@@ -45,11 +45,14 @@ jobs:
 `
 
 func TestParse_Happy(t *testing.T) {
-	p, err := Parse(strings.NewReader(sampleYAML), "proj-1", "my-pipeline")
+	p, err := ParseNamed(strings.NewReader(sampleYAML), "proj-1", "my-pipeline")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	if p.Name != "my-pipeline" {
+		t.Errorf("name: want my-pipeline, got %q", p.Name)
+	}
 	if len(p.Materials) != 2 {
 		t.Fatalf("expected 2 materials, got %d", len(p.Materials))
 	}
@@ -68,6 +71,28 @@ func TestParse_Happy(t *testing.T) {
 	}
 	if len(p.Jobs) != 3 {
 		t.Errorf("expected 3 jobs, got %d", len(p.Jobs))
+	}
+}
+
+func TestParse_NameFromFile(t *testing.T) {
+	// YAML has explicit name: — should override the fallback filename.
+	const y = `
+name: real-name
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  one:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "filename-fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name != "real-name" {
+		t.Errorf("name should be real-name, got %q", p.Name)
 	}
 }
 

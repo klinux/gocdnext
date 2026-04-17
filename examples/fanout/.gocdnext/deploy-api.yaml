@@ -1,0 +1,26 @@
+# Primeiro downstream do build-core. Quando build-core.test passa, ESTE pipeline
+# e deploy-worker.yaml são disparados em paralelo, ambos amarrados à MESMA
+# revisão do material git original (consistência de fanout — diferencial do GoCD).
+#
+# VSM visual:
+#   build-core.test ─┬─▶ deploy-api
+#                    └─▶ deploy-worker
+name: deploy-api
+
+materials:
+  - upstream:
+      pipeline: build-core
+      stage: test
+      status: success
+
+stages: [deploy]
+
+jobs:
+  deploy:
+    stage: deploy
+    image: plugins/kubectl
+    settings:
+      cluster: prod
+      manifest: k8s/api.yaml
+    rules:
+      - if: $CI_COMMIT_BRANCH == "main"

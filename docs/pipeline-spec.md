@@ -1,11 +1,32 @@
-# Pipeline spec (`.gocdnext.yaml`)
+# Pipeline spec (`.gocdnext/*.yaml`)
 
 Schema reference. See [examples/](../examples/) for working pipelines.
+
+## File layout
+
+Every repo has a **`.gocdnext/` folder** at its root. The server loads every
+`*.yaml` and `*.yml` file inside it. **One file = one pipeline.**
+
+```
+my-repo/
+├── .gocdnext/
+│   ├── build.yaml         → pipeline "build" (name from filename)
+│   ├── tests.yaml         → pipeline "tests"
+│   └── deploy-prod.yaml   → pipeline "deploy-prod"
+└── src/…
+```
+
+Pipeline name resolution:
+1. `name:` field inside the file (preferred — explicit).
+2. Filename without extension (fallback).
+
+Two files with the same resolved name is an error.
 
 ## Top-level
 
 ```yaml
 version: "1"                    # optional, reserved
+name: my-pipeline               # optional; overrides filename
 include: [...]                  # optional: local/remote/template YAMLs
 materials: [...]                # required: what triggers this pipeline
 stages: [...]                   # required: ordered list of stage names

@@ -6,9 +6,15 @@
 //   - Woodpecker: plugin = container + settings (PLUGIN_* env vars)
 package parser
 
-// File is the top-level `.gocdnext.yaml` structure.
+// File is the top-level structure of a YAML file inside `.gocdnext/`.
+// Each file defines exactly one pipeline. The folder may contain many files.
+//
+// Pipeline name resolution order:
+//  1. `name:` field (preferred, explicit)
+//  2. filename without extension (fallback)
 type File struct {
 	Version   string            `yaml:"version,omitempty"` // reserved for future
+	Name      string            `yaml:"name,omitempty"`    // pipeline name; defaults to filename
 	Include   []Include         `yaml:"include,omitempty"`
 	Materials []MaterialSpec    `yaml:"materials"`
 	Stages    []string          `yaml:"stages"`

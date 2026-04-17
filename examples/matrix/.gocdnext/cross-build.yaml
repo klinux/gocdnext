@@ -1,4 +1,6 @@
 # Matriz: 4 jobs (linux/darwin × amd64/arm64) gerados automaticamente.
+name: cross-build
+
 materials:
   - git:
       url: https://github.com/org/cross-platform-cli

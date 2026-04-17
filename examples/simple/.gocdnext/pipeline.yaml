@@ -1,4 +1,9 @@
-# Simplest usable pipeline: clone, build, test, notify.
+# Pipeline mais simples possível: clone, build, test.
+# Dentro de `.gocdnext/` o servidor carrega TODOS os arquivos *.yaml / *.yml.
+# O nome do pipeline vem de `name:` abaixo; sem ele, o filename (sem extensão)
+# é usado como fallback.
+name: hello-go
+
 materials:
   - git:
       url: https://github.com/org/hello-go

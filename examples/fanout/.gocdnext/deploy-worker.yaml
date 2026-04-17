@@ -1,0 +1,21 @@
+# Segundo downstream do build-core — exemplifica fanout para múltiplos pipelines
+# a partir do MESMO upstream. No VSM os dois aparecem lado a lado.
+name: deploy-worker
+
+materials:
+  - upstream:
+      pipeline: build-core
+      stage: test
+      status: success
+
+stages: [deploy]
+
+jobs:
+  deploy:
+    stage: deploy
+    image: plugins/kubectl
+    settings:
+      cluster: prod
+      manifest: k8s/worker.yaml
+    rules:
+      - if: $CI_COMMIT_BRANCH == "main"

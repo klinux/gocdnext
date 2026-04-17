@@ -1,0 +1,28 @@
+# Pipeline raiz: build + test do core. Dois pipelines downstream dependem do
+# sucesso da stage "test" aqui (deploy-api.yaml e deploy-worker.yaml).
+name: build-core
+
+materials:
+  - git:
+      url: https://github.com/org/core
+      branch: main
+      on: [push]
+      auto_register_webhook: true
+
+stages: [build, test]
+
+jobs:
+  build:
+    stage: build
+    image: golang:1.23
+    script:
+      - go build -o bin/core ./...
+    artifacts:
+      paths: [bin/]
+
+  test:
+    stage: test
+    image: golang:1.23
+    needs: [build]
+    script:
+      - go test -race ./...

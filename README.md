@@ -53,16 +53,31 @@ make build
 ./bin/gocdnext-server &
 GOCDNEXT_SERVER_ADDR=localhost:8154 GOCDNEXT_AGENT_TOKEN=dev-token ./bin/gocdnext-agent &
 
-# 5. validate a pipeline
-./bin/gocdnext validate examples/simple/.gocdnext.yaml
+# 5. validate all pipelines in a repo's .gocdnext/ folder
+./bin/gocdnext validate examples/simple
 ```
 
 ## Pipeline spec
 
-See [docs/pipeline-spec.md](docs/pipeline-spec.md) for the full YAML reference.
-Minimal example:
+Pipelines live in a **`.gocdnext/` folder** at the repo root. One file per
+pipeline, multiple pipelines per repo. See [docs/pipeline-spec.md](docs/pipeline-spec.md)
+for the full reference.
+
+```
+your-repo/
+├── .gocdnext/
+│   ├── build.yaml          ← pipeline "build"
+│   ├── deploy-api.yaml     ← pipeline "deploy-api"
+│   └── deploy-worker.yaml  ← pipeline "deploy-worker"
+└── src/...
+```
+
+Minimal file:
 
 ```yaml
+# .gocdnext/build.yaml
+name: build                      # optional; filename used as fallback
+
 materials:
   - git:
       url: https://github.com/org/repo
@@ -70,25 +85,19 @@ materials:
       on: [push, pull_request]
       auto_register_webhook: true
 
-stages: [build, test, deploy]
+stages: [compile, test]
 
 jobs:
-  build:
-    stage: build
+  compile:
+    stage: compile
     image: golang:1.23
     script: [go build ./...]
 
   test:
     stage: test
     image: golang:1.23
-    needs: [build]
+    needs: [compile]
     script: [go test ./...]
-
-  notify:
-    stage: deploy
-    image: plugins/slack
-    settings:
-      channel: "#deploys"
 ```
 
 ## Architecture

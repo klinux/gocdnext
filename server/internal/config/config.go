@@ -10,12 +10,13 @@ import (
 )
 
 type Config struct {
-	HTTPAddr     string
-	GRPCAddr     string
-	DatabaseURL  string
-	LogLevel     slog.Level
-	WebhookToken string // fallback shared secret until per-material secrets ship
-	ArtifactsURL string // s3://bucket or file:///var/lib/gocdnext/artifacts
+	HTTPAddr      string
+	GRPCAddr      string
+	DatabaseURL   string
+	LogLevel      slog.Level
+	WebhookToken  string // fallback shared secret until per-material secrets ship
+	ArtifactsURL  string // s3://bucket or file:///var/lib/gocdnext/artifacts
+	ConfigFolder  string // folder name in repos holding pipeline YAMLs (.gocdnext)
 }
 
 func Load() (*Config, error) {
@@ -25,6 +26,7 @@ func Load() (*Config, error) {
 		DatabaseURL:  env("GOCDNEXT_DATABASE_URL", ""),
 		WebhookToken: env("GOCDNEXT_WEBHOOK_TOKEN", ""),
 		ArtifactsURL: env("GOCDNEXT_ARTIFACTS_URL", "file:///var/lib/gocdnext/artifacts"),
+		ConfigFolder: env("GOCDNEXT_CONFIG_FOLDER", ".gocdnext"),
 	}
 
 	if c.DatabaseURL == "" {

@@ -11,7 +11,10 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
 
-// Parse reads a `.gocdnext.yaml` stream and returns a domain.Pipeline.
+// Parse reads a single pipeline file and returns a domain.Pipeline.
+// The pipelineName argument is used verbatim (caller is responsible for naming).
+//
+// Most callers should use ParseNamed or LoadFolder instead.
 //
 // Responsibilities kept here (MVP):
 //   - YAML decode
@@ -21,6 +24,13 @@ import (
 // Deferred (future): include resolution, extends/anchors merging, template expansion,
 // rules evaluation semantics. Those live in separate files to keep this one small.
 func Parse(r io.Reader, projectID, pipelineName string) (*domain.Pipeline, error) {
+	return ParseNamed(r, projectID, pipelineName)
+}
+
+// ParseNamed is the canonical entry point. Pipeline name is resolved as:
+//  1. `name:` field in the YAML (preferred)
+//  2. fallbackName (usually the filename without extension)
+func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, error) {
 	var f File
 	dec := yaml.NewDecoder(r)
 	dec.KnownFields(true)
@@ -28,9 +38,17 @@ func Parse(r io.Reader, projectID, pipelineName string) (*domain.Pipeline, error
 		return nil, fmt.Errorf("yaml decode: %w", err)
 	}
 
+	name := f.Name
+	if name == "" {
+		name = fallbackName
+	}
+	if name == "" {
+		return nil, fmt.Errorf("pipeline has no name (set top-level `name:` or pass a filename)")
+	}
+
 	p := &domain.Pipeline{
 		ProjectID: projectID,
-		Name:      pipelineName,
+		Name:      name,
 		Stages:    f.Stages,
 		Variables: f.Variables,
 		Template:  f.Template,

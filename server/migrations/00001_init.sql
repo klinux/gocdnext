@@ -19,7 +19,7 @@ CREATE TABLE pipelines (
     definition   JSONB NOT NULL,             -- snapshot canônico do YAML parseado
     definition_version INT NOT NULL DEFAULT 1,
     config_repo  TEXT,                       -- se veio de um config-repo externo
-    config_path  TEXT NOT NULL DEFAULT '.gocdnext.yaml',
+    config_path  TEXT NOT NULL DEFAULT '.gocdnext',  -- folder, não arquivo
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (project_id, name)

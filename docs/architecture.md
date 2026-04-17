@@ -45,6 +45,19 @@
     → triggers fanout (step 4 repeats for downstreams)
 ```
 
+## Pipeline config discovery
+
+Pipelines are defined in a `.gocdnext/` folder at each repo root (one file
+per pipeline). The server loads all `*.yaml` / `*.yml` files and registers
+each as a separate pipeline — filename (without extension) is the default
+name; a `name:` field overrides it.
+
+Two discovery triggers:
+- **Config-repo sync** (Phase 2): user registers a repo as a config source;
+  server clones and calls `parser.LoadFolder(root)`.
+- **First push webhook** (Phase 1): if an incoming webhook matches a git URL
+  we know but has no pipelines yet, we clone, parse, and persist.
+
 ## Why these choices
 
 - **Postgres LISTEN/NOTIFY** over Kafka/NATS for MVP: 1 less dep, fine for
