@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
+	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
@@ -72,6 +73,76 @@ func TestGitHubWebhook_PushWithMatchingMaterial(t *testing.T) {
 	}
 
 	_ = materialID // seeded, not asserted directly
+}
+
+func TestGitHubWebhook_PushTriggersRun(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newServer(t, s)
+
+	fp := store.FingerprintFor("https://github.com/gocdnext/gocdnext.git", "main")
+	_ = seedMaterial(t, pool, fp)
+
+	body := loadFixture(t, "push_main.json")
+	resp := postSigned(t, srv, "push", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	var got struct {
+		ModificationID int64  `json:"modification_id"`
+		Created        bool   `json:"created"`
+		RunID          string `json:"run_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.RunID == "" {
+		t.Fatalf("run_id missing in response: %+v", got)
+	}
+
+	ctx := context.Background()
+	var status, cause string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, cause FROM runs WHERE id = $1`, got.RunID,
+	).Scan(&status, &cause); err != nil {
+		t.Fatalf("run row: %v", err)
+	}
+	if status != "queued" || cause != "webhook" {
+		t.Fatalf("run status=%s cause=%s", status, cause)
+	}
+
+	var stageCount, jobCount int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM stage_runs WHERE run_id = $1`, got.RunID).Scan(&stageCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM job_runs WHERE run_id = $1`, got.RunID).Scan(&jobCount)
+	if stageCount != 2 || jobCount != 2 {
+		t.Fatalf("stages=%d jobs=%d, want 2/2", stageCount, jobCount)
+	}
+
+	// Replay must be idempotent: same delivery, no second run.
+	resp2 := postSigned(t, srv, "push", body)
+	defer resp2.Body.Close()
+	var got2 struct {
+		Created bool   `json:"created"`
+		RunID   string `json:"run_id"`
+	}
+	_ = json.NewDecoder(resp2.Body).Decode(&got2)
+	if got2.Created {
+		t.Fatalf("replay Created = true")
+	}
+
+	var runCount int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM runs r
+		 JOIN pipelines p ON p.id = r.pipeline_id
+		 JOIN projects pr ON pr.id = p.project_id
+		 WHERE pr.slug = 'gocdnext-webhook-test'`,
+	).Scan(&runCount)
+	if runCount != 1 {
+		t.Fatalf("run count after replay = %d, want 1", runCount)
+	}
 }
 
 func TestGitHubWebhook_PushNoMatchingMaterial(t *testing.T) {
@@ -193,34 +264,49 @@ func readBody(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
+// seedMaterial builds a minimal 2-stage pipeline via ApplyProject with a git
+// material matching (url, "main"), so webhook push_main fixtures can drive the
+// run-creation path. Returns the material UUID that the webhook handler will
+// look up by fingerprint.
 func seedMaterial(t *testing.T, pool *pgxpool.Pool, fingerprint string) uuid.UUID {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var projectID uuid.UUID
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO projects (slug, name) VALUES ($1, $2) RETURNING id`,
-		"test-"+fingerprint[:8], "test project",
-	).Scan(&projectID); err != nil {
-		t.Fatalf("seed project: %v", err)
+	url := "https://github.com/gocdnext/gocdnext.git"
+	branch := "main"
+	// Caller's fingerprint is derived from (url, branch). Sanity check.
+	if store.FingerprintFor(url, branch) != fingerprint {
+		t.Fatalf("seed fingerprint mismatch: caller=%s vs derived", fingerprint)
 	}
 
-	var pipelineID uuid.UUID
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, $2, $3) RETURNING id`,
-		projectID, "test-pipeline", []byte(`{}`),
-	).Scan(&pipelineID); err != nil {
-		t.Fatalf("seed pipeline: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	s := store.New(pool)
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "gocdnext-webhook-test",
+		Name: "gocdnext webhook test",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "ci",
+			Stages: []string{"build", "test"},
+			Materials: []domain.Material{{
+				Type:        domain.MaterialGit,
+				Fingerprint: fingerprint,
+				AutoUpdate:  true,
+				Git:         &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}},
+				{Name: "unit", Stage: "test", Tasks: []domain.Task{{Script: "make test"}}, Needs: []string{"compile"}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("seed apply: %v", err)
 	}
 
 	var materialID uuid.UUID
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO materials (pipeline_id, type, config, fingerprint)
-		 VALUES ($1, 'git', $2, $3) RETURNING id`,
-		pipelineID, []byte(`{"url":"https://github.com/x/y.git","branch":"main"}`), fingerprint,
+		`SELECT id FROM materials WHERE fingerprint = $1`, fingerprint,
 	).Scan(&materialID); err != nil {
-		t.Fatalf("seed material: %v", err)
+		t.Fatalf("seed material lookup: %v", err)
 	}
 	return materialID
 }

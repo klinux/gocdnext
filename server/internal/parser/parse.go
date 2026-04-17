@@ -1,8 +1,6 @@
 package parser
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -84,24 +82,23 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 func toMaterial(m MaterialSpec) (domain.Material, error) {
 	switch {
 	case m.Git != nil:
-		fp := fingerprint("git", m.Git.URL, m.Git.Branch)
+		branch := defaultStr(m.Git.Branch, "main")
 		return domain.Material{
 			Type:        domain.MaterialGit,
-			Fingerprint: fp,
+			Fingerprint: domain.GitFingerprint(m.Git.URL, branch),
 			AutoUpdate:  true,
 			Git: &domain.GitMaterial{
 				URL:                 m.Git.URL,
-				Branch:              defaultStr(m.Git.Branch, "main"),
+				Branch:              branch,
 				Events:              defaultEvents(m.Git.On),
 				AutoRegisterWebhook: m.Git.AutoRegisterWebhook,
 				SecretRef:           m.Git.SecretRef,
 			},
 		}, nil
 	case m.Upstream != nil:
-		fp := fingerprint("upstream", m.Upstream.Pipeline, m.Upstream.Stage)
 		return domain.Material{
 			Type:        domain.MaterialUpstream,
-			Fingerprint: fp,
+			Fingerprint: domain.UpstreamFingerprint(m.Upstream.Pipeline, m.Upstream.Stage),
 			AutoUpdate:  true,
 			Upstream: &domain.UpstreamMaterial{
 				Pipeline: m.Upstream.Pipeline,
@@ -112,14 +109,14 @@ func toMaterial(m MaterialSpec) (domain.Material, error) {
 	case m.Cron != nil:
 		return domain.Material{
 			Type:        domain.MaterialCron,
-			Fingerprint: fingerprint("cron", m.Cron.Expression),
+			Fingerprint: domain.CronFingerprint(m.Cron.Expression),
 			AutoUpdate:  true,
 			Cron:        &domain.CronMaterial{Expression: m.Cron.Expression},
 		}, nil
 	case m.Manual:
 		return domain.Material{
 			Type:        domain.MaterialManual,
-			Fingerprint: fingerprint("manual"),
+			Fingerprint: domain.ManualFingerprint(),
 		}, nil
 	default:
 		return domain.Material{}, fmt.Errorf("material must set one of: git, upstream, cron, manual")
@@ -190,11 +187,3 @@ func defaultEvents(ev []string) []string {
 	return ev
 }
 
-func fingerprint(parts ...string) string {
-	h := sha256.New()
-	for _, p := range parts {
-		h.Write([]byte(p))
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))[:32]
-}

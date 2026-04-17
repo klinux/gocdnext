@@ -119,17 +119,46 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.log.Info("github webhook: modification recorded",
-		"delivery", delivery, "material_id", material.ID, "modification_id", res.ID,
-		"created", res.Created, "revision", ev.After, "branch", branch)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
 	resp := map[string]any{
 		"modification_id": res.ID,
 		"created":         res.Created,
 		"material_id":     material.ID.String(),
 	}
+
+	// Only trigger a fresh run on a newly-inserted modification. If run creation
+	// fails after the modification was persisted, the retry on GitHub's side
+	// will see Created=false and skip this branch — a known gap to plug when we
+	// introduce EnsureRun (C1.6 or later).
+	if res.Created {
+		runRes, err := h.store.CreateRunFromModification(r.Context(), store.CreateRunFromModificationInput{
+			PipelineID:     material.PipelineID,
+			MaterialID:     material.ID,
+			ModificationID: res.ID,
+			Revision:       ev.After,
+			Branch:         branch,
+			Provider:       "github",
+			Delivery:       delivery,
+			TriggeredBy:    "system:webhook",
+		})
+		if err != nil {
+			h.log.Error("github webhook: create run failed",
+				"delivery", delivery, "modification_id", res.ID, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		resp["run_id"] = runRes.RunID.String()
+		resp["run_counter"] = runRes.Counter
+		h.log.Info("github webhook: run queued",
+			"delivery", delivery, "pipeline_id", material.PipelineID,
+			"run_id", runRes.RunID, "counter", runRes.Counter,
+			"stages", len(runRes.StageRuns), "jobs", len(runRes.JobRuns))
+	} else {
+		h.log.Info("github webhook: modification already present, no run queued",
+			"delivery", delivery, "modification_id", res.ID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		// Already wrote 202 — nothing we can do, just log.
 		h.log.Warn("github webhook: encode response failed", "err", fmt.Sprint(err))
