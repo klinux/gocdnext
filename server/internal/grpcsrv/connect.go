@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -13,6 +14,9 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
+
+	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
 const offlineFlushTimeout = 2 * time.Second
@@ -89,26 +93,111 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				log.Debug("pong dispatch skipped", "err", err)
 			}
 		case *gocdnextv1.AgentMessage_Log:
-			// C5 will persist into log_lines. For now log at debug so smoke
-			// output is readable but noisy runs don't flood info-level sinks.
-			l := kind.Log
-			log.Debug("agent log",
-				"run_id", l.GetRunId(), "job_id", l.GetJobId(),
-				"seq", l.GetSeq(), "stream", l.GetStream(), "text", l.GetText())
+			a.handleLogLine(stream.Context(), log, kind.Log)
 		case *gocdnextv1.AgentMessage_Progress:
 			log.Debug("agent progress", "kind", kindName(msg))
 		case *gocdnextv1.AgentMessage_Result:
-			// C5 will flip job_runs + stage_runs + runs to terminal status.
-			// Surface at info so smoke tests can observe the outcome.
-			r := kind.Result
-			log.Info("agent job result",
-				"run_id", r.GetRunId(), "job_id", r.GetJobId(),
-				"status", r.GetStatus().String(), "exit_code", r.GetExitCode(),
-				"error", r.GetError())
+			a.handleJobResult(stream.Context(), log, agentID, kind.Result)
 		default:
 			log.Warn("stream msg: unknown kind", "kind_type", kind)
 		}
 	}
+}
+
+// handleLogLine persists a streamed log line. Errors are logged and swallowed:
+// agents should not retry on DB hiccups because seq numbers are monotonic per
+// job, and the ON CONFLICT (job_run_id, seq) dedupe makes a later ack-less
+// retry safe anyway.
+func (a *AgentService) handleLogLine(ctx context.Context, log logger, l *gocdnextv1.LogLine) {
+	jobID, err := uuid.Parse(l.GetJobId())
+	if err != nil {
+		log.Warn("agent log: bad job_id", "job_id", l.GetJobId())
+		return
+	}
+	at := time.Time{}
+	if l.GetAt() != nil {
+		at = l.GetAt().AsTime()
+	}
+	if err := a.store.InsertLogLine(ctx, store.LogLine{
+		JobRunID: jobID,
+		Seq:      l.GetSeq(),
+		Stream:   l.GetStream(),
+		At:       at,
+		Text:     l.GetText(),
+	}); err != nil {
+		log.Warn("agent log: persist failed", "err", err, "job_id", jobID, "seq", l.GetSeq())
+	}
+}
+
+// handleJobResult flips the job terminal, cascades into stage + run, releases
+// the agent's session capacity, and nudges the scheduler to pick up the next
+// stage when the run keeps going. All errors surface as warnings — the stream
+// stays open for subsequent traffic.
+func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID uuid.UUID, r *gocdnextv1.JobResult) {
+	jobID, err := uuid.Parse(r.GetJobId())
+	if err != nil {
+		log.Warn("agent result: bad job_id", "job_id", r.GetJobId())
+		return
+	}
+
+	status := mapStatus(r.GetStatus())
+	if status == "" {
+		log.Warn("agent result: unsupported status", "status", r.GetStatus().String())
+		return
+	}
+
+	comp, ok, err := a.store.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID: jobID,
+		Status:   status,
+		ExitCode: r.GetExitCode(),
+		ErrorMsg: r.GetError(),
+	})
+	if err != nil {
+		log.Warn("agent result: complete job", "err", err, "job_id", jobID)
+		return
+	}
+	if !ok {
+		log.Debug("agent result: job already terminal", "job_id", jobID)
+		return
+	}
+
+	a.sessions.Release(agentID)
+
+	log.Info("agent job result",
+		"run_id", comp.RunID, "job_id", comp.JobRunID, "job_name", comp.JobName,
+		"status", status, "exit_code", r.GetExitCode(),
+		"stage_done", comp.StageCompleted, "stage_status", comp.StageStatus,
+		"run_done", comp.RunCompleted, "run_status", comp.RunStatus)
+
+	// Wake the scheduler so it dispatches the next stage without waiting for
+	// the periodic tick. Harmless if the run is already terminal (the handler
+	// just finds no dispatchable jobs).
+	if comp.StageCompleted && !comp.RunCompleted {
+		if err := a.store.NotifyRunQueued(ctx, comp.RunID); err != nil {
+			log.Warn("agent result: notify run_queued", "err", err)
+		}
+	}
+}
+
+// mapStatus converts the proto enum reported by the agent to the text labels
+// used everywhere else (domain.StatusSuccess / StatusFailed).
+func mapStatus(s gocdnextv1.RunStatus) string {
+	switch s {
+	case gocdnextv1.RunStatus_RUN_STATUS_SUCCESS:
+		return string(domain.StatusSuccess)
+	case gocdnextv1.RunStatus_RUN_STATUS_FAILED:
+		return string(domain.StatusFailed)
+	default:
+		return ""
+	}
+}
+
+// logger is the subset of slog.Logger the handlers rely on. Keeping it narrow
+// makes it trivial to inject a test double without dragging slog internals.
+type logger interface {
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
 }
 
 func sessionFromContext(ctx context.Context) (string, bool) {

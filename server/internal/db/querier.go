@@ -14,6 +14,16 @@ type Querier interface {
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
 	AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error)
+	CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error
+	// When a stage fails we stop dispatching the rest of the run. Running work
+	// stays untouched; the agent will still report its outcome.
+	CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID) error
+	// Flips a running job to its terminal state. Idempotent: only matches rows
+	// currently in status='running'. Returns the stage/run ids so the caller can
+	// cascade into stage + run progression.
+	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
+	CompleteRun(ctx context.Context, arg CompleteRunParams) error
+	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
@@ -23,8 +33,15 @@ type Querier interface {
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
+	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
+	// Counts jobs still working vs already-failed within a stage — the numbers
+	// the caller uses to decide whether to promote the stage.
+	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
+	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
+	// constraint makes retries safe.
+	InsertLogLine(ctx context.Context, arg InsertLogLineParams) error
 	InsertMaterial(ctx context.Context, arg InsertMaterialParams) (Material, error)
 	InsertModification(ctx context.Context, arg InsertModificationParams) (Modification, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)

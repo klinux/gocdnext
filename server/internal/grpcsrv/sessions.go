@@ -136,9 +136,30 @@ func (s *SessionStore) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage
 	}
 	select {
 	case sess.out <- msg:
+		// Only JobAssignment messages bump the running counter — heartbeats,
+		// pongs and future cancel frames don't consume capacity.
+		if msg.GetAssign() != nil {
+			sess.IncRunning()
+		}
 		return nil
 	default:
 		return ErrSessionBusy
+	}
+}
+
+// Release decrements the running counter for the agent's current session.
+// No-op if the agent has no live session (e.g., disconnected before the
+// job result came in). Called by the result handler in C5.
+func (s *SessionStore) Release(agentID uuid.UUID) {
+	s.mu.Lock()
+	id, ok := s.latestByAg[agentID]
+	var sess *Session
+	if ok {
+		sess = s.byID[id]
+	}
+	s.mu.Unlock()
+	if sess != nil {
+		sess.DecRunning()
 	}
 }
 
