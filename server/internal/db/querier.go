@@ -11,14 +11,22 @@ import (
 )
 
 type Querier interface {
+	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
+	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error)
+	FindProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	InsertMaterial(ctx context.Context, arg InsertMaterialParams) (Material, error)
 	InsertModification(ctx context.Context, arg InsertModificationParams) (Modification, error)
+	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
+	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
 	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
+	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
+	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
+	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

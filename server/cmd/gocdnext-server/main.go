@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -51,6 +52,7 @@ func main() {
 
 	st := store.New(pool)
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger)
+	projectsHandler := projectsapi.NewHandler(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
@@ -73,9 +75,9 @@ func main() {
 	})
 
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
+	r.Post("/api/v1/projects/apply", projectsHandler.Apply)
 
-	// TODO(phase-1): wire pipeline, run, agent handlers.
-	// r.Mount("/api/v1", api.Router(...))
+	// TODO(phase-1): wire run/agent handlers.
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

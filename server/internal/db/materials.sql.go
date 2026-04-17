@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteMaterial = `-- name: DeleteMaterial :exec
+DELETE FROM materials WHERE id = $1
+`
+
+func (q *Queries) DeleteMaterial(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteMaterial, id)
+	return err
+}
+
 const findMaterialByFingerprint = `-- name: FindMaterialByFingerprint :one
 SELECT id, pipeline_id, type, config, fingerprint, auto_update, created_at
 FROM materials
@@ -64,6 +73,92 @@ func (q *Queries) InsertMaterial(ctx context.Context, arg InsertMaterialParams) 
 		&i.Fingerprint,
 		&i.AutoUpdate,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const listMaterialsByPipeline = `-- name: ListMaterialsByPipeline :many
+SELECT id, pipeline_id, type, config, fingerprint, auto_update, created_at
+FROM materials
+WHERE pipeline_id = $1
+ORDER BY fingerprint
+`
+
+func (q *Queries) ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error) {
+	rows, err := q.db.Query(ctx, listMaterialsByPipeline, pipelineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Material{}
+	for rows.Next() {
+		var i Material
+		if err := rows.Scan(
+			&i.ID,
+			&i.PipelineID,
+			&i.Type,
+			&i.Config,
+			&i.Fingerprint,
+			&i.AutoUpdate,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const upsertMaterial = `-- name: UpsertMaterial :one
+INSERT INTO materials (pipeline_id, type, config, fingerprint, auto_update)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (pipeline_id, fingerprint) DO UPDATE SET
+    type = EXCLUDED.type,
+    config = EXCLUDED.config,
+    auto_update = EXCLUDED.auto_update
+RETURNING id, pipeline_id, type, config, fingerprint, auto_update, created_at, (xmax = 0) AS created
+`
+
+type UpsertMaterialParams struct {
+	PipelineID  pgtype.UUID
+	Type        string
+	Config      []byte
+	Fingerprint string
+	AutoUpdate  bool
+}
+
+type UpsertMaterialRow struct {
+	ID          pgtype.UUID
+	PipelineID  pgtype.UUID
+	Type        string
+	Config      []byte
+	Fingerprint string
+	AutoUpdate  bool
+	CreatedAt   pgtype.Timestamptz
+	Created     bool
+}
+
+func (q *Queries) UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error) {
+	row := q.db.QueryRow(ctx, upsertMaterial,
+		arg.PipelineID,
+		arg.Type,
+		arg.Config,
+		arg.Fingerprint,
+		arg.AutoUpdate,
+	)
+	var i UpsertMaterialRow
+	err := row.Scan(
+		&i.ID,
+		&i.PipelineID,
+		&i.Type,
+		&i.Config,
+		&i.Fingerprint,
+		&i.AutoUpdate,
+		&i.CreatedAt,
+		&i.Created,
 	)
 	return i, err
 }
