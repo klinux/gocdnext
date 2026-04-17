@@ -4,6 +4,12 @@ modules:
 lint:
   use:
     - STANDARD
+  except:
+    # Our bidi Connect stream carries event-style messages, not a single
+    # request/response pair — the "*Request"/"*Response" naming convention
+    # the buf standard pushes for RPCs makes the naming worse, not better.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
 breaking:
   use:
     - FILE

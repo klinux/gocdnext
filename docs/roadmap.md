@@ -9,7 +9,7 @@
 - [x] docker-compose dev stack (postgres + minio)
 - [x] Dockerfiles (server, agent)
 - [x] Makefile
-- [ ] Proto code generation wired (`make proto`)
+- [x] Proto code generation wired (`make proto`)
 - [ ] CI on gocdnext itself (GitHub Actions for now; dogfood later)
 
 ## Phase 1 — MVP pipeline (weeks 3–6)

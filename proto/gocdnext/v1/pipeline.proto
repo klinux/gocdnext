@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package gocdnext.v1;
 
-option go_package = "github.com/gocdnext/gocdnext/proto/gocdnext/v1;gocdnextv1";
+option go_package = "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1;gocdnextv1";
 
 import "google/protobuf/timestamp.proto";
 import "gocdnext/v1/common.proto";
@@ -91,7 +91,7 @@ message Run {
   string   id           = 1;
   string   pipeline_id  = 2;
   int64    counter      = 3;
-  BuildCauseType cause  = 4;
+  BuildCause cause  = 4;
   repeated Revision revisions = 5;
   RunStatus status      = 6;
   google.protobuf.Timestamp started_at  = 7;

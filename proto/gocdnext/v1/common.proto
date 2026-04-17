@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package gocdnext.v1;
 
-option go_package = "github.com/gocdnext/gocdnext/proto/gocdnext/v1;gocdnextv1";
+option go_package = "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1;gocdnextv1";
 
 import "google/protobuf/timestamp.proto";
 
@@ -18,8 +18,8 @@ enum RunStatus {
   RUN_STATUS_WAITING     = 7; // aprovação manual pendente
 }
 
-// BuildCauseType — o que disparou o pipeline.
-enum BuildCauseType {
+// BuildCause — o que disparou o pipeline.
+enum BuildCause {
   BUILD_CAUSE_UNSPECIFIED = 0;
   BUILD_CAUSE_WEBHOOK     = 1; // push ou PR via webhook
   BUILD_CAUSE_UPSTREAM    = 2; // fanout: pipeline upstream finalizou

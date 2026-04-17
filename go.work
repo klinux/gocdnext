@@ -4,5 +4,6 @@ use (
 	./agent
 	./cli
 	./plugins/slack
+	./proto
 	./server
 )

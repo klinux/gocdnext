@@ -3,7 +3,12 @@
     "allow": [
       "Bash(sqlc version *)",
       "Bash(sqlc generate *)",
-      "Bash(go version *)"
+      "Bash(go version *)",
+      "Bash(buf --version)",
+      "Bash(buf lint *)",
+      "Bash(buf generate *)",
+      "Bash(go work *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }

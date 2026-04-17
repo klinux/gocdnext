@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,8 +16,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc"
 
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/config"
+	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
@@ -47,6 +51,12 @@ func main() {
 
 	st := store.New(pool)
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger)
+
+	sessions := grpcsrv.NewSessionStore()
+	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
+
+	grpcServer := grpc.NewServer()
+	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -84,10 +94,24 @@ func main() {
 		}
 	}()
 
+	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		logger.Error("grpc listen", "addr", cfg.GRPCAddr, "err", err)
+		os.Exit(1)
+	}
+	go func() {
+		logger.Info("grpc listening", "addr", cfg.GRPCAddr)
+		if err := grpcServer.Serve(grpcLis); err != nil {
+			logger.Error("grpc server", "err", err)
+			os.Exit(1)
+		}
+	}()
+
 	<-ctx.Done()
 	logger.Info("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	grpcServer.GracefulStop()
 }

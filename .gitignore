@@ -9,9 +9,8 @@ dist/
 vendor/
 go.sum.lock
 
-# Proto generated
-*.pb.go
-!proto/gocdnext/v1/*.pb.go
+# Proto generated code lives in proto/gen/go/ and IS committed so consumers
+# don't need buf/protoc installed. Nothing to ignore here.
 
 # Node / Next.js
 web/node_modules/

@@ -6,13 +6,19 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
+	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
+	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	InsertMaterial(ctx context.Context, arg InsertMaterialParams) (Material, error)
 	InsertModification(ctx context.Context, arg InsertModificationParams) (Modification, error)
+	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
+	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
 }
 
 var _ Querier = (*Queries)(nil)
