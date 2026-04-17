@@ -177,6 +177,24 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 			log.Warn("agent result: notify run_queued", "err", err)
 		}
 	}
+
+	// Fanout: if the stage passed and some downstream pipeline lists this
+	// (pipeline, stage) as an upstream material, queue those runs now. Errors
+	// per-downstream are already joined and surfaced below — one bad sibling
+	// doesn't block the others.
+	if comp.StageCompleted && comp.StageStatus == string(domain.StatusSuccess) {
+		triggered, fanErr := a.store.FanoutFromStage(ctx, comp.StageRunID)
+		for _, t := range triggered {
+			log.Info("fanout: downstream run queued",
+				"downstream_pipeline_id", t.DownstreamPipelineID,
+				"downstream_run_id", t.Run.RunID,
+				"counter", t.Run.Counter,
+				"created", t.Created)
+		}
+		if fanErr != nil {
+			log.Warn("fanout: partial failure", "err", fanErr, "stage_run_id", comp.StageRunID)
+		}
+	}
 }
 
 // mapStatus converts the proto enum reported by the agent to the text labels

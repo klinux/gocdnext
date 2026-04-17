@@ -53,12 +53,45 @@ type RunCreated struct {
 	JobRuns   []JobRunRef
 }
 
-// CreateRunFromModification materializes a queued run for `PipelineID`: inserts
-// the `run` row (monotonic counter per pipeline), all `stage_runs`, all
-// `job_runs` (expanding matrix jobs into one row per combination), then emits
-// pg_notify('run_queued', <run_id>) from inside the transaction so the
-// scheduler sees it the moment commit lands.
+// CreateRunFromModification materializes a queued run triggered by a matched
+// webhook modification. Thin adapter over insertRunSkeleton — all the heavy
+// lifting (counter + stage_runs + job_runs + NOTIFY) lives there so other
+// trigger paths (upstream, cron, manual) share the same insertion logic.
 func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromModificationInput) (RunCreated, error) {
+	causeDetail, _ := json.Marshal(map[string]any{
+		"provider":        in.Provider,
+		"delivery":        in.Delivery,
+		"material_id":     in.MaterialID.String(),
+		"modification_id": in.ModificationID,
+	})
+	revisions, _ := json.Marshal(map[string]any{
+		in.MaterialID.String(): map[string]string{
+			"revision": in.Revision,
+			"branch":   in.Branch,
+		},
+	})
+	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
+		PipelineID:  in.PipelineID,
+		Cause:       string(domain.CauseWebhook),
+		CauseDetail: causeDetail,
+		Revisions:   revisions,
+		TriggeredBy: in.TriggeredBy,
+	})
+}
+
+// insertRunSkeletonInput is the minimal payload for creating a queued run:
+// whatever already-serialized cause + revisions the caller computed.
+type insertRunSkeletonInput struct {
+	PipelineID  uuid.UUID
+	Cause       string
+	CauseDetail json.RawMessage
+	Revisions   json.RawMessage
+	TriggeredBy string
+}
+
+// insertRunSkeleton runs the full "create run + stages + jobs + NOTIFY" dance
+// inside one tx. Trigger-specific code prepares cause+revisions and calls in.
+func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput) (RunCreated, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: create run: begin: %w", err)
@@ -84,25 +117,12 @@ func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromM
 		return RunCreated{}, fmt.Errorf("store: create run: counter: %w", err)
 	}
 
-	causeDetail, _ := json.Marshal(map[string]any{
-		"provider":        in.Provider,
-		"delivery":        in.Delivery,
-		"material_id":     in.MaterialID.String(),
-		"modification_id": in.ModificationID,
-	})
-	revisions, _ := json.Marshal(map[string]any{
-		in.MaterialID.String(): map[string]string{
-			"revision": in.Revision,
-			"branch":   in.Branch,
-		},
-	})
-
 	runRow, err := q.InsertRun(ctx, db.InsertRunParams{
 		PipelineID:  pipelineRow.ID,
 		Counter:     counter,
-		Cause:       string(domain.CauseWebhook),
-		CauseDetail: causeDetail,
-		Revisions:   revisions,
+		Cause:       in.Cause,
+		CauseDetail: in.CauseDetail,
+		Revisions:   in.Revisions,
 		TriggeredBy: nullableString(in.TriggeredBy),
 	})
 	if err != nil {

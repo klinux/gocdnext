@@ -78,32 +78,35 @@ const (
 )
 
 type Material struct {
-	ID          string
-	Type        MaterialType
-	Fingerprint string
-	AutoUpdate  bool
+	ID          string       `json:"id,omitempty"`
+	Type        MaterialType `json:"type"`
+	Fingerprint string       `json:"fingerprint"`
+	AutoUpdate  bool         `json:"auto_update"`
 
-	Git      *GitMaterial
-	Upstream *UpstreamMaterial
-	Cron     *CronMaterial
+	Git      *GitMaterial      `json:"git,omitempty"`
+	Upstream *UpstreamMaterial `json:"upstream,omitempty"`
+	Cron     *CronMaterial     `json:"cron,omitempty"`
 }
 
+// Material-config JSON tags match the YAML ones so `materials.config` in the
+// DB stays human-readable (e.g. config->>'url') and queries/UI can inspect
+// it without knowing Go's CamelCase field names.
 type GitMaterial struct {
-	URL                 string
-	Branch              string
-	Events              []string
-	AutoRegisterWebhook bool
-	SecretRef           string
+	URL                 string   `json:"url"`
+	Branch              string   `json:"branch,omitempty"`
+	Events              []string `json:"events,omitempty"`
+	AutoRegisterWebhook bool     `json:"auto_register_webhook,omitempty"`
+	SecretRef           string   `json:"secret_ref,omitempty"`
 }
 
 type UpstreamMaterial struct {
-	Pipeline string
-	Stage    string
-	Status   string
+	Pipeline string `json:"pipeline"`
+	Stage    string `json:"stage"`
+	Status   string `json:"status,omitempty"`
 }
 
 type CronMaterial struct {
-	Expression string
+	Expression string `json:"expression"`
 }
 
 type Job struct {

@@ -28,8 +28,16 @@ type Querier interface {
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
+	// For a completed stage on an upstream pipeline, find every "upstream"
+	// material in OTHER pipelines of the same project that points at it. The
+	// status filter respects `materials.config.status` (default 'success') so a
+	// user can gate downstream on specific outcomes.
+	FindDownstreamUpstreamMaterials(ctx context.Context, arg FindDownstreamUpstreamMaterialsParams) ([]FindDownstreamUpstreamMaterialsRow, error)
 	FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error)
 	FindProjectBySlug(ctx context.Context, slug string) (Project, error)
+	// Idempotency check for fanout: if we already created a downstream run for
+	// this (pipeline, upstream_run_id) pair, skip.
+	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
@@ -37,6 +45,9 @@ type Querier interface {
 	// Counts jobs still working vs already-failed within a stage — the numbers
 	// the caller uses to decide whether to promote the stage.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
+	// Everything the fanout trigger needs to identify this stage's position
+	// (pipeline + run + counter + revisions) without multiple round-trips.
+	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
