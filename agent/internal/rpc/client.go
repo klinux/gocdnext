@@ -175,12 +175,26 @@ func (c *Client) sendHeartbeat(stream gocdnextv1.AgentService_ConnectClient) err
 }
 
 func (c *Client) handleServerMessage(msg *gocdnextv1.ServerMessage) {
-	switch msg.GetKind().(type) {
+	switch k := msg.GetKind().(type) {
 	case *gocdnextv1.ServerMessage_Pong:
 		c.log.Debug("pong")
 	case *gocdnextv1.ServerMessage_Assign:
-		// TODO(phase-1-exec): execute JobAssignment.
-		c.log.Info("job assignment (not implemented yet)")
+		a := k.Assign
+		// C3: log the assignment so the smoke test can see it arrive. Actual
+		// execution (git clone + script) lands in C4.
+		scripts := 0
+		for _, t := range a.GetTasks() {
+			if t.GetScript() != "" {
+				scripts++
+			}
+		}
+		c.log.Info("job assignment received",
+			"run_id", a.GetRunId(),
+			"job_id", a.GetJobId(),
+			"job_name", a.GetName(),
+			"image", a.GetImage(),
+			"tasks", scripts,
+			"checkouts", len(a.GetCheckouts()))
 	case *gocdnextv1.ServerMessage_Cancel:
 		c.log.Info("cancel (not implemented yet)")
 	default:

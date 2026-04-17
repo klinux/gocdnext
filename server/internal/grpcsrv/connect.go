@@ -27,17 +27,33 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	if !ok {
 		return status.Error(codes.Unauthenticated, "missing session header")
 	}
-	agentID, ok := a.sessions.Lookup(sessionID)
+	sess, ok := a.sessions.Lookup(sessionID)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "invalid or expired session")
 	}
+	agentID := sess.AgentID
 
 	log := a.log.With("agent_uuid", agentID, "session", sessionID)
 	log.Info("agent stream opened")
 
+	// Send pump: drain scheduler-produced messages onto the gRPC stream. gRPC
+	// stream.Send is safe to call concurrently with stream.Recv (different
+	// directions), but NOT with itself — only this goroutine writes. The pump
+	// exits when the session channel is closed (on Revoke) or the stream ends.
+	pumpDone := make(chan struct{})
+	go func() {
+		defer close(pumpDone)
+		for msg := range sess.Out() {
+			if err := stream.Send(msg); err != nil {
+				log.Warn("stream send failed, dropping pump", "err", err)
+				return
+			}
+		}
+	}()
+
 	defer func() {
 		a.sessions.Revoke(sessionID)
-		// Use a fresh context — stream.Context() is already canceled here.
+		<-pumpDone
 		offCtx, cancel := context.WithTimeout(context.Background(), offlineFlushTimeout)
 		defer cancel()
 		if err := a.store.MarkAgentOffline(offCtx, agentID); err != nil {
@@ -61,12 +77,16 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 
 		switch kind := msg.GetKind().(type) {
 		case *gocdnextv1.AgentMessage_Heartbeat:
-			if err := stream.Send(&gocdnextv1.ServerMessage{
+			// Pong goes through the session queue so the send pump stays the
+			// single writer on stream.Send. Dropping under queue pressure is
+			// fine — agents detect liveness via stream health, not pong cadence.
+			pong := &gocdnextv1.ServerMessage{
 				Kind: &gocdnextv1.ServerMessage_Pong{
 					Pong: &gocdnextv1.Pong{At: timestamppb.Now()},
 				},
-			}); err != nil {
-				return err
+			}
+			if err := a.sessions.Dispatch(agentID, pong); err != nil {
+				log.Debug("pong dispatch skipped", "err", err)
 			}
 		case *gocdnextv1.AgentMessage_Progress,
 			*gocdnextv1.AgentMessage_Log,

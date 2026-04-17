@@ -11,6 +11,9 @@ import (
 )
 
 type Querier interface {
+	// Moves a queued, unassigned job to running and records the agent. The status
+	// predicate prevents a race where two scheduler ticks pick the same job.
+	AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error)
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
@@ -19,17 +22,25 @@ type Querier interface {
 	FindProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	InsertMaterial(ctx context.Context, arg InsertMaterialParams) (Material, error)
 	InsertModification(ctx context.Context, arg InsertModificationParams) (Modification, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
+	// Returns queued jobs in the lowest-ordinal stage that still has queued or
+	// running work. The scheduler does needs-satisfaction checking in Go so the
+	// query stays readable; the stage gate is the only SQL-level constraint.
+	ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) ([]ListDispatchableJobsRow, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
+	ListQueuedRunIDs(ctx context.Context) ([]pgtype.UUID, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
 	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
+	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
+	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)

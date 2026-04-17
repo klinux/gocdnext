@@ -3,63 +3,164 @@
 package grpcsrv
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
+
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
-// SessionStore keeps the mapping session_id → agent_id in-memory. Sessions are
+// Sentinel errors for dispatch attempts.
+var (
+	ErrNoSession      = errors.New("grpcsrv: no active session for agent")
+	ErrSessionBusy    = errors.New("grpcsrv: session send queue full")
+	ErrSessionRevoked = errors.New("grpcsrv: session revoked")
+)
+
+const defaultSendBuffer = 16
+
+// Session represents one live agent stream. The Connect handler drains `Out`
+// onto the gRPC stream, the scheduler writes to it via Dispatch.
+type Session struct {
+	ID       string
+	AgentID  uuid.UUID
+	Tags     []string
+	Capacity int32
+
+	out     chan *gocdnextv1.ServerMessage
+	running atomic.Int32
+	revoked atomic.Bool
+}
+
+// Out returns the receive side of the session's send queue. The Connect
+// handler reads from this and ships each message to the agent.
+func (s *Session) Out() <-chan *gocdnextv1.ServerMessage { return s.out }
+
+// SessionStore keeps the mapping session_id → Session in-memory. Sessions are
 // ephemeral: they exist only while an agent is connected. For multi-server HA
 // this would move to Redis, but single-process is enough for the MVP.
 type SessionStore struct {
 	mu         sync.Mutex
-	byID       map[string]uuid.UUID
+	byID       map[string]*Session
 	latestByAg map[uuid.UUID]string
 }
 
 // NewSessionStore returns an empty, ready-to-use store.
 func NewSessionStore() *SessionStore {
 	return &SessionStore{
-		byID:       make(map[string]uuid.UUID),
+		byID:       make(map[string]*Session),
 		latestByAg: make(map[uuid.UUID]string),
 	}
 }
 
-// Create issues a new session id for the given agent and invalidates any
-// previous session the agent had — a re-registration supersedes a zombie
-// stream that might still be reading with stale credentials.
+// Create issues a new session for the given agent (MVP: no tags/capacity). It
+// exists so older callsites and tests that only care about session identity
+// keep working; richer metadata comes in via CreateSession.
 func (s *SessionStore) Create(agentID uuid.UUID) string {
-	sess := uuid.NewString()
+	return s.CreateSession(agentID, nil, 1).ID
+}
+
+// CreateSession issues a session and invalidates any previous session the
+// agent had — a re-registration supersedes a zombie stream that might still
+// be reading with stale credentials. The returned Session owns a fresh send
+// queue that Revoke will close.
+func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity int32) *Session {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	sess := &Session{
+		ID:       uuid.NewString(),
+		AgentID:  agentID,
+		Tags:     append([]string(nil), tags...),
+		Capacity: capacity,
+		out:      make(chan *gocdnextv1.ServerMessage, defaultSendBuffer),
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if prev, ok := s.latestByAg[agentID]; ok {
+		if prevSess, ok := s.byID[prev]; ok {
+			prevSess.revoked.Store(true)
+			close(prevSess.out)
+		}
 		delete(s.byID, prev)
 	}
-	s.byID[sess] = agentID
-	s.latestByAg[agentID] = sess
+	s.byID[sess.ID] = sess
+	s.latestByAg[agentID] = sess.ID
 	return sess
 }
 
-// Lookup returns the agent id for the session and whether it is still valid.
-func (s *SessionStore) Lookup(session string) (uuid.UUID, bool) {
+// Lookup returns the Session for the given id and whether it is still valid.
+func (s *SessionStore) Lookup(sessionID string) (*Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, ok := s.byID[session]
-	return id, ok
+	sess, ok := s.byID[sessionID]
+	return sess, ok
 }
 
-// Revoke drops the session. Safe to call on missing/unknown ids.
-func (s *SessionStore) Revoke(session string) {
+// Revoke drops the session and closes its send queue. Safe to call on
+// missing/unknown ids — calling it on the same session twice is also safe.
+func (s *SessionStore) Revoke(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	agentID, ok := s.byID[session]
+	sess, ok := s.byID[sessionID]
 	if !ok {
 		return
 	}
-	delete(s.byID, session)
-	if s.latestByAg[agentID] == session {
-		delete(s.latestByAg, agentID)
+	if sess.revoked.CompareAndSwap(false, true) {
+		close(sess.out)
+	}
+	delete(s.byID, sessionID)
+	if s.latestByAg[sess.AgentID] == sessionID {
+		delete(s.latestByAg, sess.AgentID)
 	}
 }
+
+// Dispatch enqueues msg onto the agent's current session. Returns ErrNoSession
+// if the agent is not connected, ErrSessionBusy if the queue is full. Callers
+// should treat busy as "try another agent".
+func (s *SessionStore) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage) error {
+	s.mu.Lock()
+	id, ok := s.latestByAg[agentID]
+	var sess *Session
+	if ok {
+		sess = s.byID[id]
+	}
+	s.mu.Unlock()
+
+	if sess == nil || sess.revoked.Load() {
+		return ErrNoSession
+	}
+	select {
+	case sess.out <- msg:
+		return nil
+	default:
+		return ErrSessionBusy
+	}
+}
+
+// FindIdle returns one agent id whose current running-jobs counter is below
+// its declared capacity. MVP: first match, no tag matching yet.
+func (s *SessionStore) FindIdle() (uuid.UUID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range s.latestByAg {
+		sess, ok := s.byID[id]
+		if !ok || sess.revoked.Load() {
+			continue
+		}
+		if sess.running.Load() < sess.Capacity {
+			return sess.AgentID, true
+		}
+	}
+	return uuid.Nil, false
+}
+
+// IncRunning/DecRunning let the scheduler mark a job as being handled by an
+// agent so capacity accounting stays honest. The scheduler bumps on dispatch,
+// the result handler (C5) will decrement on final JobResult.
+func (s *Session) IncRunning() { s.running.Add(1) }
+func (s *Session) DecRunning() { s.running.Add(-1) }

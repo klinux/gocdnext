@@ -46,6 +46,12 @@ func SetupPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// DSN returns the shared container's connection string. Tests that need a
+// dedicated pgx.Conn (e.g. LISTEN loops) use this instead of the pgxpool.
+func DSN() string {
+	return sharedDSN
+}
+
 func ensureContainer(t *testing.T) {
 	t.Helper()
 	sharedOnce.Do(func() {

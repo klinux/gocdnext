@@ -22,6 +22,7 @@ import (
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
@@ -56,6 +57,7 @@ func main() {
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
+	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL)
 
 	grpcServer := grpc.NewServer()
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
@@ -106,6 +108,12 @@ func main() {
 		if err := grpcServer.Serve(grpcLis); err != nil {
 			logger.Error("grpc server", "err", err)
 			os.Exit(1)
+		}
+	}()
+
+	go func() {
+		if err := sched.Run(ctx); err != nil {
+			logger.Error("scheduler exited", "err", err)
 		}
 	}()
 
