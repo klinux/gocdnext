@@ -6,6 +6,7 @@ package store
 
 import (
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -64,4 +65,12 @@ func stringValue(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+func pgTimePtr(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	v := t.Time
+	return &v
 }

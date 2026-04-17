@@ -20,6 +20,7 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
+	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
@@ -54,6 +55,7 @@ func main() {
 	st := store.New(pool)
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger)
 	projectsHandler := projectsapi.NewHandler(st, logger)
+	runsHandler := runsapi.NewHandler(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
@@ -66,6 +68,7 @@ func main() {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	r.Use(devCORS)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -78,8 +81,9 @@ func main() {
 
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
 	r.Post("/api/v1/projects/apply", projectsHandler.Apply)
-
-	// TODO(phase-1): wire run/agent handlers.
+	r.Get("/api/v1/projects", projectsHandler.List)
+	r.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
+	r.Get("/api/v1/runs/{id}", runsHandler.Detail)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -124,4 +128,21 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	grpcServer.GracefulStop()
+}
+
+// devCORS opens the HTTP API to any origin so the Next.js dev server (port
+// 3000) can call the control plane (port 8153) during development. Replace
+// with a scoped policy (or a reverse proxy in front) before exposing this
+// server outside a private network.
+func devCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

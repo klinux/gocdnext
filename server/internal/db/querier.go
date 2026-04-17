@@ -40,8 +40,10 @@ type Querier interface {
 	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
+	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	// Counts jobs still working vs already-failed within a stage — the numbers
 	// the caller uses to decide whether to promote the stage.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
@@ -62,14 +64,24 @@ type Querier interface {
 	// query stays readable; the stage gate is the only SQL-level constraint.
 	ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) ([]ListDispatchableJobsRow, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
+	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
+	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
+	// Project list used by the dashboard home. Joins enough aggregate info so the
+	// UI renders without round-tripping per row.
+	ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWithCountsRow, error)
 	ListQueuedRunIDs(ctx context.Context) ([]pgtype.UUID, error)
+	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
+	ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunOrderedRow, error)
 	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
+	// returned window, so the UI can append-only render.
+	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
