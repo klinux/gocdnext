@@ -88,11 +88,23 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 			if err := a.sessions.Dispatch(agentID, pong); err != nil {
 				log.Debug("pong dispatch skipped", "err", err)
 			}
-		case *gocdnextv1.AgentMessage_Progress,
-			*gocdnextv1.AgentMessage_Log,
-			*gocdnextv1.AgentMessage_Result:
-			// TODO(phase-1-exec): route to scheduler / log sink / run updater.
-			log.Debug("stream msg (unhandled for now)", "kind", kindName(msg))
+		case *gocdnextv1.AgentMessage_Log:
+			// C5 will persist into log_lines. For now log at debug so smoke
+			// output is readable but noisy runs don't flood info-level sinks.
+			l := kind.Log
+			log.Debug("agent log",
+				"run_id", l.GetRunId(), "job_id", l.GetJobId(),
+				"seq", l.GetSeq(), "stream", l.GetStream(), "text", l.GetText())
+		case *gocdnextv1.AgentMessage_Progress:
+			log.Debug("agent progress", "kind", kindName(msg))
+		case *gocdnextv1.AgentMessage_Result:
+			// C5 will flip job_runs + stage_runs + runs to terminal status.
+			// Surface at info so smoke tests can observe the outcome.
+			r := kind.Result
+			log.Info("agent job result",
+				"run_id", r.GetRunId(), "job_id", r.GetJobId(),
+				"status", r.GetStatus().String(), "exit_code", r.GetExitCode(),
+				"error", r.GetError())
 		default:
 			log.Warn("stream msg: unknown kind", "kind_type", kind)
 		}

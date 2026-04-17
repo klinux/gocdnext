@@ -1,0 +1,252 @@
+// Package runner executes a JobAssignment end-to-end on the local host:
+// clones the declared git materials, runs the shell scripts, streams the
+// stdout/stderr lines back to the server as LogLine events, and finishes
+// with a JobResult. Docker/plugin execution lands in a later slice.
+package runner
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+)
+
+// Config wires the runner. Send is the single outbound callback; callers plug
+// in a function that enqueues onto the gRPC send pump.
+type Config struct {
+	WorkspaceRoot string
+	Logger        *slog.Logger
+	Send          func(*gocdnextv1.AgentMessage)
+
+	// KeepWorkspace keeps the job's working directory on disk after Execute
+	// finishes. Useful for debugging; default is to remove on success.
+	KeepWorkspace bool
+}
+
+// Runner is safe to share across concurrent Execute calls — each call uses
+// its own workspace subdirectory. No per-runner state mutates.
+type Runner struct {
+	cfg Config
+}
+
+func New(cfg Config) *Runner {
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.WorkspaceRoot == "" {
+		cfg.WorkspaceRoot = filepath.Join(os.TempDir(), "gocdnext-workspace")
+	}
+	return &Runner{cfg: cfg}
+}
+
+// Execute runs the assignment to completion: checkout each material, run
+// each script task until one fails, emit a JobResult. Never panics on task
+// failure — exit != 0 and checkout errors both resolve to RUN_STATUS_FAILED.
+func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
+	log := r.cfg.Logger.With("run_id", a.GetRunId(), "job_id", a.GetJobId(), "name", a.GetName())
+	log.Info("runner: execute start", "tasks", len(a.GetTasks()), "checkouts", len(a.GetCheckouts()))
+
+	workDir := filepath.Join(r.cfg.WorkspaceRoot, sanitize(a.GetRunId()), sanitize(a.GetJobId()))
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, "workspace: "+err.Error())
+		return
+	}
+	defer func() {
+		if !r.cfg.KeepWorkspace {
+			_ = os.RemoveAll(workDir)
+		}
+	}()
+
+	var seq atomic.Int64
+
+	for _, co := range a.GetCheckouts() {
+		if err := r.checkout(ctx, workDir, co, a, &seq); err != nil {
+			log.Warn("runner: checkout failed", "err", err, "url", co.GetUrl())
+			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
+				fmt.Sprintf("checkout %s: %v", co.GetUrl(), err))
+			return
+		}
+	}
+
+	for i, task := range a.GetTasks() {
+		script := task.GetScript()
+		if script == "" {
+			// Plugin tasks aren't supported by the local runner yet — skip with
+			// a log line so the user sees why nothing happened.
+			r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: plugin step skipped (local runner MVP)", i))
+			continue
+		}
+		exitCode, err := r.runScript(ctx, workDir, script, a.GetEnv(), a, &seq)
+		if err != nil {
+			log.Warn("runner: script error", "err", err, "task", i)
+			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
+				fmt.Sprintf("task %d: %v", i, err))
+			return
+		}
+		if exitCode != 0 {
+			log.Info("runner: task exited non-zero", "task", i, "exit", exitCode)
+			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
+				fmt.Sprintf("task %d exited with %d", i, exitCode))
+			return
+		}
+	}
+
+	log.Info("runner: execute ok")
+	r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "")
+}
+
+func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.MaterialCheckout, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {
+	target := filepath.Join(workDir, co.GetTargetDir())
+	args := []string{"clone", "--quiet"}
+	if co.GetBranch() != "" {
+		args = append(args, "--branch", co.GetBranch())
+	}
+	args = append(args, co.GetUrl(), target)
+
+	r.emitLog(a, seq, "stdout", fmt.Sprintf("$ git %v", args))
+	code, err := r.runCommand(ctx, "", "git", args, nil, a, seq)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("git clone exited %d", code)
+	}
+	if rev := co.GetRevision(); rev != "" {
+		r.emitLog(a, seq, "stdout", "$ git -C "+target+" checkout "+rev)
+		code, err := r.runCommand(ctx, "", "git", []string{"-C", target, "checkout", "--quiet", rev}, nil, a, seq)
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return fmt.Errorf("git checkout %s exited %d", rev, code)
+		}
+	}
+	return nil
+}
+
+// runScript shells out via `sh -c` so the user can pipe/redirect/chain in a
+// single string. Env from the assignment layers on top of the agent's env.
+func (r *Runner) runScript(ctx context.Context, workDir, script string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
+	r.emitLog(a, seq, "stdout", "$ "+script)
+	return r.runCommand(ctx, workDir, "sh", []string{"-c", script}, env, a, seq)
+}
+
+// runCommand executes a command and streams stdout/stderr as LogLines. Returns
+// the exit code (0 on success) and an error ONLY for lifecycle problems (fork
+// failed, unexpected wait error). A non-zero exit code is NOT an error.
+func (r *Runner) runCommand(ctx context.Context, dir, name string, args []string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), envSlice(env)...)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return -1, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return -1, err
+	}
+	if err := cmd.Start(); err != nil {
+		return -1, err
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go r.streamLines(stdout, "stdout", a, seq, &wg)
+	go r.streamLines(stderr, "stderr", a, seq, &wg)
+	wg.Wait()
+
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), nil
+		}
+		return -1, err
+	}
+	return 0, nil
+}
+
+func (r *Runner) streamLines(rd io.Reader, stream string, a *gocdnextv1.JobAssignment, seq *atomic.Int64, wg *sync.WaitGroup) {
+	defer wg.Done()
+	scanner := bufio.NewScanner(rd)
+	// Raise buffer size: long `go test -v` lines or minified JS can blow past
+	// the default 64 KiB.
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	for scanner.Scan() {
+		r.emitLog(a, seq, stream, scanner.Text())
+	}
+	// Scanner errors (e.g., pipe close) are ignored: the Wait() below sees the
+	// real process exit which is the authoritative outcome.
+}
+
+func (r *Runner) emitLog(a *gocdnextv1.JobAssignment, seq *atomic.Int64, stream, text string) {
+	n := seq.Add(1)
+	r.cfg.Send(&gocdnextv1.AgentMessage{
+		Kind: &gocdnextv1.AgentMessage_Log{
+			Log: &gocdnextv1.LogLine{
+				RunId:  a.GetRunId(),
+				JobId:  a.GetJobId(),
+				Seq:    n,
+				At:     timestamppb.New(time.Now().UTC()),
+				Stream: stream,
+				Text:   text,
+			},
+		},
+	})
+}
+
+func (r *Runner) sendResult(a *gocdnextv1.JobAssignment, status gocdnextv1.RunStatus, exitCode int32, errMsg string) {
+	r.cfg.Send(&gocdnextv1.AgentMessage{
+		Kind: &gocdnextv1.AgentMessage_Result{
+			Result: &gocdnextv1.JobResult{
+				RunId:    a.GetRunId(),
+				JobId:    a.GetJobId(),
+				Status:   status,
+				ExitCode: exitCode,
+				Error:    errMsg,
+			},
+		},
+	})
+}
+
+func envSlice(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+// sanitize strips path separators so a hostile run_id/job_id can't escape
+// the workspace root. run_ids and job_ids are UUIDs in production, but tests
+// and future manual triggers may pass arbitrary strings.
+func sanitize(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch r {
+		case '/', '\\', '.', 0:
+			out = append(out, '_')
+		default:
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return "_"
+	}
+	return string(out)
+}
