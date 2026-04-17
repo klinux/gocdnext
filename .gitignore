@@ -17,6 +17,9 @@ web/node_modules/
 web/.next/
 web/out/
 web/.turbo/
+web/*.tsbuildinfo
+web/tsconfig.tsbuildinfo
+web/next-env.d.ts
 
 # Dev
 .env
