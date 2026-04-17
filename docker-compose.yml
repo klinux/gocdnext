@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gocdnext
+      POSTGRES_PASSWORD: gocdnext
+      POSTGRES_DB: gocdnext
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gocdnext"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: gocdnext
+      MINIO_ROOT_PASSWORD: gocdnext
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GOCDNEXT_DATABASE_URL: postgres://gocdnext:gocdnext@postgres:5432/gocdnext?sslmode=disable
+      GOCDNEXT_HTTP_ADDR: ":8153"
+      GOCDNEXT_GRPC_ADDR: ":8154"
+      GOCDNEXT_LOG_LEVEL: debug
+      GOCDNEXT_ARTIFACTS_URL: s3://gocdnext-artifacts
+    ports:
+      - "8153:8153"
+      - "8154:8154"
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    depends_on:
+      - server
+    environment:
+      GOCDNEXT_SERVER_ADDR: server:8154
+      GOCDNEXT_AGENT_TOKEN: dev-token
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  web:
+    build:
+      context: ./web
+    depends_on:
+      - server
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8153
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  miniodata:

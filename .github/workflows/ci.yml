@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gocdnext
+          POSTGRES_PASSWORD: gocdnext
+          POSTGRES_DB: gocdnext
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gocdnext"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - run: go version
+      - name: Test
+        env:
+          GOCDNEXT_DATABASE_URL: postgres://gocdnext:gocdnext@localhost:5432/gocdnext?sslmode=disable
+        run: |
+          cd server && go test ./...
+          cd ../agent && go test ./...
+          cd ../cli && go test ./...
+      - name: Build
+        run: make build
+
+  web:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run build

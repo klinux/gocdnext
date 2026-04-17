@@ -1,0 +1,28 @@
+# Simplest usable pipeline: clone, build, test, notify.
+materials:
+  - git:
+      url: https://github.com/org/hello-go
+      branch: main
+      on: [push, pull_request]
+      auto_register_webhook: true
+
+stages: [build, test]
+
+variables:
+  GO_VERSION: "1.23"
+
+jobs:
+  compile:
+    stage: build
+    image: golang:1.23
+    script:
+      - go build -o bin/hello ./...
+    artifacts:
+      paths: [bin/]
+
+  unit:
+    stage: test
+    image: golang:1.23
+    needs: [compile]
+    script:
+      - go test -race ./...

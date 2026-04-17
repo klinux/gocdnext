@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package gocdnext.v1;
+
+option go_package = "github.com/gocdnext/gocdnext/proto/gocdnext/v1;gocdnextv1";
+
+import "google/protobuf/timestamp.proto";
+import "gocdnext/v1/common.proto";
+
+// Pipeline — definição parseada do YAML.
+message Pipeline {
+  string   id        = 1;
+  string   name      = 2;
+  repeated Material   materials = 3;
+  repeated string     stages    = 4; // ordem
+  repeated Job        jobs      = 5;
+  map<string, string> variables = 6;
+}
+
+message Material {
+  string id   = 1;
+  string type = 2; // "git" | "upstream" | "cron" | "manual"
+
+  // Somente um dos sub-configs é preenchido.
+  GitMaterial      git      = 10;
+  UpstreamMaterial upstream = 11;
+  CronMaterial     cron     = 12;
+}
+
+message GitMaterial {
+  string   url           = 1;
+  string   branch        = 2;           // padrão; pode ser pattern p/ feature branches
+  repeated string events = 3;           // "push" | "pull_request"
+  bool     auto_register_webhook = 4;   // nosso diferencial
+  string   secret_ref    = 5;           // referência a Secret do k8s / secret manager
+}
+
+message UpstreamMaterial {
+  string pipeline = 1;
+  string stage    = 2;
+  string status   = 3; // "success" | "any"
+}
+
+message CronMaterial {
+  string expression = 1; // "0 */2 * * *"
+}
+
+message Job {
+  string   name  = 1;
+  string   stage = 2;
+  string   image = 3;
+  repeated string needs = 4;     // DAG intra-pipeline
+  repeated Task   tasks = 5;
+  map<string, string> settings = 6; // plugin settings → PLUGIN_* env
+  map<string, string> variables = 7;
+  Matrix   matrix = 8;
+  Rules    rules  = 9;
+}
+
+message Task {
+  oneof kind {
+    string      script  = 1; // shell
+    PluginStep  plugin  = 2; // container + settings
+  }
+}
+
+message PluginStep {
+  string              image    = 1;
+  map<string, string> settings = 2;
+}
+
+message Matrix {
+  // Ex: { "OS": ["linux","darwin"], "ARCH": ["amd64","arm64"] }
+  map<string, StringList> axes = 1;
+}
+
+message StringList { repeated string values = 1; }
+
+message Rules {
+  repeated Rule items = 1;
+}
+
+message Rule {
+  string if_expr = 1;            // "$BRANCH == main"
+  string when    = 2;            // "on_success" | "on_failure" | "always" | "manual"
+  repeated string changes = 3;   // paths
+}
+
+// Run — uma execução concreta de um pipeline.
+message Run {
+  string   id           = 1;
+  string   pipeline_id  = 2;
+  int64    counter      = 3;
+  BuildCauseType cause  = 4;
+  repeated Revision revisions = 5;
+  RunStatus status      = 6;
+  google.protobuf.Timestamp started_at  = 7;
+  google.protobuf.Timestamp finished_at = 8;
+}

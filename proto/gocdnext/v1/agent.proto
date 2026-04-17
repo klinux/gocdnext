@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package gocdnext.v1;
+
+option go_package = "github.com/gocdnext/gocdnext/proto/gocdnext/v1;gocdnextv1";
+
+import "google/protobuf/timestamp.proto";
+import "gocdnext/v1/common.proto";
+
+// AgentService — contrato bidirecional server ↔ agent.
+// O agent INICIA a conexão (NAT-friendly) e mantém um stream aberto.
+service AgentService {
+  // Register: handshake inicial. Agent se identifica, server devolve session.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Connect: stream bidirecional de longa duração.
+  //   server → agent: despacho de job, cancelamento
+  //   agent → server: heartbeat, progresso de job, logs, resultado
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+}
+
+message RegisterRequest {
+  string   agent_id    = 1;
+  string   token       = 2;
+  string   version     = 3;
+  string   os          = 4;
+  string   arch        = 5;
+  repeated string tags = 6;  // "linux", "docker", "gpu", labels custom
+  int32    capacity    = 7;  // jobs paralelos
+}
+
+message RegisterResponse {
+  string session_id = 1;
+  int32  heartbeat_seconds = 2;
+}
+
+// ── Mensagens AGENT → SERVER ─────────────────────────────────────────
+message AgentMessage {
+  oneof kind {
+    Heartbeat     heartbeat     = 1;
+    JobProgress   progress      = 2;
+    LogLine       log           = 3;
+    JobResult     result        = 4;
+  }
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp at = 1;
+  int32 running_jobs = 2;
+}
+
+message JobProgress {
+  string    run_id  = 1;
+  string    job_id  = 2;
+  RunStatus status  = 3;
+  string    step    = 4;
+}
+
+message LogLine {
+  string run_id = 1;
+  string job_id = 2;
+  int64  seq    = 3;
+  google.protobuf.Timestamp at = 4;
+  string stream = 5; // "stdout" | "stderr"
+  string text   = 6;
+}
+
+message JobResult {
+  string    run_id   = 1;
+  string    job_id   = 2;
+  RunStatus status   = 3;
+  int32     exit_code = 4;
+  string    error    = 5;
+  repeated ArtifactRef artifacts = 6;
+}
+
+message ArtifactRef {
+  string path = 1;
+  string url  = 2; // S3/MinIO onde foi feito upload
+  int64  size = 3;
+}
+
+// ── Mensagens SERVER → AGENT ─────────────────────────────────────────
+message ServerMessage {
+  oneof kind {
+    JobAssignment assign = 1;
+    CancelJob     cancel = 2;
+    Pong          pong   = 3;
+  }
+}
+
+message JobAssignment {
+  string run_id  = 1;
+  string job_id  = 2;
+  string name    = 3;
+  string image   = 4;
+  repeated TaskSpec tasks = 5;
+  map<string, string> env = 6;
+  repeated MaterialCheckout checkouts = 7;
+  string workspace = 8;
+  int32  timeout_seconds = 9;
+}
+
+message TaskSpec {
+  oneof kind {
+    string      script = 1;
+    PluginSpec  plugin = 2;
+  }
+}
+
+message PluginSpec {
+  string              image    = 1;
+  map<string, string> settings = 2; // vira PLUGIN_* env no container
+}
+
+message MaterialCheckout {
+  string material_id = 1;
+  string url         = 2;
+  string revision    = 3;
+  string branch      = 4;
+  string target_dir  = 5;
+  string secret_ref  = 6;
+}
+
+message CancelJob {
+  string run_id = 1;
+  string job_id = 2;
+  string reason = 3;
+}
+
+message Pong {
+  google.protobuf.Timestamp at = 1;
+}

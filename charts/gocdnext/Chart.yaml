@@ -1,0 +1,13 @@
+apiVersion: v2
+name: gocdnext
+description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ci
+  - cd
+  - pipelines
+home: https://github.com/gocdnext/gocdnext
+sources:
+  - https://github.com/gocdnext/gocdnext

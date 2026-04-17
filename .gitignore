@@ -1,0 +1,35 @@
+# Build output
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+go.sum.lock
+
+# Proto generated
+*.pb.go
+!proto/gocdnext/v1/*.pb.go
+
+# Node / Next.js
+web/node_modules/
+web/.next/
+web/out/
+web/.turbo/
+
+# Dev
+.env
+.env.local
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# DB data (docker-compose volumes)
+.data/
+pgdata/
+
+# Logs
+*.log

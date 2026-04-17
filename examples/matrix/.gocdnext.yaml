@@ -1,0 +1,26 @@
+# Matriz: 4 jobs (linux/darwin × amd64/arm64) gerados automaticamente.
+materials:
+  - git:
+      url: https://github.com/org/cross-platform-cli
+
+stages: [test, release]
+
+jobs:
+  test:
+    stage: test
+    image: golang:1.23
+    parallel:
+      matrix:
+        - OS: [linux, darwin]
+          ARCH: [amd64, arm64]
+    script:
+      - GOOS=$OS GOARCH=$ARCH go test ./...
+
+  release-notify:
+    stage: release
+    image: plugins/slack
+    settings:
+      channel: "#releases"
+      template: "{{ .Pipeline }} #{{ .Counter }} finished: {{ .Status }}"
+    when:
+      status: [success, failure]

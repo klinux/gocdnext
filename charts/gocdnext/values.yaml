@@ -1,0 +1,46 @@
+server:
+  image:
+    repository: ghcr.io/gocdnext/gocdnext-server
+    tag: ""            # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    httpPort: 8153
+    grpcPort: 8154
+  ingress:
+    enabled: false
+    className: nginx
+    host: gocdnext.example.com
+    tls: true
+
+  env:
+    GOCDNEXT_LOG_LEVEL: info
+  envFromSecret: ""    # name of Secret with DATABASE_URL, WEBHOOK_TOKEN, etc.
+
+agent:
+  image:
+    repository: ghcr.io/gocdnext/gocdnext-agent
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicas: 2
+  tokenSecret: gocdnext-agent-token   # Secret with key AGENT_TOKEN
+  tags: ["linux", "docker"]
+
+postgres:
+  enabled: true       # bundled for dev; set false in prod and provide URL via envFromSecret
+  image: postgres:16-alpine
+  persistence:
+    size: 10Gi
+
+artifacts:
+  # s3://bucket or file:///var/lib/gocdnext/artifacts
+  url: s3://gocdnext-artifacts
+  secretName: gocdnext-artifacts-creds
+
+web:
+  enabled: true
+  image:
+    repository: ghcr.io/gocdnext/gocdnext-web
+    tag: ""
+  replicas: 1

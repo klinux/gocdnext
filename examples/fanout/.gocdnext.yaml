@@ -1,0 +1,25 @@
+# Fanout: dois pipelines downstream consomem o mesmo artefato do pipeline "build-core".
+# O VSM mostra:  build-core.test  →  deploy-api
+#                                 ↘  deploy-worker
+#
+# Quando build-core.test passa com sucesso, os dois downstream são disparados
+# automaticamente e ficam travados na MESMA revisão de material (consistência).
+
+# ── pipeline: deploy-api ─────────────────────────────────────────────
+materials:
+  - upstream:
+      pipeline: build-core
+      stage: test
+      status: success
+
+stages: [deploy]
+
+jobs:
+  deploy:
+    stage: deploy
+    image: plugins/kubectl
+    settings:
+      cluster: prod
+      manifest: k8s/api.yaml
+    rules:
+      - if: $CI_COMMIT_BRANCH == "main"

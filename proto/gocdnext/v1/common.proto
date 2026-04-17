@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package gocdnext.v1;
+
+option go_package = "github.com/gocdnext/gocdnext/proto/gocdnext/v1;gocdnextv1";
+
+import "google/protobuf/timestamp.proto";
+
+// RunStatus — status de uma execução (pipeline, stage, job, task).
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_QUEUED      = 1;
+  RUN_STATUS_RUNNING     = 2;
+  RUN_STATUS_SUCCESS     = 3;
+  RUN_STATUS_FAILED      = 4;
+  RUN_STATUS_CANCELED    = 5;
+  RUN_STATUS_SKIPPED     = 6;
+  RUN_STATUS_WAITING     = 7; // aprovação manual pendente
+}
+
+// BuildCauseType — o que disparou o pipeline.
+enum BuildCauseType {
+  BUILD_CAUSE_UNSPECIFIED = 0;
+  BUILD_CAUSE_WEBHOOK     = 1; // push ou PR via webhook
+  BUILD_CAUSE_UPSTREAM    = 2; // fanout: pipeline upstream finalizou
+  BUILD_CAUSE_MANUAL      = 3; // trigger manual via UI/API
+  BUILD_CAUSE_SCHEDULE    = 4; // cron
+  BUILD_CAUSE_POLL        = 5; // fallback de polling
+}
+
+// Revision — snapshot de um material em um ponto no tempo.
+message Revision {
+  string material_id     = 1;
+  string revision        = 2; // git SHA, PR number, upstream run counter
+  string branch          = 3; // se aplicável
+  string message         = 4;
+  string author          = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+// KeyValue genérico.
+message KeyValue {
+  string key   = 1;
+  string value = 2;
+}
