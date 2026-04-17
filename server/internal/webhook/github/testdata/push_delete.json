@@ -1,0 +1,14 @@
+{
+  "ref": "refs/heads/feature/dead",
+  "before": "aaaa1111bbbb2222cccc3333dddd4444eeee5555",
+  "after": "0000000000000000000000000000000000000000",
+  "deleted": true,
+  "repository": {
+    "full_name": "gocdnext/gocdnext",
+    "clone_url": "https://github.com/gocdnext/gocdnext.git",
+    "ssh_url": "git@github.com:gocdnext/gocdnext.git",
+    "default_branch": "main"
+  },
+  "head_commit": null,
+  "commits": []
+}

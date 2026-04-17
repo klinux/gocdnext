@@ -14,8 +14,8 @@
 
 ## Phase 1 — MVP pipeline (weeks 3–6)
 
-- [ ] GitHub webhook receiver + HMAC validation
-- [ ] Persist modifications from webhook payload
+- [x] GitHub webhook receiver + HMAC validation
+- [x] Persist modifications from webhook payload
 - [ ] Scheduler: NOTIFY loop, creates runs, dispatches jobs
 - [ ] Agent: gRPC connect/register, clone git material, run `script:` inside image
 - [ ] Agent: stream LogLine back to server

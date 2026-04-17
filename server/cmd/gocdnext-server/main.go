@@ -14,8 +14,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/config"
+	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
 
 func main() {
@@ -27,6 +30,23 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
+
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dbCancel()
+	pool, err := pgxpool.New(dbCtx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("pgxpool", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(dbCtx); err != nil {
+		logger.Error("postgres ping", "err", err)
+		os.Exit(1)
+	}
+
+	st := store.New(pool)
+	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -42,9 +62,10 @@ func main() {
 		_, _ = fmt.Fprintln(w, "gocdnext-server dev")
 	})
 
-	// TODO(phase-1): wire webhook, pipeline, run, agent handlers.
-	// r.Mount("/api/webhooks", webhook.Router(...))
-	// r.Mount("/api/v1",       api.Router(...))
+	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
+
+	// TODO(phase-1): wire pipeline, run, agent handlers.
+	// r.Mount("/api/v1", api.Router(...))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

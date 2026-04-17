@@ -1,0 +1,47 @@
+{
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after": "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+  "created": true,
+  "deleted": false,
+  "forced": false,
+  "repository": {
+    "id": 42,
+    "name": "gocdnext",
+    "full_name": "gocdnext/gocdnext",
+    "private": false,
+    "html_url": "https://github.com/gocdnext/gocdnext",
+    "clone_url": "https://github.com/gocdnext/gocdnext.git",
+    "ssh_url": "git@github.com:gocdnext/gocdnext.git",
+    "default_branch": "main"
+  },
+  "pusher": {
+    "name": "alice",
+    "email": "alice@example.com"
+  },
+  "head_commit": {
+    "id": "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+    "tree_id": "aaa0000000000000000000000000000000000000",
+    "message": "feat(parser): switch pipeline config to .gocdnext/ folder pattern",
+    "timestamp": "2026-04-17T10:15:30Z",
+    "author": {
+      "name": "Alice Dev",
+      "email": "alice@example.com",
+      "username": "alice"
+    },
+    "committer": {
+      "name": "Alice Dev",
+      "email": "alice@example.com",
+      "username": "alice"
+    },
+    "url": "https://github.com/gocdnext/gocdnext/commit/d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1"
+  },
+  "commits": [
+    {
+      "id": "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+      "message": "feat(parser): switch pipeline config to .gocdnext/ folder pattern",
+      "timestamp": "2026-04-17T10:15:30Z",
+      "author": {"name": "Alice Dev", "email": "alice@example.com"}
+    }
+  ]
+}
