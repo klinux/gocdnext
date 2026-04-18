@@ -22,6 +22,28 @@ type ApplyProjectInput struct {
 	Description string
 	ConfigRepo  string
 	Pipelines   []*domain.Pipeline
+	// SCMSource, when non-nil, binds this project to an SCM repository that
+	// carries the .gocdnext/ folder. Persisted alongside the project in the
+	// same tx so Apply stays atomic. Omit for legacy / config-less flows.
+	SCMSource *SCMSourceInput
+}
+
+// SCMSourceInput is the subset of scm_sources fields a caller can set. The
+// server fills in timestamps and id.
+type SCMSourceInput struct {
+	Provider       string // "github" | "gitlab" | "bitbucket" | "manual"
+	URL            string
+	DefaultBranch  string
+	WebhookSecret  string
+	AuthRef        string
+}
+
+type SCMSourceApplied struct {
+	ID            uuid.UUID
+	Provider      string
+	URL           string
+	DefaultBranch string
+	Created       bool
 }
 
 type PipelineApplyStatus struct {
@@ -37,6 +59,7 @@ type ApplyProjectResult struct {
 	ProjectCreated   bool
 	Pipelines        []PipelineApplyStatus
 	PipelinesRemoved []string
+	SCMSource        *SCMSourceApplied
 }
 
 // ApplyProject upserts the project and synchronizes its pipelines and materials
@@ -70,6 +93,14 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 	result := ApplyProjectResult{
 		ProjectID:      fromPgUUID(proj.ID),
 		ProjectCreated: proj.Created,
+	}
+
+	if in.SCMSource != nil {
+		applied, err := upsertSCMSource(ctx, q, proj.ID, in.SCMSource)
+		if err != nil {
+			return ApplyProjectResult{}, err
+		}
+		result.SCMSource = applied
 	}
 
 	wanted := make(map[string]*domain.Pipeline, len(in.Pipelines))
@@ -109,6 +140,40 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 		return ApplyProjectResult{}, fmt.Errorf("store: apply project: commit: %w", err)
 	}
 	return result, nil
+}
+
+// upsertSCMSource validates the input and upserts the scm_sources row bound
+// to the given project. Called inside ApplyProject's tx so the project +
+// scm_source land atomically.
+func upsertSCMSource(ctx context.Context, q *db.Queries, projectID pgtype.UUID, in *SCMSourceInput) (*SCMSourceApplied, error) {
+	if in.URL == "" {
+		return nil, fmt.Errorf("store: scm_source: url is required")
+	}
+	if in.Provider == "" {
+		return nil, fmt.Errorf("store: scm_source: provider is required")
+	}
+	defaultBranch := in.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+	row, err := q.UpsertScmSource(ctx, db.UpsertScmSourceParams{
+		ProjectID:     projectID,
+		Provider:      in.Provider,
+		Url:           in.URL,
+		DefaultBranch: defaultBranch,
+		WebhookSecret: nullableString(in.WebhookSecret),
+		AuthRef:       nullableString(in.AuthRef),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: upsert scm_source: %w", err)
+	}
+	return &SCMSourceApplied{
+		ID:            fromPgUUID(row.ID),
+		Provider:      row.Provider,
+		URL:           row.Url,
+		DefaultBranch: row.DefaultBranch,
+		Created:       row.Created,
+	}, nil
 }
 
 func applyPipeline(ctx context.Context, q *db.Queries, projectID pgtype.UUID, p *domain.Pipeline, configRepo string) (PipelineApplyStatus, error) {

@@ -27,11 +27,20 @@ type File struct {
 }
 
 type Request struct {
-	Slug        string `json:"slug"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	ConfigRepo  string `json:"config_repo,omitempty"`
-	Files       []File `json:"files"`
+	Slug        string     `json:"slug"`
+	Name        string     `json:"name,omitempty"`
+	Description string     `json:"description,omitempty"`
+	ConfigRepo  string     `json:"config_repo,omitempty"`
+	Files       []File     `json:"files"`
+	SCMSource   *SCMSource `json:"scm_source,omitempty"`
+}
+
+type SCMSource struct {
+	Provider      string `json:"provider"`
+	URL           string `json:"url"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+	WebhookSecret string `json:"webhook_secret,omitempty"`
+	AuthRef       string `json:"auth_ref,omitempty"`
 }
 
 type PipelineStatus struct {
@@ -42,11 +51,20 @@ type PipelineStatus struct {
 	MaterialsRemoved int    `json:"materials_removed"`
 }
 
+type SCMSourceResult struct {
+	ID            string `json:"id"`
+	Provider      string `json:"provider"`
+	URL           string `json:"url"`
+	DefaultBranch string `json:"default_branch"`
+	Created       bool   `json:"created"`
+}
+
 type Response struct {
 	ProjectID        string           `json:"project_id"`
 	ProjectCreated   bool             `json:"project_created"`
 	Pipelines        []PipelineStatus `json:"pipelines"`
 	PipelinesRemoved []string         `json:"pipelines_removed"`
+	SCMSource        *SCMSourceResult `json:"scm_source,omitempty"`
 }
 
 // ReadFolder collects every *.yaml / *.yml file inside `<root>/.gocdnext/`.

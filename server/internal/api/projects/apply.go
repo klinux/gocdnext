@@ -37,11 +37,20 @@ type ApplyFile struct {
 }
 
 type ApplyRequest struct {
-	Slug        string      `json:"slug"`
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	ConfigRepo  string      `json:"config_repo,omitempty"`
-	Files       []ApplyFile `json:"files"`
+	Slug        string           `json:"slug"`
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	ConfigRepo  string           `json:"config_repo,omitempty"`
+	Files       []ApplyFile      `json:"files"`
+	SCMSource   *ApplySCMSource  `json:"scm_source,omitempty"`
+}
+
+type ApplySCMSource struct {
+	Provider      string `json:"provider"`
+	URL           string `json:"url"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+	WebhookSecret string `json:"webhook_secret,omitempty"`
+	AuthRef       string `json:"auth_ref,omitempty"`
 }
 
 type ApplyPipeline struct {
@@ -52,11 +61,20 @@ type ApplyPipeline struct {
 	MaterialsRemoved int    `json:"materials_removed"`
 }
 
+type ApplySCMSourceResult struct {
+	ID            string `json:"id"`
+	Provider      string `json:"provider"`
+	URL           string `json:"url"`
+	DefaultBranch string `json:"default_branch"`
+	Created       bool   `json:"created"`
+}
+
 type ApplyResponse struct {
-	ProjectID        string          `json:"project_id"`
-	ProjectCreated   bool            `json:"project_created"`
-	Pipelines        []ApplyPipeline `json:"pipelines"`
-	PipelinesRemoved []string        `json:"pipelines_removed"`
+	ProjectID        string                `json:"project_id"`
+	ProjectCreated   bool                  `json:"project_created"`
+	Pipelines        []ApplyPipeline       `json:"pipelines"`
+	PipelinesRemoved []string              `json:"pipelines_removed"`
+	SCMSource        *ApplySCMSourceResult `json:"scm_source,omitempty"`
 }
 
 func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +105,28 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var scm *store.SCMSourceInput
+	if req.SCMSource != nil {
+		if req.SCMSource.URL == "" || req.SCMSource.Provider == "" {
+			http.Error(w, "scm_source.url and scm_source.provider are required", http.StatusBadRequest)
+			return
+		}
+		scm = &store.SCMSourceInput{
+			Provider:      req.SCMSource.Provider,
+			URL:           req.SCMSource.URL,
+			DefaultBranch: req.SCMSource.DefaultBranch,
+			WebhookSecret: req.SCMSource.WebhookSecret,
+			AuthRef:       req.SCMSource.AuthRef,
+		}
+	}
+
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        req.Slug,
 		Name:        req.Name,
 		Description: req.Description,
 		ConfigRepo:  req.ConfigRepo,
 		Pipelines:   pipelines,
+		SCMSource:   scm,
 	})
 	if err != nil {
 		h.log.Error("apply project", "slug", req.Slug, "err", err)
@@ -104,6 +138,15 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		ProjectID:        result.ProjectID.String(),
 		ProjectCreated:   result.ProjectCreated,
 		PipelinesRemoved: result.PipelinesRemoved,
+	}
+	if result.SCMSource != nil {
+		resp.SCMSource = &ApplySCMSourceResult{
+			ID:            result.SCMSource.ID.String(),
+			Provider:      result.SCMSource.Provider,
+			URL:           result.SCMSource.URL,
+			DefaultBranch: result.SCMSource.DefaultBranch,
+			Created:       result.SCMSource.Created,
+		}
 	}
 	for _, p := range result.Pipelines {
 		resp.Pipelines = append(resp.Pipelines, ApplyPipeline{

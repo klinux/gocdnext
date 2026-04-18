@@ -114,6 +114,20 @@ type Run struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type ScmSource struct {
+	ID                 pgtype.UUID
+	ProjectID          pgtype.UUID
+	Provider           string
+	Url                string
+	DefaultBranch      string
+	WebhookSecret      *string
+	AuthRef            *string
+	LastSyncedAt       pgtype.Timestamptz
+	LastSyncedRevision *string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
 type StageRun struct {
 	ID         pgtype.UUID
 	RunID      pgtype.UUID

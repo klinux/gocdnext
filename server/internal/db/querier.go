@@ -38,12 +38,14 @@ type Querier interface {
 	// Idempotency check for fanout: if we already created a downstream run for
 	// this (pipeline, upstream_run_id) pair, skip.
 	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
+	FindScmSourceByURL(ctx context.Context, url string) (ScmSource, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
+	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (ScmSource, error)
 	// Counts jobs still working vs already-failed within a stage — the numbers
 	// the caller uses to decide whether to promote the stage.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
@@ -86,6 +88,9 @@ type Querier interface {
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
+	// Bind a project to its SCM source. updated_at only bumps when something
+	// meaningful changes, so idempotent re-applies don't spam the timeline.
+	UpsertScmSource(ctx context.Context, arg UpsertScmSourceParams) (UpsertScmSourceRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

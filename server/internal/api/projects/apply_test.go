@@ -136,6 +136,46 @@ func TestApply_MissingSlug(t *testing.T) {
 	}
 }
 
+func TestApply_WithSCMSourcePersistsAndReturnsID(t *testing.T) {
+	h, _ := newHandler(t)
+
+	rr := doApply(t, h, map[string]any{
+		"slug": "scm", "name": "SCM",
+		"files": []map[string]string{{"name": "build.yaml", "content": sampleFile}},
+		"scm_source": map[string]any{
+			"provider":        "github",
+			"url":             "https://github.com/org/demo",
+			"default_branch":  "main",
+			"webhook_secret":  "sek",
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp projects.ApplyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.SCMSource == nil {
+		t.Fatalf("scm_source missing from response")
+	}
+	if !resp.SCMSource.Created || resp.SCMSource.Provider != "github" {
+		t.Fatalf("scm_source = %+v", resp.SCMSource)
+	}
+}
+
+func TestApply_RejectsSCMSourceMissingFields(t *testing.T) {
+	h, _ := newHandler(t)
+	rr := doApply(t, h, map[string]any{
+		"slug": "scm", "name": "SCM",
+		"files":      []map[string]string{{"name": "build.yaml", "content": sampleFile}},
+		"scm_source": map[string]any{"provider": "github"}, // url missing
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rr.Code)
+	}
+}
+
 func TestApply_MethodNotAllowed(t *testing.T) {
 	h, _ := newHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/apply", nil)

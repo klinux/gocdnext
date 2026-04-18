@@ -65,11 +65,15 @@ func runLocalCmd() *cobra.Command {
 
 func applyCmd() *cobra.Command {
 	var (
-		slug        string
-		name        string
-		description string
-		configRepo  string
-		serverURL   string
+		slug             string
+		name             string
+		description      string
+		configRepo       string
+		serverURL        string
+		scmURL           string
+		scmProvider      string
+		scmDefaultBranch string
+		scmWebhookSecret string
 	)
 	cmd := &cobra.Command{
 		Use:   "apply [path]",
@@ -92,6 +96,19 @@ func applyCmd() *cobra.Command {
 				return err
 			}
 
+			var scm *apply.SCMSource
+			if scmURL != "" || scmProvider != "" {
+				if scmURL == "" || scmProvider == "" {
+					return fmt.Errorf("--scm-url and --scm-provider must be set together")
+				}
+				scm = &apply.SCMSource{
+					Provider:      scmProvider,
+					URL:           scmURL,
+					DefaultBranch: scmDefaultBranch,
+					WebhookSecret: scmWebhookSecret,
+				}
+			}
+
 			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
@@ -101,6 +118,7 @@ func applyCmd() *cobra.Command {
 				Description: description,
 				ConfigRepo:  configRepo,
 				Files:       files,
+				SCMSource:   scm,
 			})
 			if err != nil {
 				return err
@@ -115,6 +133,10 @@ func applyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "description", "", "project description")
 	cmd.Flags().StringVar(&configRepo, "config-repo", "", "config repo URL (for audit)")
 	cmd.Flags().StringVar(&serverURL, "server", "", "gocdnext server URL (env GOCDNEXT_SERVER_URL)")
+	cmd.Flags().StringVar(&scmURL, "scm-url", "", "SCM repo URL hosting .gocdnext/ (binds the project to an scm_source)")
+	cmd.Flags().StringVar(&scmProvider, "scm-provider", "", "SCM provider: github | gitlab | bitbucket | manual (required with --scm-url)")
+	cmd.Flags().StringVar(&scmDefaultBranch, "scm-default-branch", "main", "default branch for the scm source")
+	cmd.Flags().StringVar(&scmWebhookSecret, "scm-webhook-secret", "", "HMAC secret expected on webhooks (will later drive config-drift re-sync)")
 	_ = cmd.MarkFlagRequired("slug")
 	cmd.SetContext(context.Background())
 	return cmd
@@ -128,6 +150,14 @@ func printResult(w interface {
 		prefix = "created"
 	}
 	fmt.Fprintf(w, "project %s %s\n", prefix, r.ProjectID)
+	if r.SCMSource != nil {
+		action := "updated"
+		if r.SCMSource.Created {
+			action = "created"
+		}
+		fmt.Fprintf(w, "  scm_source %s %s (%s, %s)\n",
+			action, r.SCMSource.Provider, r.SCMSource.URL, r.SCMSource.DefaultBranch)
+	}
 	for _, p := range r.Pipelines {
 		action := "updated"
 		if p.Created {

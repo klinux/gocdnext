@@ -202,6 +202,121 @@ func TestApplyProject_RemovePipeline(t *testing.T) {
 	}
 }
 
+func TestApplyProject_WithSCMSourcePersists(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	in := store.ApplyProjectInput{
+		Slug: "scm", Name: "SCM",
+		Pipelines: []*domain.Pipeline{
+			gitPipeline(t, "build", []string{"build"}, struct{ URL, Branch string }{"https://github.com/org/demo", "main"}),
+		},
+		SCMSource: &store.SCMSourceInput{
+			Provider:      "github",
+			URL:           "https://github.com/org/demo",
+			DefaultBranch: "main",
+			WebhookSecret: "s3cret",
+		},
+	}
+
+	got, err := s.ApplyProject(ctx, in)
+	if err != nil {
+		t.Fatalf("ApplyProject: %v", err)
+	}
+	if got.SCMSource == nil || !got.SCMSource.Created {
+		t.Fatalf("SCMSource = %+v, want created", got.SCMSource)
+	}
+
+	var url, provider, branch, webhookSecret string
+	if err := pool.QueryRow(ctx,
+		`SELECT url, provider, default_branch, COALESCE(webhook_secret, '')
+		 FROM scm_sources WHERE project_id = $1`, got.ProjectID,
+	).Scan(&url, &provider, &branch, &webhookSecret); err != nil {
+		t.Fatalf("scm_sources row: %v", err)
+	}
+	if url != "https://github.com/org/demo" || provider != "github" || branch != "main" || webhookSecret != "s3cret" {
+		t.Fatalf("scm_sources row: url=%s provider=%s branch=%s secret=%s", url, provider, branch, webhookSecret)
+	}
+}
+
+func TestApplyProject_WithSCMSourceIdempotentReapply(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	in := store.ApplyProjectInput{
+		Slug: "scm", Name: "SCM",
+		Pipelines: []*domain.Pipeline{
+			gitPipeline(t, "build", []string{"build"}, struct{ URL, Branch string }{"https://github.com/org/demo", "main"}),
+		},
+		SCMSource: &store.SCMSourceInput{Provider: "github", URL: "https://github.com/org/demo", DefaultBranch: "main"},
+	}
+
+	first, err := s.ApplyProject(ctx, in)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	second, err := s.ApplyProject(ctx, in)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second.SCMSource == nil || second.SCMSource.Created {
+		t.Fatalf("2nd apply should not create a new scm_source: %+v", second.SCMSource)
+	}
+	if second.SCMSource.ID != first.SCMSource.ID {
+		t.Fatalf("scm_source id changed on re-apply: %s vs %s", first.SCMSource.ID, second.SCMSource.ID)
+	}
+
+	var count int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM scm_sources WHERE project_id = $1`, first.ProjectID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("scm_sources rows = %d, want 1", count)
+	}
+}
+
+func TestApplyProject_SCMSourceRequiresURLAndProvider(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	_, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "scm", Name: "SCM",
+		Pipelines: []*domain.Pipeline{
+			gitPipeline(t, "build", []string{"build"}, struct{ URL, Branch string }{"https://github.com/org/demo", "main"}),
+		},
+		SCMSource: &store.SCMSourceInput{Provider: "github"}, // URL missing
+	})
+	if err == nil {
+		t.Fatalf("expected error when SCMSource.URL is empty")
+	}
+}
+
+func TestApplyProject_NilSCMSourceIsNoOp(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	in := store.ApplyProjectInput{
+		Slug: "no-scm", Name: "No SCM",
+		Pipelines: []*domain.Pipeline{
+			gitPipeline(t, "build", []string{"build"}, struct{ URL, Branch string }{"https://github.com/org/demo", "main"}),
+		},
+	}
+	got, err := s.ApplyProject(ctx, in)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.SCMSource != nil {
+		t.Fatalf("SCMSource = %+v, want nil", got.SCMSource)
+	}
+	var count int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM scm_sources WHERE project_id = $1`, got.ProjectID).Scan(&count)
+	if count != 0 {
+		t.Fatalf("scm_sources rows = %d, want 0", count)
+	}
+}
+
 func TestApplyProject_DefinitionVersionBumpsOnChange(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
