@@ -151,8 +151,12 @@ function RunsTable({
           <TableRow key={r.id} className="font-mono text-xs">
             <TableCell className="font-semibold">#{r.counter}</TableCell>
             <TableCell>
-              {/* Run detail link lands in D1c. For now surface the name plainly. */}
-              <span>{r.pipeline_name}</span>
+              <Link
+                href={{ pathname: "/runs/[id]", query: { id: r.id } }}
+                className="hover:underline"
+              >
+                {r.pipeline_name}
+              </Link>
             </TableCell>
             <TableCell>
               <StatusBadge status={r.status} />
