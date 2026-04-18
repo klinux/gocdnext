@@ -35,7 +35,10 @@ SET status = 'running', started_at = COALESCE(started_at, NOW())
 WHERE id = $1 AND status = 'queued';
 
 -- name: ListQueuedRunIDs :many
-SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at;
+-- Runs the scheduler's tick reconsiders: both freshly queued ones and
+-- already-running runs that may have a queued job waiting (re-queued by the
+-- reaper, blocked waiting for a next stage, etc.).
+SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at;
 
 -- name: GetRunForDispatch :one
 SELECT r.id, r.pipeline_id, r.counter, r.status, r.revisions,

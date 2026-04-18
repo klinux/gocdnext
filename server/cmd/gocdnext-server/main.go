@@ -61,6 +61,7 @@ func main() {
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL)
+	reaper := scheduler.NewReaper(st, logger)
 
 	grpcServer := grpc.NewServer()
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
@@ -119,6 +120,12 @@ func main() {
 	go func() {
 		if err := sched.Run(ctx); err != nil {
 			logger.Error("scheduler exited", "err", err)
+		}
+	}()
+
+	go func() {
+		if err := reaper.Run(ctx); err != nil {
+			logger.Error("reaper exited", "err", err)
 		}
 	}()
 

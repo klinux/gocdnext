@@ -58,6 +58,13 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	log.Info("runner: execute start", "tasks", len(a.GetTasks()), "checkouts", len(a.GetCheckouts()))
 
 	workDir := filepath.Join(r.cfg.WorkspaceRoot, sanitize(a.GetRunId()), sanitize(a.GetJobId()))
+	// Clean any leftover workspace from a prior attempt — if the previous
+	// agent was kill-9'd the deferred RemoveAll never ran, and a half-cloned
+	// source tree makes the next `git clone` fail with "destination exists".
+	if err := os.RemoveAll(workDir); err != nil {
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, "workspace cleanup: "+err.Error())
+		return
+	}
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, "workspace: "+err.Error())
 		return

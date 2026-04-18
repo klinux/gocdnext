@@ -46,6 +46,7 @@ type JobRun struct {
 	Needs      []string
 	StartedAt  pgtype.Timestamptz
 	FinishedAt pgtype.Timestamptz
+	Attempt    int32
 }
 
 type LogLine struct {

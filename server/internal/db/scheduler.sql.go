@@ -146,9 +146,12 @@ func (q *Queries) ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) (
 }
 
 const listQueuedRunIDs = `-- name: ListQueuedRunIDs :many
-SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at
+SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at
 `
 
+// Runs the scheduler's tick reconsiders: both freshly queued ones and
+// already-running runs that may have a queued job waiting (re-queued by the
+// reaper, blocked waiting for a next stage, etc.).
 func (q *Queries) ListQueuedRunIDs(ctx context.Context) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listQueuedRunIDs)
 	if err != nil {

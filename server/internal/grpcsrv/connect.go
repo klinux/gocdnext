@@ -81,6 +81,11 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 
 		switch kind := msg.GetKind().(type) {
 		case *gocdnextv1.AgentMessage_Heartbeat:
+			// Bump last_seen_at so the reaper can tell this agent apart from
+			// zombies whose stream is still half-open.
+			if err := a.store.MarkAgentSeen(stream.Context(), agentID); err != nil {
+				log.Warn("heartbeat: mark seen failed", "err", err)
+			}
 			// Pong goes through the session queue so the send pump stays the
 			// single writer on stream.Send. Dropping under queue pressure is
 			// fine — agents detect liveness via stream health, not pong cadence.

@@ -25,6 +25,10 @@ type Querier interface {
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Called after a successful reclaim so the retry starts with a clean log
+	// window. Loses the old attempt's output — acceptable MVP trade for not
+	// growing the schema to carry per-attempt log namespacing.
+	DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
@@ -39,6 +43,9 @@ type Querier interface {
 	// this (pipeline, upstream_run_id) pair, skip.
 	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
 	FindScmSourceByURL(ctx context.Context, url string) (ScmSource, error)
+	// Used by the reaper to disambiguate "at max attempts" from "already
+	// handled" when ReclaimJobForRetry returned no rows.
+	GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAttemptRow, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error)
@@ -74,17 +81,31 @@ type Querier interface {
 	// Project list used by the dashboard home. Joins enough aggregate info so the
 	// UI renders without round-tripping per row.
 	ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWithCountsRow, error)
+	// Runs the scheduler's tick reconsiders: both freshly queued ones and
+	// already-running runs that may have a queued job waiting (re-queued by the
+	// reaper, blocked waiting for a next stage, etc.).
 	ListQueuedRunIDs(ctx context.Context) ([]pgtype.UUID, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
 	ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunOrderedRow, error)
+	// Running jobs whose agent is either offline or hasn't been seen within
+	// @staleness. The reaper walks this list every tick and either re-queues or
+	// fails them.
+	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
 	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Flips a running job back to queued, IF it is still running AND still under
+	// the retry cap. Returns the new attempt number; ErrNoRows signals the caller
+	// should take a different code path (failed-at-max or already-handled).
+	ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
+	// Called from the gRPC heartbeat handler so the reaper can tell which agents
+	// are still alive. Tiny write per heartbeat (default cadence 30s).
+	UpdateAgentLastSeen(ctx context.Context, id pgtype.UUID) error
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
 	// Stamp the last successful config sync. Called after a drift re-apply so
 	// operators can see whether the live config tracks HEAD.
