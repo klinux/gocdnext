@@ -20,9 +20,10 @@ const maxBodyBytes = 5 << 20 // 5 MiB — GitHub payloads are usually <1 MiB.
 // Handler serves the webhook endpoints. Register HandleGitHub on the router
 // of your choice; the method signature is compatible with http.HandlerFunc.
 type Handler struct {
-	secret string
-	store  *store.Store
-	log    *slog.Logger
+	secret  string
+	store   *store.Store
+	log     *slog.Logger
+	fetcher ConfigFetcher
 }
 
 // NewHandler builds the webhook handler. secret is the HMAC shared secret for
@@ -32,6 +33,15 @@ func NewHandler(secret string, s *store.Store, log *slog.Logger) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{secret: secret, store: s, log: log}
+}
+
+// WithConfigFetcher opts the handler into drift detection: on a push whose
+// clone_url matches a registered scm_source, the fetcher is called to re-read
+// `.gocdnext/` and ApplyProject is invoked before the material-match path
+// runs. Nil (default) disables drift.
+func (h *Handler) WithConfigFetcher(f ConfigFetcher) *Handler {
+	h.fetcher = f
+	return h
 }
 
 // HandleGitHub verifies the HMAC signature, parses a push event and persists a
@@ -87,12 +97,45 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	branch := ev.Branch
+
+	// Config drift: if the repo matches a registered scm_source and the
+	// push is on its default branch, re-read `.gocdnext/` at this revision
+	// and re-apply before we match materials against the (possibly new)
+	// pipeline state. Failure here falls through to the legacy path.
+	var driftOutcome DriftOutcome
+	if scm, ok := h.driftLookup(r.Context(), ev.Repository.CloneURL); ok {
+		driftOutcome = h.applyDrift(r.Context(), scm, branch, ev.After)
+		if driftOutcome.Applied {
+			h.log.Info("github webhook: config drift re-applied",
+				"delivery", delivery, "scm_source_id", scm.ID, "revision", ev.After)
+		} else if driftOutcome.Error != "" {
+			h.log.Warn("github webhook: config drift failed",
+				"delivery", delivery, "scm_source_id", scm.ID, "err", driftOutcome.Error)
+		}
+	}
+
 	fp := store.FingerprintFor(ev.Repository.CloneURL, branch)
 
 	material, err := h.store.FindMaterialByFingerprint(r.Context(), fp)
 	if errors.Is(err, store.ErrMaterialNotFound) {
-		h.log.Info("github webhook: no matching material (dropped)",
-			"delivery", delivery, "repo", ev.Repository.FullName, "ref", ev.Ref, "fingerprint", fp)
+		h.log.Info("github webhook: no matching material",
+			"delivery", delivery, "repo", ev.Repository.FullName, "ref", ev.Ref,
+			"fingerprint", fp, "drift_applied", driftOutcome.Applied)
+		// If drift ran (config-only push: scm_source matched but no material
+		// tied to this URL+branch), acknowledge with 202 + the outcome so the
+		// caller sees the sync happened. Legacy no-match pushes still 204.
+		if driftOutcome.Attempted {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"drift": map[string]any{
+					"applied":  driftOutcome.Applied,
+					"error":    driftOutcome.Error,
+					"revision": driftOutcome.Revision,
+				},
+			})
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -123,6 +166,13 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		"modification_id": res.ID,
 		"created":         res.Created,
 		"material_id":     material.ID.String(),
+	}
+	if driftOutcome.Attempted {
+		resp["drift"] = map[string]any{
+			"applied":  driftOutcome.Applied,
+			"error":    driftOutcome.Error,
+			"revision": driftOutcome.Revision,
+		}
 	}
 
 	// Only trigger a fresh run on a newly-inserted modification. If run creation

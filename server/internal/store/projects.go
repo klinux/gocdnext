@@ -159,7 +159,7 @@ func upsertSCMSource(ctx context.Context, q *db.Queries, projectID pgtype.UUID, 
 	row, err := q.UpsertScmSource(ctx, db.UpsertScmSourceParams{
 		ProjectID:     projectID,
 		Provider:      in.Provider,
-		Url:           in.URL,
+		Url:           domain.NormalizeGitURL(in.URL),
 		DefaultBranch: defaultBranch,
 		WebhookSecret: nullableString(in.WebhookSecret),
 		AuthRef:       nullableString(in.AuthRef),

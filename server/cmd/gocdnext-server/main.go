@@ -53,7 +53,8 @@ func main() {
 	}
 
 	st := store.New(pool)
-	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger)
+	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
+		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
 	projectsHandler := projectsapi.NewHandler(st, logger)
 	runsHandler := runsapi.NewHandler(st, logger)
 

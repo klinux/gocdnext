@@ -38,6 +38,27 @@ func (q *Queries) FindScmSourceByURL(ctx context.Context, url string) (ScmSource
 	return i, err
 }
 
+const getProjectByID = `-- name: GetProjectByID :one
+SELECT id, slug, name, description, created_at, updated_at
+FROM projects
+WHERE id = $1
+LIMIT 1
+`
+
+func (q *Queries) GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error) {
+	row := q.db.QueryRow(ctx, getProjectByID, id)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getScmSourceByProject = `-- name: GetScmSourceByProject :one
 SELECT id, project_id, provider, url, default_branch, webhook_secret, auth_ref,
        last_synced_at, last_synced_revision, created_at, updated_at
@@ -63,6 +84,24 @@ func (q *Queries) GetScmSourceByProject(ctx context.Context, projectID pgtype.UU
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const updateScmSourceSynced = `-- name: UpdateScmSourceSynced :exec
+UPDATE scm_sources
+SET last_synced_at = NOW(), last_synced_revision = $2
+WHERE id = $1
+`
+
+type UpdateScmSourceSyncedParams struct {
+	ID                 pgtype.UUID
+	LastSyncedRevision *string
+}
+
+// Stamp the last successful config sync. Called after a drift re-apply so
+// operators can see whether the live config tracks HEAD.
+func (q *Queries) UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error {
+	_, err := q.db.Exec(ctx, updateScmSourceSynced, arg.ID, arg.LastSyncedRevision)
+	return err
 }
 
 const upsertScmSource = `-- name: UpsertScmSource :one

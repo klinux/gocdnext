@@ -41,6 +41,14 @@ func ManualFingerprint() string {
 	return hex.EncodeToString(h[:])
 }
 
+// NormalizeGitURL exposes the same normalization used internally by the
+// fingerprint functions. Useful for matching repo URLs across sources
+// (webhook payload vs scm_sources row vs material.git.url) without having
+// to recompute a fingerprint just for comparison.
+func NormalizeGitURL(raw string) string {
+	return normalizeGitURL(raw)
+}
+
 func normalizeGitURL(raw string) string {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimRight(s, "/")

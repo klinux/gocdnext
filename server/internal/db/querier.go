@@ -41,6 +41,7 @@ type Querier interface {
 	FindScmSourceByURL(ctx context.Context, url string) (ScmSource, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
@@ -85,6 +86,9 @@ type Querier interface {
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
+	// Stamp the last successful config sync. Called after a drift re-apply so
+	// operators can see whether the live config tracks HEAD.
+	UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)

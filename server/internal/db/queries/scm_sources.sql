@@ -34,3 +34,16 @@ SELECT id, project_id, provider, url, default_branch, webhook_secret, auth_ref,
 FROM scm_sources
 WHERE project_id = $1
 LIMIT 1;
+
+-- name: UpdateScmSourceSynced :exec
+-- Stamp the last successful config sync. Called after a drift re-apply so
+-- operators can see whether the live config tracks HEAD.
+UPDATE scm_sources
+SET last_synced_at = NOW(), last_synced_revision = $2
+WHERE id = $1;
+
+-- name: GetProjectByID :one
+SELECT id, slug, name, description, created_at, updated_at
+FROM projects
+WHERE id = $1
+LIMIT 1;
