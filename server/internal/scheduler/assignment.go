@@ -22,9 +22,11 @@ type revisionSnapshot struct {
 }
 
 // BuildAssignment composes a JobAssignment proto from the run's pipeline
-// snapshot + the dispatchable job row + the pipeline's material rows. All
-// lookups are in-memory — the caller is expected to have fetched those once.
-func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materials []store.Material) (*gocdnextv1.JobAssignment, error) {
+// snapshot + the dispatchable job row + the pipeline's material rows +
+// already-resolved secrets (keyed by name). Secret values land in env
+// alongside the pipeline's own variables AND are echoed into LogMasks so
+// the runner can replace them with *** in every log line.
+func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materials []store.Material, secrets map[string]string) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
 		return nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
@@ -72,6 +74,24 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		env["GOCDNEXT_MATRIX"] = job.MatrixKey
 	}
 
+	// Secrets: layer on top of the pipeline-declared env. A secret with the
+	// same name as a plain variable wins — we trust the user to not shadow
+	// a secret name with a plain variable by accident.
+	masks := make([]string, 0, len(secrets))
+	for _, name := range jobDef.Secrets {
+		v, ok := secrets[name]
+		if !ok {
+			// Caller should have resolved every declared secret before
+			// calling BuildAssignment; anything missing here is a contract
+			// bug we surface as an error.
+			return nil, fmt.Errorf("scheduler: secret %q not resolved for job %s", name, job.Name)
+		}
+		env[name] = v
+		if v != "" {
+			masks = append(masks, v)
+		}
+	}
+
 	checkouts := materialCheckouts(materials, revs)
 
 	return &gocdnextv1.JobAssignment{
@@ -84,7 +104,23 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		Checkouts:      checkouts,
 		Workspace:      "/workspace",
 		TimeoutSeconds: 0,
+		LogMasks:       masks,
 	}, nil
+}
+
+// JobSecretsFromDefinition returns the list of secret names a job declares,
+// by parsing the stored pipeline definition JSONB. Exported so the scheduler
+// can resolve secrets before calling BuildAssignment.
+func JobSecretsFromDefinition(definition []byte, jobName string) ([]string, error) {
+	var def domain.Pipeline
+	if err := json.Unmarshal(definition, &def); err != nil {
+		return nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
+	}
+	jobDef, ok := findJob(def.Jobs, jobName)
+	if !ok {
+		return nil, fmt.Errorf("scheduler: job %q not in pipeline definition", jobName)
+	}
+	return append([]string(nil), jobDef.Secrets...), nil
 }
 
 func findJob(jobs []domain.Job, name string) (domain.Job, bool) {

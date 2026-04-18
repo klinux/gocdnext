@@ -75,7 +75,7 @@ func main() {
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
-	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL)
+	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithCipher(cipher)
 	reaper := scheduler.NewReaper(st, logger)
 
 	grpcServer := grpc.NewServer()

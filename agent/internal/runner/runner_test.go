@@ -175,6 +175,48 @@ func TestExecute_LogLinesCarryRunAndJobIDsAndMonotonicSeq(t *testing.T) {
 	}
 }
 
+func TestExecute_MasksSecretValuesInLogs(t *testing.T) {
+	r, c := newRunner(t)
+	ctx := context.Background()
+
+	// Secret value must be >= 4 chars so the length filter doesn't skip it.
+	const secretValue = "ghp_supersecret_12345"
+	a := assignment(`echo "token=$GH_TOKEN"; echo "prefix ghp_supersecret_12345 suffix"`)
+	a.Env = map[string]string{"GH_TOKEN": secretValue}
+	a.LogMasks = []string{secretValue}
+
+	r.Execute(ctx, a)
+
+	all := c.allLogText()
+	if strings.Contains(all, secretValue) {
+		t.Fatalf("secret value leaked in logs:\n%s", all)
+	}
+	if !strings.Contains(all, "token=***") {
+		t.Fatalf("expected masked form 'token=***' in logs:\n%s", all)
+	}
+	if !strings.Contains(all, "prefix *** suffix") {
+		t.Fatalf("expected masked middle 'prefix *** suffix':\n%s", all)
+	}
+	if c.result == nil || c.result.Status != gocdnextv1.RunStatus_RUN_STATUS_SUCCESS {
+		t.Fatalf("result = %+v", c.result)
+	}
+}
+
+func TestExecute_ShortMaskValuesAreIgnored(t *testing.T) {
+	r, c := newRunner(t)
+	ctx := context.Background()
+
+	// 3-char mask — below the length floor, must be left alone.
+	a := assignment(`echo "xyz-hit"`)
+	a.LogMasks = []string{"xyz"}
+
+	r.Execute(ctx, a)
+
+	if !strings.Contains(c.allLogText(), "xyz-hit") {
+		t.Fatalf("short mask (<4) should not be applied:\n%s", c.allLogText())
+	}
+}
+
 func TestExecute_GitCheckoutFromLocalRepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")

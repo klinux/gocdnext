@@ -99,6 +99,11 @@ message JobAssignment {
   repeated MaterialCheckout checkouts = 7;
   string workspace = 8;
   int32  timeout_seconds = 9;
+  // Raw secret values the runner must replace with *** in every LogLine
+  // before it's streamed back. Kept separate from env so a future change
+  // can mask values that aren't env-derived (e.g. Bearer tokens the
+  // runtime injects into Authorization headers).
+  repeated string log_masks = 10;
 }
 
 message TaskSpec {

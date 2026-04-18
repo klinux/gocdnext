@@ -6,12 +6,13 @@ VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (job_run_id, seq) DO NOTHING;
 
 -- name: CompleteJobRun :one
--- Flips a running job to its terminal state. Idempotent: only matches rows
--- currently in status='running'. Returns the stage/run ids so the caller can
--- cascade into stage + run progression.
+-- Flips a queued or running job to its terminal state. Idempotent: matches
+-- only non-terminal rows. Accepting 'queued' lets the scheduler fail a job
+-- at dispatch time (e.g. unresolved secret) without first flipping it to
+-- running via AssignJob. Returns stage/run ids so the caller can cascade.
 UPDATE job_runs
 SET status = $2, exit_code = $3, error = $4, finished_at = NOW()
-WHERE id = $1 AND status = 'running'
+WHERE id = $1 AND status IN ('queued', 'running')
 RETURNING id, run_id, stage_run_id, agent_id, name;
 
 -- name: GetStageProgress :one

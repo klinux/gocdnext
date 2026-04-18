@@ -18,9 +18,10 @@ type Querier interface {
 	// When a stage fails we stop dispatching the rest of the run. Running work
 	// stays untouched; the agent will still report its outcome.
 	CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID) error
-	// Flips a running job to its terminal state. Idempotent: only matches rows
-	// currently in status='running'. Returns the stage/run ids so the caller can
-	// cascade into stage + run progression.
+	// Flips a queued or running job to its terminal state. Idempotent: matches
+	// only non-terminal rows. Accepting 'queued' lets the scheduler fail a job
+	// at dispatch time (e.g. unresolved secret) without first flipping it to
+	// running via AssignJob. Returns stage/run ids so the caller can cascade.
 	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error

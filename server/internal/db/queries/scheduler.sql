@@ -41,7 +41,7 @@ WHERE id = $1 AND status = 'queued';
 SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at;
 
 -- name: GetRunForDispatch :one
-SELECT r.id, r.pipeline_id, r.counter, r.status, r.revisions,
+SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
        p.definition, p.config_path
 FROM runs r
 JOIN pipelines p ON p.id = r.pipeline_id

@@ -71,6 +71,7 @@ type JobDef struct {
 	When      *WhenDef          `yaml:"when,omitempty"`
 	Timeout   string            `yaml:"timeout,omitempty"`
 	Retry     int               `yaml:"retry,omitempty"`
+	Secrets   []string          `yaml:"secrets,omitempty"` // project-secret names to inject + mask
 }
 
 type Cache struct {

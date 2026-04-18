@@ -182,6 +182,89 @@ drain:
 	}
 }
 
+func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"deploy"},
+		Jobs: []domain.Job{
+			{
+				Name: "push", Stage: "deploy",
+				Tasks:   []domain.Task{{Script: "echo $GH_TOKEN"}},
+				Secrets: []string{"GH_TOKEN", "REGISTRY_PASSWORD"},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "push"}
+
+	secrets := map[string]string{
+		"GH_TOKEN":          "ghp_abc123",
+		"REGISTRY_PASSWORD": "reg-pw-xyz",
+	}
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.Env["GH_TOKEN"] != "ghp_abc123" {
+		t.Fatalf("env[GH_TOKEN] = %q", got.Env["GH_TOKEN"])
+	}
+	if got.Env["REGISTRY_PASSWORD"] != "reg-pw-xyz" {
+		t.Fatalf("env[REGISTRY_PASSWORD] = %q", got.Env["REGISTRY_PASSWORD"])
+	}
+	// LogMasks must carry the VALUES, not the names — the runner matches on
+	// the raw string to redact it from stdout/stderr.
+	masks := map[string]bool{}
+	for _, m := range got.LogMasks {
+		masks[m] = true
+	}
+	if !masks["ghp_abc123"] || !masks["reg-pw-xyz"] {
+		t.Fatalf("log_masks missing values: %+v", got.LogMasks)
+	}
+}
+
+func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"x"},
+		Jobs:   []domain.Job{{Name: "j", Stage: "x", Secrets: []string{"ABSENT"}}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
+
+	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}); err == nil {
+		t.Fatalf("expected error when declared secret is unresolved")
+	}
+}
+
+func TestJobSecretsFromDefinition_Extracts(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"s"},
+		Jobs: []domain.Job{
+			{Name: "a", Stage: "s", Secrets: []string{"X"}},
+			{Name: "b", Stage: "s"},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+
+	got, err := scheduler.JobSecretsFromDefinition(defJSON, "a")
+	if err != nil || len(got) != 1 || got[0] != "X" {
+		t.Fatalf("secrets for a = %v err=%v", got, err)
+	}
+	got, err = scheduler.JobSecretsFromDefinition(defJSON, "b")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("secrets for b = %v err=%v", got, err)
+	}
+	if _, err := scheduler.JobSecretsFromDefinition(defJSON, "nope"); err == nil {
+		t.Fatalf("expected error for unknown job name")
+	}
+}
+
 func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 	def := domain.Pipeline{
 		Stages: []string{"build"},
@@ -206,7 +289,7 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}

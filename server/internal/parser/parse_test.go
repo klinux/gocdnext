@@ -113,6 +113,33 @@ jobs:
 	}
 }
 
+func TestParse_Secrets(t *testing.T) {
+	y := `
+stages: [deploy]
+materials:
+  - manual: true
+jobs:
+  push:
+    stage: deploy
+    image: registry:local
+    script: [docker push]
+    secrets:
+      - GH_TOKEN
+      - REGISTRY_PASSWORD
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Jobs) != 1 {
+		t.Fatalf("jobs = %d", len(p.Jobs))
+	}
+	got := p.Jobs[0].Secrets
+	if len(got) != 2 || got[0] != "GH_TOKEN" || got[1] != "REGISTRY_PASSWORD" {
+		t.Fatalf("secrets = %+v", got)
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

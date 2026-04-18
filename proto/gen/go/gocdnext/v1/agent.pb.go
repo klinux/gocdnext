@@ -739,8 +739,13 @@ type JobAssignment struct {
 	Checkouts      []*MaterialCheckout    `protobuf:"bytes,7,rep,name=checkouts,proto3" json:"checkouts,omitempty"`
 	Workspace      string                 `protobuf:"bytes,8,opt,name=workspace,proto3" json:"workspace,omitempty"`
 	TimeoutSeconds int32                  `protobuf:"varint,9,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Raw secret values the runner must replace with *** in every LogLine
+	// before it's streamed back. Kept separate from env so a future change
+	// can mask values that aren't env-derived (e.g. Bearer tokens the
+	// runtime injects into Authorization headers).
+	LogMasks      []string `protobuf:"bytes,10,rep,name=log_masks,json=logMasks,proto3" json:"log_masks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JobAssignment) Reset() {
@@ -834,6 +839,13 @@ func (x *JobAssignment) GetTimeoutSeconds() int32 {
 		return x.TimeoutSeconds
 	}
 	return 0
+}
+
+func (x *JobAssignment) GetLogMasks() []string {
+	if x != nil {
+		return x.LogMasks
+	}
+	return nil
 }
 
 type TaskSpec struct {
@@ -1211,7 +1223,7 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06assign\x18\x01 \x01(\v2\x1a.gocdnext.v1.JobAssignmentH\x00R\x06assign\x120\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x16.gocdnext.v1.CancelJobH\x00R\x06cancel\x12'\n" +
 	"\x04pong\x18\x03 \x01(\v2\x11.gocdnext.v1.PongH\x00R\x04pongB\x06\n" +
-	"\x04kind\"\x87\x03\n" +
+	"\x04kind\"\xa4\x03\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x12\n" +
@@ -1221,7 +1233,9 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x03env\x18\x06 \x03(\v2#.gocdnext.v1.JobAssignment.EnvEntryR\x03env\x12;\n" +
 	"\tcheckouts\x18\a \x03(\v2\x1d.gocdnext.v1.MaterialCheckoutR\tcheckouts\x12\x1c\n" +
 	"\tworkspace\x18\b \x01(\tR\tworkspace\x12'\n" +
-	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\x1a6\n" +
+	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\x12\x1b\n" +
+	"\tlog_masks\x18\n" +
+	" \x03(\tR\blogMasks\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"_\n" +

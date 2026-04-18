@@ -53,7 +53,7 @@ func (q *Queries) AssignJob(ctx context.Context, arg AssignJobParams) (AssignJob
 }
 
 const getRunForDispatch = `-- name: GetRunForDispatch :one
-SELECT r.id, r.pipeline_id, r.counter, r.status, r.revisions,
+SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
        p.definition, p.config_path
 FROM runs r
 JOIN pipelines p ON p.id = r.pipeline_id
@@ -64,6 +64,7 @@ LIMIT 1
 type GetRunForDispatchRow struct {
 	ID         pgtype.UUID
 	PipelineID pgtype.UUID
+	ProjectID  pgtype.UUID
 	Counter    int64
 	Status     string
 	Revisions  []byte
@@ -77,6 +78,7 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 	err := row.Scan(
 		&i.ID,
 		&i.PipelineID,
+		&i.ProjectID,
 		&i.Counter,
 		&i.Status,
 		&i.Revisions,

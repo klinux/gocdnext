@@ -127,6 +127,11 @@ type Job struct {
 	Variables map[string]string
 	Matrix    map[string][]string
 	Rules     []Rule
+	// Secrets are project-secret names whose values should be injected into
+	// the job env at dispatch time. The runner also masks these values in
+	// log lines. Kept as a list of names (not values) so the YAML and the
+	// stored pipeline definition never carry plaintext.
+	Secrets []string
 }
 
 type Task struct {

@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -26,6 +28,7 @@ type Scheduler struct {
 	log      *slog.Logger
 	dsn      string
 	tick     time.Duration
+	cipher   *crypto.Cipher
 }
 
 // New wires the scheduler. dsn is used for a dedicated LISTEN connection —
@@ -48,6 +51,15 @@ func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 	if d > 0 {
 		s.tick = d
 	}
+	return s
+}
+
+// WithCipher hands the scheduler the AES-GCM key used to decrypt secrets at
+// dispatch time. nil means "no secrets subsystem"; jobs that reference
+// secrets will fail dispatch with a clear error instead of silently running
+// with empty env values.
+func (s *Scheduler) WithCipher(c *crypto.Cipher) *Scheduler {
+	s.cipher = c
 	return s
 }
 
@@ -166,7 +178,13 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			break
 		}
 
-		assign, err := BuildAssignment(run, job, materials)
+		secretValues, secretErr := s.resolveJobSecrets(ctx, run, job.Name)
+		if secretErr != nil {
+			s.failJobWithError(ctx, job, fmt.Sprintf("secrets: %v", secretErr))
+			continue
+		}
+
+		assign, err := BuildAssignment(run, job, materials, secretValues)
 		if err != nil {
 			s.log.Warn("scheduler: build assignment", "job_id", job.ID, "err", err)
 			continue
@@ -211,4 +229,54 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 // "try later" from real errors.
 func IsNoIdleAgent(err error) bool {
 	return errors.Is(err, grpcsrv.ErrNoSession)
+}
+
+// resolveJobSecrets reads the declared secret names off the pipeline
+// definition snapshot, then asks the store to decrypt them. Returns an empty
+// map when the job has no secrets (no cipher needed either). Fails when a
+// job references secrets but the cipher isn't configured, or when a declared
+// name isn't present in the DB — both are user-visible pipeline mistakes.
+func (s *Scheduler) resolveJobSecrets(ctx context.Context, run store.RunForDispatch, jobName string) (map[string]string, error) {
+	names, err := JobSecretsFromDefinition(run.Definition, jobName)
+	if err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return map[string]string{}, nil
+	}
+	if s.cipher == nil {
+		return nil, fmt.Errorf("secret %q declared but GOCDNEXT_SECRET_KEY not configured on server", names[0])
+	}
+	resolved, err := s.store.ResolveSecrets(ctx, s.cipher, run.ProjectID, names)
+	if err != nil {
+		return nil, err
+	}
+	// Every declared name must be present; ResolveSecrets silently drops
+	// unknown names, so we diff here for a precise error.
+	var missing []string
+	for _, n := range names {
+		if _, ok := resolved[n]; !ok {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("secrets not set on project: %v", missing)
+	}
+	return resolved, nil
+}
+
+// failJobWithError marks a still-queued job as failed (with cascade to
+// stage/run via store.CompleteJob). Called when dispatch-time resolution
+// fails — e.g. a declared secret isn't set on the project. CompleteJob's
+// WHERE clause accepts both queued and running, so we don't need to flip
+// to running first just to fail it.
+func (s *Scheduler) failJobWithError(ctx context.Context, job store.DispatchableJob, errMsg string) {
+	if _, _, err := s.store.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID: job.ID, Status: string(domain.StatusFailed), ExitCode: -1, ErrorMsg: errMsg,
+	}); err != nil {
+		s.log.Warn("scheduler: fail job", "job_id", job.ID, "err", err)
+		return
+	}
+	s.log.Warn("scheduler: job failed at dispatch",
+		"run_id", job.RunID, "job_id", job.ID, "job_name", job.Name, "err", errMsg)
 }

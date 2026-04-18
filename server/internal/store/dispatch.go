@@ -38,6 +38,7 @@ type AssignedJob struct {
 type RunForDispatch struct {
 	ID         uuid.UUID
 	PipelineID uuid.UUID
+	ProjectID  uuid.UUID
 	Counter    int64
 	Status     string
 	Revisions  json.RawMessage
@@ -113,6 +114,7 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 	return RunForDispatch{
 		ID:         fromPgUUID(row.ID),
 		PipelineID: fromPgUUID(row.PipelineID),
+		ProjectID:  fromPgUUID(row.ProjectID),
 		Counter:    row.Counter,
 		Status:     row.Status,
 		Revisions:  row.Revisions,

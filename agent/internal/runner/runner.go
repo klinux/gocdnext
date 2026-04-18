@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -211,10 +212,26 @@ func (r *Runner) emitLog(a *gocdnextv1.JobAssignment, seq *atomic.Int64, stream,
 				Seq:    n,
 				At:     timestamppb.New(time.Now().UTC()),
 				Stream: stream,
-				Text:   text,
+				Text:   applyMasks(text, a.GetLogMasks()),
 			},
 		},
 	})
+}
+
+// applyMasks replaces every occurrence of a secret value with "***". Masks
+// of length < 4 are ignored so common short words don't accidentally get
+// replaced (e.g. "a", "go", "and"). Multi-line values are matched per-line
+// only — the scanner splits output on newlines before we see it, so a long
+// PEM key might not be fully masked line-by-line. Known limit; the secret
+// is still in the job's env either way.
+func applyMasks(text string, masks []string) string {
+	for _, m := range masks {
+		if len(m) < 4 {
+			continue
+		}
+		text = strings.ReplaceAll(text, m, "***")
+	}
+	return text
 }
 
 func (r *Runner) sendResult(a *gocdnextv1.JobAssignment, status gocdnextv1.RunStatus, exitCode int32, errMsg string) {
