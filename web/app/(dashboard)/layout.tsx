@@ -2,10 +2,19 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { GitBranch, LayoutDashboard } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { QueryClientProvider } from "@/components/providers/query-client-provider.client";
 
 type Props = { children: ReactNode };
 
 export default function DashboardLayout({ children }: Props) {
+  return (
+    <QueryClientProvider>
+      <DashboardShell>{children}</DashboardShell>
+    </QueryClientProvider>
+  );
+}
+
+function DashboardShell({ children }: Props) {
   return (
     <div className="min-h-screen grid grid-cols-[220px_1fr]">
       <aside className="border-r border-border bg-sidebar px-4 py-6">
