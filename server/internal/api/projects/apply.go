@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/parser"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -20,8 +21,9 @@ import (
 const maxApplyBodyBytes = 5 << 20 // 5 MiB — room for large mono-repo configs.
 
 type Handler struct {
-	store *store.Store
-	log   *slog.Logger
+	store  *store.Store
+	log    *slog.Logger
+	cipher *crypto.Cipher
 }
 
 func NewHandler(s *store.Store, log *slog.Logger) *Handler {

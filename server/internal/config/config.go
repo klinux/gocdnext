@@ -17,6 +17,7 @@ type Config struct {
 	WebhookToken  string // fallback shared secret until per-material secrets ship
 	ArtifactsURL  string // s3://bucket or file:///var/lib/gocdnext/artifacts
 	ConfigFolder  string // folder name in repos holding pipeline YAMLs (.gocdnext)
+	SecretKeyHex  string // 64-char hex AES-256 key for encrypting secrets at rest
 }
 
 func Load() (*Config, error) {
@@ -27,6 +28,7 @@ func Load() (*Config, error) {
 		WebhookToken: env("GOCDNEXT_WEBHOOK_TOKEN", ""),
 		ArtifactsURL: env("GOCDNEXT_ARTIFACTS_URL", "file:///var/lib/gocdnext/artifacts"),
 		ConfigFolder: env("GOCDNEXT_CONFIG_FOLDER", ".gocdnext"),
+		SecretKeyHex: env("GOCDNEXT_SECRET_KEY", ""),
 	}
 
 	if c.DatabaseURL == "" {

@@ -22,6 +22,7 @@ import (
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
 	"github.com/gocdnext/gocdnext/server/internal/config"
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -53,9 +54,23 @@ func main() {
 	}
 
 	st := store.New(pool)
+
+	var cipher *crypto.Cipher
+	if cfg.SecretKeyHex != "" {
+		c, err := crypto.NewCipherFromHex(cfg.SecretKeyHex)
+		if err != nil {
+			logger.Error("secret key", "err", err)
+			os.Exit(1)
+		}
+		cipher = c
+		logger.Info("secrets subsystem enabled")
+	} else {
+		logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503")
+	}
+
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
 		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
-	projectsHandler := projectsapi.NewHandler(st, logger)
+	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
 	runsHandler := runsapi.NewHandler(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
@@ -85,6 +100,9 @@ func main() {
 	r.Post("/api/v1/projects/apply", projectsHandler.Apply)
 	r.Get("/api/v1/projects", projectsHandler.List)
 	r.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
+	r.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
+	r.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
+	r.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 	r.Get("/api/v1/runs/{id}", runsHandler.Detail)
 
 	srv := &http.Server{

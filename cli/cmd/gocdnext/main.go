@@ -2,17 +2,22 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/gocdnext/gocdnext/cli/internal/apply"
+	"github.com/gocdnext/gocdnext/cli/internal/secrets"
 )
 
 func main() {
@@ -27,6 +32,7 @@ func main() {
 		validateCmd(),
 		runLocalCmd(),
 		applyCmd(),
+		secretCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -169,6 +175,183 @@ func printResult(w interface {
 	for _, name := range r.PipelinesRemoved {
 		fmt.Fprintf(w, "  pipeline removed %s\n", name)
 	}
+}
+
+func secretCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "secret",
+		Short: "Manage project secrets (encrypted at rest by the server)",
+	}
+	cmd.AddCommand(secretSetCmd(), secretListCmd(), secretRmCmd())
+	return cmd
+}
+
+func secretSetCmd() *cobra.Command {
+	var (
+		slug       string
+		serverURL  string
+		fromStdin  bool
+		fromFile   string
+	)
+	cmd := &cobra.Command{
+		Use:   "set NAME",
+		Short: "Set a secret. Value is read from stdin/file/TTY — never from a flag.",
+		Long: strings.TrimSpace(`
+Set a project secret. The value is read from one of:
+  * --from-file PATH     (read file contents verbatim)
+  * stdin when it's piped (cat token.txt | gocdnext secret set --slug X NAME)
+  * an interactive TTY prompt (silent, like sudo)
+
+Refusing to accept the value from a flag is deliberate: it keeps secrets out of
+shell history and out of 'ps'.
+`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			name := args[0]
+			if slug == "" {
+				return fmt.Errorf("--slug is required")
+			}
+			if serverURL == "" {
+				serverURL = envOr("GOCDNEXT_SERVER_URL", "http://localhost:8153")
+			}
+
+			value, err := readSecretValue(fromStdin, fromFile)
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			resp, err := secrets.Set(ctx, &http.Client{Timeout: 30 * time.Second}, serverURL, slug,
+				secrets.SetRequest{Name: name, Value: value})
+			if err != nil {
+				return err
+			}
+			action := "updated"
+			if resp.Created {
+				action = "created"
+			}
+			fmt.Fprintf(c.OutOrStdout(), "secret %s %s\n", action, resp.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&slug, "slug", "", "project slug (required)")
+	cmd.Flags().StringVar(&serverURL, "server", "", "gocdnext server URL (env GOCDNEXT_SERVER_URL)")
+	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false, "force reading value from stdin even when a TTY is attached")
+	cmd.Flags().StringVar(&fromFile, "from-file", "", "read value from the given file path (use - for stdin)")
+	_ = cmd.MarkFlagRequired("slug")
+	cmd.SetContext(context.Background())
+	return cmd
+}
+
+func secretListCmd() *cobra.Command {
+	var (
+		slug      string
+		serverURL string
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List secret names and timestamps for a project (no values)",
+		RunE: func(c *cobra.Command, _ []string) error {
+			if slug == "" {
+				return fmt.Errorf("--slug is required")
+			}
+			if serverURL == "" {
+				serverURL = envOr("GOCDNEXT_SERVER_URL", "http://localhost:8153")
+			}
+			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			list, err := secrets.List(ctx, &http.Client{Timeout: 15 * time.Second}, serverURL, slug)
+			if err != nil {
+				return err
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(c.OutOrStdout(), "(no secrets)")
+				return nil
+			}
+			for _, s := range list {
+				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\n", s.Name, s.UpdatedAt)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&slug, "slug", "", "project slug (required)")
+	cmd.Flags().StringVar(&serverURL, "server", "", "gocdnext server URL (env GOCDNEXT_SERVER_URL)")
+	_ = cmd.MarkFlagRequired("slug")
+	cmd.SetContext(context.Background())
+	return cmd
+}
+
+func secretRmCmd() *cobra.Command {
+	var (
+		slug      string
+		serverURL string
+	)
+	cmd := &cobra.Command{
+		Use:   "rm NAME",
+		Short: "Remove a secret from a project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			name := args[0]
+			if slug == "" {
+				return fmt.Errorf("--slug is required")
+			}
+			if serverURL == "" {
+				serverURL = envOr("GOCDNEXT_SERVER_URL", "http://localhost:8153")
+			}
+			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			if err := secrets.Delete(ctx, &http.Client{Timeout: 15 * time.Second}, serverURL, slug, name); err != nil {
+				return err
+			}
+			fmt.Fprintf(c.OutOrStdout(), "secret removed %s\n", name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&slug, "slug", "", "project slug (required)")
+	cmd.Flags().StringVar(&serverURL, "server", "", "gocdnext server URL (env GOCDNEXT_SERVER_URL)")
+	_ = cmd.MarkFlagRequired("slug")
+	cmd.SetContext(context.Background())
+	return cmd
+}
+
+// readSecretValue resolves the secret plaintext from one of: file, piped
+// stdin, or an interactive TTY prompt (silent input, like sudo password).
+// The value may legitimately be multi-line (PEM keys) — stdin and file read
+// the full content verbatim; the TTY prompt strips a single trailing newline
+// from ReadPassword.
+func readSecretValue(fromStdin bool, fromFile string) (string, error) {
+	if fromFile != "" {
+		if fromFile == "-" {
+			return readAllTrim(os.Stdin)
+		}
+		b, err := os.ReadFile(fromFile)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", fromFile, err)
+		}
+		return strings.TrimRight(string(b), "\n"), nil
+	}
+	// Piped stdin (e.g., `cat token.txt | gocdnext secret set ...`)
+	if fromStdin || !term.IsTerminal(int(os.Stdin.Fd())) {
+		return readAllTrim(os.Stdin)
+	}
+	// Interactive TTY — silent prompt.
+	fmt.Fprint(os.Stderr, "Value: ")
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("read tty: %w", err)
+	}
+	return string(b), nil
+}
+
+func readAllTrim(r io.Reader) (string, error) {
+	b, err := io.ReadAll(bufio.NewReader(r))
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	return strings.TrimRight(string(b), "\n"), nil
 }
 
 func envOr(key, fallback string) string {

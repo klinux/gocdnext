@@ -129,6 +129,15 @@ type ScmSource struct {
 	UpdatedAt          pgtype.Timestamptz
 }
 
+type Secret struct {
+	ID        pgtype.UUID
+	ProjectID pgtype.UUID
+	Name      string
+	ValueEnc  []byte
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type StageRun struct {
 	ID         pgtype.UUID
 	RunID      pgtype.UUID

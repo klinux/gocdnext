@@ -31,6 +31,7 @@ type Querier interface {
 	DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
+	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// For a completed stage on an upstream pipeline, find every "upstream"
 	// material in OTHER pipelines of the same project that points at it. The
@@ -54,6 +55,9 @@ type Querier interface {
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (ScmSource, error)
+	// Used by the scheduler when a job declares `secrets: [FOO, BAR]`. Returns
+	// the encrypted blobs; the caller decrypts and injects as env vars.
+	GetSecretValuesByProject(ctx context.Context, arg GetSecretValuesByProjectParams) ([]GetSecretValuesByProjectRow, error)
 	// Counts jobs still working vs already-failed within a stage — the numbers
 	// the caller uses to decide whether to promote the stage.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
@@ -86,6 +90,9 @@ type Querier interface {
 	// reaper, blocked waiting for a next stage, etc.).
 	ListQueuedRunIDs(ctx context.Context) ([]pgtype.UUID, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
+	// Lists names + timestamps only — values never leave the DB without going
+	// through GetSecretValuesByProject below.
+	ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
 	ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunOrderedRow, error)
 	// Running jobs whose agent is either offline or hasn't been seen within
@@ -116,6 +123,11 @@ type Querier interface {
 	// Bind a project to its SCM source. updated_at only bumps when something
 	// meaningful changes, so idempotent re-applies don't spam the timeline.
 	UpsertScmSource(ctx context.Context, arg UpsertScmSourceParams) (UpsertScmSourceRow, error)
+	// Upserts a (project_id, name) -> value_enc pair. updated_at always bumps on
+	// update because the ciphertext changes (random nonce) even for identical
+	// plaintext, making a "was this changed" diff unreliable; we bump
+	// unconditionally on write.
+	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
 }
 
 var _ Querier = (*Queries)(nil)
