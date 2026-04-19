@@ -135,6 +135,10 @@ type Job struct {
 	// Tags restrict which agents may run this job. A job dispatches only to
 	// a session whose Tags is a superset of this list. Empty = any agent.
 	Tags []string
+	// ArtifactPaths are the file/directory paths the runner should tar+gz
+	// and upload after the job succeeds. YAML source: `artifacts.paths:`.
+	// Empty means no artefacts expected.
+	ArtifactPaths []string
 }
 
 type Task struct {

@@ -151,6 +151,21 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 		return
 	}
 
+	// Confirm artefact uploads BEFORE marking the job done — if an agent
+	// reports success but the object never made it to storage, we'd
+	// rather have the job fail than let downstream jobs depend on a
+	// phantom row. `confirmArtifacts` returns an error message when
+	// something's off; we override the reported status in that case.
+	artifactErr := a.confirmArtifacts(ctx, log, r.GetArtifacts())
+	if artifactErr != "" && status == string(domain.StatusSuccess) {
+		status = string(domain.StatusFailed)
+		if r.GetError() == "" {
+			r.Error = "artifact reconciliation: " + artifactErr
+		}
+		log.Warn("agent result: downgraded to failed due to artifact mismatch",
+			"job_id", jobID, "detail", artifactErr)
+	}
+
 	comp, ok, err := a.store.CompleteJob(ctx, store.CompleteJobInput{
 		JobRunID: jobID,
 		Status:   status,
@@ -200,6 +215,70 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 			log.Warn("fanout: partial failure", "err", fanErr, "stage_run_id", comp.StageRunID)
 		}
 	}
+}
+
+// confirmArtifacts walks the ArtifactRef list the agent reported, HEADs
+// each object in the configured backend, and flips matching DB rows
+// from pending to ready. Returns an empty string on full success; a
+// human-readable message when something's off (HEAD mismatch, missing
+// row, short read). Missing backend = no-op so jobs without artefacts
+// still succeed on an unconfigured server.
+//
+// Size mismatch policy: the agent's reported size is authoritative for
+// the DB row, but Head() must return something non-zero for the object
+// to count as ready. A Head() that succeeds but reports 0 bytes on a
+// > 0 agent report is a mismatch we reject.
+func (a *AgentService) confirmArtifacts(ctx context.Context, log logger, refs []*gocdnextv1.ArtifactRef) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	if a.artifactStore == nil {
+		// Agent shouldn't report artefacts if the server has no
+		// backend, but don't fail the job over this — log and carry on.
+		log.Warn("artifact confirm: refs reported but backend not configured", "count", len(refs))
+		return ""
+	}
+	var bad []string
+	for _, ref := range refs {
+		key := ref.GetStorageKey()
+		if key == "" {
+			bad = append(bad, ref.GetPath()+" (empty storage_key)")
+			continue
+		}
+		size, err := a.artifactStore.Head(ctx, key)
+		if err != nil {
+			bad = append(bad, ref.GetPath()+" (head: "+err.Error()+")")
+			continue
+		}
+		if size == 0 && ref.GetSize() > 0 {
+			bad = append(bad, ref.GetPath()+" (empty object)")
+			continue
+		}
+		updated, err := a.store.MarkArtifactReady(ctx, key, ref.GetSize(), ref.GetContentSha256())
+		if err != nil {
+			bad = append(bad, ref.GetPath()+" (mark ready: "+err.Error()+")")
+			continue
+		}
+		if !updated {
+			log.Debug("artifact confirm: row not pending",
+				"storage_key", key, "path", ref.GetPath())
+		}
+	}
+	if len(bad) == 0 {
+		return ""
+	}
+	return "failed artifacts: " + joinCSV(bad)
+}
+
+func joinCSV(xs []string) string {
+	out := ""
+	for i, s := range xs {
+		if i > 0 {
+			out += ", "
+		}
+		out += s
+	}
+	return out
 }
 
 // mapStatus converts the proto enum reported by the agent to the text labels

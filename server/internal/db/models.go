@@ -23,13 +23,20 @@ type Agent struct {
 }
 
 type Artifact struct {
-	ID         pgtype.UUID
-	JobRunID   pgtype.UUID
-	Path       string
-	StorageUrl string
-	SizeBytes  *int64
-	ExpiresAt  pgtype.Timestamptz
-	CreatedAt  pgtype.Timestamptz
+	ID            pgtype.UUID
+	RunID         pgtype.UUID
+	JobRunID      pgtype.UUID
+	PipelineID    pgtype.UUID
+	ProjectID     pgtype.UUID
+	Path          string
+	StorageKey    string
+	SizeBytes     int64
+	ContentSha256 string
+	Status        string
+	PinnedAt      pgtype.Timestamptz
+	DeletedAt     pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
 }
 
 type JobRun struct {

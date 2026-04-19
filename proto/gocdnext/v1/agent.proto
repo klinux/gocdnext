@@ -17,6 +17,13 @@ service AgentService {
   //   server → agent: despacho de job, cancelamento
   //   agent → server: heartbeat, progresso de job, logs, resultado
   rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+
+  // RequestArtifactUpload: agent pede URLs assinadas para subir N
+  // artefatos de um job. Servidor cria rows pendentes em `artifacts` e
+  // devolve um ticket por path. Agent faz PUT HTTP em cada URL; server
+  // confirma via HEAD quando receber o JobResult.
+  rpc RequestArtifactUpload(RequestArtifactUploadRequest)
+      returns (RequestArtifactUploadResponse);
 }
 
 message RegisterRequest {
@@ -75,9 +82,33 @@ message JobResult {
 }
 
 message ArtifactRef {
-  string path = 1;
-  string url  = 2; // S3/MinIO onde foi feito upload
-  int64  size = 3;
+  string path           = 1;
+  string storage_key    = 2; // chave opaca no backend (devolvida pelo ticket)
+  int64  size           = 3;
+  string content_sha256 = 4; // hex; agent calcula ao tar+stream
+}
+
+message RequestArtifactUploadRequest {
+  string          session_id = 1; // autentica o agent (emitido no Register)
+  string          run_id     = 2;
+  string          job_id     = 3;
+  repeated string paths      = 4; // paths declarados no YAML job.artifacts
+}
+
+message RequestArtifactUploadResponse {
+  repeated ArtifactUploadTicket tickets = 1;
+}
+
+// ArtifactUploadTicket é o contrato opaco que o agent usa para subir um
+// único artefato. `storage_key` é o que o agent anexa no JobResult;
+// `put_url` é a URL assinada (filesystem backend: HTTP do próprio server;
+// S3/GCS: URL do cloud). `expires_at` é orientativo — se o job demorar
+// mais que a janela, agent pede novo ticket.
+message ArtifactUploadTicket {
+  string                    path       = 1;
+  string                    storage_key = 2;
+  string                    put_url    = 3;
+  google.protobuf.Timestamp expires_at = 4;
 }
 
 // ── Mensagens SERVER → AGENT ─────────────────────────────────────────
@@ -104,6 +135,11 @@ message JobAssignment {
   // can mask values that aren't env-derived (e.g. Bearer tokens the
   // runtime injects into Authorization headers).
   repeated string log_masks = 10;
+  // Artifact paths declared in the job's YAML `artifacts.paths:`. The
+  // runner tars each path after tasks succeed, calls
+  // RequestArtifactUpload to get signed PUT URLs, and reports what
+  // uploaded back in JobResult.artifacts.
+  repeated string artifact_paths = 11;
 }
 
 message TaskSpec {

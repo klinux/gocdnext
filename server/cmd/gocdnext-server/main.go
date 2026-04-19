@@ -84,7 +84,6 @@ func main() {
 		logger.Error("artifacts: init", "err", err)
 		os.Exit(1)
 	}
-	_ = artifactStore // E2a.2 will pass this to the gRPC service.
 
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
 		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
@@ -93,6 +92,9 @@ func main() {
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
+	if artifactStore != nil {
+		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*24*time.Hour)
+	}
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
 	reaper := scheduler.NewReaper(st, logger)
 

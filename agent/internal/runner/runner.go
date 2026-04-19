@@ -30,6 +30,11 @@ type Config struct {
 	Logger        *slog.Logger
 	Send          func(*gocdnextv1.AgentMessage)
 
+	// Uploader handles artifact tar+upload when a job declares
+	// `artifacts: [paths]`. Nil means "no-op" — the job still succeeds
+	// but no refs are attached to JobResult.
+	Uploader ArtifactUploader
+
 	// KeepWorkspace keeps the job's working directory on disk after Execute
 	// finishes. Useful for debugging; default is to remove on success.
 	KeepWorkspace bool
@@ -110,8 +115,34 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		}
 	}
 
-	log.Info("runner: execute ok")
-	r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "")
+	refs := r.uploadArtifacts(ctx, workDir, a, &seq)
+
+	log.Info("runner: execute ok", "artifacts", len(refs))
+	r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs)
+}
+
+// uploadArtifacts tars + uploads each declared path. Errors are
+// reported as log lines but do NOT fail the job (consistent with
+// GitLab CI — the contract is that artifacts are best-effort after a
+// successful task sequence). Downstream jobs that `needs_artifacts`
+// will fail cleanly when the server reports the missing row.
+func (r *Runner) uploadArtifacts(ctx context.Context, workDir string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) []*gocdnextv1.ArtifactRef {
+	if r.cfg.Uploader == nil || len(a.GetArtifactPaths()) == 0 {
+		return nil
+	}
+	refs, err := r.cfg.Uploader.Upload(ctx, workDir, a.GetRunId(), a.GetJobId(), a.GetArtifactPaths())
+	if err != nil {
+		r.emitLog(a, seq, "stderr", fmt.Sprintf("artifact upload failed: %v", err))
+		r.cfg.Logger.Warn("runner: artifact upload failed", "err", err,
+			"run_id", a.GetRunId(), "job_id", a.GetJobId())
+		return nil
+	}
+	for _, ref := range refs {
+		r.emitLog(a, seq, "stdout", fmt.Sprintf(
+			"artifact uploaded: %s (%d bytes, sha256 %s)",
+			ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+	}
+	return refs
 }
 
 func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.MaterialCheckout, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {
@@ -235,14 +266,19 @@ func applyMasks(text string, masks []string) string {
 }
 
 func (r *Runner) sendResult(a *gocdnextv1.JobAssignment, status gocdnextv1.RunStatus, exitCode int32, errMsg string) {
+	r.sendResultWithArtifacts(a, status, exitCode, errMsg, nil)
+}
+
+func (r *Runner) sendResultWithArtifacts(a *gocdnextv1.JobAssignment, status gocdnextv1.RunStatus, exitCode int32, errMsg string, refs []*gocdnextv1.ArtifactRef) {
 	r.cfg.Send(&gocdnextv1.AgentMessage{
 		Kind: &gocdnextv1.AgentMessage_Result{
 			Result: &gocdnextv1.JobResult{
-				RunId:    a.GetRunId(),
-				JobId:    a.GetJobId(),
-				Status:   status,
-				ExitCode: exitCode,
-				Error:    errMsg,
+				RunId:     a.GetRunId(),
+				JobId:     a.GetJobId(),
+				Status:    status,
+				ExitCode:  exitCode,
+				Error:     errMsg,
+				Artifacts: refs,
 			},
 		},
 	})

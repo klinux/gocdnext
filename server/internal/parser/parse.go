@@ -134,6 +134,9 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		Secrets:   jd.Secrets,
 		Tags:      jd.Tags,
 	}
+	if jd.Artifacts != nil {
+		j.ArtifactPaths = append([]string(nil), jd.Artifacts.Paths...)
+	}
 
 	for _, line := range jd.Script {
 		j.Tasks = append(j.Tasks, domain.Task{Script: line})

@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_Register_FullMethodName = "/gocdnext.v1.AgentService/Register"
-	AgentService_Connect_FullMethodName  = "/gocdnext.v1.AgentService/Connect"
+	AgentService_Register_FullMethodName              = "/gocdnext.v1.AgentService/Register"
+	AgentService_Connect_FullMethodName               = "/gocdnext.v1.AgentService/Connect"
+	AgentService_RequestArtifactUpload_FullMethodName = "/gocdnext.v1.AgentService/RequestArtifactUpload"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -37,6 +38,11 @@ type AgentServiceClient interface {
 	//	server → agent: despacho de job, cancelamento
 	//	agent → server: heartbeat, progresso de job, logs, resultado
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentMessage, ServerMessage], error)
+	// RequestArtifactUpload: agent pede URLs assinadas para subir N
+	// artefatos de um job. Servidor cria rows pendentes em `artifacts` e
+	// devolve um ticket por path. Agent faz PUT HTTP em cada URL; server
+	// confirma via HEAD quando receber o JobResult.
+	RequestArtifactUpload(ctx context.Context, in *RequestArtifactUploadRequest, opts ...grpc.CallOption) (*RequestArtifactUploadResponse, error)
 }
 
 type agentServiceClient struct {
@@ -70,6 +76,16 @@ func (c *agentServiceClient) Connect(ctx context.Context, opts ...grpc.CallOptio
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentService_ConnectClient = grpc.BidiStreamingClient[AgentMessage, ServerMessage]
 
+func (c *agentServiceClient) RequestArtifactUpload(ctx context.Context, in *RequestArtifactUploadRequest, opts ...grpc.CallOption) (*RequestArtifactUploadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestArtifactUploadResponse)
+	err := c.cc.Invoke(ctx, AgentService_RequestArtifactUpload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations should embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -84,6 +100,11 @@ type AgentServiceServer interface {
 	//	server → agent: despacho de job, cancelamento
 	//	agent → server: heartbeat, progresso de job, logs, resultado
 	Connect(grpc.BidiStreamingServer[AgentMessage, ServerMessage]) error
+	// RequestArtifactUpload: agent pede URLs assinadas para subir N
+	// artefatos de um job. Servidor cria rows pendentes em `artifacts` e
+	// devolve um ticket por path. Agent faz PUT HTTP em cada URL; server
+	// confirma via HEAD quando receber o JobResult.
+	RequestArtifactUpload(context.Context, *RequestArtifactUploadRequest) (*RequestArtifactUploadResponse, error)
 }
 
 // UnimplementedAgentServiceServer should be embedded to have
@@ -98,6 +119,9 @@ func (UnimplementedAgentServiceServer) Register(context.Context, *RegisterReques
 }
 func (UnimplementedAgentServiceServer) Connect(grpc.BidiStreamingServer[AgentMessage, ServerMessage]) error {
 	return status.Error(codes.Unimplemented, "method Connect not implemented")
+}
+func (UnimplementedAgentServiceServer) RequestArtifactUpload(context.Context, *RequestArtifactUploadRequest) (*RequestArtifactUploadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestArtifactUpload not implemented")
 }
 func (UnimplementedAgentServiceServer) testEmbeddedByValue() {}
 
@@ -144,6 +168,24 @@ func _AgentService_Connect_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentService_ConnectServer = grpc.BidiStreamingServer[AgentMessage, ServerMessage]
 
+func _AgentService_RequestArtifactUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestArtifactUploadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RequestArtifactUpload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RequestArtifactUpload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RequestArtifactUpload(ctx, req.(*RequestArtifactUploadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -154,6 +196,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Register",
 			Handler:    _AgentService_Register_Handler,
+		},
+		{
+			MethodName: "RequestArtifactUpload",
+			Handler:    _AgentService_RequestArtifactUpload_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

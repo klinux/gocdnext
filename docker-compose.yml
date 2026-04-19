@@ -15,18 +15,6 @@ services:
       timeout: 3s
       retries: 10
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: gocdnext
-      MINIO_ROOT_PASSWORD: gocdnext
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - miniodata:/data
-
   server:
     build:
       context: .
@@ -39,7 +27,11 @@ services:
       GOCDNEXT_HTTP_ADDR: ":8153"
       GOCDNEXT_GRPC_ADDR: ":8154"
       GOCDNEXT_LOG_LEVEL: debug
-      GOCDNEXT_ARTIFACTS_URL: s3://gocdnext-artifacts
+      GOCDNEXT_ARTIFACTS_BACKEND: filesystem
+      GOCDNEXT_ARTIFACTS_FS_ROOT: /var/lib/gocdnext/artifacts
+      GOCDNEXT_ARTIFACTS_PUBLIC_BASE: http://server:8153
+    volumes:
+      - artifacts:/var/lib/gocdnext/artifacts
     ports:
       - "8153:8153"
       - "8154:8154"
@@ -68,4 +60,4 @@ services:
 
 volumes:
   pgdata:
-  miniodata:
+  artifacts:
