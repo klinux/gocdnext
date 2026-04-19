@@ -1,0 +1,18 @@
+root = "."
+tmp_dir = "../.dev/tmp/server"
+
+[build]
+  cmd = "go build -o ../.dev/tmp/server/gocdnext-server ./cmd/gocdnext-server"
+  bin = "../.dev/tmp/server/gocdnext-server"
+  include_ext = ["go"]
+  exclude_dir = ["internal/db"]
+  exclude_regex = ["_test\\.go$"]
+  delay = 500
+  kill_delay = "2s"
+  send_interrupt = true
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true

@@ -1,0 +1,17 @@
+root = "."
+tmp_dir = "../.dev/tmp/agent"
+
+[build]
+  cmd = "go build -o ../.dev/tmp/agent/gocdnext-agent ./cmd/gocdnext-agent"
+  bin = "../.dev/tmp/agent/gocdnext-agent"
+  include_ext = ["go"]
+  exclude_regex = ["_test\\.go$"]
+  delay = 500
+  kill_delay = "2s"
+  send_interrupt = true
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true

@@ -5,7 +5,7 @@ GO := go
 
 ## help: print this help
 help:
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk '/^## / {sub(/^## */, ""); sub(/: /, ":\t", $$0); printf "  %s\n", $$0}' $(MAKEFILE_LIST)
 
 ## build: build server, agent and cli
 build:
@@ -28,14 +28,22 @@ lint:
 proto:
 	cd proto && buf generate
 
-## up: start docker-compose dev stack
-up:
-	docker compose up -d postgres minio
-	@echo "postgres ready on :5432, minio on :9000 (console :9001)"
+## dev: boot the full local stack (postgres + server + agent + web) with hot reload
+dev:
+	@bash scripts/dev.sh
 
-## down: stop docker-compose dev stack
-down:
-	docker compose down
+## stop: tear down `make dev`
+stop:
+	@bash scripts/stop.sh
+
+## db-up: start ONLY postgres (when running server/agent/web outside)
+db-up:
+	docker compose up -d postgres
+	@echo "postgres ready on :5432"
+
+## db-down: stop postgres container
+db-down:
+	docker compose stop postgres
 
 ## migrate-up: apply database migrations
 migrate-up:
@@ -45,4 +53,4 @@ migrate-up:
 migrate-status:
 	cd server && goose -dir migrations postgres "$${GOCDNEXT_DATABASE_URL}" status
 
-.PHONY: help build test lint proto up down migrate-up migrate-status
+.PHONY: help build test lint proto dev stop db-up db-down migrate-up migrate-status
