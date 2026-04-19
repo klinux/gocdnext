@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
-	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -28,7 +28,7 @@ type Scheduler struct {
 	log      *slog.Logger
 	dsn      string
 	tick     time.Duration
-	cipher   *crypto.Cipher
+	resolver secrets.Resolver
 }
 
 // New wires the scheduler. dsn is used for a dedicated LISTEN connection —
@@ -54,12 +54,14 @@ func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 	return s
 }
 
-// WithCipher hands the scheduler the AES-GCM key used to decrypt secrets at
-// dispatch time. nil means "no secrets subsystem"; jobs that reference
-// secrets will fail dispatch with a clear error instead of silently running
-// with empty env values.
-func (s *Scheduler) WithCipher(c *crypto.Cipher) *Scheduler {
-	s.cipher = c
+// WithSecretResolver plugs in the backend that supplies secret values at
+// dispatch time. nil / omitted means "no secrets subsystem" and jobs that
+// reference secrets will fail dispatch with a clear error instead of
+// silently running with empty env values. The default DBResolver lives in
+// internal/secrets; future Vault/AWS/GCP adapters implement the same
+// contract.
+func (s *Scheduler) WithSecretResolver(r secrets.Resolver) *Scheduler {
+	s.resolver = r
 	return s
 }
 
@@ -232,10 +234,10 @@ func IsNoIdleAgent(err error) bool {
 }
 
 // resolveJobSecrets reads the declared secret names off the pipeline
-// definition snapshot, then asks the store to decrypt them. Returns an empty
-// map when the job has no secrets (no cipher needed either). Fails when a
-// job references secrets but the cipher isn't configured, or when a declared
-// name isn't present in the DB — both are user-visible pipeline mistakes.
+// definition snapshot, then asks the configured Resolver for their values.
+// Returns an empty map when the job has no secrets. Fails when a job
+// references secrets but no Resolver is configured, or when a declared name
+// isn't present in the backend — both are user-visible pipeline mistakes.
 func (s *Scheduler) resolveJobSecrets(ctx context.Context, run store.RunForDispatch, jobName string) (map[string]string, error) {
 	names, err := JobSecretsFromDefinition(run.Definition, jobName)
 	if err != nil {
@@ -244,15 +246,15 @@ func (s *Scheduler) resolveJobSecrets(ctx context.Context, run store.RunForDispa
 	if len(names) == 0 {
 		return map[string]string{}, nil
 	}
-	if s.cipher == nil {
-		return nil, fmt.Errorf("secret %q declared but GOCDNEXT_SECRET_KEY not configured on server", names[0])
+	if s.resolver == nil {
+		return nil, fmt.Errorf("secret %q declared but no secrets backend is configured on this server", names[0])
 	}
-	resolved, err := s.store.ResolveSecrets(ctx, s.cipher, run.ProjectID, names)
+	resolved, err := s.resolver.Resolve(ctx, run.ProjectID, names)
 	if err != nil {
 		return nil, err
 	}
-	// Every declared name must be present; ResolveSecrets silently drops
-	// unknown names, so we diff here for a precise error.
+	// Every declared name must be present; Resolver implementations silently
+	// drop unknown names, so we diff here for a precise error.
 	var missing []string
 	for _, n := range names {
 		if _, ok := resolved[n]; !ok {

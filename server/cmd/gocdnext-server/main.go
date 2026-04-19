@@ -25,6 +25,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
+	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
@@ -56,6 +57,7 @@ func main() {
 	st := store.New(pool)
 
 	var cipher *crypto.Cipher
+	var resolver secrets.Resolver = secrets.NopResolver{}
 	if cfg.SecretKeyHex != "" {
 		c, err := crypto.NewCipherFromHex(cfg.SecretKeyHex)
 		if err != nil {
@@ -63,9 +65,15 @@ func main() {
 			os.Exit(1)
 		}
 		cipher = c
-		logger.Info("secrets subsystem enabled")
+		r, err := secrets.NewDBResolver(st, cipher)
+		if err != nil {
+			logger.Error("secrets resolver", "err", err)
+			os.Exit(1)
+		}
+		resolver = r
+		logger.Info("secrets subsystem enabled", "backend", "db")
 	} else {
-		logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503")
+		logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503 and jobs that declare secrets will fail at dispatch")
 	}
 
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
@@ -75,7 +83,7 @@ func main() {
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
-	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithCipher(cipher)
+	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
 	reaper := scheduler.NewReaper(st, logger)
 
 	grpcServer := grpc.NewServer()
