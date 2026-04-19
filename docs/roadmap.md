@@ -1,68 +1,100 @@
 # Roadmap
 
-## Phase 0 — Foundation (weeks 1–2)
+## Agora (2026-04-19)
 
-- [x] Monorepo layout, go.work, go.mod per module
-- [x] Proto contracts (agent, pipeline, common)
-- [x] SQL schema + migrations
-- [x] Domain types + YAML parser skeleton (with tests)
-- [x] docker-compose dev stack (postgres + minio)
+Em andamento: **Fase E2 — artefatos**. Design fechado em
+[artifacts-design.md](artifacts-design.md); quatro commits planejados
+(E2a.1/E2a.2/E2b/E2c/E2d).
+
+- **E2a.1 — storage + filesystem backend + handler assinado.** ✅
+  `artifacts.Store` interface, filesystem default, HMAC signed URLs,
+  handler HTTP `/artifacts/{token}`, tabela `artifacts` com campos de
+  retenção.
+- **E2a.2 — upload end-to-end** (próximo). Proto
+  `RequestArtifactUpload`, RPC server-side, agent tar+gz + PUT,
+  confirmação via HEAD+JobResult, MinIO sai do docker-compose.
+- **E2b** — backends S3 e GCS contra a mesma interface (LocalStack +
+  fake-gcs-server nos testes).
+- **E2c** — download intra-run (`needs_artifacts:`), scheduler emite
+  GETs assinados no `JobAssignment`.
+- **E2d** — fanout cross-run + sweeper de retenção (4 camadas: TTL +
+  keep-last + quota de projeto + quota global).
+
+Depois disso, volta pra mesa a **dogfood-readiness** (artefato era o
+último bloqueador estrutural que enxergo).
+
+## Fase 0 — fundação ✅
+
+- [x] Monorepo layout, `go.work`, `go.mod` por módulo
+- [x] Contratos proto (agent, pipeline, common) + `buf generate`
+- [x] Schema SQL + migrations forward-only via goose
+- [x] Tipos de domínio + parser YAML (com testes)
+- [x] docker-compose dev stack (postgres + MinIO — MinIO sai no E2a.2)
 - [x] Dockerfiles (server, agent)
-- [x] Makefile
-- [x] Proto code generation wired (`make proto`)
-- [ ] CI on gocdnext itself (GitHub Actions for now; dogfood later)
+- [x] Makefile + `make proto`
+- [ ] CI no próprio gocdnext (pendente; dogfood depois)
 
-## Phase 1 — MVP pipeline (weeks 3–6)
+## Fase 1 — MVP pipeline ✅
 
-- [x] GitHub webhook receiver + HMAC validation
-- [x] Persist modifications from webhook payload
-- [ ] Scheduler: NOTIFY loop, creates runs, dispatches jobs
-- [ ] Agent: gRPC connect/register, clone git material, run `script:` inside image
-- [ ] Agent: stream LogLine back to server
-- [ ] Web UI: list pipelines + runs, live log view (SSE)
-- [ ] `gocdnext validate` CLI working
+- [x] Webhook GitHub + validação HMAC (e persistência de delivery)
+- [x] Persistência de `modifications` a partir do webhook
+- [x] Scheduler: loop `LISTEN run_queued`, cria runs, despacha jobs
+- [x] Agent: gRPC `Register`/`Connect`, checkout git, script em container
+- [x] Agent: streaming de `LogLine` pro server
+- [x] Web UI: lista de projetos/runs, live log via TanStack polling
+- [x] CLI `gocdnext` com `validate`, `secret set/list/rm`
 
-**Exit criteria**: push a commit → pipeline runs → logs visible in UI.
+Critério de saída atingido: push → pipeline roda → logs visíveis no UI.
 
-## Phase 2 — The differentiator (weeks 7–10)
+## Fase 2 — o diferencial (parcial)
 
-- [ ] Upstream material → fanout on pipeline success
-- [ ] VSM endpoint + `@xyflow/react` visualization
-- [ ] PR native support (branch-per-run, isolated counters)
-- [ ] Auto-register webhook on GitHub (GitHub App flow)
-- [ ] Rules evaluation (if / changes / when)
-- [ ] Parallel matrix expansion
-- [ ] Plugin step execution (Woodpecker contract)
+- [x] Material `upstream:` → fanout paralelo em runs downstream
+- [x] Expansão de `parallel.matrix`
+- [x] Execução de step plugin (contrato Woodpecker-like)
+- [x] Avaliação de `rules` (`if` / `changes` / `when`)
+- [x] Detecção de drift de config (`ConfigFetcher` GitHub API)
+- [x] Tag matching: agente com `tags: [docker]` só recebe jobs com tag
+- [x] Secrets: store AES-GCM, `Resolver` interface, UI shadcn, mask em log
+- [x] Reaper: reclaim de jobs órfãos, retry contados por tentativa
+- [ ] **Artefatos** — em andamento (Fase E2 acima)
+- [ ] Endpoint VSM + visualização `@xyflow/react`
+- [ ] Suporte nativo a PR (branch-per-run, counters isolados)
+- [ ] Auto-register de webhook via GitHub App flow (schema já tem a flag)
 
-**Exit criteria**: 1 pipeline with 2 downstream fanout, VSM renders, PR from a
-fork triggers an isolated run.
+## Fase 3 — validação interna
 
-## Phase 3 — Internal validation (weeks 11–14)
+- [ ] Helm chart pra K8s
+- [ ] Agente K8s-native (jobs rodam como `Job`/`Pod`)
+- [ ] Secrets via K8s Secret refs (adapter do `Resolver`)
+- [x] Upload de artefato — coberto pela Fase E2 acima
+- [ ] Rodar 3–5 pipelines reais da própria org
+- [ ] Coletar feedback, iterar UX
 
-- [ ] Helm chart for K8s deployment
-- [ ] Kubernetes-native agent (runs jobs as `Job`/`Pod`)
-- [ ] Secrets via K8s Secret references
-- [ ] Artifact upload to S3/MinIO
-- [ ] Run 3–5 real pipelines from our own org
-- [ ] Collect feedback, iterate UX
+Critério de saída: gocdnext rodando ≥1 pipeline *produção-crítico* por 2
+semanas seguidas.
 
-**Exit criteria**: gocdnext is running at least one of our *production-critical*
-pipelines reliably for 2 weeks.
+## Gate: abrir ou continuar interno?
 
-## Gate: open or stay internal?
+Entradas da decisão:
+- Usuários internos preferiram ao que tinham antes?
+- VSM + fanout se mostrou diferencial real?
+- Temos bandwidth pra manter projeto público?
 
-Decision inputs:
-- Did internal users actually prefer it over what they had?
-- Is the VSM + fanout differentiator clearly valuable?
-- Do we have bandwidth to maintain a public project?
-
-## Parking lot (future)
+## Parking lot (futuro)
 
 - Multi-tenant + RBAC
-- Plugin marketplace / trust model
-- Approval gates (manual stage)
+- Marketplace de plugins / modelo de trust
+- Approval gates (stage manual)
 - Cron scheduling
-- Config-as-code repo (pipelines from a separate config repo, GoCD-style)
-- GitLab + Bitbucket webhook parity
-- ClickHouse / Loki for logs at scale
-- Distributed scheduler (multi-server HA)
+- Config-as-code em repo separado (estilo GoCD config-repo)
+- Paridade GitLab + Bitbucket (webhooks e config-repo)
+- ClickHouse / Loki pra logs em escala
+- Scheduler distribuído (HA multi-server)
+- **Test Reports** — parser JUnit/Cobertura + aba Tests no UI + histórico
+  de flakiness. Design própria quando for a vez
+  (`docs/test-reports-design.md`).
+- Cache step (`cache:` no YAML) — semântica key-addressed/LRU, separada de
+  artifacts. Ver discussão na seção 6 do `artifacts-design.md`.
+- Adapters de secret externos (Vault, AWS Secrets Manager, GCP Secret
+  Manager) — `Resolver` já está pronto pra receber, implementação quando
+  alguém pedir.

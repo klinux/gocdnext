@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,6 +23,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
+	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
@@ -76,6 +79,13 @@ func main() {
 		logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503 and jobs that declare secrets will fail at dispatch")
 	}
 
+	artifactStore, artifactHandler, err := buildArtifactBackend(cfg, logger)
+	if err != nil {
+		logger.Error("artifacts: init", "err", err)
+		os.Exit(1)
+	}
+	_ = artifactStore // E2a.2 will pass this to the gRPC service.
+
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
 		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
 	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
@@ -104,6 +114,9 @@ func main() {
 		_, _ = fmt.Fprintln(w, "gocdnext-server dev")
 	})
 
+	if artifactHandler != nil {
+		artifactHandler.Mount(r)
+	}
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
 	r.Post("/api/v1/projects/apply", projectsHandler.Apply)
 	r.Get("/api/v1/projects", projectsHandler.List)
@@ -162,6 +175,61 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	grpcServer.GracefulStop()
+}
+
+// buildArtifactBackend wires the configured artefact Store. Today only
+// `filesystem` is supported; `s3` and `gcs` land in E2b. The HTTP handler
+// returned is non-nil only for filesystem — cloud backends serve signed
+// URLs from their own endpoints and don't need routes on our server.
+func buildArtifactBackend(cfg *config.Config, logger *slog.Logger) (artifacts.Store, *artifacts.Handler, error) {
+	switch cfg.ArtifactsBackend {
+	case "filesystem", "":
+		signKey, err := resolveArtifactSignKey(cfg, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		signer, err := artifacts.NewSigner(signKey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("signer: %w", err)
+		}
+		fs, err := artifacts.NewFilesystemStore(cfg.ArtifactsFSRoot, cfg.ArtifactsPublicBase, signer)
+		if err != nil {
+			return nil, nil, fmt.Errorf("filesystem store: %w", err)
+		}
+		maxBody := cfg.ArtifactsMaxBodyMB * 1024 * 1024
+		h := artifacts.NewHandler(fs, logger, maxBody)
+		logger.Info("artifacts backend: filesystem",
+			"root", cfg.ArtifactsFSRoot,
+			"public_base", cfg.ArtifactsPublicBase,
+			"max_body_mb", cfg.ArtifactsMaxBodyMB,
+		)
+		return fs, h, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported artifacts backend %q (expected: filesystem)", cfg.ArtifactsBackend)
+	}
+}
+
+// resolveArtifactSignKey decodes the hex signing key from config; if
+// unset, generates a random 32-byte key and warns loudly. Regenerating
+// on restart invalidates in-flight signed URLs — acceptable for dev, not
+// for prod (operator should set the env var).
+func resolveArtifactSignKey(cfg *config.Config, logger *slog.Logger) ([]byte, error) {
+	if cfg.ArtifactsSignKeyHex != "" {
+		b, err := hex.DecodeString(cfg.ArtifactsSignKeyHex)
+		if err != nil {
+			return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_SIGN_KEY: decode: %w", err)
+		}
+		if len(b) < 16 {
+			return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_SIGN_KEY: need >= 16 bytes (32 hex chars)")
+		}
+		return b, nil
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("ephemeral sign key: %w", err)
+	}
+	logger.Warn("GOCDNEXT_ARTIFACTS_SIGN_KEY not set; generated ephemeral key (signed URLs will break across restart)")
+	return b, nil
 }
 
 // devCORS opens the HTTP API to any origin so the Next.js dev server (port
