@@ -3,20 +3,24 @@
 ## Agora (2026-04-19)
 
 Em andamento: **Fase E2 — artefatos**. Design fechado em
-[artifacts-design.md](artifacts-design.md); quatro commits planejados
-(E2a.1/E2a.2/E2b/E2c/E2d).
+[artifacts-design.md](artifacts-design.md).
 
 - **E2a.1 — storage + filesystem backend + handler assinado.** ✅
   `artifacts.Store` interface, filesystem default, HMAC signed URLs,
   handler HTTP `/artifacts/{token}`, tabela `artifacts` com campos de
   retenção.
-- **E2a.2 — upload end-to-end** (próximo). Proto
+- **E2a.2 — upload end-to-end.** ✅ Proto
   `RequestArtifactUpload`, RPC server-side, agent tar+gz + PUT,
-  confirmação via HEAD+JobResult, MinIO sai do docker-compose.
-- **E2b** — backends S3 e GCS contra a mesma interface (LocalStack +
-  fake-gcs-server nos testes).
-- **E2c** — download intra-run (`needs_artifacts:`), scheduler emite
-  GETs assinados no `JobAssignment`.
+  confirmação via HEAD+JobResult, MinIO fora do docker-compose.
+- **E2b.1 — S3 backend.** ✅ AWS SDK v2, endpoint-overridable (R2,
+  Tigris, LocalStack). Integração via LocalStack.
+- **E2b.2 — GCS backend.** ✅ `cloud.google.com/go/storage`, V4
+  signing com JSON service-account key. Integração parcial via
+  fake-gcs-server (Put/Head/Delete; Get depende de download URL
+  externa que o fake não resolve bem — coberto por teste direto em
+  prod).
+- **E2c** (próximo) — download intra-run (`needs_artifacts:`),
+  scheduler emite GETs assinados no `JobAssignment`.
 - **E2d** — fanout cross-run + sweeper de retenção (4 camadas: TTL +
   keep-last + quota de projeto + quota global).
 

@@ -35,6 +35,13 @@ type Config struct {
 	ArtifactsS3SecretKey    string
 	ArtifactsS3UsePathStyle bool
 	ArtifactsS3EnsureBucket bool // best-effort CreateBucket on startup
+
+	// GCS config (used when ArtifactsBackend == "gcs").
+	ArtifactsGCSBucket          string
+	ArtifactsGCSCredentialsFile string // path to service-account JSON; enables SignedURL
+	ArtifactsGCSCredentialsJSON string // inline JSON (same schema)
+	ArtifactsGCSProjectID       string // required only for EnsureBucket
+	ArtifactsGCSEnsureBucket    bool
 }
 
 func Load() (*Config, error) {
@@ -64,6 +71,12 @@ func Load() (*Config, error) {
 		ArtifactsS3SecretKey:    env("GOCDNEXT_ARTIFACTS_S3_SECRET_KEY", ""),
 		ArtifactsS3UsePathStyle: strings.EqualFold(env("GOCDNEXT_ARTIFACTS_S3_USE_PATH_STYLE", "false"), "true"),
 		ArtifactsS3EnsureBucket: strings.EqualFold(env("GOCDNEXT_ARTIFACTS_S3_ENSURE_BUCKET", "false"), "true"),
+
+		ArtifactsGCSBucket:          env("GOCDNEXT_ARTIFACTS_GCS_BUCKET", ""),
+		ArtifactsGCSCredentialsFile: env("GOCDNEXT_ARTIFACTS_GCS_CREDENTIALS_FILE", ""),
+		ArtifactsGCSCredentialsJSON: env("GOCDNEXT_ARTIFACTS_GCS_CREDENTIALS_JSON", ""),
+		ArtifactsGCSProjectID:       env("GOCDNEXT_ARTIFACTS_GCS_PROJECT_ID", ""),
+		ArtifactsGCSEnsureBucket:    strings.EqualFold(env("GOCDNEXT_ARTIFACTS_GCS_ENSURE_BUCKET", "false"), "true"),
 	}
 
 	if c.DatabaseURL == "" {

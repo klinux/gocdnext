@@ -232,8 +232,33 @@ func buildArtifactBackend(cfg *config.Config, logger *slog.Logger) (artifacts.St
 			"path_style", cfg.ArtifactsS3UsePathStyle,
 		)
 		return s3Store, nil, nil
+	case "gcs":
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		gcsStore, err := artifacts.NewGCSStore(ctx, artifacts.GCSConfig{
+			Bucket:          cfg.ArtifactsGCSBucket,
+			CredentialsFile: cfg.ArtifactsGCSCredentialsFile,
+			CredentialsJSON: []byte(cfg.ArtifactsGCSCredentialsJSON),
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if cfg.ArtifactsGCSEnsureBucket {
+			if cfg.ArtifactsGCSProjectID == "" {
+				return nil, nil, fmt.Errorf("ensure gcs bucket: GOCDNEXT_ARTIFACTS_GCS_PROJECT_ID required")
+			}
+			if err := gcsStore.EnsureBucket(ctx, cfg.ArtifactsGCSProjectID); err != nil {
+				return nil, nil, fmt.Errorf("ensure gcs bucket: %w", err)
+			}
+		}
+		logger.Info("artifacts backend: gcs",
+			"bucket", cfg.ArtifactsGCSBucket,
+			"creds_file", cfg.ArtifactsGCSCredentialsFile != "",
+			"creds_inline", cfg.ArtifactsGCSCredentialsJSON != "",
+		)
+		return gcsStore, nil, nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported artifacts backend %q (expected: filesystem, s3)", cfg.ArtifactsBackend)
+		return nil, nil, fmt.Errorf("unsupported artifacts backend %q (expected: filesystem, s3, gcs)", cfg.ArtifactsBackend)
 	}
 }
 
