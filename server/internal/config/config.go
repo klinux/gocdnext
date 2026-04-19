@@ -26,6 +26,15 @@ type Config struct {
 	ArtifactsPublicBase string // external base URL used to build signed URLs
 	ArtifactsSignKeyHex string // hex HMAC key for filesystem signed URLs
 	ArtifactsMaxBodyMB  int64  // PUT body cap in MiB; 0 disables
+
+	// S3 config (used when ArtifactsBackend == "s3").
+	ArtifactsS3Bucket       string
+	ArtifactsS3Region       string
+	ArtifactsS3Endpoint     string // optional; set for R2/Tigris/LocalStack
+	ArtifactsS3AccessKey    string // optional; default cred chain if empty
+	ArtifactsS3SecretKey    string
+	ArtifactsS3UsePathStyle bool
+	ArtifactsS3EnsureBucket bool // best-effort CreateBucket on startup
 }
 
 func Load() (*Config, error) {
@@ -47,6 +56,14 @@ func Load() (*Config, error) {
 		ArtifactsPublicBase: env("GOCDNEXT_ARTIFACTS_PUBLIC_BASE", "http://localhost:8153"),
 		ArtifactsSignKeyHex: env("GOCDNEXT_ARTIFACTS_SIGN_KEY", ""),
 		ArtifactsMaxBodyMB:  maxBodyMB,
+
+		ArtifactsS3Bucket:       env("GOCDNEXT_ARTIFACTS_S3_BUCKET", ""),
+		ArtifactsS3Region:       env("GOCDNEXT_ARTIFACTS_S3_REGION", "us-east-1"),
+		ArtifactsS3Endpoint:     env("GOCDNEXT_ARTIFACTS_S3_ENDPOINT", ""),
+		ArtifactsS3AccessKey:    env("GOCDNEXT_ARTIFACTS_S3_ACCESS_KEY", ""),
+		ArtifactsS3SecretKey:    env("GOCDNEXT_ARTIFACTS_S3_SECRET_KEY", ""),
+		ArtifactsS3UsePathStyle: strings.EqualFold(env("GOCDNEXT_ARTIFACTS_S3_USE_PATH_STYLE", "false"), "true"),
+		ArtifactsS3EnsureBucket: strings.EqualFold(env("GOCDNEXT_ARTIFACTS_S3_ENSURE_BUCKET", "false"), "true"),
 	}
 
 	if c.DatabaseURL == "" {

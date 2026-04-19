@@ -179,10 +179,10 @@ func main() {
 	grpcServer.GracefulStop()
 }
 
-// buildArtifactBackend wires the configured artefact Store. Today only
-// `filesystem` is supported; `s3` and `gcs` land in E2b. The HTTP handler
-// returned is non-nil only for filesystem — cloud backends serve signed
-// URLs from their own endpoints and don't need routes on our server.
+// buildArtifactBackend wires the configured artefact Store. Backends:
+// filesystem (default), s3, gcs. The HTTP handler returned is non-nil
+// only for filesystem — cloud backends serve signed URLs from their own
+// endpoints and don't need routes on our server.
 func buildArtifactBackend(cfg *config.Config, logger *slog.Logger) (artifacts.Store, *artifacts.Handler, error) {
 	switch cfg.ArtifactsBackend {
 	case "filesystem", "":
@@ -206,8 +206,34 @@ func buildArtifactBackend(cfg *config.Config, logger *slog.Logger) (artifacts.St
 			"max_body_mb", cfg.ArtifactsMaxBodyMB,
 		)
 		return fs, h, nil
+	case "s3":
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		s3Store, err := artifacts.NewS3Store(ctx, artifacts.S3Config{
+			Bucket:       cfg.ArtifactsS3Bucket,
+			Region:       cfg.ArtifactsS3Region,
+			Endpoint:     cfg.ArtifactsS3Endpoint,
+			AccessKey:    cfg.ArtifactsS3AccessKey,
+			SecretKey:    cfg.ArtifactsS3SecretKey,
+			UsePathStyle: cfg.ArtifactsS3UsePathStyle,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if cfg.ArtifactsS3EnsureBucket {
+			if err := s3Store.EnsureBucket(ctx, cfg.ArtifactsS3Region); err != nil {
+				return nil, nil, fmt.Errorf("ensure s3 bucket: %w", err)
+			}
+		}
+		logger.Info("artifacts backend: s3",
+			"bucket", cfg.ArtifactsS3Bucket,
+			"region", cfg.ArtifactsS3Region,
+			"endpoint", cfg.ArtifactsS3Endpoint,
+			"path_style", cfg.ArtifactsS3UsePathStyle,
+		)
+		return s3Store, nil, nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported artifacts backend %q (expected: filesystem)", cfg.ArtifactsBackend)
+		return nil, nil, fmt.Errorf("unsupported artifacts backend %q (expected: filesystem, s3)", cfg.ArtifactsBackend)
 	}
 }
 
