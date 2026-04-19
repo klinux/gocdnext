@@ -78,3 +78,13 @@ export type RunDetail = RunSummary & {
   revisions?: Record<string, { revision: string; branch: string }>;
   stages: StageDetail[];
 };
+
+export type Secret = {
+  name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SecretsList = {
+  secrets: Secret[];
+};

@@ -64,9 +64,20 @@ export default async function ProjectDetailPage({
           <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
           <span>{detail.project.slug}</span>
         </nav>
-        <h2 className="mt-1 text-2xl font-semibold tracking-tight">
-          {detail.project.name}
-        </h2>
+        <div className="mt-1 flex items-baseline justify-between gap-4">
+          <h2 className="text-2xl font-semibold tracking-tight">
+            {detail.project.name}
+          </h2>
+          <Link
+            href={{
+              pathname: "/projects/[slug]/secrets",
+              query: { slug: detail.project.slug },
+            }}
+            className="text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+          >
+            Manage secrets →
+          </Link>
+        </div>
         {detail.project.description ? (
           <p className="mt-1 text-sm text-muted-foreground">
             {detail.project.description}

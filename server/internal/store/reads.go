@@ -161,6 +161,10 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			UpdatedAt:     proj.UpdatedAt.Time,
 			PipelineCount: pipelineCount,
 		},
+		// Pre-allocate to empty slices so the JSON stays `[]` instead of
+		// `null` when there are no rows. Clients iterate without nil-guards.
+		Pipelines: []PipelineSummary{},
+		Runs:      []RunSummary{},
 	}
 	for _, pl := range pipes {
 		detail.Pipelines = append(detail.Pipelines, PipelineSummary{
@@ -228,6 +232,7 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 		ProjectSlug: run.ProjectSlug,
 		CauseDetail: run.CauseDetail,
 		Revisions:   run.Revisions,
+		Stages:      []StageDetail{},
 	}
 
 	jobsByStage := map[uuid.UUID][]JobDetail{}
@@ -266,6 +271,10 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 	}
 
 	for _, st := range stages {
+		jobs := jobsByStage[fromPgUUID(st.ID)]
+		if jobs == nil {
+			jobs = []JobDetail{}
+		}
 		sd := StageDetail{
 			ID:         fromPgUUID(st.ID),
 			Name:       st.Name,
@@ -273,7 +282,7 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 			Status:     st.Status,
 			StartedAt:  pgTimePtr(st.StartedAt),
 			FinishedAt: pgTimePtr(st.FinishedAt),
-			Jobs:       jobsByStage[fromPgUUID(st.ID)],
+			Jobs:       jobs,
 		}
 		detail.Stages = append(detail.Stages, sd)
 	}

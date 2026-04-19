@@ -3,7 +3,12 @@
 // realtime transport (SSE) is wired.
 
 import { env } from "@/lib/env";
-import type { ProjectDetail, ProjectSummary, RunDetail } from "@/types/api";
+import type {
+  ProjectDetail,
+  ProjectSummary,
+  RunDetail,
+  SecretsList,
+} from "@/types/api";
 
 type ListResponse = { projects: ProjectSummary[] };
 
@@ -58,4 +63,11 @@ export async function getRunDetail(
   return readJSON<RunDetail>(
     `/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}`,
   );
+}
+
+export async function listSecrets(slug: string) {
+  const { secrets } = await readJSON<SecretsList>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/secrets`,
+  );
+  return secrets;
 }
