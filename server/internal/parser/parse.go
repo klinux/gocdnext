@@ -132,6 +132,7 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		Settings:  jd.Settings,
 		Variables: jd.Variables,
 		Secrets:   jd.Secrets,
+		Tags:      jd.Tags,
 	}
 
 	for _, line := range jd.Script {

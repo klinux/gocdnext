@@ -182,6 +182,124 @@ drain:
 	}
 }
 
+func TestDispatchRun_RoutesToAgentMatchingTags(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	// Pipeline with a single job that requires the `docker` tag.
+	url, branch := "https://github.com/org/tagged", "main"
+	fp := domain.GitFingerprint(url, branch)
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "tagged", Name: "Tagged",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "ci",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{Name: "build", Stage: "build", Tasks: []domain.Task{{Script: "docker build ."}}, Tags: []string{"docker"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var matID uuid.UUID
+	_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&matID)
+
+	run, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: applyRes.Pipelines[0].PipelineID, MaterialID: matID,
+		Revision: "abc0123456789abc0123456789abc0123456789a", Branch: "main",
+		Provider: "github", Delivery: "t", TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	// Two agents: plain (no docker) and dockerized.
+	plainID := seedAgentRow(t, pool, "plain")
+	dockerID := seedAgentRow(t, pool, "dockerized")
+	plainSess := sessions.CreateSession(plainID, []string{"linux"}, 1)
+	dockerSess := sessions.CreateSession(dockerID, []string{"linux", "docker"}, 1)
+
+	sched.DispatchRun(ctx, run.RunID)
+
+	// The plain agent must not have received anything.
+	select {
+	case msg := <-plainSess.Out():
+		if msg.GetAssign() != nil {
+			t.Fatalf("plain agent received an assignment despite lacking docker tag: %+v", msg.GetAssign())
+		}
+	case <-time.After(200 * time.Millisecond):
+		// ok
+	}
+
+	// The docker agent must have it.
+	select {
+	case msg := <-dockerSess.Out():
+		if msg.GetAssign() == nil {
+			t.Fatalf("docker agent got non-assignment message: %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("docker agent never received the assignment")
+	}
+}
+
+func TestDispatchRun_LeavesJobQueuedWhenNoAgentHasRequiredTags(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	url, branch := "https://github.com/org/gpuonly", "main"
+	fp := domain.GitFingerprint(url, branch)
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "gpuonly", Name: "GPU Only",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "ci",
+			Stages: []string{"train"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{Name: "train", Stage: "train", Tasks: []domain.Task{{Script: "train.sh"}}, Tags: []string{"gpu"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var matID uuid.UUID
+	_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&matID)
+
+	run, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: applyRes.Pipelines[0].PipelineID, MaterialID: matID,
+		Revision: "abc0123456789abc0123456789abc0123456789a", Branch: "main",
+		Provider: "github", Delivery: "t", TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	plainID := seedAgentRow(t, pool, "plain-only")
+	sessions.CreateSession(plainID, []string{"linux"}, 1)
+
+	sched.DispatchRun(ctx, run.RunID)
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE name='train'`).Scan(&status)
+	if status != "queued" {
+		t.Fatalf("status = %q, want queued (no gpu agent available)", status)
+	}
+}
+
 func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 	def := domain.Pipeline{
 		Stages: []string{"deploy"},

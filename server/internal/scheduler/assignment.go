@@ -112,15 +112,33 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 // by parsing the stored pipeline definition JSONB. Exported so the scheduler
 // can resolve secrets before calling BuildAssignment.
 func JobSecretsFromDefinition(definition []byte, jobName string) ([]string, error) {
+	jobDef, err := jobDefFromDefinition(definition, jobName)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), jobDef.Secrets...), nil
+}
+
+// JobTagsFromDefinition returns the list of required agent tags for a job.
+// Exported so the scheduler can filter live sessions before picking one.
+func JobTagsFromDefinition(definition []byte, jobName string) ([]string, error) {
+	jobDef, err := jobDefFromDefinition(definition, jobName)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), jobDef.Tags...), nil
+}
+
+func jobDefFromDefinition(definition []byte, jobName string) (domain.Job, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(definition, &def); err != nil {
-		return nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
+		return domain.Job{}, fmt.Errorf("scheduler: decode pipeline: %w", err)
 	}
 	jobDef, ok := findJob(def.Jobs, jobName)
 	if !ok {
-		return nil, fmt.Errorf("scheduler: job %q not in pipeline definition", jobName)
+		return domain.Job{}, fmt.Errorf("scheduler: job %q not in pipeline definition", jobName)
 	}
-	return append([]string(nil), jobDef.Secrets...), nil
+	return jobDef, nil
 }
 
 func findJob(jobs []domain.Job, name string) (domain.Job, bool) {

@@ -173,11 +173,18 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 
 	dispatched := 0
 	for _, job := range jobs {
-		agentID, ok := s.sessions.FindIdle()
+		requiredTags, tagsErr := JobTagsFromDefinition(run.Definition, job.Name)
+		if tagsErr != nil {
+			s.log.Warn("scheduler: read job tags", "job_id", job.ID, "err", tagsErr)
+			continue
+		}
+		agentID, ok := s.sessions.FindIdleWithTags(requiredTags)
 		if !ok {
-			s.log.Info("scheduler: no idle agent, leaving queued",
-				"run_id", runID, "job_id", job.ID, "job_name", job.Name)
-			break
+			s.log.Info("scheduler: no matching idle agent, leaving queued",
+				"run_id", runID, "job_id", job.ID, "job_name", job.Name,
+				"required_tags", requiredTags)
+			// Other jobs might have different tag requirements — keep trying.
+			continue
 		}
 
 		secretValues, secretErr := s.resolveJobSecrets(ctx, run, job.Name)

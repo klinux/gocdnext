@@ -164,8 +164,19 @@ func (s *SessionStore) Release(agentID uuid.UUID) {
 }
 
 // FindIdle returns one agent id whose current running-jobs counter is below
-// its declared capacity. MVP: first match, no tag matching yet.
+// its declared capacity. Equivalent to FindIdleWithTags(nil) — preserved for
+// callers that don't care about tag matching.
 func (s *SessionStore) FindIdle() (uuid.UUID, bool) {
+	return s.FindIdleWithTags(nil)
+}
+
+// FindIdleWithTags returns one agent id whose tags are a superset of the
+// required list AND which still has spare capacity. An empty `required` list
+// matches any agent (same as FindIdle). Returns uuid.Nil, false when no
+// session qualifies — the scheduler leaves the job queued for the next tick.
+//
+// Matching is AND: every required tag must be present. Case-sensitive.
+func (s *SessionStore) FindIdleWithTags(required []string) (uuid.UUID, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, id := range s.latestByAg {
@@ -173,11 +184,31 @@ func (s *SessionStore) FindIdle() (uuid.UUID, bool) {
 		if !ok || sess.revoked.Load() {
 			continue
 		}
-		if sess.running.Load() < sess.Capacity {
-			return sess.AgentID, true
+		if sess.running.Load() >= sess.Capacity {
+			continue
 		}
+		if !hasAllTags(sess.Tags, required) {
+			continue
+		}
+		return sess.AgentID, true
 	}
 	return uuid.Nil, false
+}
+
+func hasAllTags(have, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	set := make(map[string]struct{}, len(have))
+	for _, t := range have {
+		set[t] = struct{}{}
+	}
+	for _, t := range required {
+		if _, ok := set[t]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // IncRunning/DecRunning let the scheduler mark a job as being handled by an

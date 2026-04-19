@@ -140,6 +140,27 @@ jobs:
 	}
 }
 
+func TestParse_Tags(t *testing.T) {
+	y := `
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build-amd64:
+    stage: build
+    script: [go build]
+    tags: [linux, amd64]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := p.Jobs[0].Tags
+	if len(got) != 2 || got[0] != "linux" || got[1] != "amd64" {
+		t.Fatalf("tags = %+v", got)
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

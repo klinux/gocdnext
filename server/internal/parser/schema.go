@@ -72,6 +72,7 @@ type JobDef struct {
 	Timeout   string            `yaml:"timeout,omitempty"`
 	Retry     int               `yaml:"retry,omitempty"`
 	Secrets   []string          `yaml:"secrets,omitempty"` // project-secret names to inject + mask
+	Tags      []string          `yaml:"tags,omitempty"`    // required agent tags (all must match)
 }
 
 type Cache struct {

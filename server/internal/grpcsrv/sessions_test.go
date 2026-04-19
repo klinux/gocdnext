@@ -165,6 +165,58 @@ func TestSessionStore_FindIdleRespectsCapacity(t *testing.T) {
 	}
 }
 
+func TestSessionStore_FindIdleWithTags_MatchesSupersets(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	linuxAgent := uuid.New()
+	dockerAgent := uuid.New()
+	s.CreateSession(linuxAgent, []string{"linux"}, 1)
+	s.CreateSession(dockerAgent, []string{"linux", "docker"}, 1)
+
+	// Requiring just "linux" can hit either agent.
+	if _, ok := s.FindIdleWithTags([]string{"linux"}); !ok {
+		t.Fatalf("expected a match for required=[linux]")
+	}
+
+	// Requiring "docker" must pick dockerAgent.
+	got, ok := s.FindIdleWithTags([]string{"docker"})
+	if !ok || got != dockerAgent {
+		t.Fatalf("required=[docker] got (%s, %v), want (%s, true)", got, ok, dockerAgent)
+	}
+
+	// Requiring "gpu" (no agent has it) must fail.
+	if _, ok := s.FindIdleWithTags([]string{"gpu"}); ok {
+		t.Fatalf("expected no match for required=[gpu]")
+	}
+
+	// Empty required list matches any agent (same as FindIdle).
+	if _, ok := s.FindIdleWithTags(nil); !ok {
+		t.Fatalf("empty required should match any agent")
+	}
+}
+
+func TestSessionStore_FindIdleWithTags_RespectsCapacityAndRevoked(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	agent := uuid.New()
+	sess := s.CreateSession(agent, []string{"linux", "docker"}, 1)
+	sess.IncRunning()
+	if _, ok := s.FindIdleWithTags([]string{"docker"}); ok {
+		t.Fatalf("should not match when capacity exhausted")
+	}
+	sess.DecRunning()
+	if _, ok := s.FindIdleWithTags([]string{"docker"}); !ok {
+		t.Fatalf("should match after capacity frees")
+	}
+
+	s.Revoke(sess.ID)
+	if _, ok := s.FindIdleWithTags([]string{"docker"}); ok {
+		t.Fatalf("revoked session should not match")
+	}
+}
+
 func TestSessionStore_RevokeClosesChannel(t *testing.T) {
 	t.Parallel()
 

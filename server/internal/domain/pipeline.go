@@ -132,6 +132,9 @@ type Job struct {
 	// log lines. Kept as a list of names (not values) so the YAML and the
 	// stored pipeline definition never carry plaintext.
 	Secrets []string
+	// Tags restrict which agents may run this job. A job dispatches only to
+	// a session whose Tags is a superset of this list. Empty = any agent.
+	Tags []string
 }
 
 type Task struct {

@@ -78,16 +78,18 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
-	sess := a.sessions.Create(agent.ID)
+	sess := a.sessions.CreateSession(agent.ID, req.GetTags(), req.GetCapacity())
 	a.log.Info("agent registered",
 		"agent_id", req.GetAgentId(),
 		"agent_uuid", agent.ID,
 		"version", req.GetVersion(),
-		"session", sess,
+		"tags", req.GetTags(),
+		"capacity", req.GetCapacity(),
+		"session", sess.ID,
 	)
 
 	return &gocdnextv1.RegisterResponse{
-		SessionId:        sess,
+		SessionId:        sess.ID,
 		HeartbeatSeconds: a.heartbeatSeconds,
 	}, nil
 }
