@@ -1,6 +1,6 @@
 "use client";
 
-import { useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Route } from "next";
 import { LogOut, ShieldCheck, User as UserIcon } from "lucide-react";
@@ -95,10 +95,18 @@ export function UserMenu({ user, loginBase }: Props) {
 }
 
 function Avatar({ url, initials }: { url?: string; initials: string }) {
-  if (url) {
-    // next/image not used here: provider avatars are remote and
-    // adding host whitelist per-IdP is not worth the churn for a
-    // 28px circle.
+  // Render initials on SSR and during the first paint, then swap
+  // to the remote <img> after mount. Ad blockers / Dark Reader /
+  // other browser extensions routinely mutate <img> tags and trip
+  // React's hydration diff — this pattern sidesteps that by never
+  // letting the server-rendered tree include the <img> at all.
+  const [mounted, setMounted] = useState(false);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (mounted && url && !failed) {
     return (
       <span className="inline-flex size-6 shrink-0 overflow-hidden rounded-full border bg-muted">
         <img
@@ -107,6 +115,7 @@ function Avatar({ url, initials }: { url?: string; initials: string }) {
           width={24}
           height={24}
           className="size-full object-cover"
+          onError={() => setFailed(true)}
         />
       </span>
     );
