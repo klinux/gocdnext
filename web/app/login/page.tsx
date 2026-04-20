@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { GitBranch } from "lucide-react";
 
 import { LocalLoginForm } from "@/components/auth/local-login-form.client";
+import { Logo } from "@/components/brand/logo";
 import { env } from "@/lib/env";
 import { listProviders } from "@/server/queries/auth";
 
@@ -35,7 +35,7 @@ export default async function LoginPage({ searchParams }: Props) {
     <main className="flex min-h-svh items-center justify-center bg-muted/30 px-4">
       <div className="w-full max-w-sm space-y-6 rounded-xl border bg-background p-8 shadow-sm">
         <header className="flex flex-col items-center text-center">
-          <GitBranch className="mb-3 size-8 text-primary" aria-hidden />
+          <Logo size={40} className="mb-3 text-primary" />
           <h1 className="text-lg font-semibold tracking-tight">
             Sign in to gocdnext
           </h1>

@@ -9,8 +9,24 @@ import "./globals.css";
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "gocdnext",
-  description: "Modern CI/CD orchestrator",
+  title: {
+    default: "gocdnext",
+    template: "%s · gocdnext",
+  },
+  description:
+    "Modern CI/CD orchestrator — stages, jobs, secrets, artifacts, on your own agents.",
+  applicationName: "gocdnext",
+  openGraph: {
+    title: "gocdnext",
+    description: "Modern CI/CD orchestrator",
+    siteName: "gocdnext",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "gocdnext",
+    description: "Modern CI/CD orchestrator",
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

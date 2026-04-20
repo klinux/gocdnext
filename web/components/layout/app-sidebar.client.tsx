@@ -7,12 +7,12 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Boxes,
-  GitBranch,
   LayoutDashboard,
   Server,
   Settings,
 } from "lucide-react";
 
+import { Logo } from "@/components/brand/logo";
 import { SidebarUserMenu } from "@/components/layout/sidebar-user-menu.client";
 import {
   Sidebar,
@@ -63,8 +63,10 @@ export function AppSidebar({ user, loginBase }: Props) {
     <Sidebar collapsible="icon">
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5">
-          <GitBranch className="size-5 shrink-0 text-primary" aria-hidden />
-          <span className="truncate text-sm font-semibold tracking-tight">
+          <Logo size={22} className="text-primary" />
+          {/* Wordmark hides when the sidebar collapses to icon-only
+              mode — the mark alone carries the brand at that size. */}
+          <span className="truncate text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
             gocdnext
           </span>
         </div>
