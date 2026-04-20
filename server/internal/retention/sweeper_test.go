@@ -265,6 +265,273 @@ func TestSweeper_PinnedIsNeverSwept(t *testing.T) {
 	}
 }
 
+func TestSweeper_KeepLast_DemotesOlderRuns(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+
+	// Seed 4 runs on the SAME pipeline, each producing one artifact
+	// with expires_at far in the future. We keep_last=2 → oldest 2 are
+	// demoted + swept in the same tick.
+	ctx := context.Background()
+	fp := domain.GitFingerprint("https://github.com/org/keep", "main")
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "keep", Name: "keep",
+		Pipelines: []*domain.Pipeline{{
+			Name: "p1", Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/keep", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{{Name: "one", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applied.Pipelines[0].PipelineID
+	var matID uuid.UUID
+	_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&matID)
+
+	keys := make([]string, 4)
+	for i := 0; i < 4; i++ {
+		keys[i] = uuid.NewString()
+		res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID: pipelineID, MaterialID: matID,
+			ModificationID: int64(i + 1),
+			Revision:       "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+			Branch:         "main", Provider: "github", Delivery: "t", TriggeredBy: "test",
+		})
+		if err != nil {
+			t.Fatalf("create run %d: %v", i, err)
+		}
+		// Space the runs in time so ORDER BY created_at is deterministic.
+		if _, err := pool.Exec(ctx,
+			`UPDATE runs SET created_at = NOW() - (INTERVAL '1 minute' * $2::int) WHERE id = $1`,
+			res.RunID, 4-i,
+		); err != nil {
+			t.Fatal(err)
+		}
+		row, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+			RunID: res.RunID, JobRunID: res.JobRuns[0].ID,
+			PipelineID: pipelineID, ProjectID: applied.ProjectID,
+			Path: "bin/x", StorageKey: keys[i],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc"); err != nil {
+			t.Fatal(err)
+		}
+		_ = row
+	}
+
+	sw := retention.New(s, fs, silent()).
+		WithKeepLast(2).
+		WithProjectQuotaBytes(0). // disable project cap for isolation
+		WithGlobalQuotaBytes(0)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.DemotedKeepLast != 2 {
+		t.Errorf("keep-last demotions = %d, want 2", stats.DemotedKeepLast)
+	}
+	if stats.Deleted != 2 {
+		t.Errorf("deletes = %d, want 2", stats.Deleted)
+	}
+	// The 2 oldest (indexes 0, 1) should be gone. The 2 newest (2, 3)
+	// should still be present.
+	for i, k := range keys {
+		_, err := s.GetArtifactByStorageKey(ctx, k)
+		if i < 2 {
+			if !errors.Is(err, store.ErrArtifactNotFound) {
+				t.Errorf("key[%d] %s: want gone, got err=%v", i, k, err)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("key[%d] %s: want kept, got err=%v", i, k, err)
+			}
+		}
+	}
+}
+
+func TestSweeper_ProjectQuota_DemotesOldestUntilUnderCap(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+
+	// Seed a single project with 4 artefacts of 1KB each = 4KB total.
+	// Set project quota to 2KB → excess = 2KB → expire 2 oldest rows
+	// (cum_prev < 2048: row0 cum_prev=0, row1 cum_prev=1024, row2
+	// cum_prev=2048 [not <], so 2 rows demoted).
+	fp := domain.GitFingerprint("https://github.com/org/q", "main")
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "q", Name: "q",
+		Pipelines: []*domain.Pipeline{{
+			Name: "p1", Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/q", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{{Name: "one", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipelineID := applied.Pipelines[0].PipelineID
+	var matID uuid.UUID
+	_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&matID)
+
+	keys := make([]string, 4)
+	for i := 0; i < 4; i++ {
+		res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID: pipelineID, MaterialID: matID,
+			ModificationID: int64(i + 1),
+			Revision:       "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+			Branch:         "main", Provider: "github", Delivery: "t", TriggeredBy: "test",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[i] = uuid.NewString()
+		_, err = s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+			RunID: res.RunID, JobRunID: res.JobRuns[0].ID,
+			PipelineID: pipelineID, ProjectID: applied.ProjectID,
+			Path: "bin/x", StorageKey: keys[i],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc"); err != nil {
+			t.Fatal(err)
+		}
+		// Ensure created_at ordering reflects insertion order.
+		if _, err := pool.Exec(ctx,
+			`UPDATE artifacts SET created_at = NOW() - (INTERVAL '1 minute' * $2::int) WHERE storage_key = $1`,
+			keys[i], 4-i,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sw := retention.New(s, fs, silent()).
+		WithKeepLast(0). // disable
+		WithProjectQuotaBytes(2048).
+		WithGlobalQuotaBytes(0)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.DemotedProjectCap != 2 {
+		t.Errorf("project-cap demotions = %d, want 2 (stats=%+v)", stats.DemotedProjectCap, stats)
+	}
+	if stats.Deleted != 2 {
+		t.Errorf("deletes = %d, want 2", stats.Deleted)
+	}
+	// Oldest two gone; newest two kept.
+	for i, k := range keys {
+		_, err := s.GetArtifactByStorageKey(ctx, k)
+		if i < 2 {
+			if !errors.Is(err, store.ErrArtifactNotFound) {
+				t.Errorf("key[%d] %s: want gone, got err=%v", i, k, err)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("key[%d] %s: want kept, got err=%v", i, k, err)
+			}
+		}
+	}
+}
+
+func TestSweeper_GlobalQuota_DemotesOldestAcrossProjects(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+
+	// Two projects, 2 artefacts each of 1KB = 4KB total. Global cap =
+	// 3KB → excess=1KB → 1 oldest row demoted.
+	type pinfo struct {
+		pipelineID, projectID, matID uuid.UUID
+	}
+	mkProj := func(slug string) pinfo {
+		fp := domain.GitFingerprint("https://github.com/org/"+slug, "main")
+		applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+			Slug: slug, Name: slug,
+			Pipelines: []*domain.Pipeline{{
+				Name: "p1", Stages: []string{"build"},
+				Materials: []domain.Material{{
+					Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+					Git: &domain.GitMaterial{URL: "https://github.com/org/" + slug, Branch: "main", Events: []string{"push"}},
+				}},
+				Jobs: []domain.Job{{Name: "one", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mid uuid.UUID
+		_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&mid)
+		return pinfo{pipelineID: applied.Pipelines[0].PipelineID, projectID: applied.ProjectID, matID: mid}
+	}
+	pA := mkProj("gA")
+	pB := mkProj("gB")
+
+	// Order: A0 (oldest), B0, A1, B1 (newest)
+	keys := make([]string, 4)
+	specs := []struct {
+		p      pinfo
+		offset int
+	}{
+		{pA, 4}, {pB, 3}, {pA, 2}, {pB, 1},
+	}
+	for i, sp := range specs {
+		res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID: sp.p.pipelineID, MaterialID: sp.p.matID,
+			ModificationID: int64(i + 1),
+			Revision:       "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+			Branch:         "main", Provider: "github", Delivery: "t", TriggeredBy: "test",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[i] = uuid.NewString()
+		_, err = s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+			RunID: res.RunID, JobRunID: res.JobRuns[0].ID,
+			PipelineID: sp.p.pipelineID, ProjectID: sp.p.projectID,
+			Path: "bin/x", StorageKey: keys[i],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.MarkArtifactReady(ctx, keys[i], 1024, "abc"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE artifacts SET created_at = NOW() - (INTERVAL '1 minute' * $2::int) WHERE storage_key = $1`,
+			keys[i], sp.offset,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sw := retention.New(s, fs, silent()).
+		WithKeepLast(0).
+		WithProjectQuotaBytes(0).
+		WithGlobalQuotaBytes(3072)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.DemotedGlobalCap != 1 {
+		t.Errorf("global-cap demotions = %d, want 1", stats.DemotedGlobalCap)
+	}
+	if stats.Deleted != 1 {
+		t.Errorf("deletes = %d, want 1", stats.Deleted)
+	}
+	// The first key (oldest, project A) should be gone.
+	if _, err := s.GetArtifactByStorageKey(ctx, keys[0]); !errors.Is(err, store.ErrArtifactNotFound) {
+		t.Errorf("oldest key: want gone, got %v", err)
+	}
+}
+
 func TestSweeper_StorageNotFoundIsTreatedAsSuccess(t *testing.T) {
 	// Someone deleted the object out-of-band; sweeper should still
 	// reap the DB row instead of looping forever.

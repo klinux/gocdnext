@@ -124,6 +124,88 @@ RETURNING id, storage_key, size_bytes;
 -- was already gone). Removes the DB row.
 DELETE FROM artifacts WHERE id = $1;
 
+-- name: ExpireArtifactsBeyondKeepLast :execrows
+-- Keep-last policy: per pipeline, rank the runs that produced
+-- non-deleted artefacts by recency (run.created_at DESC); any run
+-- beyond position N has ALL its non-pinned artefacts stamped with
+-- expires_at = NOW(). The next TTL sweep picks them up. Pinned rows
+-- are exempt; pinned runs don't consume a "slot" — they live forever
+-- orthogonally to the N budget.
+WITH ranked AS (
+  SELECT DISTINCT a.run_id, a.pipeline_id, r.created_at,
+    row_number() OVER (
+      PARTITION BY a.pipeline_id
+      ORDER BY r.created_at DESC
+    ) AS rn
+  FROM artifacts a
+  JOIN runs r ON r.id = a.run_id
+  WHERE a.deleted_at IS NULL AND a.pinned_at IS NULL
+)
+UPDATE artifacts
+SET expires_at = NOW()
+WHERE run_id IN (SELECT run_id FROM ranked WHERE rn > $1::int)
+  AND deleted_at IS NULL
+  AND pinned_at IS NULL
+  AND (expires_at IS NULL OR expires_at > NOW());
+
+-- name: ListProjectsOverArtifactQuota :many
+-- Projects whose total live artefact bytes (pending + ready, non-
+-- deleted, non-pinned) exceed the configured soft cap. Returned once
+-- per tick so the sweeper can ExpireOldestInProjectByExcess against
+-- each one individually.
+SELECT a.project_id, COALESCE(SUM(a.size_bytes), 0)::bigint AS bytes
+FROM artifacts a
+WHERE a.deleted_at IS NULL
+  AND a.pinned_at IS NULL
+  AND a.status IN ('pending', 'ready')
+GROUP BY a.project_id
+HAVING COALESCE(SUM(a.size_bytes), 0) > $1::bigint;
+
+-- name: ExpireOldestInProjectByExcess :execrows
+-- Stamp expires_at = NOW() on the oldest non-pinned rows in a project,
+-- stopping as soon as the demoted bytes cover `excess`. Uses a window
+-- function so the cut-off is computed against the cumulative-up-to-
+-- but-not-including-this-row (so we always demote enough, never
+-- less).
+WITH running AS (
+  SELECT a.id,
+    COALESCE(SUM(a.size_bytes) OVER (
+      ORDER BY a.created_at ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ), 0)::bigint AS cum_prev
+  FROM artifacts a
+  WHERE a.project_id = @pid::uuid
+    AND a.deleted_at IS NULL AND a.pinned_at IS NULL
+    AND a.status IN ('pending', 'ready')
+)
+UPDATE artifacts
+SET expires_at = NOW()
+WHERE id IN (SELECT id FROM running WHERE cum_prev < @excess::bigint);
+
+-- name: GlobalArtifactUsage :one
+-- Total live artefact bytes. Returns 0 when the artifacts table is
+-- empty. Used for the global hard cap.
+SELECT COALESCE(SUM(size_bytes), 0)::bigint AS bytes
+FROM artifacts
+WHERE deleted_at IS NULL
+  AND pinned_at IS NULL
+  AND status IN ('pending', 'ready');
+
+-- name: ExpireOldestGloballyByExcess :execrows
+WITH running AS (
+  SELECT a.id,
+    COALESCE(SUM(a.size_bytes) OVER (
+      ORDER BY a.created_at ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ), 0)::bigint AS cum_prev
+  FROM artifacts a
+  WHERE a.deleted_at IS NULL AND a.pinned_at IS NULL
+    AND a.status IN ('pending', 'ready')
+)
+UPDATE artifacts
+SET expires_at = NOW()
+WHERE id IN (SELECT id FROM running WHERE cum_prev < $1::bigint);
+
 -- name: GetRunUpstreamContext :one
 -- For a downstream run, extracts upstream_run_id + upstream pipeline
 -- name from cause_detail JSON. Empty string / null UUID when this run

@@ -42,6 +42,11 @@ type Config struct {
 	ArtifactsGCSCredentialsJSON string // inline JSON (same schema)
 	ArtifactsGCSProjectID       string // required only for EnsureBucket
 	ArtifactsGCSEnsureBucket    bool
+
+	// Retention / sweeper knobs. 0 on any quota = disabled.
+	ArtifactsKeepLast          int   // keep N most recent runs per pipeline; 0 disables
+	ArtifactsProjectQuotaBytes int64 // per-project soft cap; 0 disables
+	ArtifactsGlobalQuotaBytes  int64 // global hard cap; 0 disables
 }
 
 func Load() (*Config, error) {
@@ -78,6 +83,24 @@ func Load() (*Config, error) {
 		ArtifactsGCSProjectID:       env("GOCDNEXT_ARTIFACTS_GCS_PROJECT_ID", ""),
 		ArtifactsGCSEnsureBucket:    strings.EqualFold(env("GOCDNEXT_ARTIFACTS_GCS_ENSURE_BUCKET", "false"), "true"),
 	}
+
+	keepLast, err := strconv.Atoi(env("GOCDNEXT_ARTIFACTS_KEEP_LAST", "30"))
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_KEEP_LAST: %w", err)
+	}
+	c.ArtifactsKeepLast = keepLast
+
+	projectQuota, err := strconv.ParseInt(env("GOCDNEXT_ARTIFACTS_PROJECT_QUOTA_BYTES", "107374182400"), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_PROJECT_QUOTA_BYTES: %w", err)
+	}
+	c.ArtifactsProjectQuotaBytes = projectQuota
+
+	globalQuota, err := strconv.ParseInt(env("GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES", "0"), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES: %w", err)
+	}
+	c.ArtifactsGlobalQuotaBytes = globalQuota
 
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("GOCDNEXT_DATABASE_URL is required")

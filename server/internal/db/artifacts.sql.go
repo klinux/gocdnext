@@ -76,6 +76,98 @@ func (q *Queries) ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifacts
 	return items, nil
 }
 
+const expireArtifactsBeyondKeepLast = `-- name: ExpireArtifactsBeyondKeepLast :execrows
+WITH ranked AS (
+  SELECT DISTINCT a.run_id, a.pipeline_id, r.created_at,
+    row_number() OVER (
+      PARTITION BY a.pipeline_id
+      ORDER BY r.created_at DESC
+    ) AS rn
+  FROM artifacts a
+  JOIN runs r ON r.id = a.run_id
+  WHERE a.deleted_at IS NULL AND a.pinned_at IS NULL
+)
+UPDATE artifacts
+SET expires_at = NOW()
+WHERE run_id IN (SELECT run_id FROM ranked WHERE rn > $1::int)
+  AND deleted_at IS NULL
+  AND pinned_at IS NULL
+  AND (expires_at IS NULL OR expires_at > NOW())
+`
+
+// Keep-last policy: per pipeline, rank the runs that produced
+// non-deleted artefacts by recency (run.created_at DESC); any run
+// beyond position N has ALL its non-pinned artefacts stamped with
+// expires_at = NOW(). The next TTL sweep picks them up. Pinned rows
+// are exempt; pinned runs don't consume a "slot" — they live forever
+// orthogonally to the N budget.
+func (q *Queries) ExpireArtifactsBeyondKeepLast(ctx context.Context, dollar_1 int32) (int64, error) {
+	result, err := q.db.Exec(ctx, expireArtifactsBeyondKeepLast, dollar_1)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const expireOldestGloballyByExcess = `-- name: ExpireOldestGloballyByExcess :execrows
+WITH running AS (
+  SELECT a.id,
+    COALESCE(SUM(a.size_bytes) OVER (
+      ORDER BY a.created_at ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ), 0)::bigint AS cum_prev
+  FROM artifacts a
+  WHERE a.deleted_at IS NULL AND a.pinned_at IS NULL
+    AND a.status IN ('pending', 'ready')
+)
+UPDATE artifacts
+SET expires_at = NOW()
+WHERE id IN (SELECT id FROM running WHERE cum_prev < $1::bigint)
+`
+
+func (q *Queries) ExpireOldestGloballyByExcess(ctx context.Context, dollar_1 int64) (int64, error) {
+	result, err := q.db.Exec(ctx, expireOldestGloballyByExcess, dollar_1)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const expireOldestInProjectByExcess = `-- name: ExpireOldestInProjectByExcess :execrows
+WITH running AS (
+  SELECT a.id,
+    COALESCE(SUM(a.size_bytes) OVER (
+      ORDER BY a.created_at ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ), 0)::bigint AS cum_prev
+  FROM artifacts a
+  WHERE a.project_id = $2::uuid
+    AND a.deleted_at IS NULL AND a.pinned_at IS NULL
+    AND a.status IN ('pending', 'ready')
+)
+UPDATE artifacts
+SET expires_at = NOW()
+WHERE id IN (SELECT id FROM running WHERE cum_prev < $1::bigint)
+`
+
+type ExpireOldestInProjectByExcessParams struct {
+	Excess int64
+	Pid    pgtype.UUID
+}
+
+// Stamp expires_at = NOW() on the oldest non-pinned rows in a project,
+// stopping as soon as the demoted bytes cover `excess`. Uses a window
+// function so the cut-off is computed against the cumulative-up-to-
+// but-not-including-this-row (so we always demote enough, never
+// less).
+func (q *Queries) ExpireOldestInProjectByExcess(ctx context.Context, arg ExpireOldestInProjectByExcessParams) (int64, error) {
+	result, err := q.db.Exec(ctx, expireOldestInProjectByExcess, arg.Excess, arg.Pid)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getArtifactByStorageKey = `-- name: GetArtifactByStorageKey :one
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
@@ -180,6 +272,23 @@ func (q *Queries) GetRunUpstreamContext(ctx context.Context, id pgtype.UUID) (Ge
 	var i GetRunUpstreamContextRow
 	err := row.Scan(&i.UpstreamRunID, &i.UpstreamPipeline)
 	return i, err
+}
+
+const globalArtifactUsage = `-- name: GlobalArtifactUsage :one
+SELECT COALESCE(SUM(size_bytes), 0)::bigint AS bytes
+FROM artifacts
+WHERE deleted_at IS NULL
+  AND pinned_at IS NULL
+  AND status IN ('pending', 'ready')
+`
+
+// Total live artefact bytes. Returns 0 when the artifacts table is
+// empty. Used for the global hard cap.
+func (q *Queries) GlobalArtifactUsage(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, globalArtifactUsage)
+	var bytes int64
+	err := row.Scan(&bytes)
+	return bytes, err
 }
 
 const insertPendingArtifact = `-- name: InsertPendingArtifact :one
@@ -434,6 +543,45 @@ func (q *Queries) ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UU
 			&i.CreatedAt,
 			&i.JobName,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectsOverArtifactQuota = `-- name: ListProjectsOverArtifactQuota :many
+SELECT a.project_id, COALESCE(SUM(a.size_bytes), 0)::bigint AS bytes
+FROM artifacts a
+WHERE a.deleted_at IS NULL
+  AND a.pinned_at IS NULL
+  AND a.status IN ('pending', 'ready')
+GROUP BY a.project_id
+HAVING COALESCE(SUM(a.size_bytes), 0) > $1::bigint
+`
+
+type ListProjectsOverArtifactQuotaRow struct {
+	ProjectID pgtype.UUID
+	Bytes     int64
+}
+
+// Projects whose total live artefact bytes (pending + ready, non-
+// deleted, non-pinned) exceed the configured soft cap. Returned once
+// per tick so the sweeper can ExpireOldestInProjectByExcess against
+// each one individually.
+func (q *Queries) ListProjectsOverArtifactQuota(ctx context.Context, dollar_1 int64) ([]ListProjectsOverArtifactQuotaRow, error) {
+	rows, err := q.db.Query(ctx, listProjectsOverArtifactQuota, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectsOverArtifactQuotaRow{}
+	for rows.Next() {
+		var i ListProjectsOverArtifactQuotaRow
+		if err := rows.Scan(&i.ProjectID, &i.Bytes); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

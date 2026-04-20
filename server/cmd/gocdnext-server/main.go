@@ -104,7 +104,10 @@ func main() {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
 	reaper := scheduler.NewReaper(st, logger)
-	sweeper := retention.New(st, artifactStore, logger)
+	sweeper := retention.New(st, artifactStore, logger).
+		WithKeepLast(cfg.ArtifactsKeepLast).
+		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
+		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes)
 
 	grpcServer := grpc.NewServer()
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)

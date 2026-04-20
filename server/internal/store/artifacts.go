@@ -228,6 +228,76 @@ type ClaimedArtifact struct {
 	SizeBytes  int64
 }
 
+// ExpireArtifactsBeyondKeepLast stamps expires_at=NOW() on artefacts
+// in runs ranked beyond the N most recent per pipeline. Returns the
+// number of rows demoted. The actual delete happens on a following
+// tick via the TTL path — keeping the delete flow in one place.
+func (s *Store) ExpireArtifactsBeyondKeepLast(ctx context.Context, keepLast int) (int64, error) {
+	n, err := s.q.ExpireArtifactsBeyondKeepLast(ctx, int32(keepLast))
+	if err != nil {
+		return 0, fmt.Errorf("store: keep-last expire: %w", err)
+	}
+	return n, nil
+}
+
+// ProjectOverQuota is one entry returned by ListProjectsOverArtifactQuota.
+type ProjectOverQuota struct {
+	ProjectID uuid.UUID
+	Bytes     int64
+}
+
+// ListProjectsOverArtifactQuota returns projects whose live bytes
+// exceed `quota`. Used by the sweeper to iterate overquota projects
+// once per tick.
+func (s *Store) ListProjectsOverArtifactQuota(ctx context.Context, quota int64) ([]ProjectOverQuota, error) {
+	rows, err := s.q.ListProjectsOverArtifactQuota(ctx, quota)
+	if err != nil {
+		return nil, fmt.Errorf("store: list over-quota projects: %w", err)
+	}
+	out := make([]ProjectOverQuota, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ProjectOverQuota{
+			ProjectID: fromPgUUID(r.ProjectID),
+			Bytes:     r.Bytes,
+		})
+	}
+	return out, nil
+}
+
+// ExpireOldestInProjectByExcess demotes the oldest non-pinned rows in
+// a project until cumulative demoted bytes cover `excess`. Returns
+// rows affected.
+func (s *Store) ExpireOldestInProjectByExcess(ctx context.Context, projectID uuid.UUID, excess int64) (int64, error) {
+	n, err := s.q.ExpireOldestInProjectByExcess(ctx, db.ExpireOldestInProjectByExcessParams{
+		Pid:    pgUUID(projectID),
+		Excess: excess,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: project-quota expire: %w", err)
+	}
+	return n, nil
+}
+
+// GlobalArtifactUsage sums non-deleted + non-pinned live bytes across
+// all projects. Used for the global hard cap.
+func (s *Store) GlobalArtifactUsage(ctx context.Context) (int64, error) {
+	n, err := s.q.GlobalArtifactUsage(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("store: global usage: %w", err)
+	}
+	return n, nil
+}
+
+// ExpireOldestGloballyByExcess is the global-cap variant: demotes the
+// oldest non-pinned rows across the whole system.
+func (s *Store) ExpireOldestGloballyByExcess(ctx context.Context, excess int64) (int64, error) {
+	n, err := s.q.ExpireOldestGloballyByExcess(ctx, excess)
+	if err != nil {
+		return 0, fmt.Errorf("store: global-quota expire: %w", err)
+	}
+	return n, nil
+}
+
 // ClaimArtifactsForSweep atomically marks a batch of expired / stale-
 // deleting artefacts for removal, returning their storage keys. Caller
 // deletes each from the backend, then calls RemoveArtifactRow. grace

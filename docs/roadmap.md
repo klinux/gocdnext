@@ -19,13 +19,19 @@ Em andamento: **Fase E2 — artefatos**. Design fechado em
   fake-gcs-server (Put/Head/Delete; Get depende de download URL
   externa que o fake não resolve bem — coberto por teste direto em
   prod).
-- **E2c** (próximo) — download intra-run (`needs_artifacts:`),
-  scheduler emite GETs assinados no `JobAssignment`.
-- **E2d** — fanout cross-run + sweeper de retenção (4 camadas: TTL +
-  keep-last + quota de projeto + quota global).
+- **E2c — download intra-run.** ✅ `needs_artifacts:` no YAML,
+  scheduler resolve + emite GETs assinados no `JobAssignment`,
+  agent baixa+verifica sha+untara antes das tasks.
+- **E2d.1 — fanout cross-run.** ✅ `from_pipeline: build-core` puxa
+  artefatos da run upstream que triggou. `examples/fanout/` deixa
+  de ser teatro.
+- **E2d.2 — sweeper de retenção.** ✅ 4 camadas (TTL, keep-last
+  por pipeline, quota de projeto soft, quota global hard), ordem
+  determinística, idempotente, pinned-at skipa tudo.
 
-Depois disso, volta pra mesa a **dogfood-readiness** (artefato era o
-último bloqueador estrutural que enxergo).
+**Artefato fechado.** Volta pra mesa **dogfood-readiness**: VSM +
+xyflow (diferencial visual), PR support, auto-register webhook via
+GitHub App.
 
 ## Fase 0 — fundação ✅
 

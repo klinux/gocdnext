@@ -47,6 +47,20 @@ type Querier interface {
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
+	// Keep-last policy: per pipeline, rank the runs that produced
+	// non-deleted artefacts by recency (run.created_at DESC); any run
+	// beyond position N has ALL its non-pinned artefacts stamped with
+	// expires_at = NOW(). The next TTL sweep picks them up. Pinned rows
+	// are exempt; pinned runs don't consume a "slot" — they live forever
+	// orthogonally to the N budget.
+	ExpireArtifactsBeyondKeepLast(ctx context.Context, dollar_1 int32) (int64, error)
+	ExpireOldestGloballyByExcess(ctx context.Context, dollar_1 int64) (int64, error)
+	// Stamp expires_at = NOW() on the oldest non-pinned rows in a project,
+	// stopping as soon as the demoted bytes cover `excess`. Uses a window
+	// function so the cut-off is computed against the cumulative-up-to-
+	// but-not-including-this-row (so we always demote enough, never
+	// less).
+	ExpireOldestInProjectByExcess(ctx context.Context, arg ExpireOldestInProjectByExcessParams) (int64, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// For a completed stage on an upstream pipeline, find every "upstream"
 	// material in OTHER pipelines of the same project that points at it. The
@@ -94,6 +108,9 @@ type Querier interface {
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
+	// Total live artefact bytes. Returns 0 when the artifacts table is
+	// empty. Used for the global hard cap.
+	GlobalArtifactUsage(ctx context.Context) (int64, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
@@ -129,6 +146,11 @@ type Querier interface {
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
 	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
+	// Projects whose total live artefact bytes (pending + ready, non-
+	// deleted, non-pinned) exceed the configured soft cap. Returned once
+	// per tick so the sweeper can ExpireOldestInProjectByExcess against
+	// each one individually.
+	ListProjectsOverArtifactQuota(ctx context.Context, dollar_1 int64) ([]ListProjectsOverArtifactQuotaRow, error)
 	// Project list used by the dashboard home. Joins enough aggregate info so the
 	// UI renders without round-tripping per row.
 	ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWithCountsRow, error)
