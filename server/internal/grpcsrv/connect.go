@@ -189,6 +189,10 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 		"stage_done", comp.StageCompleted, "stage_status", comp.StageStatus,
 		"run_done", comp.RunCompleted, "run_status", comp.RunStatus)
 
+	if comp.RunCompleted {
+		a.checksReporter.ReportRunCompleted(ctx, comp.RunID, comp.RunStatus)
+	}
+
 	// Wake the scheduler so it dispatches the next stage without waiting for
 	// the periodic tick. Harmless if the run is already terminal (the handler
 	// just finds no dispatchable jobs).

@@ -26,19 +26,28 @@ lista `pull_request` em `on:`. Run criada com branch = head ref,
 cause=`pull_request`, cause_detail carrega metadata. UI mostra banner
 com #number, author, head→base, short SHA. Closed/merged ignorados.
 
-**Próximo: GitHub App — auto-register webhook + Checks API** (slice
-combinada, mesma infra de credenciais):
+**GitHub App — auto-register webhook + Checks API ✅ (3 commits):**
 
-- **APP.1** — `github.AppClient` (JWT + installation token cache +
-  HTTP wrapper) + armazenamento da App private key via `Resolver`.
-- **APP.2** — auto-register webhook: `gocdnext apply` cria hook via
-  GitHub API quando material git tem `auto_register_webhook: true` e
-  o App está instalado no repo.
-- **APP.3** — Checks API: server reporta `in_progress` ao dispatch +
-  `success`/`failure` no JobResult, via installation token do repo.
+- **APP.1** ✅ `github.AppClient`: JWT RS256 hand-rolled sobre stdlib
+  (sem lib JWT adicional), installation token cache com TTL, PKCS#1
+  e PKCS#8 PEM, `NewAppClientFromEnv` retorna nil quando App não
+  configurada.
+- **APP.2** ✅ auto-register webhook: `gocdnext apply` cria hook via
+  `POST /repos/{o}/{r}/hooks` quando material git tem
+  `auto_register_webhook: true`; idempotente (checa hooks existentes
+  por prefixo de URL); best-effort (erro em um material não falha o
+  apply); status por material na resposta: `registered`,
+  `already_exists`, `skipped_no_install`, `failed`.
+- **APP.3** ✅ Checks API: reporter cria check_run em `in_progress`
+  no momento da criação da run (webhook push / pull_request),
+  atualiza pra `completed` com conclusão
+  `success|failure|cancelled|neutral` quando a run termina. Prefere
+  PR head SHA vem do `cause_detail` sobre material revision. Link
+  `run_id → check_run_id` persiste na nova tabela
+  `github_check_runs`.
 
-Depois disso a **dogfood-readiness** estrutural fecha e a Fase 3
-(Helm + K8s agent + pipelines reais) entra em cena.
+Com isso a **dogfood-readiness estrutural fechou**. Fase 3 (Helm +
+K8s agent + pipelines reais) é o próximo capítulo.
 
 ## Fase 0 — fundação ✅
 
@@ -76,8 +85,8 @@ Critério de saída atingido: push → pipeline roda → logs visíveis no UI.
 - [x] **Artefatos** — Fase E2 fechada (acima)
 - [x] Endpoint VSM + visualização `@xyflow/react`
 - [x] Suporte nativo a PR (trigger + UI; Checks API vai na próxima)
-- [ ] Auto-register de webhook via GitHub App flow (APP.2 abaixo)
-- [ ] GitHub Checks API reportando status do run (APP.3 abaixo)
+- [x] Auto-register de webhook via GitHub App flow (APP.2)
+- [x] GitHub Checks API reportando status do run (APP.3)
 
 ## Fase 3 — validação interna
 

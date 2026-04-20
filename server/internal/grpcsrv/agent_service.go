@@ -13,6 +13,7 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -34,6 +35,10 @@ type AgentService struct {
 	artifactStore            artifacts.Store
 	artifactPutURLTTL        time.Duration
 	artifactDefaultRetention time.Duration
+
+	// checksReporter: optional; nil means "don't report back to GitHub
+	// when a run terminates". Set via WithChecksReporter.
+	checksReporter *checks.Reporter
 }
 
 // NewAgentService wires the service. heartbeatSeconds is the cadence the server
@@ -67,6 +72,15 @@ func (a *AgentService) WithArtifactStore(st artifacts.Store, putURLTTL, retentio
 	a.artifactStore = st
 	a.artifactPutURLTTL = putURLTTL
 	a.artifactDefaultRetention = retention
+	return a
+}
+
+// WithChecksReporter plugs the GitHub Checks API reporter that will
+// be called when a run reaches terminal state. Nil-safe: if the
+// server was started without an App configured, callers pass nil
+// and the handle-result path just skips the report.
+func (a *AgentService) WithChecksReporter(r *checks.Reporter) *AgentService {
+	a.checksReporter = r
 	return a
 }
 

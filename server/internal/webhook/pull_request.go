@@ -141,6 +141,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 			"delivery", delivery, "pipeline_id", material.PipelineID,
 			"run_id", runRes.RunID, "counter", runRes.Counter,
 			"pr_number", ev.Number, "head_sha", ev.HeadSHA, "head_ref", ev.HeadRef)
+		h.reporter.ReportRunCreated(r.Context(), runRes.RunID)
 	} else {
 		h.log.Info("github webhook: PR modification already present, no run queued",
 			"delivery", delivery, "modification_id", res.ID, "pr_number", ev.Number)

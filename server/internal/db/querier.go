@@ -76,6 +76,10 @@ type Querier interface {
 	// Single-row lookup for the JobResult confirmation path. Returns
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
+	// Reporter needs owner/repo/check_run_id to patch a check when the
+	// run finishes. Returns ErrNoRows when the run didn't produce a
+	// check (most common path: no App installed, or feature disabled).
+	GetGithubCheckRun(ctx context.Context, runID pgtype.UUID) (GithubCheckRun, error)
 	// Used by the reaper to disambiguate "at max attempts" from "already
 	// handled" when ReclaimJobForRetry returned no rows.
 	GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAttemptRow, error)
@@ -206,6 +210,10 @@ type Querier interface {
 	// Stamp the last successful config sync. Called after a drift re-apply so
 	// operators can see whether the live config tracks HEAD.
 	UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error
+	// Called right after CreateCheckRun on GitHub responds; caller may
+	// already have an entry from a previous retry so we upsert rather
+	// than insert. updated_at bumps so we can spot stale rows later.
+	UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubCheckRunParams) error
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)

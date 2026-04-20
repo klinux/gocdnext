@@ -24,6 +24,7 @@ import (
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
@@ -103,8 +104,14 @@ func main() {
 		logger.Info("github app not configured; auto-register webhook + Checks API disabled")
 	}
 
+	checksReporter := checks.NewReporter(st, ghApp, cfg.PublicBase, logger)
+	if checksReporter != nil {
+		logger.Info("github checks reporter enabled")
+	}
+
 	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
-		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
+		WithConfigFetcher(&webhook.GitHubConfigFetcher{}).
+		WithChecksReporter(checksReporter)
 	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
 	if ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "" {
 		projectsHandler = projectsHandler.WithAutoRegister(projectsapi.AutoRegisterConfig{
@@ -121,7 +128,8 @@ func main() {
 	}
 
 	sessions := grpcsrv.NewSessionStore()
-	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
+	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
+		WithChecksReporter(checksReporter)
 	if artifactStore != nil {
 		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*24*time.Hour)
 	}

@@ -39,6 +39,17 @@ type Artifact struct {
 	CreatedAt     pgtype.Timestamptz
 }
 
+type GithubCheckRun struct {
+	RunID          pgtype.UUID
+	InstallationID int64
+	CheckRunID     int64
+	Owner          string
+	Repo           string
+	HeadSha        string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type JobRun struct {
 	ID         pgtype.UUID
 	RunID      pgtype.UUID

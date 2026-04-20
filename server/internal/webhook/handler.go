@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 )
@@ -20,10 +21,11 @@ const maxBodyBytes = 5 << 20 // 5 MiB — GitHub payloads are usually <1 MiB.
 // Handler serves the webhook endpoints. Register HandleGitHub on the router
 // of your choice; the method signature is compatible with http.HandlerFunc.
 type Handler struct {
-	secret  string
-	store   *store.Store
-	log     *slog.Logger
-	fetcher ConfigFetcher
+	secret   string
+	store    *store.Store
+	log      *slog.Logger
+	fetcher  ConfigFetcher
+	reporter *checks.Reporter
 }
 
 // NewHandler builds the webhook handler. secret is the HMAC shared secret for
@@ -41,6 +43,14 @@ func NewHandler(secret string, s *store.Store, log *slog.Logger) *Handler {
 // runs. Nil (default) disables drift.
 func (h *Handler) WithConfigFetcher(f ConfigFetcher) *Handler {
 	h.fetcher = f
+	return h
+}
+
+// WithChecksReporter enables GitHub Checks API reporting. nil keeps
+// the feature off; each webhook-triggered run will then silently
+// skip the check create.
+func (h *Handler) WithChecksReporter(r *checks.Reporter) *Handler {
+	h.reporter = r
 	return h
 }
 
@@ -207,6 +217,7 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 			"delivery", delivery, "pipeline_id", material.PipelineID,
 			"run_id", runRes.RunID, "counter", runRes.Counter,
 			"stages", len(runRes.StageRuns), "jobs", len(runRes.JobRuns))
+		h.reporter.ReportRunCreated(r.Context(), runRes.RunID)
 	} else {
 		h.log.Info("github webhook: modification already present, no run queued",
 			"delivery", delivery, "modification_id", res.ID)
