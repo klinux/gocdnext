@@ -1,0 +1,38 @@
+# gocdnext CLI — test + build. The CLI talks to a Postgres
+# directly for `admin create-user`, so the test step uses
+# testcontainers just like the server side.
+name: ci-cli
+
+materials:
+  - git:
+      url: https://github.com/klinux/gocdnext
+      branch: main
+      on: [push, pull_request]
+
+stages: [lint, test, build]
+
+variables:
+  GO_VERSION: "1.25"
+
+jobs:
+  vet:
+    stage: lint
+    image: golang:1.25
+    script:
+      - cd cli && go vet ./...
+
+  unit:
+    stage: test
+    image: golang:1.25
+    needs: [vet]
+    script:
+      - cd cli && go test -race ./...
+
+  compile:
+    stage: build
+    image: golang:1.25
+    needs: [unit]
+    script:
+      - cd cli && go build -o ../bin/gocdnext ./cmd/gocdnext
+    artifacts:
+      paths: [bin/gocdnext]

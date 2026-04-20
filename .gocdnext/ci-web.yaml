@@ -1,0 +1,57 @@
+# gocdnext web (Next.js) — type-check, unit tests, production
+# build. The build output is artefacted so a follow-up pipeline
+# (not in this repo yet) could pick it up for a static-hosting
+# deploy if we ever separate web from the server binary.
+name: ci-web
+
+materials:
+  - git:
+      url: https://github.com/klinux/gocdnext
+      branch: main
+      on: [push, pull_request]
+
+stages: [install, lint, test, build]
+
+variables:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9"
+
+jobs:
+  deps:
+    stage: install
+    image: node:22-alpine
+    script:
+      # pnpm is fetched via corepack; frozen-lockfile makes CI
+      # fail rather than regenerate the lockfile on drift.
+      - corepack enable
+      - cd web && pnpm install --frozen-lockfile
+    artifacts:
+      paths: [web/node_modules/]
+
+  typecheck:
+    stage: lint
+    image: node:22-alpine
+    needs: [deps]
+    script:
+      - corepack enable
+      - cd web && pnpm exec tsc --noEmit
+
+  unit:
+    stage: test
+    image: node:22-alpine
+    needs: [deps]
+    script:
+      - corepack enable
+      - cd web && pnpm test --run
+
+  bundle:
+    stage: build
+    image: node:22-alpine
+    needs: [typecheck, unit]
+    script:
+      - corepack enable
+      # GOCDNEXT_API_URL is only needed at runtime; build uses a
+      # placeholder so the bundle still generates deterministically.
+      - cd web && GOCDNEXT_API_URL=http://localhost:8153 pnpm build
+    artifacts:
+      paths: [web/.next/standalone/, web/.next/static/]

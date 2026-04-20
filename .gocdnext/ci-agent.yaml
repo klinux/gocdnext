@@ -1,0 +1,38 @@
+# gocdnext agent — test + build. Shares the Go toolchain image
+# with the server pipeline; kept separate so an agent-only PR
+# doesn't have to wait on the server test matrix.
+name: ci-agent
+
+materials:
+  - git:
+      url: https://github.com/klinux/gocdnext
+      branch: main
+      on: [push, pull_request]
+
+stages: [lint, test, build]
+
+variables:
+  GO_VERSION: "1.25"
+
+jobs:
+  vet:
+    stage: lint
+    image: golang:1.25
+    script:
+      - cd agent && go vet ./...
+
+  unit:
+    stage: test
+    image: golang:1.25
+    needs: [vet]
+    script:
+      - cd agent && go test -race ./...
+
+  compile:
+    stage: build
+    image: golang:1.25
+    needs: [unit]
+    script:
+      - cd agent && go build -o ../bin/gocdnext-agent ./cmd/gocdnext-agent
+    artifacts:
+      paths: [bin/gocdnext-agent]

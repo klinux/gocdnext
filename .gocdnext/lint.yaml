@@ -1,0 +1,28 @@
+# Cross-module lint: golangci-lint across server/agent/cli plus
+# buf lint on the proto contracts. Runs in parallel with the
+# per-module ci-* pipelines so a lint error surfaces early
+# without blocking tests.
+name: lint
+
+materials:
+  - git:
+      url: https://github.com/klinux/gocdnext
+      branch: main
+      on: [push, pull_request]
+
+stages: [lint]
+
+jobs:
+  golangci:
+    stage: lint
+    image: golangci/golangci-lint:v1.63
+    # --timeout bumps the default 1m which is tight for workspaces
+    # with generated sqlc + pgx types.
+    script:
+      - golangci-lint run --timeout 5m ./server/... ./agent/... ./cli/...
+
+  buf:
+    stage: lint
+    image: bufbuild/buf:1.47
+    script:
+      - cd proto && buf lint
