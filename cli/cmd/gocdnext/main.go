@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/gocdnext/gocdnext/cli/internal/admin"
 	"github.com/gocdnext/gocdnext/cli/internal/apply"
 	"github.com/gocdnext/gocdnext/cli/internal/secrets"
 )
@@ -33,6 +34,7 @@ func main() {
 		runLocalCmd(),
 		applyCmd(),
 		secretCmd(),
+		adminCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -359,4 +361,130 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// adminCmd groups ops-level actions that bypass the HTTP API.
+// Today that's local-user provisioning. Runs against the same DB
+// the server uses (GOCDNEXT_DATABASE_URL); the server does not
+// have to be running.
+func adminCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "admin",
+		Short: "Ops commands that talk to the DB directly (local users, etc.)",
+	}
+	cmd.AddCommand(adminCreateUserCmd(), adminResetPasswordCmd())
+	return cmd
+}
+
+func adminCreateUserCmd() *cobra.Command {
+	var (
+		email       string
+		name        string
+		role        string
+		databaseURL string
+		fromStdin   bool
+		fromFile    string
+	)
+	cmd := &cobra.Command{
+		Use:   "create-user",
+		Short: "Create (or rotate) a local-password user",
+		Long: strings.TrimSpace(`
+Create a local-password user directly in the database. Use this
+to bootstrap the first admin before any OIDC provider is wired,
+or as a break-glass account for oncall.
+
+Password is read from:
+  * --from-file PATH       (read file contents verbatim)
+  * stdin when it's piped  (echo 'pw' | gocdnext admin create-user ...)
+  * an interactive TTY prompt (silent, like sudo)
+
+If a local user with this email already exists, the password +
+role + name are rotated.
+
+Requires GOCDNEXT_DATABASE_URL (or --database-url) with write
+access to the users table.
+`),
+		RunE: func(c *cobra.Command, _ []string) error {
+			if email == "" {
+				return fmt.Errorf("--email is required")
+			}
+			if databaseURL == "" {
+				databaseURL = envOr("GOCDNEXT_DATABASE_URL", "")
+			}
+			if databaseURL == "" {
+				return fmt.Errorf("--database-url or GOCDNEXT_DATABASE_URL is required")
+			}
+			password, err := readSecretValue(fromStdin, fromFile)
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			created, err := admin.CreateOrUpdateLocalUser(ctx, databaseURL, email, name, role, password)
+			if err != nil {
+				return err
+			}
+			verb := "rotated"
+			if created {
+				verb = "created"
+			}
+			fmt.Fprintf(c.OutOrStdout(), "local user %s %s (role=%s)\n", verb, email, role)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&email, "email", "", "user email (also the login name)")
+	cmd.Flags().StringVar(&name, "name", "", "display name (defaults to the email local-part)")
+	cmd.Flags().StringVar(&role, "role", admin.RoleAdmin, "admin | user | viewer")
+	cmd.Flags().StringVar(&databaseURL, "database-url", "", "Postgres URL (env GOCDNEXT_DATABASE_URL)")
+	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false, "force reading password from stdin even when a TTY is attached")
+	cmd.Flags().StringVar(&fromFile, "from-file", "", "read password from the given file path (use - for stdin)")
+	_ = cmd.MarkFlagRequired("email")
+	cmd.SetContext(context.Background())
+	return cmd
+}
+
+func adminResetPasswordCmd() *cobra.Command {
+	var (
+		email       string
+		databaseURL string
+		fromStdin   bool
+		fromFile    string
+	)
+	cmd := &cobra.Command{
+		Use:   "reset-password",
+		Short: "Rotate the password for an existing local user",
+		RunE: func(c *cobra.Command, _ []string) error {
+			if email == "" {
+				return fmt.Errorf("--email is required")
+			}
+			if databaseURL == "" {
+				databaseURL = envOr("GOCDNEXT_DATABASE_URL", "")
+			}
+			if databaseURL == "" {
+				return fmt.Errorf("--database-url or GOCDNEXT_DATABASE_URL is required")
+			}
+			password, err := readSecretValue(fromStdin, fromFile)
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			if err := admin.ResetPassword(ctx, databaseURL, email, password); err != nil {
+				return err
+			}
+			fmt.Fprintf(c.OutOrStdout(), "password rotated for %s\n", email)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&email, "email", "", "user email")
+	cmd.Flags().StringVar(&databaseURL, "database-url", "", "Postgres URL (env GOCDNEXT_DATABASE_URL)")
+	cmd.Flags().BoolVar(&fromStdin, "from-stdin", false, "force reading password from stdin even when a TTY is attached")
+	cmd.Flags().StringVar(&fromFile, "from-file", "", "read password from the given file path (use - for stdin)")
+	_ = cmd.MarkFlagRequired("email")
+	cmd.SetContext(context.Background())
+	return cmd
 }
