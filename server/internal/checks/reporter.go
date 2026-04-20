@@ -18,24 +18,32 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
 // Reporter is the glue between a run's lifecycle and the GitHub
 // Checks API. Goroutine-spawning wrappers (ReportRunCreated /
 // ReportRunCompleted) fire-and-forget so we never block the hot
 // request path on a remote call. Any error is logged and swallowed.
+//
+// The App client is read through the vcs.Registry at call time,
+// not captured at construction — that's what lets the admin UI
+// rotate GitHub App credentials and have the next reported run
+// pick them up without a server restart.
 type Reporter struct {
 	store      *store.Store
-	app        *ghscm.AppClient
+	vcs        *vcs.Registry
 	publicBase string
 	log        *slog.Logger
 }
 
-// NewReporter returns nil when any dependency is absent — callers
-// treat a nil *Reporter as "feature disabled", so every call site is
-// a simple `if r != nil { r.Report...() }`.
-func NewReporter(s *store.Store, app *ghscm.AppClient, publicBase string, log *slog.Logger) *Reporter {
-	if s == nil || app == nil || publicBase == "" {
+// NewReporter returns nil when store or publicBase is missing —
+// callers treat a nil *Reporter as "feature disabled", so every
+// call site is a simple `if r != nil { r.Report...() }`. Passing
+// a registry with no github_app currently configured is fine:
+// each call guards on appClient() and no-ops cleanly.
+func NewReporter(s *store.Store, registry *vcs.Registry, publicBase string, log *slog.Logger) *Reporter {
+	if s == nil || publicBase == "" {
 		return nil
 	}
 	if log == nil {
@@ -43,10 +51,20 @@ func NewReporter(s *store.Store, app *ghscm.AppClient, publicBase string, log *s
 	}
 	return &Reporter{
 		store:      s,
-		app:        app,
+		vcs:        registry,
 		publicBase: strings.TrimRight(publicBase, "/"),
 		log:        log,
 	}
+}
+
+// appClient returns the currently active GitHub App client, or
+// nil when none is configured. Guarded by every public method
+// that actually talks to GitHub.
+func (r *Reporter) appClient() *ghscm.AppClient {
+	if r == nil || r.vcs == nil {
+		return nil
+	}
+	return r.vcs.GitHubApp()
 }
 
 // ReportRunCreated is called from the webhook path once a new run is
@@ -90,6 +108,13 @@ func (r *Reporter) ReportRunCompleted(_ context.Context, runID uuid.UUID, status
 // installed) so callers can't trivially tell "created" from
 // "skipped"; check logs for that.
 func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
+	app := r.appClient()
+	if app == nil {
+		// Registry has no active github_app — admin deleted the
+		// row or env+DB both empty. Treated like "feature
+		// disabled": no work, no error.
+		return nil
+	}
 	ctxInfo, err := r.resolveRunContext(ctx, runID)
 	if err != nil {
 		return err
@@ -97,7 +122,7 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 	if ctxInfo == nil {
 		return nil // non-reportable cause, non-GitHub repo, etc.
 	}
-	installationID, err := r.app.InstallationID(ctx, ctxInfo.owner, ctxInfo.repo)
+	installationID, err := app.InstallationID(ctx, ctxInfo.owner, ctxInfo.repo)
 	if errors.Is(err, ghscm.ErrNoInstallation) {
 		r.log.Info("checks: app not installed, skipping",
 			"run_id", runID, "repo", ctxInfo.owner+"/"+ctxInfo.repo)
@@ -107,7 +132,7 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 		return fmt.Errorf("installation lookup: %w", err)
 	}
 
-	created, err := r.app.CreateCheckRun(ctx, installationID, ghscm.CreateCheckRunInput{
+	created, err := app.CreateCheckRun(ctx, installationID, ghscm.CreateCheckRunInput{
 		Owner:      ctxInfo.owner,
 		Repo:       ctxInfo.repo,
 		Name:       fmt.Sprintf("gocdnext / %s", ctxInfo.pipelineName),
@@ -145,6 +170,10 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 // Returns nil when we have no check record for the run (feature
 // disabled, or create-side skipped).
 func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status string) error {
+	app := r.appClient()
+	if app == nil {
+		return nil
+	}
 	link, err := r.store.GetGithubCheckRun(ctx, runID)
 	if errors.Is(err, store.ErrCheckRunNotFound) {
 		return nil
@@ -157,7 +186,7 @@ func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status st
 	title := "Pipeline " + status
 	summary := fmt.Sprintf("gocdnext run finished with status=%s.", status)
 
-	if err := r.app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
+	if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
 		Owner:      link.Owner,
 		Repo:       link.Repo,
 		CheckRunID: link.CheckRunID,

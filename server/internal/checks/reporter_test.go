@@ -24,6 +24,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
 // githubStub emulates the minimum GitHub API surface the reporter
@@ -141,7 +142,11 @@ func newReporter(t *testing.T, pool *pgxpool.Pool, stub *githubStub) *checks.Rep
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
-	r := checks.NewReporter(store.New(pool), app, "https://gocdnext.dev",
+	reg := vcs.New()
+	reg.Replace(app, []vcs.Integration{{
+		Name: "test", Kind: "github_app", Enabled: true, Source: vcs.SourceEnv,
+	}})
+	r := checks.NewReporter(store.New(pool), reg, "https://gocdnext.dev",
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if r == nil {
 		t.Fatal("reporter is nil")

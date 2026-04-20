@@ -34,10 +34,10 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
-	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
 
@@ -118,23 +118,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	ghApp, err := ghscm.NewAppClientFromEnv(
-		cfg.GithubAppID,
-		cfg.GithubAppPrivateKeyPEM,
-		cfg.GithubAppPrivateKeyFile,
-		cfg.GithubAppAPIBase,
-	)
+	// VCS registry — holds the currently active GitHub App client.
+	// Populated from env at boot; the /settings/integrations admin
+	// CRUD (UI.9.c) will Replace() the contents when the operator
+	// saves new credentials, so checks.Reporter + auto-register see
+	// the new App on the next call without a restart.
+	//
+	// st isn't wired in yet as a DBSource — the store cipher is
+	// configured later in this file — so we bootstrap env-only now
+	// and re-Reload() right after the cipher is set.
+	vcsRegistry, err := vcs.BuildRegistry(context.Background(), cfg, nil, logger)
 	if err != nil {
-		logger.Error("github app: init", "err", err)
+		logger.Error("vcs: bootstrap", "err", err)
 		os.Exit(1)
 	}
-	if ghApp != nil {
-		logger.Info("github app client ready", "app_id", cfg.GithubAppID)
+	if vcsRegistry.GitHubApp() != nil {
+		logger.Info("github app client ready (env)", "app_id", cfg.GithubAppID)
 	} else {
 		logger.Info("github app not configured; auto-register webhook + Checks API disabled")
 	}
 
-	checksReporter := checks.NewReporter(st, ghApp, cfg.PublicBase, logger)
+	checksReporter := checks.NewReporter(st, vcsRegistry, cfg.PublicBase, logger)
 	if checksReporter != nil {
 		logger.Info("github checks reporter enabled")
 	}
@@ -143,13 +147,13 @@ func main() {
 		WithConfigFetcher(&webhook.GitHubConfigFetcher{}).
 		WithChecksReporter(checksReporter)
 	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
-	if ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "" {
+	if cfg.PublicBase != "" && cfg.WebhookToken != "" {
 		projectsHandler = projectsHandler.WithAutoRegister(projectsapi.AutoRegisterConfig{
-			App:           ghApp,
+			VCS:           vcsRegistry,
 			PublicBase:    cfg.PublicBase,
 			WebhookSecret: cfg.WebhookToken,
 		})
-		logger.Info("auto-register webhooks enabled",
+		logger.Info("auto-register webhooks wired",
 			"public_base", cfg.PublicBase)
 	}
 	runsHandler := runsapi.NewHandler(st, logger)
@@ -174,12 +178,16 @@ func main() {
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
 		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes)
 
+	// IntegrationState snapshot reads through the registry so the
+	// summary card on /settings/integrations reflects env OR DB
+	// configuration uniformly.
+	ghAppPresent := vcsRegistry.GitHubApp() != nil
 	adminHandler := adminapi.NewHandler(st, sweeper, adminapi.IntegrationState{
-		GitHubAppConfigured: ghApp != nil,
+		GitHubAppConfigured: ghAppPresent,
 		WebhookTokenSet:     cfg.WebhookToken != "",
 		PublicBaseSet:       cfg.PublicBase != "",
 		ChecksReporterOn:    checksReporter != nil,
-		AutoRegisterOn:      ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "",
+		AutoRegisterOn:      ghAppPresent && cfg.PublicBase != "" && cfg.WebhookToken != "",
 	}, logger)
 	// authProvidersHandler is constructed once we have the Registry
 	// (a few lines below) so it can hot-swap on CRUD writes.
@@ -196,11 +204,21 @@ func main() {
 
 	authCtx, authCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	authRegistry, err := auth.BuildRegistry(authCtx, cfg, st, logger)
-	authCancel()
 	if err != nil {
+		authCancel()
 		logger.Error("auth: build registry", "err", err)
 		os.Exit(1)
 	}
+	// Re-Reload the VCS registry now that the cipher is wired so
+	// DB integrations are picked up on boot. Env-only load at the
+	// top stays correct for deployments that haven't written any
+	// DB rows yet.
+	if cipher != nil {
+		if err := vcs.Reload(authCtx, vcsRegistry, cfg, st, logger); err != nil {
+			logger.Warn("vcs: db reload on boot", "err", err)
+		}
+	}
+	authCancel()
 	authProvidersHandler = adminapi.NewAuthProvidersHandler(st, authRegistry, cfg, logger)
 	authMiddleware := authapi.NewMiddleware(st, logger, cfg.AuthEnabled)
 	authHandler := authapi.NewHandler(authapi.Config{

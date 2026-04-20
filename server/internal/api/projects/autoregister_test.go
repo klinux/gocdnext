@@ -18,6 +18,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
 // keyToPEMInline generates a throwaway RSA key as PEM for the App
@@ -104,8 +105,12 @@ func applyHandler(t *testing.T, api *fakeGitHubAPI) *projects.Handler {
 	if err != nil {
 		t.Fatalf("new app client: %v", err)
 	}
+	reg := vcs.New()
+	reg.Replace(app, []vcs.Integration{{
+		Name: "test", Kind: "github_app", Enabled: true, Source: vcs.SourceEnv,
+	}})
 	return h.WithAutoRegister(projects.AutoRegisterConfig{
-		App:           app,
+		VCS:           reg,
 		PublicBase:    "https://gocdnext.dev",
 		WebhookSecret: "topsecret",
 	})

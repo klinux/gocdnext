@@ -7,27 +7,41 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
 // AutoRegisterConfig wires the handler into the GitHub App flow so
-// `gocdnext apply` can create webhooks in one round-trip. Empty App
-// disables the whole path (the Apply response just won't include the
-// `webhooks` section).
+// `gocdnext apply` can create webhooks in one round-trip. The
+// AppClient is read from the VCS registry at call time so an admin
+// CRUD write takes effect on the next apply without a restart.
+// PublicBase + WebhookSecret are still captured at boot — rotating
+// those without a restart isn't a supported flow today.
 type AutoRegisterConfig struct {
-	App           *ghscm.AppClient
+	VCS           *vcs.Registry
 	PublicBase    string // e.g. https://gocdnext.dev; webhook URL is {base}/api/webhooks/github
 	WebhookSecret string
 }
 
 // WithAutoRegister enables the post-apply webhook registration. All
-// three fields must be set or the handler silently skips — that way
-// dev stacks without an App boot cleanly.
+// three fields must be set (a nil registry is treated as "feature
+// off") or the handler silently skips — that way dev stacks without
+// an App boot cleanly.
 func (h *Handler) WithAutoRegister(cfg AutoRegisterConfig) *Handler {
-	if cfg.App == nil || cfg.PublicBase == "" || cfg.WebhookSecret == "" {
+	if cfg.VCS == nil || cfg.PublicBase == "" || cfg.WebhookSecret == "" {
 		return h
 	}
 	h.autoRegister = &cfg
 	return h
+}
+
+// currentApp returns the active GitHub App client or nil. The
+// reconcileOne path guards on this — "no app right now" becomes a
+// skipped_no_install outcome, not a failure.
+func (c *AutoRegisterConfig) currentApp() *ghscm.AppClient {
+	if c == nil || c.VCS == nil {
+		return nil
+	}
+	return c.VCS.GitHubApp()
 }
 
 // HookRegistration is one line in the apply response's webhooks
@@ -70,6 +84,18 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 	cfg := h.autoRegister
 	res := HookRegistration{Pipeline: pipeline, MaterialURL: materialURL}
 
+	app := cfg.currentApp()
+	if app == nil {
+		// Admin deleted the DB row (or env was the only source and
+		// it's gone). We already gated reconcilePipelines on the
+		// autoRegister struct being non-nil, but the underlying
+		// AppClient can still disappear at runtime — treat as
+		// skipped_no_install so the caller sees a clean outcome.
+		res.Status = "skipped_no_install"
+		res.Error = "no github app configured"
+		return res
+	}
+
 	owner, repo, err := ghscm.ParseRepoURL(materialURL)
 	if err != nil {
 		// Not a GitHub-shaped URL (GitLab etc.); skip rather than error.
@@ -78,7 +104,7 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 		return res
 	}
 
-	installationID, err := cfg.App.InstallationID(ctx, owner, repo)
+	installationID, err := app.InstallationID(ctx, owner, repo)
 	if errors.Is(err, ghscm.ErrNoInstallation) {
 		res.Status = "skipped_no_install"
 		res.Error = "gocdnext App is not installed on " + owner + "/" + repo
@@ -94,7 +120,7 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 		return res
 	}
 
-	existing, err := cfg.App.ListRepoHooks(ctx, installationID, owner, repo)
+	existing, err := app.ListRepoHooks(ctx, installationID, owner, repo)
 	if err != nil {
 		res.Status = "failed"
 		res.Error = err.Error()
@@ -108,7 +134,7 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 		return res
 	}
 
-	created, err := cfg.App.CreateRepoHook(ctx, installationID, ghscm.CreateHookInput{
+	created, err := app.CreateRepoHook(ctx, installationID, ghscm.CreateHookInput{
 		Owner:  owner,
 		Repo:   repo,
 		URL:    hookURL,
