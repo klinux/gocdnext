@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
 )
 
 // Config wires the runner. Send is the single outbound callback; callers plug
@@ -35,6 +36,11 @@ type Config struct {
 	// `artifacts: [paths]`. Nil means "no-op" — the job still succeeds
 	// but no refs are attached to JobResult.
 	Uploader ArtifactUploader
+
+	// Engine executes each script task. Nil defaults to engine.Shell
+	// — the pre-F3 behaviour (`sh -c` on the agent host). K8s-native
+	// deployments set engine.Kubernetes.
+	Engine engine.Engine
 
 	// KeepWorkspace keeps the job's working directory on disk after Execute
 	// finishes. Useful for debugging; default is to remove on success.
@@ -53,6 +59,9 @@ func New(cfg Config) *Runner {
 	}
 	if cfg.WorkspaceRoot == "" {
 		cfg.WorkspaceRoot = filepath.Join(os.TempDir(), "gocdnext-workspace")
+	}
+	if cfg.Engine == nil {
+		cfg.Engine = engine.NewShell()
 	}
 	return &Runner{cfg: cfg}
 }
@@ -117,7 +126,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: plugin step skipped (local runner MVP)", i))
 			continue
 		}
-		exitCode, err := r.runScript(ctx, workDir, script, a.GetEnv(), a, &seq)
+		exitCode, err := r.runScript(ctx, workDir, script, a.GetImage(), a.GetEnv(), a, &seq)
 		if err != nil {
 			log.Warn("runner: script error", "err", err, "task", i)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
@@ -224,11 +233,22 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 	return nil
 }
 
-// runScript shells out via `sh -c` so the user can pipe/redirect/chain in a
-// single string. Env from the assignment layers on top of the agent's env.
-func (r *Runner) runScript(ctx context.Context, workDir, script string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
+// runScript delegates the actual execution to the configured engine
+// (Shell on the host for dev/local; Kubernetes for cluster deploys).
+// The engine calls OnLine for each stdout/stderr line it sees; we
+// turn those into LogLine protos via the same emitLog path used
+// everywhere else (so masking + seq numbering remain centralised).
+func (r *Runner) runScript(ctx context.Context, workDir, script, image string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
-	return r.runCommand(ctx, workDir, "sh", []string{"-c", script}, env, a, seq)
+	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
+		WorkDir: workDir,
+		Image:   image,
+		Env:     env,
+		Script:  script,
+		OnLine: func(stream, text string) {
+			r.emitLog(a, seq, stream, text)
+		},
+	})
 }
 
 // runCommand executes a command and streams stdout/stderr as LogLines. Returns
