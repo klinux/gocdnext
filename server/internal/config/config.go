@@ -47,6 +47,15 @@ type Config struct {
 	ArtifactsKeepLast          int   // keep N most recent runs per pipeline; 0 disables
 	ArtifactsProjectQuotaBytes int64 // per-project soft cap; 0 disables
 	ArtifactsGlobalQuotaBytes  int64 // global hard cap; 0 disables
+
+	// GitHub App (optional): enables auto-register webhook + Checks
+	// API status reporting. AppID + (PrivateKey OR PrivateKeyFile)
+	// must all be set to enable; empty = App disabled, webhooks
+	// are created manually by ops and Checks API is skipped.
+	GithubAppID             int64
+	GithubAppPrivateKeyPEM  string // inline PEM content
+	GithubAppPrivateKeyFile string // path to PEM file (alternative)
+	GithubAppAPIBase        string // default https://api.github.com
 }
 
 func Load() (*Config, error) {
@@ -101,6 +110,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES: %w", err)
 	}
 	c.ArtifactsGlobalQuotaBytes = globalQuota
+
+	if raw := env("GOCDNEXT_GITHUB_APP_ID", ""); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("GOCDNEXT_GITHUB_APP_ID: %w", err)
+		}
+		c.GithubAppID = id
+	}
+	c.GithubAppPrivateKeyPEM = env("GOCDNEXT_GITHUB_APP_PRIVATE_KEY", "")
+	c.GithubAppPrivateKeyFile = env("GOCDNEXT_GITHUB_APP_PRIVATE_KEY_FILE", "")
+	c.GithubAppAPIBase = env("GOCDNEXT_GITHUB_APP_API_BASE", "")
 
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("GOCDNEXT_DATABASE_URL is required")

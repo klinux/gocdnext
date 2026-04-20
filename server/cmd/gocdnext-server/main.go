@@ -28,6 +28,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
+	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -93,6 +94,23 @@ func main() {
 	if artifactStore != nil {
 		runsHandler = runsHandler.WithArtifactStore(artifactStore)
 	}
+
+	ghApp, err := ghscm.NewAppClientFromEnv(
+		cfg.GithubAppID,
+		cfg.GithubAppPrivateKeyPEM,
+		cfg.GithubAppPrivateKeyFile,
+		cfg.GithubAppAPIBase,
+	)
+	if err != nil {
+		logger.Error("github app: init", "err", err)
+		os.Exit(1)
+	}
+	if ghApp != nil {
+		logger.Info("github app client ready", "app_id", cfg.GithubAppID)
+	} else {
+		logger.Info("github app not configured; auto-register webhook + Checks API disabled")
+	}
+	_ = ghApp // consumed by APP.2 (auto-register) + APP.3 (Checks API)
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
