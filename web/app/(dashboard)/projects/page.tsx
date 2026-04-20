@@ -1,5 +1,7 @@
 import Link from "next/link";
 import type { Metadata, Route } from "next";
+
+import { NewProjectDialog } from "@/components/projects/new-project-dialog.client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listProjects } from "@/server/queries/projects";
@@ -19,13 +21,14 @@ export default async function ProjectsPage() {
 
   return (
     <section className="space-y-6">
-      <header className="flex items-baseline justify-between">
+      <header className="flex items-baseline justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Projects</h2>
           <p className="text-sm text-muted-foreground">
             {projects.length} project{projects.length === 1 ? "" : "s"} registered.
           </p>
         </div>
+        <NewProjectDialog />
       </header>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -58,13 +61,17 @@ export default async function ProjectsPage() {
 
 function EmptyState() {
   return (
-    <section className="mx-auto max-w-lg rounded-lg border border-dashed border-border p-10 text-center">
+    <section className="mx-auto max-w-lg space-y-4 rounded-lg border border-dashed border-border p-10 text-center">
       <h2 className="text-xl font-semibold">No projects yet</h2>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Run <code className="rounded bg-muted px-1 py-0.5">gocdnext apply --slug my-project .</code>{" "}
-        from a repo with a <code className="rounded bg-muted px-1 py-0.5">.gocdnext/</code> folder
-        to register your first pipeline.
+      <p className="text-sm text-muted-foreground">
+        Click the button to create one with a template, connect an existing
+        repo, or go empty and add pipelines later. The CLI path (
+        <code className="rounded bg-muted px-1 py-0.5">gocdnext apply</code>)
+        also works for power users.
       </p>
+      <div className="flex justify-center pt-2">
+        <NewProjectDialog />
+      </div>
     </section>
   );
 }
