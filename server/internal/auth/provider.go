@@ -11,6 +11,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 // ProviderName is a short stable string we key users + config on.
@@ -63,10 +64,13 @@ type Provider interface {
 	Exchange(ctx context.Context, code, state, nonce string) (Claims, error)
 }
 
-// Registry is the set of providers enabled at server boot.
-// Iteration order is stable (insertion order) so the login page
-// renders buttons in a deterministic sequence.
+// Registry is the set of providers enabled right now. Contents are
+// swappable (see Replace) so the admin UI can rebuild the set after
+// a CRUD operation without restarting the server. Iteration order
+// is stable (insertion order) so the login page renders buttons in
+// a deterministic sequence.
 type Registry struct {
+	mu        sync.RWMutex
 	providers []Provider
 	byName    map[ProviderName]Provider
 }
@@ -74,25 +78,56 @@ type Registry struct {
 // NewRegistry seeds a registry. A nil slice is valid: the login
 // page just says "no identity providers configured."
 func NewRegistry(providers ...Provider) *Registry {
-	r := &Registry{byName: make(map[ProviderName]Provider, len(providers))}
+	r := &Registry{}
+	r.Replace(providers...)
+	return r
+}
+
+// Replace atomically swaps the provider set. Safe to call
+// concurrently with Get/List/Len from the request path.
+//
+// Name-collision policy: later entries win. First-seen position
+// is preserved so passing Replace(env..., db...) keeps env order
+// in the login page while letting DB rows override the values.
+func (r *Registry) Replace(providers ...Provider) {
+	byName := make(map[ProviderName]Provider, len(providers))
 	for _, p := range providers {
 		if p == nil {
 			continue
 		}
-		r.providers = append(r.providers, p)
-		r.byName[p.Name()] = p
+		byName[p.Name()] = p
 	}
-	return r
+	seen := make(map[ProviderName]bool, len(byName))
+	ordered := make([]Provider, 0, len(byName))
+	for _, p := range providers {
+		if p == nil {
+			continue
+		}
+		name := p.Name()
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		ordered = append(ordered, byName[name])
+	}
+	r.mu.Lock()
+	r.providers = ordered
+	r.byName = byName
+	r.mu.Unlock()
 }
 
 // Get returns the provider registered under `name`, or nil when
 // absent. Handlers should treat nil as "unknown provider" → 404.
 func (r *Registry) Get(name ProviderName) Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.byName[name]
 }
 
 // List returns the providers in insertion order.
 func (r *Registry) List() []Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Provider, len(r.providers))
 	copy(out, r.providers)
 	return out
@@ -101,5 +136,7 @@ func (r *Registry) List() []Provider {
 // Len reports how many providers are enabled. Zero = auth effectively
 // disabled from the login page's perspective.
 func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return len(r.providers)
 }

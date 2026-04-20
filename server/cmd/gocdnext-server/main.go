@@ -181,14 +181,27 @@ func main() {
 		ChecksReporterOn:    checksReporter != nil,
 		AutoRegisterOn:      ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "",
 	}, logger)
+	// authProvidersHandler is constructed once we have the Registry
+	// (a few lines below) so it can hot-swap on CRUD writes.
+	var authProvidersHandler *adminapi.AuthProvidersHandler
+
+	// DB-backed providers need the same AES cipher used for /secrets.
+	// Wire it here so the admin UI can create/edit provider rows and
+	// the bootstrap path can decrypt them. Without a cipher the
+	// store layer returns ErrAuthProviderCipherUnset and only env-
+	// based providers load.
+	if cipher != nil {
+		st.SetAuthCipher(cipher)
+	}
 
 	authCtx, authCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	authRegistry, err := auth.BuildRegistry(authCtx, cfg, logger)
+	authRegistry, err := auth.BuildRegistry(authCtx, cfg, st, logger)
 	authCancel()
 	if err != nil {
 		logger.Error("auth: build registry", "err", err)
 		os.Exit(1)
 	}
+	authProvidersHandler = adminapi.NewAuthProvidersHandler(st, authRegistry, cfg, logger)
 	authMiddleware := authapi.NewMiddleware(st, logger, cfg.AuthEnabled)
 	authHandler := authapi.NewHandler(authapi.Config{
 		Registry:       authRegistry,
@@ -277,6 +290,10 @@ func main() {
 		p.Get("/api/v1/admin/webhooks/{id}", adminHandler.WebhookDetail)
 		p.Get("/api/v1/admin/health", adminHandler.Health)
 		p.Get("/api/v1/admin/integrations/github", adminHandler.IntegrationGitHub)
+		p.Get("/api/v1/admin/auth/providers", authProvidersHandler.List)
+		p.Post("/api/v1/admin/auth/providers", authProvidersHandler.Upsert)
+		p.Delete("/api/v1/admin/auth/providers/{id}", authProvidersHandler.Delete)
+		p.Post("/api/v1/admin/auth/providers/reload", authProvidersHandler.Reload)
 	})
 
 	srv := &http.Server{

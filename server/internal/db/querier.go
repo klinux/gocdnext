@@ -67,6 +67,7 @@ type Querier interface {
 	// caller computes rate = success / (success + failure). Returns
 	// 0 when no terminal runs in the window.
 	DashboardSuccessRate7d(ctx context.Context) (DashboardSuccessRate7dRow, error)
+	DeleteAuthProvider(ctx context.Context, id pgtype.UUID) error
 	DeleteExpiredAuthStates(ctx context.Context) error
 	DeleteExpiredUserSessions(ctx context.Context) error
 	// Called after a successful reclaim so the retry starts with a clean log
@@ -111,6 +112,7 @@ type Querier interface {
 	// Single-row lookup for the JobResult confirmation path. Returns
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
+	GetAuthProviderByID(ctx context.Context, id pgtype.UUID) (AuthProvider, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
 	// check (most common path: no App installed, or feature disabled).
@@ -209,10 +211,17 @@ type Querier interface {
 	// can group artefacts by the job that produced them without an extra
 	// per-artifact lookup. Returns ALL statuses — callers filter as needed.
 	ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UUID) ([]ListArtifactsWithJobByRunRow, error)
+	// Returns every row regardless of `enabled`. The UI filters on
+	// the boolean so admins can see disabled providers they can re-
+	// enable later.
+	ListAuthProviders(ctx context.Context) ([]AuthProvider, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
 	// running work. The scheduler does needs-satisfaction checking in Go so the
 	// query stays readable; the stage gate is the only SQL-level constraint.
 	ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) ([]ListDispatchableJobsRow, error)
+	// Bootstrap path: just the ones that should be registered on
+	// server start (or after a reload).
+	ListEnabledAuthProviders(ctx context.Context) ([]AuthProvider, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
 	// Recent jobs dispatched to this agent. Joined all the way up to
@@ -280,6 +289,7 @@ type Querier interface {
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
+	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
@@ -294,6 +304,9 @@ type Querier interface {
 	// Stamp the last successful config sync. Called after a drift re-apply so
 	// operators can see whether the live config tracks HEAD.
 	UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error
+	// ON CONFLICT (name) DO UPDATE bumps kind + display + id/secret
+	// + issuer + api base + enabled. We never update created_at.
+	UpsertAuthProvider(ctx context.Context, arg UpsertAuthProviderParams) (AuthProvider, error)
 	// Called right after CreateCheckRun on GitHub responds; caller may
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.

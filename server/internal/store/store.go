@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
@@ -23,8 +24,9 @@ var (
 
 // Store is the public entry point; construct once at server start.
 type Store struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
+	pool       *pgxpool.Pool
+	q          *db.Queries
+	authCipher *crypto.Cipher // optional; set via SetAuthCipher
 }
 
 // New wraps an already-configured pgx pool.

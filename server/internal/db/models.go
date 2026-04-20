@@ -39,6 +39,20 @@ type Artifact struct {
 	CreatedAt     pgtype.Timestamptz
 }
 
+type AuthProvider struct {
+	ID            pgtype.UUID
+	Name          string
+	Kind          string
+	DisplayName   string
+	ClientID      string
+	ClientSecret  []byte
+	Issuer        string
+	GithubApiBase string
+	Enabled       bool
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type AuthState struct {
 	StateHash  []byte
 	Provider   string
