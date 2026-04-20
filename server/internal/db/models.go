@@ -140,6 +140,7 @@ type Project struct {
 	Description *string
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+	ConfigPath  string
 }
 
 type Run struct {

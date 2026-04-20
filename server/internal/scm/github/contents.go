@@ -70,13 +70,21 @@ func ParseRepoURL(raw string) (owner, repo string, err error) {
 	return segments[0], segments[1], nil
 }
 
-// FetchGocdnextFolder lists every `*.yaml`/`*.yml` file directly inside the
-// repo's `.gocdnext/` folder at the given ref and returns their content.
-// Non-YAML entries and nested directories are ignored — the config folder
-// is a flat file-per-pipeline convention.
-func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Config, ref string) ([]RawFile, error) {
+// FetchGocdnextFolder lists every `*.yaml`/`*.yml` file directly
+// inside the repo's configured pipeline folder at the given ref
+// and returns their content. Non-YAML entries and nested
+// directories are ignored — the config folder is a flat
+// file-per-pipeline convention.
+//
+// configPath is the repo-relative folder (e.g. ".gocdnext",
+// ".woodpecker", "apps/api/.gocdnext"). Empty → ".gocdnext" for
+// backwards-compat with older callers.
+func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Config, ref, configPath string) ([]RawFile, error) {
 	if cfg.Owner == "" || cfg.Repo == "" {
 		return nil, fmt.Errorf("github: owner and repo are required")
+	}
+	if configPath == "" {
+		configPath = ".gocdnext"
 	}
 	apiBase := cfg.APIBase
 	if apiBase == "" {
@@ -87,10 +95,11 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 	}
 
 	listURL := fmt.Sprintf(
-		"%s/repos/%s/%s/contents/.gocdnext",
+		"%s/repos/%s/%s/contents/%s",
 		strings.TrimRight(apiBase, "/"),
 		url.PathEscape(cfg.Owner),
 		url.PathEscape(cfg.Repo),
+		escapePath(configPath),
 	)
 	if ref != "" {
 		listURL += "?ref=" + url.QueryEscape(ref)
@@ -154,7 +163,7 @@ func fetchContents(ctx context.Context, client *http.Client, token, u string) ([
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("github: %s: .gocdnext folder not found (404)", u)
+		return nil, fmt.Errorf("github: %s: config folder not found (404)", u)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("github: %s returned %d: %s",
@@ -213,4 +222,16 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// escapePath URL-escapes each segment of a slash-delimited path
+// individually — url.PathEscape would turn every slash into %2F,
+// which GitHub's contents API rejects. Supports nested paths
+// like "apps/api/.gocdnext" without mangling the separators.
+func escapePath(p string) string {
+	segments := strings.Split(strings.Trim(p, "/"), "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segments, "/")
 }

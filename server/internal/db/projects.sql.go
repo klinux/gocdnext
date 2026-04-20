@@ -12,20 +12,31 @@ import (
 )
 
 const findProjectBySlug = `-- name: FindProjectBySlug :one
-SELECT id, slug, name, description, created_at, updated_at
+SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
 WHERE slug = $1
 LIMIT 1
 `
 
-func (q *Queries) FindProjectBySlug(ctx context.Context, slug string) (Project, error) {
+type FindProjectBySlugRow struct {
+	ID          pgtype.UUID
+	Slug        string
+	Name        string
+	Description *string
+	ConfigPath  string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) FindProjectBySlug(ctx context.Context, slug string) (FindProjectBySlugRow, error) {
 	row := q.db.QueryRow(ctx, findProjectBySlug, slug)
-	var i Project
+	var i FindProjectBySlugRow
 	err := row.Scan(
 		&i.ID,
 		&i.Slug,
 		&i.Name,
 		&i.Description,
+		&i.ConfigPath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -33,19 +44,21 @@ func (q *Queries) FindProjectBySlug(ctx context.Context, slug string) (Project, 
 }
 
 const upsertProject = `-- name: UpsertProject :one
-INSERT INTO projects (slug, name, description)
-VALUES ($1, $2, $3)
+INSERT INTO projects (slug, name, description, config_path)
+VALUES ($1, $2, $3, COALESCE(NULLIF($4::text, ''), '.gocdnext'))
 ON CONFLICT (slug) DO UPDATE SET
-    name = EXCLUDED.name,
+    name        = EXCLUDED.name,
     description = EXCLUDED.description,
-    updated_at = NOW()
-RETURNING id, slug, name, description, created_at, updated_at, (xmax = 0) AS created
+    config_path = COALESCE(NULLIF(EXCLUDED.config_path, ''), projects.config_path),
+    updated_at  = NOW()
+RETURNING id, slug, name, description, config_path, created_at, updated_at, (xmax = 0) AS created
 `
 
 type UpsertProjectParams struct {
 	Slug        string
 	Name        string
 	Description *string
+	ConfigPath  string
 }
 
 type UpsertProjectRow struct {
@@ -53,19 +66,30 @@ type UpsertProjectRow struct {
 	Slug        string
 	Name        string
 	Description *string
+	ConfigPath  string
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
 	Created     bool
 }
 
+// config_path defaults to '.gocdnext' at the SQL level. Apply
+// callers that don't set it (legacy path, drift re-apply) get
+// that default naturally via COALESCE on the column-side default.
+// Callers that DO set it override via ON CONFLICT.
 func (q *Queries) UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error) {
-	row := q.db.QueryRow(ctx, upsertProject, arg.Slug, arg.Name, arg.Description)
+	row := q.db.QueryRow(ctx, upsertProject,
+		arg.Slug,
+		arg.Name,
+		arg.Description,
+		arg.ConfigPath,
+	)
 	var i UpsertProjectRow
 	err := row.Scan(
 		&i.ID,
 		&i.Slug,
 		&i.Name,
 		&i.Description,
+		&i.ConfigPath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Created,

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
@@ -40,12 +41,17 @@ type ApplyFile struct {
 }
 
 type ApplyRequest struct {
-	Slug        string           `json:"slug"`
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	ConfigRepo  string           `json:"config_repo,omitempty"`
-	Files       []ApplyFile      `json:"files"`
-	SCMSource   *ApplySCMSource  `json:"scm_source,omitempty"`
+	Slug        string          `json:"slug"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	ConfigRepo  string          `json:"config_repo,omitempty"`
+	// ConfigPath overrides the default ".gocdnext" folder where
+	// pipelines live inside the repo. Leave empty to keep the
+	// current value (or default on insert). Validated in the
+	// handler against validConfigPath.
+	ConfigPath string          `json:"config_path,omitempty"`
+	Files      []ApplyFile     `json:"files"`
+	SCMSource  *ApplySCMSource `json:"scm_source,omitempty"`
 }
 
 type ApplySCMSource struct {
@@ -102,6 +108,10 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "slug is required", http.StatusBadRequest)
 		return
 	}
+	if req.ConfigPath != "" && !validConfigPath(req.ConfigPath) {
+		http.Error(w, "invalid config_path: allow letters, digits, . _ - / (no .., no leading /)", http.StatusBadRequest)
+		return
+	}
 	// files is optional: the web "New project" dialog supports an
 	// Empty + Connect-repo flow that just registers metadata (and
 	// optionally an scm_source). ApplyProject with zero pipelines
@@ -133,6 +143,7 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		Name:        req.Name,
 		Description: req.Description,
 		ConfigRepo:  req.ConfigRepo,
+		ConfigPath:  req.ConfigPath,
 		Pipelines:   pipelines,
 		SCMSource:   scm,
 	})
@@ -200,4 +211,31 @@ func parseFiles(files []ApplyFile) ([]*domain.Pipeline, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// configPathRE restricts project-level config paths to a safe
+// shape: letters, digits, dots, dashes, underscores and forward
+// slashes. No leading slash (would look absolute), no "..", no
+// whitespace. Matches what you'd reasonably find at a repo root
+// (".gocdnext", ".woodpecker", "apps/api/.gocdnext").
+var configPathRE = regexp.MustCompile(`^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)*$`)
+
+// validConfigPath returns true when s is a safe, repo-relative
+// folder name the server can hand to GitHub's contents API /
+// filepath.Join without ambiguity. Max length bounds the URL
+// size; "." and ".." segments are rejected explicitly on top of
+// the regex because those slip through the charset check.
+func validConfigPath(s string) bool {
+	if s == "" || len(s) > 512 {
+		return false
+	}
+	if !configPathRE.MatchString(s) {
+		return false
+	}
+	for _, seg := range strings.Split(s, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }

@@ -1,7 +1,8 @@
 -- name: ListProjectsWithCounts :many
 -- Project list used by the dashboard home. Joins enough aggregate info so the
 -- UI renders without round-tripping per row.
-SELECT p.id, p.slug, p.name, p.description, p.created_at, p.updated_at,
+SELECT p.id, p.slug, p.name, p.description, p.config_path,
+       p.created_at, p.updated_at,
        COUNT(DISTINCT pl.id)::BIGINT AS pipeline_count,
        MAX(r.created_at)::TIMESTAMPTZ AS latest_run_at
 FROM projects p
@@ -11,7 +12,7 @@ GROUP BY p.id
 ORDER BY p.updated_at DESC;
 
 -- name: GetProjectBySlug :one
-SELECT id, slug, name, description, created_at, updated_at
+SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
 WHERE slug = $1
 LIMIT 1;

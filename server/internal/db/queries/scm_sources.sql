@@ -71,7 +71,7 @@ SET last_synced_at = NOW(), last_synced_revision = $2
 WHERE id = $1;
 
 -- name: GetProjectByID :one
-SELECT id, slug, name, description, created_at, updated_at
+SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
 WHERE id = $1
 LIMIT 1;

@@ -15,24 +15,29 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// ConfigFetcher resolves the `.gocdnext/` folder for a known scm_source at a
-// given revision. Implementations wrap a provider-specific contents API
-// (GitHub today; GitLab/Bitbucket later). Tests supply an in-memory impl so
-// the drift path can exercise end-to-end without a network call.
+// ConfigFetcher resolves the pipeline config folder for a known
+// scm_source at a given revision. Implementations wrap a
+// provider-specific contents API (GitHub today; GitLab/Bitbucket
+// later). Tests supply an in-memory impl so the drift path can
+// exercise end-to-end without a network call.
+//
+// configPath is the repo-relative folder to read (e.g. ".gocdnext",
+// ".woodpecker", "apps/api/.gocdnext"). Empty → ".gocdnext" for
+// backwards-compat.
 type ConfigFetcher interface {
-	Fetch(ctx context.Context, scm store.SCMSource, ref string) ([]gh.RawFile, error)
+	Fetch(ctx context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error)
 }
 
-// GitHubConfigFetcher is the default implementation. Parses owner/repo out of
-// scm.URL, passes scm.AuthRef as the bearer token when set. Returns an error
-// when the scm.Provider isn't "github" — other providers add their own
-// ConfigFetcher impl.
+// GitHubConfigFetcher is the default implementation. Parses
+// owner/repo out of scm.URL, passes scm.AuthRef as the bearer
+// token when set. Returns an error when the scm.Provider isn't
+// "github" — other providers add their own ConfigFetcher impl.
 type GitHubConfigFetcher struct {
 	Client  *http.Client
 	APIBase string // empty -> github.DefaultAPIBase
 }
 
-func (f *GitHubConfigFetcher) Fetch(ctx context.Context, scm store.SCMSource, ref string) ([]gh.RawFile, error) {
+func (f *GitHubConfigFetcher) Fetch(ctx context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error) {
 	if scm.Provider != "github" {
 		return nil, fmt.Errorf("drift: provider %q not supported by GitHubConfigFetcher", scm.Provider)
 	}
@@ -49,7 +54,7 @@ func (f *GitHubConfigFetcher) Fetch(ctx context.Context, scm store.SCMSource, re
 		Owner:   owner,
 		Repo:    repo,
 		Token:   scm.AuthRef,
-	}, ref)
+	}, ref, configPath)
 }
 
 // DriftOutcome reports what happened when a push arrived for a registered
@@ -79,7 +84,16 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 	}
 	out.Attempted = true
 
-	files, err := h.fetcher.Fetch(ctx, scm, revision)
+	// Project first — we need its config_path to know which
+	// folder to fetch. Failing this before the network call
+	// saves one GitHub round-trip when the row is missing.
+	project, err := h.store.GetProjectByID(ctx, scm.ProjectID)
+	if err != nil {
+		out.Error = fmt.Sprintf("project lookup: %v", err)
+		return out
+	}
+
+	files, err := h.fetcher.Fetch(ctx, scm, revision, project.ConfigPath)
 	if err != nil {
 		out.Error = err.Error()
 		return out
@@ -88,12 +102,6 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 	pipelines, err := parseConfigFiles(files)
 	if err != nil {
 		out.Error = fmt.Sprintf("parse: %v", err)
-		return out
-	}
-
-	project, err := h.store.GetProjectByID(ctx, scm.ProjectID)
-	if err != nil {
-		out.Error = fmt.Sprintf("project lookup: %v", err)
 		return out
 	}
 
@@ -113,6 +121,7 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		Slug:        project.Slug,
 		Name:        project.Name,
 		Description: project.Description,
+		ConfigPath:  project.ConfigPath,
 		Pipelines:   pipelines,
 		SCMSource:   scmInput,
 	}); err != nil {

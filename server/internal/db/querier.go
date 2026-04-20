@@ -109,7 +109,7 @@ type Querier interface {
 	// user can gate downstream on specific outcomes.
 	FindDownstreamUpstreamMaterials(ctx context.Context, arg FindDownstreamUpstreamMaterialsParams) ([]FindDownstreamUpstreamMaterialsRow, error)
 	FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error)
-	FindProjectBySlug(ctx context.Context, slug string) (Project, error)
+	FindProjectBySlug(ctx context.Context, slug string) (FindProjectBySlugRow, error)
 	// Idempotency check for fanout: if we already created a downstream run for
 	// this (pipeline, upstream_run_id) pair, skip.
 	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
@@ -148,8 +148,8 @@ type Querier interface {
 	GetLocalUserForLogin(ctx context.Context, email string) (User, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
-	GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error)
-	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
+	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
+	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
 	// pipeline + revisions without pulling the whole detail query.
 	GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunForActionRow, error)
@@ -353,6 +353,10 @@ type Querier interface {
 	UpsertLocalUser(ctx context.Context, arg UpsertLocalUserParams) (UpsertLocalUserRow, error)
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
+	// config_path defaults to '.gocdnext' at the SQL level. Apply
+	// callers that don't set it (legacy path, drift re-apply) get
+	// that default naturally via COALESCE on the column-side default.
+	// Callers that DO set it override via ON CONFLICT.
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
 	// Bind a project to its SCM source. updated_at only bumps when
 	// something meaningful changes, so idempotent re-applies don't

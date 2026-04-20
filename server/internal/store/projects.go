@@ -16,18 +16,25 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
 
-// ApplyProjectInput is the declarative payload from `gocdnext apply`: a project
-// and the full list of pipelines that should exist under it. Pipelines not in
-// this list are removed; materials not in a pipeline's list are removed.
+// ApplyProjectInput is the declarative payload from `gocdnext
+// apply`: a project and the full list of pipelines that should
+// exist under it. Pipelines not in this list are removed;
+// materials not in a pipeline's list are removed.
 type ApplyProjectInput struct {
 	Slug        string
 	Name        string
 	Description string
 	ConfigRepo  string
-	Pipelines   []*domain.Pipeline
-	// SCMSource, when non-nil, binds this project to an SCM repository that
-	// carries the .gocdnext/ folder. Persisted alongside the project in the
-	// same tx so Apply stays atomic. Omit for legacy / config-less flows.
+	// ConfigPath is the repo-relative folder that holds the
+	// pipeline YAMLs. Empty = preserve existing (on update) or
+	// fall back to the column default `.gocdnext` (on insert).
+	// The Apply handler validates the shape before calling.
+	ConfigPath string
+	Pipelines  []*domain.Pipeline
+	// SCMSource, when non-nil, binds this project to an SCM
+	// repository that carries the pipeline folder. Persisted
+	// alongside the project in the same tx so Apply stays atomic.
+	// Omit for legacy / config-less flows.
 	SCMSource *SCMSourceInput
 }
 
@@ -95,6 +102,7 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 		Slug:        in.Slug,
 		Name:        in.Name,
 		Description: nullableString(in.Description),
+		ConfigPath:  in.ConfigPath, // empty → SQL keeps existing / defaults to .gocdnext
 	})
 	if err != nil {
 		return ApplyProjectResult{}, fmt.Errorf("store: upsert project: %w", err)
@@ -138,8 +146,12 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 		result.PipelinesRemoved = append(result.PipelinesRemoved, row.Name)
 	}
 
+	// Pipelines inherit the project's persisted config_path (what
+	// the upsert just wrote) so a drift re-apply without an
+	// explicit ConfigPath still stamps the right value on each
+	// pipeline row.
 	for _, p := range in.Pipelines {
-		status, err := applyPipeline(ctx, q, proj.ID, p, in.ConfigRepo)
+		status, err := applyPipeline(ctx, q, proj.ID, p, in.ConfigRepo, proj.ConfigPath)
 		if err != nil {
 			return ApplyProjectResult{}, err
 		}
@@ -247,18 +259,21 @@ func newWebhookSecret() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func applyPipeline(ctx context.Context, q *db.Queries, projectID pgtype.UUID, p *domain.Pipeline, configRepo string) (PipelineApplyStatus, error) {
+func applyPipeline(ctx context.Context, q *db.Queries, projectID pgtype.UUID, p *domain.Pipeline, configRepo, configPath string) (PipelineApplyStatus, error) {
 	definition, err := marshalPipelineDefinition(p)
 	if err != nil {
 		return PipelineApplyStatus{}, fmt.Errorf("store: marshal pipeline %s: %w", p.Name, err)
 	}
 
+	if configPath == "" {
+		configPath = ".gocdnext"
+	}
 	row, err := q.UpsertPipeline(ctx, db.UpsertPipelineParams{
 		ProjectID:  projectID,
 		Name:       p.Name,
 		Definition: definition,
 		ConfigRepo: nullableString(configRepo),
-		ConfigPath: ".gocdnext",
+		ConfigPath: configPath,
 	})
 	if err != nil {
 		return PipelineApplyStatus{}, fmt.Errorf("store: upsert pipeline %s: %w", p.Name, err)

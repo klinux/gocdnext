@@ -87,7 +87,7 @@ func TestFetchGocdnextFolder_ReturnsInlineYAMLOnly(t *testing.T) {
 
 	got, err := github.FetchGocdnextFolder(context.Background(), srv.Client(), github.Config{
 		APIBase: srv.URL, Owner: "org", Repo: "repo",
-	}, "abc123")
+	}, "abc123", "")
 	if err != nil {
 		t.Fatalf("FetchGocdnextFolder: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestFetchGocdnextFolder_NotFound(t *testing.T) {
 
 	_, err := github.FetchGocdnextFolder(context.Background(), srv.Client(), github.Config{
 		APIBase: srv.URL, Owner: "org", Repo: "repo",
-	}, "main")
+	}, "main", "")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err = %v, want not-found", err)
 	}
@@ -129,7 +129,7 @@ func TestFetchGocdnextFolder_SendsAuthHeaderWhenTokenSet(t *testing.T) {
 
 	_, err := github.FetchGocdnextFolder(context.Background(), srv.Client(), github.Config{
 		APIBase: srv.URL, Owner: "org", Repo: "repo", Token: "ghp_xyz",
-	}, "")
+	}, "", "")
 	if err != nil {
 		t.Fatalf("FetchGocdnextFolder: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestFetchGocdnextFolder_FallsBackToDownloadURL(t *testing.T) {
 
 	got, err := github.FetchGocdnextFolder(context.Background(), srv.Client(), github.Config{
 		APIBase: srv.URL, Owner: "org", Repo: "repo",
-	}, "")
+	}, "", "")
 	if err != nil {
 		t.Fatalf("FetchGocdnextFolder: %v", err)
 	}

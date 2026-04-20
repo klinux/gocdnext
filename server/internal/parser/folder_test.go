@@ -6,7 +6,7 @@ import (
 
 func TestLoadFolder_Fanout(t *testing.T) {
 	// Uses the examples/fanout fixture from the repo — 3 pipelines in one folder.
-	got, err := LoadFolder("../../../examples/fanout", "fanout-proj")
+	got, err := LoadFolder("../../../examples/fanout", "", "fanout-proj")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestLoadFolder_Fanout(t *testing.T) {
 func TestLoadFolder_FilenameFallback(t *testing.T) {
 	// examples/matrix has one file (cross-build.yaml) with an explicit name
 	// field matching the filename — serves as a sanity check.
-	got, err := LoadFolder("../../../examples/matrix", "matrix-proj")
+	got, err := LoadFolder("../../../examples/matrix", "", "matrix-proj")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

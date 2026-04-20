@@ -34,6 +34,10 @@ export function NewProjectDialog() {
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  // Repo-relative folder for pipeline YAMLs. ".gocdnext" is the
+  // default; teams with a different convention (`.woodpecker`,
+  // `apps/api/.gocdnext`, …) override per project.
+  const [configPath, setConfigPath] = useState(".gocdnext");
 
   const [mode, setMode] = useState<Mode>("repo");
 
@@ -52,6 +56,7 @@ export function NewProjectDialog() {
     setSlug("");
     setName("");
     setDescription("");
+    setConfigPath(".gocdnext");
     setMode("repo");
     setScmProvider("github");
     setScmURL("");
@@ -82,6 +87,7 @@ export function NewProjectDialog() {
         slug: slug.trim(),
         name: name.trim(),
         description: description.trim() || undefined,
+        config_path: configPath.trim() || undefined,
       };
       if (mode === "repo") {
         input.scm_source = {
@@ -160,6 +166,16 @@ export function NewProjectDialog() {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="What this project does, who owns it…"
+          />
+        </Field>
+        <Field
+          label="Config folder"
+          hint="repo-relative path to pipeline YAMLs · default .gocdnext"
+        >
+          <Input
+            value={configPath}
+            onChange={(e) => setConfigPath(e.target.value)}
+            placeholder=".gocdnext"
           />
         </Field>
 

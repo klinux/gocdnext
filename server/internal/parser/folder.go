@@ -10,17 +10,22 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
 
-// ConfigFolderName is the conventional directory inside a repo that holds
-// pipeline definitions. One file = one pipeline.
-const ConfigFolderName = ".gocdnext"
+// DefaultConfigFolder is the convention applied when a caller
+// doesn't pass an explicit per-project path. Projects can override
+// via projects.config_path (UI.10.b).
+const DefaultConfigFolder = ".gocdnext"
 
-// LoadFolder reads every *.yaml / *.yml file inside `.gocdnext/` and returns
-// the parsed pipelines. Filenames (without extension) are used as the
-// pipeline name fallback when the file has no `name:` field.
+// LoadFolder reads every *.yaml / *.yml file inside <root>/<path>
+// and returns the parsed pipelines. Filenames (without extension)
+// are used as the pipeline name fallback when the file has no
+// `name:` field. An empty configPath resolves to DefaultConfigFolder.
 //
 // Returns a stable, sorted result for reproducible diffs in git / UI.
-func LoadFolder(root, projectID string) ([]*domain.Pipeline, error) {
-	dir := filepath.Join(root, ConfigFolderName)
+func LoadFolder(root, configPath, projectID string) ([]*domain.Pipeline, error) {
+	if configPath == "" {
+		configPath = DefaultConfigFolder
+	}
+	dir := filepath.Join(root, configPath)
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", dir, err)

@@ -15,7 +15,6 @@ type Config struct {
 	GRPCAddr     string
 	DatabaseURL  string
 	LogLevel     slog.Level
-	ConfigFolder string // folder name in repos holding pipeline YAMLs (.gocdnext)
 	SecretKeyHex string // 64-char hex AES-256 key for encrypting secrets at rest
 
 	// Artifact storage. Backend selects the implementation; the other
@@ -114,11 +113,18 @@ func Load() (*Config, error) {
 		slog.Warn("config: GOCDNEXT_WEBHOOK_TOKEN is deprecated and ignored; secrets are per-repo now (see /settings/integrations)")
 	}
 
+	// GOCDNEXT_CONFIG_FOLDER was never read off the Config struct
+	// and is now per-project (projects.config_path). Warn the
+	// operator if they still have it in env so the onboarding
+	// docs don't mislead.
+	if legacy := env("GOCDNEXT_CONFIG_FOLDER", ""); legacy != "" {
+		slog.Warn("config: GOCDNEXT_CONFIG_FOLDER is deprecated and ignored; set it per project via /projects → Connect repo")
+	}
+
 	c := &Config{
 		HTTPAddr:     env("GOCDNEXT_HTTP_ADDR", ":8153"),
 		GRPCAddr:     env("GOCDNEXT_GRPC_ADDR", ":8154"),
 		DatabaseURL:  env("GOCDNEXT_DATABASE_URL", ""),
-		ConfigFolder: env("GOCDNEXT_CONFIG_FOLDER", ".gocdnext"),
 		SecretKeyHex: env("GOCDNEXT_SECRET_KEY", ""),
 
 		ArtifactsBackend:    strings.ToLower(env("GOCDNEXT_ARTIFACTS_BACKEND", "filesystem")),

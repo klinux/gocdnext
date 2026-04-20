@@ -19,10 +19,23 @@ const scmSourceSchema = z.object({
   webhook_secret: z.string().max(256).optional(),
 });
 
+// Config path shape: same rule as the backend — letters, digits,
+// . _ - / only, no leading slash, no "..". Empty means "default
+// .gocdnext on insert / keep existing on update".
+const configPathSchema = z
+  .string()
+  .max(512)
+  .regex(
+    /^(?!.*(^|\/)\.\.($|\/))[a-zA-Z0-9._-]+(\/[a-zA-Z0-9._-]+)*$/,
+    "letters, digits, . _ - / only; no .., no leading /",
+  )
+  .optional();
+
 const createProjectSchema = z.object({
   slug: projectSlugSchema,
   name: z.string().min(1).max(128),
   description: z.string().max(2000).optional(),
+  config_path: configPathSchema,
   files: z.array(fileSchema).optional(),
   scm_source: scmSourceSchema.optional(),
 });
@@ -63,6 +76,7 @@ export async function createProject(
         slug: parsed.data.slug,
         name: parsed.data.name,
         description: parsed.data.description ?? "",
+        config_path: parsed.data.config_path ?? "",
         files: parsed.data.files ?? [],
         ...(parsed.data.scm_source ? { scm_source: parsed.data.scm_source } : {}),
       }),

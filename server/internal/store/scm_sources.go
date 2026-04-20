@@ -38,13 +38,15 @@ type SCMSource struct {
 	UpdatedAt          time.Time
 }
 
-// ProjectInfo is the thin shape used by drift re-apply to rebuild an
-// ApplyProjectInput — we only need slug/name/description.
+// ProjectInfo is the thin shape used by drift re-apply to
+// rebuild an ApplyProjectInput + by the webhook fetch path to
+// know which folder to read from the remote repo.
 type ProjectInfo struct {
 	ID          uuid.UUID
 	Slug        string
 	Name        string
 	Description string
+	ConfigPath  string
 }
 
 // FindSCMSourceByURL looks up the scm_source bound to a given repo URL. The
@@ -168,5 +170,6 @@ func (s *Store) GetProjectByID(ctx context.Context, id uuid.UUID) (ProjectInfo, 
 		Slug:        row.Slug,
 		Name:        row.Name,
 		Description: stringValue(row.Description),
+		ConfigPath:  row.ConfigPath,
 	}, nil
 }

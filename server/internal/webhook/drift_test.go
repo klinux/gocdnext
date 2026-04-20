@@ -24,15 +24,17 @@ type fakeFetcher struct {
 	err   error
 	calls int
 	last  struct {
-		scm store.SCMSource
-		ref string
+		scm        store.SCMSource
+		ref        string
+		configPath string
 	}
 }
 
-func (f *fakeFetcher) Fetch(_ context.Context, scm store.SCMSource, ref string) ([]gh.RawFile, error) {
+func (f *fakeFetcher) Fetch(_ context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error) {
 	f.calls++
 	f.last.scm = scm
 	f.last.ref = ref
+	f.last.configPath = configPath
 	return f.files, f.err
 }
 

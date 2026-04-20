@@ -12,20 +12,31 @@ import (
 )
 
 const getProjectBySlug = `-- name: GetProjectBySlug :one
-SELECT id, slug, name, description, created_at, updated_at
+SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
 WHERE slug = $1
 LIMIT 1
 `
 
-func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (Project, error) {
+type GetProjectBySlugRow struct {
+	ID          pgtype.UUID
+	Slug        string
+	Name        string
+	Description *string
+	ConfigPath  string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error) {
 	row := q.db.QueryRow(ctx, getProjectBySlug, slug)
-	var i Project
+	var i GetProjectBySlugRow
 	err := row.Scan(
 		&i.ID,
 		&i.Slug,
 		&i.Name,
 		&i.Description,
+		&i.ConfigPath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -275,7 +286,8 @@ func (q *Queries) ListPipelinesByProjectSlug(ctx context.Context, slug string) (
 }
 
 const listProjectsWithCounts = `-- name: ListProjectsWithCounts :many
-SELECT p.id, p.slug, p.name, p.description, p.created_at, p.updated_at,
+SELECT p.id, p.slug, p.name, p.description, p.config_path,
+       p.created_at, p.updated_at,
        COUNT(DISTINCT pl.id)::BIGINT AS pipeline_count,
        MAX(r.created_at)::TIMESTAMPTZ AS latest_run_at
 FROM projects p
@@ -290,6 +302,7 @@ type ListProjectsWithCountsRow struct {
 	Slug          string
 	Name          string
 	Description   *string
+	ConfigPath    string
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
 	PipelineCount int64
@@ -312,6 +325,7 @@ func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWit
 			&i.Slug,
 			&i.Name,
 			&i.Description,
+			&i.ConfigPath,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PipelineCount,

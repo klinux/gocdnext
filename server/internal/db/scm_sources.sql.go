@@ -55,20 +55,31 @@ func (q *Queries) FindScmSourceByURL(ctx context.Context, url string) (FindScmSo
 }
 
 const getProjectByID = `-- name: GetProjectByID :one
-SELECT id, slug, name, description, created_at, updated_at
+SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
 WHERE id = $1
 LIMIT 1
 `
 
-func (q *Queries) GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error) {
+type GetProjectByIDRow struct {
+	ID          pgtype.UUID
+	Slug        string
+	Name        string
+	Description *string
+	ConfigPath  string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error) {
 	row := q.db.QueryRow(ctx, getProjectByID, id)
-	var i Project
+	var i GetProjectByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Slug,
 		&i.Name,
 		&i.Description,
+		&i.ConfigPath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
