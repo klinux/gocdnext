@@ -189,9 +189,11 @@ func main() {
 		ChecksReporterOn:    checksReporter != nil,
 		AutoRegisterOn:      ghAppPresent && cfg.PublicBase != "" && cfg.WebhookToken != "",
 	}, logger)
-	// authProvidersHandler is constructed once we have the Registry
-	// (a few lines below) so it can hot-swap on CRUD writes.
+	// authProvidersHandler + vcsIntegrationsHandler are wired
+	// later (after the cipher + auth registry are ready). Declared
+	// here so the router block can reference them.
 	var authProvidersHandler *adminapi.AuthProvidersHandler
+	var vcsIntegrationsHandler *adminapi.VCSIntegrationsHandler
 
 	// DB-backed providers need the same AES cipher used for /secrets.
 	// Wire it here so the admin UI can create/edit provider rows and
@@ -220,6 +222,7 @@ func main() {
 	}
 	authCancel()
 	authProvidersHandler = adminapi.NewAuthProvidersHandler(st, authRegistry, cfg, logger)
+	vcsIntegrationsHandler = adminapi.NewVCSIntegrationsHandler(st, vcsRegistry, cfg, logger)
 	authMiddleware := authapi.NewMiddleware(st, logger, cfg.AuthEnabled)
 	authHandler := authapi.NewHandler(authapi.Config{
 		Registry:       authRegistry,
@@ -312,6 +315,10 @@ func main() {
 		p.Post("/api/v1/admin/auth/providers", authProvidersHandler.Upsert)
 		p.Delete("/api/v1/admin/auth/providers/{id}", authProvidersHandler.Delete)
 		p.Post("/api/v1/admin/auth/providers/reload", authProvidersHandler.Reload)
+		p.Get("/api/v1/admin/integrations/vcs", vcsIntegrationsHandler.List)
+		p.Post("/api/v1/admin/integrations/vcs", vcsIntegrationsHandler.Upsert)
+		p.Delete("/api/v1/admin/integrations/vcs/{id}", vcsIntegrationsHandler.Delete)
+		p.Post("/api/v1/admin/integrations/vcs/reload", vcsIntegrationsHandler.Reload)
 	})
 
 	srv := &http.Server{
