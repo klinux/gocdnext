@@ -1,22 +1,34 @@
 import type { Metadata } from "next";
 import { Check, X } from "lucide-react";
 
+import { VCSIntegrationsAdminView } from "@/components/settings/vcs-integrations.client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusPill } from "@/components/shared/status-pill";
-import { getGitHubIntegration } from "@/server/queries/admin";
+import {
+  getGitHubIntegration,
+  listVCSIntegrations,
+} from "@/server/queries/admin";
 
 export const metadata: Metadata = {
   title: "Settings — Integrations",
 };
 
+export const dynamic = "force-dynamic";
+
 export default async function IntegrationsPage() {
-  const gh = await getGitHubIntegration();
+  // Fetch both the summary booleans (env-derived wiring check) and
+  // the full VCS integration list (DB + registry view). Runs in
+  // parallel so the page load stays snappy.
+  const [gh, vcs] = await Promise.all([
+    getGitHubIntegration(),
+    listVCSIntegrations(),
+  ]);
 
   const rows: { label: string; value: boolean; hint?: string }[] = [
     {
       label: "GitHub App",
       value: gh.github_app_configured,
-      hint: "APP_ID + private key env vars are set.",
+      hint: "An App client is active (from env or DB).",
     },
     {
       label: "Webhook token",
@@ -44,11 +56,10 @@ export default async function IntegrationsPage() {
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>GitHub</CardTitle>
+          <CardTitle className="text-base">Wiring summary</CardTitle>
           <CardDescription>
-            Values are surfaced as booleans only. The concrete secrets and URLs
-            live in <code className="font-mono">GOCDNEXT_GITHUB_*</code> env
-            vars at the control-plane boot.
+            Quick overview of which control-plane features are reachable right
+            now. Configure integrations below — the flags refresh on save.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -72,12 +83,17 @@ export default async function IntegrationsPage() {
         </CardContent>
       </Card>
 
+      <VCSIntegrationsAdminView
+        integrations={vcs.integrations}
+        active={vcs.active}
+      />
+
       <Card>
         <CardHeader>
-          <CardTitle>GitLab · Bitbucket</CardTitle>
+          <CardTitle className="text-base">GitLab · Bitbucket</CardTitle>
           <CardDescription>
-            Not yet supported. Planned alongside the multi-provider auth work
-            (UI.6): once OIDC is generic, the webhook vocabulary can follow.
+            Not yet supported. Planned alongside the auth OIDC work: once the
+            registry is polyglot, the webhook vocabulary follows.
           </CardDescription>
         </CardHeader>
       </Card>

@@ -268,6 +268,42 @@ export type AuthProvidersAdmin = {
   env_only: string[];
 };
 
+// DB-managed VCS integration row. Secrets never cross the wire —
+// has_private_key / has_webhook_secret tell the UI whether the
+// stored ciphertext exists so the dialog can render "••••".
+export type ConfiguredVCSIntegration = {
+  id: string;
+  kind: "github_app";
+  name: string;
+  display_name: string;
+  app_id?: number;
+  api_base?: string;
+  enabled: boolean;
+  has_private_key: boolean;
+  has_webhook_secret: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+// Active registry view. Source=env rows are read-only in the UI;
+// source=db rows render edit/delete controls.
+export type ActiveVCSIntegration = {
+  id?: string;
+  name: string;
+  kind: string;
+  display_name?: string;
+  app_id?: number;
+  api_base?: string;
+  enabled: boolean;
+  source: "env" | "db";
+  updated_at?: string;
+};
+
+export type VCSIntegrationsAdmin = {
+  integrations: ConfiguredVCSIntegration[];
+  active: ActiveVCSIntegration[];
+};
+
 export type GitHubIntegration = {
   github_app_configured: boolean;
   webhook_token_set: boolean;

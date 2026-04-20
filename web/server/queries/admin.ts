@@ -11,6 +11,7 @@ import type {
   AuthProvidersAdmin,
   GitHubIntegration,
   RetentionSnapshot,
+  VCSIntegrationsAdmin,
   WebhookDeliveriesResponse,
   WebhookDeliveryDetail,
 } from "@/types/api";
@@ -74,4 +75,8 @@ export async function getWebhookDelivery(id: number): Promise<WebhookDeliveryDet
 
 export async function listConfiguredAuthProviders(): Promise<AuthProvidersAdmin> {
   return readJSON<AuthProvidersAdmin>("/api/v1/admin/auth/providers");
+}
+
+export async function listVCSIntegrations(): Promise<VCSIntegrationsAdmin> {
+  return readJSON<VCSIntegrationsAdmin>("/api/v1/admin/integrations/vcs");
 }
