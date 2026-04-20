@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -61,37 +62,45 @@ export function UserMenu({ user, loginBase }: Props) {
         }
       />
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel className="flex items-start gap-2">
-          <Avatar url={user.avatar_url} initials={initials} />
-          <div className="min-w-0">
-            <p className="truncate text-xs font-medium">
-              {user.name || user.email}
-            </p>
-            <p className="truncate text-[10px] text-muted-foreground">
-              {user.email}
-            </p>
-            <p className="mt-0.5 inline-flex items-center gap-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              {user.role === "admin" ? (
-                <ShieldCheck className="size-3" />
-              ) : (
-                <UserIcon className="size-3" />
-              )}
-              {user.role}
-            </p>
-          </div>
-        </DropdownMenuLabel>
+        {/* base-ui's Menu.GroupLabel requires a Menu.Group parent.
+            We wrap the header in a Group; the action items below
+            live in a second Group so each keeps its own a11y
+            semantics. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="flex items-start gap-2">
+            <Avatar url={user.avatar_url} initials={initials} />
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium">
+                {user.name || user.email}
+              </p>
+              <p className="truncate text-[10px] text-muted-foreground">
+                {user.email}
+              </p>
+              <p className="mt-0.5 inline-flex items-center gap-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                {user.role === "admin" ? (
+                  <ShieldCheck className="size-3" />
+                ) : (
+                  <UserIcon className="size-3" />
+                )}
+                {user.role}
+              </p>
+            </div>
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={() => router.push("/account" as Route)}
-          disabled={pending}
-        >
-          <Settings className="size-4" />
-          Account
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={doLogout} disabled={pending}>
-          <LogOut className="size-4" />
-          Sign out
-        </DropdownMenuItem>
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            onClick={() => router.push("/account" as Route)}
+            disabled={pending}
+          >
+            <Settings className="size-4" />
+            Account
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={doLogout} disabled={pending}>
+            <LogOut className="size-4" />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled className="text-[10px] text-muted-foreground">
           via {user.provider} · {loginBase}
