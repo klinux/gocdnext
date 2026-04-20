@@ -1,37 +1,44 @@
 # Roadmap
 
-## Agora (2026-04-19)
+## Agora (2026-04-20)
 
-Em andamento: **Fase E2 — artefatos**. Design fechado em
-[artifacts-design.md](artifacts-design.md).
+**Fase E2 — artefatos ✅ (fechada).** 9 commits:
 
-- **E2a.1 — storage + filesystem backend + handler assinado.** ✅
-  `artifacts.Store` interface, filesystem default, HMAC signed URLs,
-  handler HTTP `/artifacts/{token}`, tabela `artifacts` com campos de
-  retenção.
-- **E2a.2 — upload end-to-end.** ✅ Proto
-  `RequestArtifactUpload`, RPC server-side, agent tar+gz + PUT,
-  confirmação via HEAD+JobResult, MinIO fora do docker-compose.
-- **E2b.1 — S3 backend.** ✅ AWS SDK v2, endpoint-overridable (R2,
-  Tigris, LocalStack). Integração via LocalStack.
-- **E2b.2 — GCS backend.** ✅ `cloud.google.com/go/storage`, V4
-  signing com JSON service-account key. Integração parcial via
-  fake-gcs-server (Put/Head/Delete; Get depende de download URL
-  externa que o fake não resolve bem — coberto por teste direto em
-  prod).
-- **E2c — download intra-run.** ✅ `needs_artifacts:` no YAML,
-  scheduler resolve + emite GETs assinados no `JobAssignment`,
-  agent baixa+verifica sha+untara antes das tasks.
-- **E2d.1 — fanout cross-run.** ✅ `from_pipeline: build-core` puxa
-  artefatos da run upstream que triggou. `examples/fanout/` deixa
-  de ser teatro.
-- **E2d.2 — sweeper de retenção.** ✅ 4 camadas (TTL, keep-last
-  por pipeline, quota de projeto soft, quota global hard), ordem
-  determinística, idempotente, pinned-at skipa tudo.
+- **E2a.1** storage interface + filesystem backend + handler assinado
+- **E2a.2** upload end-to-end (RPC + agent tar + JobResult reconcile;
+  MinIO sai do docker-compose)
+- **E2b.1** S3 backend (AWS SDK v2 + LocalStack integration)
+- **E2b.2** GCS backend (V4 signing, fake-gcs-server parcial)
+- **UI Artifacts tab** na página de run (polling + download signed URL)
+- **E2c** download intra-run (`needs_artifacts:` + untar + sha check)
+- **E2d.1** fanout cross-run (`from_pipeline:` via cause_detail.upstream)
+- **E2d.2.a** sweeper TTL + idempotent retry
+- **E2d.2.b** keep-last + quota de projeto + quota global
 
-**Artefato fechado.** Volta pra mesa **dogfood-readiness**: VSM +
-xyflow (diferencial visual), PR support, auto-register webhook via
-GitHub App.
+**VSM ✅ (2 commits).** Endpoint `/api/v1/projects/{slug}/vsm` retorna
+nodes (pipelines + latest run + git materials) + edges (upstream).
+Página `/projects/{slug}/vsm` com `@xyflow/react`, layout por depth
+(upstream roots à esquerda), click no counter leva ao run detail.
+
+**PR.1 ✅ (1 commit).** Webhook aceita `pull_request` (opened /
+synchronize / reopened). Match por (repo, base_ref) quando material
+lista `pull_request` em `on:`. Run criada com branch = head ref,
+cause=`pull_request`, cause_detail carrega metadata. UI mostra banner
+com #number, author, head→base, short SHA. Closed/merged ignorados.
+
+**Próximo: GitHub App — auto-register webhook + Checks API** (slice
+combinada, mesma infra de credenciais):
+
+- **APP.1** — `github.AppClient` (JWT + installation token cache +
+  HTTP wrapper) + armazenamento da App private key via `Resolver`.
+- **APP.2** — auto-register webhook: `gocdnext apply` cria hook via
+  GitHub API quando material git tem `auto_register_webhook: true` e
+  o App está instalado no repo.
+- **APP.3** — Checks API: server reporta `in_progress` ao dispatch +
+  `success`/`failure` no JobResult, via installation token do repo.
+
+Depois disso a **dogfood-readiness** estrutural fecha e a Fase 3
+(Helm + K8s agent + pipelines reais) entra em cena.
 
 ## Fase 0 — fundação ✅
 
@@ -66,10 +73,11 @@ Critério de saída atingido: push → pipeline roda → logs visíveis no UI.
 - [x] Tag matching: agente com `tags: [docker]` só recebe jobs com tag
 - [x] Secrets: store AES-GCM, `Resolver` interface, UI shadcn, mask em log
 - [x] Reaper: reclaim de jobs órfãos, retry contados por tentativa
-- [ ] **Artefatos** — em andamento (Fase E2 acima)
-- [ ] Endpoint VSM + visualização `@xyflow/react`
-- [ ] Suporte nativo a PR (branch-per-run, counters isolados)
-- [ ] Auto-register de webhook via GitHub App flow (schema já tem a flag)
+- [x] **Artefatos** — Fase E2 fechada (acima)
+- [x] Endpoint VSM + visualização `@xyflow/react`
+- [x] Suporte nativo a PR (trigger + UI; Checks API vai na próxima)
+- [ ] Auto-register de webhook via GitHub App flow (APP.2 abaixo)
+- [ ] GitHub Checks API reportando status do run (APP.3 abaixo)
 
 ## Fase 3 — validação interna
 
