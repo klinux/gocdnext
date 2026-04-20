@@ -57,6 +57,10 @@ type Handler struct {
 	cfg            Config
 	allowedDomains []string
 	adminEmails    []string
+	// localRL throttles /auth/login/local so a scanner can't
+	// brute-force a weak break-glass password. In-memory, per-
+	// process — good enough for a single-binary CI server.
+	localRL *loginRateLimiter
 }
 
 // NewHandler bakes the config into an idempotent handler.
@@ -64,7 +68,7 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	h := &Handler{cfg: cfg}
+	h := &Handler{cfg: cfg, localRL: newLoginRateLimiter()}
 	for _, d := range cfg.AllowedDomains {
 		h.allowedDomains = append(h.allowedDomains, strings.ToLower(strings.TrimPrefix(d, "@")))
 	}
@@ -76,14 +80,17 @@ func NewHandler(cfg Config) *Handler {
 
 // Mount registers the auth routes under /auth/* on the given router.
 // Path shape: /auth/providers, /auth/login/{provider}, /auth/callback/{provider},
-// /auth/logout, /api/v1/me. The me-endpoint goes under /api/v1 on
-// purpose so the frontend's single fetch layer handles it.
+// /auth/logout, /auth/login/local, /api/v1/me. The me-endpoint and
+// local-password-change go under /api/v1 so the frontend's single
+// fetch layer handles them.
 func (h *Handler) Mount(r chi.Router) {
 	r.Get("/auth/providers", h.Providers)
 	r.Get("/auth/login/{provider}", h.Login)
 	r.Get("/auth/callback/{provider}", h.Callback)
+	r.Post("/auth/login/local", h.LocalLogin)
 	r.Post("/auth/logout", h.Logout)
 	r.Get("/api/v1/me", h.Me)
+	r.Post("/api/v1/me/password", h.ChangeOwnPassword)
 }
 
 // Providers handles GET /auth/providers. Returns the enabled providers
@@ -98,9 +105,19 @@ func (h *Handler) Providers(w http.ResponseWriter, r *http.Request) {
 	for _, p := range list {
 		out = append(out, item{Name: string(p.Name()), Display: p.DisplayName()})
 	}
+	// Check for local users so the UI knows whether to render the
+	// password form. A DB failure here is swallowed: the login
+	// page still shows the OIDC buttons.
+	localEnabled := false
+	if has, err := h.cfg.Store.HasLocalUsers(r.Context()); err == nil {
+		localEnabled = has
+	} else {
+		h.cfg.Logger.Warn("auth providers: has local users", "err", err)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":   h.cfg.Registry.Len() > 0,
-		"providers": out,
+		"enabled":       h.cfg.Registry.Len() > 0 || localEnabled,
+		"providers":     out,
+		"local_enabled": localEnabled,
 	})
 }
 

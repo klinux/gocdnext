@@ -47,6 +47,10 @@ type Querier interface {
 	// Single-use: delete as we read. Returning nothing = no such state
 	// (or it expired and the sweeper got to it first).
 	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
+	// Drives the "show local login form" decision on the login page:
+	// no rows = zero local admins, the form stays hidden so the page
+	// doesn't advertise a dead code path.
+	CountLocalUsers(ctx context.Context) (int64, error)
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Paired with ListRunsGlobal so /runs can render "N of M" with the
 	// same filter args. Returned as bigint to fit any table; UI only
@@ -133,6 +137,10 @@ type Querier interface {
 	// committer timestamp is older (rebases, fast-forwards of older
 	// commits).
 	GetLatestModificationForPipeline(ctx context.Context, pipelineID pgtype.UUID) (GetLatestModificationForPipelineRow, error)
+	// Fetches the row we need to bcrypt-compare on a login POST.
+	// Filtering by provider keeps an OIDC user with the same email
+	// from accidentally answering to a password form.
+	GetLocalUserForLogin(ctx context.Context, email string) (User, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error)
@@ -158,7 +166,7 @@ type Querier interface {
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
-	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	// Returns the session + its user row. Expired rows are filtered in
 	// the query so a single round-trip tells the handler "yes/no".
 	GetUserSession(ctx context.Context, id []byte) (GetUserSessionRow, error)
@@ -269,7 +277,7 @@ type Querier interface {
 	// @staleness. The reaper walks this list every tick and either re-queues or
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
-	ListUsers(ctx context.Context) ([]User, error)
+	ListUsers(ctx context.Context) ([]ListUsersRow, error)
 	// Admin console feed. Most recent first; indexed on received_at.
 	// Filter by provider + status keep the page useful even under
 	// heavy traffic. Empty string = no filter on that axis.
@@ -301,6 +309,10 @@ type Querier interface {
 	// are still alive. Tiny write per heartbeat (default cadence 30s).
 	UpdateAgentLastSeen(ctx context.Context, id pgtype.UUID) error
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
+	// Dedicated password-only write. Used when an admin changes their
+	// own password from /settings/account — we never want to let the
+	// admin also flip their role through that surface.
+	UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUserPasswordParams) error
 	// Stamp the last successful config sync. Called after a drift re-apply so
 	// operators can see whether the live config tracks HEAD.
 	UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error
@@ -311,6 +323,10 @@ type Querier interface {
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.
 	UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubCheckRunParams) error
+	// Create/update a local account. Called from the CLI and the
+	// admin self-service change-password endpoint. external_id is
+	// the email so the (provider, external_id) unique key covers us.
+	UpsertLocalUser(ctx context.Context, arg UpsertLocalUserParams) (UpsertLocalUserRow, error)
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
@@ -326,7 +342,7 @@ type Querier interface {
 	// fields we pull from the IdP every time. Role is intentionally
 	// NOT overwritten on conflict — it's admin-assigned and must not
 	// revert to 'user' just because the IdP doesn't carry it.
-	UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (User, error)
+	UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (UpsertUserByProviderRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

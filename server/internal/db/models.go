@@ -190,17 +190,18 @@ type StageRun struct {
 }
 
 type User struct {
-	ID          pgtype.UUID
-	Email       string
-	Name        string
-	AvatarUrl   string
-	Provider    string
-	ExternalID  string
-	Role        string
-	DisabledAt  pgtype.Timestamptz
-	LastLoginAt pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
+	ID           pgtype.UUID
+	Email        string
+	Name         string
+	AvatarUrl    string
+	Provider     string
+	ExternalID   string
+	Role         string
+	DisabledAt   pgtype.Timestamptz
+	LastLoginAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	PasswordHash []byte
 }
 
 type UserSession struct {

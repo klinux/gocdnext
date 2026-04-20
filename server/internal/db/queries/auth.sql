@@ -70,3 +70,43 @@ DELETE FROM user_sessions WHERE user_id = $1;
 
 -- name: DeleteExpiredUserSessions :exec
 DELETE FROM user_sessions WHERE expires_at <= NOW();
+
+-- name: CountLocalUsers :one
+-- Drives the "show local login form" decision on the login page:
+-- no rows = zero local admins, the form stays hidden so the page
+-- doesn't advertise a dead code path.
+SELECT COUNT(*)::bigint
+FROM users
+WHERE provider = 'local' AND password_hash IS NOT NULL;
+
+-- name: GetLocalUserForLogin :one
+-- Fetches the row we need to bcrypt-compare on a login POST.
+-- Filtering by provider keeps an OIDC user with the same email
+-- from accidentally answering to a password form.
+SELECT id, email, name, avatar_url, provider, external_id, role,
+       disabled_at, last_login_at, created_at, updated_at, password_hash
+FROM users
+WHERE provider = 'local' AND email = $1
+LIMIT 1;
+
+-- name: UpsertLocalUser :one
+-- Create/update a local account. Called from the CLI and the
+-- admin self-service change-password endpoint. external_id is
+-- the email so the (provider, external_id) unique key covers us.
+INSERT INTO users (email, name, avatar_url, provider, external_id, role, password_hash)
+VALUES ($1, $2, '', 'local', $1, $3, $4)
+ON CONFLICT (provider, external_id) DO UPDATE SET
+    name          = EXCLUDED.name,
+    role          = EXCLUDED.role,
+    password_hash = EXCLUDED.password_hash,
+    updated_at    = NOW()
+RETURNING id, email, name, avatar_url, provider, external_id, role,
+          disabled_at, last_login_at, created_at, updated_at;
+
+-- name: UpdateLocalUserPassword :exec
+-- Dedicated password-only write. Used when an admin changes their
+-- own password from /settings/account — we never want to let the
+-- admin also flip their role through that surface.
+UPDATE users
+SET password_hash = $2, updated_at = NOW()
+WHERE id = $1 AND provider = 'local';

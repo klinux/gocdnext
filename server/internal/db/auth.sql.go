@@ -32,6 +32,22 @@ func (q *Queries) ConsumeAuthState(ctx context.Context, stateHash []byte) (Consu
 	return i, err
 }
 
+const countLocalUsers = `-- name: CountLocalUsers :one
+SELECT COUNT(*)::bigint
+FROM users
+WHERE provider = 'local' AND password_hash IS NOT NULL
+`
+
+// Drives the "show local login form" decision on the login page:
+// no rows = zero local admins, the form stays hidden so the page
+// doesn't advertise a dead code path.
+func (q *Queries) CountLocalUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countLocalUsers)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteExpiredAuthStates = `-- name: DeleteExpiredAuthStates :exec
 DELETE FROM auth_states WHERE expires_at <= NOW()
 `
@@ -68,6 +84,37 @@ func (q *Queries) DeleteUserSessionsForUser(ctx context.Context, userID pgtype.U
 	return err
 }
 
+const getLocalUserForLogin = `-- name: GetLocalUserForLogin :one
+SELECT id, email, name, avatar_url, provider, external_id, role,
+       disabled_at, last_login_at, created_at, updated_at, password_hash
+FROM users
+WHERE provider = 'local' AND email = $1
+LIMIT 1
+`
+
+// Fetches the row we need to bcrypt-compare on a login POST.
+// Filtering by provider keeps an OIDC user with the same email
+// from accidentally answering to a password form.
+func (q *Queries) GetLocalUserForLogin(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRow(ctx, getLocalUserForLogin, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Role,
+		&i.DisabledAt,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PasswordHash,
+	)
+	return i, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT id, email, name, avatar_url, provider, external_id, role,
        disabled_at, last_login_at, created_at, updated_at
@@ -75,9 +122,23 @@ FROM users
 WHERE id = $1
 `
 
-func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
+type GetUserByIDRow struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
-	var i User
+	var i GetUserByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
@@ -195,15 +256,29 @@ FROM users
 ORDER BY email ASC
 `
 
-func (q *Queries) ListUsers(ctx context.Context) ([]User, error) {
+type ListUsersRow struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
 	rows, err := q.db.Query(ctx, listUsers)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []User{}
+	items := []ListUsersRow{}
 	for rows.Next() {
-		var i User
+		var i ListUsersRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Email,
@@ -241,6 +316,85 @@ func (q *Queries) TouchUserSession(ctx context.Context, id []byte) error {
 	return err
 }
 
+const updateLocalUserPassword = `-- name: UpdateLocalUserPassword :exec
+UPDATE users
+SET password_hash = $2, updated_at = NOW()
+WHERE id = $1 AND provider = 'local'
+`
+
+type UpdateLocalUserPasswordParams struct {
+	ID           pgtype.UUID
+	PasswordHash []byte
+}
+
+// Dedicated password-only write. Used when an admin changes their
+// own password from /settings/account — we never want to let the
+// admin also flip their role through that surface.
+func (q *Queries) UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUserPasswordParams) error {
+	_, err := q.db.Exec(ctx, updateLocalUserPassword, arg.ID, arg.PasswordHash)
+	return err
+}
+
+const upsertLocalUser = `-- name: UpsertLocalUser :one
+INSERT INTO users (email, name, avatar_url, provider, external_id, role, password_hash)
+VALUES ($1, $2, '', 'local', $1, $3, $4)
+ON CONFLICT (provider, external_id) DO UPDATE SET
+    name          = EXCLUDED.name,
+    role          = EXCLUDED.role,
+    password_hash = EXCLUDED.password_hash,
+    updated_at    = NOW()
+RETURNING id, email, name, avatar_url, provider, external_id, role,
+          disabled_at, last_login_at, created_at, updated_at
+`
+
+type UpsertLocalUserParams struct {
+	Email        string
+	Name         string
+	Role         string
+	PasswordHash []byte
+}
+
+type UpsertLocalUserRow struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Create/update a local account. Called from the CLI and the
+// admin self-service change-password endpoint. external_id is
+// the email so the (provider, external_id) unique key covers us.
+func (q *Queries) UpsertLocalUser(ctx context.Context, arg UpsertLocalUserParams) (UpsertLocalUserRow, error) {
+	row := q.db.QueryRow(ctx, upsertLocalUser,
+		arg.Email,
+		arg.Name,
+		arg.Role,
+		arg.PasswordHash,
+	)
+	var i UpsertLocalUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Role,
+		&i.DisabledAt,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertUserByProvider = `-- name: UpsertUserByProvider :one
 INSERT INTO users (email, name, avatar_url, provider, external_id, role, last_login_at)
 VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -263,11 +417,25 @@ type UpsertUserByProviderParams struct {
 	Role       string
 }
 
+type UpsertUserByProviderRow struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 // Either inserts a fresh row (new login) or bumps the profile
 // fields we pull from the IdP every time. Role is intentionally
 // NOT overwritten on conflict — it's admin-assigned and must not
 // revert to 'user' just because the IdP doesn't carry it.
-func (q *Queries) UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (User, error) {
+func (q *Queries) UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (UpsertUserByProviderRow, error) {
 	row := q.db.QueryRow(ctx, upsertUserByProvider,
 		arg.Email,
 		arg.Name,
@@ -276,7 +444,7 @@ func (q *Queries) UpsertUserByProvider(ctx context.Context, arg UpsertUserByProv
 		arg.ExternalID,
 		arg.Role,
 	)
-	var i User
+	var i UpsertUserByProviderRow
 	err := row.Scan(
 		&i.ID,
 		&i.Email,

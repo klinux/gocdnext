@@ -84,7 +84,19 @@ func (s *Store) UpsertUserByProvider(ctx context.Context, in UpsertUserInput) (U
 	if err != nil {
 		return User{}, fmt.Errorf("store: upsert user: %w", err)
 	}
-	u := userFromDBRow(row)
+	u := User{
+		ID:          fromPgUUID(row.ID),
+		Email:       row.Email,
+		Name:        row.Name,
+		AvatarURL:   row.AvatarUrl,
+		Provider:    row.Provider,
+		ExternalID:  row.ExternalID,
+		Role:        row.Role,
+		DisabledAt:  pgTimePtr(row.DisabledAt),
+		LastLoginAt: pgTimePtr(row.LastLoginAt),
+		CreatedAt:   row.CreatedAt.Time,
+		UpdatedAt:   row.UpdatedAt.Time,
+	}
 	if u.DisabledAt != nil {
 		return u, ErrUserDisabled
 	}
@@ -265,20 +277,3 @@ func (s *Store) SweepUserSessions(ctx context.Context) error {
 	return s.q.DeleteExpiredUserSessions(ctx)
 }
 
-// --- locals ---
-
-func userFromDBRow(row db.User) User {
-	return User{
-		ID:          fromPgUUID(row.ID),
-		Email:       row.Email,
-		Name:        row.Name,
-		AvatarURL:   row.AvatarUrl,
-		Provider:    row.Provider,
-		ExternalID:  row.ExternalID,
-		Role:        row.Role,
-		DisabledAt:  pgTimePtr(row.DisabledAt),
-		LastLoginAt: pgTimePtr(row.LastLoginAt),
-		CreatedAt:   row.CreatedAt.Time,
-		UpdatedAt:   row.UpdatedAt.Time,
-	}
-}
