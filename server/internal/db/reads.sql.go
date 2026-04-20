@@ -80,6 +80,62 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 	return i, err
 }
 
+const latestRunPerPipelineByProjectSlug = `-- name: LatestRunPerPipelineByProjectSlug :many
+SELECT DISTINCT ON (r.pipeline_id)
+  r.pipeline_id, r.id, r.counter, r.cause, r.status,
+  r.created_at, r.started_at, r.finished_at, r.triggered_by
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p  ON p.id  = pl.project_id
+WHERE p.slug = $1
+ORDER BY r.pipeline_id, r.created_at DESC
+`
+
+type LatestRunPerPipelineByProjectSlugRow struct {
+	PipelineID  pgtype.UUID
+	ID          pgtype.UUID
+	Counter     int64
+	Cause       string
+	Status      string
+	CreatedAt   pgtype.Timestamptz
+	StartedAt   pgtype.Timestamptz
+	FinishedAt  pgtype.Timestamptz
+	TriggeredBy *string
+}
+
+// DISTINCT ON picks the most recent run per pipeline. Pipelines with
+// no runs yet are absent from the result; the handler merges with
+// ListPipelinesByProjectSlug to produce node entries.
+func (q *Queries) LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error) {
+	rows, err := q.db.Query(ctx, latestRunPerPipelineByProjectSlug, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LatestRunPerPipelineByProjectSlugRow{}
+	for rows.Next() {
+		var i LatestRunPerPipelineByProjectSlugRow
+		if err := rows.Scan(
+			&i.PipelineID,
+			&i.ID,
+			&i.Counter,
+			&i.Cause,
+			&i.Status,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.TriggeredBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listJobRunsByRunFull = `-- name: ListJobRunsByRunFull :many
 SELECT id, stage_run_id, name, matrix_key, image,
        status, exit_code, error, started_at, finished_at, agent_id
@@ -123,6 +179,50 @@ func (q *Queries) ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) (
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.AgentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMaterialsByProjectSlug = `-- name: ListMaterialsByProjectSlug :many
+SELECT m.pipeline_id, m.type, m.config, m.fingerprint
+FROM materials m
+JOIN pipelines pl ON pl.id = m.pipeline_id
+JOIN projects p  ON p.id  = pl.project_id
+WHERE p.slug = $1
+ORDER BY m.pipeline_id, m.type
+`
+
+type ListMaterialsByProjectSlugRow struct {
+	PipelineID  pgtype.UUID
+	Type        string
+	Config      []byte
+	Fingerprint string
+}
+
+// All materials across pipelines of a project. VSM uses the
+// `upstream` ones to build edges between pipeline nodes; git ones
+// are informational (shown as entry points on the graph).
+func (q *Queries) ListMaterialsByProjectSlug(ctx context.Context, slug string) ([]ListMaterialsByProjectSlugRow, error) {
+	rows, err := q.db.Query(ctx, listMaterialsByProjectSlug, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMaterialsByProjectSlugRow{}
+	for rows.Next() {
+		var i ListMaterialsByProjectSlugRow
+		if err := rows.Scan(
+			&i.PipelineID,
+			&i.Type,
+			&i.Config,
+			&i.Fingerprint,
 		); err != nil {
 			return nil, err
 		}

@@ -125,6 +125,10 @@ type Querier interface {
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
+	// DISTINCT ON picks the most recent run per pipeline. Pipelines with
+	// no runs yet are absent from the result; the handler merges with
+	// ListPipelinesByProjectSlug to produce node entries.
+	LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.
@@ -144,6 +148,10 @@ type Querier interface {
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
+	// All materials across pipelines of a project. VSM uses the
+	// `upstream` ones to build edges between pipeline nodes; git ones
+	// are informational (shown as entry points on the graph).
+	ListMaterialsByProjectSlug(ctx context.Context, slug string) ([]ListMaterialsByProjectSlugRow, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
 	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
 	// Projects whose total live artefact bytes (pending + ready, non-

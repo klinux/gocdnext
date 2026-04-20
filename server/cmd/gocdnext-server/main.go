@@ -134,6 +134,7 @@ func main() {
 	r.Post("/api/v1/projects/apply", projectsHandler.Apply)
 	r.Get("/api/v1/projects", projectsHandler.List)
 	r.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
+	r.Get("/api/v1/projects/{slug}/vsm", projectsHandler.VSM)
 	r.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
 	r.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
 	r.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)

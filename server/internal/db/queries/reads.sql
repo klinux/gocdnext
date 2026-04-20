@@ -34,6 +34,30 @@ WHERE p.slug = $1
 ORDER BY r.created_at DESC
 LIMIT $2;
 
+-- name: ListMaterialsByProjectSlug :many
+-- All materials across pipelines of a project. VSM uses the
+-- `upstream` ones to build edges between pipeline nodes; git ones
+-- are informational (shown as entry points on the graph).
+SELECT m.pipeline_id, m.type, m.config, m.fingerprint
+FROM materials m
+JOIN pipelines pl ON pl.id = m.pipeline_id
+JOIN projects p  ON p.id  = pl.project_id
+WHERE p.slug = $1
+ORDER BY m.pipeline_id, m.type;
+
+-- name: LatestRunPerPipelineByProjectSlug :many
+-- DISTINCT ON picks the most recent run per pipeline. Pipelines with
+-- no runs yet are absent from the result; the handler merges with
+-- ListPipelinesByProjectSlug to produce node entries.
+SELECT DISTINCT ON (r.pipeline_id)
+  r.pipeline_id, r.id, r.counter, r.cause, r.status,
+  r.created_at, r.started_at, r.finished_at, r.triggered_by
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p  ON p.id  = pl.project_id
+WHERE p.slug = $1
+ORDER BY r.pipeline_id, r.created_at DESC;
+
 -- name: GetRunWithPipeline :one
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
        r.counter, r.cause, r.cause_detail, r.status, r.revisions,
