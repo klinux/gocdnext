@@ -1,5 +1,7 @@
-// Package runs exposes read-only HTTP endpoints for runs. The POST side (retry,
-// cancel, manual trigger) will land in a later slice.
+// Package runs exposes the HTTP endpoints backing the /runs + /projects
+// UI surface. Read endpoints (Detail, Artifacts) coexist with the action
+// endpoints (Cancel, Rerun, pipeline ManualTrigger) in one handler so the
+// server action layer in web/ can stay thin.
 package runs
 
 import (

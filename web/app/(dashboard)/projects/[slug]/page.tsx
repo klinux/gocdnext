@@ -20,6 +20,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
 import { formatDurationSeconds, durationBetween } from "@/lib/format";
 import {
   GocdnextAPIError,
@@ -115,6 +116,11 @@ export default async function ProjectDetailPage({
                       <RelativeTime at={pl.updated_at} />
                     </span>
                   </div>
+                  <TriggerPipelineButton
+                    pipelineId={pl.id}
+                    pipelineName={pl.name}
+                    projectSlug={detail.project.slug}
+                  />
                 </li>
               ))}
             </ul>

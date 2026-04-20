@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts } from "@/components/runs/run-artifacts.client";
+import { RunActions } from "@/components/runs/run-actions.client";
 import { durationBetween, formatDurationSeconds } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
@@ -112,6 +113,9 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
               Live
             </span>
           ) : null}
+          <div className="ml-auto">
+            <RunActions runId={runId} status={data.status} />
+          </div>
         </div>
 
         <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">

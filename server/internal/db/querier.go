@@ -14,6 +14,11 @@ type Querier interface {
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
 	AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error)
+	// Flips a run to 'canceled' only if it was still active. Idempotent:
+	// a second call on a terminal run returns no rows so the handler
+	// can answer 409. Returns the row id so the caller can tell the
+	// update happened.
+	CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error
 	// When a stage fails we stop dispatching the rest of the run. Running work
 	// stays untouched; the agent will still report its outcome.
@@ -113,10 +118,19 @@ type Querier interface {
 	// dispatched yet (shouldn't happen on this code path but the column
 	// nullability forces us to handle it).
 	GetJobRunParents(ctx context.Context, arg GetJobRunParentsParams) (GetJobRunParentsRow, error)
+	// Most recent modification across any material attached to a
+	// pipeline. Powers "trigger latest" for manual runs. Ordered by
+	// detected_at so the newest webhook delivery wins even when the
+	// committer timestamp is older (rebases, fast-forwards of older
+	// commits).
+	GetLatestModificationForPipeline(ctx context.Context, pipelineID pgtype.UUID) (GetLatestModificationForPipelineRow, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, error)
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
+	// Thin row used by cancel/rerun handlers to check status + find the
+	// pipeline + revisions without pulling the whole detail query.
+	GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunForActionRow, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
 	// For a downstream run, extracts upstream_run_id + upstream pipeline

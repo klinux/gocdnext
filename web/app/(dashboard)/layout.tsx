@@ -10,6 +10,7 @@ import { RouteBreadcrumbs } from "@/components/layout/breadcrumbs.client";
 import { CommandPalette } from "@/components/layout/command-palette.client";
 import { ThemeToggle } from "@/components/layout/theme-toggle.client";
 import { QueryClientProvider } from "@/components/providers/query-client-provider.client";
+import { Toaster } from "@/components/ui/sonner";
 
 type Props = { children: ReactNode };
 
@@ -31,6 +32,7 @@ export default function DashboardLayout({ children }: Props) {
           <div className="flex-1 p-6 lg:p-8">{children}</div>
         </SidebarInset>
       </SidebarProvider>
+      <Toaster position="top-right" richColors />
     </QueryClientProvider>
   );
 }
