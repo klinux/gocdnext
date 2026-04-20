@@ -11,7 +11,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { RelativeTime } from "@/components/shared/relative-time";
+import { StatusPill } from "@/components/shared/status-pill";
 import { isTerminalStatus } from "@/lib/status";
+import type { StatusTone } from "@/lib/status";
 import type { RunArtifact } from "@/types/api";
 
 const POLL_MS = 5_000;
@@ -91,7 +93,7 @@ export function RunArtifacts({ runId, runStatus, apiBaseURL }: Props) {
                   <TableCell className="truncate">{a.path}</TableCell>
                   <TableCell>{formatBytes(a.size_bytes)}</TableCell>
                   <TableCell>
-                    <StatusPill status={a.status} />
+                    <ArtifactStatusPill status={a.status} />
                   </TableCell>
                   <TableCell>
                     <RelativeTime at={a.created_at} />
@@ -135,19 +137,13 @@ function EmptyNote({ children }: { children: React.ReactNode }) {
   );
 }
 
-function StatusPill({ status }: { status: RunArtifact["status"] }) {
-  const tone =
-    status === "ready"
-      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-      : status === "pending"
-        ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-        : "border-border bg-muted text-muted-foreground";
+function ArtifactStatusPill({ status }: { status: RunArtifact["status"] }) {
+  const tone: StatusTone =
+    status === "ready" ? "success" : status === "pending" ? "warning" : "neutral";
   return (
-    <span
-      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${tone}`}
-    >
+    <StatusPill tone={tone} className="uppercase tracking-wide text-[10px]">
       {status}
-    </span>
+    </StatusPill>
   );
 }
 

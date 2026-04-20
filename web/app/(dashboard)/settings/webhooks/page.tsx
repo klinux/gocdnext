@@ -12,8 +12,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { StatusPill } from "@/components/shared/status-pill";
 import { listWebhookDeliveries } from "@/server/queries/admin";
 import { cn } from "@/lib/utils";
+import type { StatusTone } from "@/lib/status";
 import type { WebhookDeliverySummary } from "@/types/api";
 
 export const metadata: Metadata = {
@@ -155,19 +157,15 @@ function Row({ d }: { d: WebhookDeliverySummary }) {
 }
 
 function StatusBadge({ status }: { status: WebhookDeliverySummary["status"] }) {
-  const tone =
+  const tone: StatusTone =
     status === "accepted"
-      ? "bg-status-success-bg text-status-success-fg"
+      ? "success"
       : status === "rejected"
-        ? "bg-status-failed-bg text-status-failed-fg"
+        ? "failed"
         : status === "error"
-          ? "bg-status-warning-bg text-status-warning-fg"
-          : "bg-muted text-muted-foreground";
-  return (
-    <span className={cn("inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium", tone)}>
-      {status}
-    </span>
-  );
+          ? "warning"
+          : "neutral";
+  return <StatusPill tone={tone}>{status}</StatusPill>;
 }
 
 function ChipRow({

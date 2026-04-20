@@ -15,13 +15,33 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { StatusDot } from "@/components/shared/status-dot";
 import { formatDurationSeconds } from "@/lib/format";
+import type { StatusTone } from "@/lib/status";
 import {
   getDashboardMetrics,
   listAgents,
   listGlobalRunsOnly,
 } from "@/server/queries/projects";
 import type { AgentSummary, GlobalRunSummary } from "@/types/api";
+
+// Maps the backend's AgentHealthState to a StatusTone for the
+// design-system components. Stays colocated with the dashboard
+// because it's dashboard-specific policy (the agents page may
+// pick a slightly different mapping).
+function agentHealthTone(health: AgentSummary["health_state"]): StatusTone {
+  switch (health) {
+    case "online":
+      return "success";
+    case "stale":
+      return "warning";
+    case "offline":
+      return "failed";
+    case "idle":
+    default:
+      return "neutral";
+  }
+}
 
 export const metadata: Metadata = {
   title: "Dashboard — gocdnext",
@@ -194,11 +214,11 @@ function Metric({
 }) {
   const toneClass =
     tone === "success"
-      ? "text-emerald-600 dark:text-emerald-400"
+      ? "text-status-success-fg"
       : tone === "warn"
-        ? "text-amber-600 dark:text-amber-400"
+        ? "text-status-warning-fg"
         : tone === "danger"
-          ? "text-destructive"
+          ? "text-status-failed-fg"
           : tone === "muted"
             ? "text-muted-foreground"
             : "text-foreground";
@@ -247,16 +267,10 @@ function RunRow({ run }: { run: GlobalRunSummary }) {
 }
 
 function AgentRow({ agent }: { agent: AgentSummary }) {
-  const dotClass =
-    agent.health_state === "online"
-      ? "bg-emerald-500"
-      : agent.health_state === "stale"
-        ? "bg-amber-500"
-        : "bg-muted-foreground/50";
   return (
     <li className="px-4 py-2.5">
       <div className="flex items-center gap-2">
-        <span className={`h-2 w-2 rounded-full ${dotClass}`} aria-hidden />
+        <StatusDot tone={agentHealthTone(agent.health_state)} />
         <span className="font-mono text-sm truncate">{agent.name}</span>
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
           {agent.running_jobs > 0 ? `${agent.running_jobs} running` : "idle"}

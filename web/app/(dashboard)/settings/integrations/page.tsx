@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Check, X } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { StatusPill } from "@/components/shared/status-pill";
 import { getGitHubIntegration } from "@/server/queries/admin";
 
 export const metadata: Metadata = {
@@ -61,13 +62,9 @@ export default async function IntegrationsPage() {
                   ) : null}
                 </div>
                 {r.value ? (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-status-success-bg px-2 py-0.5 text-xs font-medium text-status-success-fg">
-                    <Check className="size-3.5" /> configured
-                  </span>
+                  <StatusPill tone="success" icon={Check}>configured</StatusPill>
                 ) : (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                    <X className="size-3.5" /> off
-                  </span>
+                  <StatusPill tone="neutral" icon={X}>off</StatusPill>
                 )}
               </li>
             ))}

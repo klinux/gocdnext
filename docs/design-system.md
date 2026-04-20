@@ -82,6 +82,58 @@ border-status-success/30          (borders at any alpha via slash)
 
 Same shape for every other status.
 
+## Shared components on top of tokens
+
+Raw Tailwind utilities are a valid way to consume tokens, but
+most of the app should reach for these small helpers so the "pill
+shape", "dot shape", etc. don't re-diverge.
+
+### `<StatusPill tone="success">…</StatusPill>`
+
+Canonical badge for any colored label: webhook deliveries,
+integration state, artifact status, anything with a tone + text.
+Maps `tone` → background/text tokens. Optional `icon` prop for a
+leading glyph (`icon={Check}`).
+
+```tsx
+<StatusPill tone="success" icon={Check}>configured</StatusPill>
+<StatusPill tone="warning">stale</StatusPill>
+```
+
+### `<StatusDot tone="running" />`
+
+Tiny colored circle for list rows where a full pill would be
+noisy (agents table, dashboard agents widget). Pulses
+automatically on `tone="running"` — pass `pulse={false}` to
+force static. Accepts `size="sm" | "md" | "lg"` and an optional
+`label` for screen readers.
+
+```tsx
+<StatusDot tone="success" />
+<StatusDot tone="warning" size="lg" label="stale" />
+```
+
+### Mapping domain-specific statuses
+
+The app has several status vocabularies (run statuses, webhook
+delivery statuses, agent health). Each consumer maps its own
+status to a `StatusTone` at the edge — there's no central
+dispatcher because the mappings are small and domain-specific:
+
+```tsx
+function agentHealthTone(state: AgentSummary["health_state"]): StatusTone {
+  switch (state) {
+    case "online": return "success";
+    case "stale":  return "warning";
+    case "idle":   return "running";
+    default:       return "failed";
+  }
+}
+```
+
+For run/stage/job statuses, `statusTone()` in `lib/status.ts`
+already does the mapping.
+
 ## Adding a new status
 
 1. Define `--status-<name>-base / -bg / -fg` in both `:root` and

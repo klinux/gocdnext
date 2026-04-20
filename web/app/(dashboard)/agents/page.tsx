@@ -13,6 +13,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { RelativeTime } from "@/components/shared/relative-time";
+import { StatusDot } from "@/components/shared/status-dot";
+import type { StatusTone } from "@/lib/status";
 import { listAgents } from "@/server/queries/projects";
 import type { AgentSummary } from "@/types/api";
 
@@ -117,20 +119,21 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
 }
 
 function HealthDot({ state }: { state: AgentSummary["health_state"] }) {
-  const cls =
-    state === "online"
-      ? "bg-emerald-500"
-      : state === "stale"
-        ? "bg-amber-500"
-        : state === "idle"
-          ? "bg-sky-500"
-          : "bg-muted-foreground/50";
-  return (
-    <span
-      className={`h-2 w-2 rounded-full ${cls}`}
-      aria-label={state}
-    />
-  );
+  return <StatusDot tone={agentHealthTone(state)} label={state} />;
+}
+
+function agentHealthTone(state: AgentSummary["health_state"]): StatusTone {
+  switch (state) {
+    case "online":
+      return "success";
+    case "stale":
+      return "warning";
+    case "idle":
+      return "running";
+    case "offline":
+    default:
+      return "failed";
+  }
 }
 
 function HealthBadge({ state }: { state: AgentSummary["health_state"] }) {
