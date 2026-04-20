@@ -87,14 +87,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
-		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
-	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
-	runsHandler := runsapi.NewHandler(st, logger)
-	if artifactStore != nil {
-		runsHandler = runsHandler.WithArtifactStore(artifactStore)
-	}
-
 	ghApp, err := ghscm.NewAppClientFromEnv(
 		cfg.GithubAppID,
 		cfg.GithubAppPrivateKeyPEM,
@@ -110,7 +102,23 @@ func main() {
 	} else {
 		logger.Info("github app not configured; auto-register webhook + Checks API disabled")
 	}
-	_ = ghApp // consumed by APP.2 (auto-register) + APP.3 (Checks API)
+
+	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
+		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
+	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
+	if ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "" {
+		projectsHandler = projectsHandler.WithAutoRegister(projectsapi.AutoRegisterConfig{
+			App:           ghApp,
+			PublicBase:    cfg.PublicBase,
+			WebhookSecret: cfg.WebhookToken,
+		})
+		logger.Info("auto-register webhooks enabled",
+			"public_base", cfg.PublicBase)
+	}
+	runsHandler := runsapi.NewHandler(st, logger)
+	if artifactStore != nil {
+		runsHandler = runsHandler.WithArtifactStore(artifactStore)
+	}
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)

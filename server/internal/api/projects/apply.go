@@ -21,9 +21,10 @@ import (
 const maxApplyBodyBytes = 5 << 20 // 5 MiB — room for large mono-repo configs.
 
 type Handler struct {
-	store  *store.Store
-	log    *slog.Logger
-	cipher *crypto.Cipher
+	store        *store.Store
+	log          *slog.Logger
+	cipher       *crypto.Cipher
+	autoRegister *AutoRegisterConfig
 }
 
 func NewHandler(s *store.Store, log *slog.Logger) *Handler {
@@ -77,6 +78,11 @@ type ApplyResponse struct {
 	Pipelines        []ApplyPipeline       `json:"pipelines"`
 	PipelinesRemoved []string              `json:"pipelines_removed"`
 	SCMSource        *ApplySCMSourceResult `json:"scm_source,omitempty"`
+	// Webhooks is present only when the server has a GitHub App
+	// configured AND the request contained git materials with
+	// auto_register_webhook=true. Each entry is best-effort:
+	// "skipped_no_install" / "failed" don't abort the apply.
+	Webhooks []HookRegistration `json:"webhooks,omitempty"`
 }
 
 func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +165,11 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 			MaterialsRemoved: p.MaterialsRemoved,
 		})
 	}
+
+	// Best-effort webhook registration. Always runs after the apply
+	// succeeded so even a 100% failure here leaves the project
+	// definition in place; operator can retry later.
+	resp.Webhooks = h.reconcilePipelines(r.Context(), pipelines)
 
 	h.log.Info("apply project",
 		"slug", req.Slug,

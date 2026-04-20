@@ -56,6 +56,11 @@ type Config struct {
 	GithubAppPrivateKeyPEM  string // inline PEM content
 	GithubAppPrivateKeyFile string // path to PEM file (alternative)
 	GithubAppAPIBase        string // default https://api.github.com
+
+	// PublicBase is the externally-reachable URL of this server.
+	// Used when building webhook URLs we register at GitHub. For
+	// local dev with ngrok, set to the ngrok HTTPS URL.
+	PublicBase string
 }
 
 func Load() (*Config, error) {
@@ -121,6 +126,7 @@ func Load() (*Config, error) {
 	c.GithubAppPrivateKeyPEM = env("GOCDNEXT_GITHUB_APP_PRIVATE_KEY", "")
 	c.GithubAppPrivateKeyFile = env("GOCDNEXT_GITHUB_APP_PRIVATE_KEY_FILE", "")
 	c.GithubAppAPIBase = env("GOCDNEXT_GITHUB_APP_API_BASE", "")
+	c.PublicBase = env("GOCDNEXT_PUBLIC_BASE", "")
 
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("GOCDNEXT_DATABASE_URL is required")
