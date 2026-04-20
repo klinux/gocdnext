@@ -266,6 +266,18 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		stats.BytesFreed += row.SizeBytes
 	}
 
+	// Auth hygiene: expired sessions + OAuth state rows aren't part
+	// of the artifact pipeline, but they accumulate in the same DB
+	// and we already have a goroutine ticking — piggyback so ops
+	// don't need a second sweeper. Failures are warnings, not
+	// fatal: the next tick retries.
+	if err := s.store.SweepAuthStates(ctx); err != nil {
+		s.log.Warn("retention: sweep auth states", "err", err)
+	}
+	if err := s.store.SweepUserSessions(ctx); err != nil {
+		s.log.Warn("retention: sweep user sessions", "err", err)
+	}
+
 	s.log.Info("retention: sweep done",
 		"demoted_keep_last", stats.DemotedKeepLast,
 		"demoted_project_cap", stats.DemotedProjectCap,

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,9 +23,11 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
+	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
+	"github.com/gocdnext/gocdnext/server/internal/auth"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/config"
@@ -179,6 +182,33 @@ func main() {
 		AutoRegisterOn:      ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "",
 	}, logger)
 
+	authCtx, authCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	authRegistry, err := auth.BuildRegistry(authCtx, cfg, logger)
+	authCancel()
+	if err != nil {
+		logger.Error("auth: build registry", "err", err)
+		os.Exit(1)
+	}
+	authMiddleware := authapi.NewMiddleware(st, logger, cfg.AuthEnabled)
+	authHandler := authapi.NewHandler(authapi.Config{
+		Registry:       authRegistry,
+		Store:          st,
+		Logger:         logger,
+		PublicBase:     cfg.PublicBase,
+		AllowedDomains: cfg.AuthAllowedDomains,
+		AdminEmails:    cfg.AuthAdminEmails,
+		DevMode:        !strings.HasPrefix(cfg.PublicBase, "https://"),
+	})
+	if cfg.AuthEnabled {
+		logger.Info("auth: middleware enforcing sessions",
+			"providers", authRegistry.Len(),
+			"admin_emails", len(cfg.AuthAdminEmails),
+			"allowed_domains", len(cfg.AuthAllowedDomains),
+		)
+	} else {
+		logger.Warn("auth: DISABLED — API is open; set GOCDNEXT_AUTH_ENABLED=true in prod")
+	}
+
 	grpcServer := grpc.NewServer()
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
 
@@ -187,6 +217,7 @@ func main() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(devCORS)
+	r.Use(authMiddleware.LoadSession)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -197,31 +228,56 @@ func main() {
 		_, _ = fmt.Fprintln(w, "gocdnext-server dev")
 	})
 
+	// /auth/* is public (login, callback, logout, providers).
+	// /api/v1/me also mounts here; RequireAuth inside authHandler
+	// decides on its own whether to 401.
+	authHandler.Mount(r)
+
 	if artifactHandler != nil {
 		artifactHandler.Mount(r)
 	}
+
+	// /api/webhooks stays outside the auth middleware's enforcement
+	// path — it authenticates via HMAC signature, not sessions.
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
-	r.Post("/api/v1/projects/apply", projectsHandler.Apply)
-	r.Get("/api/v1/projects", projectsHandler.List)
-	r.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
-	r.Get("/api/v1/projects/{slug}/vsm", projectsHandler.VSM)
-	r.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
-	r.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
-	r.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
-	r.Get("/api/v1/runs/{id}", runsHandler.Detail)
-	r.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
-	r.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
-	r.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
-	r.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
-	r.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
-	r.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
-	r.Get("/api/v1/agents", dashboardHandler.Agents)
-	r.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
-	r.Get("/api/v1/admin/retention", adminHandler.Retention)
-	r.Get("/api/v1/admin/webhooks", adminHandler.Webhooks)
-	r.Get("/api/v1/admin/webhooks/{id}", adminHandler.WebhookDetail)
-	r.Get("/api/v1/admin/health", adminHandler.Health)
-	r.Get("/api/v1/admin/integrations/github", adminHandler.IntegrationGitHub)
+
+	// Protected API surface: every mutation + every read that could
+	// leak internal state sits inside this group. RequireAuth is a
+	// pass-through when auth is globally disabled, so dev workflows
+	// without GOCDNEXT_AUTH_ENABLED keep working.
+	r.Group(func(p chi.Router) {
+		p.Use(authMiddleware.RequireAuth)
+
+		p.Post("/api/v1/projects/apply", projectsHandler.Apply)
+		p.Get("/api/v1/projects", projectsHandler.List)
+		p.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
+		p.Get("/api/v1/projects/{slug}/vsm", projectsHandler.VSM)
+		p.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
+		p.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
+		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
+		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
+		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
+		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
+		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
+		p.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
+		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
+		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
+		p.Get("/api/v1/agents", dashboardHandler.Agents)
+		p.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
+	})
+
+	// Admin API is gated on role=admin on top of RequireAuth. Users
+	// and viewers get 403 even when authenticated.
+	r.Group(func(p chi.Router) {
+		p.Use(authMiddleware.RequireAuth)
+		p.Use(authMiddleware.RequireRole("admin"))
+
+		p.Get("/api/v1/admin/retention", adminHandler.Retention)
+		p.Get("/api/v1/admin/webhooks", adminHandler.Webhooks)
+		p.Get("/api/v1/admin/webhooks/{id}", adminHandler.WebhookDetail)
+		p.Get("/api/v1/admin/health", adminHandler.Health)
+		p.Get("/api/v1/admin/integrations/github", adminHandler.IntegrationGitHub)
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -392,8 +448,19 @@ func resolveArtifactSignKey(cfg *config.Config, logger *slog.Logger) ([]byte, er
 // server outside a private network.
 func devCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		// Credentials=true forces us off "*" on Origin; echo the
+		// requester's Origin so the browser lets the cookie flow
+		// both ways. Dev-only; production should front this with a
+		// reverse proxy on the same origin.
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

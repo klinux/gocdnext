@@ -69,6 +69,37 @@ type Config struct {
 	SecretK8sNamespace string
 	SecretK8sTemplate  string // default "gocdnext-secrets-{slug}"
 	SecretK8sKubeconfig string // empty = in-cluster
+
+	// Auth (UI.6): GOCDNEXT_AUTH_ENABLED=true turns on session
+	// enforcement + /auth routes. When disabled (the default) the
+	// API stays open so existing dev workflows keep working.
+	//
+	// PublicBase is reused as the callback base — we only mint
+	// callback URLs when auth is on, so the startup check is local
+	// to NewRegistryFromConfig.
+	AuthEnabled       bool
+	AuthAdminEmails   []string // comma list; matched case-insensitively on first login
+	AuthAllowedDomains []string // optional allowlist; empty = anyone who passes IdP
+
+	// Per-provider settings. Each provider becomes "enabled" by
+	// having its CLIENT_ID set. Issuer defaults to the vendor's
+	// well-known URL when left blank for Google.
+	AuthGitHubClientID     string
+	AuthGitHubClientSecret string
+	AuthGitHubAPIBase      string // GitHub Enterprise override
+
+	AuthGoogleClientID     string
+	AuthGoogleClientSecret string
+	AuthGoogleIssuer       string // default https://accounts.google.com
+
+	AuthKeycloakClientID     string
+	AuthKeycloakClientSecret string
+	AuthKeycloakIssuer       string
+
+	AuthOIDCClientID     string
+	AuthOIDCClientSecret string
+	AuthOIDCIssuer       string
+	AuthOIDCDisplayName  string
 }
 
 func Load() (*Config, error) {
@@ -144,6 +175,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_DATABASE_URL is required")
 	}
 
+	c.AuthEnabled = strings.EqualFold(env("GOCDNEXT_AUTH_ENABLED", "false"), "true")
+	c.AuthAdminEmails = splitAndTrim(env("GOCDNEXT_AUTH_ADMIN_EMAILS", ""))
+	c.AuthAllowedDomains = splitAndTrim(env("GOCDNEXT_AUTH_ALLOWED_DOMAINS", ""))
+	c.AuthGitHubClientID = env("GOCDNEXT_AUTH_GITHUB_CLIENT_ID", "")
+	c.AuthGitHubClientSecret = env("GOCDNEXT_AUTH_GITHUB_CLIENT_SECRET", "")
+	c.AuthGitHubAPIBase = env("GOCDNEXT_AUTH_GITHUB_API_BASE", "")
+	c.AuthGoogleClientID = env("GOCDNEXT_AUTH_GOOGLE_CLIENT_ID", "")
+	c.AuthGoogleClientSecret = env("GOCDNEXT_AUTH_GOOGLE_CLIENT_SECRET", "")
+	c.AuthGoogleIssuer = env("GOCDNEXT_AUTH_GOOGLE_ISSUER", "https://accounts.google.com")
+	c.AuthKeycloakClientID = env("GOCDNEXT_AUTH_KEYCLOAK_CLIENT_ID", "")
+	c.AuthKeycloakClientSecret = env("GOCDNEXT_AUTH_KEYCLOAK_CLIENT_SECRET", "")
+	c.AuthKeycloakIssuer = env("GOCDNEXT_AUTH_KEYCLOAK_ISSUER", "")
+	c.AuthOIDCClientID = env("GOCDNEXT_AUTH_OIDC_CLIENT_ID", "")
+	c.AuthOIDCClientSecret = env("GOCDNEXT_AUTH_OIDC_CLIENT_SECRET", "")
+	c.AuthOIDCIssuer = env("GOCDNEXT_AUTH_OIDC_ISSUER", "")
+	c.AuthOIDCDisplayName = env("GOCDNEXT_AUTH_OIDC_NAME", "")
+
 	switch strings.ToLower(env("GOCDNEXT_LOG_LEVEL", "info")) {
 	case "debug":
 		c.LogLevel = slog.LevelDebug
@@ -163,4 +211,21 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// splitAndTrim parses a comma-separated env var into a clean slice.
+// Empty entries are dropped so "a,,b, " yields ["a","b"].
+func splitAndTrim(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
