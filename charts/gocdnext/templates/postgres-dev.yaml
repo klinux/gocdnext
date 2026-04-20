@@ -1,0 +1,66 @@
+{{- if .Values.devDatabase.enabled }}
+# WARNING: single-replica dev Postgres. Suitable only for smoke
+# testing the chart. Prod deployments must point `database.url` at
+# a managed DB.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gocdnext.postgres.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      name: postgres
+  selector:
+    app.kubernetes.io/name: {{ include "gocdnext.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: dev-database
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gocdnext.postgres.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gocdnext.postgres.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gocdnext.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: dev-database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "gocdnext.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: dev-database
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.devDatabase.image }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.devDatabase.credentials.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.devDatabase.credentials.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.devDatabase.credentials.database | quote }}
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.devDatabase.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.devDatabase.persistence.size }}
+{{- end }}

@@ -1,0 +1,30 @@
+{{- if and .Values.server.enabled .Values.server.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  {{- with .Values.server.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.server.ingress.tls }}
+  tls:
+    - hosts:
+        - {{ .Values.server.ingress.host }}
+      secretName: {{ default (printf "%s-tls" (include "gocdnext.server.fullname" .)) .Values.server.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.server.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gocdnext.server.fullname" . }}
+                port:
+                  name: http
+{{- end }}

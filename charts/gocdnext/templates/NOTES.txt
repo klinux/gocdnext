@@ -1,0 +1,62 @@
+
+gocdnext has been installed as release {{ .Release.Name }} in
+namespace {{ .Release.Namespace }}.
+
+Next steps:
+
+1. Wait for Pods to become ready:
+
+     kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+{{- if .Values.server.ingress.enabled }}
+
+2. Server is ingress-exposed at {{ .Values.server.ingress.host }}.
+{{- else }}
+
+2. Server Service (in-cluster):
+
+     http://{{ include "gocdnext.server.fullname" . }}:{{ .Values.server.service.httpPort }}
+     grpc://{{ include "gocdnext.server.fullname" . }}:{{ .Values.server.service.grpcPort }}
+
+   Port-forward for local inspection:
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gocdnext.server.fullname" . }} 8153:{{ .Values.server.service.httpPort }}
+{{- end }}
+
+{{- if .Values.web.enabled }}
+
+3. Web UI:
+{{- if .Values.web.ingress.enabled }}
+
+     https://{{ .Values.web.ingress.host }}
+{{- else }}
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gocdnext.web.fullname" . }} 3000:{{ .Values.web.service.port }}
+     # then open http://localhost:3000
+{{- end }}
+{{- end }}
+
+{{- if .Values.devDatabase.enabled }}
+
+4. You enabled devDatabase — this is a SINGLE-REPLICA Postgres for
+   smoke tests. Do NOT use in production. Replace with a managed DB
+   by setting database.url (or database.existingSecret) and flipping
+   devDatabase.enabled=false.
+{{- end }}
+
+{{- if not .Values.server.publicBase }}
+
+⚠ server.publicBase is empty. GitHub webhook auto-register and the
+Checks API will not work until you set it to a URL reachable from
+github.com. Examples:
+  - Ingress-based prod: https://gocdnext.example.com
+  - Local dev via ngrok: https://<your-ngrok-id>.ngrok.io
+{{- end }}
+
+{{- if .Values.githubApp.enabled }}
+
+GitHub App integration is enabled (app id {{ .Values.githubApp.appID }}).
+Verify the server picked up the key with:
+
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "gocdnext.server.fullname" . }} | grep 'github app'
+{{- end }}

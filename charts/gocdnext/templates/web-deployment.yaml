@@ -1,0 +1,75 @@
+{{- if .Values.web.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gocdnext.web.fullname" . }}
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels: {{- include "gocdnext.web.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "gocdnext.web.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ include "gocdnext.image" (dict "root" . "imageRef" .Values.web.image) }}
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # The browser needs to reach the server from OUTSIDE the
+            # cluster; in-cluster name works only for SSR calls from
+            # the web Pod itself. Operator sets server.publicBase for
+            # that — we reuse it here.
+            - name: GOCDNEXT_API_URL
+              value: {{ .Values.server.publicBase | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gocdnext.web.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.web.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port }}
+      targetPort: http
+  selector: {{- include "gocdnext.web.selectorLabels" . | nindent 4 }}
+{{- if .Values.web.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gocdnext.web.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.web.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.web.ingress.tls }}
+  tls:
+    - hosts: [{{ .Values.web.ingress.host | quote }}]
+      secretName: {{ default (printf "%s-tls" (include "gocdnext.web.fullname" .)) .Values.web.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.web.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gocdnext.web.fullname" . }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}

@@ -1,0 +1,71 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: {{ .Values.agent.replicas }}
+  selector:
+    matchLabels: {{- include "gocdnext.agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "gocdnext.agent.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gocdnext.agent.fullname" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: {{ include "gocdnext.image" (dict "root" . "imageRef" .Values.agent.image) }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          env:
+            - name: GOCDNEXT_SERVER_ADDR
+              value: {{ printf "%s:%d" (include "gocdnext.server.fullname" .) (int .Values.server.service.grpcPort) | quote }}
+            - name: GOCDNEXT_AGENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GOCDNEXT_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-token" (include "gocdnext.agent.fullname" .)) .Values.agent.tokenSecret.existingSecret }}
+                  key: token
+            - name: GOCDNEXT_AGENT_TAGS
+              value: {{ .Values.agent.tags | quote }}
+            - name: GOCDNEXT_AGENT_CAPACITY
+              value: {{ .Values.agent.capacity | quote }}
+            - name: GOCDNEXT_AGENT_ENGINE
+              value: {{ .Values.agent.engine | quote }}
+            {{- if eq .Values.agent.engine "kubernetes" }}
+            - name: GOCDNEXT_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GOCDNEXT_K8S_WORKSPACE_PVC
+              value: {{ include "gocdnext.agent.fullname" . }}-workspace
+            - name: GOCDNEXT_K8S_WORKSPACE_PATH
+              value: {{ .Values.agent.workspace.mountPath | quote }}
+            - name: GOCDNEXT_K8S_DEFAULT_IMAGE
+              value: {{ .Values.agent.defaultJobImage | quote }}
+            - name: GOCDNEXT_K8S_CLEANUP_ON_SUCCESS
+              value: {{ .Values.agent.jobCleanup.onSuccess | quote }}
+            - name: GOCDNEXT_K8S_CLEANUP_ON_FAILURE
+              value: {{ .Values.agent.jobCleanup.onFailure | quote }}
+            {{- end }}
+          {{- if eq .Values.agent.engine "kubernetes" }}
+          volumeMounts:
+            - name: workspace
+              mountPath: {{ .Values.agent.workspace.mountPath }}
+          {{- end }}
+          resources: {{- toYaml .Values.agent.resources | nindent 12 }}
+      {{- if eq .Values.agent.engine "kubernetes" }}
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: {{ include "gocdnext.agent.fullname" . }}-workspace
+      {{- end }}
+{{- end }}

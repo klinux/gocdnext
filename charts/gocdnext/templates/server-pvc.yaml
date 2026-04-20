@@ -1,0 +1,15 @@
+{{- if and .Values.server.enabled (eq .Values.artifacts.backend "filesystem") }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}-artifacts
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.artifacts.filesystem.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.artifacts.filesystem.size }}
+{{- end }}

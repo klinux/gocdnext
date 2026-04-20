@@ -1,0 +1,21 @@
+{{- if .Values.server.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  type: {{ .Values.server.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.server.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.server.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector: {{- include "gocdnext.server.selectorLabels" . | nindent 4 }}
+{{- end }}

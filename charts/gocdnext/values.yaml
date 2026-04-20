@@ -1,9 +1,20 @@
+# Default values for gocdnext. Override via --values custom.yaml or --set.
+# Every env-driven knob of the server/agent binaries is surfaced here.
+
+global:
+  imageRegistry: ghcr.io/gocdnext
+  imagePullSecrets: []
+  logLevel: info
+
+# ----- server ----------------------------------------------------------
+
 server:
-  image:
-    repository: ghcr.io/gocdnext/gocdnext-server
-    tag: ""            # defaults to Chart.appVersion
-    pullPolicy: IfNotPresent
+  enabled: true
   replicas: 1
+  image:
+    repository: gocdnext-server
+    tag: ""           # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
   service:
     type: ClusterIP
     httpPort: 8153
@@ -12,35 +23,133 @@ server:
     enabled: false
     className: nginx
     host: gocdnext.example.com
-    tls: true
+    tls: false
+    tlsSecretName: ""
+  # Externally-reachable URL (webhook + artifact signed URLs). If
+  # agents run in-cluster and ingress.enabled=false, use
+  # http://<release>-server:8153.
+  publicBase: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
-  env:
-    GOCDNEXT_LOG_LEVEL: info
-  envFromSecret: ""    # name of Secret with DATABASE_URL, WEBHOOK_TOKEN, etc.
+# ----- agent -----------------------------------------------------------
 
 agent:
+  enabled: true
+  replicas: 2
   image:
-    repository: ghcr.io/gocdnext/gocdnext-agent
+    repository: gocdnext-agent
     tag: ""
     pullPolicy: IfNotPresent
-  replicas: 2
-  tokenSecret: gocdnext-agent-token   # Secret with key AGENT_TOKEN
-  tags: ["linux", "docker"]
+  # shell or kubernetes. Kubernetes spawns one Pod per task in the
+  # namespace below (requires the RBAC + PVC this chart creates).
+  engine: kubernetes
+  tags: "linux,docker"
+  capacity: 2
+  tokenSecret:
+    existingSecret: ""
+    value: ""  # required when existingSecret is empty
+  workspace:
+    storageClass: ""        # "" = cluster default
+    size: 20Gi
+    accessMode: ReadWriteMany
+    mountPath: /workspace
+  defaultJobImage: alpine:3.19
+  jobCleanup:
+    onSuccess: true
+    onFailure: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
 
-postgres:
-  enabled: true       # bundled for dev; set false in prod and provide URL via envFromSecret
-  image: postgres:16-alpine
-  persistence:
-    size: 10Gi
-
-artifacts:
-  # s3://bucket or file:///var/lib/gocdnext/artifacts
-  url: s3://gocdnext-artifacts
-  secretName: gocdnext-artifacts-creds
+# ----- web -------------------------------------------------------------
 
 web:
   enabled: true
-  image:
-    repository: ghcr.io/gocdnext/gocdnext-web
-    tag: ""
   replicas: 1
+  image:
+    repository: gocdnext-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: false
+    className: nginx
+    host: ui.gocdnext.example.com
+    tls: false
+    tlsSecretName: ""
+
+# ----- database --------------------------------------------------------
+# Prod: point at a managed DB via `url` or a Secret. Dev: enable
+# devDatabase for a single-replica StatefulSet (not for prod).
+
+database:
+  url: ""
+  existingSecret: ""
+  secretKey: DATABASE_URL
+
+devDatabase:
+  enabled: false
+  image: postgres:16-alpine
+  persistence:
+    size: 10Gi
+    storageClass: ""
+  credentials:
+    user: gocdnext
+    password: gocdnext
+    database: gocdnext
+
+# ----- artifacts -------------------------------------------------------
+
+artifacts:
+  backend: filesystem          # filesystem | s3 | gcs
+  keepLastPerPipeline: 30
+  projectQuotaBytes: "107374182400"  # 100 GiB
+  globalQuotaBytes: "0"              # disabled
+
+  filesystem:
+    storageClass: ""
+    size: 50Gi
+    root: /var/lib/gocdnext/artifacts
+  s3:
+    bucket: ""
+    region: us-east-1
+    endpoint: ""
+    usePathStyle: false
+    ensureBucket: false
+    existingSecret: ""
+  gcs:
+    bucket: ""
+    projectID: ""
+    ensureBucket: false
+    existingSecret: ""
+
+# ----- webhook / secret / signing keys --------------------------------
+
+webhookToken:
+  existingSecret: ""
+  value: ""
+secretKey:
+  existingSecret: ""
+  value: ""
+artifactsSignKey:
+  existingSecret: ""
+  value: ""
+
+# ----- GitHub App ------------------------------------------------------
+
+githubApp:
+  enabled: false
+  appID: 0
+  existingSecret: ""
+  privateKey: ""
+  apiBase: ""

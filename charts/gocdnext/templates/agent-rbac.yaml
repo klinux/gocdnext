@@ -1,0 +1,40 @@
+{{- if .Values.agent.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+rules:
+  # Pod lifecycle: agent creates a Pod per task, watches its status,
+  # reads its logs, and (optionally) deletes it. Scoped to the
+  # release namespace; CRUD on Pods is the minimum set.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/status]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gocdnext.agent.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gocdnext.agent.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

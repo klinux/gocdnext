@@ -1,0 +1,160 @@
+{{- if .Values.server.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels: {{- include "gocdnext.server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "gocdnext.server.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "gocdnext.image" (dict "root" . "imageRef" .Values.server.image) }}
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8153
+            - name: grpc
+              containerPort: 8154
+          env:
+            - name: GOCDNEXT_HTTP_ADDR
+              value: ":8153"
+            - name: GOCDNEXT_GRPC_ADDR
+              value: ":8154"
+            - name: GOCDNEXT_LOG_LEVEL
+              value: {{ .Values.global.logLevel | quote }}
+            {{- include "gocdnext.database.envVar" . | nindent 12 }}
+            - name: GOCDNEXT_PUBLIC_BASE
+              value: {{ .Values.server.publicBase | quote }}
+            - name: GOCDNEXT_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.webhookToken.existingSecret }}
+                  key: {{ default "webhook-token" (ternary "WEBHOOK_TOKEN" "webhook-token" (ne .Values.webhookToken.existingSecret "")) }}
+                  optional: true
+            - name: GOCDNEXT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.secretKey.existingSecret }}
+                  key: {{ default "secret-key" (ternary "SECRET_KEY" "secret-key" (ne .Values.secretKey.existingSecret "")) }}
+                  optional: true
+            - name: GOCDNEXT_ARTIFACTS_BACKEND
+              value: {{ .Values.artifacts.backend | quote }}
+            - name: GOCDNEXT_ARTIFACTS_FS_ROOT
+              value: {{ .Values.artifacts.filesystem.root | quote }}
+            - name: GOCDNEXT_ARTIFACTS_PUBLIC_BASE
+              value: {{ .Values.server.publicBase | quote }}
+            - name: GOCDNEXT_ARTIFACTS_SIGN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.artifactsSignKey.existingSecret }}
+                  key: {{ default "artifacts-sign-key" (ternary "ARTIFACTS_SIGN_KEY" "artifacts-sign-key" (ne .Values.artifactsSignKey.existingSecret "")) }}
+                  optional: true
+            - name: GOCDNEXT_ARTIFACTS_KEEP_LAST
+              value: {{ .Values.artifacts.keepLastPerPipeline | quote }}
+            - name: GOCDNEXT_ARTIFACTS_PROJECT_QUOTA_BYTES
+              value: {{ .Values.artifacts.projectQuotaBytes | quote }}
+            - name: GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES
+              value: {{ .Values.artifacts.globalQuotaBytes | quote }}
+            {{- if eq .Values.artifacts.backend "s3" }}
+            - name: GOCDNEXT_ARTIFACTS_S3_BUCKET
+              value: {{ .Values.artifacts.s3.bucket | quote }}
+            - name: GOCDNEXT_ARTIFACTS_S3_REGION
+              value: {{ .Values.artifacts.s3.region | quote }}
+            - name: GOCDNEXT_ARTIFACTS_S3_ENDPOINT
+              value: {{ .Values.artifacts.s3.endpoint | quote }}
+            - name: GOCDNEXT_ARTIFACTS_S3_USE_PATH_STYLE
+              value: {{ .Values.artifacts.s3.usePathStyle | quote }}
+            - name: GOCDNEXT_ARTIFACTS_S3_ENSURE_BUCKET
+              value: {{ .Values.artifacts.s3.ensureBucket | quote }}
+            {{- if .Values.artifacts.s3.existingSecret }}
+            - name: GOCDNEXT_ARTIFACTS_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifacts.s3.existingSecret }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: GOCDNEXT_ARTIFACTS_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifacts.s3.existingSecret }}
+                  key: AWS_SECRET_ACCESS_KEY
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.artifacts.backend "gcs" }}
+            - name: GOCDNEXT_ARTIFACTS_GCS_BUCKET
+              value: {{ .Values.artifacts.gcs.bucket | quote }}
+            - name: GOCDNEXT_ARTIFACTS_GCS_PROJECT_ID
+              value: {{ .Values.artifacts.gcs.projectID | quote }}
+            - name: GOCDNEXT_ARTIFACTS_GCS_ENSURE_BUCKET
+              value: {{ .Values.artifacts.gcs.ensureBucket | quote }}
+            {{- if .Values.artifacts.gcs.existingSecret }}
+            - name: GOCDNEXT_ARTIFACTS_GCS_CREDENTIALS_FILE
+              value: /var/run/secrets/gcs/service-account.json
+            {{- end }}
+            {{- end }}
+            {{- if .Values.githubApp.enabled }}
+            - name: GOCDNEXT_GITHUB_APP_ID
+              value: {{ .Values.githubApp.appID | quote }}
+            - name: GOCDNEXT_GITHUB_APP_PRIVATE_KEY_FILE
+              value: /var/run/secrets/gocdnext/github-app-private-key
+            - name: GOCDNEXT_GITHUB_APP_API_BASE
+              value: {{ .Values.githubApp.apiBase | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- if eq .Values.artifacts.backend "filesystem" }}
+            - name: artifacts
+              mountPath: {{ .Values.artifacts.filesystem.root }}
+            {{- end }}
+            {{- if .Values.githubApp.enabled }}
+            - name: github-app-key
+              mountPath: /var/run/secrets/gocdnext
+              readOnly: true
+            {{- end }}
+            {{- if and (eq .Values.artifacts.backend "gcs") .Values.artifacts.gcs.existingSecret }}
+            - name: gcs-creds
+              mountPath: /var/run/secrets/gcs
+              readOnly: true
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources: {{- toYaml .Values.server.resources | nindent 12 }}
+      volumes:
+        {{- if eq .Values.artifacts.backend "filesystem" }}
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ include "gocdnext.server.fullname" . }}-artifacts
+        {{- end }}
+        {{- if .Values.githubApp.enabled }}
+        - name: github-app-key
+          secret:
+            secretName: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.githubApp.existingSecret }}
+            items:
+              - key: {{ default "github-app-private-key" (ternary "private-key" "github-app-private-key" (ne .Values.githubApp.existingSecret "")) }}
+                path: github-app-private-key
+        {{- end }}
+        {{- if and (eq .Values.artifacts.backend "gcs") .Values.artifacts.gcs.existingSecret }}
+        - name: gcs-creds
+          secret:
+            secretName: {{ .Values.artifacts.gcs.existingSecret }}
+        {{- end }}
+{{- end }}
