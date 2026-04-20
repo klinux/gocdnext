@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Metadata } from "next";
+import type { Metadata, Route } from "next";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listProjects } from "@/server/queries/projects";
@@ -32,7 +32,7 @@ export default async function ProjectsPage() {
         {projects.map((p) => (
           <Link
             key={p.id}
-            href={{ pathname: "/projects/[slug]", query: { slug: p.slug } }}
+            href={`/projects/${p.slug}` as Route}
             className="group"
           >
             <Card className="h-full transition-colors group-hover:border-primary/40">

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Metadata } from "next";
+import type { Metadata, Route } from "next";
 import { ChevronRight } from "lucide-react";
 import {
   Card,
@@ -69,10 +69,7 @@ export default async function ProjectDetailPage({
             {detail.project.name}
           </h2>
           <Link
-            href={{
-              pathname: "/projects/[slug]/secrets",
-              query: { slug: detail.project.slug },
-            }}
+            href={`/projects/${detail.project.slug}/secrets` as Route}
             className="text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
           >
             Manage secrets →
@@ -163,7 +160,7 @@ function RunsTable({
             <TableCell className="font-semibold">#{r.counter}</TableCell>
             <TableCell>
               <Link
-                href={{ pathname: "/runs/[id]", query: { id: r.id } }}
+                href={`/runs/${r.id}` as Route}
                 className="hover:underline"
               >
                 {r.pipeline_name}

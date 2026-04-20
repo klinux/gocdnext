@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { Route } from "next";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Radio } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
@@ -68,10 +69,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           </Link>
           <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
           <Link
-            href={{
-              pathname: "/projects/[slug]",
-              query: { slug: data.project_slug },
-            }}
+            href={`/projects/${data.project_slug}` as Route}
             className="hover:text-foreground"
           >
             {data.project_slug}
@@ -179,10 +177,7 @@ function UpstreamBanner({
         <>
           {" · "}
           <Link
-            href={{
-              pathname: "/runs/[id]",
-              query: { id: upstream_run_id },
-            }}
+            href={`/runs/${upstream_run_id}` as Route}
             className="text-primary hover:underline"
           >
             view upstream run

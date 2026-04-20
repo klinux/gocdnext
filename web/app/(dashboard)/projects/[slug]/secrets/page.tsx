@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Metadata } from "next";
+import type { Metadata, Route } from "next";
 import { ChevronRight, Lock } from "lucide-react";
 import {
   Table,
@@ -70,7 +70,7 @@ export default async function SecretsPage({
           </Link>
           <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
           <Link
-            href={{ pathname: "/projects/[slug]", query: { slug } }}
+            href={`/projects/${slug}` as Route}
             className="hover:text-foreground"
           >
             {slug}
