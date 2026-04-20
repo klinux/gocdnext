@@ -138,6 +138,16 @@ artifacts:
 webhookToken:
   existingSecret: ""
   value: ""
+
+# Project secrets live in Postgres (db, default) or as K8s Secret
+# objects (kubernetes). Kubernetes backend reads objects named by
+# secrets.kubernetes.nameTemplate; secretKey below is ignored.
+secrets:
+  backend: db          # db | kubernetes
+  kubernetes:
+    namespace: ""                              # empty = Release.Namespace
+    nameTemplate: "gocdnext-secrets-{slug}"
+
 secretKey:
   existingSecret: ""
   value: ""

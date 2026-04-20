@@ -64,22 +64,47 @@ func main() {
 
 	var cipher *crypto.Cipher
 	var resolver secrets.Resolver = secrets.NopResolver{}
-	if cfg.SecretKeyHex != "" {
-		c, err := crypto.NewCipherFromHex(cfg.SecretKeyHex)
-		if err != nil {
-			logger.Error("secret key", "err", err)
+	switch cfg.SecretBackend {
+	case "kubernetes":
+		if cfg.SecretK8sNamespace == "" {
+			logger.Error("secrets: GOCDNEXT_SECRET_K8S_NAMESPACE required when backend=kubernetes")
 			os.Exit(1)
 		}
-		cipher = c
-		r, err := secrets.NewDBResolver(st, cipher)
+		r, err := secrets.NewKubernetesResolver(secrets.KubernetesResolverConfig{
+			Store:          st,
+			Namespace:      cfg.SecretK8sNamespace,
+			KubeconfigPath: cfg.SecretK8sKubeconfig,
+			NameTemplate:   cfg.SecretK8sTemplate,
+		})
 		if err != nil {
 			logger.Error("secrets resolver", "err", err)
 			os.Exit(1)
 		}
 		resolver = r
-		logger.Info("secrets subsystem enabled", "backend", "db")
-	} else {
-		logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503 and jobs that declare secrets will fail at dispatch")
+		logger.Info("secrets subsystem enabled",
+			"backend", "kubernetes",
+			"namespace", cfg.SecretK8sNamespace)
+	case "db", "":
+		if cfg.SecretKeyHex != "" {
+			c, err := crypto.NewCipherFromHex(cfg.SecretKeyHex)
+			if err != nil {
+				logger.Error("secret key", "err", err)
+				os.Exit(1)
+			}
+			cipher = c
+			r, err := secrets.NewDBResolver(st, cipher)
+			if err != nil {
+				logger.Error("secrets resolver", "err", err)
+				os.Exit(1)
+			}
+			resolver = r
+			logger.Info("secrets subsystem enabled", "backend", "db")
+		} else {
+			logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503 and jobs that declare secrets will fail at dispatch")
+		}
+	default:
+		logger.Error("secrets: unknown backend", "backend", cfg.SecretBackend)
+		os.Exit(1)
 	}
 
 	artifactStore, artifactHandler, err := buildArtifactBackend(cfg, logger)

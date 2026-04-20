@@ -1,0 +1,37 @@
+{{- if and .Values.server.enabled (eq .Values.secrets.backend "kubernetes") }}
+# Server needs to read Secrets when secrets.backend=kubernetes. We
+# scope narrowly: only `get` on the namespace where the project-
+# secrets live. List/watch aren't needed — the server knows the
+# exact name to fetch.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}-secrets
+  namespace: {{ default .Release.Namespace .Values.secrets.kubernetes.namespace }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}-secrets
+  namespace: {{ default .Release.Namespace .Values.secrets.kubernetes.namespace }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gocdnext.server.fullname" . }}-secrets
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gocdnext.server.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

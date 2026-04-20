@@ -49,6 +49,27 @@ com #number, author, head→base, short SHA. Closed/merged ignorados.
 Com isso a **dogfood-readiness estrutural fechou**. Fase 3 (Helm +
 K8s agent + pipelines reais) é o próximo capítulo.
 
+---
+
+## Fase 3 — K8s + Helm ✅ (4 commits)
+
+- **F3.1** ✅ `agent.engine` interface + Shell impl (refactor sem
+  mudança de comportamento; destrava F3.2).
+- **F3.2** ✅ `engine.Kubernetes`: cria Pod por task, streama logs
+  via GetLogs(Follow), cleanup configurável. Workspace via PVC
+  compartilhado entre agent Pod e job Pod.
+- **F3.3** ✅ Helm chart: server + agent + web + RBAC + PVCs;
+  condicionais por backend de artefato, engine do agent, dev
+  postgres. `helm lint` limpo, 14 objetos renderizados no default.
+- **F3.4** ✅ `secrets.KubernetesResolver`: projeto vira Secret
+  `gocdnext-secrets-{slug}`; chart adiciona Role `get` em Secrets
+  quando `secrets.backend=kubernetes`.
+
+Próximo item é operacional: **rodar pipelines reais**. Instalar o
+App de verdade num repo, instalar o chart num cluster, ver o que
+quebra na prática. Não tem mais débito estrutural que eu enxergo —
+o que falta é uso.
+
 ## Fase 0 — fundação ✅
 
 - [x] Monorepo layout, `go.work`, `go.mod` por módulo
@@ -90,9 +111,9 @@ Critério de saída atingido: push → pipeline roda → logs visíveis no UI.
 
 ## Fase 3 — validação interna
 
-- [ ] Helm chart pra K8s
-- [ ] Agente K8s-native (jobs rodam como `Job`/`Pod`)
-- [ ] Secrets via K8s Secret refs (adapter do `Resolver`)
+- [x] Helm chart pra K8s (F3.3)
+- [x] Agente K8s-native (`agent.engine=kubernetes`, F3.1+F3.2)
+- [x] Secrets via K8s Secret refs (F3.4, `secrets.backend=kubernetes`)
 - [x] Upload de artefato — coberto pela Fase E2 acima
 - [ ] Rodar 3–5 pipelines reais da própria org
 - [ ] Coletar feedback, iterar UX

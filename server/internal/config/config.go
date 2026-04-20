@@ -61,6 +61,14 @@ type Config struct {
 	// Used when building webhook URLs we register at GitHub. For
 	// local dev with ngrok, set to the ngrok HTTPS URL.
 	PublicBase string
+
+	// Secret backend: "db" (default, uses SecretKeyHex to decrypt
+	// ciphertext stored in Postgres) or "kubernetes" (reads K8s
+	// Secret objects named by template).
+	SecretBackend      string
+	SecretK8sNamespace string
+	SecretK8sTemplate  string // default "gocdnext-secrets-{slug}"
+	SecretK8sKubeconfig string // empty = in-cluster
 }
 
 func Load() (*Config, error) {
@@ -127,6 +135,10 @@ func Load() (*Config, error) {
 	c.GithubAppPrivateKeyFile = env("GOCDNEXT_GITHUB_APP_PRIVATE_KEY_FILE", "")
 	c.GithubAppAPIBase = env("GOCDNEXT_GITHUB_APP_API_BASE", "")
 	c.PublicBase = env("GOCDNEXT_PUBLIC_BASE", "")
+	c.SecretBackend = strings.ToLower(env("GOCDNEXT_SECRET_BACKEND", "db"))
+	c.SecretK8sNamespace = env("GOCDNEXT_SECRET_K8S_NAMESPACE", "")
+	c.SecretK8sTemplate = env("GOCDNEXT_SECRET_K8S_NAME_TEMPLATE", "")
+	c.SecretK8sKubeconfig = env("GOCDNEXT_SECRET_K8S_KUBECONFIG", "")
 
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("GOCDNEXT_DATABASE_URL is required")

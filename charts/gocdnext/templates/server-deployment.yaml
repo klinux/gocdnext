@@ -14,6 +14,9 @@ spec:
     metadata:
       labels: {{- include "gocdnext.server.selectorLabels" . | nindent 8 }}
     spec:
+      {{- if eq .Values.secrets.backend "kubernetes" }}
+      serviceAccountName: {{ include "gocdnext.server.fullname" . }}
+      {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -48,6 +51,14 @@ spec:
                   name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.secretKey.existingSecret }}
                   key: {{ default "secret-key" (ternary "SECRET_KEY" "secret-key" (ne .Values.secretKey.existingSecret "")) }}
                   optional: true
+            - name: GOCDNEXT_SECRET_BACKEND
+              value: {{ .Values.secrets.backend | quote }}
+            {{- if eq .Values.secrets.backend "kubernetes" }}
+            - name: GOCDNEXT_SECRET_K8S_NAMESPACE
+              value: {{ default .Release.Namespace .Values.secrets.kubernetes.namespace | quote }}
+            - name: GOCDNEXT_SECRET_K8S_NAME_TEMPLATE
+              value: {{ .Values.secrets.kubernetes.nameTemplate | quote }}
+            {{- end }}
             - name: GOCDNEXT_ARTIFACTS_BACKEND
               value: {{ .Values.artifacts.backend | quote }}
             - name: GOCDNEXT_ARTIFACTS_FS_ROOT
