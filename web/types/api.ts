@@ -89,6 +89,30 @@ export type SecretsList = {
   secrets: Secret[];
 };
 
+export type VSMNode = {
+  pipeline_id: string;
+  name: string;
+  definition_version: number;
+  git_materials?: { url: string; branch?: string }[];
+  latest_run?: RunSummary;
+};
+
+export type VSMEdge = {
+  from_pipeline: string;
+  to_pipeline: string;
+  stage: string;
+  status?: string;
+};
+
+export type ProjectVSM = {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  nodes: VSMNode[];
+  edges: VSMEdge[];
+  generated_at: string;
+};
+
 export type RunArtifact = {
   id: string;
   job_run_id: string;

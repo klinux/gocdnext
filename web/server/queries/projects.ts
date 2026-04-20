@@ -6,6 +6,7 @@ import { env } from "@/lib/env";
 import type {
   ProjectDetail,
   ProjectSummary,
+  ProjectVSM,
   RunDetail,
   SecretsList,
 } from "@/types/api";
@@ -62,6 +63,12 @@ export async function getRunDetail(
 ): Promise<RunDetail> {
   return readJSON<RunDetail>(
     `/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}`,
+  );
+}
+
+export async function getProjectVSM(slug: string): Promise<ProjectVSM> {
+  return readJSON<ProjectVSM>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/vsm`,
   );
 }
 

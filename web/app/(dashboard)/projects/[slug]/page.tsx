@@ -68,12 +68,20 @@ export default async function ProjectDetailPage({
           <h2 className="text-2xl font-semibold tracking-tight">
             {detail.project.name}
           </h2>
-          <Link
-            href={`/projects/${detail.project.slug}/secrets` as Route}
-            className="text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
-          >
-            Manage secrets →
-          </Link>
+          <div className="flex items-center gap-4 text-sm">
+            <Link
+              href={`/projects/${detail.project.slug}/vsm` as Route}
+              className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+            >
+              View VSM →
+            </Link>
+            <Link
+              href={`/projects/${detail.project.slug}/secrets` as Route}
+              className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+            >
+              Manage secrets →
+            </Link>
+          </div>
         </div>
         {detail.project.description ? (
           <p className="mt-1 text-sm text-muted-foreground">
