@@ -10,6 +10,7 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts } from "@/components/runs/run-artifacts.client";
 import { RunActions } from "@/components/runs/run-actions.client";
+import { PipelineCanvas } from "@/components/runs/pipeline-canvas.client";
 import { durationBetween, formatDurationSeconds } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
@@ -140,6 +141,8 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
 
       {upstream ? <UpstreamBanner upstream={upstream} /> : null}
       {pullRequest ? <PullRequestBanner pr={pullRequest} /> : null}
+
+      <PipelineCanvas stages={data.stages} />
 
       <Separator />
 

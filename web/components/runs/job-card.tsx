@@ -17,7 +17,10 @@ export function JobCard({ job }: Props) {
   const hasLogs = (job.logs?.length ?? 0) > 0;
 
   return (
-    <Card>
+    <Card
+      id={`job-${job.id}`}
+      className="scroll-mt-20 transition-shadow"
+    >
       <CardHeader className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-semibold">{job.name}</span>

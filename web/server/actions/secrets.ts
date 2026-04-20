@@ -3,16 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { env } from "@/lib/env";
-
-// Zod schema deliberately mirrors the server-side validation in
-// store.ValidateSecretName + the 64 KiB size cap on the HTTP handler. Keeping
-// the check client-side saves a round-trip on obvious mistakes; the server
-// re-validates everything anyway.
-export const secretNameSchema = z
-  .string()
-  .min(1, "name is required")
-  .max(64)
-  .regex(/^[A-Za-z][A-Za-z0-9_]*$/, "use letters, digits and underscore; must start with a letter");
+import { secretNameSchema } from "@/lib/validations";
 
 const setSchema = z.object({
   slug: z.string().min(1),

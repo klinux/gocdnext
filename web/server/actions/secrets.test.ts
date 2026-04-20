@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { secretNameSchema } from "./secrets";
+import { secretNameSchema } from "@/lib/validations";
 
 describe("secretNameSchema", () => {
   it("accepts valid env-var-shaped names", () => {

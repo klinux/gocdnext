@@ -5,19 +5,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { env } from "@/lib/env";
-
-// Server-side Zod validation. Mirrors the backend's contract —
-// backend re-validates everything, so these checks are just for
-// fast failure on obvious user mistakes before the round-trip.
-
-export const projectSlugSchema = z
-  .string()
-  .min(1, "slug is required")
-  .max(64)
-  .regex(
-    /^[a-z][a-z0-9-]*$/,
-    "lowercase letters, digits and dashes; must start with a letter",
-  );
+import { projectSlugSchema } from "@/lib/validations";
 
 const fileSchema = z.object({
   name: z.string().min(1),

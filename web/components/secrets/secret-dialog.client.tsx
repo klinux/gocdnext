@@ -18,7 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { secretNameSchema, setSecret } from "@/server/actions/secrets";
+import { secretNameSchema } from "@/lib/validations";
+import { setSecret } from "@/server/actions/secrets";
 
 type Props = {
   slug: string;
