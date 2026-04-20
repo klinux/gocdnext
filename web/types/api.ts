@@ -19,6 +19,7 @@ export type CurrentUser = {
 export type AuthProvidersResponse = {
   enabled: boolean;
   providers: { name: string; display: string }[];
+  local_enabled?: boolean;
 };
 
 export type ProjectSummary = {

@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Route } from "next";
-import { LogOut, ShieldCheck, User as UserIcon } from "lucide-react";
+import { LogOut, Settings, ShieldCheck, User as UserIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -81,6 +81,13 @@ export function UserMenu({ user, loginBase }: Props) {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => router.push("/account" as Route)}
+          disabled={pending}
+        >
+          <Settings className="size-4" />
+          Account
+        </DropdownMenuItem>
         <DropdownMenuItem onClick={doLogout} disabled={pending}>
           <LogOut className="size-4" />
           Sign out

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { GitBranch } from "lucide-react";
 
+import { LocalLoginForm } from "@/components/auth/local-login-form.client";
 import { env } from "@/lib/env";
 import { listProviders } from "@/server/queries/auth";
 
@@ -52,14 +53,16 @@ export default async function LoginPage({ searchParams }: Props) {
           </div>
         ) : null}
 
-        {providers.providers.length === 0 ? (
+        {providers.providers.length === 0 && !providers.local_enabled ? (
           <p className="rounded-md border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-            No identity providers are configured. Set up at least one
-            (see{" "}
-            <code className="font-mono">GOCDNEXT_AUTH_*</code> env vars)
-            and restart the server.
+            No identity providers configured. Either set{" "}
+            <code className="font-mono">GOCDNEXT_AUTH_*</code> env vars +
+            restart, or seed a local admin with{" "}
+            <code className="font-mono">gocdnext admin create-user</code>.
           </p>
-        ) : (
+        ) : null}
+
+        {providers.providers.length > 0 ? (
           <ul className="space-y-2">
             {providers.providers.map((p) => {
               const qs = sanitizedNext
@@ -77,7 +80,21 @@ export default async function LoginPage({ searchParams }: Props) {
               );
             })}
           </ul>
-        )}
+        ) : null}
+
+        {providers.local_enabled && providers.providers.length > 0 ? (
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              or
+            </span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+        ) : null}
+
+        {providers.local_enabled ? (
+          <LocalLoginForm next={sanitizedNext || "/"} />
+        ) : null}
 
         <p className="text-center text-[10px] uppercase tracking-wide text-muted-foreground/70">
           control plane
