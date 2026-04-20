@@ -86,6 +86,16 @@ WHERE a.run_id = $1
   AND (cardinality($3::text[]) = 0 OR a.path = ANY($3::text[]))
 ORDER BY a.path;
 
+-- name: GetRunUpstreamContext :one
+-- For a downstream run, extracts upstream_run_id + upstream pipeline
+-- name from cause_detail JSON. Empty string / null UUID when this run
+-- was NOT triggered by an upstream material (cause is 'webhook' /
+-- 'manual'). Caller checks upstream_run_id.Valid.
+SELECT
+  NULLIF(cause_detail->>'upstream_run_id',  '')::uuid AS upstream_run_id,
+  (COALESCE(cause_detail->>'upstream_pipeline', ''))::text AS upstream_pipeline
+FROM runs WHERE id = $1;
+
 -- name: GetJobRunParents :one
 -- Resolves pipeline_id + project_id + agent_id for a (job_run_id,
 -- run_id) pair. Used by the RequestArtifactUpload handler to authorise

@@ -319,15 +319,23 @@ func (s *Scheduler) resolveArtifactDeps(ctx context.Context, run store.RunForDis
 
 	out := make([]*gocdnextv1.ArtifactDownload, 0)
 	for _, dep := range deps {
-		rows, err := s.store.ListReadyArtifactsByRunAndJob(ctx, run.ID, dep.FromJob, dep.Paths)
+		sourceRunID, err := s.resolveDepRunID(ctx, run, dep)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.store.ListReadyArtifactsByRunAndJob(ctx, sourceRunID, dep.FromJob, dep.Paths)
 		if err != nil {
 			return nil, fmt.Errorf("lookup artefacts from %q: %w", dep.FromJob, err)
 		}
 		if len(rows) == 0 {
-			if len(dep.Paths) == 0 {
-				return nil, fmt.Errorf("no ready artefacts found from job %q", dep.FromJob)
+			scope := "same run"
+			if dep.FromPipeline != "" {
+				scope = fmt.Sprintf("upstream run of pipeline %q", dep.FromPipeline)
 			}
-			return nil, fmt.Errorf("no ready artefacts from job %q matching paths %v", dep.FromJob, dep.Paths)
+			if len(dep.Paths) == 0 {
+				return nil, fmt.Errorf("no ready artefacts found from job %q (%s)", dep.FromJob, scope)
+			}
+			return nil, fmt.Errorf("no ready artefacts from job %q matching paths %v (%s)", dep.FromJob, dep.Paths, scope)
 		}
 		dest := dep.Dest
 		if dest == "" {
@@ -349,6 +357,29 @@ func (s *Scheduler) resolveArtifactDeps(ctx context.Context, run store.RunForDis
 		}
 	}
 	return out, nil
+}
+
+// resolveDepRunID picks the run_id whose artefacts back this
+// particular `needs_artifacts` entry. Empty FromPipeline = current
+// run (intra). Set FromPipeline = upstream run that triggered this
+// run (fanout). Validates that the upstream is indeed the named
+// pipeline so a typo surfaces as a clear error instead of "no
+// artefacts found".
+func (s *Scheduler) resolveDepRunID(ctx context.Context, run store.RunForDispatch, dep domain.ArtifactDep) (uuid.UUID, error) {
+	if dep.FromPipeline == "" {
+		return run.ID, nil
+	}
+	upstream, err := s.store.GetRunUpstreamContext(ctx, run.ID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if upstream.UpstreamRunID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("needs_artifacts references upstream pipeline %q but this run has no upstream (cause is webhook/manual)", dep.FromPipeline)
+	}
+	if upstream.UpstreamPipeline != dep.FromPipeline {
+		return uuid.Nil, fmt.Errorf("needs_artifacts references upstream pipeline %q but this run was triggered by %q", dep.FromPipeline, upstream.UpstreamPipeline)
+	}
+	return upstream.UpstreamRunID, nil
 }
 
 // failJobWithError marks a still-queued job as failed (with cascade to

@@ -76,13 +76,18 @@ type JobDef struct {
 	Tags           []string            `yaml:"tags,omitempty"`
 }
 
-// NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. Picks
-// an upstream job (same pipeline) by name and asks the scheduler to
-// stage its artefacts into the workspace before tasks run.
+// NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. It
+// addresses an upstream job's artefacts. Scope is intra-run by
+// default; setting `from_pipeline` switches to cross-run (fanout):
+// the scheduler resolves the run that triggered *this* run (via
+// `upstream:` material) and pulls from there instead. Useful for
+// pipelines that declare `upstream:` and want bits from the parent
+// run.
 type NeedsArtifactDef struct {
-	FromJob string   `yaml:"from_job"`
-	Paths   []string `yaml:"paths,omitempty"` // subset filter; empty = all
-	Dest    string   `yaml:"dest,omitempty"`  // default "./"
+	FromJob      string   `yaml:"from_job"`
+	FromPipeline string   `yaml:"from_pipeline,omitempty"` // "" = same run; set = upstream run triggered by this pipeline
+	Paths        []string `yaml:"paths,omitempty"`          // subset filter; empty = all
+	Dest         string   `yaml:"dest,omitempty"`           // default "./"
 }
 
 type Cache struct {

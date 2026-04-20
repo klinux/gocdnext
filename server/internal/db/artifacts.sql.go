@@ -94,6 +94,29 @@ func (q *Queries) GetJobRunParents(ctx context.Context, arg GetJobRunParentsPara
 	return i, err
 }
 
+const getRunUpstreamContext = `-- name: GetRunUpstreamContext :one
+SELECT
+  NULLIF(cause_detail->>'upstream_run_id',  '')::uuid AS upstream_run_id,
+  (COALESCE(cause_detail->>'upstream_pipeline', ''))::text AS upstream_pipeline
+FROM runs WHERE id = $1
+`
+
+type GetRunUpstreamContextRow struct {
+	UpstreamRunID    pgtype.UUID
+	UpstreamPipeline string
+}
+
+// For a downstream run, extracts upstream_run_id + upstream pipeline
+// name from cause_detail JSON. Empty string / null UUID when this run
+// was NOT triggered by an upstream material (cause is 'webhook' /
+// 'manual'). Caller checks upstream_run_id.Valid.
+func (q *Queries) GetRunUpstreamContext(ctx context.Context, id pgtype.UUID) (GetRunUpstreamContextRow, error) {
+	row := q.db.QueryRow(ctx, getRunUpstreamContext, id)
+	var i GetRunUpstreamContextRow
+	err := row.Scan(&i.UpstreamRunID, &i.UpstreamPipeline)
+	return i, err
+}
+
 const insertPendingArtifact = `-- name: InsertPendingArtifact :one
 INSERT INTO artifacts (
     run_id, job_run_id, pipeline_id, project_id,

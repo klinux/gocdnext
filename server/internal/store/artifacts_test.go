@@ -151,6 +151,57 @@ func TestListArtifactsByJobRun(t *testing.T) {
 	}
 }
 
+func TestGetRunUpstreamContext_Empty(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+
+	runID, _, _, _, _ := seedRunningJob(t, pool)
+	got, err := s.GetRunUpstreamContext(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("get upstream: %v", err)
+	}
+	if got.UpstreamRunID != uuid.Nil {
+		t.Errorf("run with no upstream must return nil id, got %v", got.UpstreamRunID)
+	}
+	if got.UpstreamPipeline != "" {
+		t.Errorf("upstream pipeline must be empty, got %q", got.UpstreamPipeline)
+	}
+}
+
+func TestGetRunUpstreamContext_Populated(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	upstreamID := uuid.New()
+	runID, _, _, _, _ := seedRunningJob(t, pool)
+	// Patch cause_detail directly — we don't have a CreateRunFromUpstream
+	// helper at this level that we can reach cleanly from a store test;
+	// the SQL shape is what we care about here.
+	if _, err := pool.Exec(ctx, `
+		UPDATE runs SET
+		  cause = 'upstream',
+		  cause_detail = jsonb_build_object(
+		    'upstream_run_id', $2::text,
+		    'upstream_pipeline', 'build-core'
+		  )
+		WHERE id = $1
+	`, runID, upstreamID.String()); err != nil {
+		t.Fatalf("patch cause_detail: %v", err)
+	}
+
+	got, err := s.GetRunUpstreamContext(ctx, runID)
+	if err != nil {
+		t.Fatalf("get upstream: %v", err)
+	}
+	if got.UpstreamRunID != upstreamID {
+		t.Errorf("run id: got %v, want %v", got.UpstreamRunID, upstreamID)
+	}
+	if got.UpstreamPipeline != "build-core" {
+		t.Errorf("pipeline: got %q, want build-core", got.UpstreamPipeline)
+	}
+}
+
 func TestListReadyArtifactsByRun_OnlyReady(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

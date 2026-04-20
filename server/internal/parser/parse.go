@@ -142,9 +142,10 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 			return domain.Job{}, fmt.Errorf("job %q: needs_artifacts entry missing from_job", name)
 		}
 		j.ArtifactDeps = append(j.ArtifactDeps, domain.ArtifactDep{
-			FromJob: na.FromJob,
-			Paths:   append([]string(nil), na.Paths...),
-			Dest:    na.Dest,
+			FromJob:      na.FromJob,
+			FromPipeline: na.FromPipeline,
+			Paths:        append([]string(nil), na.Paths...),
+			Dest:         na.Dest,
 		})
 	}
 

@@ -219,6 +219,30 @@ func (s *Store) ListReadyArtifactsByRunAndJob(ctx context.Context, runID uuid.UU
 	return out, nil
 }
 
+// RunUpstreamContext is what the scheduler needs to resolve a
+// cross-run `needs_artifacts` entry: which run produced the artifacts
+// (because fanout downstream runs carry the upstream's id in
+// cause_detail) and which pipeline name that run belongs to.
+// UpstreamRunID is uuid.Nil when the current run is not a fanout
+// downstream (webhook/manual). In that case UpstreamPipeline is "".
+type RunUpstreamContext struct {
+	UpstreamRunID    uuid.UUID
+	UpstreamPipeline string
+}
+
+// GetRunUpstreamContext returns the upstream-run context from a
+// run's cause_detail. Returns zeros when no upstream is set.
+func (s *Store) GetRunUpstreamContext(ctx context.Context, runID uuid.UUID) (RunUpstreamContext, error) {
+	row, err := s.q.GetRunUpstreamContext(ctx, pgUUID(runID))
+	if err != nil {
+		return RunUpstreamContext{}, fmt.Errorf("store: upstream context: %w", err)
+	}
+	return RunUpstreamContext{
+		UpstreamRunID:    fromPgUUID(row.UpstreamRunID),
+		UpstreamPipeline: row.UpstreamPipeline,
+	}, nil
+}
+
 // JobRunParents returns pipeline_id + project_id + dispatched agent_id
 // for a (job_run_id, run_id) pair, and ErrArtifactNotFound if the job
 // doesn't belong to the claimed run. agent_id is uuid.Nil if the job

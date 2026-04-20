@@ -64,6 +64,11 @@ type Querier interface {
 	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
+	// For a downstream run, extracts upstream_run_id + upstream pipeline
+	// name from cause_detail JSON. Empty string / null UUID when this run
+	// was NOT triggered by an upstream material (cause is 'webhook' /
+	// 'manual'). Caller checks upstream_run_id.Valid.
+	GetRunUpstreamContext(ctx context.Context, id pgtype.UUID) (GetRunUpstreamContextRow, error)
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (ScmSource, error)
 	// Used by the scheduler when a job declares `secrets: [FOO, BAR]`. Returns

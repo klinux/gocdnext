@@ -19,6 +19,15 @@ jobs:
   deploy:
     stage: deploy
     image: plugins/kubectl
+    # Pull the binary that build-core.build produced on the upstream run
+    # that triggered this one. `from_pipeline` switches the lookup from
+    # "same run" to "upstream that fanned out into me", keyed on the
+    # pipeline name.
+    needs_artifacts:
+      - from_pipeline: build-core
+        from_job: build
+        paths: [bin/]
+        dest: ./
     settings:
       cluster: prod
       manifest: k8s/api.yaml

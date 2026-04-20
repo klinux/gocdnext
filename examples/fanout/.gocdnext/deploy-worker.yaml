@@ -14,6 +14,11 @@ jobs:
   deploy:
     stage: deploy
     image: plugins/kubectl
+    needs_artifacts:
+      - from_pipeline: build-core
+        from_job: build
+        paths: [bin/]
+        dest: ./
     settings:
       cluster: prod
       manifest: k8s/worker.yaml

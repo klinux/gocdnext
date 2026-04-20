@@ -145,14 +145,18 @@ type Job struct {
 	ArtifactDeps []ArtifactDep
 }
 
-// ArtifactDep is one entry in `needs_artifacts`. FromJob is the name of
-// the producing job in the same pipeline. Paths (optional) filters
+// ArtifactDep is one entry in `needs_artifacts`. FromJob is the name
+// of the producing job. FromPipeline, when set, switches resolution
+// from the current run to the *upstream* run that triggered this one
+// (fanout case) and names the pipeline we expect that run to belong
+// to. Empty FromPipeline means intra-run. Paths (optional) filters
 // which of that job's artifacts to pull — empty means all. Dest
 // defaults to "./" (workspace root).
 type ArtifactDep struct {
-	FromJob string
-	Paths   []string
-	Dest    string
+	FromJob      string
+	FromPipeline string
+	Paths        []string
+	Dest         string
 }
 
 type Task struct {
