@@ -83,6 +83,7 @@ type Querier interface {
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
+	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
 	// Keep-last policy: per pipeline, rank the runs that produced
 	// non-deleted artefacts by recency (run.created_at DESC); any run
 	// beyond position N has ALL its non-pinned artefacts stamped with
@@ -170,6 +171,7 @@ type Querier interface {
 	// Returns the session + its user row. Expired rows are filtered in
 	// the query so a single round-trip tells the handler "yes/no".
 	GetUserSession(ctx context.Context, id []byte) (GetUserSessionRow, error)
+	GetVCSIntegrationByID(ctx context.Context, id pgtype.UUID) (VcsIntegration, error)
 	// Expands a row with its headers + payload JSON for the drawer
 	// view. Kept in a separate query so the list shot stays tiny
 	// (payloads can be 100+ KB).
@@ -230,6 +232,9 @@ type Querier interface {
 	// Bootstrap path: just the ones that should be registered on
 	// server start (or after a reload).
 	ListEnabledAuthProviders(ctx context.Context) ([]AuthProvider, error)
+	// Bootstrap + reload path: rows the registry should actually
+	// instantiate on startup.
+	ListEnabledVCSIntegrations(ctx context.Context) ([]VcsIntegration, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
 	// Recent jobs dispatched to this agent. Joined all the way up to
@@ -278,6 +283,10 @@ type Querier interface {
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
 	ListUsers(ctx context.Context) ([]ListUsersRow, error)
+	// Admin feed. Returns every row regardless of `enabled` so the
+	// /settings/integrations page can surface disabled rows the user
+	// can re-enable.
+	ListVCSIntegrations(ctx context.Context) ([]VcsIntegration, error)
 	// Admin console feed. Most recent first; indexed on received_at.
 	// Filter by provider + status keep the page useful even under
 	// heavy traffic. Empty string = no filter on that axis.
@@ -298,6 +307,7 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
+	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
@@ -343,6 +353,11 @@ type Querier interface {
 	// NOT overwritten on conflict — it's admin-assigned and must not
 	// revert to 'user' just because the IdP doesn't carry it.
 	UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (UpsertUserByProviderRow, error)
+	// ON CONFLICT (name) DO UPDATE refreshes every field EXCEPT
+	// private_key + webhook_secret when the caller passes NULL.
+	// The handler interprets an empty string from the dialog as
+	// "keep existing ciphertext", mirroring auth_providers.
+	UpsertVCSIntegration(ctx context.Context, arg UpsertVCSIntegrationParams) (VcsIntegration, error)
 }
 
 var _ Querier = (*Queries)(nil)

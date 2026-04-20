@@ -213,6 +213,20 @@ type UserSession struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type VcsIntegration struct {
+	ID            pgtype.UUID
+	Kind          string
+	Name          string
+	DisplayName   string
+	AppID         *int64
+	PrivateKey    []byte
+	WebhookSecret []byte
+	ApiBase       string
+	Enabled       bool
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type WebhookDelivery struct {
 	ID         int64
 	Provider   string
