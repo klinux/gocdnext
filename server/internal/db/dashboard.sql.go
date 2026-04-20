@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countRunsGlobal = `-- name: CountRunsGlobal :one
+SELECT COUNT(*)::bigint AS total
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects  p  ON p.id  = pl.project_id
+WHERE ($1::text = '' OR r.status = $1::text)
+  AND ($2::text = '' OR r.cause = $2::text)
+  AND ($3::text = '' OR p.slug = $3::text)
+`
+
+type CountRunsGlobalParams struct {
+	StatusFilter string
+	CauseFilter  string
+	ProjectSlug  string
+}
+
+// Paired with ListRunsGlobal so /runs can render "N of M" with the
+// same filter args. Returned as bigint to fit any table; UI only
+// needs int32 but this avoids cast noise.
+func (q *Queries) CountRunsGlobal(ctx context.Context, arg CountRunsGlobalParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRunsGlobal, arg.StatusFilter, arg.CauseFilter, arg.ProjectSlug)
+	var total int64
+	err := row.Scan(&total)
+	return total, err
+}
+
 const dashboardP50DurationSec7d = `-- name: DashboardP50DurationSec7d :one
 SELECT COALESCE(
   percentile_cont(0.5) WITHIN GROUP (
@@ -182,13 +208,18 @@ FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects  p  ON p.id  = pl.project_id
 WHERE ($2::text = '' OR r.status = $2::text)
+  AND ($3::text = '' OR r.cause = $3::text)
+  AND ($4::text = '' OR p.slug = $4::text)
 ORDER BY r.created_at DESC
-LIMIT $1
+LIMIT $1 OFFSET $5::bigint
 `
 
 type ListRunsGlobalParams struct {
 	Limit        int32
 	StatusFilter string
+	CauseFilter  string
+	ProjectSlug  string
+	RowOffset    int64
 }
 
 type ListRunsGlobalRow struct {
@@ -208,10 +239,18 @@ type ListRunsGlobalRow struct {
 }
 
 // Cross-project timeline: most recent runs first. Carries the
-// pipeline + project names so the dashboard table can link without
-// N+1 lookups. Optional status filter; empty = all.
+// pipeline + project names so list views can link without per-row
+// lookups. All filter params accept the empty string as "no filter"
+// so the same query drives the dashboard widget (no filters) and
+// the /runs page (every filter the UI exposes).
 func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error) {
-	rows, err := q.db.Query(ctx, listRunsGlobal, arg.Limit, arg.StatusFilter)
+	rows, err := q.db.Query(ctx, listRunsGlobal,
+		arg.Limit,
+		arg.StatusFilter,
+		arg.CauseFilter,
+		arg.ProjectSlug,
+		arg.RowOffset,
+	)
 	if err != nil {
 		return nil, err
 	}

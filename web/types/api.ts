@@ -130,6 +130,33 @@ export type GlobalRunSummary = RunSummary & {
   project_name: string;
 };
 
+export type AgentJobSummary = {
+  job_run_id: string;
+  job_name: string;
+  job_status: string;
+  started_at?: string;
+  finished_at?: string;
+  exit_code?: number;
+  run_id: string;
+  run_counter: number;
+  pipeline_name: string;
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+};
+
+export type AgentDetail = {
+  agent: AgentSummary;
+  jobs: AgentJobSummary[];
+};
+
+export type RunsListResponse = {
+  runs: GlobalRunSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type AgentSummary = {
   id: string;
   name: string;

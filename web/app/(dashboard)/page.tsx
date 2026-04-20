@@ -19,7 +19,7 @@ import { formatDurationSeconds } from "@/lib/format";
 import {
   getDashboardMetrics,
   listAgents,
-  listGlobalRuns,
+  listGlobalRunsOnly,
 } from "@/server/queries/projects";
 import type { AgentSummary, GlobalRunSummary } from "@/types/api";
 
@@ -35,7 +35,7 @@ export default async function DashboardPage() {
   // could Suspense-split them if one gets slow.
   const [metrics, runs, agents] = await Promise.all([
     getDashboardMetrics(),
-    listGlobalRuns(20),
+    listGlobalRunsOnly(20),
     listAgents(),
   ]);
 

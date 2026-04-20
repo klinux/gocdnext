@@ -40,6 +40,10 @@ type Querier interface {
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Paired with ListRunsGlobal so /runs can render "N of M" with the
+	// same filter args. Returned as bigint to fit any table; UI only
+	// needs int32 but this avoids cast noise.
+	CountRunsGlobal(ctx context.Context, arg CountRunsGlobalParams) (int64, error)
 	// Median run duration in seconds across the last 7 days. NULL when
 	// no finished runs.
 	DashboardP50DurationSec7d(ctx context.Context) (float64, error)
@@ -75,6 +79,10 @@ type Querier interface {
 	// less).
 	ExpireOldestInProjectByExcess(ctx context.Context, arg ExpireOldestInProjectByExcessParams) (int64, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
+	// Same shape as ListAgentsWithRunning but for one row — reused by
+	// the /agents/{id} page. Returns ErrNoRows when the UUID is not
+	// an existing agent.
+	FindAgentWithRunning(ctx context.Context, id pgtype.UUID) (FindAgentWithRunningRow, error)
 	// For a completed stage on an upstream pipeline, find every "upstream"
 	// material in OTHER pipelines of the same project that points at it. The
 	// status filter respects `materials.config.status` (default 'success') so a
@@ -169,6 +177,11 @@ type Querier interface {
 	ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) ([]ListDispatchableJobsRow, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
+	// Recent jobs dispatched to this agent. Joined all the way up to
+	// the project so the table can link to the owning run/project
+	// without per-row lookups. LIMIT is caller-supplied to avoid
+	// pagination complexity for now (UI caps at 100).
+	ListJobsForAgent(ctx context.Context, arg ListJobsForAgentParams) ([]ListJobsForAgentRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	// All materials across pipelines of a project. VSM uses the
 	// `upstream` ones to build edges between pipeline nodes; git ones
@@ -195,8 +208,10 @@ type Querier interface {
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	// Cross-project timeline: most recent runs first. Carries the
-	// pipeline + project names so the dashboard table can link without
-	// N+1 lookups. Optional status filter; empty = all.
+	// pipeline + project names so list views can link without per-row
+	// lookups. All filter params accept the empty string as "no filter"
+	// so the same query drives the dashboard widget (no filters) and
+	// the /runs page (every filter the UI exposes).
 	ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error)
 	// Lists names + timestamps only — values never leave the DB without going
 	// through GetSecretValuesByProject below.

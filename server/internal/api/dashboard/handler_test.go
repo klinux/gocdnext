@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -94,20 +95,23 @@ func TestMetrics_CountsRunsToday(t *testing.T) {
 	}
 }
 
-func TestRunsGlobal_ReturnsRecentFirst(t *testing.T) {
+func TestRunsGlobal_ReturnsRecentFirstWithTotal(t *testing.T) {
 	h, pool := newHandler(t)
 	_ = seedOneRun(t, pool)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/runs?limit=5", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?limit=5", nil)
 	rr := httptest.NewRecorder()
 	h.RunsGlobal(rr, req)
 
 	var got struct {
-		Runs []store.GlobalRunSummary `json:"runs"`
+		Runs   []store.GlobalRunSummary `json:"runs"`
+		Total  int64                    `json:"total"`
+		Limit  int32                    `json:"limit"`
+		Offset int64                    `json:"offset"`
 	}
 	_ = json.Unmarshal(rr.Body.Bytes(), &got)
-	if len(got.Runs) != 1 {
-		t.Fatalf("runs = %d", len(got.Runs))
+	if len(got.Runs) != 1 || got.Total != 1 || got.Limit != 5 || got.Offset != 0 {
+		t.Fatalf("envelope = %+v", got)
 	}
 	if got.Runs[0].ProjectSlug != "demo" || got.Runs[0].PipelineName != "ci" {
 		t.Errorf("unexpected run: %+v", got.Runs[0])
@@ -118,22 +122,51 @@ func TestRunsGlobal_StatusFilter(t *testing.T) {
 	h, pool := newHandler(t)
 	_ = seedOneRun(t, pool)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/runs?status=success", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?status=success", nil)
 	rr := httptest.NewRecorder()
 	h.RunsGlobal(rr, req)
 
 	var got struct {
-		Runs []store.GlobalRunSummary `json:"runs"`
+		Runs  []store.GlobalRunSummary `json:"runs"`
+		Total int64                    `json:"total"`
 	}
 	_ = json.Unmarshal(rr.Body.Bytes(), &got)
-	if len(got.Runs) != 0 {
-		t.Errorf("the seeded run is queued; status=success filter should exclude it, got %d", len(got.Runs))
+	if len(got.Runs) != 0 || got.Total != 0 {
+		t.Errorf("status=success filter on queued run: runs=%d total=%d", len(got.Runs), got.Total)
+	}
+}
+
+func TestRunsGlobal_ProjectFilter(t *testing.T) {
+	h, pool := newHandler(t)
+	_ = seedOneRun(t, pool)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?project=other", nil)
+	rr := httptest.NewRecorder()
+	h.RunsGlobal(rr, req)
+
+	var got struct {
+		Runs  []store.GlobalRunSummary `json:"runs"`
+		Total int64                    `json:"total"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(got.Runs) != 0 || got.Total != 0 {
+		t.Errorf("project=other should match nothing, got %+v", got)
 	}
 }
 
 func TestRunsGlobal_InvalidLimit(t *testing.T) {
 	h, _ := newHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/runs?limit=0", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?limit=0", nil)
+	rr := httptest.NewRecorder()
+	h.RunsGlobal(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestRunsGlobal_InvalidOffset(t *testing.T) {
+	h, _ := newHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?offset=-1", nil)
 	rr := httptest.NewRecorder()
 	h.RunsGlobal(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -168,5 +201,65 @@ func TestAgents_ListsSeededAgent(t *testing.T) {
 	a := got.Agents[0]
 	if a.Name != "worker-a" || a.Capacity != 4 || a.HealthState != "online" {
 		t.Errorf("unexpected agent: %+v", a)
+	}
+}
+
+func TestAgentDetail_ReturnsSingleAgent(t *testing.T) {
+	h, pool := newHandler(t)
+	var agentID uuid.UUID
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO agents (name, token_hash, status, tags, capacity, last_seen_at)
+		VALUES ('worker-b', 'hash', 'online', ARRAY['linux']::text[], 2, NOW())
+		RETURNING id
+	`).Scan(&agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := chi.NewRouter()
+	r.Get("/api/v1/agents/{id}", h.AgentDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agentID.String(), nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Agent store.AgentSummary      `json:"agent"`
+		Jobs  []store.AgentJobSummary `json:"jobs"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if got.Agent.Name != "worker-b" || got.Agent.HealthState != "online" {
+		t.Errorf("agent = %+v", got.Agent)
+	}
+	if len(got.Jobs) != 0 {
+		t.Errorf("fresh agent should have no jobs, got %d", len(got.Jobs))
+	}
+}
+
+func TestAgentDetail_NotFound(t *testing.T) {
+	h, _ := newHandler(t)
+	r := chi.NewRouter()
+	r.Get("/api/v1/agents/{id}", h.AgentDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+uuid.NewString(), nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestAgentDetail_InvalidID(t *testing.T) {
+	h, _ := newHandler(t)
+	r := chi.NewRouter()
+	r.Get("/api/v1/agents/{id}", h.AgentDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/not-a-uuid", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
 	}
 }

@@ -4,6 +4,7 @@
 
 import { env } from "@/lib/env";
 import type {
+  AgentDetail,
   AgentSummary,
   DashboardMetrics,
   GlobalRunSummary,
@@ -11,6 +12,7 @@ import type {
   ProjectSummary,
   ProjectVSM,
   RunDetail,
+  RunsListResponse,
   SecretsList,
 } from "@/types/api";
 
@@ -79,21 +81,43 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   return readJSON<DashboardMetrics>("/api/v1/dashboard/metrics");
 }
 
+// RunsQuery mirrors the backend /api/v1/runs query string; every
+// field optional so the dashboard widget passes just `limit` and
+// the /runs page passes the full set.
+export type RunsQuery = {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  cause?: string;
+  project?: string;
+};
+
 export async function listGlobalRuns(
-  limit = 20,
-  status?: string,
-): Promise<GlobalRunSummary[]> {
-  const qs = new URLSearchParams({ limit: String(limit) });
-  if (status) qs.set("status", status);
-  const { runs } = await readJSON<{ runs: GlobalRunSummary[] }>(
-    `/api/v1/dashboard/runs?${qs.toString()}`,
-  );
-  return runs;
+  opts: RunsQuery = {},
+): Promise<RunsListResponse> {
+  const qs = new URLSearchParams({ limit: String(opts.limit ?? 20) });
+  if (opts.offset) qs.set("offset", String(opts.offset));
+  if (opts.status) qs.set("status", opts.status);
+  if (opts.cause) qs.set("cause", opts.cause);
+  if (opts.project) qs.set("project", opts.project);
+  return readJSON<RunsListResponse>(`/api/v1/runs?${qs.toString()}`);
+}
+
+// listGlobalRunsOnly is the legacy shape the dashboard widget used
+// (bare slice, no envelope). Kept so we don't tear up that code
+// path in this slice — v2 can migrate it when convenient.
+export async function listGlobalRunsOnly(limit = 20): Promise<GlobalRunSummary[]> {
+  const env = await listGlobalRuns({ limit });
+  return env.runs;
 }
 
 export async function listAgents(): Promise<AgentSummary[]> {
   const { agents } = await readJSON<{ agents: AgentSummary[] }>("/api/v1/agents");
   return agents;
+}
+
+export async function getAgentDetail(id: string): Promise<AgentDetail> {
+  return readJSON<AgentDetail>(`/api/v1/agents/${encodeURIComponent(id)}`);
 }
 
 export async function listSecrets(slug: string) {

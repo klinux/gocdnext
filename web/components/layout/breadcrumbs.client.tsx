@@ -33,11 +33,15 @@ type Entry = {
 const registry: Record<string, Entry> = {
   projects: {
     label: () => "Projects",
-    href: () => "/",
+    href: () => "/projects",
   },
   runs: {
     label: () => "Runs",
-    href: () => null,
+    href: () => "/runs",
+  },
+  agents: {
+    label: () => "Agents",
+    href: () => "/agents",
   },
   vsm: {
     label: () => "VSM",

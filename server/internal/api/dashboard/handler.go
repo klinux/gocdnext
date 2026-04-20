@@ -7,10 +7,14 @@ package dashboard
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -50,9 +54,14 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(m)
 }
 
-// RunsGlobal handles GET /api/v1/dashboard/runs. Query params:
+// RunsGlobal handles GET /api/v1/runs. Query params:
 //   - limit (default 20, max 200)
+//   - offset (default 0)
 //   - status (optional filter, any domain.RunStatus value)
+//   - cause (optional filter: webhook | pull_request | upstream | manual)
+//   - project (optional project slug filter)
+// Response includes `total` alongside the slice so the UI can
+// render "N of M" without a second call.
 func (h *Handler) RunsGlobal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -71,15 +80,40 @@ func (h *Handler) RunsGlobal(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = int32(parsed)
 	}
-	status := r.URL.Query().Get("status")
-	runs, err := h.store.ListRunsGlobal(r.Context(), limit, status)
+	var offset int64
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid 'offset' query", http.StatusBadRequest)
+			return
+		}
+		offset = parsed
+	}
+	filter := store.RunsFilter{
+		Status:      r.URL.Query().Get("status"),
+		Cause:       r.URL.Query().Get("cause"),
+		ProjectSlug: r.URL.Query().Get("project"),
+	}
+
+	runs, err := h.store.ListRunsGlobal(r.Context(), limit, offset, filter)
 	if err != nil {
-		h.log.Error("dashboard runs", "err", err)
+		h.log.Error("list runs", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	total, err := h.store.CountRunsGlobal(r.Context(), filter)
+	if err != nil {
+		h.log.Error("count runs", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"runs": runs})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"runs":   runs,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 // Agents handles GET /api/v1/agents. Flat list for both the home
@@ -98,4 +132,55 @@ func (h *Handler) Agents(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"agents": agents})
+}
+
+// AgentDetail handles GET /api/v1/agents/{id}. Returns the single
+// agent's metadata + a tail of recent jobs it was assigned.
+// Tail size from ?jobs= (default 50, max 200). Missing agent = 404.
+func (h *Handler) AgentDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := chi.URLParam(r, "id")
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	jobsLimit := int32(50)
+	if raw := r.URL.Query().Get("jobs"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || parsed < 1 {
+			http.Error(w, "invalid 'jobs' query", http.StatusBadRequest)
+			return
+		}
+		if int32(parsed) > 200 {
+			parsed = 200
+		}
+		jobsLimit = int32(parsed)
+	}
+
+	agent, err := h.store.FindAgentWithRunning(r.Context(), id, time.Now())
+	if errors.Is(err, store.ErrAgentByIDNotFound) {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		h.log.Error("agent detail", "agent_id", id, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	jobs, err := h.store.ListJobsForAgent(r.Context(), id, jobsLimit)
+	if err != nil {
+		h.log.Error("agent jobs", "agent_id", id, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"agent": agent,
+		"jobs":  jobs,
+	})
 }

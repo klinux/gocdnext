@@ -41,8 +41,8 @@ type NavItem = {
 const primaryNav: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Projects", href: "/projects", icon: Boxes },
-  { label: "Runs", href: "/", icon: Activity, comingSoon: true },
-  { label: "Agents", href: "/", icon: Server, comingSoon: true },
+  { label: "Runs", href: "/runs", icon: Activity },
+  { label: "Agents", href: "/agents", icon: Server },
 ];
 
 const adminNav: NavItem[] = [

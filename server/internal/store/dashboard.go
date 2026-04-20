@@ -2,13 +2,18 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
+
+// ErrAgentByIDNotFound signals FindAgentWithRunning saw no row.
+var ErrAgentByIDNotFound = errors.New("store: agent not found")
 
 // DashboardMetrics is the payload the `/` widget row needs.
 type DashboardMetrics struct {
@@ -72,13 +77,28 @@ type GlobalRunSummary struct {
 	ProjectName string    `json:"project_name"`
 }
 
-// ListRunsGlobal returns the N most recent runs across all
-// projects. Optional status filter narrows to a single status
-// (empty = any).
-func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, statusFilter string) ([]GlobalRunSummary, error) {
+// RunsFilter bundles the optional filters for ListRunsGlobal /
+// CountRunsGlobal. Empty strings mean "no filter" on that axis.
+type RunsFilter struct {
+	Status      string
+	Cause       string
+	ProjectSlug string
+}
+
+// ListRunsGlobal returns a slice of GlobalRunSummary matching the
+// filter, paged by limit/offset. Offset defaults to 0 when negative.
+// Used by both the dashboard widget (filter empty, limit=20) and
+// the /runs page (full filter surface, paginated).
+func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, filter RunsFilter) ([]GlobalRunSummary, error) {
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := s.q.ListRunsGlobal(ctx, db.ListRunsGlobalParams{
 		Limit:        limit,
-		StatusFilter: statusFilter,
+		StatusFilter: filter.Status,
+		CauseFilter:  filter.Cause,
+		ProjectSlug:  filter.ProjectSlug,
+		RowOffset:    offset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list runs global: %w", err)
@@ -106,6 +126,20 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, statusFilter st
 	return out, nil
 }
 
+// CountRunsGlobal returns the total matching the same filter, for
+// paged "N of M" displays.
+func (s *Store) CountRunsGlobal(ctx context.Context, filter RunsFilter) (int64, error) {
+	n, err := s.q.CountRunsGlobal(ctx, db.CountRunsGlobalParams{
+		StatusFilter: filter.Status,
+		CauseFilter:  filter.Cause,
+		ProjectSlug:  filter.ProjectSlug,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: count runs global: %w", err)
+	}
+	return n, nil
+}
+
 // AgentSummary is what dashboards + the /agents page show. Derived
 // status (online/offline/idle) is computed in Go instead of SQL —
 // lets UI tune the "offline if last_seen > N minutes ago" threshold
@@ -131,6 +165,97 @@ type AgentSummary struct {
 // server's 30s default.
 const AgentStaleAfter = 90 * time.Second
 
+// FindAgentWithRunning returns the single-agent shape used by the
+// /agents/{id} page. Returns ErrAgentByIDNotFound when the UUID
+// doesn't exist — handler maps that to 404.
+func (s *Store) FindAgentWithRunning(ctx context.Context, id uuid.UUID, now time.Time) (AgentSummary, error) {
+	row, err := s.q.FindAgentWithRunning(ctx, pgUUID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgentSummary{}, ErrAgentByIDNotFound
+	}
+	if err != nil {
+		return AgentSummary{}, fmt.Errorf("store: find agent: %w", err)
+	}
+	lastSeen := pgTimePtr(row.LastSeenAt)
+	return AgentSummary{
+		ID:           fromPgUUID(row.ID),
+		Name:         row.Name,
+		Version:      stringValue(row.Version),
+		OS:           stringValue(row.Os),
+		Arch:         stringValue(row.Arch),
+		Tags:         append([]string(nil), row.Tags...),
+		Capacity:     row.Capacity,
+		Status:       row.Status,
+		HealthState:  deriveHealth(row.Status, lastSeen, now),
+		LastSeenAt:   lastSeen,
+		RegisteredAt: row.RegisteredAt.Time,
+		RunningJobs:  row.RunningJobs,
+	}, nil
+}
+
+// AgentJobSummary is one row in the /agents/{id} recent-jobs table.
+type AgentJobSummary struct {
+	JobRunID     uuid.UUID  `json:"job_run_id"`
+	JobName      string     `json:"job_name"`
+	JobStatus    string     `json:"job_status"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	ExitCode     *int32     `json:"exit_code,omitempty"`
+	RunID        uuid.UUID  `json:"run_id"`
+	RunCounter   int64      `json:"run_counter"`
+	PipelineName string     `json:"pipeline_name"`
+	ProjectID    uuid.UUID  `json:"project_id"`
+	ProjectSlug  string     `json:"project_slug"`
+	ProjectName  string     `json:"project_name"`
+}
+
+// ListJobsForAgent returns the N most recent jobs dispatched to
+// this agent, newest first. Joins up to the owning project so the
+// UI table links directly.
+func (s *Store) ListJobsForAgent(ctx context.Context, id uuid.UUID, limit int32) ([]AgentJobSummary, error) {
+	rows, err := s.q.ListJobsForAgent(ctx, db.ListJobsForAgentParams{
+		AgentID: pgUUID(id),
+		Limit:   limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: agent jobs: %w", err)
+	}
+	out := make([]AgentJobSummary, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, AgentJobSummary{
+			JobRunID:     fromPgUUID(r.JobRunID),
+			JobName:      r.JobName,
+			JobStatus:    r.JobStatus,
+			StartedAt:    pgTimePtr(r.StartedAt),
+			FinishedAt:   pgTimePtr(r.FinishedAt),
+			ExitCode:     r.ExitCode,
+			RunID:        fromPgUUID(r.RunID),
+			RunCounter:   r.RunCounter,
+			PipelineName: r.PipelineName,
+			ProjectID:    fromPgUUID(r.ProjectID),
+			ProjectSlug:  r.ProjectSlug,
+			ProjectName:  r.ProjectName,
+		})
+	}
+	return out, nil
+}
+
+// deriveHealth collapses the agent's raw status + last-seen age
+// into the UI-visible state. Factored out so FindAgent and
+// ListAgents share the same threshold (AgentStaleAfter).
+func deriveHealth(status string, lastSeen *time.Time, now time.Time) string {
+	switch status {
+	case "online":
+		if lastSeen != nil && now.Sub(*lastSeen) <= AgentStaleAfter {
+			return "online"
+		}
+		return "stale"
+	case "idle":
+		return "idle"
+	}
+	return "offline"
+}
+
 // ListAgentsWithRunning returns every agent plus its current
 // running+queued job count. Handler decorates with HealthState
 // derived from LastSeenAt.
@@ -142,17 +267,6 @@ func (s *Store) ListAgentsWithRunning(ctx context.Context, now time.Time) ([]Age
 	out := make([]AgentSummary, 0, len(rows))
 	for _, r := range rows {
 		lastSeen := pgTimePtr(r.LastSeenAt)
-		health := "offline"
-		switch r.Status {
-		case "online":
-			if lastSeen != nil && now.Sub(*lastSeen) <= AgentStaleAfter {
-				health = "online"
-			} else {
-				health = "stale"
-			}
-		case "idle":
-			health = "idle"
-		}
 		out = append(out, AgentSummary{
 			ID:           fromPgUUID(r.ID),
 			Name:         r.Name,
@@ -162,7 +276,7 @@ func (s *Store) ListAgentsWithRunning(ctx context.Context, now time.Time) ([]Age
 			Tags:         append([]string(nil), r.Tags...),
 			Capacity:     r.Capacity,
 			Status:       r.Status,
-			HealthState:  health,
+			HealthState:  deriveHealth(r.Status, lastSeen, now),
 			LastSeenAt:   lastSeen,
 			RegisteredAt: r.RegisteredAt.Time,
 			RunningJobs:  r.RunningJobs,

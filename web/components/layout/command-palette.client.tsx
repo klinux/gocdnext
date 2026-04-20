@@ -78,15 +78,13 @@ export function CommandPalette() {
               <Boxes className="size-4" />
               Projects
             </CommandItem>
-            <CommandItem disabled>
+            <CommandItem onSelect={() => go("/runs" as Route)}>
               <Activity className="size-4" />
               Runs
-              <CommandShortcut>soon</CommandShortcut>
             </CommandItem>
-            <CommandItem disabled>
+            <CommandItem onSelect={() => go("/agents" as Route)}>
               <Server className="size-4" />
               Agents
-              <CommandShortcut>soon</CommandShortcut>
             </CommandItem>
             <CommandItem disabled>
               <Settings className="size-4" />

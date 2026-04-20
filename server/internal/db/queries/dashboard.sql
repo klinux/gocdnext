@@ -1,7 +1,9 @@
 -- name: ListRunsGlobal :many
 -- Cross-project timeline: most recent runs first. Carries the
--- pipeline + project names so the dashboard table can link without
--- N+1 lookups. Optional status filter; empty = all.
+-- pipeline + project names so list views can link without per-row
+-- lookups. All filter params accept the empty string as "no filter"
+-- so the same query drives the dashboard widget (no filters) and
+-- the /runs page (every filter the UI exposes).
 SELECT r.id,
        r.pipeline_id,
        pl.name         AS pipeline_name,
@@ -19,8 +21,22 @@ FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects  p  ON p.id  = pl.project_id
 WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
+  AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
+  AND (@project_slug::text = '' OR p.slug = @project_slug::text)
 ORDER BY r.created_at DESC
-LIMIT $1;
+LIMIT $1 OFFSET @row_offset::bigint;
+
+-- name: CountRunsGlobal :one
+-- Paired with ListRunsGlobal so /runs can render "N of M" with the
+-- same filter args. Returned as bigint to fit any table; UI only
+-- needs int32 but this avoids cast noise.
+SELECT COUNT(*)::bigint AS total
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects  p  ON p.id  = pl.project_id
+WHERE (@status_filter::text = '' OR r.status = @status_filter::text)
+  AND (@cause_filter::text = '' OR r.cause = @cause_filter::text)
+  AND (@project_slug::text = '' OR p.slug = @project_slug::text);
 
 -- name: ListAgentsWithRunning :many
 -- Dashboard + /agents list: every agent with its declared metadata

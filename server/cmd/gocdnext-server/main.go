@@ -202,8 +202,9 @@ func main() {
 	r.Get("/api/v1/runs/{id}", runsHandler.Detail)
 	r.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
 	r.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
-	r.Get("/api/v1/dashboard/runs", dashboardHandler.RunsGlobal)
+	r.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 	r.Get("/api/v1/agents", dashboardHandler.Agents)
+	r.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
