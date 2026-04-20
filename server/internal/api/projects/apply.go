@@ -102,11 +102,11 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "slug is required", http.StatusBadRequest)
 		return
 	}
-	if len(req.Files) == 0 {
-		http.Error(w, "files is required", http.StatusBadRequest)
-		return
-	}
-
+	// files is optional: the web "New project" dialog supports an
+	// Empty + Connect-repo flow that just registers metadata (and
+	// optionally an scm_source). ApplyProject with zero pipelines
+	// is a valid no-op on the pipeline side. The CLI always sends
+	// files via `gocdnext apply` so that path is unaffected.
 	pipelines, err := parseFiles(req.Files)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

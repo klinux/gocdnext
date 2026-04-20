@@ -136,6 +136,70 @@ func TestApply_MissingSlug(t *testing.T) {
 	}
 }
 
+// TestApply_EmptyFilesCreatesProjectShell mirrors the web "Empty"
+// and "Connect repo" flows — both ship zero pipeline YAML files
+// and expect the project metadata (+ optional scm_source) to
+// persist anyway. Regression test for the UI change that dropped
+// "files is required" on the handler.
+func TestApply_EmptyFilesCreatesProjectShell(t *testing.T) {
+	h, _ := newHandler(t)
+
+	rr := doApply(t, h, map[string]any{
+		"slug":        "shell-only",
+		"name":        "Shell Only",
+		"description": "created via the web with no pipelines yet",
+		"files":       []map[string]string{}, // empty on purpose
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ProjectID      string `json:"project_id"`
+		ProjectCreated bool   `json:"project_created"`
+		Pipelines      []any  `json:"pipelines"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ProjectID == "" || !resp.ProjectCreated {
+		t.Fatalf("expected fresh project id + created=true, got %+v", resp)
+	}
+	if len(resp.Pipelines) != 0 {
+		t.Fatalf("pipelines = %d, want 0", len(resp.Pipelines))
+	}
+}
+
+func TestApply_EmptyFilesWithSCMSourceRegistersBoth(t *testing.T) {
+	h, _ := newHandler(t)
+
+	rr := doApply(t, h, map[string]any{
+		"slug":  "repo-shell",
+		"name":  "Repo Shell",
+		"files": []map[string]string{},
+		"scm_source": map[string]string{
+			"provider":       "github",
+			"url":            "https://github.com/org/repo",
+			"default_branch": "main",
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		ProjectCreated bool `json:"project_created"`
+		SCMSource      *struct {
+			URL string `json:"url"`
+		} `json:"scm_source"`
+	}
+	_ = json.NewDecoder(rr.Body).Decode(&resp)
+	if !resp.ProjectCreated {
+		t.Fatalf("project not created")
+	}
+	if resp.SCMSource == nil || resp.SCMSource.URL != "https://github.com/org/repo" {
+		t.Fatalf("scm_source = %+v", resp.SCMSource)
+	}
+}
+
 func TestApply_WithSCMSourcePersistsAndReturnsID(t *testing.T) {
 	h, _ := newHandler(t)
 
