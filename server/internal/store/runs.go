@@ -31,6 +31,13 @@ type CreateRunFromModificationInput struct {
 	Provider       string
 	Delivery       string
 	TriggeredBy    string
+	// Cause + CauseDetail override the default cause="webhook" run
+	// labelling. Empty Cause keeps the existing webhook default;
+	// callers tagging a run as `pull_request` (etc.) supply both.
+	// CauseDetail is merged onto the provider/delivery metadata —
+	// keys in CauseDetail win if a conflict arises.
+	Cause       string
+	CauseDetail json.RawMessage
 }
 
 type StageRunRef struct {
@@ -58,21 +65,36 @@ type RunCreated struct {
 // lifting (counter + stage_runs + job_runs + NOTIFY) lives there so other
 // trigger paths (upstream, cron, manual) share the same insertion logic.
 func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromModificationInput) (RunCreated, error) {
-	causeDetail, _ := json.Marshal(map[string]any{
+	base := map[string]any{
 		"provider":        in.Provider,
 		"delivery":        in.Delivery,
 		"material_id":     in.MaterialID.String(),
 		"modification_id": in.ModificationID,
-	})
+	}
+	// Caller-provided cause_detail is merged last so PR metadata (or
+	// whatever other trigger adds) takes precedence on a key clash.
+	if len(in.CauseDetail) > 0 {
+		var extra map[string]any
+		if err := json.Unmarshal(in.CauseDetail, &extra); err == nil {
+			for k, v := range extra {
+				base[k] = v
+			}
+		}
+	}
+	causeDetail, _ := json.Marshal(base)
 	revisions, _ := json.Marshal(map[string]any{
 		in.MaterialID.String(): map[string]string{
 			"revision": in.Revision,
 			"branch":   in.Branch,
 		},
 	})
+	cause := in.Cause
+	if cause == "" {
+		cause = string(domain.CauseWebhook)
+	}
 	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
 		PipelineID:  in.PipelineID,
-		Cause:       string(domain.CauseWebhook),
+		Cause:       cause,
 		CauseDetail: causeDetail,
 		Revisions:   revisions,
 		TriggeredBy: in.TriggeredBy,

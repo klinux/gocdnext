@@ -75,8 +75,13 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only push events land modifications. ping / others are ack'd with 204.
-	if event != "push" {
+	switch event {
+	case "push":
+		// continue below
+	case "pull_request":
+		h.handlePullRequest(w, r, body, delivery)
+		return
+	default:
 		h.log.Info("github webhook: ignored event", "event", event, "delivery", delivery)
 		w.WriteHeader(http.StatusNoContent)
 		return

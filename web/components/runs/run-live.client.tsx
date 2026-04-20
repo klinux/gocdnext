@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { Route } from "next";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Radio } from "lucide-react";
+import { ChevronRight, GitPullRequest, Radio } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -56,6 +56,19 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           upstream_pipeline?: string;
           upstream_stage?: string;
           upstream_run_counter?: number;
+        })
+      : null;
+
+  const pullRequest =
+    data.cause === "pull_request" && data.cause_detail
+      ? (data.cause_detail as {
+          pr_number?: number;
+          pr_title?: string;
+          pr_author?: string;
+          pr_url?: string;
+          pr_head_ref?: string;
+          pr_head_sha?: string;
+          pr_base_ref?: string;
         })
       : null;
 
@@ -118,6 +131,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       </header>
 
       {upstream ? <UpstreamBanner upstream={upstream} /> : null}
+      {pullRequest ? <PullRequestBanner pr={pullRequest} /> : null}
 
       <Separator />
 
@@ -155,6 +169,57 @@ function Meta({ k, v }: { k: string; v: React.ReactNode }) {
       </dt>{" "}
       <dd className="inline font-mono">{v}</dd>
     </div>
+  );
+}
+
+function PullRequestBanner({
+  pr,
+}: {
+  pr: {
+    pr_number?: number;
+    pr_title?: string;
+    pr_author?: string;
+    pr_url?: string;
+    pr_head_ref?: string;
+    pr_head_sha?: string;
+    pr_base_ref?: string;
+  };
+}) {
+  return (
+    <aside className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <GitPullRequest className="h-4 w-4 text-primary" aria-hidden />
+        {pr.pr_url ? (
+          <a
+            href={pr.pr_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="font-mono text-primary hover:underline"
+          >
+            #{pr.pr_number}
+          </a>
+        ) : (
+          <span className="font-mono">#{pr.pr_number}</span>
+        )}
+        {pr.pr_title ? <span className="truncate">{pr.pr_title}</span> : null}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {pr.pr_author ? (
+          <span>
+            by <span className="font-mono">@{pr.pr_author}</span>
+          </span>
+        ) : null}
+        {pr.pr_head_ref && pr.pr_base_ref ? (
+          <span>
+            <span className="font-mono">{pr.pr_head_ref}</span> →{" "}
+            <span className="font-mono">{pr.pr_base_ref}</span>
+          </span>
+        ) : null}
+        {pr.pr_head_sha ? (
+          <span className="font-mono">{pr.pr_head_sha.slice(0, 7)}</span>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 

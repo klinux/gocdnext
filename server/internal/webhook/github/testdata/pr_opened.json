@@ -1,0 +1,29 @@
+{
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "html_url": "https://github.com/org/demo/pull/42",
+    "title": "feat: add gizmo",
+    "merged": false,
+    "updated_at": "2026-04-19T12:34:56Z",
+    "user": {
+      "login": "kleber"
+    },
+    "head": {
+      "ref": "feat/gizmo",
+      "sha": "9f7c3d2e1b8a5f6c4e0d7a9b1c3d5e7f9a0b2c4d"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
+    }
+  },
+  "repository": {
+    "id": 4242,
+    "name": "demo",
+    "full_name": "org/demo",
+    "default_branch": "main",
+    "clone_url": "https://github.com/org/demo.git",
+    "html_url": "https://github.com/org/demo"
+  }
+}
