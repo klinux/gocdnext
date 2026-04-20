@@ -12,7 +12,6 @@ import { AppSidebar } from "@/components/layout/app-sidebar.client";
 import { RouteBreadcrumbs } from "@/components/layout/breadcrumbs.client";
 import { CommandPalette } from "@/components/layout/command-palette.client";
 import { ThemeToggle } from "@/components/layout/theme-toggle.client";
-import { UserMenu } from "@/components/layout/user-menu.client";
 import { QueryClientProvider } from "@/components/providers/query-client-provider.client";
 import { Toaster } from "@/components/ui/sonner";
 import { env } from "@/lib/env";
@@ -30,10 +29,13 @@ export default async function DashboardLayout({ children }: Props) {
     redirect(`/login?next=${encodeURIComponent(next)}`);
   }
 
+  const user = auth.mode === "authenticated" ? auth.user : undefined;
+  const loginBase = env.GOCDNEXT_API_URL.replace(/\/+$/, "");
+
   return (
     <QueryClientProvider>
       <SidebarProvider>
-        <AppSidebar />
+        <AppSidebar user={user} loginBase={loginBase} />
         <SidebarInset>
           <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <SidebarTrigger className="-ml-1" />
@@ -42,12 +44,6 @@ export default async function DashboardLayout({ children }: Props) {
             <div className="ml-auto flex items-center gap-2">
               <CommandPalette />
               <ThemeToggle />
-              {auth.mode === "authenticated" ? (
-                <UserMenu
-                  user={auth.user}
-                  loginBase={env.GOCDNEXT_API_URL.replace(/\/+$/, "")}
-                />
-              ) : null}
             </div>
           </header>
           <div className="flex-1 p-6 lg:p-8">{children}</div>

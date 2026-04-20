@@ -8,7 +8,24 @@
       "Bash(buf lint *)",
       "Bash(buf generate *)",
       "Bash(go work *)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(sed -n '60,110p' /home/kleber/Dados/gocdnext/server/internal/parser/schema.go)",
+      "Bash(sed -n '60,100p' /home/kleber/Dados/gocdnext/proto/gocdnext/v1/agent.proto)",
+      "Bash(docker volume *)",
+      "Bash(goose postgres *)",
+      "Bash(golangci-lint run *)",
+      "Bash(go list *)",
+      "Bash(docker run *)",
+      "Bash(chmod +x /home/kleber/Dados/gocdnext/scripts/dev.sh /home/kleber/Dados/gocdnext/scripts/stop.sh)",
+      "Bash(awk 'BEGIN {FS = \":.*?## \"} /^[a-zA-Z_-]+:.*?## / {printf \"  %-18s %s\\\\n\", $1, $2}' Makefile)",
+      "Bash(bash -c 'awk -F\":.*?## \" \"/^[a-zA-Z_-]+:.*?## / {printf \\\\\"%-18s %s\\\\n\\\\\", \\\\$1, \\\\$2}\" Makefile')",
+      "Bash(ps -o pid,ppid,etime,cmd -p 718375)",
+      "Bash(pnpm exec *)",
+      "Bash(pnpm add *)",
+      "Bash(pnpm remove *)",
+      "Bash(pnpm dlx *)",
+      "Bash(GOCDNEXT_API_URL=http://localhost:8153 pnpm build)",
+      "Bash(/home/kleber/Dados/gocdnext)"
     ]
   }
 }

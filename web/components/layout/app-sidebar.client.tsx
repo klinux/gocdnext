@@ -13,6 +13,7 @@ import {
   Settings,
 } from "lucide-react";
 
+import { SidebarUserMenu } from "@/components/layout/sidebar-user-menu.client";
 import {
   Sidebar,
   SidebarContent,
@@ -25,6 +26,12 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import type { CurrentUser } from "@/types/api";
+
+type Props = {
+  user?: CurrentUser;
+  loginBase?: string;
+};
 
 type NavItem = {
   label: string;
@@ -49,7 +56,7 @@ const adminNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
-export function AppSidebar() {
+export function AppSidebar({ user, loginBase }: Props) {
   const pathname = usePathname();
 
   return (
@@ -96,9 +103,13 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
-        <p className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-          Control plane
-        </p>
+        {user ? (
+          <SidebarUserMenu user={user} loginBase={loginBase ?? ""} />
+        ) : (
+          <p className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground group-data-[collapsible=icon]:hidden">
+            Control plane
+          </p>
+        )}
       </SidebarFooter>
     </Sidebar>
   );
