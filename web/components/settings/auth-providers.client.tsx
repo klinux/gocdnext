@@ -151,7 +151,7 @@ export function AuthProvidersAdminView({ enabled, providers, envOnly }: Props) {
   return (
     <div className="space-y-4">
       {!enabled ? (
-        <Card className="border-amber-500/40 bg-amber-500/5">
+        <Card className="border-status-warning/40 bg-status-warning-bg">
           <CardHeader>
             <CardTitle className="text-sm">Auth is globally disabled</CardTitle>
             <CardDescription>

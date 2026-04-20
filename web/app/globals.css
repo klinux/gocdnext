@@ -4,9 +4,239 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * gocdnext design tokens.
+ *
+ * Three layers:
+ *   1. Brand scale (--brand-50..950): the teal-cyan identity.
+ *      Used anywhere we want "this is gocdnext" to feel present.
+ *   2. Status scale (--status-*): semantic tokens for the CI
+ *      states a run can be in. Each status carries a base color,
+ *      a soft -bg, and a -fg for on-bg text. Every pipeline view
+ *      + status badge points here so a palette change is a single
+ *      edit.
+ *   3. shadcn tokens (--primary, --ring, …): re-pointed at the
+ *      brand so the off-the-shelf components inherit our look.
+ *
+ * Changing any of these values here is the right blast-radius —
+ * do not set raw colors (`text-emerald-500`, …) in components.
+ */
+
+:root {
+    /* Brand — teal-cyan, hue 195. Chroma peaks at 500 and fades
+       at both ends of the scale for good contrast in both modes. */
+    --brand-50:  oklch(0.97 0.02 195);
+    --brand-100: oklch(0.93 0.04 195);
+    --brand-200: oklch(0.88 0.07 195);
+    --brand-300: oklch(0.80 0.09 195);
+    --brand-400: oklch(0.72 0.12 195);
+    --brand-500: oklch(0.65 0.14 195);
+    --brand-600: oklch(0.58 0.14 195);
+    --brand-700: oklch(0.50 0.12 195);
+    --brand-800: oklch(0.40 0.09 195);
+    --brand-900: oklch(0.30 0.06 195);
+    --brand-950: oklch(0.20 0.04 195);
+
+    /* Status tokens. -base is the saturated color, -bg is a soft
+       tint for fills + badges, -fg is the text color optimized for
+       that tint. Success/failed/running/queued/canceled/skipped
+       cover every value of domain.RunStatus + JobStatus. */
+    --status-success-base: oklch(0.70 0.16 150);
+    --status-success-bg:   oklch(0.70 0.16 150 / 12%);
+    --status-success-fg:   oklch(0.40 0.15 150);
+
+    --status-failed-base:  oklch(0.62 0.22 20);
+    --status-failed-bg:    oklch(0.62 0.22 20 / 12%);
+    --status-failed-fg:    oklch(0.42 0.20 20);
+
+    --status-running-base: var(--brand-500);
+    --status-running-bg:   oklch(0.65 0.14 195 / 10%);
+    --status-running-fg:   oklch(0.40 0.12 195);
+
+    --status-queued-base:  oklch(0.60 0.02 250);
+    --status-queued-bg:    oklch(0.60 0.02 250 / 8%);
+    --status-queued-fg:    oklch(0.35 0.02 250);
+
+    --status-canceled-base: oklch(0.55 0.02 250);
+    --status-canceled-bg:   oklch(0.55 0.02 250 / 6%);
+    --status-canceled-fg:   oklch(0.40 0.02 250);
+
+    --status-skipped-base: oklch(0.60 0.02 250);
+    --status-skipped-bg:   oklch(0.60 0.02 250 / 5%);
+    --status-skipped-fg:   oklch(0.45 0.02 250);
+
+    /* Warning is the "attention required, not a hard failure"
+       channel: stale agents, auth-disabled banner, watch-list
+       metrics. Amber hue keeps it distinct from failed (red). */
+    --status-warning-base: oklch(0.75 0.16 75);
+    --status-warning-bg:   oklch(0.75 0.16 75 / 14%);
+    --status-warning-fg:   oklch(0.45 0.14 75);
+
+    /* Base surfaces + typography — mostly unchanged from shadcn
+       defaults so existing components don't shift. */
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+
+    /* Primary now points at brand instead of neutral near-black.
+       Every shadcn Button variant=default, Badge variant=default,
+       focus ring, etc. picks up identity automatically. */
+    --primary: var(--brand-600);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: var(--status-failed-base);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: var(--brand-500);
+
+    --chart-1: var(--brand-500);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: var(--status-success-base);
+    --chart-4: var(--status-failed-base);
+    --chart-5: oklch(0.269 0 0);
+
+    --radius: 0.625rem;
+
+    /* Sidebar — accent flows through brand so the active nav item
+       is unmistakably gocdnext. */
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: var(--brand-600);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: var(--brand-700);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: var(--brand-500);
+}
+
+.dark {
+    /* Brand lifts a touch in dark mode so chroma still reads. */
+    --brand-50:  oklch(0.22 0.04 195);
+    --brand-100: oklch(0.28 0.06 195);
+    --brand-200: oklch(0.34 0.09 195);
+    --brand-300: oklch(0.42 0.12 195);
+    --brand-400: oklch(0.55 0.13 195);
+    --brand-500: oklch(0.68 0.14 195);
+    --brand-600: oklch(0.75 0.14 195);
+    --brand-700: oklch(0.82 0.12 195);
+    --brand-800: oklch(0.88 0.09 195);
+    --brand-900: oklch(0.93 0.06 195);
+    --brand-950: oklch(0.97 0.03 195);
+
+    /* Status in dark: same hues, bumped lightness for legibility,
+       kept chroma so they still pop against the deep background. */
+    --status-success-base: oklch(0.76 0.17 150);
+    --status-success-bg:   oklch(0.76 0.17 150 / 15%);
+    --status-success-fg:   oklch(0.84 0.14 150);
+
+    --status-failed-base:  oklch(0.72 0.22 20);
+    --status-failed-bg:    oklch(0.72 0.22 20 / 18%);
+    --status-failed-fg:    oklch(0.82 0.17 20);
+
+    --status-running-base: var(--brand-500);
+    --status-running-bg:   oklch(0.68 0.14 195 / 15%);
+    --status-running-fg:   oklch(0.82 0.12 195);
+
+    --status-queued-base:  oklch(0.72 0.02 250);
+    --status-queued-bg:    oklch(0.72 0.02 250 / 10%);
+    --status-queued-fg:    oklch(0.80 0.02 250);
+
+    --status-canceled-base: oklch(0.60 0.02 250);
+    --status-canceled-bg:   oklch(0.60 0.02 250 / 10%);
+    --status-canceled-fg:   oklch(0.72 0.02 250);
+
+    --status-skipped-base: oklch(0.55 0.02 250);
+    --status-skipped-bg:   oklch(0.55 0.02 250 / 8%);
+    --status-skipped-fg:   oklch(0.70 0.02 250);
+
+    --status-warning-base: oklch(0.78 0.16 75);
+    --status-warning-bg:   oklch(0.78 0.16 75 / 16%);
+    --status-warning-fg:   oklch(0.85 0.14 75);
+
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: var(--brand-500);
+    --primary-foreground: oklch(0.15 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: var(--status-failed-base);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: var(--brand-400);
+    --chart-1: var(--brand-500);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: var(--status-success-base);
+    --chart-4: var(--status-failed-base);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: var(--brand-500);
+    --sidebar-primary-foreground: oklch(0.15 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: var(--brand-400);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: var(--brand-400);
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: var(--font-sans);
+
+    /* Brand scale exposed as utilities: bg-brand-500, text-brand-700,
+       border-brand-200, ring-brand-400, etc. */
+    --color-brand-50:  var(--brand-50);
+    --color-brand-100: var(--brand-100);
+    --color-brand-200: var(--brand-200);
+    --color-brand-300: var(--brand-300);
+    --color-brand-400: var(--brand-400);
+    --color-brand-500: var(--brand-500);
+    --color-brand-600: var(--brand-600);
+    --color-brand-700: var(--brand-700);
+    --color-brand-800: var(--brand-800);
+    --color-brand-900: var(--brand-900);
+    --color-brand-950: var(--brand-950);
+
+    /* Status utilities: bg-status-success-bg, text-status-failed-fg,
+       etc. Pipeline canvas + badges consume these, so re-coloring
+       "success" across the app is one line here. */
+    --color-status-success:    var(--status-success-base);
+    --color-status-success-bg: var(--status-success-bg);
+    --color-status-success-fg: var(--status-success-fg);
+    --color-status-failed:     var(--status-failed-base);
+    --color-status-failed-bg:  var(--status-failed-bg);
+    --color-status-failed-fg:  var(--status-failed-fg);
+    --color-status-running:    var(--status-running-base);
+    --color-status-running-bg: var(--status-running-bg);
+    --color-status-running-fg: var(--status-running-fg);
+    --color-status-queued:     var(--status-queued-base);
+    --color-status-queued-bg:  var(--status-queued-bg);
+    --color-status-queued-fg:  var(--status-queued-fg);
+    --color-status-canceled:    var(--status-canceled-base);
+    --color-status-canceled-bg: var(--status-canceled-bg);
+    --color-status-canceled-fg: var(--status-canceled-fg);
+    --color-status-skipped:    var(--status-skipped-base);
+    --color-status-skipped-bg: var(--status-skipped-bg);
+    --color-status-skipped-fg: var(--status-skipped-fg);
+    --color-status-warning:    var(--status-warning-base);
+    --color-status-warning-bg: var(--status-warning-bg);
+    --color-status-warning-fg: var(--status-warning-fg);
+
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -45,75 +275,6 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
-}
-
-:root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
 }
 
 @layer base {

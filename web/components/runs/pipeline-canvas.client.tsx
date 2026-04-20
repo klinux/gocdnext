@@ -201,11 +201,10 @@ function iconFor(status: string): ComponentType<{ className?: string }> {
 
 // --- tone palette ---
 //
-// Central place to tweak the whole pipeline-canvas look. Each status
-// returns the class set used by the stage column, the job pill + the
-// connector glyph. Keeping it in one table makes it cheap to slot
-// into the design-system slice later: point these at tokens
-// (`bg-status-success`, …) instead of raw Tailwind colors.
+// Every status maps to a design-system token defined in
+// app/globals.css → :root (+ .dark). Recoloring the whole
+// pipeline-canvas for a brand tweak is a two-line edit in that
+// file; this component stays untouched.
 
 type Tone = {
   border: string;
@@ -218,51 +217,51 @@ type Tone = {
 
 const TONE: Record<string, Tone> = {
   success: {
-    border: "border-emerald-500/30",
-    header: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    glyph: "text-emerald-600 dark:text-emerald-400",
-    pillBg: "bg-emerald-500/5",
-    pillBorder: "border-emerald-500/20",
-    text: "text-emerald-900 dark:text-emerald-100",
+    border: "border-status-success/30",
+    header: "bg-status-success-bg text-status-success-fg",
+    glyph: "text-status-success",
+    pillBg: "bg-status-success-bg",
+    pillBorder: "border-status-success/25",
+    text: "text-status-success-fg",
   },
   failed: {
-    border: "border-rose-500/40",
-    header: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
-    glyph: "text-rose-600 dark:text-rose-400",
-    pillBg: "bg-rose-500/5",
-    pillBorder: "border-rose-500/30",
-    text: "text-rose-900 dark:text-rose-100",
+    border: "border-status-failed/40",
+    header: "bg-status-failed-bg text-status-failed-fg",
+    glyph: "text-status-failed",
+    pillBg: "bg-status-failed-bg",
+    pillBorder: "border-status-failed/30",
+    text: "text-status-failed-fg",
   },
   running: {
-    border: "border-primary/40",
-    header: "bg-primary/10 text-primary",
-    glyph: "text-primary",
-    pillBg: "bg-primary/5",
-    pillBorder: "border-primary/30",
+    border: "border-status-running/40",
+    header: "bg-status-running-bg text-status-running-fg",
+    glyph: "text-status-running",
+    pillBg: "bg-status-running-bg",
+    pillBorder: "border-status-running/30",
     text: "text-foreground",
   },
   queued: {
     border: "border-border",
-    header: "bg-muted/60 text-muted-foreground",
-    glyph: "text-muted-foreground",
+    header: "bg-status-queued-bg text-status-queued-fg",
+    glyph: "text-status-queued",
     pillBg: "bg-background",
     pillBorder: "border-border",
     text: "text-foreground",
   },
   canceled: {
-    border: "border-border/70 border-dashed",
-    header: "bg-muted/30 text-muted-foreground",
-    glyph: "text-muted-foreground",
-    pillBg: "bg-muted/20",
-    pillBorder: "border-border/60 border-dashed",
+    border: "border-border border-dashed",
+    header: "bg-status-canceled-bg text-status-canceled-fg",
+    glyph: "text-status-canceled",
+    pillBg: "bg-status-canceled-bg",
+    pillBorder: "border-border border-dashed",
     text: "text-muted-foreground",
   },
   skipped: {
-    border: "border-border/70 border-dashed",
-    header: "bg-muted/30 text-muted-foreground",
-    glyph: "text-muted-foreground",
-    pillBg: "bg-muted/20",
-    pillBorder: "border-border/60 border-dashed",
+    border: "border-border border-dashed",
+    header: "bg-status-skipped-bg text-status-skipped-fg",
+    glyph: "text-status-skipped",
+    pillBg: "bg-status-skipped-bg",
+    pillBorder: "border-border border-dashed",
     text: "text-muted-foreground",
   },
   waiting: {

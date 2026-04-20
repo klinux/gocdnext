@@ -157,11 +157,11 @@ function Row({ d }: { d: WebhookDeliverySummary }) {
 function StatusBadge({ status }: { status: WebhookDeliverySummary["status"] }) {
   const tone =
     status === "accepted"
-      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+      ? "bg-status-success-bg text-status-success-fg"
       : status === "rejected"
-        ? "bg-rose-500/15 text-rose-700 dark:text-rose-400"
+        ? "bg-status-failed-bg text-status-failed-fg"
         : status === "error"
-          ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+          ? "bg-status-warning-bg text-status-warning-fg"
           : "bg-muted text-muted-foreground";
   return (
     <span className={cn("inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium", tone)}>
