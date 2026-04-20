@@ -44,6 +44,9 @@ type Querier interface {
 	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
+	// Single-use: delete as we read. Returning nothing = no such state
+	// (or it expired and the sweeper got to it first).
+	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Paired with ListRunsGlobal so /runs can render "N of M" with the
 	// same filter args. Returned as bigint to fit any table; UI only
@@ -64,6 +67,8 @@ type Querier interface {
 	// caller computes rate = success / (success + failure). Returns
 	// 0 when no terminal runs in the window.
 	DashboardSuccessRate7d(ctx context.Context) (DashboardSuccessRate7dRow, error)
+	DeleteExpiredAuthStates(ctx context.Context) error
+	DeleteExpiredUserSessions(ctx context.Context) error
 	// Called after a successful reclaim so the retry starts with a clean log
 	// window. Loses the old attempt's output — acceptable MVP trade for not
 	// growing the schema to carry per-attempt log namespacing.
@@ -71,6 +76,8 @@ type Querier interface {
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
+	DeleteUserSession(ctx context.Context, id []byte) error
+	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	// Keep-last policy: per pipeline, rank the runs that produced
 	// non-deleted artefacts by recency (run.created_at DESC); any run
 	// beyond position N has ALL its non-pinned artefacts stamped with
@@ -149,6 +156,10 @@ type Querier interface {
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	// Returns the session + its user row. Expired rows are filtered in
+	// the query so a single round-trip tells the handler "yes/no".
+	GetUserSession(ctx context.Context, id []byte) (GetUserSessionRow, error)
 	// Expands a row with its headers + payload JSON for the drawer
 	// view. Kept in a separate query so the list shot stays tiny
 	// (payloads can be 100+ KB).
@@ -157,6 +168,7 @@ type Querier interface {
 	// empty. Used for the global hard cap.
 	GlobalArtifactUsage(ctx context.Context) (int64, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
+	InsertAuthState(ctx context.Context, arg InsertAuthStateParams) error
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
 	// constraint makes retries safe.
@@ -170,6 +182,7 @@ type Querier interface {
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
+	InsertUserSession(ctx context.Context, arg InsertUserSessionParams) error
 	// Append-only audit row for every HTTP call that lands on
 	// /api/webhooks/*. Rows outlive the request so the admin page can
 	// show signature-rejected and drift-only deliveries too, not just
@@ -247,6 +260,7 @@ type Querier interface {
 	// @staleness. The reaper walks this list every tick and either re-queues or
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
+	ListUsers(ctx context.Context) ([]User, error)
 	// Admin console feed. Most recent first; indexed on received_at.
 	// Filter by provider + status keep the page useful even under
 	// heavy traffic. Empty string = no filter on that axis.
@@ -269,6 +283,10 @@ type Querier interface {
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
+	// Cheap idempotent update; called at most once per request via a
+	// debounce in the middleware so we don't rewrite the row on every
+	// 2s dashboard poll.
+	TouchUserSession(ctx context.Context, id []byte) error
 	// Called from the gRPC heartbeat handler so the reaper can tell which agents
 	// are still alive. Tiny write per heartbeat (default cadence 30s).
 	UpdateAgentLastSeen(ctx context.Context, id pgtype.UUID) error
@@ -291,6 +309,11 @@ type Querier interface {
 	// plaintext, making a "was this changed" diff unreliable; we bump
 	// unconditionally on write.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
+	// Either inserts a fresh row (new login) or bumps the profile
+	// fields we pull from the IdP every time. Role is intentionally
+	// NOT overwritten on conflict — it's admin-assigned and must not
+	// revert to 'user' just because the IdP doesn't carry it.
+	UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (User, error)
 }
 
 var _ Querier = (*Queries)(nil)

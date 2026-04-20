@@ -39,6 +39,15 @@ type Artifact struct {
 	CreatedAt     pgtype.Timestamptz
 }
 
+type AuthState struct {
+	StateHash  []byte
+	Provider   string
+	RedirectTo string
+	Nonce      string
+	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+}
+
 type GithubCheckRun struct {
 	RunID          pgtype.UUID
 	InstallationID int64
@@ -164,6 +173,29 @@ type StageRun struct {
 	Status     string
 	StartedAt  pgtype.Timestamptz
 	FinishedAt pgtype.Timestamptz
+}
+
+type User struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type UserSession struct {
+	ID         []byte
+	UserID     pgtype.UUID
+	ExpiresAt  pgtype.Timestamptz
+	LastSeenAt pgtype.Timestamptz
+	UserAgent  string
+	CreatedAt  pgtype.Timestamptz
 }
 
 type WebhookDelivery struct {
