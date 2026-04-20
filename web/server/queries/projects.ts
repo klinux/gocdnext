@@ -4,6 +4,9 @@
 
 import { env } from "@/lib/env";
 import type {
+  AgentSummary,
+  DashboardMetrics,
+  GlobalRunSummary,
   ProjectDetail,
   ProjectSummary,
   ProjectVSM,
@@ -70,6 +73,27 @@ export async function getProjectVSM(slug: string): Promise<ProjectVSM> {
   return readJSON<ProjectVSM>(
     `/api/v1/projects/${encodeURIComponent(slug)}/vsm`,
   );
+}
+
+export async function getDashboardMetrics(): Promise<DashboardMetrics> {
+  return readJSON<DashboardMetrics>("/api/v1/dashboard/metrics");
+}
+
+export async function listGlobalRuns(
+  limit = 20,
+  status?: string,
+): Promise<GlobalRunSummary[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (status) qs.set("status", status);
+  const { runs } = await readJSON<{ runs: GlobalRunSummary[] }>(
+    `/api/v1/dashboard/runs?${qs.toString()}`,
+  );
+  return runs;
+}
+
+export async function listAgents(): Promise<AgentSummary[]> {
+  const { agents } = await readJSON<{ agents: AgentSummary[] }>("/api/v1/agents");
+  return agents;
 }
 
 export async function listSecrets(slug: string) {

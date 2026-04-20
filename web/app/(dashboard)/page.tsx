@@ -1,70 +1,291 @@
 import Link from "next/link";
 import type { Metadata, Route } from "next";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  Clock,
+  Gauge,
+  Server,
+  Timer,
+} from "lucide-react";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { listProjects } from "@/server/queries/projects";
+import { StatusBadge } from "@/components/shared/status-badge";
+import { formatDurationSeconds } from "@/lib/format";
+import {
+  getDashboardMetrics,
+  listAgents,
+  listGlobalRuns,
+} from "@/server/queries/projects";
+import type { AgentSummary, GlobalRunSummary } from "@/types/api";
 
 export const metadata: Metadata = {
-  title: "Projects — gocdnext",
+  title: "Dashboard — gocdnext",
 };
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectsPage() {
-  const projects = await listProjects();
+export default async function DashboardPage() {
+  // Kick off in parallel so the slowest query sets page TTFB, not
+  // the sum. RSC renders only after all three resolve; future work
+  // could Suspense-split them if one gets slow.
+  const [metrics, runs, agents] = await Promise.all([
+    getDashboardMetrics(),
+    listGlobalRuns(20),
+    listAgents(),
+  ]);
 
-  if (projects.length === 0) {
-    return <EmptyState />;
-  }
+  const onlineAgents = agents.filter((a) => a.health_state === "online").length;
+  const recentFailures = runs
+    .filter((r) => r.status === "failed" || r.status === "canceled")
+    .slice(0, 5);
 
   return (
-    <section className="space-y-6">
-      <header className="flex items-baseline justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Projects</h2>
-          <p className="text-sm text-muted-foreground">
-            {projects.length} project{projects.length === 1 ? "" : "s"} registered.
-          </p>
-        </div>
+    <section className="space-y-8">
+      <header>
+        <h2 className="text-2xl font-semibold tracking-tight">Dashboard</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Activity across every project in this gocdnext instance.
+        </p>
       </header>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {projects.map((p) => (
-          <Link
-            key={p.id}
-            href={`/projects/${p.slug}` as Route}
-            className="group"
-          >
-            <Card className="h-full transition-colors group-hover:border-primary/40">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric
+          icon={Activity}
+          label="Runs today"
+          value={metrics.runs_today.toLocaleString()}
+          helper={`${metrics.successes_7d + metrics.failures_7d + metrics.canceled_7d} in last 7d`}
+        />
+        <Metric
+          icon={CheckCircle2}
+          label="Success rate"
+          value={
+            metrics.successes_7d + metrics.failures_7d === 0
+              ? "—"
+              : `${Math.round(metrics.success_rate_7d * 100)}%`
+          }
+          helper={`${metrics.successes_7d} ok · ${metrics.failures_7d} failed (7d)`}
+          tone={metrics.success_rate_7d >= 0.9 ? "success" : metrics.success_rate_7d >= 0.7 ? "warn" : "danger"}
+        />
+        <Metric
+          icon={Timer}
+          label="p50 duration"
+          value={
+            metrics.p50_seconds_7d > 0
+              ? formatDurationSeconds(metrics.p50_seconds_7d)
+              : "—"
+          }
+          helper="median finished run (7d)"
+        />
+        <Metric
+          icon={Gauge}
+          label="Queue depth"
+          value={metrics.queued_runs.toLocaleString()}
+          helper={`${metrics.pending_jobs} job(s) pending`}
+          tone={metrics.queued_runs > 0 ? "warn" : "muted"}
+        />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2 space-y-6">
+          <Card>
+            <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+              <CardTitle className="text-base">Recent activity</CardTitle>
+              <Link
+                href={"/projects" as Route}
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                Projects <ArrowRight className="h-3 w-3" />
+              </Link>
+            </CardHeader>
+            <CardContent className="px-0 pb-0">
+              {runs.length === 0 ? (
+                <EmptyState
+                  icon={Activity}
+                  title="No runs yet"
+                  body="Push a commit or trigger a manual run to get started."
+                />
+              ) : (
+                <ul className="divide-y divide-border">
+                  {runs.map((r) => (
+                    <RunRow key={r.id} run={r} />
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          {recentFailures.length > 0 ? (
+            <Card>
               <CardHeader>
-                <CardTitle className="truncate">{p.name}</CardTitle>
-                <CardDescription className="truncate">{p.slug}</CardDescription>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden />
+                  Needs attention
+                </CardTitle>
               </CardHeader>
-              <CardContent className="flex items-end justify-between text-sm text-muted-foreground">
-                <span>
-                  {p.pipeline_count} pipeline{p.pipeline_count === 1 ? "" : "s"}
-                </span>
-                <span>
-                  latest run <RelativeTime at={p.latest_run_at} />
-                </span>
+              <CardContent className="space-y-2">
+                {recentFailures.map((r) => (
+                  <Link
+                    key={r.id}
+                    href={`/runs/${r.id}` as Route}
+                    className="flex items-center justify-between gap-3 rounded border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs hover:border-destructive/40"
+                  >
+                    <span className="font-mono truncate">
+                      {r.project_slug} / {r.pipeline_name} #{r.counter}
+                    </span>
+                    <span className="flex items-center gap-2 shrink-0 text-muted-foreground">
+                      <RelativeTime at={r.finished_at ?? r.created_at} />
+                      <StatusBadge status={r.status} />
+                    </span>
+                  </Link>
+                ))}
               </CardContent>
             </Card>
-          </Link>
-        ))}
+          ) : null}
+        </div>
+
+        <Card>
+          <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Server className="h-4 w-4" aria-hidden />
+              Agents
+            </CardTitle>
+            <span className="text-xs text-muted-foreground">
+              {onlineAgents}/{agents.length} online
+            </span>
+          </CardHeader>
+          <CardContent className="px-0 pb-0">
+            {agents.length === 0 ? (
+              <EmptyState
+                icon={Server}
+                title="No agents registered"
+                body="Deploy the agent chart or run gocdnext-agent locally to pick up jobs."
+              />
+            ) : (
+              <ul className="divide-y divide-border">
+                {agents.map((a) => (
+                  <AgentRow key={a.id} agent={a} />
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </section>
   );
 }
 
-function EmptyState() {
+function Metric({
+  icon: Icon,
+  label,
+  value,
+  helper,
+  tone = "default",
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  helper?: string;
+  tone?: "default" | "success" | "warn" | "danger" | "muted";
+}) {
+  const toneClass =
+    tone === "success"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : tone === "warn"
+        ? "text-amber-600 dark:text-amber-400"
+        : tone === "danger"
+          ? "text-destructive"
+          : tone === "muted"
+            ? "text-muted-foreground"
+            : "text-foreground";
   return (
-    <section className="mx-auto max-w-lg rounded-lg border border-dashed border-border p-10 text-center">
-      <h2 className="text-xl font-semibold">No projects yet</h2>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Run <code className="rounded bg-muted px-1 py-0.5">gocdnext apply --slug my-project .</code>{" "}
-        from a repo with a <code className="rounded bg-muted px-1 py-0.5">.gocdnext/</code> folder
-        to register your first pipeline.
-      </p>
-    </section>
+    <Card>
+      <CardContent className="flex items-start justify-between gap-3 p-4">
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            {label}
+          </p>
+          <p className={`mt-1 text-2xl font-semibold tabular-nums ${toneClass}`}>
+            {value}
+          </p>
+          {helper ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">{helper}</p>
+          ) : null}
+        </div>
+        <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
+      </CardContent>
+    </Card>
+  );
+}
+
+function RunRow({ run }: { run: GlobalRunSummary }) {
+  return (
+    <li>
+      <Link
+        href={`/runs/${run.id}` as Route}
+        className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/50 transition-colors"
+      >
+        <StatusBadge status={run.status} />
+        <span className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="font-mono text-sm truncate">
+            {run.project_slug} / {run.pipeline_name}
+          </span>
+          <span className="font-mono text-xs text-muted-foreground">
+            #{run.counter}
+          </span>
+        </span>
+        <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+          <RelativeTime at={run.started_at ?? run.created_at} />
+        </span>
+      </Link>
+    </li>
+  );
+}
+
+function AgentRow({ agent }: { agent: AgentSummary }) {
+  const dotClass =
+    agent.health_state === "online"
+      ? "bg-emerald-500"
+      : agent.health_state === "stale"
+        ? "bg-amber-500"
+        : "bg-muted-foreground/50";
+  return (
+    <li className="px-4 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className={`h-2 w-2 rounded-full ${dotClass}`} aria-hidden />
+        <span className="font-mono text-sm truncate">{agent.name}</span>
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+          {agent.running_jobs > 0 ? `${agent.running_jobs} running` : "idle"}
+        </span>
+      </div>
+      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <Clock className="h-3 w-3" aria-hidden />
+        <RelativeTime at={agent.last_seen_at} fallback="never" />
+        <Separator orientation="vertical" className="mx-1 h-3" />
+        <span className="truncate">{agent.tags.join(", ") || "no tags"}</span>
+      </div>
+    </li>
+  );
+}
+
+function EmptyState({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: typeof Activity;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div className="px-4 py-8 text-center">
+      <Icon className="mx-auto mb-2 h-5 w-5 text-muted-foreground" aria-hidden />
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{body}</p>
+    </div>
   );
 }

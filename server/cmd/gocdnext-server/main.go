@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
@@ -151,6 +152,7 @@ func main() {
 	if artifactStore != nil {
 		runsHandler = runsHandler.WithArtifactStore(artifactStore)
 	}
+	dashboardHandler := dashboardapi.NewHandler(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
@@ -199,6 +201,9 @@ func main() {
 	r.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 	r.Get("/api/v1/runs/{id}", runsHandler.Detail)
 	r.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
+	r.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
+	r.Get("/api/v1/dashboard/runs", dashboardHandler.RunsGlobal)
+	r.Get("/api/v1/agents", dashboardHandler.Agents)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

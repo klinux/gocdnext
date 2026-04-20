@@ -113,6 +113,38 @@ export type ProjectVSM = {
   generated_at: string;
 };
 
+export type DashboardMetrics = {
+  runs_today: number;
+  successes_7d: number;
+  failures_7d: number;
+  canceled_7d: number;
+  success_rate_7d: number; // 0..1
+  p50_seconds_7d: number;
+  queued_runs: number;
+  pending_jobs: number;
+};
+
+export type GlobalRunSummary = RunSummary & {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+};
+
+export type AgentSummary = {
+  id: string;
+  name: string;
+  version?: string;
+  os?: string;
+  arch?: string;
+  tags: string[];
+  capacity: number;
+  status: string;
+  health_state: "online" | "stale" | "offline" | "idle";
+  last_seen_at?: string;
+  registered_at: string;
+  running_jobs: number;
+};
+
 export type RunArtifact = {
   id: string;
   job_run_id: string;

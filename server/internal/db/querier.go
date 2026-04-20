@@ -40,6 +40,19 @@ type Querier interface {
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Median run duration in seconds across the last 7 days. NULL when
+	// no finished runs.
+	DashboardP50DurationSec7d(ctx context.Context) (float64, error)
+	// Active backlog: every queued run across the system, plus queued
+	// + running job_runs (the scheduler's work left to do).
+	DashboardQueueDepth(ctx context.Context) (DashboardQueueDepthRow, error)
+	// Count of runs created today (server-local day boundary via
+	// now()::date).
+	DashboardRunsToday(ctx context.Context) (int64, error)
+	// Terminal runs in the last 7 days, broken down by outcome. The
+	// caller computes rate = success / (success + failure). Returns
+	// 0 when no terminal runs in the window.
+	DashboardSuccessRate7d(ctx context.Context) (DashboardSuccessRate7dRow, error)
 	// Called after a successful reclaim so the retry starts with a clean log
 	// window. Loses the old attempt's output — acceptable MVP trade for not
 	// growing the schema to carry per-attempt log namespacing.
@@ -133,6 +146,11 @@ type Querier interface {
 	// no runs yet are absent from the result; the handler merges with
 	// ListPipelinesByProjectSlug to produce node entries.
 	LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error)
+	// Dashboard + /agents list: every agent with its declared metadata
+	// + a count of currently-running job_runs it's been assigned.
+	// LEFT JOIN + FILTER gives 0 for idle agents without needing a
+	// second roundtrip.
+	ListAgentsWithRunning(ctx context.Context) ([]ListAgentsWithRunningRow, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.
@@ -176,6 +194,10 @@ type Querier interface {
 	// array returns all of that job's artefacts.
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
+	// Cross-project timeline: most recent runs first. Carries the
+	// pipeline + project names so the dashboard table can link without
+	// N+1 lookups. Optional status filter; empty = all.
+	ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error)
 	// Lists names + timestamps only — values never leave the DB without going
 	// through GetSecretValuesByProject below.
 	ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error)

@@ -74,7 +74,7 @@ export function CommandPalette() {
               <LayoutDashboard className="size-4" />
               Dashboard
             </CommandItem>
-            <CommandItem onSelect={() => go("/" as Route)}>
+            <CommandItem onSelect={() => go("/projects" as Route)}>
               <Boxes className="size-4" />
               Projects
             </CommandItem>

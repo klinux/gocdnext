@@ -40,7 +40,7 @@ type NavItem = {
 // land, flip comingSoon flags and point href at the real route.
 const primaryNav: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Projects", href: "/", icon: Boxes },
+  { label: "Projects", href: "/projects", icon: Boxes },
   { label: "Runs", href: "/", icon: Activity, comingSoon: true },
   { label: "Agents", href: "/", icon: Server, comingSoon: true },
 ];
