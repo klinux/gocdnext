@@ -3,6 +3,24 @@
 // the other. When the backend grows a proto-driven API these should be
 // regenerated from the proto instead of hand-maintained.
 
+export type CurrentUser = {
+  id: string;
+  email: string;
+  name: string;
+  avatar_url?: string;
+  provider: string;
+  external_id: string;
+  role: "admin" | "user" | "viewer";
+  last_login_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuthProvidersResponse = {
+  enabled: boolean;
+  providers: { name: string; display: string }[];
+};
+
 export type ProjectSummary = {
   id: string;
   slug: string;
