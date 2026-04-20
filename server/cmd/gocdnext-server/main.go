@@ -143,18 +143,18 @@ func main() {
 		logger.Info("github checks reporter enabled")
 	}
 
-	webhookHandler := webhook.NewHandler(cfg.WebhookToken, st, logger).
+	webhookHandler := webhook.NewHandler(st, logger).
 		WithConfigFetcher(&webhook.GitHubConfigFetcher{}).
 		WithChecksReporter(checksReporter)
 	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
-	if cfg.PublicBase != "" && cfg.WebhookToken != "" {
+	// Auto-register is disabled pending the multi-scm_source
+	// refactor (see autoregister.go). Wiring stays here so the
+	// path is easy to re-enable; WithAutoRegister is a no-op.
+	if cfg.PublicBase != "" {
 		projectsHandler = projectsHandler.WithAutoRegister(projectsapi.AutoRegisterConfig{
-			VCS:           vcsRegistry,
-			PublicBase:    cfg.PublicBase,
-			WebhookSecret: cfg.WebhookToken,
+			VCS:        vcsRegistry,
+			PublicBase: cfg.PublicBase,
 		})
-		logger.Info("auto-register webhooks wired",
-			"public_base", cfg.PublicBase)
 	}
 	runsHandler := runsapi.NewHandler(st, logger)
 	if artifactStore != nil {
@@ -185,7 +185,6 @@ func main() {
 	// an admin who just saved a VCS integration sees a stale
 	// "off" on the next page load.
 	adminHandler := adminapi.NewHandler(st, sweeper, vcsRegistry, adminapi.WiringState{
-		WebhookTokenSet:  cfg.WebhookToken != "",
 		PublicBaseSet:    cfg.PublicBase != "",
 		ChecksReporterOn: checksReporter != nil,
 	}, logger)

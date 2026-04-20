@@ -20,20 +20,22 @@ var (
 	ErrProjectByIDNotFound = errors.New("store: project not found")
 )
 
-// SCMSource mirrors the scm_sources row for read paths (webhook drift match,
-// future UI listings).
+// SCMSource mirrors the scm_sources row for read paths (webhook
+// drift match, future UI listings). Deliberately does NOT expose
+// the webhook secret ciphertext — the only consumer is the webhook
+// handler, which goes through FindSCMSourceWebhookSecret so the
+// plaintext lives only inside that narrow call.
 type SCMSource struct {
-	ID                   uuid.UUID
-	ProjectID            uuid.UUID
-	Provider             string
-	URL                  string
-	DefaultBranch        string
-	WebhookSecret        string
-	AuthRef              string
-	LastSyncedAt         *time.Time
-	LastSyncedRevision   string
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	ID                 uuid.UUID
+	ProjectID          uuid.UUID
+	Provider           string
+	URL                string
+	DefaultBranch      string
+	AuthRef            string
+	LastSyncedAt       *time.Time
+	LastSyncedRevision string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // ProjectInfo is the thin shape used by drift re-apply to rebuild an
@@ -63,13 +65,80 @@ func (s *Store) FindSCMSourceByURL(ctx context.Context, rawURL string) (SCMSourc
 		Provider:           row.Provider,
 		URL:                row.Url,
 		DefaultBranch:      row.DefaultBranch,
-		WebhookSecret:      stringValue(row.WebhookSecret),
 		AuthRef:            stringValue(row.AuthRef),
 		LastSyncedAt:       pgTimePtr(row.LastSyncedAt),
 		LastSyncedRevision: stringValue(row.LastSyncedRevision),
 		CreatedAt:          row.CreatedAt.Time,
 		UpdatedAt:          row.UpdatedAt.Time,
 	}, nil
+}
+
+// SCMSourceWebhookAuth is the slim shape the webhook handler
+// consumes: enough to identify which scm_source the request is
+// for plus the plaintext secret needed for HMAC verification.
+// Separate from SCMSource so the ciphertext never rides along
+// the general read path.
+type SCMSourceWebhookAuth struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Secret    string
+}
+
+// FindSCMSourceWebhookSecret returns the decrypted webhook secret
+// paired with the scm_source for a given repo URL. Errors:
+//   - ErrSCMSourceNotFound when no row binds this URL
+//   - ErrAuthProviderCipherUnset when the server was started
+//     without GOCDNEXT_SECRET_KEY (can't decrypt)
+// An empty Secret with nil error means "row exists but no secret
+// registered yet" — the caller should answer 401 in that case.
+func (s *Store) FindSCMSourceWebhookSecret(ctx context.Context, rawURL string) (SCMSourceWebhookAuth, error) {
+	if s.authCipher == nil {
+		return SCMSourceWebhookAuth{}, ErrAuthProviderCipherUnset
+	}
+	row, err := s.q.GetScmSourceWebhookSecretByURL(ctx, domain.NormalizeGitURL(rawURL))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SCMSourceWebhookAuth{}, ErrSCMSourceNotFound
+		}
+		return SCMSourceWebhookAuth{}, fmt.Errorf("store: get webhook secret: %w", err)
+	}
+	out := SCMSourceWebhookAuth{
+		ID:        fromPgUUID(row.ID),
+		ProjectID: fromPgUUID(row.ProjectID),
+	}
+	if len(row.WebhookSecret) > 0 {
+		plain, err := s.authCipher.Decrypt(row.WebhookSecret)
+		if err != nil {
+			return SCMSourceWebhookAuth{}, fmt.Errorf("store: decrypt webhook secret: %w", err)
+		}
+		out.Secret = string(plain)
+	}
+	return out, nil
+}
+
+// RotateSCMSourceWebhookSecret generates a new random secret,
+// encrypts it, replaces the stored ciphertext, and returns the
+// plaintext to the caller. The plaintext lives only on the
+// return value — subsequent reads can't recover it.
+func (s *Store) RotateSCMSourceWebhookSecret(ctx context.Context, id uuid.UUID) (string, error) {
+	if s.authCipher == nil {
+		return "", ErrAuthProviderCipherUnset
+	}
+	plain, err := newWebhookSecret()
+	if err != nil {
+		return "", err
+	}
+	sealed, err := s.authCipher.Encrypt([]byte(plain))
+	if err != nil {
+		return "", fmt.Errorf("store: seal webhook secret: %w", err)
+	}
+	if err := s.q.UpdateScmSourceWebhookSecret(ctx, db.UpdateScmSourceWebhookSecretParams{
+		ID:            pgUUID(id),
+		WebhookSecret: sealed,
+	}); err != nil {
+		return "", fmt.Errorf("store: rotate webhook secret: %w", err)
+	}
+	return plain, nil
 }
 
 // MarkSCMSourceSynced records a successful drift re-apply. Idempotent at the

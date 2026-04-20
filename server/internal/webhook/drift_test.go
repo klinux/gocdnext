@@ -36,9 +36,19 @@ func (f *fakeFetcher) Fetch(_ context.Context, scm store.SCMSource, ref string) 
 	return f.files, f.err
 }
 
+// seedSCMSourceOnly registers an scm_source bound to the given
+// repo URL with testSecret as its webhook secret. branch defaults
+// to "main" when empty. Sets up the cipher on the local store so
+// the upsert can seal the secret; handler stores share the same
+// DB pool, so the sealed ciphertext is visible to them after a
+// SetAuthCipher(newTestCipher(t)) on their side.
 func seedSCMSourceOnly(t *testing.T, pool *pgxpool.Pool, url, branch string) {
 	t.Helper()
+	if branch == "" {
+		branch = "main"
+	}
 	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
@@ -48,6 +58,7 @@ func seedSCMSourceOnly(t *testing.T, pool *pgxpool.Pool, url, branch string) {
 			Provider:      "github",
 			URL:           url,
 			DefaultBranch: branch,
+			WebhookSecret: testSecret,
 		},
 	}); err != nil {
 		t.Fatalf("seed scm_source: %v", err)
@@ -70,13 +81,14 @@ jobs:
 func TestGitHubWebhook_DriftApplyOnScmSourceMatch(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
 
 	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext", "main")
 
 	fetcher := &fakeFetcher{files: []gh.RawFile{
 		{Name: "ci.yaml", Content: driftCiYAML},
 	}}
-	h := webhook.NewHandler(testSecret, s, slog.New(slog.NewTextHandler(io.Discard, nil))).
+	h := webhook.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
 		WithConfigFetcher(fetcher)
 	srv := http.HandlerFunc(h.HandleGitHub)
 
@@ -155,7 +167,7 @@ func TestGitHubWebhook_DriftSkippedForNonDefaultBranch(t *testing.T) {
 	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext", "develop")
 
 	fetcher := &fakeFetcher{}
-	h := webhook.NewHandler(testSecret, s, slog.New(slog.NewTextHandler(io.Discard, nil))).
+	h := webhook.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
 		WithConfigFetcher(fetcher)
 	srv := http.HandlerFunc(h.HandleGitHub)
 

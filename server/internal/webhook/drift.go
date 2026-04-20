@@ -97,13 +97,15 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		return out
 	}
 
-	// Feed the scm_source back through ApplyProject so its row stays
-	// consistent with the binding the caller already established.
+	// Feed the scm_source back through ApplyProject so its row
+	// stays consistent with the binding the caller already
+	// established. Leaving WebhookSecret empty signals "preserve
+	// existing ciphertext" — drift re-apply is not the path
+	// where we rotate credentials.
 	scmInput := &store.SCMSourceInput{
 		Provider:      scm.Provider,
 		URL:           scm.URL,
 		DefaultBranch: scm.DefaultBranch,
-		WebhookSecret: scm.WebhookSecret,
 		AuthRef:       scm.AuthRef,
 	}
 

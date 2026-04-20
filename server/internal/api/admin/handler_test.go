@@ -170,7 +170,6 @@ func TestAdminHandler_IntegrationGitHub(t *testing.T) {
 		Name: "env", Kind: "github_app", Enabled: true, Source: vcs.SourceEnv,
 	}})
 	h := adminapi.NewHandler(nil, nil, reg, adminapi.WiringState{
-		WebhookTokenSet:  true,
 		PublicBaseSet:    false,
 		ChecksReporterOn: true,
 	}, quietLogger())

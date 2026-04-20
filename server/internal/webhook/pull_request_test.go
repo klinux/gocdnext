@@ -26,9 +26,14 @@ func seedPRMaterial(t *testing.T, pool *pgxpool.Pool, events []string) uuid.UUID
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
 
 	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug: "demo-pr", Name: "demo pr",
+		SCMSource: &store.SCMSourceInput{
+			Provider: "github", URL: url, DefaultBranch: branch,
+			WebhookSecret: testSecret,
+		},
 		Pipelines: []*domain.Pipeline{{
 			Name:   "ci",
 			Stages: []string{"build"},

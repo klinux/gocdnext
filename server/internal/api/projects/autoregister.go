@@ -10,27 +10,27 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
-// AutoRegisterConfig wires the handler into the GitHub App flow so
-// `gocdnext apply` can create webhooks in one round-trip. The
-// AppClient is read from the VCS registry at call time so an admin
-// CRUD write takes effect on the next apply without a restart.
-// PublicBase + WebhookSecret are still captured at boot — rotating
-// those without a restart isn't a supported flow today.
+// AutoRegisterConfig wires the handler into the GitHub App flow.
+//
+// DISABLED as of UI.10.a: auto-register used to rely on one
+// global webhook secret (GOCDNEXT_WEBHOOK_TOKEN) that got
+// embedded into every installed webhook. The per-repo-secret
+// refactor killed that env var, and reviving auto-register
+// cleanly requires making scm_sources multi-row-per-project so
+// each material gets its own sealed secret. Until that schema
+// change lands, WithAutoRegister is an explicit no-op and
+// reconcilePipelines early-returns.
 type AutoRegisterConfig struct {
-	VCS           *vcs.Registry
-	PublicBase    string // e.g. https://gocdnext.dev; webhook URL is {base}/api/webhooks/github
-	WebhookSecret string
+	VCS        *vcs.Registry
+	PublicBase string
 }
 
-// WithAutoRegister enables the post-apply webhook registration. All
-// three fields must be set (a nil registry is treated as "feature
-// off") or the handler silently skips — that way dev stacks without
-// an App boot cleanly.
+// WithAutoRegister used to enable post-apply webhook registration.
+// Currently a no-op — see AutoRegisterConfig's doc comment.
 func (h *Handler) WithAutoRegister(cfg AutoRegisterConfig) *Handler {
-	if cfg.VCS == nil || cfg.PublicBase == "" || cfg.WebhookSecret == "" {
-		return h
-	}
-	h.autoRegister = &cfg
+	// Intentionally keeps the same signature so main.go wiring
+	// stays one line; all callers become no-ops transparently.
+	_ = cfg
 	return h
 }
 
@@ -134,11 +134,15 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 		return res
 	}
 
+	// Dead code since WithAutoRegister is a no-op; kept for the
+	// quick-revive path once per-repo scm_sources become plural.
+	// Passes an empty secret — real flow will pull from a store
+	// helper keyed on the material URL.
+	_ = cfg
 	created, err := app.CreateRepoHook(ctx, installationID, ghscm.CreateHookInput{
-		Owner:  owner,
-		Repo:   repo,
-		URL:    hookURL,
-		Secret: cfg.WebhookSecret,
+		Owner: owner,
+		Repo:  repo,
+		URL:   hookURL,
 	})
 	if err != nil {
 		res.Status = "failed"

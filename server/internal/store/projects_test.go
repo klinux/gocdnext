@@ -205,6 +205,7 @@ func TestApplyProject_RemovePipeline(t *testing.T) {
 func TestApplyProject_WithSCMSourcePersists(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
 	ctx := context.Background()
 
 	in := store.ApplyProjectInput{
@@ -227,22 +228,37 @@ func TestApplyProject_WithSCMSourcePersists(t *testing.T) {
 	if got.SCMSource == nil || !got.SCMSource.Created {
 		t.Fatalf("SCMSource = %+v, want created", got.SCMSource)
 	}
+	if got.SCMSource.GeneratedWebhookSecret != "" {
+		t.Fatalf("caller-provided secret should not produce a generated one: %q",
+			got.SCMSource.GeneratedWebhookSecret)
+	}
 
-	var url, provider, branch, webhookSecret string
+	// The row stores ciphertext now; we verify round-trip through
+	// the store accessor rather than a bare SELECT.
+	auth, err := s.FindSCMSourceWebhookSecret(ctx, "https://github.com/org/demo")
+	if err != nil {
+		t.Fatalf("webhook secret lookup: %v", err)
+	}
+	if auth.Secret != "s3cret" {
+		t.Fatalf("roundtripped secret = %q, want s3cret", auth.Secret)
+	}
+
+	var url, provider, branch string
 	if err := pool.QueryRow(ctx,
-		`SELECT url, provider, default_branch, COALESCE(webhook_secret, '')
-		 FROM scm_sources WHERE project_id = $1`, got.ProjectID,
-	).Scan(&url, &provider, &branch, &webhookSecret); err != nil {
+		`SELECT url, provider, default_branch FROM scm_sources WHERE project_id = $1`,
+		got.ProjectID,
+	).Scan(&url, &provider, &branch); err != nil {
 		t.Fatalf("scm_sources row: %v", err)
 	}
-	if url != "https://github.com/org/demo" || provider != "github" || branch != "main" || webhookSecret != "s3cret" {
-		t.Fatalf("scm_sources row: url=%s provider=%s branch=%s secret=%s", url, provider, branch, webhookSecret)
+	if url != "https://github.com/org/demo" || provider != "github" || branch != "main" {
+		t.Fatalf("scm_sources row: url=%s provider=%s branch=%s", url, provider, branch)
 	}
 }
 
 func TestApplyProject_WithSCMSourceIdempotentReapply(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
 	ctx := context.Background()
 
 	in := store.ApplyProjectInput{

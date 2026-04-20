@@ -15,7 +15,6 @@ type Config struct {
 	GRPCAddr     string
 	DatabaseURL  string
 	LogLevel     slog.Level
-	WebhookToken string // fallback shared secret until per-material secrets ship
 	ConfigFolder string // folder name in repos holding pipeline YAMLs (.gocdnext)
 	SecretKeyHex string // 64-char hex AES-256 key for encrypting secrets at rest
 
@@ -108,11 +107,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_MAX_BODY_MB: %w", err)
 	}
 
+	// GOCDNEXT_WEBHOOK_TOKEN used to be the global HMAC secret.
+	// Per-repo secrets killed it in UI.10.a — flag as deprecated
+	// if anyone still sets it so onboarding docs don't mislead.
+	if legacy := env("GOCDNEXT_WEBHOOK_TOKEN", ""); legacy != "" {
+		slog.Warn("config: GOCDNEXT_WEBHOOK_TOKEN is deprecated and ignored; secrets are per-repo now (see /settings/integrations)")
+	}
+
 	c := &Config{
 		HTTPAddr:     env("GOCDNEXT_HTTP_ADDR", ":8153"),
 		GRPCAddr:     env("GOCDNEXT_GRPC_ADDR", ":8154"),
 		DatabaseURL:  env("GOCDNEXT_DATABASE_URL", ""),
-		WebhookToken: env("GOCDNEXT_WEBHOOK_TOKEN", ""),
 		ConfigFolder: env("GOCDNEXT_CONFIG_FOLDER", ".gocdnext"),
 		SecretKeyHex: env("GOCDNEXT_SECRET_KEY", ""),
 

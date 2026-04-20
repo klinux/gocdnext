@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	cryptopkg "github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -149,6 +150,9 @@ func TestGitHubWebhook_PushNoMatchingMaterial(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	srv := newServer(t, s)
+	// Seed an scm_source with our testSecret so HMAC resolves,
+	// but no pipeline/material → 204 (accepted, nothing to run).
+	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext.git", "main")
 
 	body := loadFixture(t, "push_main.json")
 	resp := postSigned(t, srv, "push", body)
@@ -163,6 +167,10 @@ func TestGitHubWebhook_InvalidSignature(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	srv := newServer(t, s)
+	// Register the repo so HMAC verification actually runs (vs
+	// bouncing with "unknown repo"); the bogus signature then
+	// fails verification with the real stored secret.
+	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext.git", "main")
 
 	body := loadFixture(t, "push_main.json")
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(body))
@@ -177,17 +185,19 @@ func TestGitHubWebhook_InvalidSignature(t *testing.T) {
 	}
 }
 
-func TestGitHubWebhook_PingEvent(t *testing.T) {
+func TestGitHubWebhook_PingEvent_OrgScoped400(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	srv := newServer(t, s)
 
+	// Org-scoped ping has no repository.clone_url — handler can't
+	// route it to any scm_source for HMAC lookup, so 400.
 	body := []byte(`{"zen":"hello"}`)
 	resp := postSigned(t, srv, "ping", body)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204 for ping", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for org-ping without repo", resp.StatusCode)
 	}
 }
 
@@ -226,6 +236,10 @@ func TestGitHubWebhook_RecordsDeliveryAudit(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	srv := newServer(t, s)
+	// Register the repo up front so the "bad signature" and
+	// "no matching material" cases get past the scm_source
+	// lookup and produce the right audit statuses.
+	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext.git", "main")
 
 	// 1. Signature-rejected delivery → status=rejected, http_status=401.
 	body := loadFixture(t, "push_main.json")
@@ -242,6 +256,8 @@ func TestGitHubWebhook_RecordsDeliveryAudit(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// 3. Matched push → status=accepted, http_status=202, material_id set.
+	// seedMaterial re-upserts the same scm_source (COALESCE keeps
+	// the secret), then adds the matching git material.
 	fp := store.FingerprintFor("https://github.com/gocdnext/gocdnext.git", "main")
 	materialID := seedMaterial(t, pool, fp)
 	resp2 := postSigned(t, srv, "push", body)
@@ -293,8 +309,11 @@ func TestGitHubWebhook_RecordsDeliveryAudit(t *testing.T) {
 
 func newServer(t *testing.T, s *store.Store) http.Handler {
 	t.Helper()
+	// Per-repo secrets need the cipher wired up on the store —
+	// handler 500s on FindSCMSourceWebhookSecret otherwise.
+	s.SetAuthCipher(newTestCipher(t))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := webhook.NewHandler(testSecret, s, logger)
+	h := webhook.NewHandler(s, logger)
 	return http.HandlerFunc(h.HandleGitHub)
 }
 
@@ -347,10 +366,22 @@ func seedMaterial(t *testing.T, pool *pgxpool.Pool, fingerprint string) uuid.UUI
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Per-repo webhook secrets (UI.10.a) require the store to
+	// have a cipher + the scm_source to carry the test secret so
+	// HandleGitHub's HMAC lookup resolves. Previously the handler
+	// took a global token; now the cipher-backed scm_source is
+	// the only path.
 	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
 	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug: "gocdnext-webhook-test",
 		Name: "gocdnext webhook test",
+		SCMSource: &store.SCMSourceInput{
+			Provider:      "github",
+			URL:           url,
+			DefaultBranch: branch,
+			WebhookSecret: testSecret,
+		},
 		Pipelines: []*domain.Pipeline{{
 			Name:   "ci",
 			Stages: []string{"build", "test"},
@@ -377,3 +408,23 @@ func seedMaterial(t *testing.T, pool *pgxpool.Pool, fingerprint string) uuid.UUI
 	}
 	return materialID
 }
+
+// newTestCipher returns a deterministic AES-256 cipher for use in
+// webhook tests. Every suite that exercises the per-repo secret
+// path calls SetAuthCipher with this.
+func newTestCipher(t *testing.T) *cryptoCipher {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	c, err := cryptopkg.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	return c
+}
+
+// Type alias via pointer helper so test code reads naturally without
+// importing the package at every call site.
+type cryptoCipher = cryptopkg.Cipher

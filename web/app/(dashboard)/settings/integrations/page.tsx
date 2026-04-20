@@ -31,11 +31,6 @@ export default async function IntegrationsPage() {
       hint: "An App client is active (from env or DB).",
     },
     {
-      label: "Webhook token",
-      value: gh.webhook_token_set,
-      hint: "HMAC secret signs incoming push/PR events.",
-    },
-    {
       label: "Public base URL",
       value: gh.public_base_set,
       hint: "Needed for auto-register and Checks callbacks.",
@@ -48,7 +43,7 @@ export default async function IntegrationsPage() {
     {
       label: "Auto-register",
       value: gh.auto_register_on,
-      hint: "Installs webhooks on new repos at Apply time.",
+      hint: "Disabled pending multi-scm_source refactor.",
     },
   ];
 

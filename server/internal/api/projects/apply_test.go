@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
+	cryptopkg "github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -32,6 +33,18 @@ func newHandler(t *testing.T) (*projects.Handler, *store.Store) {
 	t.Helper()
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
+	// SCMSource upsert encrypts the webhook secret via the
+	// store cipher — tests that don't wire one get 500s from the
+	// store's ErrAuthProviderCipherUnset guard.
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	c, err := cryptopkg.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	s.SetAuthCipher(c)
 	return projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))), s
 }
 

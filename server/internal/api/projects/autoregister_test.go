@@ -110,9 +110,8 @@ func applyHandler(t *testing.T, api *fakeGitHubAPI) *projects.Handler {
 		Name: "test", Kind: "github_app", Enabled: true, Source: vcs.SourceEnv,
 	}})
 	return h.WithAutoRegister(projects.AutoRegisterConfig{
-		VCS:           reg,
-		PublicBase:    "https://gocdnext.dev",
-		WebhookSecret: "topsecret",
+		VCS:        reg,
+		PublicBase: "https://gocdnext.dev",
 	})
 }
 
@@ -151,7 +150,14 @@ jobs:
 	}
 }
 
+// Auto-register tests are SKIPPED since UI.10.a disabled the
+// feature globally pending the multi-scm_source schema refactor.
+// The tests stay so they can be reactivated when the feature
+// comes back; `t.Skip` makes it clear why they don't run.
+const autoRegisterSkipMsg = "auto-register disabled in UI.10.a; re-enable with the multi-scm_source refactor"
+
 func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
+	t.Skip(autoRegisterSkipMsg)
 	api := newFakeGitHubAPI()
 	h := applyHandler(t, api)
 
@@ -185,6 +191,7 @@ func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 }
 
 func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
+	t.Skip(autoRegisterSkipMsg)
 	api := newFakeGitHubAPI()
 	api.listHooks = []map[string]any{
 		{
@@ -214,6 +221,7 @@ func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
 }
 
 func TestAutoRegister_SkipsWhenAppNotInstalled(t *testing.T) {
+	t.Skip(autoRegisterSkipMsg)
 	api := newFakeGitHubAPI()
 	api.installStatus = http.StatusNotFound
 	h := applyHandler(t, api)
@@ -234,6 +242,7 @@ func TestAutoRegister_SkipsWhenAppNotInstalled(t *testing.T) {
 }
 
 func TestAutoRegister_NoFlagSkipsWebhook(t *testing.T) {
+	t.Skip(autoRegisterSkipMsg)
 	// YAML without auto_register_webhook → no webhooks section.
 	api := newFakeGitHubAPI()
 	h := applyHandler(t, api)

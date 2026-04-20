@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -44,6 +47,13 @@ type SCMSourceApplied struct {
 	URL           string
 	DefaultBranch string
 	Created       bool
+	// GeneratedWebhookSecret is the plaintext of a freshly-minted
+	// per-repo secret — set ONLY on the apply that created or
+	// rotated the stored ciphertext. Callers surface this in the
+	// HTTP response exactly once so the operator copies it into
+	// the GitHub webhook config; subsequent reads never see it
+	// again.
+	GeneratedWebhookSecret string
 }
 
 type PipelineApplyStatus struct {
@@ -96,7 +106,7 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 	}
 
 	if in.SCMSource != nil {
-		applied, err := upsertSCMSource(ctx, q, proj.ID, in.SCMSource)
+		applied, err := s.upsertSCMSource(ctx, q, proj.ID, in.SCMSource)
 		if err != nil {
 			return ApplyProjectResult{}, err
 		}
@@ -142,38 +152,99 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 	return result, nil
 }
 
-// upsertSCMSource validates the input and upserts the scm_sources row bound
-// to the given project. Called inside ApplyProject's tx so the project +
-// scm_source land atomically.
-func upsertSCMSource(ctx context.Context, q *db.Queries, projectID pgtype.UUID, in *SCMSourceInput) (*SCMSourceApplied, error) {
+// upsertSCMSource validates the input and upserts the scm_sources
+// row bound to the given project. Called inside ApplyProject's tx
+// so the project + scm_source land atomically.
+//
+// Per-repo webhook secret policy:
+//   - caller sends a plaintext secret → we seal it with the
+//     store's cipher and pass the ciphertext to Upsert. The
+//     plaintext is echoed back via GeneratedWebhookSecret so the
+//     HTTP response can hand it to the operator (once).
+//   - caller sends empty AND this is a fresh row → we generate
+//     32 random bytes, seal, surface the plaintext.
+//   - caller sends empty AND the row already has a secret → we
+//     pass nil, the COALESCE in the query preserves the existing
+//     ciphertext, GeneratedWebhookSecret stays empty.
+func (s *Store) upsertSCMSource(ctx context.Context, q *db.Queries, projectID pgtype.UUID, in *SCMSourceInput) (*SCMSourceApplied, error) {
 	if in.URL == "" {
 		return nil, fmt.Errorf("store: scm_source: url is required")
 	}
 	if in.Provider == "" {
 		return nil, fmt.Errorf("store: scm_source: provider is required")
 	}
+	if s.authCipher == nil {
+		return nil, ErrAuthProviderCipherUnset
+	}
 	defaultBranch := in.DefaultBranch
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
+
+	// Is there already a row? Decides whether empty input means
+	// "preserve" (existing row) or "generate" (fresh row).
+	existing, err := q.GetScmSourceByProject(ctx, projectID)
+	alreadyExists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: scm_source lookup: %w", err)
+	}
+	_ = existing
+
+	var sealed []byte
+	var generated string
+	switch {
+	case in.WebhookSecret != "":
+		sealed, err = s.authCipher.Encrypt([]byte(in.WebhookSecret))
+		if err != nil {
+			return nil, fmt.Errorf("store: seal webhook secret: %w", err)
+		}
+	case !alreadyExists:
+		plain, err := newWebhookSecret()
+		if err != nil {
+			return nil, err
+		}
+		generated = plain
+		sealed, err = s.authCipher.Encrypt([]byte(plain))
+		if err != nil {
+			return nil, fmt.Errorf("store: seal generated secret: %w", err)
+		}
+	default:
+		// Existing row + empty input → preserve the ciphertext via
+		// the COALESCE path in UpsertScmSource.
+		sealed = nil
+	}
+
 	row, err := q.UpsertScmSource(ctx, db.UpsertScmSourceParams{
 		ProjectID:     projectID,
 		Provider:      in.Provider,
 		Url:           domain.NormalizeGitURL(in.URL),
 		DefaultBranch: defaultBranch,
-		WebhookSecret: nullableString(in.WebhookSecret),
+		WebhookSecret: sealed,
 		AuthRef:       nullableString(in.AuthRef),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: upsert scm_source: %w", err)
 	}
 	return &SCMSourceApplied{
-		ID:            fromPgUUID(row.ID),
-		Provider:      row.Provider,
-		URL:           row.Url,
-		DefaultBranch: row.DefaultBranch,
-		Created:       row.Created,
+		ID:                     fromPgUUID(row.ID),
+		Provider:               row.Provider,
+		URL:                    row.Url,
+		DefaultBranch:          row.DefaultBranch,
+		Created:                row.Created,
+		GeneratedWebhookSecret: generated,
 	}, nil
+}
+
+// newWebhookSecret returns a fresh 32-byte hex-encoded secret.
+// Long enough that brute-force against the HMAC is infeasible;
+// hex-encoded so the operator can paste it into the GitHub
+// webhook form without worrying about special chars.
+func newWebhookSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("store: random: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func applyPipeline(ctx context.Context, q *db.Queries, projectID pgtype.UUID, p *domain.Pipeline, configRepo string) (PipelineApplyStatus, error) {

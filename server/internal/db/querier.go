@@ -113,7 +113,11 @@ type Querier interface {
 	// Idempotency check for fanout: if we already created a downstream run for
 	// this (pipeline, upstream_run_id) pair, skip.
 	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
-	FindScmSourceByURL(ctx context.Context, url string) (ScmSource, error)
+	// Read path used by webhook drift detection and future UI
+	// listings. Does NOT return webhook_secret — that's handled by
+	// GetScmSourceWebhookSecret to keep ciphertext out of the general
+	// read path.
+	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
 	// Single-row lookup for the JobResult confirmation path. Returns
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
@@ -157,7 +161,13 @@ type Querier interface {
 	// 'manual'). Caller checks upstream_run_id.Valid.
 	GetRunUpstreamContext(ctx context.Context, id pgtype.UUID) (GetRunUpstreamContextRow, error)
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
-	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (ScmSource, error)
+	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (GetScmSourceByProjectRow, error)
+	// Webhook-handler path: pulls the sealed secret + the scm_source
+	// id for a given clone_url so HandleGitHub can verify HMAC with
+	// the right per-repo key. Returns an empty BYTEA when the row
+	// has no secret configured yet (the caller then answers 401 —
+	// "no webhook secret registered for this repo").
+	GetScmSourceWebhookSecretByURL(ctx context.Context, url string) (GetScmSourceWebhookSecretByURLRow, error)
 	// Used by the scheduler when a job declares `secrets: [FOO, BAR]`. Returns
 	// the encrypted blobs; the caller decrypts and injects as env vars.
 	GetSecretValuesByProject(ctx context.Context, arg GetSecretValuesByProjectParams) ([]GetSecretValuesByProjectRow, error)
@@ -326,6 +336,10 @@ type Querier interface {
 	// Stamp the last successful config sync. Called after a drift re-apply so
 	// operators can see whether the live config tracks HEAD.
 	UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error
+	// Rotation path. Takes the newly sealed ciphertext and bumps
+	// updated_at. Intended for POST /api/v1/projects/{slug}/scm-sources
+	// /{id}/rotate-webhook-secret.
+	UpdateScmSourceWebhookSecret(ctx context.Context, arg UpdateScmSourceWebhookSecretParams) error
 	// ON CONFLICT (name) DO UPDATE bumps kind + display + id/secret
 	// + issuer + api base + enabled. We never update created_at.
 	UpsertAuthProvider(ctx context.Context, arg UpsertAuthProviderParams) (AuthProvider, error)
@@ -340,8 +354,12 @@ type Querier interface {
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
-	// Bind a project to its SCM source. updated_at only bumps when something
-	// meaningful changes, so idempotent re-applies don't spam the timeline.
+	// Bind a project to its SCM source. updated_at only bumps when
+	// something meaningful changes, so idempotent re-applies don't
+	// spam the timeline. webhook_secret is BYTEA ciphertext (sealed
+	// in the store layer via crypto.Cipher); sending NULL means
+	// "keep the existing ciphertext" so rotation is explicit — a
+	// Plain upsert without a secret doesn't wipe an existing one.
 	UpsertScmSource(ctx context.Context, arg UpsertScmSourceParams) (UpsertScmSourceRow, error)
 	// Upserts a (project_id, name) -> value_enc pair. updated_at always bumps on
 	// update because the ciphertext changes (random nonce) even for identical

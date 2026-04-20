@@ -18,23 +18,46 @@ import (
 
 const maxBodyBytes = 5 << 20 // 5 MiB — GitHub payloads are usually <1 MiB.
 
-// Handler serves the webhook endpoints. Register HandleGitHub on the router
-// of your choice; the method signature is compatible with http.HandlerFunc.
+// extractCloneURL pulls repository.clone_url out of an unverified
+// GitHub webhook body. Every event we care about (push,
+// pull_request, ping-on-repo) carries this field at the top level
+// of the "repository" object. Failing to parse → empty string →
+// caller 400s.
+func extractCloneURL(body []byte) string {
+	var env struct {
+		Repository struct {
+			CloneURL string `json:"clone_url"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ""
+	}
+	return env.Repository.CloneURL
+}
+
+// Handler serves the webhook endpoints. Register HandleGitHub on
+// the router of your choice; the method signature is compatible
+// with http.HandlerFunc.
+//
+// HMAC verification is per-repo: we peek at repository.clone_url
+// in the (still-unverified) body, look up the scm_source bound to
+// that URL, and validate the signature with its sealed secret.
+// An unknown repo or a row without a registered secret → 401.
 type Handler struct {
-	secret   string
 	store    *store.Store
 	log      *slog.Logger
 	fetcher  ConfigFetcher
 	reporter *checks.Reporter
 }
 
-// NewHandler builds the webhook handler. secret is the HMAC shared secret for
-// GitHub; an empty string disables the endpoint (returns 503).
-func NewHandler(secret string, s *store.Store, log *slog.Logger) *Handler {
+// NewHandler builds the webhook handler. The Store must have a
+// cipher configured (GOCDNEXT_SECRET_KEY) — without it no repo can
+// register a secret and every incoming webhook 401s.
+func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{secret: secret, store: s, log: log}
+	return &Handler{store: s, log: log}
 }
 
 // WithConfigFetcher opts the handler into drift detection: on a push whose
@@ -54,17 +77,11 @@ func (h *Handler) WithChecksReporter(r *checks.Reporter) *Handler {
 	return h
 }
 
-// HandleGitHub verifies the HMAC signature, parses a push event and persists a
-// modification when the payload matches a known material. Non-push events and
-// pushes with no matching material are answered with 204 No Content so GitHub
-// does not retry.
+// HandleGitHub verifies the HMAC signature, parses a push event
+// and persists a modification when the payload matches a known
+// material. Non-push events and pushes with no matching material
+// are answered with 204 No Content so GitHub does not retry.
 func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
-	if h.secret == "" {
-		h.log.Error("github webhook: no secret configured")
-		http.Error(w, "github webhook not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	event := r.Header.Get("X-GitHub-Event")
 	if event == "" {
 		http.Error(w, "missing X-GitHub-Event header", http.StatusBadRequest)
@@ -90,10 +107,51 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	defer h.recordDelivery(r.Context(), rec)
 	w = sc
 
-	if err := github.VerifySignature(h.secret, body, signature); err != nil {
+	// Peek at the unverified body to pull repository.clone_url so
+	// we can look up which scm_source's secret to check against.
+	// This is safe: the attacker controls what URL we pick, but
+	// they still have to produce a valid HMAC for whichever secret
+	// that choice resolves to — and they don't have any of those.
+	cloneURL := extractCloneURL(body)
+	if cloneURL == "" {
+		rec.status = store.WebhookStatusRejected
+		rec.errText = "missing repository.clone_url"
+		h.log.Warn("github webhook: no clone_url in payload",
+			"event", event, "delivery", delivery)
+		http.Error(w, "invalid payload: repository.clone_url required", http.StatusBadRequest)
+		return
+	}
+	auth, err := h.store.FindSCMSourceWebhookSecret(r.Context(), cloneURL)
+	if errors.Is(err, store.ErrSCMSourceNotFound) {
+		rec.status = store.WebhookStatusRejected
+		rec.errText = "no scm_source registered for this repo"
+		h.log.Warn("github webhook: unknown repo", "event", event,
+			"delivery", delivery, "clone_url", cloneURL)
+		http.Error(w, "no scm_source registered for this repo", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "scm_source lookup: " + err.Error()
+		h.log.Error("github webhook: scm_source lookup", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if auth.Secret == "" {
+		rec.status = store.WebhookStatusRejected
+		rec.errText = "no webhook secret registered for this scm_source"
+		h.log.Warn("github webhook: scm_source has no secret yet",
+			"delivery", delivery, "scm_source_id", auth.ID)
+		http.Error(w, "no webhook secret registered for this repo", http.StatusUnauthorized)
+		return
+	}
+
+	if err := github.VerifySignature(auth.Secret, body, signature); err != nil {
 		rec.status = store.WebhookStatusRejected
 		rec.errText = "invalid signature: " + err.Error()
-		h.log.Warn("github webhook: signature rejected", "event", event, "delivery", delivery, "err", err)
+		h.log.Warn("github webhook: signature rejected",
+			"event", event, "delivery", delivery,
+			"scm_source_id", auth.ID, "err", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}

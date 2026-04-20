@@ -162,12 +162,12 @@ type ScmSource struct {
 	Provider           string
 	Url                string
 	DefaultBranch      string
-	WebhookSecret      *string
 	AuthRef            *string
 	LastSyncedAt       pgtype.Timestamptz
 	LastSyncedRevision *string
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
+	WebhookSecret      []byte
 }
 
 type Secret struct {

@@ -24,14 +24,12 @@ const (
 )
 
 // WiringState captures the parts of the integration summary that
-// never change at runtime (env-derived wiring: webhook token,
-// public base, checks reporter presence). The dynamic bits
-// (GitHub App configured / auto-register on) are recomputed on
-// every /integrations/github request by reading the live
-// vcs.Registry — otherwise the summary freezes at boot and the
-// admin UI lies after a CRUD write.
+// never change at runtime (public base, checks reporter). The
+// dynamic bits (GitHub App configured) are recomputed per
+// request via the live vcs.Registry. Webhook auth moved to
+// per-scm_source secrets in UI.10.a — no global token lives in
+// env anymore.
 type WiringState struct {
-	WebhookTokenSet  bool
 	PublicBaseSet    bool
 	ChecksReporterOn bool
 }
@@ -208,10 +206,12 @@ func (h *Handler) IntegrationGitHub(w http.ResponseWriter, r *http.Request) {
 	appActive := h.vcs != nil && h.vcs.GitHubApp() != nil
 	writeJSON(w, map[string]any{
 		"github_app_configured": appActive,
-		"webhook_token_set":     h.wiring.WebhookTokenSet,
 		"public_base_set":       h.wiring.PublicBaseSet,
 		"checks_reporter_on":    h.wiring.ChecksReporterOn,
-		"auto_register_on":      appActive && h.wiring.PublicBaseSet && h.wiring.WebhookTokenSet,
+		// Auto-register is disabled globally pending the multi-
+		// scm_source refactor (see autoregister.go). Report off
+		// so the UI doesn't mislead the operator.
+		"auto_register_on": false,
 	})
 }
 

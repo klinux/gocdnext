@@ -306,7 +306,6 @@ export type VCSIntegrationsAdmin = {
 
 export type GitHubIntegration = {
   github_app_configured: boolean;
-  webhook_token_set: boolean;
   public_base_set: boolean;
   checks_reporter_on: boolean;
   auto_register_on: boolean;

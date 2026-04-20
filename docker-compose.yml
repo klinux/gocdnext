@@ -38,7 +38,8 @@ services:
       GOCDNEXT_GRPC_ADDR: "${GOCDNEXT_GRPC_ADDR:-:8154}"
       GOCDNEXT_LOG_LEVEL: "${GOCDNEXT_LOG_LEVEL:-debug}"
       GOCDNEXT_PUBLIC_BASE: "${GOCDNEXT_PUBLIC_BASE:-http://server:8153}"
-      GOCDNEXT_WEBHOOK_TOKEN: "${GOCDNEXT_WEBHOOK_TOKEN:-}"
+      # GOCDNEXT_WEBHOOK_TOKEN removed in UI.10.a — webhook
+      # secrets are per-scm_source now (sealed via SECRET_KEY).
       GOCDNEXT_SECRET_KEY: "${GOCDNEXT_SECRET_KEY:-}"
       GOCDNEXT_ARTIFACTS_BACKEND: "${GOCDNEXT_ARTIFACTS_BACKEND:-filesystem}"
       GOCDNEXT_ARTIFACTS_FS_ROOT: /var/lib/gocdnext/artifacts
