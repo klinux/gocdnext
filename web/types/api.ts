@@ -248,6 +248,25 @@ export type AdminHealth = {
   checked_at: string;
 };
 
+export type ConfiguredAuthProvider = {
+  id: string;
+  name: string;
+  kind: "github" | "oidc";
+  display_name: string;
+  client_id: string;
+  issuer?: string;
+  github_api_base?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuthProvidersAdmin = {
+  enabled: boolean;
+  providers: ConfiguredAuthProvider[];
+  env_only: string[];
+};
+
 export type GitHubIntegration = {
   github_app_configured: boolean;
   webhook_token_set: boolean;

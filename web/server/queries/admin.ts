@@ -3,9 +3,12 @@
 // query surface in, and so a future permission check can be added in
 // one place.
 
+import { cookies } from "next/headers";
+
 import { env } from "@/lib/env";
 import type {
   AdminHealth,
+  AuthProvidersAdmin,
   GitHubIntegration,
   RetentionSnapshot,
   WebhookDeliveriesResponse,
@@ -14,11 +17,16 @@ import type {
 
 async function readJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
+  // Forward the session cookie so the control plane's RequireRole
+  // middleware sees the admin user on admin routes.
+  const store = await cookies();
+  const session = store.get("gocdnext_session")?.value;
   const res = await fetch(url, {
     cache: "no-store",
     ...init,
     headers: {
       Accept: "application/json",
+      ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -62,4 +70,8 @@ export async function listWebhookDeliveries(
 
 export async function getWebhookDelivery(id: number): Promise<WebhookDeliveryDetail> {
   return readJSON<WebhookDeliveryDetail>(`/api/v1/admin/webhooks/${id}`);
+}
+
+export async function listConfiguredAuthProviders(): Promise<AuthProvidersAdmin> {
+  return readJSON<AuthProvidersAdmin>("/api/v1/admin/auth/providers");
 }

@@ -75,6 +75,10 @@ const registry: Record<string, Entry> = {
     label: () => "GitHub",
     href: () => null,
   },
+  auth: {
+    label: () => "Auth",
+    href: () => "/settings/auth",
+  },
 };
 
 export function RouteBreadcrumbs() {

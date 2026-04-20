@@ -14,6 +14,7 @@ const tabs: Tab[] = [
   { label: "Webhooks", href: "/settings/webhooks" as Route, matchPrefix: "/settings/webhooks" },
   { label: "Retention", href: "/settings/retention" as Route, matchPrefix: "/settings/retention" },
   { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations" },
+  { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth" },
 ];
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {
