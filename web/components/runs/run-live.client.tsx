@@ -29,7 +29,11 @@ type Props = {
 async function fetchRun(apiBaseURL: string, id: string): Promise<RunDetail> {
   const res = await fetch(
     `${apiBaseURL.replace(/\/+$/, "")}/api/v1/runs/${encodeURIComponent(id)}?logs=${LOGS_PER_JOB}`,
-    { cache: "no-store" },
+    // credentials: "include" forwards the session cookie cross-
+    // origin (web dev on :3000 → control plane on :8153). The
+    // control plane's devCORS echoes the Origin and sets
+    // Access-Control-Allow-Credentials=true to let it through.
+    { cache: "no-store", credentials: "include" },
   );
   if (!res.ok) throw new Error(`run fetch ${res.status}`);
   return (await res.json()) as RunDetail;

@@ -2,6 +2,8 @@
 // the dashboard polls every tick; swap for tag-based revalidation once a
 // realtime transport (SSE) is wired.
 
+import { cookies } from "next/headers";
+
 import { env } from "@/lib/env";
 import type {
   AgentDetail,
@@ -20,11 +22,18 @@ type ListResponse = { projects: ProjectSummary[] };
 
 async function readJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
+  // Forward the browser's session cookie to the control plane so
+  // protected RSC fetches don't 401 when auth is enabled. Missing
+  // cookie = no header added (the control plane treats that as
+  // anonymous, exactly like a fresh curl).
+  const store = await cookies();
+  const session = store.get("gocdnext_session")?.value;
   const res = await fetch(url, {
     cache: "no-store",
     ...init,
     headers: {
       Accept: "application/json",
+      ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
       ...(init?.headers ?? {}),
     },
   });

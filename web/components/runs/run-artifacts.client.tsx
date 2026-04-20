@@ -28,7 +28,7 @@ async function fetchArtifacts(
 ): Promise<RunArtifact[]> {
   const res = await fetch(
     `${apiBaseURL.replace(/\/+$/, "")}/api/v1/runs/${encodeURIComponent(id)}/artifacts`,
-    { cache: "no-store" },
+    { cache: "no-store", credentials: "include" },
   );
   // 503 = backend not configured; treat as "no artefacts" so the section
   // just stays empty instead of breaking the page.
