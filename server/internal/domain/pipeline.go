@@ -139,6 +139,20 @@ type Job struct {
 	// and upload after the job succeeds. YAML source: `artifacts.paths:`.
 	// Empty means no artefacts expected.
 	ArtifactPaths []string
+	// ArtifactDeps declare artefacts this job consumes from earlier jobs
+	// in the same run. Agent downloads each before tasks start; a
+	// missing/not-ready dep fails the job cleanly.
+	ArtifactDeps []ArtifactDep
+}
+
+// ArtifactDep is one entry in `needs_artifacts`. FromJob is the name of
+// the producing job in the same pipeline. Paths (optional) filters
+// which of that job's artifacts to pull — empty means all. Dest
+// defaults to "./" (workspace root).
+type ArtifactDep struct {
+	FromJob string
+	Paths   []string
+	Dest    string
 }
 
 type Task struct {

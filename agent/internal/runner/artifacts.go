@@ -114,3 +114,89 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	c.n += int64(len(p))
 	return len(p), nil
 }
+
+// UntarGz writes the gzip-compressed tar read from `src` into `dest`,
+// creating directories as needed, while verifying the stream's sha256
+// matches `wantSHA` (hex). Rejects entries that would escape `dest`
+// via path traversal. `wantSHA` empty skips verification.
+func UntarGz(dest string, src io.Reader, wantSHA string) error {
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return fmt.Errorf("artifact: mkdir dest: %w", err)
+	}
+	destAbs, err := filepath.Abs(dest)
+	if err != nil {
+		return fmt.Errorf("artifact: abs dest: %w", err)
+	}
+
+	hasher := sha256.New()
+	tee := io.TeeReader(src, hasher)
+
+	gz, err := gzip.NewReader(tee)
+	if err != nil {
+		return fmt.Errorf("artifact: gzip reader: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("artifact: tar next: %w", err)
+		}
+		clean := filepath.Clean(hdr.Name)
+		if strings.HasPrefix(clean, "..") || strings.HasPrefix(clean, "/") {
+			return fmt.Errorf("artifact: tar entry %q escapes dest", hdr.Name)
+		}
+		full := filepath.Join(destAbs, clean)
+		rel, err := filepath.Rel(destAbs, full)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("artifact: tar entry %q escapes dest (post-join)", hdr.Name)
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(full, 0o755); err != nil {
+				return fmt.Errorf("artifact: mkdir %q: %w", full, err)
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return fmt.Errorf("artifact: mkdir parent %q: %w", full, err)
+			}
+			mode := os.FileMode(hdr.Mode) & 0o777
+			if mode == 0 {
+				mode = 0o644
+			}
+			out, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			if err != nil {
+				return fmt.Errorf("artifact: create %q: %w", full, err)
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				return fmt.Errorf("artifact: write %q: %w", full, err)
+			}
+			if err := out.Close(); err != nil {
+				return fmt.Errorf("artifact: close %q: %w", full, err)
+			}
+		default:
+			// Symlinks / other types: ignored rather than refused —
+			// tar.FileInfoHeader on a plain file/dir never creates
+			// these, but we may encounter them from other producers.
+		}
+	}
+	// Drain any trailing gzip bytes so the hash includes every byte
+	// of the gzip stream (tar stops at the end-of-archive marker, but
+	// gzip may have padding + checksum after).
+	if _, err := io.Copy(io.Discard, tee); err != nil {
+		return fmt.Errorf("artifact: drain: %w", err)
+	}
+	if wantSHA != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if got != wantSHA {
+			return fmt.Errorf("artifact: sha256 mismatch: got %s want %s", got, wantSHA)
+		}
+	}
+	return nil
+}

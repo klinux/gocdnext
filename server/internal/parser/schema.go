@@ -64,15 +64,25 @@ type JobDef struct {
 	Script    []string          `yaml:"script,omitempty"`
 	Settings  map[string]string `yaml:"settings,omitempty"` // plugin step
 	Variables map[string]string `yaml:"variables,omitempty"`
-	Cache     *Cache            `yaml:"cache,omitempty"`
-	Artifacts *Artifacts        `yaml:"artifacts,omitempty"`
-	Parallel  *Parallel         `yaml:"parallel,omitempty"`
-	Rules     []RuleDef         `yaml:"rules,omitempty"`
-	When      *WhenDef          `yaml:"when,omitempty"`
-	Timeout   string            `yaml:"timeout,omitempty"`
-	Retry     int               `yaml:"retry,omitempty"`
-	Secrets   []string          `yaml:"secrets,omitempty"` // project-secret names to inject + mask
-	Tags      []string          `yaml:"tags,omitempty"`    // required agent tags (all must match)
+	Cache          *Cache              `yaml:"cache,omitempty"`
+	Artifacts      *Artifacts          `yaml:"artifacts,omitempty"`
+	NeedsArtifacts []NeedsArtifactDef  `yaml:"needs_artifacts,omitempty"`
+	Parallel       *Parallel           `yaml:"parallel,omitempty"`
+	Rules          []RuleDef           `yaml:"rules,omitempty"`
+	When           *WhenDef            `yaml:"when,omitempty"`
+	Timeout        string              `yaml:"timeout,omitempty"`
+	Retry          int                 `yaml:"retry,omitempty"`
+	Secrets        []string            `yaml:"secrets,omitempty"`
+	Tags           []string            `yaml:"tags,omitempty"`
+}
+
+// NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. Picks
+// an upstream job (same pipeline) by name and asks the scheduler to
+// stage its artefacts into the workspace before tasks run.
+type NeedsArtifactDef struct {
+	FromJob string   `yaml:"from_job"`
+	Paths   []string `yaml:"paths,omitempty"` // subset filter; empty = all
+	Dest    string   `yaml:"dest,omitempty"`  // default "./"
 }
 
 type Cache struct {

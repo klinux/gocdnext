@@ -68,6 +68,24 @@ JOIN job_runs jr ON jr.id = a.job_run_id
 WHERE a.run_id = $1 AND a.deleted_at IS NULL
 ORDER BY jr.name, a.path;
 
+-- name: ListReadyArtifactsByRunAndJobName :many
+-- Returns ready artefacts produced by a specific job name within a run,
+-- optionally filtered by a path whitelist. Used by the scheduler when
+-- resolving `needs_artifacts` on a downstream job. An empty paths
+-- array returns all of that job's artefacts.
+SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
+       a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
+       jr.name AS job_name
+FROM artifacts a
+JOIN job_runs jr ON jr.id = a.job_run_id
+WHERE a.run_id = $1
+  AND jr.name  = $2
+  AND a.status = 'ready'
+  AND a.deleted_at IS NULL
+  AND (cardinality($3::text[]) = 0 OR a.path = ANY($3::text[]))
+ORDER BY a.path;
+
 -- name: GetJobRunParents :one
 -- Resolves pipeline_id + project_id + agent_id for a (job_run_id,
 -- run_id) pair. Used by the RequestArtifactUpload handler to authorise

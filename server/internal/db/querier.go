@@ -117,6 +117,11 @@ type Querier interface {
 	// already-running runs that may have a queued job waiting (re-queued by the
 	// reaper, blocked waiting for a next stage, etc.).
 	ListQueuedRunIDs(ctx context.Context) ([]pgtype.UUID, error)
+	// Returns ready artefacts produced by a specific job name within a run,
+	// optionally filtered by a path whitelist. Used by the scheduler when
+	// resolving `needs_artifacts` on a downstream job. An empty paths
+	// array returns all of that job's artefacts.
+	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	// Lists names + timestamps only — values never leave the DB without going
 	// through GetSecretValuesByProject below.

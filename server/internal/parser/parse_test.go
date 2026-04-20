@@ -161,6 +161,71 @@ jobs:
 	}
 }
 
+func TestParse_NeedsArtifacts(t *testing.T) {
+	y := `
+stages: [build, deploy]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    script: [make]
+    artifacts:
+      paths: [bin/]
+  deploy:
+    stage: deploy
+    script: [./deploy.sh]
+    needs_artifacts:
+      - from_job: build
+        paths: [bin/]
+        dest: ./in
+      - from_job: build
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var dep *domain.Job
+	for i := range p.Jobs {
+		if p.Jobs[i].Name == "deploy" {
+			dep = &p.Jobs[i]
+		}
+	}
+	if dep == nil {
+		t.Fatal("deploy job not parsed")
+	}
+	if len(dep.ArtifactDeps) != 2 {
+		t.Fatalf("want 2 deps, got %d", len(dep.ArtifactDeps))
+	}
+	if dep.ArtifactDeps[0].FromJob != "build" ||
+		dep.ArtifactDeps[0].Dest != "./in" ||
+		len(dep.ArtifactDeps[0].Paths) != 1 {
+		t.Errorf("first dep = %+v", dep.ArtifactDeps[0])
+	}
+	if dep.ArtifactDeps[1].FromJob != "build" ||
+		dep.ArtifactDeps[1].Dest != "" ||
+		len(dep.ArtifactDeps[1].Paths) != 0 {
+		t.Errorf("second dep (defaults) = %+v", dep.ArtifactDeps[1])
+	}
+}
+
+func TestParse_NeedsArtifacts_MissingFromJob(t *testing.T) {
+	y := `
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  oops:
+    stage: build
+    script: [true]
+    needs_artifacts:
+      - paths: [bin/]
+`
+	if _, err := Parse(strings.NewReader(y), "p", "n"); err == nil {
+		t.Fatal("expected error for missing from_job")
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

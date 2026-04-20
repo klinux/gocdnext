@@ -23,10 +23,13 @@ type revisionSnapshot struct {
 
 // BuildAssignment composes a JobAssignment proto from the run's pipeline
 // snapshot + the dispatchable job row + the pipeline's material rows +
-// already-resolved secrets (keyed by name). Secret values land in env
-// alongside the pipeline's own variables AND are echoed into LogMasks so
-// the runner can replace them with *** in every log line.
-func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materials []store.Material, secrets map[string]string) (*gocdnextv1.JobAssignment, error) {
+// already-resolved secrets (keyed by name) + pre-signed artifact
+// downloads. Secret values land in env alongside the pipeline's own
+// variables AND are echoed into LogMasks so the runner can replace them
+// with *** in every log line. `downloads` is the list of upstream-job
+// artefacts this job declares via `needs_artifacts:`; nil/empty when
+// the job has no deps.
+func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materials []store.Material, secrets map[string]string, downloads []*gocdnextv1.ArtifactDownload) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
 		return nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
@@ -104,8 +107,9 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		Checkouts:      checkouts,
 		Workspace:      "/workspace",
 		TimeoutSeconds: 0,
-		LogMasks:       masks,
-		ArtifactPaths:  append([]string(nil), jobDef.ArtifactPaths...),
+		LogMasks:          masks,
+		ArtifactPaths:     append([]string(nil), jobDef.ArtifactPaths...),
+		ArtifactDownloads: downloads,
 	}, nil
 }
 
@@ -128,6 +132,18 @@ func JobTagsFromDefinition(definition []byte, jobName string) ([]string, error) 
 		return nil, err
 	}
 	return append([]string(nil), jobDef.Tags...), nil
+}
+
+// JobArtifactDepsFromDefinition returns the `needs_artifacts:` entries
+// for a job, decoded into domain.ArtifactDep. Scheduler calls this
+// ahead of BuildAssignment so it can fetch the upstream artefact rows
+// and sign download URLs to embed in the assignment.
+func JobArtifactDepsFromDefinition(definition []byte, jobName string) ([]domain.ArtifactDep, error) {
+	jobDef, err := jobDefFromDefinition(definition, jobName)
+	if err != nil {
+		return nil, err
+	}
+	return append([]domain.ArtifactDep(nil), jobDef.ArtifactDeps...), nil
 }
 
 func jobDefFromDefinition(definition []byte, jobName string) (domain.Job, error) {

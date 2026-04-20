@@ -99,6 +99,9 @@ func main() {
 		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*24*time.Hour)
 	}
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
+	if artifactStore != nil {
+		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
+	}
 	reaper := scheduler.NewReaper(st, logger)
 
 	grpcServer := grpc.NewServer()

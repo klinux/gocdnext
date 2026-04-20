@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
@@ -29,6 +30,12 @@ type Scheduler struct {
 	dsn      string
 	tick     time.Duration
 	resolver secrets.Resolver
+
+	// Artifact download resolution. Nil artifactStore means "no artefact
+	// downloads" — jobs that declare needs_artifacts will fail dispatch
+	// with a clear error, matching secrets behaviour.
+	artifactStore     artifacts.Store
+	artifactGetURLTTL time.Duration
 }
 
 // New wires the scheduler. dsn is used for a dedicated LISTEN connection —
@@ -62,6 +69,19 @@ func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 // contract.
 func (s *Scheduler) WithSecretResolver(r secrets.Resolver) *Scheduler {
 	s.resolver = r
+	return s
+}
+
+// WithArtifactStore plugs in the backend used to sign download URLs for
+// `needs_artifacts`. ttl <= 0 falls back to 30 minutes (agents under
+// load can sit in queue for a while before they pull, so don't be
+// stingy). Must be set or intra-run downloads refuse dispatch.
+func (s *Scheduler) WithArtifactStore(store artifacts.Store, ttl time.Duration) *Scheduler {
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	s.artifactStore = store
+	s.artifactGetURLTTL = ttl
 	return s
 }
 
@@ -193,7 +213,13 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, err := BuildAssignment(run, job, materials, secretValues)
+		downloads, depErr := s.resolveArtifactDeps(ctx, run, job.Name)
+		if depErr != nil {
+			s.failJobWithError(ctx, job, fmt.Sprintf("artifact deps: %v", depErr))
+			continue
+		}
+
+		assign, err := BuildAssignment(run, job, materials, secretValues, downloads)
 		if err != nil {
 			s.log.Warn("scheduler: build assignment", "job_id", job.ID, "err", err)
 			continue
@@ -272,6 +298,57 @@ func (s *Scheduler) resolveJobSecrets(ctx context.Context, run store.RunForDispa
 		return nil, fmt.Errorf("secrets not set on project: %v", missing)
 	}
 	return resolved, nil
+}
+
+// resolveArtifactDeps turns the job's needs_artifacts entries into a
+// list of signed-URL download tickets. Fails when: no artifact backend
+// is configured but the job declares deps, an upstream job produced
+// zero ready artefacts (matching the optional paths filter), or
+// signing errors. Empty return for a job with no deps.
+func (s *Scheduler) resolveArtifactDeps(ctx context.Context, run store.RunForDispatch, jobName string) ([]*gocdnextv1.ArtifactDownload, error) {
+	deps, err := JobArtifactDepsFromDefinition(run.Definition, jobName)
+	if err != nil {
+		return nil, err
+	}
+	if len(deps) == 0 {
+		return nil, nil
+	}
+	if s.artifactStore == nil {
+		return nil, fmt.Errorf("needs_artifacts declared but no artifact backend is configured on this server")
+	}
+
+	out := make([]*gocdnextv1.ArtifactDownload, 0)
+	for _, dep := range deps {
+		rows, err := s.store.ListReadyArtifactsByRunAndJob(ctx, run.ID, dep.FromJob, dep.Paths)
+		if err != nil {
+			return nil, fmt.Errorf("lookup artefacts from %q: %w", dep.FromJob, err)
+		}
+		if len(rows) == 0 {
+			if len(dep.Paths) == 0 {
+				return nil, fmt.Errorf("no ready artefacts found from job %q", dep.FromJob)
+			}
+			return nil, fmt.Errorf("no ready artefacts from job %q matching paths %v", dep.FromJob, dep.Paths)
+		}
+		dest := dep.Dest
+		if dest == "" {
+			dest = "./"
+		}
+		for _, a := range rows {
+			signed, err := s.artifactStore.SignedGetURL(ctx, a.StorageKey, s.artifactGetURLTTL)
+			if err != nil {
+				return nil, fmt.Errorf("sign get url for %q: %w", a.Path, err)
+			}
+			out = append(out, &gocdnextv1.ArtifactDownload{
+				Path:          a.Path,
+				StorageKey:    a.StorageKey,
+				GetUrl:        signed.URL,
+				Dest:          dest,
+				ContentSha256: a.ContentSHA256,
+				FromJob:       a.JobName,
+			})
+		}
+	}
+	return out, nil
 }
 
 // failJobWithError marks a still-queued job as failed (with cascade to

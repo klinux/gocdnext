@@ -137,6 +137,16 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 	if jd.Artifacts != nil {
 		j.ArtifactPaths = append([]string(nil), jd.Artifacts.Paths...)
 	}
+	for _, na := range jd.NeedsArtifacts {
+		if na.FromJob == "" {
+			return domain.Job{}, fmt.Errorf("job %q: needs_artifacts entry missing from_job", name)
+		}
+		j.ArtifactDeps = append(j.ArtifactDeps, domain.ArtifactDep{
+			FromJob: na.FromJob,
+			Paths:   append([]string(nil), na.Paths...),
+			Dest:    na.Dest,
+		})
+	}
 
 	for _, line := range jd.Script {
 		j.Tasks = append(j.Tasks, domain.Task{Script: line})

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +93,22 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		}
 	}
 
+	// Dependency artefacts from upstream jobs land BEFORE tasks run —
+	// the whole point of the download is to feed `script:`. A bad
+	// download (http error, sha mismatch, tar escape) fails the job
+	// cleanly with the producing job's name so the user knows where to
+	// look. We don't mask the error message here; artefact paths are
+	// declared config, not secrets.
+	for _, dl := range a.GetArtifactDownloads() {
+		if err := r.downloadArtifact(ctx, workDir, dl, a, &seq); err != nil {
+			log.Warn("runner: artifact download failed",
+				"err", err, "path", dl.GetPath(), "from", dl.GetFromJob())
+			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
+				fmt.Sprintf("artifact %s (from %s): %v", dl.GetPath(), dl.GetFromJob(), err))
+			return
+		}
+	}
+
 	for i, task := range a.GetTasks() {
 		script := task.GetScript()
 		if script == "" {
@@ -119,6 +136,39 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 
 	log.Info("runner: execute ok", "artifacts", len(refs))
 	r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs)
+}
+
+// downloadArtifact pulls a single upstream artefact, verifies its
+// sha256, and untars it into `dl.dest` (relative to the workspace).
+// net/http is plenty for the signed URL fetch — no retry yet; we fail
+// the job and let the reaper re-queue.
+func (r *Runner) downloadArtifact(ctx context.Context, workDir string, dl *gocdnextv1.ArtifactDownload, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {
+	r.emitLog(a, seq, "stdout", fmt.Sprintf("$ download artifact %s (from %s)", dl.GetPath(), dl.GetFromJob()))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dl.GetGetUrl(), nil)
+	if err != nil {
+		return fmt.Errorf("build GET: %w", err)
+	}
+	client := &http.Client{Timeout: 30 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http GET: %w", err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("GET returned %s", resp.Status)
+	}
+
+	dest := dl.GetDest()
+	if dest == "" {
+		dest = "./"
+	}
+	destAbs := filepath.Join(workDir, dest)
+	if err := UntarGz(destAbs, resp.Body, dl.GetContentSha256()); err != nil {
+		return err
+	}
+	r.emitLog(a, seq, "stdout", fmt.Sprintf("  unpacked into %s", dest))
+	return nil
 }
 
 // uploadArtifacts tars + uploads each declared path. Errors are

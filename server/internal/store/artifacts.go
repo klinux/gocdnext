@@ -178,6 +178,47 @@ func (s *Store) ListArtifactsWithJobByRun(ctx context.Context, runID uuid.UUID) 
 	return out, nil
 }
 
+// ListReadyArtifactsByRunAndJob returns only the ready artifacts a
+// given job name produced within a run. Optional paths filter narrows
+// further — empty = all that job's artefacts. Used by the scheduler
+// when resolving `needs_artifacts` for a downstream job.
+func (s *Store) ListReadyArtifactsByRunAndJob(ctx context.Context, runID uuid.UUID, jobName string, paths []string) ([]ArtifactWithJob, error) {
+	if paths == nil {
+		paths = []string{}
+	}
+	rows, err := s.q.ListReadyArtifactsByRunAndJobName(ctx, db.ListReadyArtifactsByRunAndJobNameParams{
+		RunID:   pgUUID(runID),
+		Name:    jobName,
+		Column3: paths,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list ready artifacts by job: %w", err)
+	}
+	out := make([]ArtifactWithJob, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ArtifactWithJob{
+			Artifact: Artifact{
+				ID:            fromPgUUID(r.ID),
+				RunID:         fromPgUUID(r.RunID),
+				JobRunID:      fromPgUUID(r.JobRunID),
+				PipelineID:    fromPgUUID(r.PipelineID),
+				ProjectID:     fromPgUUID(r.ProjectID),
+				Path:          r.Path,
+				StorageKey:    r.StorageKey,
+				Status:        r.Status,
+				SizeBytes:     r.SizeBytes,
+				ContentSHA256: r.ContentSha256,
+				ExpiresAt:     pgTimePtr(r.ExpiresAt),
+				PinnedAt:      pgTimePtr(r.PinnedAt),
+				DeletedAt:     pgTimePtr(r.DeletedAt),
+				CreatedAt:     r.CreatedAt.Time,
+			},
+			JobName: r.JobName,
+		})
+	}
+	return out, nil
+}
+
 // JobRunParents returns pipeline_id + project_id + dispatched agent_id
 // for a (job_run_id, run_id) pair, and ErrArtifactNotFound if the job
 // doesn't belong to the claimed run. agent_id is uuid.Nil if the job

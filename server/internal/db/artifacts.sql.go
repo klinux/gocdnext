@@ -356,6 +356,85 @@ func (q *Queries) ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UU
 	return items, nil
 }
 
+const listReadyArtifactsByRunAndJobName = `-- name: ListReadyArtifactsByRunAndJobName :many
+SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
+       a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
+       jr.name AS job_name
+FROM artifacts a
+JOIN job_runs jr ON jr.id = a.job_run_id
+WHERE a.run_id = $1
+  AND jr.name  = $2
+  AND a.status = 'ready'
+  AND a.deleted_at IS NULL
+  AND (cardinality($3::text[]) = 0 OR a.path = ANY($3::text[]))
+ORDER BY a.path
+`
+
+type ListReadyArtifactsByRunAndJobNameParams struct {
+	RunID   pgtype.UUID
+	Name    string
+	Column3 []string
+}
+
+type ListReadyArtifactsByRunAndJobNameRow struct {
+	ID            pgtype.UUID
+	RunID         pgtype.UUID
+	JobRunID      pgtype.UUID
+	PipelineID    pgtype.UUID
+	ProjectID     pgtype.UUID
+	Path          string
+	StorageKey    string
+	Status        string
+	SizeBytes     int64
+	ContentSha256 string
+	ExpiresAt     pgtype.Timestamptz
+	PinnedAt      pgtype.Timestamptz
+	DeletedAt     pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
+	JobName       string
+}
+
+// Returns ready artefacts produced by a specific job name within a run,
+// optionally filtered by a path whitelist. Used by the scheduler when
+// resolving `needs_artifacts` on a downstream job. An empty paths
+// array returns all of that job's artefacts.
+func (q *Queries) ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error) {
+	rows, err := q.db.Query(ctx, listReadyArtifactsByRunAndJobName, arg.RunID, arg.Name, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReadyArtifactsByRunAndJobNameRow{}
+	for rows.Next() {
+		var i ListReadyArtifactsByRunAndJobNameRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.JobRunID,
+			&i.PipelineID,
+			&i.ProjectID,
+			&i.Path,
+			&i.StorageKey,
+			&i.Status,
+			&i.SizeBytes,
+			&i.ContentSha256,
+			&i.ExpiresAt,
+			&i.PinnedAt,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.JobName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markArtifactReady = `-- name: MarkArtifactReady :execrows
 UPDATE artifacts
 SET status = 'ready',

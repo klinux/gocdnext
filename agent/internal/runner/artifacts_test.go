@@ -98,6 +98,69 @@ func TestTarGzPath_Missing(t *testing.T) {
 	}
 }
 
+func TestUntarGz_RoundTrip(t *testing.T) {
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "bin", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(src, "bin", "core"), []byte("hello"), 0o644)
+	_ = os.WriteFile(filepath.Join(src, "bin", "sub", "tool"), []byte("world!"), 0o755)
+
+	var buf bytes.Buffer
+	sha, _, err := runner.TarGzPath(src, "bin", &buf)
+	if err != nil {
+		t.Fatalf("tar: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := runner.UntarGz(dest, &buf, sha); err != nil {
+		t.Fatalf("untar: %v", err)
+	}
+
+	got1, _ := os.ReadFile(filepath.Join(dest, "bin", "core"))
+	if string(got1) != "hello" {
+		t.Errorf("core: %q", got1)
+	}
+	got2, _ := os.ReadFile(filepath.Join(dest, "bin", "sub", "tool"))
+	if string(got2) != "world!" {
+		t.Errorf("tool: %q", got2)
+	}
+}
+
+func TestUntarGz_ShaMismatchErrors(t *testing.T) {
+	src := t.TempDir()
+	_ = os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644)
+	var buf bytes.Buffer
+	if _, _, err := runner.TarGzPath(src, "f", &buf); err != nil {
+		t.Fatal(err)
+	}
+	// wrong sha
+	err := runner.UntarGz(t.TempDir(), &buf, "deadbeef")
+	if err == nil {
+		t.Fatal("expected sha mismatch error")
+	}
+}
+
+func TestUntarGz_RejectsPathTraversal(t *testing.T) {
+	// Hand-craft a malicious tar with "../escape" entry; untar must
+	// refuse rather than write outside dest.
+	var tarBuf bytes.Buffer
+	gz := gzip.NewWriter(&tarBuf)
+	tw := tar.NewWriter(gz)
+	hdr := &tar.Header{
+		Name: "../escape.txt", Mode: 0o644, Size: int64(len("pwn")),
+		Typeflag: tar.TypeReg,
+	}
+	_ = tw.WriteHeader(hdr)
+	_, _ = tw.Write([]byte("pwn"))
+	_ = tw.Close()
+	_ = gz.Close()
+
+	if err := runner.UntarGz(t.TempDir(), &tarBuf, ""); err == nil {
+		t.Fatal("expected path traversal error")
+	}
+}
+
 func TestTarGzPath_ShaDeterministicForSameBytes(t *testing.T) {
 	// Same content tarred twice must *not* necessarily have the same sha
 	// (gzip embeds mtime by default) — document the known limit via test.
