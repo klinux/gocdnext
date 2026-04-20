@@ -9,7 +9,20 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# ---- defaults (override by exporting before `make dev`) --------------
+# ---- .env (optional; shell-exported vars still win) ------------------
+# `set -a` auto-exports every assignment until `set +a`, so variables
+# declared in .env reach child processes (server, agent, web, goose)
+# without us listing them one by one. Missing file = silent no-op so
+# first-time clones still work with the defaults below.
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  echo "[dev] loading .env"
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/.env"
+  set +a
+fi
+
+# ---- defaults (override by exporting or via .env) --------------------
 
 export GOCDNEXT_DATABASE_URL="${GOCDNEXT_DATABASE_URL:-postgres://gocdnext:gocdnext@localhost:5432/gocdnext?sslmode=disable}"
 export GOCDNEXT_HTTP_ADDR="${GOCDNEXT_HTTP_ADDR:-:8153}"
@@ -31,6 +44,22 @@ export GOCDNEXT_AGENT_CAPACITY="${GOCDNEXT_AGENT_CAPACITY:-2}"
 export GOCDNEXT_API_URL="${GOCDNEXT_API_URL:-http://localhost:8153}"
 
 # ---- bootstrap ------------------------------------------------------
+
+# Port collision guard. If 8153 / 8154 / 3000 are already bound, Next.js
+# silently hops to another port and the user ends up staring at a stale
+# server they forgot to kill. Fail loud instead.
+check_port_free() {
+  local port="$1" label="$2"
+  if ss -ltn "( sport = :$port )" 2>/dev/null | tail -n +2 | grep -q .; then
+    echo "[dev] port $port ($label) is already in use." >&2
+    echo "[dev] process: $(ss -ltnp "( sport = :$port )" 2>/dev/null | tail -n +2 | head -1)" >&2
+    echo "[dev] run \`make stop\`, or kill the offending process, and retry." >&2
+    exit 1
+  fi
+}
+check_port_free 8153 "server HTTP"
+check_port_free 8154 "server gRPC"
+check_port_free 3000 "web"
 
 mkdir -p .dev/artifacts .dev/logs .dev/tmp/server .dev/tmp/agent
 PIDS_FILE="$REPO_ROOT/.dev/pids"

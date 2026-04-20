@@ -3,9 +3,24 @@
 BIN_DIR := bin
 GO := go
 
+# Pull local dev config in so targets like migrate-up + admin-* see
+# GOCDNEXT_DATABASE_URL without the operator having to export it by
+# hand. `-include` = no error if the file is missing (fresh clones,
+# CI with pure env). `export` forwards every var to recipe shells.
+-include .env
+export
+
 ## help: print this help
 help:
 	@awk '/^## / {sub(/^## */, ""); sub(/: /, ":\t", $$0); printf "  %s\n", $$0}' $(MAKEFILE_LIST)
+
+## env-setup: copy .env.example to .env (first-time onboarding)
+env-setup:
+	@if [ -f .env ]; then \
+		echo ".env already exists — not overwriting"; \
+	else \
+		cp .env.example .env && echo "created .env from .env.example — edit secrets before \`make dev\`"; \
+	fi
 
 ## build: build server, agent and cli
 build:
@@ -53,4 +68,18 @@ migrate-up:
 migrate-status:
 	cd server && goose -dir migrations postgres "$${GOCDNEXT_DATABASE_URL}" status
 
-.PHONY: help build test lint proto dev stop db-up db-down migrate-up migrate-status
+## admin-create-user: seed or rotate a local user; usage: make admin-create-user EMAIL=you@org.com [ROLE=admin]
+admin-create-user: build
+	@if [ -z "$(EMAIL)" ]; then \
+		echo "usage: make admin-create-user EMAIL=you@org.com [ROLE=admin|user|viewer]"; exit 1; \
+	fi
+	./$(BIN_DIR)/gocdnext admin create-user --email "$(EMAIL)" --role "$(or $(ROLE),admin)"
+
+## admin-reset-password: rotate a local user's password; usage: make admin-reset-password EMAIL=you@org.com
+admin-reset-password: build
+	@if [ -z "$(EMAIL)" ]; then \
+		echo "usage: make admin-reset-password EMAIL=you@org.com"; exit 1; \
+	fi
+	./$(BIN_DIR)/gocdnext admin reset-password --email "$(EMAIL)"
+
+.PHONY: help env-setup build test lint proto dev stop db-up db-down migrate-up migrate-status admin-create-user admin-reset-password
