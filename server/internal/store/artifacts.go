@@ -219,6 +219,49 @@ func (s *Store) ListReadyArtifactsByRunAndJob(ctx context.Context, runID uuid.UU
 	return out, nil
 }
 
+// ClaimedArtifact is what the sweeper iterates over: enough to call
+// Store.Delete + RemoveArtifactRow. SizeBytes flows through so
+// observability can report bytes freed per tick.
+type ClaimedArtifact struct {
+	ID         uuid.UUID
+	StorageKey string
+	SizeBytes  int64
+}
+
+// ClaimArtifactsForSweep atomically marks a batch of expired / stale-
+// deleting artefacts for removal, returning their storage keys. Caller
+// deletes each from the backend, then calls RemoveArtifactRow. grace
+// is the window after which a row stuck in 'deleting' is eligible for
+// retry (typical 5 minutes). limit caps the batch.
+func (s *Store) ClaimArtifactsForSweep(ctx context.Context, limit int, graceMinutes int) ([]ClaimedArtifact, error) {
+	rows, err := s.q.ClaimArtifactsForSweep(ctx, db.ClaimArtifactsForSweepParams{
+		Limit:   int32(limit),
+		Column2: int32(graceMinutes),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: claim artifacts: %w", err)
+	}
+	out := make([]ClaimedArtifact, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ClaimedArtifact{
+			ID:         fromPgUUID(r.ID),
+			StorageKey: r.StorageKey,
+			SizeBytes:  r.SizeBytes,
+		})
+	}
+	return out, nil
+}
+
+// RemoveArtifactRow deletes the DB row after the sweeper confirmed the
+// storage object is gone. Separate from the storage delete so we can
+// retry independently.
+func (s *Store) RemoveArtifactRow(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.q.RemoveArtifactRow(ctx, pgUUID(id)); err != nil {
+		return fmt.Errorf("store: remove artifact row: %w", err)
+	}
+	return nil
+}
+
 // RunUpstreamContext is what the scheduler needs to resolve a
 // cross-run `needs_artifacts` entry: which run produced the artifacts
 // (because fanout downstream runs carry the upstream's id in

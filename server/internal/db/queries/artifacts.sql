@@ -86,6 +86,44 @@ WHERE a.run_id = $1
   AND (cardinality($3::text[]) = 0 OR a.path = ANY($3::text[]))
 ORDER BY a.path;
 
+-- name: ClaimArtifactsForSweep :many
+-- Atomically marks a bounded batch of artefacts as 'deleting' and
+-- returns their storage keys so the sweeper can call Store.Delete and
+-- then remove the DB row.
+--
+-- Two populations get claimed:
+--   1) Freshly-expired rows: status='ready' AND expires_at < now() AND
+--      not pinned. Standard TTL sweep.
+--   2) Rows left in 'deleting' for longer than the grace window — the
+--      previous sweeper crashed between "marked deleting" and "storage
+--      delete + row removed". We pick those up and retry idempotently.
+--
+-- FOR UPDATE SKIP LOCKED makes this safe to run from multiple
+-- schedulers/sweepers at once; each gets a disjoint batch.
+UPDATE artifacts
+SET status = 'deleting', deleted_at = NOW()
+WHERE id IN (
+    SELECT id FROM artifacts
+    WHERE pinned_at IS NULL
+      AND (
+          (status = 'ready'
+              AND expires_at IS NOT NULL
+              AND expires_at < NOW())
+          OR
+          (status = 'deleting'
+              AND deleted_at < NOW() - make_interval(mins => $2::int))
+      )
+    ORDER BY COALESCE(expires_at, deleted_at)
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, storage_key, size_bytes;
+
+-- name: RemoveArtifactRow :execrows
+-- Called by the sweeper AFTER Store.Delete succeeded (or the object
+-- was already gone). Removes the DB row.
+DELETE FROM artifacts WHERE id = $1;
+
 -- name: GetRunUpstreamContext :one
 -- For a downstream run, extracts upstream_run_id + upstream pipeline
 -- name from cause_detail JSON. Empty string / null UUID when this run

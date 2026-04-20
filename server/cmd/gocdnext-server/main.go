@@ -27,6 +27,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -103,6 +104,7 @@ func main() {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
 	reaper := scheduler.NewReaper(st, logger)
+	sweeper := retention.New(st, artifactStore, logger)
 
 	grpcServer := grpc.NewServer()
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
@@ -174,6 +176,12 @@ func main() {
 	go func() {
 		if err := reaper.Run(ctx); err != nil {
 			logger.Error("reaper exited", "err", err)
+		}
+	}()
+
+	go func() {
+		if err := sweeper.Run(ctx); err != nil {
+			logger.Error("artifact sweeper exited", "err", err)
 		}
 	}()
 

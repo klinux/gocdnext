@@ -11,6 +11,71 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimArtifactsForSweep = `-- name: ClaimArtifactsForSweep :many
+UPDATE artifacts
+SET status = 'deleting', deleted_at = NOW()
+WHERE id IN (
+    SELECT id FROM artifacts
+    WHERE pinned_at IS NULL
+      AND (
+          (status = 'ready'
+              AND expires_at IS NOT NULL
+              AND expires_at < NOW())
+          OR
+          (status = 'deleting'
+              AND deleted_at < NOW() - make_interval(mins => $2::int))
+      )
+    ORDER BY COALESCE(expires_at, deleted_at)
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, storage_key, size_bytes
+`
+
+type ClaimArtifactsForSweepParams struct {
+	Limit   int32
+	Column2 int32
+}
+
+type ClaimArtifactsForSweepRow struct {
+	ID         pgtype.UUID
+	StorageKey string
+	SizeBytes  int64
+}
+
+// Atomically marks a bounded batch of artefacts as 'deleting' and
+// returns their storage keys so the sweeper can call Store.Delete and
+// then remove the DB row.
+//
+// Two populations get claimed:
+//  1. Freshly-expired rows: status='ready' AND expires_at < now() AND
+//     not pinned. Standard TTL sweep.
+//  2. Rows left in 'deleting' for longer than the grace window — the
+//     previous sweeper crashed between "marked deleting" and "storage
+//     delete + row removed". We pick those up and retry idempotently.
+//
+// FOR UPDATE SKIP LOCKED makes this safe to run from multiple
+// schedulers/sweepers at once; each gets a disjoint batch.
+func (q *Queries) ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifactsForSweepParams) ([]ClaimArtifactsForSweepRow, error) {
+	rows, err := q.db.Query(ctx, claimArtifactsForSweep, arg.Limit, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimArtifactsForSweepRow{}
+	for rows.Next() {
+		var i ClaimArtifactsForSweepRow
+		if err := rows.Scan(&i.ID, &i.StorageKey, &i.SizeBytes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getArtifactByStorageKey = `-- name: GetArtifactByStorageKey :one
 SELECT id, run_id, job_run_id, pipeline_id, project_id,
        path, storage_key, status, size_bytes, content_sha256,
@@ -477,6 +542,20 @@ type MarkArtifactReadyParams struct {
 // calls update nothing (status already 'ready'), returning 0 rows.
 func (q *Queries) MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markArtifactReady, arg.StorageKey, arg.SizeBytes, arg.ContentSha256)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const removeArtifactRow = `-- name: RemoveArtifactRow :execrows
+DELETE FROM artifacts WHERE id = $1
+`
+
+// Called by the sweeper AFTER Store.Delete succeeded (or the object
+// was already gone). Removes the DB row.
+func (q *Queries) RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, removeArtifactRow, id)
 	if err != nil {
 		return 0, err
 	}

@@ -18,6 +18,20 @@ type Querier interface {
 	// When a stage fails we stop dispatching the rest of the run. Running work
 	// stays untouched; the agent will still report its outcome.
 	CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID) error
+	// Atomically marks a bounded batch of artefacts as 'deleting' and
+	// returns their storage keys so the sweeper can call Store.Delete and
+	// then remove the DB row.
+	//
+	// Two populations get claimed:
+	//   1) Freshly-expired rows: status='ready' AND expires_at < now() AND
+	//      not pinned. Standard TTL sweep.
+	//   2) Rows left in 'deleting' for longer than the grace window — the
+	//      previous sweeper crashed between "marked deleting" and "storage
+	//      delete + row removed". We pick those up and retry idempotently.
+	//
+	// FOR UPDATE SKIP LOCKED makes this safe to run from multiple
+	// schedulers/sweepers at once; each gets a disjoint batch.
+	ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifactsForSweepParams) ([]ClaimArtifactsForSweepRow, error)
 	// Flips a queued or running job to its terminal state. Idempotent: matches
 	// only non-terminal rows. Accepting 'queued' lets the scheduler fail a job
 	// at dispatch time (e.g. unresolved secret) without first flipping it to
@@ -149,6 +163,9 @@ type Querier interface {
 	// the retry cap. Returns the new attempt number; ErrNoRows signals the caller
 	// should take a different code path (failed-at-max or already-handled).
 	ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error)
+	// Called by the sweeper AFTER Store.Delete succeeded (or the object
+	// was already gone). Removes the DB row.
+	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
