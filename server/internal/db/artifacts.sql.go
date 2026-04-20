@@ -288,6 +288,74 @@ func (q *Queries) ListArtifactsByRun(ctx context.Context, runID pgtype.UUID) ([]
 	return items, nil
 }
 
+const listArtifactsWithJobByRun = `-- name: ListArtifactsWithJobByRun :many
+SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
+       a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
+       jr.name AS job_name
+FROM artifacts a
+JOIN job_runs jr ON jr.id = a.job_run_id
+WHERE a.run_id = $1 AND a.deleted_at IS NULL
+ORDER BY jr.name, a.path
+`
+
+type ListArtifactsWithJobByRunRow struct {
+	ID            pgtype.UUID
+	RunID         pgtype.UUID
+	JobRunID      pgtype.UUID
+	PipelineID    pgtype.UUID
+	ProjectID     pgtype.UUID
+	Path          string
+	StorageKey    string
+	Status        string
+	SizeBytes     int64
+	ContentSha256 string
+	ExpiresAt     pgtype.Timestamptz
+	PinnedAt      pgtype.Timestamptz
+	DeletedAt     pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
+	JobName       string
+}
+
+// Same as ListArtifactsByRun but joined with job_runs.name so the UI
+// can group artefacts by the job that produced them without an extra
+// per-artifact lookup. Returns ALL statuses — callers filter as needed.
+func (q *Queries) ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UUID) ([]ListArtifactsWithJobByRunRow, error) {
+	rows, err := q.db.Query(ctx, listArtifactsWithJobByRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListArtifactsWithJobByRunRow{}
+	for rows.Next() {
+		var i ListArtifactsWithJobByRunRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.JobRunID,
+			&i.PipelineID,
+			&i.ProjectID,
+			&i.Path,
+			&i.StorageKey,
+			&i.Status,
+			&i.SizeBytes,
+			&i.ContentSha256,
+			&i.ExpiresAt,
+			&i.PinnedAt,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.JobName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markArtifactReady = `-- name: MarkArtifactReady :execrows
 UPDATE artifacts
 SET status = 'ready',

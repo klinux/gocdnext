@@ -97,6 +97,10 @@ type Querier interface {
 	// Only returns ready artefacts — pending/deleting must not leak as
 	// dependable to downstream jobs.
 	ListArtifactsByRun(ctx context.Context, runID pgtype.UUID) ([]ListArtifactsByRunRow, error)
+	// Same as ListArtifactsByRun but joined with job_runs.name so the UI
+	// can group artefacts by the job that produced them without an extra
+	// per-artifact lookup. Returns ALL statuses — callers filter as needed.
+	ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UUID) ([]ListArtifactsWithJobByRunRow, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
 	// running work. The scheduler does needs-satisfaction checking in Go so the
 	// query stays readable; the stage gate is the only SQL-level constraint.

@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StageSection } from "@/components/runs/stage-section";
+import { RunArtifacts } from "@/components/runs/run-artifacts.client";
 import { durationBetween, formatDurationSeconds } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
@@ -129,6 +130,19 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           data.stages.map((s) => <StageSection key={s.id} stage={s} />)
         )}
       </div>
+
+      <Separator />
+
+      <section aria-label="Artifacts">
+        <h3 className="mb-3 text-lg font-semibold tracking-tight">
+          Artifacts
+        </h3>
+        <RunArtifacts
+          runId={runId}
+          runStatus={data.status}
+          apiBaseURL={apiBaseURL}
+        />
+      </section>
     </section>
   );
 }

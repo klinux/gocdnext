@@ -55,6 +55,19 @@ WHERE run_id = $1 AND status = 'ready'
   AND deleted_at IS NULL
 ORDER BY created_at;
 
+-- name: ListArtifactsWithJobByRun :many
+-- Same as ListArtifactsByRun but joined with job_runs.name so the UI
+-- can group artefacts by the job that produced them without an extra
+-- per-artifact lookup. Returns ALL statuses — callers filter as needed.
+SELECT a.id, a.run_id, a.job_run_id, a.pipeline_id, a.project_id,
+       a.path, a.storage_key, a.status, a.size_bytes, a.content_sha256,
+       a.expires_at, a.pinned_at, a.deleted_at, a.created_at,
+       jr.name AS job_name
+FROM artifacts a
+JOIN job_runs jr ON jr.id = a.job_run_id
+WHERE a.run_id = $1 AND a.deleted_at IS NULL
+ORDER BY jr.name, a.path;
+
 -- name: GetJobRunParents :one
 -- Resolves pipeline_id + project_id + agent_id for a (job_run_id,
 -- run_id) pair. Used by the RequestArtifactUpload handler to authorise

@@ -89,6 +89,9 @@ func main() {
 		WithConfigFetcher(&webhook.GitHubConfigFetcher{})
 	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
 	runsHandler := runsapi.NewHandler(st, logger)
+	if artifactStore != nil {
+		runsHandler = runsHandler.WithArtifactStore(artifactStore)
+	}
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30)
@@ -127,6 +130,7 @@ func main() {
 	r.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
 	r.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 	r.Get("/api/v1/runs/{id}", runsHandler.Detail)
+	r.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

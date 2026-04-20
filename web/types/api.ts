@@ -88,3 +88,17 @@ export type Secret = {
 export type SecretsList = {
   secrets: Secret[];
 };
+
+export type RunArtifact = {
+  id: string;
+  job_run_id: string;
+  job_name: string;
+  path: string;
+  status: "pending" | "ready" | "deleting";
+  size_bytes: number;
+  content_sha256: string;
+  created_at: string;
+  expires_at?: string;
+  download_url?: string;
+  download_url_expires_at?: string;
+};
