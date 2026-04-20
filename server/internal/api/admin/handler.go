@@ -15,6 +15,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
 const (
@@ -22,33 +23,37 @@ const (
 	maxWebhooksLimit     int32 = 200
 )
 
-// IntegrationState is what main.go reports about the GitHub integration
-// that's already wired at boot. Handed to the handler so the admin UI
-// can show "GitHub App configured: yes/no" without poking at env vars.
-type IntegrationState struct {
-	GitHubAppConfigured bool
-	WebhookTokenSet     bool
-	PublicBaseSet       bool
-	ChecksReporterOn    bool
-	AutoRegisterOn      bool
+// WiringState captures the parts of the integration summary that
+// never change at runtime (env-derived wiring: webhook token,
+// public base, checks reporter presence). The dynamic bits
+// (GitHub App configured / auto-register on) are recomputed on
+// every /integrations/github request by reading the live
+// vcs.Registry — otherwise the summary freezes at boot and the
+// admin UI lies after a CRUD write.
+type WiringState struct {
+	WebhookTokenSet  bool
+	PublicBaseSet    bool
+	ChecksReporterOn bool
 }
 
 // Handler owns the /api/v1/admin/* routes.
 type Handler struct {
-	store        *store.Store
-	sweeper      *retention.Sweeper
-	integrations IntegrationState
-	log          *slog.Logger
+	store   *store.Store
+	sweeper *retention.Sweeper
+	vcs     *vcs.Registry
+	wiring  WiringState
+	log     *slog.Logger
 }
 
-// NewHandler wires the admin handler. sweeper may be nil — retention
-// endpoint will then report disabled. integrations is a value snapshot
-// captured at server boot.
-func NewHandler(s *store.Store, sweeper *retention.Sweeper, integrations IntegrationState, log *slog.Logger) *Handler {
+// NewHandler wires the admin handler. sweeper may be nil —
+// retention endpoint will then report disabled. vcsRegistry is
+// the shared registry; the handler reads it live so a CRUD write
+// is visible to the wiring-summary page immediately.
+func NewHandler(s *store.Store, sweeper *retention.Sweeper, vcsRegistry *vcs.Registry, wiring WiringState, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{store: s, sweeper: sweeper, integrations: integrations, log: log}
+	return &Handler{store: s, sweeper: sweeper, vcs: vcsRegistry, wiring: wiring, log: log}
 }
 
 // Retention handles GET /api/v1/admin/retention. Returns the sweeper
@@ -193,16 +198,20 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 // IntegrationGitHub handles GET /api/v1/admin/integrations/github.
 // Reports only booleans (the config values themselves can be secret).
+// GitHubAppConfigured + AutoRegisterOn are live — they read the
+// current vcs.Registry so a CRUD write via /integrations/vcs is
+// immediately reflected here without a server restart.
 func (h *Handler) IntegrationGitHub(w http.ResponseWriter, r *http.Request) {
 	if !methodGET(w, r) {
 		return
 	}
+	appActive := h.vcs != nil && h.vcs.GitHubApp() != nil
 	writeJSON(w, map[string]any{
-		"github_app_configured": h.integrations.GitHubAppConfigured,
-		"webhook_token_set":     h.integrations.WebhookTokenSet,
-		"public_base_set":       h.integrations.PublicBaseSet,
-		"checks_reporter_on":    h.integrations.ChecksReporterOn,
-		"auto_register_on":      h.integrations.AutoRegisterOn,
+		"github_app_configured": appActive,
+		"webhook_token_set":     h.wiring.WebhookTokenSet,
+		"public_base_set":       h.wiring.PublicBaseSet,
+		"checks_reporter_on":    h.wiring.ChecksReporterOn,
+		"auto_register_on":      appActive && h.wiring.PublicBaseSet && h.wiring.WebhookTokenSet,
 	})
 }
 

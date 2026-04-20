@@ -15,15 +15,29 @@ import (
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
+	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
+
+func testAppClient(t *testing.T) *ghscm.AppClient {
+	t.Helper()
+	c, err := ghscm.NewAppClient(ghscm.AppConfig{
+		AppID:         1,
+		PrivateKeyPEM: []byte(realPEM(t)),
+	})
+	if err != nil {
+		t.Fatalf("app client: %v", err)
+	}
+	return c
+}
 
 func TestAdminHandler_Retention(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 
 	sweeper := retention.New(s, nil, quietLogger())
-	h := adminapi.NewHandler(s, sweeper, adminapi.IntegrationState{}, quietLogger())
+	h := adminapi.NewHandler(s, sweeper, nil, adminapi.WiringState{}, quietLogger())
 	srv := mount(h)
 
 	resp := httpGet(t, srv, "/api/v1/admin/retention")
@@ -67,7 +81,7 @@ func TestAdminHandler_WebhooksList(t *testing.T) {
 		}
 	}
 
-	h := adminapi.NewHandler(s, nil, adminapi.IntegrationState{}, quietLogger())
+	h := adminapi.NewHandler(s, nil, nil, adminapi.WiringState{}, quietLogger())
 	srv := mount(h)
 
 	// No filters → all 4.
@@ -118,7 +132,7 @@ func TestAdminHandler_WebhookDetail(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	h := adminapi.NewHandler(s, nil, adminapi.IntegrationState{}, quietLogger())
+	h := adminapi.NewHandler(s, nil, nil, adminapi.WiringState{}, quietLogger())
 	srv := mount(h)
 
 	resp := httpGet(t, srv, "/api/v1/admin/webhooks/"+strconv.FormatInt(id, 10))
@@ -149,12 +163,16 @@ func TestAdminHandler_WebhookDetail(t *testing.T) {
 }
 
 func TestAdminHandler_IntegrationGitHub(t *testing.T) {
-	h := adminapi.NewHandler(nil, nil, adminapi.IntegrationState{
-		GitHubAppConfigured: true,
-		WebhookTokenSet:     true,
-		PublicBaseSet:       false,
-		ChecksReporterOn:    true,
-		AutoRegisterOn:      false,
+	// Registry carries an active app via a direct Replace — this
+	// exercises the live-lookup path that the bug fix introduced.
+	reg := vcs.New()
+	reg.Replace(testAppClient(t), []vcs.Integration{{
+		Name: "env", Kind: "github_app", Enabled: true, Source: vcs.SourceEnv,
+	}})
+	h := adminapi.NewHandler(nil, nil, reg, adminapi.WiringState{
+		WebhookTokenSet:  true,
+		PublicBaseSet:    false,
+		ChecksReporterOn: true,
 	}, quietLogger())
 	srv := mount(h)
 

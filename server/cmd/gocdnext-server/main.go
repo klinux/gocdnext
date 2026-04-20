@@ -178,16 +178,16 @@ func main() {
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
 		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes)
 
-	// IntegrationState snapshot reads through the registry so the
-	// summary card on /settings/integrations reflects env OR DB
-	// configuration uniformly.
-	ghAppPresent := vcsRegistry.GitHubApp() != nil
-	adminHandler := adminapi.NewHandler(st, sweeper, adminapi.IntegrationState{
-		GitHubAppConfigured: ghAppPresent,
-		WebhookTokenSet:     cfg.WebhookToken != "",
-		PublicBaseSet:       cfg.PublicBase != "",
-		ChecksReporterOn:    checksReporter != nil,
-		AutoRegisterOn:      ghAppPresent && cfg.PublicBase != "" && cfg.WebhookToken != "",
+	// WiringState carries the env-derived wiring only. The
+	// dynamic bits (GitHub App active, auto-register effective)
+	// are recomputed on each request via the vcs.Registry the
+	// handler holds — otherwise the summary freezes at boot and
+	// an admin who just saved a VCS integration sees a stale
+	// "off" on the next page load.
+	adminHandler := adminapi.NewHandler(st, sweeper, vcsRegistry, adminapi.WiringState{
+		WebhookTokenSet:  cfg.WebhookToken != "",
+		PublicBaseSet:    cfg.PublicBase != "",
+		ChecksReporterOn: checksReporter != nil,
 	}, logger)
 	// authProvidersHandler + vcsIntegrationsHandler are wired
 	// later (after the cipher + auth registry are ready). Declared
