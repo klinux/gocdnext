@@ -222,6 +222,73 @@ func TestGitHubWebhook_MissingEventHeader(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhook_RecordsDeliveryAudit(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newServer(t, s)
+
+	// 1. Signature-rejected delivery → status=rejected, http_status=401.
+	body := loadFixture(t, "push_main.json")
+	badReq := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(body))
+	badReq.Header.Set("X-GitHub-Event", "push")
+	badReq.Header.Set("X-Hub-Signature-256", "sha256=deadbeef")
+	badReq.Header.Set("X-GitHub-Delivery", "audit-rejected")
+	badReq.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, badReq)
+
+	// 2. No-material delivery → status=ignored, http_status=204.
+	resp := postSigned(t, srv, "push", body)
+	_ = resp.Body.Close()
+
+	// 3. Matched push → status=accepted, http_status=202, material_id set.
+	fp := store.FingerprintFor("https://github.com/gocdnext/gocdnext.git", "main")
+	materialID := seedMaterial(t, pool, fp)
+	resp2 := postSigned(t, srv, "push", body)
+	_ = resp2.Body.Close()
+
+	ctx := context.Background()
+	rows, err := pool.Query(ctx,
+		`SELECT status, http_status, material_id, error
+		 FROM webhook_deliveries
+		 WHERE provider = 'github' AND event = 'push'
+		 ORDER BY id ASC`,
+	)
+	if err != nil {
+		t.Fatalf("query deliveries: %v", err)
+	}
+	defer rows.Close()
+	type rec struct {
+		status string
+		code   int32
+		matID  *uuid.UUID
+		errMsg *string
+	}
+	var got []rec
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.status, &r.code, &r.matID, &r.errMsg); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if len(got) != 3 {
+		t.Fatalf("deliveries = %d, want 3: %+v", len(got), got)
+	}
+	if got[0].status != "rejected" || got[0].code != 401 || got[0].errMsg == nil {
+		t.Fatalf("rejected row = %+v", got[0])
+	}
+	if got[1].status != "ignored" || got[1].code != 204 || got[1].matID != nil {
+		t.Fatalf("ignored row = %+v", got[1])
+	}
+	if got[2].status != "accepted" || got[2].code != 202 {
+		t.Fatalf("accepted row = %+v", got[2])
+	}
+	if got[2].matID == nil || *got[2].matID != materialID {
+		t.Fatalf("accepted row material_id mismatch: got=%v want=%s", got[2].matID, materialID)
+	}
+}
+
 // --- helpers ---
 
 func newServer(t *testing.T, s *store.Store) http.Handler {

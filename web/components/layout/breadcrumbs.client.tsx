@@ -51,6 +51,30 @@ const registry: Record<string, Entry> = {
     label: () => "Secrets",
     href: () => null,
   },
+  settings: {
+    label: () => "Settings",
+    href: () => "/settings",
+  },
+  retention: {
+    label: () => "Retention",
+    href: () => null,
+  },
+  webhooks: {
+    label: () => "Webhooks",
+    href: () => "/settings/webhooks",
+  },
+  health: {
+    label: () => "Health",
+    href: () => null,
+  },
+  integrations: {
+    label: () => "Integrations",
+    href: () => null,
+  },
+  github: {
+    label: () => "GitHub",
+    href: () => null,
+  },
 };
 
 export function RouteBreadcrumbs() {

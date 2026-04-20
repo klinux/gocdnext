@@ -79,7 +79,20 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sc := &statusCapture{ResponseWriter: w}
+	rec := &deliveryRec{
+		provider: "github",
+		event:    event,
+		headers:  headersJSON(r.Header),
+		payload:  json.RawMessage(body),
+		writer:   sc,
+	}
+	defer h.recordDelivery(r.Context(), rec)
+	w = sc
+
 	if err := github.VerifySignature(h.secret, body, signature); err != nil {
+		rec.status = store.WebhookStatusRejected
+		rec.errText = "invalid signature: " + err.Error()
 		h.log.Warn("github webhook: signature rejected", "event", event, "delivery", delivery, "err", err)
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
@@ -89,9 +102,10 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	case "push":
 		// continue below
 	case "pull_request":
-		h.handlePullRequest(w, r, body, delivery)
+		h.handlePullRequest(w, r, body, delivery, rec)
 		return
 	default:
+		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: ignored event", "event", event, "delivery", delivery)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -99,6 +113,8 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 
 	ev, err := github.ParsePushEvent(body)
 	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "parse push: " + err.Error()
 		h.log.Warn("github webhook: parse failed", "delivery", delivery, "err", err)
 		http.Error(w, "invalid push payload: "+err.Error(), http.StatusBadRequest)
 		return
@@ -106,6 +122,7 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 
 	// Branch deletions carry no head commit — nothing to persist.
 	if ev.Deleted || ev.HeadCommit == nil {
+		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: skipping delete/no-head-commit", "delivery", delivery, "ref", ev.Ref)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -140,6 +157,7 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		// tied to this URL+branch), acknowledge with 202 + the outcome so the
 		// caller sees the sync happened. Legacy no-match pushes still 204.
 		if driftOutcome.Attempted {
+			rec.status = store.WebhookStatusAccepted
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -151,14 +169,18 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		rec.status = store.WebhookStatusIgnored
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "material lookup: " + err.Error()
 		h.log.Error("github webhook: material lookup failed", "delivery", delivery, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	rec.materialID = material.ID
 
 	mod := store.Modification{
 		MaterialID:  material.ID,
@@ -172,6 +194,8 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.store.InsertModification(r.Context(), mod)
 	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "insert modification: " + err.Error()
 		h.log.Error("github webhook: insert modification failed", "delivery", delivery, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -206,6 +230,8 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 			TriggeredBy:    "system:webhook",
 		})
 		if err != nil {
+			rec.status = store.WebhookStatusError
+			rec.errText = "create run: " + err.Error()
 			h.log.Error("github webhook: create run failed",
 				"delivery", delivery, "modification_id", res.ID, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -223,6 +249,7 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 			"delivery", delivery, "modification_id", res.ID)
 	}
 
+	rec.status = store.WebhookStatusAccepted
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {

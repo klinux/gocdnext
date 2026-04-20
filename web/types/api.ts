@@ -172,6 +172,72 @@ export type AgentSummary = {
   running_jobs: number;
 };
 
+export type WebhookDeliverySummary = {
+  id: number;
+  provider: string;
+  event: string;
+  material_id?: string;
+  status: "accepted" | "rejected" | "error" | "ignored";
+  http_status: number;
+  error?: string;
+  received_at: string;
+};
+
+export type WebhookDeliveryDetail = WebhookDeliverySummary & {
+  headers?: Record<string, string>;
+  payload?: unknown;
+};
+
+export type WebhookDeliveriesResponse = {
+  deliveries: WebhookDeliverySummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type RetentionSnapshot =
+  | { enabled: false }
+  | {
+      enabled: true;
+      tick: number;
+      batch_size: number;
+      grace_minutes: number;
+      keep_last: number;
+      project_quota_bytes: number;
+      global_quota_bytes: number;
+      last_sweep_at?: string;
+      last_stats: {
+        DemotedKeepLast: number;
+        DemotedProjectCap: number;
+        DemotedGlobalCap: number;
+        Claimed: number;
+        Deleted: number;
+        StorageFailures: number;
+        DBFailures: number;
+        BytesFreed: number;
+      };
+    };
+
+export type AdminHealth = {
+  db_ok: boolean;
+  db_error?: string;
+  agents_online: number;
+  agents_stale: number;
+  agents_offline: number;
+  queued_runs: number;
+  pending_jobs: number;
+  success_rate_7d: number;
+  checked_at: string;
+};
+
+export type GitHubIntegration = {
+  github_app_configured: boolean;
+  webhook_token_set: boolean;
+  public_base_set: boolean;
+  checks_reporter_on: boolean;
+  auto_register_on: boolean;
+};
+
 export type RunArtifact = {
   id: string;
   job_run_id: string;

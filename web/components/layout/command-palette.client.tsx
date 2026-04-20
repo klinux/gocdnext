@@ -86,10 +86,9 @@ export function CommandPalette() {
               <Server className="size-4" />
               Agents
             </CommandItem>
-            <CommandItem disabled>
+            <CommandItem onSelect={() => go("/settings" as Route)}>
               <Settings className="size-4" />
               Settings
-              <CommandShortcut>soon</CommandShortcut>
             </CommandItem>
           </CommandGroup>
           <CommandSeparator />

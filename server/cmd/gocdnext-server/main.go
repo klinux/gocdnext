@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
@@ -170,6 +171,14 @@ func main() {
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
 		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes)
 
+	adminHandler := adminapi.NewHandler(st, sweeper, adminapi.IntegrationState{
+		GitHubAppConfigured: ghApp != nil,
+		WebhookTokenSet:     cfg.WebhookToken != "",
+		PublicBaseSet:       cfg.PublicBase != "",
+		ChecksReporterOn:    checksReporter != nil,
+		AutoRegisterOn:      ghApp != nil && cfg.PublicBase != "" && cfg.WebhookToken != "",
+	}, logger)
+
 	grpcServer := grpc.NewServer()
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
 
@@ -205,6 +214,11 @@ func main() {
 	r.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 	r.Get("/api/v1/agents", dashboardHandler.Agents)
 	r.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
+	r.Get("/api/v1/admin/retention", adminHandler.Retention)
+	r.Get("/api/v1/admin/webhooks", adminHandler.Webhooks)
+	r.Get("/api/v1/admin/webhooks/{id}", adminHandler.WebhookDetail)
+	r.Get("/api/v1/admin/health", adminHandler.Health)
+	r.Get("/api/v1/admin/integrations/github", adminHandler.IntegrationGitHub)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

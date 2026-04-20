@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
@@ -54,6 +55,10 @@ type Sweeper struct {
 	keepLast          int
 	projectQuotaBytes int64
 	globalQuotaBytes  int64
+
+	mu          sync.Mutex
+	lastStats   SweepStats
+	lastSweepAt time.Time
 }
 
 // New wires a Sweeper. nil Store is a programming error (panic via
@@ -270,5 +275,43 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		"bytes_freed", stats.BytesFreed,
 		"storage_failures", stats.StorageFailures,
 		"db_failures", stats.DBFailures)
+
+	s.mu.Lock()
+	s.lastStats = stats
+	s.lastSweepAt = time.Now()
+	s.mu.Unlock()
 	return stats
+}
+
+// Snapshot is the admin-page view of what the sweeper is configured
+// to do and what the last tick produced. Zero LastSweepAt means the
+// sweeper hasn't ticked yet (fresh boot or storage-disabled).
+type Snapshot struct {
+	Enabled           bool          `json:"enabled"`
+	Tick              time.Duration `json:"tick"`
+	BatchSize         int           `json:"batch_size"`
+	GraceMinutes      int           `json:"grace_minutes"`
+	KeepLast          int           `json:"keep_last"`
+	ProjectQuotaBytes int64         `json:"project_quota_bytes"`
+	GlobalQuotaBytes  int64         `json:"global_quota_bytes"`
+	LastSweepAt       time.Time     `json:"last_sweep_at,omitempty"`
+	Last              SweepStats    `json:"last_stats"`
+}
+
+// Snapshot returns the current config + the last tick's stats. Safe
+// to call from an HTTP handler concurrently with Run.
+func (s *Sweeper) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Snapshot{
+		Enabled:           s.storage != nil,
+		Tick:              s.tick,
+		BatchSize:         s.batchSize,
+		GraceMinutes:      s.graceMinutes,
+		KeepLast:          s.keepLast,
+		ProjectQuotaBytes: s.projectQuotaBytes,
+		GlobalQuotaBytes:  s.globalQuotaBytes,
+		LastSweepAt:       s.lastSweepAt,
+		Last:              s.lastStats,
+	}
 }

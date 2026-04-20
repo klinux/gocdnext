@@ -46,7 +46,7 @@ const primaryNav: NavItem[] = [
 ];
 
 const adminNav: NavItem[] = [
-  { label: "Settings", href: "/", icon: Settings, comingSoon: true },
+  { label: "Settings", href: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {

@@ -44,6 +44,8 @@ type Querier interface {
 	// same filter args. Returned as bigint to fit any table; UI only
 	// needs int32 but this avoids cast noise.
 	CountRunsGlobal(ctx context.Context, arg CountRunsGlobalParams) (int64, error)
+	// Pair for ListWebhookDeliveries so the UI can render "N of M".
+	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
 	// Median run duration in seconds across the last 7 days. NULL when
 	// no finished runs.
 	DashboardP50DurationSec7d(ctx context.Context) (float64, error)
@@ -133,6 +135,10 @@ type Querier interface {
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
+	// Expands a row with its headers + payload JSON for the drawer
+	// view. Kept in a separate query so the list shot stays tiny
+	// (payloads can be 100+ KB).
+	GetWebhookDelivery(ctx context.Context, id int64) (WebhookDelivery, error)
 	// Total live artefact bytes. Returns 0 when the artifacts table is
 	// empty. Used for the global hard cap.
 	GlobalArtifactUsage(ctx context.Context) (int64, error)
@@ -150,6 +156,11 @@ type Querier interface {
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
+	// Append-only audit row for every HTTP call that lands on
+	// /api/webhooks/*. Rows outlive the request so the admin page can
+	// show signature-rejected and drift-only deliveries too, not just
+	// the ones that produced a modification.
+	InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDeliveryParams) (InsertWebhookDeliveryRow, error)
 	// DISTINCT ON picks the most recent run per pipeline. Pipelines with
 	// no runs yet are absent from the result; the handler merges with
 	// ListPipelinesByProjectSlug to produce node entries.
@@ -222,6 +233,10 @@ type Querier interface {
 	// @staleness. The reaper walks this list every tick and either re-queues or
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
+	// Admin console feed. Most recent first; indexed on received_at.
+	// Filter by provider + status keep the page useful even under
+	// heavy traffic. Empty string = no filter on that axis.
+	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
 	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
 	// Called after the server HEADs the storage and confirms the object is
 	// there. Bumps status + records size/sha. Safe to call once; subsequent

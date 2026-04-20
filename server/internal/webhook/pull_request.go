@@ -30,15 +30,18 @@ import (
 //
 // Only opened / synchronize / reopened trigger runs. Close/merge are
 // ack'd with 204 — the subsequent push to base handles itself.
-func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body []byte, delivery string) {
+func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body []byte, delivery string, rec *deliveryRec) {
 	ev, err := github.ParsePullRequestEvent(body)
 	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "parse pull_request: " + err.Error()
 		h.log.Warn("github webhook: PR parse failed", "delivery", delivery, "err", err)
 		http.Error(w, "invalid pull_request payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if !ev.IsTriggerableAction() {
+		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: PR action ignored",
 			"delivery", delivery, "action", ev.Action, "number", ev.Number)
 		w.WriteHeader(http.StatusNoContent)
@@ -51,6 +54,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	fp := store.FingerprintFor(ev.Repository.CloneURL, ev.BaseRef)
 	material, err := h.store.FindMaterialByFingerprint(r.Context(), fp)
 	if errors.Is(err, store.ErrMaterialNotFound) {
+		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: no material for PR base",
 			"delivery", delivery, "repo", ev.Repository.FullName,
 			"base_ref", ev.BaseRef, "fingerprint", fp)
@@ -58,23 +62,29 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		return
 	}
 	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "material lookup (PR): " + err.Error()
 		h.log.Error("github webhook: material lookup failed (PR)",
 			"delivery", delivery, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	rec.materialID = material.ID
 
 	// Does this material opt into PR events? `on: [pull_request]`.
 	// Events live inside the JSONB config (Git material); decode only
 	// that subset.
 	var gitCfg domain.GitMaterial
 	if err := json.Unmarshal(material.Config, &gitCfg); err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "decode material config: " + err.Error()
 		h.log.Warn("github webhook: decode material config (PR)",
 			"delivery", delivery, "material_id", material.ID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if !slices.Contains(gitCfg.Events, "pull_request") {
+		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: material does not listen for pull_request",
 			"delivery", delivery, "material_id", material.ID,
 			"events", gitCfg.Events)
@@ -93,6 +103,8 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	}
 	res, err := h.store.InsertModification(r.Context(), mod)
 	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "insert PR modification: " + err.Error()
 		h.log.Error("github webhook: insert PR modification failed",
 			"delivery", delivery, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -130,6 +142,8 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 			CauseDetail:    causeDetail,
 		})
 		if err != nil {
+			rec.status = store.WebhookStatusError
+			rec.errText = "create PR run: " + err.Error()
 			h.log.Error("github webhook: PR run create failed",
 				"delivery", delivery, "modification_id", res.ID, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -147,6 +161,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 			"delivery", delivery, "modification_id", res.ID, "pr_number", ev.Number)
 	}
 
+	rec.status = store.WebhookStatusAccepted
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
