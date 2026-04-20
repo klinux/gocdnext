@@ -1,0 +1,109 @@
+"use client";
+
+import Link from "next/link";
+import type { Route } from "next";
+import { usePathname } from "next/navigation";
+
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+
+// RouteBreadcrumbs turns the current URL into shadcn Breadcrumb
+// components. Registry-driven: each segment is mapped to a human
+// label (no "[slug]" leaking into the UI) and optionally to a link
+// target. Segments not in the registry fall back to their raw
+// value — safe for UUIDs under `/runs/<id>` where the raw id is
+// what a power user would want to see anyway.
+type LabelFn = (segment: string, segments: string[]) => string;
+type BreadcrumbHref = (segments: string[]) => string | null;
+
+type Entry = {
+  label: LabelFn;
+  // When href is null, the crumb is rendered as non-clickable
+  // current-page text. Segments known to be prefixes (projects)
+  // link to their own index; leaf routes (vsm, secrets) are text.
+  href?: BreadcrumbHref;
+};
+
+const registry: Record<string, Entry> = {
+  projects: {
+    label: () => "Projects",
+    href: () => "/",
+  },
+  runs: {
+    label: () => "Runs",
+    href: () => null,
+  },
+  vsm: {
+    label: () => "VSM",
+    href: () => null,
+  },
+  secrets: {
+    label: () => "Secrets",
+    href: () => null,
+  },
+};
+
+export function RouteBreadcrumbs() {
+  const pathname = usePathname();
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    return (
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbPage>Dashboard</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+    );
+  }
+
+  return (
+    <Breadcrumb>
+      <BreadcrumbList>
+        <BreadcrumbItem className="hidden md:block">
+          <BreadcrumbLink render={<Link href="/">Home</Link>} />
+        </BreadcrumbItem>
+        <BreadcrumbSeparator className="hidden md:block" />
+        {segments.map((seg, i) => {
+          const consumed = segments.slice(0, i + 1);
+          const isLast = i === segments.length - 1;
+          const meta = registry[seg];
+          const label = meta?.label
+            ? meta.label(seg, consumed)
+            : decodeURIComponent(seg);
+          const href = meta?.href
+            ? meta.href(consumed)
+            : "/" + consumed.join("/");
+
+          return (
+            <span key={consumed.join("/")} className="contents">
+              <BreadcrumbItem>
+                {isLast || !href ? (
+                  <BreadcrumbPage className="truncate max-w-[220px]">
+                    {label}
+                  </BreadcrumbPage>
+                ) : (
+                  <BreadcrumbLink
+                    render={
+                      <Link href={href as Route} className="truncate max-w-[220px]">
+                        {label}
+                      </Link>
+                    }
+                  />
+                )}
+              </BreadcrumbItem>
+              {!isLast ? <BreadcrumbSeparator /> : null}
+            </span>
+          );
+        })}
+      </BreadcrumbList>
+    </Breadcrumb>
+  );
+}
