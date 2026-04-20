@@ -22,6 +22,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
 
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	"github.com/gocdnext/gocdnext/agent/internal/runner"
 )
 
@@ -43,6 +44,11 @@ type Config struct {
 	// WorkspaceRoot is where the runner materializes per-job workspaces.
 	// Empty falls back to runner's own default (tempdir).
 	WorkspaceRoot string
+
+	// Engine is the runtime that executes each script task. Nil
+	// defaults to engine.Shell inside runner.New. Set to a
+	// KubernetesEngine on in-cluster deployments.
+	Engine engine.Engine
 
 	// DialOpts lets tests inject a bufconn dialer or custom credentials.
 	// When nil, the client uses insecure.NewCredentials — the MVP assumes a
@@ -116,6 +122,7 @@ func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader runne
 		Logger:        c.log,
 		Send:          send,
 		Uploader:      uploader,
+		Engine:        c.cfg.Engine,
 	})
 }
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	"github.com/gocdnext/gocdnext/agent/internal/rpc"
 )
 
@@ -24,6 +25,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
+	eng, err := buildEngine(logger)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	cfg.Engine = eng
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -73,6 +81,48 @@ func loadConfig() (rpc.Config, error) {
 		Tags:       tags,
 		Capacity:   capacity,
 	}, nil
+}
+
+// buildEngine picks the runtime used for each script task. The
+// default (unset / "shell") keeps the historical behaviour:
+// `sh -c $script` on the agent host. Set GOCDNEXT_AGENT_ENGINE=
+// kubernetes to spawn a Pod per task inside the configured cluster.
+func buildEngine(logger *slog.Logger) (engine.Engine, error) {
+	choice := strings.ToLower(os.Getenv("GOCDNEXT_AGENT_ENGINE"))
+	switch choice {
+	case "", "shell":
+		logger.Info("agent engine: shell")
+		return engine.NewShell(), nil
+	case "kubernetes":
+		cfg := engine.KubernetesConfig{
+			Namespace:          os.Getenv("GOCDNEXT_K8S_NAMESPACE"),
+			KubeconfigPath:     os.Getenv("GOCDNEXT_KUBECONFIG"),
+			WorkspacePVCName:   os.Getenv("GOCDNEXT_K8S_WORKSPACE_PVC"),
+			WorkspaceMountPath: os.Getenv("GOCDNEXT_K8S_WORKSPACE_PATH"),
+			DefaultImage:       os.Getenv("GOCDNEXT_K8S_DEFAULT_IMAGE"),
+		}
+		if raw := os.Getenv("GOCDNEXT_K8S_IMAGE_PULL_SECRETS"); raw != "" {
+			for _, s := range strings.Split(raw, ",") {
+				if s = strings.TrimSpace(s); s != "" {
+					cfg.ImagePullSecrets = append(cfg.ImagePullSecrets, s)
+				}
+			}
+		}
+		cfg.CleanupOnSuccess = os.Getenv("GOCDNEXT_K8S_CLEANUP_ON_SUCCESS") != "false"
+		cfg.CleanupOnFailure = strings.EqualFold(os.Getenv("GOCDNEXT_K8S_CLEANUP_ON_FAILURE"), "true")
+
+		eng, err := engine.NewKubernetes(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("agent engine=kubernetes: %w", err)
+		}
+		logger.Info("agent engine: kubernetes",
+			"namespace", cfg.Namespace,
+			"workspace_pvc", cfg.WorkspacePVCName,
+			"default_image", cfg.DefaultImage)
+		return eng, nil
+	default:
+		return nil, fmt.Errorf("GOCDNEXT_AGENT_ENGINE=%q not supported (use shell or kubernetes)", choice)
+	}
 }
 
 // versionString returns a static version string until we wire ldflags at build
