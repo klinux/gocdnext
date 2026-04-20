@@ -109,6 +109,7 @@ export default async function WebhooksPage({ searchParams }: Props) {
           <Button
             variant="outline"
             size="sm"
+            nativeButton={false}
             disabled={offset === 0}
             render={
               <Link href={pageHref({ provider, status, offset: prevOffset }) as Route}>
@@ -119,6 +120,7 @@ export default async function WebhooksPage({ searchParams }: Props) {
           <Button
             variant="outline"
             size="sm"
+            nativeButton={false}
             disabled={!hasMore}
             render={
               <Link href={pageHref({ provider, status, offset: offset + PAGE_SIZE }) as Route}>
@@ -195,6 +197,7 @@ function ChipRow({
               size="sm"
               variant={active ? "default" : "outline"}
               className="h-7 px-3 text-xs"
+              nativeButton={false}
               render={<Link href={href as Route}>{opt.label}</Link>}
             />
           );

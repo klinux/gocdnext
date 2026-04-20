@@ -167,6 +167,7 @@ function FilterBar({
           variant="ghost"
           size="sm"
           className="h-7 text-xs"
+          nativeButton={false}
           render={<Link href={"/runs" as Route}>Clear filters</Link>}
         />
       ) : null}
