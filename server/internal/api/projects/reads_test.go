@@ -23,7 +23,18 @@ func readsHandler(t *testing.T) (*projects.Handler, *pgxpool.Pool) {
 	t.Helper()
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
-	return projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))), pool
+	return projects.NewHandler(s, slog.New(slog.NewTextHandler(newTestLogWriter(t), nil))), pool
+}
+
+// newTestLogWriter pipes slog output into t.Logf so a 500 in List
+// surfaces the underlying store error instead of being swallowed
+// into io.Discard.
+type testLogWriter struct{ t *testing.T }
+
+func newTestLogWriter(t *testing.T) io.Writer { return &testLogWriter{t: t} }
+func (w *testLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(string(p))
+	return len(p), nil
 }
 
 func seedOneProject(t *testing.T, pool *pgxpool.Pool) uuid.UUID {

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,13 @@ import (
 // DefaultAPIBase is the GitHub.com v3 REST API root. Override via Config for
 // GitHub Enterprise.
 const DefaultAPIBase = "https://api.github.com"
+
+// ErrFolderNotFound is returned by FetchGocdnextFolder when the
+// configured config folder doesn't exist on the given ref — lets
+// the caller distinguish "repo reachable, folder absent" (a valid
+// bind state, maybe the user hasn't pushed yet) from transport or
+// auth errors, which should hard-fail.
+var ErrFolderNotFound = errors.New("github: config folder not found")
 
 // Config wires one call to the Contents API. Token is optional.
 type Config struct {
@@ -163,7 +171,7 @@ func fetchContents(ctx context.Context, client *http.Client, token, u string) ([
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("github: %s: config folder not found (404)", u)
+		return nil, fmt.Errorf("%w: %s", ErrFolderNotFound, u)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("github: %s returned %d: %s",

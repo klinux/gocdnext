@@ -74,12 +74,18 @@ type Querier interface {
 	DeleteAuthProvider(ctx context.Context, id pgtype.UUID) error
 	DeleteExpiredAuthStates(ctx context.Context) error
 	DeleteExpiredUserSessions(ctx context.Context) error
+	DeleteGlobalSecretByName(ctx context.Context, name string) (int64, error)
 	// Called after a successful reclaim so the retry starts with a clean log
 	// window. Loses the old attempt's output — acceptable MVP trade for not
 	// growing the schema to carry per-attempt log namespacing.
 	DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
+	// Returns the number of project rows deleted (0 or 1). ON DELETE
+	// CASCADE on every foreign key that points at projects carries
+	// the children (pipelines → materials → runs → artifacts, secrets,
+	// scm_sources, etc.), so this single statement is enough.
+	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
@@ -113,6 +119,9 @@ type Querier interface {
 	// Idempotency check for fanout: if we already created a downstream run for
 	// this (pipeline, upstream_run_id) pair, skip.
 	FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamParams) (FindRunByUpstreamRow, error)
+	// Rotation + UI detail views go project-slug → scm_source without
+	// the caller having to resolve the project id first.
+	FindScmSourceBySlug(ctx context.Context, slug string) (FindScmSourceBySlugRow, error)
 	// Read path used by webhook drift detection and future UI
 	// listings. Does NOT return webhook_secret — that's handled by
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
@@ -126,6 +135,11 @@ type Querier interface {
 	// run finishes. Returns ErrNoRows when the run didn't produce a
 	// check (most common path: no App installed, or feature disabled).
 	GetGithubCheckRun(ctx context.Context, runID pgtype.UUID) (GithubCheckRun, error)
+	// Resolver fallback: after GetSecretValuesByProject, names still
+	// missing are looked up as globals. Kept as a separate call so
+	// the resolver can short-circuit when every name was already
+	// covered at project scope.
+	GetGlobalSecretValues(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretValuesRow, error)
 	// Used by the reaper to disambiguate "at max attempts" from "already
 	// handled" when ReclaimJobForRetry returned no rows.
 	GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAttemptRow, error)
@@ -150,6 +164,11 @@ type Querier interface {
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
+	// Aggregated before the cascading delete so the caller can surface
+	// "deleted N pipelines, M runs, K secrets" without probing each
+	// table after the fact (by then the rows are gone). Kept as a
+	// single round-trip so the delete flow stays two calls, not six.
+	GetProjectDeletionCounts(ctx context.Context, slug string) (GetProjectDeletionCountsRow, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
 	// pipeline + revisions without pulling the whole detail query.
 	GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunForActionRow, error)
@@ -245,8 +264,17 @@ type Querier interface {
 	// Bootstrap + reload path: rows the registry should actually
 	// instantiate on startup.
 	ListEnabledVCSIntegrations(ctx context.Context) ([]VcsIntegration, error)
+	// Admin-only listing of every global (unscoped) secret. Same
+	// "names + timestamps, never values" contract as project secrets.
+	ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
+	// Batch-loads job_runs for every run whose id is in the input
+	// array. The project detail page renders a GitLab-style pipeline
+	// flow per pipeline, each stage box listing its jobs — fetching
+	// these per pipeline would mean N queries. This single scan
+	// covers the card set.
+	ListJobRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListJobRunsForRunsRow, error)
 	// Recent jobs dispatched to this agent. Joined all the way up to
 	// the project so the table can link to the owning run/project
 	// without per-row lookups. LIMIT is caller-supplied to avoid
@@ -258,6 +286,9 @@ type Querier interface {
 	// are informational (shown as entry points on the graph).
 	ListMaterialsByProjectSlug(ctx context.Context, slug string) ([]ListMaterialsByProjectSlugRow, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
+	// Returns definition alongside metadata so the card can pull
+	// stage names from the YAML when the pipeline has never run
+	// (no stage_runs yet → no history to render from).
 	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
 	// Projects whose total live artefact bytes (pending + ready, non-
 	// deleted, non-pinned) exceed the configured soft cap. Returned once
@@ -266,6 +297,17 @@ type Querier interface {
 	ListProjectsOverArtifactQuota(ctx context.Context, dollar_1 int64) ([]ListProjectsOverArtifactQuotaRow, error)
 	// Project list used by the dashboard home. Joins enough aggregate info so the
 	// UI renders without round-tripping per row.
+	//
+	// Extra columns feed the card-style layout on /projects:
+	//   * provider: from the bound scm_source when present; empty string
+	//     when the project has no repo yet (shown as "—" in the UI).
+	//   * run_count: total runs across all pipelines — the card shows
+	//     "5 pipelines · 123 runs" as a density signal.
+	//   * status_agg: coarse health derived from the most recent run per
+	//     pipeline. Pre-computed in a CTE (latest_per_pipeline) so the
+	//     outer aggregate stays aggregate-only; correlated subqueries
+	//     inside CASE/WHEN during GROUP BY are fragile in Postgres and
+	//     blew up the previous version of this query.
 	ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWithCountsRow, error)
 	// Runs the scheduler's tick reconsiders: both freshly queued ones and
 	// already-running runs that may have a queued job waiting (re-queued by the
@@ -288,10 +330,30 @@ type Querier interface {
 	ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
 	ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunOrderedRow, error)
+	// Batch-loads stage_runs for every run whose id is in the input
+	// array — the project detail page renders one pipeline card per
+	// pipeline and each card needs the latest run's stage states.
+	// Issuing one query per card would mean N+1 round trips; this
+	// amortizes them into a single scan.
+	ListStageRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListStageRunsForRunsRow, error)
 	// Running jobs whose agent is either offline or hasn't been seen within
 	// @staleness. The reaper walks this list every tick and either re-queues or
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
+	// Per-project top-N (most recently updated) pipelines with their
+	// latest run status. Used to render the "mini stack" inside each
+	// project card without issuing one query per card (N+1). Currently
+	// capped at 3 entries per project via ROW_NUMBER partition — the
+	// UI appends a "+K more" link when pipeline_count > 3.
+	//
+	// Also returns:
+	//   * latest_run_id: zero-UUID when the pipeline has never run.
+	//     Callers collect these to batch-load stage_runs.
+	//   * definition: the pipeline's YAML snapshot (JSONB). The card
+	//     renders grey "pending" stage pills from definition.Stages
+	//     when latest_run_id is zero, and reconciles definition vs.
+	//     stage_runs for mid-run/cancelled states.
+	ListTopPipelinesPerProject(ctx context.Context) ([]ListTopPipelinesPerProjectRow, error)
 	ListUsers(ctx context.Context) ([]ListUsersRow, error)
 	// Admin feed. Returns every row regardless of `enabled` so the
 	// /settings/integrations page can surface disabled rows the user
@@ -347,6 +409,11 @@ type Querier interface {
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.
 	UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubCheckRunParams) error
+	// Global scope: project_id = NULL, shadowed by a same-name project
+	// secret at resolution time. Targets the partial UNIQUE index
+	// secrets_global_name_idx — Postgres can't infer partial indexes
+	// from ON CONFLICT (name) alone, so we spell out the predicate.
+	UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecretParams) (UpsertGlobalSecretRow, error)
 	// Create/update a local account. Called from the CLI and the
 	// admin self-service change-password endpoint. external_id is
 	// the email so the (provider, external_id) unique key covers us.
@@ -369,6 +436,10 @@ type Querier interface {
 	// update because the ciphertext changes (random nonce) even for identical
 	// plaintext, making a "was this changed" diff unreliable; we bump
 	// unconditionally on write.
+	//
+	// Targets the partial UNIQUE index secrets_project_name_idx (rows
+	// where project_id IS NOT NULL). The global twin lives in
+	// UpsertGlobalSecret below.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
 	// Either inserts a fresh row (new login) or bumps the profile
 	// fields we pull from the IdP every time. Role is intentionally

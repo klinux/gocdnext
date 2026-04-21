@@ -38,6 +38,14 @@ func (f *fakeFetcher) Fetch(_ context.Context, scm store.SCMSource, ref, configP
 	return f.files, f.err
 }
 
+// HeadSHA is required by the configsync.Fetcher contract the
+// handler consumes. Drift tests don't touch it (they go through
+// Fetch at the push revision) so a deterministic stub keeps the
+// interface satisfied without widening scope.
+func (f *fakeFetcher) HeadSHA(_ context.Context, _ store.SCMSource, _ string) (string, error) {
+	return "", nil
+}
+
 // seedSCMSourceOnly registers an scm_source bound to the given
 // repo URL with testSecret as its webhook secret. branch defaults
 // to "main" when empty. Sets up the cipher on the local store so

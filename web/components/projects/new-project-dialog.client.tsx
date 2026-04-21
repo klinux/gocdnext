@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { pipelineTemplates } from "@/lib/pipeline-templates";
 import { createProject } from "@/server/actions/projects";
+import { WebhookSecretDialog } from "@/components/projects/webhook-secret-dialog.client";
 
 type Mode = "repo" | "template" | "empty";
 
@@ -51,6 +52,15 @@ export function NewProjectDialog() {
   const [templateID, setTemplateID] = useState(pipelineTemplates[0]!.id);
   const [templateYAML, setTemplateYAML] = useState(pipelineTemplates[0]!.yaml);
   const [templateTouched, setTemplateTouched] = useState(false);
+
+  // One-shot reveal for an auto-generated webhook secret. The
+  // backend returns it exactly once on /projects/apply when the
+  // caller didn't supply their own; we show it modally on top of
+  // the (now-closed) create dialog so the user can copy before
+  // navigating away.
+  const [generatedSecret, setGeneratedSecret] = useState<string | null>(null);
+  const [generatedSecretOpen, setGeneratedSecretOpen] = useState(false);
+  const [createdSlug, setCreatedSlug] = useState<string | null>(null);
 
   const reset = () => {
     setSlug("");
@@ -111,10 +121,33 @@ export function NewProjectDialog() {
             onClick: () => router.push(`/projects/${slug}` as Route),
           },
         });
+        const data = res.data as {
+          scm_source?: { generated_webhook_secret?: string };
+          warnings?: string[];
+        };
+        // Surface every backend-emitted warning as its own toast —
+        // the common case is "bound repo but .gocdnext/ is empty",
+        // which is expected when the user creates the project
+        // before pushing config. A single toast per warning reads
+        // better than concatenating them into one line.
+        for (const w of data?.warnings ?? []) {
+          toast.warning(w, { duration: 8000 });
+        }
+        const scm = data?.scm_source;
+        const secret = scm?.generated_webhook_secret;
         reset();
         setOpen(false);
-        router.push(`/projects/${slug}` as Route);
-        router.refresh();
+        if (secret) {
+          // Keep the user on the current page so they can copy the
+          // secret before navigating to the project. The reveal
+          // dialog's Done button triggers the push + refresh.
+          setGeneratedSecret(secret);
+          setCreatedSlug(slug);
+          setGeneratedSecretOpen(true);
+        } else {
+          router.push(`/projects/${slug}` as Route);
+          router.refresh();
+        }
       } else {
         toast.error(`Create failed: ${res.error}`);
       }
@@ -305,6 +338,26 @@ export function NewProjectDialog() {
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <WebhookSecretDialog
+        open={generatedSecretOpen}
+        secret={generatedSecret ?? ""}
+        variant="create"
+        title="Webhook secret generated"
+        subtitle="We generated a webhook secret for this project. Register it in your provider's webhook configuration now — it won't be shown again."
+        onOpenChange={(next) => {
+          setGeneratedSecretOpen(next);
+          if (!next) {
+            const target = createdSlug;
+            setGeneratedSecret(null);
+            setCreatedSlug(null);
+            if (target) {
+              router.push(`/projects/${target}` as Route);
+              router.refresh();
+            }
+          }
+        }}
+      />
     </Dialog>
   );
 }

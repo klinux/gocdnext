@@ -3,39 +3,33 @@ package projects
 import (
 	"context"
 	"errors"
-	"strings"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
+	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
 
-// AutoRegisterConfig wires the handler into the GitHub App flow.
-//
-// DISABLED as of UI.10.a: auto-register used to rely on one
-// global webhook secret (GOCDNEXT_WEBHOOK_TOKEN) that got
-// embedded into every installed webhook. The per-repo-secret
-// refactor killed that env var, and reviving auto-register
-// cleanly requires making scm_sources multi-row-per-project so
-// each material gets its own sealed secret. Until that schema
-// change lands, WithAutoRegister is an explicit no-op and
-// reconcilePipelines early-returns.
+// AutoRegisterConfig wires the handler into the GitHub App flow so
+// that binding an scm_source auto-installs a webhook on the repo
+// with the project's sealed secret as the HMAC key. Requires
+// PublicBase (for the hook URL) and a VCS registry carrying an
+// active GitHub App client.
 type AutoRegisterConfig struct {
 	VCS        *vcs.Registry
 	PublicBase string
 }
 
-// WithAutoRegister used to enable post-apply webhook registration.
-// Currently a no-op — see AutoRegisterConfig's doc comment.
+// WithAutoRegister enables post-apply webhook registration for
+// scm_source bindings. Safe to call with an unconfigured registry;
+// reconcileSCMSourceWebhook checks for a live App at call time and
+// downgrades to skipped_no_install when absent.
 func (h *Handler) WithAutoRegister(cfg AutoRegisterConfig) *Handler {
-	// Intentionally keeps the same signature so main.go wiring
-	// stays one line; all callers become no-ops transparently.
-	_ = cfg
+	h.autoRegister = &cfg
 	return h
 }
 
 // currentApp returns the active GitHub App client or nil. The
-// reconcileOne path guards on this — "no app right now" becomes a
+// reconcile path guards on this — "no app right now" becomes a
 // skipped_no_install outcome, not a failure.
 func (c *AutoRegisterConfig) currentApp() *ghscm.AppClient {
 	if c == nil || c.VCS == nil {
@@ -48,58 +42,50 @@ func (c *AutoRegisterConfig) currentApp() *ghscm.AppClient {
 // list. The CLI / UI shows this so the operator knows whether they
 // need to install the App manually.
 type HookRegistration struct {
-	Pipeline    string `json:"pipeline"`
-	MaterialURL string `json:"material_url"`
-	Status      string `json:"status"` // registered | already_exists | skipped_no_install | failed
-	HookID      int64  `json:"hook_id,omitempty"`
-	Error       string `json:"error,omitempty"`
+	SCMSourceURL string `json:"scm_source_url"`
+	Status       string `json:"status"` // registered | already_exists | skipped_no_install | skipped_not_github | failed
+	HookID       int64  `json:"hook_id,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
-// reconcilePipelines walks every git material with
-// auto_register_webhook=true and ensures a gocdnext hook is
-// installed on the repo. Idempotent: an existing hook whose
-// config.url starts with our public base is treated as "already
-// exists" and not duplicated. Best-effort — errors on one pipeline
-// don't affect the rest, and the whole apply still succeeds.
-func (h *Handler) reconcilePipelines(ctx context.Context, pipelines []*domain.Pipeline) []HookRegistration {
-	if h.autoRegister == nil {
+// reconcileSCMSourceWebhook ensures a gocdnext-owned webhook is
+// installed on the repo referenced by applied (post-ApplyProject).
+// Idempotent: an existing hook whose config.url matches our public
+// base is reported as already_exists, not recreated. Best-effort —
+// any failure lands in the response body so the operator can
+// decide to install manually, but never aborts the apply.
+//
+// plaintextSecret takes precedence over DB lookup: when the apply
+// just generated the secret, passing it in avoids re-decrypting
+// what's already in memory. When empty (re-apply that preserved
+// existing ciphertext), the store cipher is used to recover the
+// plaintext for GitHub's HMAC config.
+func (h *Handler) reconcileSCMSourceWebhook(
+	ctx context.Context,
+	applied *store.SCMSourceApplied,
+	plaintextSecret string,
+) *HookRegistration {
+	if h.autoRegister == nil || applied == nil {
 		return nil
 	}
 	cfg := h.autoRegister
-	hookURL := strings.TrimRight(cfg.PublicBase, "/") + "/api/webhooks/github"
+	res := &HookRegistration{SCMSourceURL: applied.URL}
 
-	var out []HookRegistration
-	for _, p := range pipelines {
-		for _, m := range p.Materials {
-			if m.Type != domain.MaterialGit || m.Git == nil || !m.Git.AutoRegisterWebhook {
-				continue
-			}
-			out = append(out, h.reconcileOne(ctx, p.Name, m.Git.URL, hookURL))
-		}
+	if applied.Provider != "github" {
+		res.Status = "skipped_not_github"
+		return res
 	}
-	return out
-}
-
-func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookURL string) HookRegistration {
-	cfg := h.autoRegister
-	res := HookRegistration{Pipeline: pipeline, MaterialURL: materialURL}
 
 	app := cfg.currentApp()
 	if app == nil {
-		// Admin deleted the DB row (or env was the only source and
-		// it's gone). We already gated reconcilePipelines on the
-		// autoRegister struct being non-nil, but the underlying
-		// AppClient can still disappear at runtime — treat as
-		// skipped_no_install so the caller sees a clean outcome.
 		res.Status = "skipped_no_install"
 		res.Error = "no github app configured"
 		return res
 	}
 
-	owner, repo, err := ghscm.ParseRepoURL(materialURL)
+	owner, repo, err := ghscm.ParseRepoURL(applied.URL)
 	if err != nil {
-		// Not a GitHub-shaped URL (GitLab etc.); skip rather than error.
-		res.Status = "skipped_no_install"
+		res.Status = "skipped_not_github"
 		res.Error = "url does not look like a GitHub repo"
 		return res
 	}
@@ -109,23 +95,24 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 		res.Status = "skipped_no_install"
 		res.Error = "gocdnext App is not installed on " + owner + "/" + repo
 		h.log.Info("autoregister: no installation",
-			"pipeline", pipeline, "repo", owner+"/"+repo)
+			"repo", owner+"/"+repo)
 		return res
 	}
 	if err != nil {
 		res.Status = "failed"
 		res.Error = err.Error()
 		h.log.Warn("autoregister: installation lookup failed",
-			"pipeline", pipeline, "repo", owner+"/"+repo, "err", err)
+			"repo", owner+"/"+repo, "err", err)
 		return res
 	}
 
+	hookURL := trimTrailingSlash(cfg.PublicBase) + "/api/webhooks/github"
 	existing, err := app.ListRepoHooks(ctx, installationID, owner, repo)
 	if err != nil {
 		res.Status = "failed"
 		res.Error = err.Error()
 		h.log.Warn("autoregister: list hooks failed",
-			"pipeline", pipeline, "repo", owner+"/"+repo, "err", err)
+			"repo", owner+"/"+repo, "err", err)
 		return res
 	}
 	if hook, ok := ghscm.FindHookForURL(existing, hookURL); ok {
@@ -134,26 +121,51 @@ func (h *Handler) reconcileOne(ctx context.Context, pipeline, materialURL, hookU
 		return res
 	}
 
-	// Dead code since WithAutoRegister is a no-op; kept for the
-	// quick-revive path once per-repo scm_sources become plural.
-	// Passes an empty secret — real flow will pull from a store
-	// helper keyed on the material URL.
-	_ = cfg
+	// Secret resolution: prefer the plaintext from the just-completed
+	// apply (free — already in memory), fall back to decrypting the
+	// stored ciphertext (re-applies that preserved the existing
+	// secret). If both paths leave us empty, the hook would be
+	// registered unsigned — refuse so the operator doesn't end up
+	// with a 401-ing webhook that looks installed.
+	secret := plaintextSecret
+	if secret == "" {
+		auth, err := h.store.FindSCMSourceWebhookSecret(ctx, applied.URL)
+		if err != nil {
+			res.Status = "failed"
+			res.Error = "secret lookup: " + err.Error()
+			return res
+		}
+		secret = auth.Secret
+	}
+	if secret == "" {
+		res.Status = "failed"
+		res.Error = "no webhook secret available (rotate the secret and retry)"
+		return res
+	}
+
 	created, err := app.CreateRepoHook(ctx, installationID, ghscm.CreateHookInput{
-		Owner: owner,
-		Repo:  repo,
-		URL:   hookURL,
+		Owner:  owner,
+		Repo:   repo,
+		URL:    hookURL,
+		Secret: secret,
 	})
 	if err != nil {
 		res.Status = "failed"
 		res.Error = err.Error()
 		h.log.Warn("autoregister: create hook failed",
-			"pipeline", pipeline, "repo", owner+"/"+repo, "err", err)
+			"repo", owner+"/"+repo, "err", err)
 		return res
 	}
 	res.Status = "registered"
 	res.HookID = created.ID
 	h.log.Info("autoregister: hook created",
-		"pipeline", pipeline, "repo", owner+"/"+repo, "hook_id", created.ID)
+		"repo", owner+"/"+repo, "hook_id", created.ID)
 	return res
+}
+
+func trimTrailingSlash(s string) string {
+	for len(s) > 0 && s[len(s)-1] == '/' {
+		s = s[:len(s)-1]
+	}
+	return s
 }

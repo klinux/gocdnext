@@ -75,6 +75,33 @@ func (s *Store) FindSCMSourceByURL(ctx context.Context, rawURL string) (SCMSourc
 	}, nil
 }
 
+// FindSCMSourceByProjectSlug resolves the scm_source bound to a
+// project by slug. Returns ErrSCMSourceNotFound when the project
+// has no binding (or no such project). Used by the webhook-secret
+// rotation endpoint so the caller doesn't have to go slug→project
+// →scm_source in two round-trips.
+func (s *Store) FindSCMSourceByProjectSlug(ctx context.Context, slug string) (SCMSource, error) {
+	row, err := s.q.FindScmSourceBySlug(ctx, slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SCMSource{}, ErrSCMSourceNotFound
+		}
+		return SCMSource{}, fmt.Errorf("store: find scm_source by slug: %w", err)
+	}
+	return SCMSource{
+		ID:                 fromPgUUID(row.ID),
+		ProjectID:          fromPgUUID(row.ProjectID),
+		Provider:           row.Provider,
+		URL:                row.Url,
+		DefaultBranch:      row.DefaultBranch,
+		AuthRef:            stringValue(row.AuthRef),
+		LastSyncedAt:       pgTimePtr(row.LastSyncedAt),
+		LastSyncedRevision: stringValue(row.LastSyncedRevision),
+		CreatedAt:          row.CreatedAt.Time,
+		UpdatedAt:          row.UpdatedAt.Time,
+	}, nil
+}
+
 // SCMSourceWebhookAuth is the slim shape the webhook handler
 // consumes: enough to identify which scm_source the request is
 // for plus the plaintext secret needed for HMAC verification.

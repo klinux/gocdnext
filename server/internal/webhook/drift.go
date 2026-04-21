@@ -4,58 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"path/filepath"
-	"strings"
-	"time"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
-	"github.com/gocdnext/gocdnext/server/internal/parser"
-	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
+	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// ConfigFetcher resolves the pipeline config folder for a known
-// scm_source at a given revision. Implementations wrap a
-// provider-specific contents API (GitHub today; GitLab/Bitbucket
-// later). Tests supply an in-memory impl so the drift path can
-// exercise end-to-end without a network call.
-//
-// configPath is the repo-relative folder to read (e.g. ".gocdnext",
-// ".woodpecker", "apps/api/.gocdnext"). Empty → ".gocdnext" for
-// backwards-compat.
-type ConfigFetcher interface {
-	Fetch(ctx context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error)
-}
+// ConfigFetcher is an alias for configsync.Fetcher kept here so
+// existing webhook call sites (and tests) don't churn. The actual
+// type lives in configsync — both the webhook push-drift path
+// and the project-apply initial-sync path need it, and neither
+// should import the other.
+type ConfigFetcher = configsync.Fetcher
 
-// GitHubConfigFetcher is the default implementation. Parses
-// owner/repo out of scm.URL, passes scm.AuthRef as the bearer
-// token when set. Returns an error when the scm.Provider isn't
-// "github" — other providers add their own ConfigFetcher impl.
-type GitHubConfigFetcher struct {
-	Client  *http.Client
-	APIBase string // empty -> github.DefaultAPIBase
-}
-
-func (f *GitHubConfigFetcher) Fetch(ctx context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error) {
-	if scm.Provider != "github" {
-		return nil, fmt.Errorf("drift: provider %q not supported by GitHubConfigFetcher", scm.Provider)
-	}
-	owner, repo, err := gh.ParseRepoURL(scm.URL)
-	if err != nil {
-		return nil, fmt.Errorf("drift: parse repo url: %w", err)
-	}
-	client := f.Client
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	return gh.FetchGocdnextFolder(ctx, client, gh.Config{
-		APIBase: f.APIBase,
-		Owner:   owner,
-		Repo:    repo,
-		Token:   scm.AuthRef,
-	}, ref, configPath)
-}
+// GitHubConfigFetcher aliases configsync.GitHubFetcher for the
+// same reason: a back-compat name for callers that wire the
+// default implementation into webhook.Handler.
+type GitHubConfigFetcher = configsync.GitHubFetcher
 
 // DriftOutcome reports what happened when a push arrived for a registered
 // scm_source — the webhook handler surfaces this in its response body for
@@ -99,7 +63,7 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		return out
 	}
 
-	pipelines, err := parseConfigFiles(files)
+	pipelines, err := configsync.ParseFiles(files)
 	if err != nil {
 		out.Error = fmt.Sprintf("parse: %v", err)
 		return out
@@ -136,27 +100,6 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 
 	out.Applied = true
 	return out
-}
-
-func parseConfigFiles(files []gh.RawFile) ([]*domain.Pipeline, error) {
-	seen := map[string]string{}
-	out := make([]*domain.Pipeline, 0, len(files))
-	for _, f := range files {
-		if f.Name == "" {
-			return nil, fmt.Errorf("config entry missing name")
-		}
-		fallback := strings.TrimSuffix(f.Name, filepath.Ext(f.Name))
-		p, err := parser.ParseNamed(strings.NewReader(f.Content), "", fallback)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f.Name, err)
-		}
-		if prev, dup := seen[p.Name]; dup {
-			return nil, fmt.Errorf("pipeline %q defined twice: %s and %s", p.Name, prev, f.Name)
-		}
-		seen[p.Name] = f.Name
-		out = append(out, p)
-	}
-	return out, nil
 }
 
 // driftLookup wraps the common "find scm_source for this push" call — the

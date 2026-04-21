@@ -11,6 +11,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const findScmSourceBySlug = `-- name: FindScmSourceBySlug :one
+SELECT s.id, s.project_id, s.provider, s.url, s.default_branch,
+       s.auth_ref, s.last_synced_at, s.last_synced_revision,
+       s.created_at, s.updated_at
+FROM scm_sources s
+JOIN projects p ON p.id = s.project_id
+WHERE p.slug = $1
+LIMIT 1
+`
+
+type FindScmSourceBySlugRow struct {
+	ID                 pgtype.UUID
+	ProjectID          pgtype.UUID
+	Provider           string
+	Url                string
+	DefaultBranch      string
+	AuthRef            *string
+	LastSyncedAt       pgtype.Timestamptz
+	LastSyncedRevision *string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+}
+
+// Rotation + UI detail views go project-slug → scm_source without
+// the caller having to resolve the project id first.
+func (q *Queries) FindScmSourceBySlug(ctx context.Context, slug string) (FindScmSourceBySlugRow, error) {
+	row := q.db.QueryRow(ctx, findScmSourceBySlug, slug)
+	var i FindScmSourceBySlugRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Provider,
+		&i.Url,
+		&i.DefaultBranch,
+		&i.AuthRef,
+		&i.LastSyncedAt,
+		&i.LastSyncedRevision,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const findScmSourceByURL = `-- name: FindScmSourceByURL :one
 SELECT id, project_id, provider, url, default_branch, auth_ref,
        last_synced_at, last_synced_revision, created_at, updated_at

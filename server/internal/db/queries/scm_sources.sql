@@ -44,6 +44,17 @@ FROM scm_sources
 WHERE project_id = $1
 LIMIT 1;
 
+-- name: FindScmSourceBySlug :one
+-- Rotation + UI detail views go project-slug → scm_source without
+-- the caller having to resolve the project id first.
+SELECT s.id, s.project_id, s.provider, s.url, s.default_branch,
+       s.auth_ref, s.last_synced_at, s.last_synced_revision,
+       s.created_at, s.updated_at
+FROM scm_sources s
+JOIN projects p ON p.id = s.project_id
+WHERE p.slug = $1
+LIMIT 1;
+
 -- name: GetScmSourceWebhookSecretByURL :one
 -- Webhook-handler path: pulls the sealed secret + the scm_source
 -- id for a given clone_url so HandleGitHub can verify HMAC with

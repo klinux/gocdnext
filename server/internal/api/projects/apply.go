@@ -6,6 +6,7 @@ package projects
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/parser"
@@ -26,6 +28,7 @@ type Handler struct {
 	log          *slog.Logger
 	cipher       *crypto.Cipher
 	autoRegister *AutoRegisterConfig
+	fetcher      configsync.Fetcher
 }
 
 func NewHandler(s *store.Store, log *slog.Logger) *Handler {
@@ -33,6 +36,17 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{store: s, log: log}
+}
+
+// WithConfigFetcher opts the apply handler into initial-sync
+// behavior: when the request binds an scm_source and doesn't
+// supply local pipeline files, the handler reads .gocdnext/ from
+// the repo at the default branch and uses those files as the
+// pipeline set. Leaving the fetcher nil keeps the legacy behavior
+// (bind without pipelines; wait for a push to populate them).
+func (h *Handler) WithConfigFetcher(f configsync.Fetcher) *Handler {
+	h.fetcher = f
+	return h
 }
 
 type ApplyFile struct {
@@ -76,6 +90,13 @@ type ApplySCMSourceResult struct {
 	URL           string `json:"url"`
 	DefaultBranch string `json:"default_branch"`
 	Created       bool   `json:"created"`
+	// GeneratedWebhookSecret is present ONLY when this apply
+	// minted a fresh secret (new scm_source or an explicit
+	// plaintext caller-supplied value). Returned plaintext
+	// exactly once — the UI shows it with a copy button and
+	// a "won't be shown again" banner. Subsequent reads never
+	// see it; rotation goes through a dedicated endpoint.
+	GeneratedWebhookSecret string `json:"generated_webhook_secret,omitempty"`
 }
 
 type ApplyResponse struct {
@@ -89,6 +110,13 @@ type ApplyResponse struct {
 	// auto_register_webhook=true. Each entry is best-effort:
 	// "skipped_no_install" / "failed" don't abort the apply.
 	Webhooks []HookRegistration `json:"webhooks,omitempty"`
+	// Warnings collects non-fatal issues the caller should see
+	// but that don't warrant failing the apply: e.g. "scm_source
+	// bound but the .gocdnext/ folder doesn't exist yet at
+	// default_branch HEAD, so no pipelines were synced". The CLI
+	// prints these as yellow lines; the UI surfaces them in the
+	// create-result toast.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +166,53 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Initial sync from the repo: when the caller binds an
+	// scm_source and doesn't ship local pipeline files, read the
+	// configured folder from the default branch and use those as
+	// the pipeline set. This makes pipelines appear at bind time
+	// instead of waiting for the first push. Reachable-but-empty
+	// folders come back as a warning (valid state); network/auth
+	// errors hard-fail so we don't create a half-bound project
+	// whose webhook will 404 later too.
+	var warnings []string
+	if scm != nil && len(req.Files) == 0 && h.fetcher != nil {
+		fetchRef := scm.DefaultBranch
+		if fetchRef == "" {
+			fetchRef = "main"
+		}
+		remote := store.SCMSource{
+			Provider:      scm.Provider,
+			URL:           scm.URL,
+			DefaultBranch: fetchRef,
+			AuthRef:       scm.AuthRef,
+		}
+		fetchPath := req.ConfigPath // empty → fetcher defaults to ".gocdnext"
+		files, ferr := h.fetcher.Fetch(r.Context(), remote, fetchRef, fetchPath)
+		switch {
+		case errors.Is(ferr, configsync.ErrFolderNotFound):
+			warnings = append(warnings, fmt.Sprintf(
+				"config folder %q not found at %s@%s — project bound, pipelines will sync on first push",
+				displayConfigPath(req.ConfigPath), scm.URL, fetchRef))
+		case ferr != nil:
+			h.log.Warn("apply: initial sync fetch failed",
+				"slug", req.Slug, "url", scm.URL, "err", ferr)
+			http.Error(w, "fetch .gocdnext/ from repo: "+ferr.Error(), http.StatusBadGateway)
+			return
+		default:
+			parsed, perr := configsync.ParseFiles(files)
+			if perr != nil {
+				http.Error(w, "parse remote .gocdnext/: "+perr.Error(), http.StatusUnprocessableEntity)
+				return
+			}
+			if len(parsed) == 0 {
+				warnings = append(warnings, fmt.Sprintf(
+					"no YAML files in %q at %s@%s — pipelines will sync on first push with files",
+					displayConfigPath(req.ConfigPath), scm.URL, fetchRef))
+			}
+			pipelines = parsed
+		}
+	}
+
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        req.Slug,
 		Name:        req.Name,
@@ -160,11 +235,12 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.SCMSource != nil {
 		resp.SCMSource = &ApplySCMSourceResult{
-			ID:            result.SCMSource.ID.String(),
-			Provider:      result.SCMSource.Provider,
-			URL:           result.SCMSource.URL,
-			DefaultBranch: result.SCMSource.DefaultBranch,
-			Created:       result.SCMSource.Created,
+			ID:                     result.SCMSource.ID.String(),
+			Provider:               result.SCMSource.Provider,
+			URL:                    result.SCMSource.URL,
+			DefaultBranch:          result.SCMSource.DefaultBranch,
+			Created:                result.SCMSource.Created,
+			GeneratedWebhookSecret: result.SCMSource.GeneratedWebhookSecret,
 		}
 	}
 	for _, p := range result.Pipelines {
@@ -177,10 +253,21 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Best-effort webhook registration. Always runs after the apply
-	// succeeded so even a 100% failure here leaves the project
-	// definition in place; operator can retry later.
-	resp.Webhooks = h.reconcilePipelines(r.Context(), pipelines)
+	resp.Warnings = warnings
+
+	// Best-effort webhook registration on the scm_source that the
+	// apply just bound. A 100% failure here leaves the project
+	// definition intact — the operator can install the webhook
+	// manually or re-apply later.
+	if result.SCMSource != nil {
+		if hr := h.reconcileSCMSourceWebhook(
+			r.Context(),
+			result.SCMSource,
+			result.SCMSource.GeneratedWebhookSecret,
+		); hr != nil {
+			resp.Webhooks = []HookRegistration{*hr}
+		}
+	}
 
 	h.log.Info("apply project",
 		"slug", req.Slug,
@@ -211,6 +298,17 @@ func parseFiles(files []ApplyFile) ([]*domain.Pipeline, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// displayConfigPath renders the config path as it appears to the
+// user: empty → ".gocdnext" (the default the fetcher would use).
+// Only used inside warning strings so operators see the folder
+// they can push files into.
+func displayConfigPath(s string) string {
+	if s == "" {
+		return ".gocdnext"
+	}
+	return s
 }
 
 // configPathRE restricts project-level config paths to a safe

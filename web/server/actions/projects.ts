@@ -100,3 +100,132 @@ export async function createProject(
     };
   }
 }
+
+export type DeleteProjectCounts = {
+  pipelines_deleted: number;
+  runs_deleted: number;
+  secrets_deleted: number;
+  scm_sources_deleted: number;
+};
+
+export type DeleteProjectResult =
+  | { ok: true; slug: string; counts: DeleteProjectCounts }
+  | { ok: false; error: string; status?: number };
+
+// deleteProject removes the project and all cascaded children
+// (pipelines, materials, runs, artifacts, secrets, scm_sources)
+// via the backend's ON DELETE CASCADE wiring. Returns the
+// pre-delete row counts so the UI can confirm the blast radius
+// in its success toast.
+export async function deleteProject(slug: string): Promise<DeleteProjectResult> {
+  const parsed = projectSlugSchema.safeParse(slug);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid slug" };
+  }
+
+  const url =
+    env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+    `/api/v1/projects/${encodeURIComponent(parsed.data)}`;
+  const store = await cookies();
+  const session = store.get("gocdnext_session")?.value;
+
+  try {
+    const res = await fetch(url, {
+      method: "DELETE",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: text.trim().slice(0, 300) || `server ${res.status}`,
+      };
+    }
+    const body = text
+      ? (JSON.parse(text) as Partial<DeleteProjectCounts> & { slug?: string })
+      : {};
+    revalidatePath("/projects");
+    revalidatePath(`/projects/${parsed.data}`);
+    return {
+      ok: true,
+      slug: body.slug ?? parsed.data,
+      counts: {
+        pipelines_deleted: body.pipelines_deleted ?? 0,
+        runs_deleted: body.runs_deleted ?? 0,
+        secrets_deleted: body.secrets_deleted ?? 0,
+        scm_sources_deleted: body.scm_sources_deleted ?? 0,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export type RotateWebhookSecretResult =
+  | { ok: true; scmSourceID: string; generatedWebhookSecret: string }
+  | { ok: false; error: string; status?: number };
+
+// rotateWebhookSecret POSTs the per-project rotation endpoint. The
+// plaintext secret lives only in the return value — subsequent reads
+// cannot recover it, same contract the backend enforces.
+export async function rotateWebhookSecret(
+  slug: string,
+): Promise<RotateWebhookSecretResult> {
+  const parsed = projectSlugSchema.safeParse(slug);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid slug" };
+  }
+
+  const url =
+    env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+    `/api/v1/projects/${encodeURIComponent(parsed.data)}/scm-sources/rotate-webhook-secret`;
+  const store = await cookies();
+  const session = store.get("gocdnext_session")?.value;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: text.trim().slice(0, 300) || `server ${res.status}`,
+      };
+    }
+    const body = text
+      ? (JSON.parse(text) as {
+          scm_source_id?: string;
+          generated_webhook_secret?: string;
+        })
+      : {};
+    if (!body.scm_source_id || !body.generated_webhook_secret) {
+      return { ok: false, error: "server returned no secret" };
+    }
+    revalidatePath(`/projects/${parsed.data}`);
+    return {
+      ok: true,
+      scmSourceID: body.scm_source_id,
+      generatedWebhookSecret: body.generated_webhook_secret,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}

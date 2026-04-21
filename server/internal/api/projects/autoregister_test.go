@@ -150,11 +150,18 @@ jobs:
 	}
 }
 
-// Auto-register tests are SKIPPED since UI.10.a disabled the
-// feature globally pending the multi-scm_source schema refactor.
-// The tests stay so they can be reactivated when the feature
-// comes back; `t.Skip` makes it clear why they don't run.
-const autoRegisterSkipMsg = "auto-register disabled in UI.10.a; re-enable with the multi-scm_source refactor"
+// Auto-register tests are SKIPPED pending a rewrite: UI.10.a
+// switched auto-register from per-material (old
+// `auto_register_webhook: true` YAML flag, one hook per git
+// material) to per-scm_source (one hook per project binding,
+// using the sealed secret). The fixtures below still build the
+// old-shape apply request, so they no longer exercise the live
+// code path. Leaving the tests here as scaffolding — the new
+// test must: (1) bind an scm_source in the apply body,
+// (2) assert one HookRegistration in body.Webhooks keyed by
+// SCMSourceURL, (3) verify the created hook's secret came from
+// scm_source.webhook_secret plaintext.
+const autoRegisterSkipMsg = "auto-register tests need a rewrite for the scm_source-per-project model (UI.10.a)"
 
 func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 	t.Skip(autoRegisterSkipMsg)

@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteProjectBySlug = `-- name: DeleteProjectBySlug :execrows
+DELETE FROM projects WHERE slug = $1
+`
+
+// Returns the number of project rows deleted (0 or 1). ON DELETE
+// CASCADE on every foreign key that points at projects carries
+// the children (pipelines → materials → runs → artifacts, secrets,
+// scm_sources, etc.), so this single statement is enough.
+func (q *Queries) DeleteProjectBySlug(ctx context.Context, slug string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProjectBySlug, slug)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findProjectBySlug = `-- name: FindProjectBySlug :one
 SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
@@ -39,6 +55,41 @@ func (q *Queries) FindProjectBySlug(ctx context.Context, slug string) (FindProje
 		&i.ConfigPath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProjectDeletionCounts = `-- name: GetProjectDeletionCounts :one
+SELECT
+    (SELECT COUNT(*) FROM pipelines WHERE project_id = p.id)::bigint        AS pipeline_count,
+    (SELECT COUNT(*) FROM runs r
+        JOIN pipelines pl ON pl.id = r.pipeline_id
+        WHERE pl.project_id = p.id)::bigint                                  AS run_count,
+    (SELECT COUNT(*) FROM secrets WHERE project_id = p.id)::bigint           AS secret_count,
+    (SELECT COUNT(*) FROM scm_sources WHERE project_id = p.id)::bigint       AS scm_source_count
+FROM projects p
+WHERE p.slug = $1
+`
+
+type GetProjectDeletionCountsRow struct {
+	PipelineCount  int64
+	RunCount       int64
+	SecretCount    int64
+	ScmSourceCount int64
+}
+
+// Aggregated before the cascading delete so the caller can surface
+// "deleted N pipelines, M runs, K secrets" without probing each
+// table after the fact (by then the rows are gone). Kept as a
+// single round-trip so the delete flow stays two calls, not six.
+func (q *Queries) GetProjectDeletionCounts(ctx context.Context, slug string) (GetProjectDeletionCountsRow, error) {
+	row := q.db.QueryRow(ctx, getProjectDeletionCounts, slug)
+	var i GetProjectDeletionCountsRow
+	err := row.Scan(
+		&i.PipelineCount,
+		&i.RunCount,
+		&i.SecretCount,
+		&i.ScmSourceCount,
 	)
 	return i, err
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/config"
+	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
@@ -143,10 +144,19 @@ func main() {
 		logger.Info("github checks reporter enabled")
 	}
 
+	// Single shared fetcher: same HTTP client + API base feed both
+	// the webhook drift path (push → re-apply) and the project-apply
+	// initial-sync path (bind → pull pipelines from HEAD). Reusing
+	// one instance means connection-pool churn stays low when both
+	// paths fire close together.
+	gitHubFetcher := &configsync.GitHubFetcher{}
+
 	webhookHandler := webhook.NewHandler(st, logger).
-		WithConfigFetcher(&webhook.GitHubConfigFetcher{}).
+		WithConfigFetcher(gitHubFetcher).
 		WithChecksReporter(checksReporter)
-	projectsHandler := projectsapi.NewHandler(st, logger).WithCipher(cipher)
+	projectsHandler := projectsapi.NewHandler(st, logger).
+		WithCipher(cipher).
+		WithConfigFetcher(gitHubFetcher)
 	// Auto-register is disabled pending the multi-scm_source
 	// refactor (see autoregister.go). Wiring stays here so the
 	// path is easy to re-enable; WithAutoRegister is a no-op.
@@ -156,7 +166,8 @@ func main() {
 			PublicBase: cfg.PublicBase,
 		})
 	}
-	runsHandler := runsapi.NewHandler(st, logger)
+	runsHandler := runsapi.NewHandler(st, logger).
+		WithConfigFetcher(gitHubFetcher)
 	if artifactStore != nil {
 		runsHandler = runsHandler.WithArtifactStore(artifactStore)
 	}
@@ -193,6 +204,7 @@ func main() {
 	// here so the router block can reference them.
 	var authProvidersHandler *adminapi.AuthProvidersHandler
 	var vcsIntegrationsHandler *adminapi.VCSIntegrationsHandler
+	globalSecretsHandler := adminapi.NewGlobalSecretsHandler(st, cipher, logger)
 
 	// DB-backed providers need the same AES cipher used for /secrets.
 	// Wire it here so the admin UI can create/edit provider rows and
@@ -284,7 +296,9 @@ func main() {
 		p.Post("/api/v1/projects/apply", projectsHandler.Apply)
 		p.Get("/api/v1/projects", projectsHandler.List)
 		p.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
+		p.Delete("/api/v1/projects/{slug}", projectsHandler.Delete)
 		p.Get("/api/v1/projects/{slug}/vsm", projectsHandler.VSM)
+		p.Post("/api/v1/projects/{slug}/scm-sources/rotate-webhook-secret", projectsHandler.RotateWebhookSecret)
 		p.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
 		p.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
 		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
@@ -318,6 +332,9 @@ func main() {
 		p.Post("/api/v1/admin/integrations/vcs", vcsIntegrationsHandler.Upsert)
 		p.Delete("/api/v1/admin/integrations/vcs/{id}", vcsIntegrationsHandler.Delete)
 		p.Post("/api/v1/admin/integrations/vcs/reload", vcsIntegrationsHandler.Reload)
+		p.Get("/api/v1/admin/secrets", globalSecretsHandler.List)
+		p.Post("/api/v1/admin/secrets", globalSecretsHandler.Set)
+		p.Delete("/api/v1/admin/secrets/{name}", globalSecretsHandler.Delete)
 	})
 
 	srv := &http.Server{
