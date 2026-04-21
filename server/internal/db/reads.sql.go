@@ -201,6 +201,56 @@ func (q *Queries) ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) (
 	return items, nil
 }
 
+const listJobRunsForRuns = `-- name: ListJobRunsForRuns :many
+SELECT run_id, stage_run_id, id, name, status, started_at, finished_at
+FROM job_runs
+WHERE run_id = ANY($1::uuid[])
+ORDER BY run_id, stage_run_id, name
+`
+
+type ListJobRunsForRunsRow struct {
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	ID         pgtype.UUID
+	Name       string
+	Status     string
+	StartedAt  pgtype.Timestamptz
+	FinishedAt pgtype.Timestamptz
+}
+
+// Batch-loads job_runs for every run whose id is in the input
+// array. The project detail page renders a GitLab-style pipeline
+// flow per pipeline, each stage box listing its jobs — fetching
+// these per pipeline would mean N queries. This single scan
+// covers the card set.
+func (q *Queries) ListJobRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListJobRunsForRunsRow, error) {
+	rows, err := q.db.Query(ctx, listJobRunsForRuns, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobRunsForRunsRow{}
+	for rows.Next() {
+		var i ListJobRunsForRunsRow
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StageRunID,
+			&i.ID,
+			&i.Name,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMaterialsByProjectSlug = `-- name: ListMaterialsByProjectSlug :many
 SELECT m.pipeline_id, m.type, m.config, m.fingerprint
 FROM materials m
@@ -246,7 +296,7 @@ func (q *Queries) ListMaterialsByProjectSlug(ctx context.Context, slug string) (
 }
 
 const listPipelinesByProjectSlug = `-- name: ListPipelinesByProjectSlug :many
-SELECT pl.id, pl.name, pl.definition_version, pl.updated_at
+SELECT pl.id, pl.name, pl.definition_version, pl.definition, pl.updated_at
 FROM pipelines pl
 JOIN projects p ON p.id = pl.project_id
 WHERE p.slug = $1
@@ -257,9 +307,13 @@ type ListPipelinesByProjectSlugRow struct {
 	ID                pgtype.UUID
 	Name              string
 	DefinitionVersion int32
+	Definition        []byte
 	UpdatedAt         pgtype.Timestamptz
 }
 
+// Returns definition alongside metadata so the card can pull
+// stage names from the YAML when the pipeline has never run
+// (no stage_runs yet → no history to render from).
 func (q *Queries) ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error) {
 	rows, err := q.db.Query(ctx, listPipelinesByProjectSlug, slug)
 	if err != nil {
@@ -273,6 +327,7 @@ func (q *Queries) ListPipelinesByProjectSlug(ctx context.Context, slug string) (
 			&i.ID,
 			&i.Name,
 			&i.DefinitionVersion,
+			&i.Definition,
 			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -286,14 +341,42 @@ func (q *Queries) ListPipelinesByProjectSlug(ctx context.Context, slug string) (
 }
 
 const listProjectsWithCounts = `-- name: ListProjectsWithCounts :many
+WITH
+latest_per_pipeline AS (
+  SELECT DISTINCT ON (r.pipeline_id)
+         r.pipeline_id, pl.project_id, r.status AS latest_status
+  FROM runs r
+  JOIN pipelines pl ON pl.id = r.pipeline_id
+  ORDER BY r.pipeline_id, r.created_at DESC
+),
+project_health AS (
+  SELECT project_id,
+         bool_or(latest_status = 'running' OR latest_status = 'queued') AS any_running,
+         bool_or(latest_status = 'failed') AS any_failed
+  FROM latest_per_pipeline
+  GROUP BY project_id
+)
 SELECT p.id, p.slug, p.name, p.description, p.config_path,
        p.created_at, p.updated_at,
+       COALESCE(s.provider, '')::TEXT AS provider,
        COUNT(DISTINCT pl.id)::BIGINT AS pipeline_count,
-       MAX(r.created_at)::TIMESTAMPTZ AS latest_run_at
+       COUNT(r.id)::BIGINT AS run_count,
+       MAX(r.created_at)::TIMESTAMPTZ AS latest_run_at,
+       (
+         CASE
+           WHEN COUNT(DISTINCT pl.id) = 0 THEN 'no_pipelines'
+           WHEN MAX(r.created_at) IS NULL THEN 'never_run'
+           WHEN COALESCE(ph.any_running, false) THEN 'running'
+           WHEN COALESCE(ph.any_failed, false) THEN 'failing'
+           ELSE 'success'
+         END
+       )::TEXT AS status_agg
 FROM projects p
 LEFT JOIN pipelines pl ON pl.project_id = p.id
 LEFT JOIN runs r ON r.pipeline_id = pl.id
-GROUP BY p.id
+LEFT JOIN scm_sources s ON s.project_id = p.id
+LEFT JOIN project_health ph ON ph.project_id = p.id
+GROUP BY p.id, s.provider, ph.any_running, ph.any_failed
 ORDER BY p.updated_at DESC
 `
 
@@ -305,12 +388,26 @@ type ListProjectsWithCountsRow struct {
 	ConfigPath    string
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
+	Provider      string
 	PipelineCount int64
+	RunCount      int64
 	LatestRunAt   pgtype.Timestamptz
+	StatusAgg     string
 }
 
 // Project list used by the dashboard home. Joins enough aggregate info so the
 // UI renders without round-tripping per row.
+//
+// Extra columns feed the card-style layout on /projects:
+//   - provider: from the bound scm_source when present; empty string
+//     when the project has no repo yet (shown as "—" in the UI).
+//   - run_count: total runs across all pipelines — the card shows
+//     "5 pipelines · 123 runs" as a density signal.
+//   - status_agg: coarse health derived from the most recent run per
+//     pipeline. Pre-computed in a CTE (latest_per_pipeline) so the
+//     outer aggregate stays aggregate-only; correlated subqueries
+//     inside CASE/WHEN during GROUP BY are fragile in Postgres and
+//     blew up the previous version of this query.
 func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWithCountsRow, error) {
 	rows, err := q.db.Query(ctx, listProjectsWithCounts)
 	if err != nil {
@@ -328,8 +425,11 @@ func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWit
 			&i.ConfigPath,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Provider,
 			&i.PipelineCount,
+			&i.RunCount,
 			&i.LatestRunAt,
+			&i.StatusAgg,
 		); err != nil {
 			return nil, err
 		}
@@ -434,6 +534,155 @@ func (q *Queries) ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UU
 			&i.Status,
 			&i.StartedAt,
 			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStageRunsForRuns = `-- name: ListStageRunsForRuns :many
+SELECT run_id, id, name, ordinal, status, started_at, finished_at
+FROM stage_runs
+WHERE run_id = ANY($1::uuid[])
+ORDER BY run_id, ordinal
+`
+
+type ListStageRunsForRunsRow struct {
+	RunID      pgtype.UUID
+	ID         pgtype.UUID
+	Name       string
+	Ordinal    int32
+	Status     string
+	StartedAt  pgtype.Timestamptz
+	FinishedAt pgtype.Timestamptz
+}
+
+// Batch-loads stage_runs for every run whose id is in the input
+// array — the project detail page renders one pipeline card per
+// pipeline and each card needs the latest run's stage states.
+// Issuing one query per card would mean N+1 round trips; this
+// amortizes them into a single scan.
+func (q *Queries) ListStageRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListStageRunsForRunsRow, error) {
+	rows, err := q.db.Query(ctx, listStageRunsForRuns, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStageRunsForRunsRow{}
+	for rows.Next() {
+		var i ListStageRunsForRunsRow
+		if err := rows.Scan(
+			&i.RunID,
+			&i.ID,
+			&i.Name,
+			&i.Ordinal,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTopPipelinesPerProject = `-- name: ListTopPipelinesPerProject :many
+SELECT pipeline_id, project_id, name, latest_run_id,
+       latest_run_status, latest_run_at, definition
+FROM (
+  SELECT pl.id AS pipeline_id, pl.project_id, pl.name,
+         pl.definition,
+         -- COALESCE to empty string so sqlc types this as
+         -- plain string (not *string). Empty means "never run" —
+         -- the store layer treats "" the same way null would.
+         COALESCE(lr.status, '')::TEXT AS latest_run_status,
+         lr.created_at AS latest_run_at,
+         -- Nil UUID when the LEFT JOIN LATERAL didn't match a run.
+         -- Store-side treats that as "skip stage_runs lookup".
+         COALESCE(lr.id, '00000000-0000-0000-0000-000000000000'::uuid) AS latest_run_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY pl.project_id
+           ORDER BY
+             -- Failing pipelines first so the card headlines the
+             -- problem state; then running, then anything else
+             -- that has at least one run, ordered by recency;
+             -- finally pipelines that never ran, alphabetical.
+             -- Without this priority ladder, a project with 3
+             -- freshly-applied-never-ran pipelines and 1 failing
+             -- one would hide the failure behind "+N more".
+             CASE lr.status
+               WHEN 'failed' THEN 0
+               WHEN 'running' THEN 1
+               WHEN 'queued' THEN 2
+               WHEN 'canceled' THEN 3
+               WHEN 'success' THEN 4
+               ELSE 5 -- never run
+             END,
+             lr.created_at DESC NULLS LAST,
+             pl.name
+         ) AS rn
+  FROM pipelines pl
+  LEFT JOIN LATERAL (
+    SELECT id, status, created_at
+    FROM runs
+    WHERE pipeline_id = pl.id
+    ORDER BY created_at DESC
+    LIMIT 1
+  ) lr ON true
+) ranked
+WHERE rn <= 3
+ORDER BY project_id, rn
+`
+
+type ListTopPipelinesPerProjectRow struct {
+	PipelineID      pgtype.UUID
+	ProjectID       pgtype.UUID
+	Name            string
+	LatestRunID     pgtype.UUID
+	LatestRunStatus string
+	LatestRunAt     pgtype.Timestamptz
+	Definition      []byte
+}
+
+// Per-project top-N (most recently updated) pipelines with their
+// latest run status. Used to render the "mini stack" inside each
+// project card without issuing one query per card (N+1). Currently
+// capped at 3 entries per project via ROW_NUMBER partition — the
+// UI appends a "+K more" link when pipeline_count > 3.
+//
+// Also returns:
+//   - latest_run_id: zero-UUID when the pipeline has never run.
+//     Callers collect these to batch-load stage_runs.
+//   - definition: the pipeline's YAML snapshot (JSONB). The card
+//     renders grey "pending" stage pills from definition.Stages
+//     when latest_run_id is zero, and reconciles definition vs.
+//     stage_runs for mid-run/cancelled states.
+func (q *Queries) ListTopPipelinesPerProject(ctx context.Context) ([]ListTopPipelinesPerProjectRow, error) {
+	rows, err := q.db.Query(ctx, listTopPipelinesPerProject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTopPipelinesPerProjectRow{}
+	for rows.Next() {
+		var i ListTopPipelinesPerProjectRow
+		if err := rows.Scan(
+			&i.PipelineID,
+			&i.ProjectID,
+			&i.Name,
+			&i.LatestRunID,
+			&i.LatestRunStatus,
+			&i.LatestRunAt,
+			&i.Definition,
 		); err != nil {
 			return nil, err
 		}

@@ -22,22 +22,51 @@ export type AuthProvidersResponse = {
   local_enabled?: boolean;
 };
 
+export type PipelinePreview = {
+  id: string;
+  name: string;
+  latest_run_status?: string;
+  latest_run_at?: string;
+  definition_stages?: string[];
+  latest_run_stages?: StageRunSummary[];
+};
+
+export type ProjectStatus =
+  | "no_pipelines"
+  | "never_run"
+  | "running"
+  | "failing"
+  | "success";
+
+export type ProjectProvider =
+  | "github"
+  | "gitlab"
+  | "bitbucket"
+  | "manual"
+  | ""; // empty = no scm_source bound yet
+
 export type ProjectSummary = {
   id: string;
   slug: string;
   name: string;
   description?: string;
+  config_path?: string;
   created_at: string;
   updated_at: string;
   pipeline_count: number;
+  run_count: number;
   latest_run_at?: string;
+  provider?: ProjectProvider;
+  status: ProjectStatus;
+  top_pipelines?: PipelinePreview[];
 };
 
-export type PipelineSummary = {
+export type ProjectSCMInfo = {
   id: string;
-  name: string;
-  definition_version: number;
-  updated_at: string;
+  provider: "github" | "gitlab" | "bitbucket" | "manual";
+  url: string;
+  default_branch: string;
+  auth_ref?: string;
 };
 
 export type RunSummary = {
@@ -53,9 +82,52 @@ export type RunSummary = {
   triggered_by?: string;
 };
 
+export type JobRunSummaryLite = {
+  id: string;
+  name: string;
+  status: string;
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type StageRunSummary = {
+  id: string;
+  name: string;
+  ordinal: number;
+  status: string;
+  started_at?: string;
+  finished_at?: string;
+  jobs?: JobRunSummaryLite[];
+};
+
+export type DefinitionJob = {
+  name: string;
+  stage: string;
+};
+
+export type PipelineSummary = {
+  id: string;
+  name: string;
+  definition_version: number;
+  updated_at: string;
+  definition_stages?: string[];
+  definition_jobs?: DefinitionJob[];
+  latest_run?: RunSummary;
+  latest_run_stages?: StageRunSummary[];
+};
+
+export type PipelineEdge = {
+  from_pipeline: string;
+  to_pipeline: string;
+  stage?: string;
+  status?: string;
+};
+
 export type ProjectDetail = {
   project: ProjectSummary;
+  scm_source?: ProjectSCMInfo;
   pipelines: PipelineSummary[];
+  edges?: PipelineEdge[];
   runs: RunSummary[];
 };
 

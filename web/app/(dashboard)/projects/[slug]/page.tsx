@@ -3,13 +3,6 @@ import { notFound } from "next/navigation";
 import type { Metadata, Route } from "next";
 import { ChevronRight } from "lucide-react";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
   Table,
   TableBody,
   TableCell,
@@ -20,7 +13,8 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
+import { PipelineFlow } from "@/components/pipelines/pipeline-flow";
+import { ProjectActionsMenu } from "@/components/projects/project-actions-menu.client";
 import { formatDurationSeconds, durationBetween } from "@/lib/format";
 import {
   GocdnextAPIError,
@@ -69,20 +63,12 @@ export default async function ProjectDetailPage({
           <h2 className="text-2xl font-semibold tracking-tight">
             {detail.project.name}
           </h2>
-          <div className="flex items-center gap-4 text-sm">
-            <Link
-              href={`/projects/${detail.project.slug}/vsm` as Route}
-              className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
-            >
-              View VSM →
-            </Link>
-            <Link
-              href={`/projects/${detail.project.slug}/secrets` as Route}
-              className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
-            >
-              Manage secrets →
-            </Link>
-          </div>
+          <ProjectActionsMenu
+            project={detail.project}
+            scmSource={detail.scm_source}
+            pipelineCount={detail.pipelines.length}
+            runCount={detail.runs.length}
+          />
         </div>
         {detail.project.description ? (
           <p className="mt-1 text-sm text-muted-foreground">
@@ -91,42 +77,20 @@ export default async function ProjectDetailPage({
         ) : null}
       </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Pipelines</CardTitle>
-          <CardDescription>
+      <section>
+        <header className="mb-3 flex items-baseline justify-between">
+          <h3 className="text-lg font-semibold tracking-tight">Pipelines</h3>
+          <span className="text-xs text-muted-foreground">
             {detail.pipelines.length} definition
             {detail.pipelines.length === 1 ? "" : "s"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {detail.pipelines.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No pipelines.</p>
-          ) : (
-            <ul className="divide-y divide-border">
-              {detail.pipelines.map((pl) => (
-                <li
-                  key={pl.id}
-                  className="flex items-center justify-between py-2 text-sm"
-                >
-                  <div className="flex flex-col">
-                    <span className="font-mono">{pl.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      v{pl.definition_version} · updated{" "}
-                      <RelativeTime at={pl.updated_at} />
-                    </span>
-                  </div>
-                  <TriggerPipelineButton
-                    pipelineId={pl.id}
-                    pipelineName={pl.name}
-                    projectSlug={detail.project.slug}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+          </span>
+        </header>
+        <PipelineFlow
+          projectSlug={detail.project.slug}
+          pipelines={detail.pipelines}
+          edges={detail.edges ?? []}
+        />
+      </section>
 
       <Separator />
 

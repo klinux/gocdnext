@@ -3,7 +3,14 @@ import { Input as InputPrimitive } from "@base-ui/react/input"
 
 import { cn } from "@/lib/utils"
 
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+// Prop type mirrors the base-ui primitive instead of the native
+// <input>. The primitive is controlled via onValueChange (not the
+// synthetic onChange event), and TS would silently drop that prop
+// on a native-shaped wrapper — which is how the projects page
+// search ended up firing keystrokes into the void.
+type InputProps = React.ComponentProps<typeof InputPrimitive>;
+
+function Input({ className, type, ...props }: InputProps) {
   return (
     <InputPrimitive
       type={type}

@@ -54,6 +54,21 @@ func TestListProjects_CountsAndLatestRun(t *testing.T) {
 	if time.Since(*p.LatestRunAt) > time.Minute {
 		t.Fatalf("LatestRunAt looks stale: %v", p.LatestRunAt)
 	}
+
+	// After a run is created the preview should surface it so the
+	// projects page card can render the status node instead of the
+	// grey "never run" pill. Regression guard for the list-card vs
+	// detail-card parity the user called out.
+	if len(p.TopPipelines) != 1 {
+		t.Fatalf("TopPipelines = %d, want 1", len(p.TopPipelines))
+	}
+	tp := p.TopPipelines[0]
+	if tp.LatestRunStatus == "" {
+		t.Fatalf("TopPipelines[0].LatestRunStatus is empty — run wasn't attached")
+	}
+	if len(tp.LatestRunStages) == 0 {
+		t.Fatalf("TopPipelines[0].LatestRunStages is empty — stage_runs weren't attached")
+	}
 }
 
 func TestGetProjectDetail_NotFound(t *testing.T) {

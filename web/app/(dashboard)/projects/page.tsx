@@ -1,9 +1,7 @@
-import Link from "next/link";
-import type { Metadata, Route } from "next";
+import type { Metadata } from "next";
 
 import { NewProjectDialog } from "@/components/projects/new-project-dialog.client";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { RelativeTime } from "@/components/shared/relative-time";
+import { ProjectsExplorer } from "@/components/projects/projects-explorer.client";
 import { listProjects } from "@/server/queries/projects";
 
 export const metadata: Metadata = {
@@ -25,36 +23,14 @@ export default async function ProjectsPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Projects</h2>
           <p className="text-sm text-muted-foreground">
-            {projects.length} project{projects.length === 1 ? "" : "s"} registered.
+            Browse, filter and open any project registered on this control
+            plane. Click a card to view its pipelines and recent runs.
           </p>
         </div>
         <NewProjectDialog />
       </header>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {projects.map((p) => (
-          <Link
-            key={p.id}
-            href={`/projects/${p.slug}` as Route}
-            className="group"
-          >
-            <Card className="h-full transition-colors group-hover:border-primary/40">
-              <CardHeader>
-                <CardTitle className="truncate">{p.name}</CardTitle>
-                <CardDescription className="truncate">{p.slug}</CardDescription>
-              </CardHeader>
-              <CardContent className="flex items-end justify-between text-sm text-muted-foreground">
-                <span>
-                  {p.pipeline_count} pipeline{p.pipeline_count === 1 ? "" : "s"}
-                </span>
-                <span>
-                  latest run <RelativeTime at={p.latest_run_at} />
-                </span>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
-      </div>
+      <ProjectsExplorer projects={projects} />
     </section>
   );
 }
