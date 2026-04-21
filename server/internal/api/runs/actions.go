@@ -123,16 +123,18 @@ func (h *Handler) TriggerPipeline(w http.ResponseWriter, r *http.Request) {
 		PipelineID:  pipelineID,
 		TriggeredBy: body.TriggeredBy,
 	}
-	res, err := h.store.TriggerManualRun(r.Context(), in)
-	// Seed-on-trigger fallback: a pipeline bound via initial-sync
-	// but never pushed has no modification row yet, so the first
-	// "Run latest" would 422. If we have a Fetcher wired, try to
-	// resolve HEAD of the default branch and retry once.
-	if errors.Is(err, store.ErrNoModificationForPipeline) && h.fetcher != nil {
-		if seeded := h.seedHeadModification(r.Context(), pipelineID); seeded {
-			res, err = h.store.TriggerManualRun(r.Context(), in)
-		}
+	// Always refresh HEAD before the trigger when we have a fetcher
+	// wired. Users expect "Run latest" to run whatever is at HEAD of
+	// the default branch right now, not the last modification cached
+	// in the DB (which may be stale if no webhook is registered, or
+	// if the operator is iterating locally and hasn't pushed enough
+	// to fire one). InsertModification is idempotent on
+	// (material_id, revision, branch) — if HEAD hasn't moved the
+	// existing row is reused and nothing changes.
+	if h.fetcher != nil {
+		h.seedHeadModification(r.Context(), pipelineID)
 	}
+	res, err := h.store.TriggerManualRun(r.Context(), in)
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")
