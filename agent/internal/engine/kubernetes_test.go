@@ -36,13 +36,22 @@ func newFakeEngine(t *testing.T, cfg engine.KubernetesConfig) (*engine.Kubernete
 
 // advancePod adjusts the Pod's phase + ContainerStatuses via Update,
 // simulating what kubelet would do in a real cluster.
+//
+// Uses t.Errorf (not Fatalf) because callers dispatch this via
+// `go advancePod(...)`. Fatalf from a non-test goroutine only
+// exits the goroutine — go vet rightfully flags that, and the
+// test would continue silently toward a timeout instead of
+// failing fast. Errorf is goroutine-safe and the downstream
+// RunScript assertion catches the cascade when advancing the
+// pod fails.
 func advancePod(t *testing.T, cli *fake.Clientset, ns, name string, phase corev1.PodPhase, exitCode int32) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	pod, err := cli.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get: %v", err)
+		t.Errorf("get: %v", err)
+		return
 	}
 	pod.Status.Phase = phase
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
@@ -52,7 +61,7 @@ func advancePod(t *testing.T, cli *fake.Clientset, ns, name string, phase corev1
 		},
 	}}
 	if _, err := cli.CoreV1().Pods(ns).UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
-		t.Fatalf("updateStatus: %v", err)
+		t.Errorf("updateStatus: %v", err)
 	}
 }
 

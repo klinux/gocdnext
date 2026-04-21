@@ -93,12 +93,22 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 
 	var seq atomic.Int64
 
-	for _, co := range a.GetCheckouts() {
+	// scriptWorkDir is where user scripts run. Defaults to workspace
+	// root when there are no checkouts (plugin-only jobs), otherwise
+	// follows the first checkout into its target dir so relative
+	// paths in the user's script match the layout of the repo they
+	// cloned. Multi-material pipelines reach sibling checkouts via
+	// `../<other-target>` — the first is the de-facto "primary".
+	scriptWorkDir := workDir
+	for i, co := range a.GetCheckouts() {
 		if err := r.checkout(ctx, workDir, co, a, &seq); err != nil {
 			log.Warn("runner: checkout failed", "err", err, "url", co.GetUrl())
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
 				fmt.Sprintf("checkout %s: %v", co.GetUrl(), err))
 			return
+		}
+		if i == 0 && co.GetTargetDir() != "" {
+			scriptWorkDir = filepath.Join(workDir, co.GetTargetDir())
 		}
 	}
 
@@ -126,7 +136,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: plugin step skipped (local runner MVP)", i))
 			continue
 		}
-		exitCode, err := r.runScript(ctx, workDir, script, a.GetImage(), a.GetEnv(), a, &seq)
+		exitCode, err := r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetEnv(), a, &seq)
 		if err != nil {
 			log.Warn("runner: script error", "err", err, "task", i)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),

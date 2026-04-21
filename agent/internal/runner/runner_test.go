@@ -228,7 +228,10 @@ func TestExecute_GitCheckoutFromLocalRepo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	a := assignment(`cat fixture/README.md`)
+	// Script uses a relative path ("README.md") — the runner
+	// must cd into the checkout target so the user doesn't have
+	// to hardcode the scheduler-assigned TargetDir in every step.
+	a := assignment(`cat README.md`)
 	a.Checkouts = []*gocdnextv1.MaterialCheckout{{
 		MaterialId: "mat-1",
 		Url:        "file://" + repoDir,
