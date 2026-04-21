@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteGlobalSecretByName = `-- name: DeleteGlobalSecretByName :execrows
+DELETE FROM secrets WHERE project_id IS NULL AND name = $1
+`
+
+func (q *Queries) DeleteGlobalSecretByName(ctx context.Context, name string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGlobalSecretByName, name)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteSecretByName = `-- name: DeleteSecretByName :execrows
 DELETE FROM secrets WHERE project_id = $1 AND name = $2
 `
@@ -26,6 +38,41 @@ func (q *Queries) DeleteSecretByName(ctx context.Context, arg DeleteSecretByName
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getGlobalSecretValues = `-- name: GetGlobalSecretValues :many
+SELECT name, value_enc
+FROM secrets
+WHERE project_id IS NULL AND name = ANY($1::text[])
+`
+
+type GetGlobalSecretValuesRow struct {
+	Name     string
+	ValueEnc []byte
+}
+
+// Resolver fallback: after GetSecretValuesByProject, names still
+// missing are looked up as globals. Kept as a separate call so
+// the resolver can short-circuit when every name was already
+// covered at project scope.
+func (q *Queries) GetGlobalSecretValues(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretValuesRow, error) {
+	rows, err := q.db.Query(ctx, getGlobalSecretValues, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetGlobalSecretValuesRow{}
+	for rows.Next() {
+		var i GetGlobalSecretValuesRow
+		if err := rows.Scan(&i.Name, &i.ValueEnc); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getSecretValuesByProject = `-- name: GetSecretValuesByProject :many
@@ -56,6 +103,41 @@ func (q *Queries) GetSecretValuesByProject(ctx context.Context, arg GetSecretVal
 	for rows.Next() {
 		var i GetSecretValuesByProjectRow
 		if err := rows.Scan(&i.Name, &i.ValueEnc); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGlobalSecrets = `-- name: ListGlobalSecrets :many
+SELECT name, created_at, updated_at
+FROM secrets
+WHERE project_id IS NULL
+ORDER BY name
+`
+
+type ListGlobalSecretsRow struct {
+	Name      string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+// Admin-only listing of every global (unscoped) secret. Same
+// "names + timestamps, never values" contract as project secrets.
+func (q *Queries) ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow, error) {
+	rows, err := q.db.Query(ctx, listGlobalSecrets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGlobalSecretsRow{}
+	for rows.Next() {
+		var i ListGlobalSecretsRow
+		if err := rows.Scan(&i.Name, &i.CreatedAt, &i.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -101,10 +183,49 @@ func (q *Queries) ListSecretsByProject(ctx context.Context, projectID pgtype.UUI
 	return items, nil
 }
 
+const upsertGlobalSecret = `-- name: UpsertGlobalSecret :one
+INSERT INTO secrets (project_id, name, value_enc)
+VALUES (NULL, $1, $2)
+ON CONFLICT (name) WHERE project_id IS NULL DO UPDATE SET
+    value_enc  = EXCLUDED.value_enc,
+    updated_at = NOW()
+RETURNING id, name, created_at, updated_at, (xmax = 0) AS created
+`
+
+type UpsertGlobalSecretParams struct {
+	Name     string
+	ValueEnc []byte
+}
+
+type UpsertGlobalSecretRow struct {
+	ID        pgtype.UUID
+	Name      string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+	Created   bool
+}
+
+// Global scope: project_id = NULL, shadowed by a same-name project
+// secret at resolution time. Targets the partial UNIQUE index
+// secrets_global_name_idx — Postgres can't infer partial indexes
+// from ON CONFLICT (name) alone, so we spell out the predicate.
+func (q *Queries) UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecretParams) (UpsertGlobalSecretRow, error) {
+	row := q.db.QueryRow(ctx, upsertGlobalSecret, arg.Name, arg.ValueEnc)
+	var i UpsertGlobalSecretRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Created,
+	)
+	return i, err
+}
+
 const upsertSecret = `-- name: UpsertSecret :one
 INSERT INTO secrets (project_id, name, value_enc)
 VALUES ($1, $2, $3)
-ON CONFLICT (project_id, name) DO UPDATE SET
+ON CONFLICT (project_id, name) WHERE project_id IS NOT NULL DO UPDATE SET
     value_enc  = EXCLUDED.value_enc,
     updated_at = NOW()
 RETURNING id, project_id, name, created_at, updated_at, (xmax = 0) AS created
@@ -129,6 +250,10 @@ type UpsertSecretRow struct {
 // update because the ciphertext changes (random nonce) even for identical
 // plaintext, making a "was this changed" diff unreliable; we bump
 // unconditionally on write.
+//
+// Targets the partial UNIQUE index secrets_project_name_idx (rows
+// where project_id IS NOT NULL). The global twin lives in
+// UpsertGlobalSecret below.
 func (q *Queries) UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error) {
 	row := q.db.QueryRow(ctx, upsertSecret, arg.ProjectID, arg.Name, arg.ValueEnc)
 	var i UpsertSecretRow

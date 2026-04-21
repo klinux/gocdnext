@@ -19,22 +19,31 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { secretNameSchema } from "@/lib/validations";
-import { setSecret } from "@/server/actions/secrets";
+import { setGlobalSecret, setSecret } from "@/server/actions/secrets";
 
-type Props = {
-  slug: string;
-  // When `name` is set, the dialog is in "rotate" mode — name is locked and
-  // the submit button reads "Update value" instead of "Create".
+// Discriminated on scope so the caller can't accidentally pass a
+// slug to a global secret or forget the slug on a project one. The
+// shared `mode`/`name`/`trigger` props live in a base type so the
+// two variants stay thin.
+type SharedProps = {
   mode?: "create" | "rotate";
   name?: string;
-  // `render`-style prop for base-ui: accepts a single element, not a ReactNode.
   trigger?: ReactElement;
 };
 
+type Props =
+  | (SharedProps & { scope?: "project"; slug: string })
+  | (SharedProps & { scope: "global" });
+
 // SecretDialog handles both creating a new secret (trigger = "New secret"
 // button) and rotating an existing value (trigger = "Rotate" on a row).
-// Rotate mode reuses setSecret because the server endpoint is an upsert.
-export function SecretDialog({ slug, mode = "create", name = "", trigger }: Props) {
+// Rotate mode reuses the underlying upsert — the server endpoint is
+// idempotent on (scope, name). The scope prop routes to the right
+// server action.
+export function SecretDialog(props: Props) {
+  const isGlobal = props.scope === "global";
+  const slug = isGlobal ? "" : props.slug;
+  const { mode = "create", name = "", trigger } = props;
   const [open, setOpen] = useState(false);
   const [formName, setFormName] = useState(name);
   const [value, setValue] = useState("");
@@ -67,13 +76,18 @@ export function SecretDialog({ slug, mode = "create", name = "", trigger }: Prop
     }
 
     startTransition(async () => {
-      const res = await setSecret({ slug, name: formName, value });
+      const res = isGlobal
+        ? await setGlobalSecret({ name: formName, value })
+        : await setSecret({ slug, name: formName, value });
       if (!res.ok) {
         toast.error(`set secret: ${res.error}`);
         return;
       }
+      const scopeLabel = isGlobal ? "Global secret" : "Secret";
       toast.success(
-        res.created ? `Secret ${formName} created` : `Secret ${formName} updated`,
+        res.created
+          ? `${scopeLabel} ${formName} created`
+          : `${scopeLabel} ${formName} updated`,
       );
       resetAndClose();
     });

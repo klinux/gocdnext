@@ -94,8 +94,10 @@ func (s *Store) DeleteSecret(ctx context.Context, projectID uuid.UUID, name stri
 	return nil
 }
 
-// ResolveSecrets decrypts the listed names and returns name→plaintext. Names
-// not in the DB are silently omitted (caller decides whether missing is an
+// ResolveSecrets decrypts the listed names and returns name→plaintext.
+// Names present at project scope win over globals; only names missing
+// from the project fall back to the global table. Names not in either
+// scope are silently omitted (caller decides whether missing is an
 // error — scheduler treats it as pipeline misconfig, fails the job).
 func (s *Store) ResolveSecrets(ctx context.Context, cipher *crypto.Cipher, projectID uuid.UUID, names []string) (map[string]string, error) {
 	if cipher == nil {
@@ -111,7 +113,7 @@ func (s *Store) ResolveSecrets(ctx context.Context, cipher *crypto.Cipher, proje
 	if err != nil {
 		return nil, fmt.Errorf("store: get secrets: %w", err)
 	}
-	out := make(map[string]string, len(rows))
+	out := make(map[string]string, len(names))
 	for _, r := range rows {
 		plain, err := cipher.Decrypt(r.ValueEnc)
 		if err != nil {
@@ -119,7 +121,88 @@ func (s *Store) ResolveSecrets(ctx context.Context, cipher *crypto.Cipher, proje
 		}
 		out[r.Name] = string(plain)
 	}
+
+	// Fallback to globals for names the project didn't cover.
+	// Short-circuit when everything resolved at project scope to
+	// avoid the extra round trip on the hot path.
+	missing := make([]string, 0, len(names)-len(out))
+	for _, n := range names {
+		if _, ok := out[n]; !ok {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	globals, err := s.q.GetGlobalSecretValues(ctx, missing)
+	if err != nil {
+		return nil, fmt.Errorf("store: get global secrets: %w", err)
+	}
+	for _, r := range globals {
+		plain, err := cipher.Decrypt(r.ValueEnc)
+		if err != nil {
+			return nil, fmt.Errorf("store: decrypt global secret %q: %w", r.Name, err)
+		}
+		out[r.Name] = string(plain)
+	}
 	return out, nil
+}
+
+// SetGlobalSecret encrypts plaintext and upserts at global scope
+// (project_id = NULL). Reuses SecretSet's name/value pair with
+// ProjectID ignored — admin-only path, gated on the HTTP side.
+func (s *Store) SetGlobalSecret(ctx context.Context, cipher *crypto.Cipher, name string, value []byte) (bool, error) {
+	if cipher == nil {
+		return false, errors.New("store: secrets: cipher not configured")
+	}
+	if err := ValidateSecretName(name); err != nil {
+		return false, err
+	}
+	enc, err := cipher.Encrypt(value)
+	if err != nil {
+		return false, fmt.Errorf("store: encrypt global secret: %w", err)
+	}
+	row, err := s.q.UpsertGlobalSecret(ctx, db.UpsertGlobalSecretParams{
+		Name:     name,
+		ValueEnc: enc,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: upsert global secret: %w", err)
+	}
+	return row.Created, nil
+}
+
+// ListGlobalSecrets returns names + timestamps for every global
+// row. Admin-only view — nothing here that a regular user should
+// see (names leak infrastructure topology).
+func (s *Store) ListGlobalSecrets(ctx context.Context) ([]Secret, error) {
+	rows, err := s.q.ListGlobalSecrets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: list global secrets: %w", err)
+	}
+	out := make([]Secret, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Secret{
+			Name:      r.Name,
+			CreatedAt: r.CreatedAt.Time,
+			UpdatedAt: r.UpdatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+// DeleteGlobalSecret removes a global row by name. Returns
+// ErrSecretNotFound when nothing matched so the HTTP layer can
+// 404 cleanly.
+func (s *Store) DeleteGlobalSecret(ctx context.Context, name string) error {
+	n, err := s.q.DeleteGlobalSecretByName(ctx, name)
+	if err != nil {
+		return fmt.Errorf("store: delete global secret: %w", err)
+	}
+	if n == 0 {
+		return ErrSecretNotFound
+	}
+	return nil
 }
 
 // ValidateSecretName enforces the naming convention. Exposed so the HTTP

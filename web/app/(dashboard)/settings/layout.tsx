@@ -15,6 +15,7 @@ const tabs: Tab[] = [
   { label: "Retention", href: "/settings/retention" as Route, matchPrefix: "/settings/retention" },
   { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations" },
   { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth" },
+  { label: "Secrets", href: "/settings/secrets" as Route, matchPrefix: "/settings/secrets" },
 ];
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {

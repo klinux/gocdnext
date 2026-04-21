@@ -14,22 +14,27 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { deleteSecret } from "@/server/actions/secrets";
+import { deleteGlobalSecret, deleteSecret } from "@/server/actions/secrets";
 
-type Props = {
-  slug: string;
-  name: string;
-};
+// Same discriminated-union pattern as SecretDialog — slug is
+// required at project scope and forbidden at global scope.
+type Props =
+  | { scope?: "project"; slug: string; name: string }
+  | { scope: "global"; name: string };
 
 // Two-step delete: a small Dialog confirmation before the action fires.
 // Secrets aren't recoverable once deleted — extra click is cheap insurance.
-export function DeleteSecretButton({ slug, name }: Props) {
+export function DeleteSecretButton(props: Props) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const { name } = props;
+  const isGlobal = props.scope === "global";
 
   function onConfirm() {
     startTransition(async () => {
-      const res = await deleteSecret({ slug, name });
+      const res = isGlobal
+        ? await deleteGlobalSecret({ name })
+        : await deleteSecret({ slug: props.slug, name });
       if (!res.ok) {
         toast.error(`delete secret: ${res.error}`);
         return;
