@@ -1,14 +1,17 @@
 package runs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -116,10 +119,20 @@ func (h *Handler) TriggerPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.store.TriggerManualRun(r.Context(), store.TriggerManualRunInput{
+	in := store.TriggerManualRunInput{
 		PipelineID:  pipelineID,
 		TriggeredBy: body.TriggeredBy,
-	})
+	}
+	res, err := h.store.TriggerManualRun(r.Context(), in)
+	// Seed-on-trigger fallback: a pipeline bound via initial-sync
+	// but never pushed has no modification row yet, so the first
+	// "Run latest" would 422. If we have a Fetcher wired, try to
+	// resolve HEAD of the default branch and retry once.
+	if errors.Is(err, store.ErrNoModificationForPipeline) && h.fetcher != nil {
+		if seeded := h.seedHeadModification(r.Context(), pipelineID); seeded {
+			res, err = h.store.TriggerManualRun(r.Context(), in)
+		}
+	}
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")
@@ -135,6 +148,82 @@ func (h *Handler) TriggerPipeline(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("trigger pipeline", "pipeline_id", pipelineID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// seedHeadModification fetches the HEAD commit SHA for a pipeline's
+// first git material and inserts a modification row so TriggerManualRun
+// can find one to execute against. Returns true when a usable
+// modification is in the DB (freshly inserted or one that raced in
+// between the first 422 and this attempt). Silent on failure — the
+// caller keeps propagating the original 422 so the user sees the
+// "push to seed" hint instead of a noisy 500.
+//
+// Resolves auth via the project's scm_source: the material URL must
+// match a bound scm_source so we can pull its auth_ref (PAT/app token)
+// for private repos. A material pointing at a repo without a bound
+// scm_source falls back to unauthenticated — fine for public repos,
+// will 404 for private ones, which is the expected behaviour.
+func (h *Handler) seedHeadModification(ctx context.Context, pipelineID uuid.UUID) bool {
+	mats, err := h.store.ListGitMaterialsForPipeline(ctx, pipelineID)
+	if err != nil {
+		h.log.Warn("trigger seed: list materials failed", "pipeline_id", pipelineID, "err", err)
+		return false
+	}
+	if len(mats) == 0 {
+		return false
+	}
+	// Stick to the first git material. Pipelines with multiple git
+	// materials are rare and seeding all of them from HEAD could
+	// mix unrelated revisions; the webhook path will correct the
+	// picture on the first real push.
+	m := mats[0]
+	if m.Config.URL == "" {
+		return false
+	}
+	branch := m.Config.Branch
+	if branch == "" {
+		branch = "main"
+	}
+
+	// Auth lookup — may legitimately miss (material points at an
+	// unbound public repo). Pass an empty-URL SCMSource in that
+	// case so the fetcher does an unauthenticated request.
+	scm, err := h.store.FindSCMSourceByURL(ctx, m.Config.URL)
+	if err != nil && !errors.Is(err, store.ErrSCMSourceNotFound) {
+		h.log.Warn("trigger seed: scm_source lookup failed",
+			"pipeline_id", pipelineID, "url", m.Config.URL, "err", err)
+		return false
+	}
+	if errors.Is(err, store.ErrSCMSourceNotFound) {
+		scm = store.SCMSource{Provider: "github", URL: m.Config.URL}
+	}
+
+	sha, err := h.fetcher.HeadSHA(ctx, scm, branch)
+	if err != nil {
+		if errors.Is(err, gh.ErrBranchNotFound) {
+			h.log.Info("trigger seed: branch not found",
+				"pipeline_id", pipelineID, "url", m.Config.URL, "branch", branch)
+		} else {
+			h.log.Warn("trigger seed: head lookup failed",
+				"pipeline_id", pipelineID, "url", m.Config.URL, "branch", branch, "err", err)
+		}
+		return false
+	}
+
+	_, err = h.store.InsertModification(ctx, store.Modification{
+		MaterialID: m.ID,
+		Revision:   sha,
+		Branch:     branch,
+		Message:    fmt.Sprintf("seeded from HEAD of %s at manual trigger", branch),
+	})
+	if err != nil {
+		h.log.Warn("trigger seed: insert modification failed",
+			"pipeline_id", pipelineID, "material_id", m.ID, "err", err)
+		return false
+	}
+	h.log.Info("trigger seed: modification inserted",
+		"pipeline_id", pipelineID, "material_id", m.ID, "revision", sha, "branch", branch)
+	return true
 }
 
 // --- helpers shared by the action endpoints ---

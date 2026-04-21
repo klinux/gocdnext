@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -31,6 +32,7 @@ const downloadTTL = 5 * time.Minute
 type Handler struct {
 	store         *store.Store
 	artifactStore artifacts.Store
+	fetcher       configsync.Fetcher
 	log           *slog.Logger
 }
 
@@ -46,6 +48,16 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 // (Detail) keep working.
 func (h *Handler) WithArtifactStore(st artifacts.Store) *Handler {
 	h.artifactStore = st
+	return h
+}
+
+// WithConfigFetcher enables the trigger-seed fallback: when a user
+// asks to trigger a pipeline that has no modification yet (never
+// received a push), we resolve HEAD of the default branch via the
+// fetcher, insert a modification row and retry the trigger. Leaving
+// the fetcher nil preserves the legacy "422 — push to seed" UX.
+func (h *Handler) WithConfigFetcher(f configsync.Fetcher) *Handler {
+	h.fetcher = f
 	return h
 }
 

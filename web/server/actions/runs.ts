@@ -1,5 +1,6 @@
 "use server";
 
+import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
@@ -78,11 +79,22 @@ export async function triggerPipelineRun(
 
 async function postJSON(path: string, body: unknown): Promise<RunActionResult> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
+  // Forward the session cookie so the backend's RequireAuth
+  // middleware sees the logged-in user. Server actions run on
+  // the Node side and don't inherit browser cookies automatically
+  // — omitting this is how the handler returned "not authenticated"
+  // on trigger/cancel/rerun calls.
+  const store = await cookies();
+  const session = store.get("gocdnext_session")?.value;
   try {
     const res = await fetch(url, {
       method: "POST",
       cache: "no-store",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
       body: JSON.stringify(body),
     });
     const text = await res.text();
