@@ -389,7 +389,6 @@ function ArtifactsPanel({
     // Lazy-fetch: only hit the API once the user opens this tab.
     // runId missing = pipeline has never run, skip entirely.
     if (!active || !runId) return;
-    if (state.kind !== "idle") return;
     let cancelled = false;
     setState({ kind: "loading" });
     fetch(
@@ -402,8 +401,11 @@ function ArtifactsPanel({
           setState({ kind: "error", message: `HTTP ${res.status}` });
           return;
         }
-        const body = (await res.json()) as { artifacts?: RunArtifact[] };
-        setState({ kind: "ok", items: body.artifacts ?? [] });
+        // Endpoint returns a bare array — historical guess of
+        // {artifacts: [...]} was wrong and silently dropped every
+        // row, masked by the perpetual-loading bug below it.
+        const items = (await res.json()) as RunArtifact[];
+        setState({ kind: "ok", items });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -412,10 +414,14 @@ function ArtifactsPanel({
           message: err instanceof Error ? err.message : String(err),
         });
       });
+    // Deps are intentionally limited to (active, runId): state.kind
+    // in deps caused the effect to re-run on its own setState call,
+    // which cleanup'd the in-flight fetch (cancelled=true) before
+    // the response landed — so the panel stuck on "loading" forever.
     return () => {
       cancelled = true;
     };
-  }, [active, runId, state.kind]);
+  }, [active, runId]);
 
   if (!runId) {
     return (
