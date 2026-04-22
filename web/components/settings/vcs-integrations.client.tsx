@@ -102,6 +102,59 @@ export function VCSIntegrationsAdminView({ integrations, active }: Props) {
     setOpen(true);
   };
 
+  // Rotate dialog state: kept separate from the generic edit form
+  // so the narrow "just replace the PEM" workflow doesn't expose
+  // AppID / name / webhook secret controls that the user doesn't
+  // mean to touch during a key rotation.
+  const [rotateRow, setRotateRow] = useState<ConfiguredVCSIntegration | null>(null);
+  const [rotatePEM, setRotatePEM] = useState("");
+
+  const startRotate = (row: ConfiguredVCSIntegration) => {
+    setRotateRow(row);
+    setRotatePEM("");
+  };
+
+  const submitRotate = () => {
+    if (!rotateRow) return;
+    const pem = rotatePEM.trim();
+    if (!pem) {
+      toast.error("Paste the new private key PEM to rotate.");
+      return;
+    }
+    const appID = rotateRow.app_id;
+    if (typeof appID !== "number") {
+      toast.error("This integration has no App ID — edit it first.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await upsertVCSIntegration({
+        name: rotateRow.name,
+        kind: "github_app",
+        display_name: rotateRow.display_name || undefined,
+        app_id: appID,
+        private_key: pem,
+        // empty webhook_secret preserves the sealed one — rotate
+        // is strictly a private-key swap.
+        api_base: rotateRow.api_base || undefined,
+        enabled: rotateRow.enabled,
+      });
+      if (res.ok) {
+        setRotateRow(null);
+        setRotatePEM("");
+        const warn =
+          typeof res.data.reload_warning === "string"
+            ? res.data.reload_warning
+            : null;
+        toast.success(`Rotated ${rotateRow.name}`, {
+          description: warn ? `Saved, but reload warned: ${warn}` : undefined,
+        });
+        router.refresh();
+      } else {
+        toast.error(`Rotate failed: ${res.error}`);
+      }
+    });
+  };
+
   const onSubmit = () => {
     startTransition(async () => {
       const appID = Number(form.app_id);
@@ -232,6 +285,15 @@ export function VCSIntegrationsAdminView({ integrations, active }: Props) {
                       <Button
                         size="icon-sm"
                         variant="ghost"
+                        onClick={() => startRotate(row)}
+                        aria-label={`Rotate private key for ${row.name}`}
+                        title="Rotate private key"
+                      >
+                        <KeyRound className="size-3.5" />
+                      </Button>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
                         onClick={() => startEdit(row)}
                         aria-label={`Edit ${row.name}`}
                       >
@@ -285,6 +347,66 @@ export function VCSIntegrationsAdminView({ integrations, active }: Props) {
         pending={pending}
         onSubmit={onSubmit}
       />
+
+      <Dialog
+        open={rotateRow !== null}
+        onOpenChange={(next) => {
+          if (!next) {
+            setRotateRow(null);
+            setRotatePEM("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>
+              Rotate private key
+              {rotateRow ? (
+                <span className="ml-2 font-mono text-sm text-muted-foreground">
+                  {rotateRow.name}
+                </span>
+              ) : null}
+            </DialogTitle>
+            <DialogDescription>
+              Paste the new PEM from GitHub&apos;s App settings. The old
+              key is replaced on save and the VCS registry reloads
+              immediately — all other fields (App ID, webhook secret,
+              API base) stay as they are.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Field
+            label="New private key PEM"
+            hint="-----BEGIN RSA PRIVATE KEY----- …"
+          >
+            <Textarea
+              value={rotatePEM}
+              onChange={(e) => setRotatePEM(e.target.value)}
+              className="h-40 font-mono text-xs"
+              spellCheck={false}
+              autoFocus
+            />
+          </Field>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => {
+                setRotateRow(null);
+                setRotatePEM("");
+              }}
+              disabled={pending}
+            >
+              Cancel
+            </Button>
+            <Button onClick={submitRotate} disabled={pending || !rotatePEM.trim()}>
+              <RefreshCw className="size-3.5" />
+              {pending ? "Rotating…" : "Rotate key"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
