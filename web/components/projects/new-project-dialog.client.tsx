@@ -226,8 +226,11 @@ export function NewProjectDialog() {
         side="right"
         // Half-viewport on desktop, full-ish on narrow screens —
         // the form packs 4-5 fields + the template textarea, which
-        // never fit comfortably in the 600px Dialog.
-        className="flex w-full flex-col gap-0 p-0 sm:w-[min(720px,50vw)] sm:max-w-[min(720px,50vw)]"
+        // never fit comfortably in the 600px Dialog. The shadcn
+        // Sheet default caps at sm:max-w-sm via a data-[side=right]
+        // variant selector; twMerge only dedupes same-variant
+        // classes, so we have to override with the same prefix.
+        className="flex flex-col gap-0 p-0 data-[side=right]:w-[50vw] data-[side=right]:sm:max-w-[50vw]"
       >
         <SheetHeader className="border-b p-6">
           <SheetTitle>New project</SheetTitle>
