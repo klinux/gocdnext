@@ -7,13 +7,13 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -101,7 +101,7 @@ export function EditProjectDialog({ project, scmSource }: Props) {
   };
 
   return (
-    <Dialog
+    <Sheet
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -113,119 +113,128 @@ export function EditProjectDialog({ project, scmSource }: Props) {
         Edit project
       </Button>
 
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>Edit {project.slug}</DialogTitle>
-          <DialogDescription>
+      <SheetContent
+        side="right"
+        // Mirrors the new-project Sheet: half viewport so metadata
+        // + repo-binding panel don't fight for room, with the
+        // same data-[side=right] variant override so twMerge
+        // actually swaps the shadcn default sm:max-w-sm.
+        className="flex flex-col gap-0 p-0 data-[side=right]:w-[50vw] data-[side=right]:sm:max-w-[50vw]"
+      >
+        <SheetHeader className="border-b p-6">
+          <SheetTitle>Edit {project.slug}</SheetTitle>
+          <SheetDescription>
             Slug is locked after creation. Pipelines live at{" "}
             <code className="font-mono">{configPath || ".gocdnext"}</code>{" "}
             in the repo — edit them by pushing to the branch below.
-          </DialogDescription>
-        </DialogHeader>
+          </SheetDescription>
+        </SheetHeader>
 
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="Slug" hint="read-only">
-            <Input value={project.slug} disabled readOnly />
-          </Field>
-          <Field label="Name">
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Slug" hint="read-only">
+              <Input value={project.slug} disabled readOnly />
+            </Field>
+            <Field label="Name">
+              <Input
+                value={name}
+                onValueChange={setName}
+              />
+            </Field>
+          </div>
+          <Field label="Description (optional)">
             <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={description}
+              onValueChange={setDescription}
             />
           </Field>
-        </div>
-        <Field label="Description (optional)">
-          <Input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </Field>
-        <Field
-          label="Config path"
-          hint="folder (.gocdnext) or single file (.gocdnext.yml)"
-        >
-          <Input
-            value={configPath}
-            onChange={(e) => setConfigPath(e.target.value)}
-            placeholder=".gocdnext"
-          />
-        </Field>
-
-        <div className="rounded-md border p-3">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={bindRepo}
-              onChange={(e) => setBindRepo(e.target.checked)}
+          <Field
+            label="Config path"
+            hint="folder (.gocdnext) or single file (.gocdnext.yml)"
+          >
+            <Input
+              value={configPath}
+              onValueChange={setConfigPath}
+              placeholder=".gocdnext"
             />
-            Repository binding
-          </label>
-          {bindRepo ? (
-            <div className="mt-3 space-y-3">
-              <div className="grid grid-cols-3 gap-3">
-                <Field label="Provider">
-                  <select
-                    value={provider}
-                    onChange={(e) =>
-                      setProvider(e.target.value as ProjectSCMInfo["provider"])
-                    }
-                    className="h-8 w-full rounded-md border bg-background px-2 text-sm"
-                  >
-                    <option value="github">github</option>
-                    <option value="gitlab">gitlab</option>
-                    <option value="bitbucket">bitbucket</option>
-                    <option value="manual">manual</option>
-                  </select>
-                </Field>
-                <Field label="Default branch" className="col-span-2">
+          </Field>
+
+          <div className="rounded-md border p-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={bindRepo}
+                onChange={(e) => setBindRepo(e.target.checked)}
+              />
+              Repository binding
+            </label>
+            {bindRepo ? (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <Field label="Provider">
+                    <select
+                      value={provider}
+                      onChange={(e) =>
+                        setProvider(e.target.value as ProjectSCMInfo["provider"])
+                      }
+                      className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="github">github</option>
+                      <option value="gitlab">gitlab</option>
+                      <option value="bitbucket">bitbucket</option>
+                      <option value="manual">manual</option>
+                    </select>
+                  </Field>
+                  <Field label="Default branch" className="col-span-2">
+                    <Input
+                      value={branch}
+                      onValueChange={setBranch}
+                      placeholder="main"
+                    />
+                  </Field>
+                </div>
+                <Field label="Clone URL">
                   <Input
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    placeholder="main"
+                    value={url}
+                    onValueChange={setUrl}
+                    placeholder="https://github.com/org/repo"
                   />
                 </Field>
+                <Field
+                  label="Auth ref (optional)"
+                  hint="PAT or credentials key — stored server-side"
+                >
+                  <Input
+                    value={authRef}
+                    onValueChange={setAuthRef}
+                    placeholder="leave empty to keep existing"
+                  />
+                </Field>
+                <p className="text-xs text-muted-foreground">
+                  Webhook secret is not editable here — use the rotate button to
+                  generate a new one.
+                </p>
               </div>
-              <Field label="Clone URL">
-                <Input
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://github.com/org/repo"
-                />
-              </Field>
-              <Field
-                label="Auth ref (optional)"
-                hint="PAT or credentials key — stored server-side"
-              >
-                <Input
-                  value={authRef}
-                  onChange={(e) => setAuthRef(e.target.value)}
-                  placeholder="leave empty to keep existing"
-                />
-              </Field>
-              <p className="text-xs text-muted-foreground">
-                Webhook secret is not editable here — use the rotate button to
-                generate a new one.
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Disabling this here leaves the binding untouched in the database
+                (a future rebinding via apply still works). To clear the
+                binding permanently, delete and recreate the project.
               </p>
-            </div>
-          ) : (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Disabling this here leaves the binding untouched in the database
-              (a future rebinding via apply still works). To clear the
-              binding permanently, delete and recreate the project.
-            </p>
-          )}
+            )}
+          </div>
         </div>
 
-        <DialogFooter>
+        <SheetFooter className="border-t p-6 sm:flex-row sm:justify-end">
           <Button variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
             Cancel
           </Button>
           <Button onClick={submit} disabled={!canSubmit || pending}>
             {pending ? "Saving…" : "Save changes"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
