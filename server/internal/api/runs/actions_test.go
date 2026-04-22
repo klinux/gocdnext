@@ -196,15 +196,23 @@ func TestTriggerPipeline_Success(t *testing.T) {
 }
 
 func TestTriggerPipeline_NoModifications(t *testing.T) {
+	// Git-backed pipeline that has never seen a push. Fetcher isn't
+	// wired on this handler, so the seed fallback can't run and the
+	// 422 hint surfaces unchanged.
 	h, pool := handler(t)
 	s := store.New(pool)
 	ctx := context.Background()
+	url, branch := "https://github.com/org/never-pushed", "main"
 	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
-		Slug: "demo-empty", Name: "empty",
+		Slug: "never-pushed", Name: "never-pushed",
 		Pipelines: []*domain.Pipeline{{
 			Name:   "build",
 			Stages: []string{"build"},
-			// No materials: pipeline exists but has never seen a push.
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: domain.GitFingerprint(url, branch),
+				AutoUpdate: true,
+				Git:        &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+			}},
 			Jobs: []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
 		}},
 	})
@@ -215,7 +223,49 @@ func TestTriggerPipeline_NoModifications(t *testing.T) {
 
 	rr := doPost(h, "/api/v1/pipelines/"+pipelineID.String()+"/trigger", nil)
 	if rr.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d want 422", rr.Code)
+		t.Fatalf("status = %d want 422, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestTriggerPipeline_UpstreamOnly(t *testing.T) {
+	// Pipelines whose only material is `upstream:` (typical for
+	// "ci-web depends on ci-server.test" fanout) have no git to
+	// seed from and no modifications until an upstream run
+	// succeeds. Manual trigger must still work — insert a bare
+	// run skeleton so operators can kick the downstream without
+	// waiting for the upstream to land.
+	h, pool := handler(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "web-only", Name: "web-only",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "downstream",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type:        domain.MaterialUpstream,
+				Fingerprint: domain.UpstreamFingerprint("ci-server", "test"),
+				AutoUpdate:  true,
+				Upstream:    &domain.UpstreamMaterial{Pipeline: "ci-server", Stage: "test", Status: "success"},
+			}},
+			Jobs: []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applied.Pipelines[0].PipelineID
+
+	rr := doPost(h, "/api/v1/pipelines/"+pipelineID.String()+"/trigger", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d want 202, body=%s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		RunID string `json:"run_id"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if got.RunID == "" {
+		t.Fatalf("run_id missing: %s", rr.Body.String())
 	}
 }
 

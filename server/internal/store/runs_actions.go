@@ -134,37 +134,88 @@ type TriggerManualRunInput struct {
 	TriggeredBy string
 }
 
-// TriggerManualRun starts a new run on a pipeline using its most
-// recent modification. Returns ErrNoModificationForPipeline when
-// the pipeline has never seen a push — the UI uses that to render
-// a "push to seed the pipeline" hint instead of a generic 500.
+// TriggerManualRun starts a new run on a pipeline.
+//
+// For git-backed pipelines we reuse the most recent modification row
+// so the run is tied to a real commit (build caching, revision
+// display, log correlation all keep working). When the pipeline has
+// never seen a push we return ErrNoModificationForPipeline so the
+// handler can 422 with "push to seed…".
+//
+// For pipelines whose only materials are upstream / manual / cron
+// there's nothing to seed from — the webhook path doesn't apply.
+// We insert a bare run skeleton (empty revisions) so operators can
+// kick those pipelines by hand. The scheduler's assignment builder
+// already skips checkout for non-git materials, so no revision on
+// the run is fine.
 func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) (RunCreated, error) {
-	mod, err := s.q.GetLatestModificationForPipeline(ctx, pgUUID(in.PipelineID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RunCreated{}, ErrNoModificationForPipeline
-	}
-	if err != nil {
-		return RunCreated{}, fmt.Errorf("store: manual trigger: modification: %w", err)
-	}
-	branch := ""
-	if mod.Branch != nil {
-		branch = *mod.Branch
-	}
 	triggeredBy := in.TriggeredBy
 	if triggeredBy == "" {
 		triggeredBy = "manual"
 	}
-	return s.CreateRunFromModification(ctx, CreateRunFromModificationInput{
-		PipelineID:     in.PipelineID,
-		MaterialID:     fromPgUUID(mod.MaterialID),
-		ModificationID: mod.ID,
-		Revision:       mod.Revision,
-		Branch:         branch,
-		Provider:       "api",
-		Delivery:       "manual-" + in.PipelineID.String(),
-		TriggeredBy:    triggeredBy,
-		Cause:          "manual",
+
+	mod, err := s.q.GetLatestModificationForPipeline(ctx, pgUUID(in.PipelineID))
+	switch {
+	case err == nil:
+		branch := ""
+		if mod.Branch != nil {
+			branch = *mod.Branch
+		}
+		return s.CreateRunFromModification(ctx, CreateRunFromModificationInput{
+			PipelineID:     in.PipelineID,
+			MaterialID:     fromPgUUID(mod.MaterialID),
+			ModificationID: mod.ID,
+			Revision:       mod.Revision,
+			Branch:         branch,
+			Provider:       "api",
+			Delivery:       "manual-" + in.PipelineID.String(),
+			TriggeredBy:    triggeredBy,
+			Cause:          "manual",
+		})
+	case errors.Is(err, pgx.ErrNoRows):
+		// Fall through to the no-material trigger path below.
+	default:
+		return RunCreated{}, fmt.Errorf("store: manual trigger: modification: %w", err)
+	}
+
+	// No modification — decide whether that's because the pipeline is
+	// git-backed and never saw a push (→ 422) or because it has no
+	// git material at all (→ bare run).
+	hasGit, err := s.pipelineHasGitMaterial(ctx, in.PipelineID)
+	if err != nil {
+		return RunCreated{}, fmt.Errorf("store: manual trigger: material check: %w", err)
+	}
+	if hasGit {
+		return RunCreated{}, ErrNoModificationForPipeline
+	}
+
+	causeDetail, _ := json.Marshal(map[string]any{
+		"delivery": "manual-" + in.PipelineID.String(),
 	})
+	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
+		PipelineID:  in.PipelineID,
+		Cause:       "manual",
+		CauseDetail: causeDetail,
+		Revisions:   json.RawMessage(`{}`),
+		TriggeredBy: triggeredBy,
+	})
+}
+
+// pipelineHasGitMaterial reports whether any of the pipeline's
+// materials is of type git. Upstream/manual/cron-only pipelines
+// return false — those can't be seeded from a push, so the manual
+// trigger path has to synthesise a run instead of bailing.
+func (s *Store) pipelineHasGitMaterial(ctx context.Context, pipelineID uuid.UUID) (bool, error) {
+	rows, err := s.q.ListMaterialsByPipeline(ctx, pgUUID(pipelineID))
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if r.Type == "git" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // pickPrimaryRevision unmarshals the revisions JSONB (shape:
