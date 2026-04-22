@@ -124,6 +124,58 @@ func (c *AppClient) CreateRepoHook(ctx context.Context, installationID int64, in
 	return Hook{ID: raw.ID, Active: raw.Active, Events: raw.Events, Config: raw.Config}, nil
 }
 
+// UpdateRepoHook PATCHes an existing hook so its config URL +
+// secret match whatever we're rotating to. Events default to
+// push + pull_request (same as create) — passing nil rotates
+// only the config pieces GitHub lets us change. Used by the
+// rotate-webhook endpoint to keep the provider-side secret in
+// sync with the sealed one we just re-minted in the DB.
+func (c *AppClient) UpdateRepoHook(ctx context.Context, installationID, hookID int64, in CreateHookInput) (Hook, error) {
+	events := in.Events
+	if len(events) == 0 {
+		events = []string{"push", "pull_request"}
+	}
+	payload := map[string]any{
+		"active": true,
+		"events": events,
+		"config": map[string]any{
+			"url":          in.URL,
+			"content_type": "json",
+			"secret":       in.Secret,
+			"insecure_ssl": "0",
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPatch,
+		fmt.Sprintf("%s/repos/%s/%s/hooks/%d", c.apiBase, in.Owner, in.Repo, hookID),
+		bytes.NewReader(body))
+	if err != nil {
+		return Hook{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.DoAsInstallation(ctx, installationID, req)
+	if err != nil {
+		return Hook{}, fmt.Errorf("github: update hook: %w", err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+
+	if resp.StatusCode/100 != 2 {
+		rb, _ := io.ReadAll(resp.Body)
+		return Hook{}, fmt.Errorf("github: update hook returned %s: %s", resp.Status, rb)
+	}
+	var raw struct {
+		ID     int64      `json:"id"`
+		Active bool       `json:"active"`
+		Events []string   `json:"events"`
+		Config HookConfig `json:"config"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return Hook{}, fmt.Errorf("github: decode updated hook: %w", err)
+	}
+	return Hook{ID: raw.ID, Active: raw.Active, Events: raw.Events, Config: raw.Config}, nil
+}
+
 // FindHookForURL returns the first hook whose config.url matches a
 // prefix (typically the gocdnext public base). Used for idempotency —
 // we don't want to create a second hook alongside an existing one on

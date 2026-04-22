@@ -173,6 +173,9 @@ export function NewProjectDialog() {
             case "registered":
               toast.success(`Webhook installed on ${repo}`, { duration: 6000 });
               break;
+            case "updated":
+              toast.success(`Webhook secret synced on ${repo}`, { duration: 6000 });
+              break;
             case "already_exists":
               toast.info(`Webhook already installed on ${repo}`, { duration: 5000 });
               break;

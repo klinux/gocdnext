@@ -2,13 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import type { Route } from "next";
 import {
-  KeyRound,
   MoreHorizontal,
-  Network,
-  Pencil,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -89,6 +84,38 @@ export function ProjectActionsMenu({
       setRotatedSecret(res.generatedWebhookSecret);
       setRotateConfirmOpen(false);
       setRotateRevealOpen(true);
+
+      // Surface the webhook-reconcile outcome. Rotate also re-runs
+      // the reconcile on the server, so the user knows whether
+      // the new secret was PATCHed onto GitHub (status=updated),
+      // freshly installed (registered), or still needs their
+      // attention (skipped_no_install / failed).
+      const w = res.webhook;
+      if (w) {
+        const repo = w.scm_source_url;
+        switch (w.status) {
+          case "registered":
+            toast.success(`Webhook installed on ${repo}`, { duration: 6000 });
+            break;
+          case "updated":
+            toast.success(`Webhook secret synced on ${repo}`, { duration: 6000 });
+            break;
+          case "skipped_no_install":
+            toast.warning(
+              `GitHub App not installed on ${repo} — install it to enable push triggers`,
+              { duration: 10000 },
+            );
+            break;
+          case "skipped_not_github":
+            break;
+          case "failed":
+            toast.error(
+              `Webhook sync failed: ${w.error ?? "unknown error"}`,
+              { duration: 10000 },
+            );
+            break;
+        }
+      }
     });
   };
 
@@ -131,25 +158,6 @@ export function ProjectActionsMenu({
             }
           />
           <DropdownMenuContent align="end" className="min-w-52">
-            <DropdownMenuItem
-              render={
-                <Link href={`/projects/${project.slug}/vsm` as Route} />
-              }
-              className="whitespace-nowrap"
-            >
-              <Network className="size-3.5" />
-              View VSM
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              render={
-                <Link href={`/projects/${project.slug}/secrets` as Route} />
-              }
-              className="whitespace-nowrap"
-            >
-              <KeyRound className="size-3.5" />
-              Manage secrets
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => setRotateConfirmOpen(true)}
               className="whitespace-nowrap"

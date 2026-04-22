@@ -56,9 +56,31 @@ func (h *Handler) RotateWebhookSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	// Re-run the webhook reconcile with the new plaintext. Two
+	// cases matter here:
+	//   1) The hook already exists → UpdateRepoHook PATCHes its
+	//      config.secret so GitHub signs future pushes with the
+	//      new value (otherwise the rotation would silently break
+	//      validation on the next push).
+	//   2) The hook never registered (e.g. initial install
+	//      failed on 422 "unreachable URL") → CreateRepoHook
+	//      retries now that secrets / URL may be fixed.
+	// A nil outcome happens on projects without a provider hook
+	// affordance (manual, non-github) — stay silent there.
+	applied := &store.SCMSourceApplied{
+		ID:            scm.ID,
+		Provider:      scm.Provider,
+		URL:           scm.URL,
+		DefaultBranch: scm.DefaultBranch,
+	}
+	resp := map[string]any{
 		"scm_source_id":            scm.ID.String(),
 		"generated_webhook_secret": plain,
-	})
+	}
+	if hr := h.reconcileSCMSourceWebhook(r.Context(), applied, plain); hr != nil {
+		resp["webhook"] = hr
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

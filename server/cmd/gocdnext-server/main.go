@@ -165,8 +165,9 @@ func main() {
 	// feature off.
 	if cfg.PublicBase != "" {
 		projectsHandler = projectsHandler.WithAutoRegister(projectsapi.AutoRegisterConfig{
-			VCS:        vcsRegistry,
-			PublicBase: cfg.PublicBase,
+			VCS:              vcsRegistry,
+			PublicBase:       cfg.PublicBase,
+			WebhookPublicURL: cfg.WebhookPublicURL,
 		})
 	}
 	runsHandler := runsapi.NewHandler(st, logger).

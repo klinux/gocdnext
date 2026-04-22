@@ -60,6 +60,17 @@ type Config struct {
 	// local dev with ngrok, set to the ngrok HTTPS URL.
 	PublicBase string
 
+	// WebhookPublicURL optionally overrides PublicBase for the
+	// URL we hand to GitHub when installing a repo webhook.
+	// GitHub refuses to register hooks pointing at localhost
+	// (422 "not reachable over the public Internet"), so local
+	// dev can point this at a smee.io / ngrok tunnel while the
+	// UI keeps serving from http://localhost:8153.
+	//
+	// Interpretation: full URL including path. Empty → fall back
+	// to PublicBase + "/api/webhooks/github".
+	WebhookPublicURL string
+
 	// Secret backend: "db" (default, uses SecretKeyHex to decrypt
 	// ciphertext stored in Postgres) or "kubernetes" (reads K8s
 	// Secret objects named by template).
@@ -177,6 +188,7 @@ func Load() (*Config, error) {
 	c.GithubAppPrivateKeyFile = env("GOCDNEXT_GITHUB_APP_PRIVATE_KEY_FILE", "")
 	c.GithubAppAPIBase = env("GOCDNEXT_GITHUB_APP_API_BASE", "")
 	c.PublicBase = env("GOCDNEXT_PUBLIC_BASE", "")
+	c.WebhookPublicURL = env("GOCDNEXT_WEBHOOK_PUBLIC_URL", "")
 	c.SecretBackend = strings.ToLower(env("GOCDNEXT_SECRET_BACKEND", "db"))
 	c.SecretK8sNamespace = env("GOCDNEXT_SECRET_K8S_NAMESPACE", "")
 	c.SecretK8sTemplate = env("GOCDNEXT_SECRET_K8S_NAME_TEMPLATE", "")

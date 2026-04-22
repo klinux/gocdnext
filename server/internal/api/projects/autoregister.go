@@ -17,6 +17,27 @@ import (
 type AutoRegisterConfig struct {
 	VCS        *vcs.Registry
 	PublicBase string
+	// WebhookPublicURL overrides the URL we hand to GitHub when
+	// creating a hook. GitHub refuses localhost (422 "not
+	// reachable over the public Internet"), so local dev pairs
+	// http://localhost:8153 with a tunnel (smee.io, ngrok)
+	// configured here. Empty → derive from PublicBase +
+	// /api/webhooks/github.
+	WebhookPublicURL string
+}
+
+// hookURL returns the URL the GitHub repo webhook will POST to on
+// events. Prefers WebhookPublicURL when set so the server stays
+// on localhost for the UI but hands a public tunnel address to
+// the provider.
+func (c *AutoRegisterConfig) hookURL() string {
+	if c == nil {
+		return ""
+	}
+	if c.WebhookPublicURL != "" {
+		return c.WebhookPublicURL
+	}
+	return trimTrailingSlash(c.PublicBase) + "/api/webhooks/github"
 }
 
 // WithAutoRegister enables post-apply webhook registration for
@@ -106,7 +127,7 @@ func (h *Handler) reconcileSCMSourceWebhook(
 		return res
 	}
 
-	hookURL := trimTrailingSlash(cfg.PublicBase) + "/api/webhooks/github"
+	hookURL := cfg.hookURL()
 	existing, err := app.ListRepoHooks(ctx, installationID, owner, repo)
 	if err != nil {
 		res.Status = "failed"
@@ -115,12 +136,6 @@ func (h *Handler) reconcileSCMSourceWebhook(
 			"repo", owner+"/"+repo, "err", err)
 		return res
 	}
-	if hook, ok := ghscm.FindHookForURL(existing, hookURL); ok {
-		res.Status = "already_exists"
-		res.HookID = hook.ID
-		return res
-	}
-
 	// Secret resolution: prefer the plaintext from the just-completed
 	// apply (free — already in memory), fall back to decrypting the
 	// stored ciphertext (re-applies that preserved the existing
@@ -143,12 +158,35 @@ func (h *Handler) reconcileSCMSourceWebhook(
 		return res
 	}
 
-	created, err := app.CreateRepoHook(ctx, installationID, ghscm.CreateHookInput{
+	input := ghscm.CreateHookInput{
 		Owner:  owner,
 		Repo:   repo,
 		URL:    hookURL,
 		Secret: secret,
-	})
+	}
+
+	// Existing hook at our URL → PATCH it. Keeps GitHub's
+	// config.secret in sync with the sealed one we have in the
+	// DB, so rotating a secret actually results in a hook that
+	// still validates on the next push. Same-value PATCH is
+	// cheap (GitHub records no audit noise when nothing changed).
+	if hook, ok := ghscm.FindHookForURL(existing, hookURL); ok {
+		updated, err := app.UpdateRepoHook(ctx, installationID, hook.ID, input)
+		if err != nil {
+			res.Status = "failed"
+			res.Error = err.Error()
+			h.log.Warn("autoregister: update hook failed",
+				"repo", owner+"/"+repo, "hook_id", hook.ID, "err", err)
+			return res
+		}
+		res.Status = "updated"
+		res.HookID = updated.ID
+		h.log.Info("autoregister: hook updated",
+			"repo", owner+"/"+repo, "hook_id", updated.ID)
+		return res
+	}
+
+	created, err := app.CreateRepoHook(ctx, installationID, input)
 	if err != nil {
 		res.Status = "failed"
 		res.Error = err.Error()

@@ -169,8 +169,24 @@ export async function deleteProject(slug: string): Promise<DeleteProjectResult> 
   }
 }
 
+export type RotateWebhookOutcome = {
+  scm_source_url: string;
+  status: string;
+  hook_id?: number;
+  error?: string;
+};
+
 export type RotateWebhookSecretResult =
-  | { ok: true; scmSourceID: string; generatedWebhookSecret: string }
+  | {
+      ok: true;
+      scmSourceID: string;
+      generatedWebhookSecret: string;
+      // Present when the server also re-ran the webhook reconcile
+      // (e.g. PATCHed the hook's secret on GitHub). Absent for
+      // projects whose scm_source isn't a github provider or when
+      // the GitHub App isn't wired.
+      webhook?: RotateWebhookOutcome;
+    }
   | { ok: false; error: string; status?: number };
 
 // rotateWebhookSecret POSTs the per-project rotation endpoint. The
@@ -211,6 +227,7 @@ export async function rotateWebhookSecret(
       ? (JSON.parse(text) as {
           scm_source_id?: string;
           generated_webhook_secret?: string;
+          webhook?: RotateWebhookOutcome;
         })
       : {};
     if (!body.scm_source_id || !body.generated_webhook_secret) {
@@ -221,6 +238,7 @@ export async function rotateWebhookSecret(
       ok: true,
       scmSourceID: body.scm_source_id,
       generatedWebhookSecret: body.generated_webhook_secret,
+      webhook: body.webhook,
     };
   } catch (err) {
     return {

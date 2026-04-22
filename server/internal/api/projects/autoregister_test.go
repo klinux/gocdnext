@@ -43,6 +43,7 @@ type fakeGitHubAPI struct {
 	installStatus  int // default 200
 	listHooks      []map[string]any
 	createdPayload atomic.Pointer[map[string]any]
+	updatedPayload atomic.Pointer[map[string]any]
 	createdHookID  int64 // default 999
 }
 
@@ -77,6 +78,18 @@ func (f *fakeGitHubAPI) handler(t *testing.T) http.Handler {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":     f.createdHookID,
+				"active": true,
+				"events": body["events"],
+				"config": body["config"],
+			})
+		case strings.Contains(r.URL.Path, "/hooks/") && r.Method == http.MethodPatch:
+			// PATCH /repos/{owner}/{repo}/hooks/{id} — rotation path.
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.updatedPayload.Store(&body)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":     f.listHooks[0]["id"],
 				"active": true,
 				"events": body["events"],
 				"config": body["config"],
@@ -189,7 +202,12 @@ func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 	}
 }
 
-func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
+func TestAutoRegister_UpdatesWhenHookAlreadyExists(t *testing.T) {
+	// Existing hook at our URL → the reconcile must PATCH it so
+	// GitHub's stored config.secret stays in sync with the one
+	// we just sealed in the DB. Previously the code reported
+	// already_exists and left GitHub with a stale secret, which
+	// broke validation right after rotation.
 	api := newFakeGitHubAPI()
 	api.listHooks = []map[string]any{
 		{
@@ -211,11 +229,23 @@ func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
 	if len(body.Webhooks) != 1 {
 		t.Fatalf("webhooks = %d", len(body.Webhooks))
 	}
-	if body.Webhooks[0].Status != "already_exists" || body.Webhooks[0].HookID != 555 {
+	if body.Webhooks[0].Status != "updated" || body.Webhooks[0].HookID != 555 {
 		t.Errorf("webhook = %+v", body.Webhooks[0])
 	}
 	if api.createdPayload.Load() != nil {
-		t.Error("create hook should not have been called")
+		t.Error("POST /hooks must not be called when an existing hook matched")
+	}
+	patched := api.updatedPayload.Load()
+	if patched == nil {
+		t.Fatalf("expected a PATCH /hooks/555 with the new config")
+	}
+	cfg, _ := (*patched)["config"].(map[string]any)
+	if body.SCMSource == nil || body.SCMSource.GeneratedWebhookSecret == "" {
+		t.Fatalf("apply response missing generated secret: %+v", body.SCMSource)
+	}
+	if cfg["secret"] != body.SCMSource.GeneratedWebhookSecret {
+		t.Errorf("patched secret (%v) != apply generated (%q)",
+			cfg["secret"], body.SCMSource.GeneratedWebhookSecret)
 	}
 }
 
