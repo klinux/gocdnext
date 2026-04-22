@@ -1,6 +1,7 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { Route } from "next";
 import {
@@ -8,9 +9,13 @@ import {
   ChevronsRight,
   Loader2,
   Minus,
+  RotateCcw,
   TriangleAlert,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
+
+import { rerunRun } from "@/server/actions/runs";
 
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
@@ -21,7 +26,6 @@ import {
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
-import { JobActionsMenu } from "@/components/pipelines/job-actions-menu.client";
 import type {
   DefinitionJob,
   JobRunSummaryLite,
@@ -406,29 +410,84 @@ function StageColumnBox({
   );
 }
 
-// JobRow is clickable: wraps the status dot + name in a dropdown
-// trigger so the user gets "View logs" / "Re-run pipeline" without
-// navigating first. Runs that don't exist yet still get a trigger
-// so the affordance is discoverable, but the items inside are
-// disabled.
+// JobRow adopts the GitLab CI layout: status dot + clickable
+// job name (deep-links to the specific job on the run detail
+// page) + retry icon aligned right. Runs that don't exist yet
+// render the name as plain text with no retry affordance so the
+// affordance only appears when the action is meaningful.
 function JobRow({ job, runId }: { job: MergedJob; runId?: string }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
   const tone: StatusTone = job.run ? statusTone(job.run.status) : "neutral";
-  const label = job.run ? `${job.name} (${job.run.status})` : `${job.name} (not run)`;
+  const jobHref =
+    runId && job.run
+      ? (`/runs/${runId}#job-${job.run.id}` as Route)
+      : null;
+
+  const retry = () => {
+    if (!runId) return;
+    startTransition(async () => {
+      const res = await rerunRun({ runId });
+      if (!res.ok) {
+        toast.error(`Re-run failed: ${res.error}`);
+        return;
+      }
+      const newID = String(res.data.run_id ?? "");
+      toast.success(`Re-ran ${job.name}`, {
+        action: newID
+          ? {
+              label: "Open",
+              onClick: () => router.push(`/runs/${newID}` as Route),
+            }
+          : undefined,
+      });
+    });
+  };
+
   return (
-    <li>
-      <JobActionsMenu label={label} runId={runId} jobRunId={job.run?.id}>
-        <span
-          className={cn(
-            "inline-flex size-3 shrink-0 items-center justify-center rounded-full",
-            stageDotClasses[tone],
-            job.run?.status === "running" && "animate-pulse",
-          )}
-          aria-hidden
+    <li className="flex items-center gap-1.5">
+      <span
+        className={cn(
+          "inline-flex size-3 shrink-0 items-center justify-center rounded-full",
+          stageDotClasses[tone],
+          job.run?.status === "running" && "animate-pulse",
+        )}
+        aria-hidden
+      >
+        <JobIcon tone={tone} />
+      </span>
+      {jobHref ? (
+        <Link
+          href={jobHref}
+          className="min-w-0 flex-1 truncate font-mono text-[11px] hover:underline"
+          title={`Open logs for ${job.name}`}
         >
-          <JobIcon tone={tone} />
+          {job.name}
+        </Link>
+      ) : (
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+          {job.name}
         </span>
-        <span className="truncate text-[11px] font-mono">{job.name}</span>
-      </JobActionsMenu>
+      )}
+      {runId ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            // Stop propagation so a future click handler on the
+            // stage box doesn't get a surprise event — the button
+            // is the only interactive target at this level.
+            e.preventDefault();
+            e.stopPropagation();
+            retry();
+          }}
+          disabled={pending}
+          aria-label={`Re-run pipeline for ${job.name}`}
+          title="Re-run this commit"
+          className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        >
+          <RotateCcw className={cn("size-2.5", pending && "animate-spin")} />
+        </button>
+      ) : null}
     </li>
   );
 }

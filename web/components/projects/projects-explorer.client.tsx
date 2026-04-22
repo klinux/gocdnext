@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import {
-  ArrowRight,
   Check,
   CheckCircle2,
   ChevronsRight,
@@ -145,56 +144,52 @@ export function ProjectsExplorer({ projects }: Props) {
 }
 
 function ProjectCard({ project }: { project: ProjectSummary }) {
-  const tone = statusToTone(project.status);
   return (
     <Link
       href={`/projects/${project.slug}` as Route}
-      className="group flex flex-col gap-4 rounded-xl border bg-card p-5 shadow-sm transition-colors hover:border-primary/40"
+      className="group flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm transition-colors hover:border-primary/40"
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <ProviderIcon provider={project.provider} className="size-4" />
-          {project.provider ? providerLabel(project.provider) : "no repo"}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+          <h3 className="truncate text-sm font-semibold">{project.name}</h3>
+          <code className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
+            {project.slug}
+          </code>
         </div>
         <StatusBadgeCard status={project.status} />
       </div>
 
-      <div className="space-y-1">
-        <h3 className="truncate font-mono text-base font-semibold">
-          {project.slug}
-        </h3>
-        <p className="truncate text-sm text-muted-foreground">{project.name}</p>
+      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <ProviderIcon provider={project.provider} className="size-3.5" />
+        <span>{project.provider ? providerLabel(project.provider) : "no repo"}</span>
+        <span aria-hidden>·</span>
+        <span className="normal-case">
+          {project.pipeline_count} pipeline
+          {project.pipeline_count === 1 ? "" : "s"} · {project.run_count} run
+          {project.run_count === 1 ? "" : "s"}
+        </span>
       </div>
 
       {project.description ? (
-        <p className="line-clamp-2 text-sm text-muted-foreground">
+        <p className="line-clamp-1 text-xs text-muted-foreground">
           {project.description}
         </p>
-      ) : (
-        <p className="text-sm italic text-muted-foreground/70">
-          No description.
-        </p>
-      )}
+      ) : null}
 
       {project.top_pipelines && project.top_pipelines.length > 0 ? (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {project.top_pipelines.map((pl) => (
             <PipelinePreviewRow key={pl.id} pipeline={pl} />
           ))}
           {project.pipeline_count > project.top_pipelines.length ? (
-            <p className="pt-0.5 text-xs text-muted-foreground/70">
+            <p className="text-[10px] text-muted-foreground/70">
               +{project.pipeline_count - project.top_pipelines.length} more
             </p>
           ) : null}
         </div>
       ) : null}
 
-      <div className="mt-auto flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
-        <span>
-          {project.pipeline_count} pipeline
-          {project.pipeline_count === 1 ? "" : "s"} · {project.run_count} run
-          {project.run_count === 1 ? "" : "s"}
-        </span>
+      <div className="mt-auto flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground">
         {project.latest_run_at ? (
           <span>
             <RelativeTime at={project.latest_run_at} />
@@ -203,16 +198,6 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
           <span className="italic">Never run</span>
         )}
       </div>
-
-      <span
-        className={cn(
-          "flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors",
-          "group-hover:text-primary",
-          tone === "failed" && "group-hover:text-destructive",
-        )}
-      >
-        Open project <ArrowRight className="size-3.5" aria-hidden />
-      </span>
     </Link>
   );
 }

@@ -19,8 +19,11 @@ const tabs: Tab[] = [
 ];
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {
+  // Dashboard layout already pads the content area — we'd be
+  // doubling horizontal padding by re-applying it here, which
+  // is what made /settings look narrower than every other page.
   return (
-    <div className="space-y-6 px-4 py-6 md:px-8">
+    <div className="space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
