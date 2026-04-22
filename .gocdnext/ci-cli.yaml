@@ -3,11 +3,8 @@
 # testcontainers just like the server side.
 name: ci-cli
 
-materials:
-  - git:
-      url: https://github.com/klinux/gocdnext
-      branch: main
-      on: [push, pull_request]
+when:
+  event: [push, pull_request]
 
 stages: [lint, test, build]
 

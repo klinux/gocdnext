@@ -90,6 +90,13 @@ type Pipeline struct {
 	// Concurrency controls whether multiple runs of this pipeline
 	// can execute side by side. See the constants above.
 	Concurrency string
+	// TriggerEvents configures which SCM events fire the pipeline's
+	// implicit project material (see injectImplicitProjectMaterial
+	// in api/projects). Sourced from YAML's top-level `on:` field;
+	// empty means "push only". Ignored for pipelines that declare
+	// an explicit git material — those keep full control via the
+	// material's own events list.
+	TriggerEvents []string
 }
 
 type MaterialType string

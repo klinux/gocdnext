@@ -213,6 +213,26 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Project repo is implicit: when the project has (or is about to
+	// have) an scm_source and pipelines don't declare a git material
+	// for it, synthesize one so operators don't restate the project's
+	// own repo in every YAML. For re-applies without an scm_source in
+	// the request we fall back to the existing DB binding — otherwise
+	// a CLI apply that trims explicit git from YAML would strip the
+	// material entirely on apply.
+	effectiveSCM := scm
+	if effectiveSCM == nil {
+		if existing, ferr := h.store.FindSCMSourceByProjectSlug(r.Context(), req.Slug); ferr == nil {
+			effectiveSCM = &store.SCMSourceInput{
+				Provider:      existing.Provider,
+				URL:           existing.URL,
+				DefaultBranch: existing.DefaultBranch,
+				AuthRef:       existing.AuthRef,
+			}
+		}
+	}
+	injectImplicitProjectMaterial(pipelines, effectiveSCM)
+
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        req.Slug,
 		Name:        req.Name,

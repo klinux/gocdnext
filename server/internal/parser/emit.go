@@ -35,6 +35,9 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 		Template:    p.Template,
 		Concurrency: p.Concurrency,
 	}
+	if len(p.TriggerEvents) > 0 {
+		f.When = &WhenDef{Event: append([]string(nil), p.TriggerEvents...)}
+	}
 	for _, m := range p.Materials {
 		f.Materials = append(f.Materials, materialToSpec(m))
 	}
@@ -163,6 +166,13 @@ func buildRootNode(p *domain.Pipeline, f File) (*yaml.Node, error) {
 	addScalar(root, "name", f.Name)
 	if f.Concurrency != "" {
 		addScalar(root, "concurrency", f.Concurrency)
+	}
+	if f.When != nil {
+		whenNode, err := marshalInto(f.When)
+		if err != nil {
+			return nil, err
+		}
+		appendKV(root, "when", whenNode)
 	}
 	if len(f.Stages) > 0 {
 		stagesNode, err := marshalInto(f.Stages)

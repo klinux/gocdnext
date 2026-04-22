@@ -61,6 +61,9 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		Template:    f.Template,
 		Concurrency: concurrency,
 	}
+	if f.When != nil && len(f.When.Event) > 0 {
+		p.TriggerEvents = append([]string(nil), f.When.Event...)
+	}
 
 	for _, m := range f.Materials {
 		mat, err := toMaterial(m)

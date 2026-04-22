@@ -16,7 +16,7 @@ type File struct {
 	Version   string            `yaml:"version,omitempty"` // reserved for future
 	Name      string            `yaml:"name,omitempty"`    // pipeline name; defaults to filename
 	Include   []Include         `yaml:"include,omitempty"`
-	Materials []MaterialSpec    `yaml:"materials"`
+	Materials []MaterialSpec    `yaml:"materials,omitempty"`
 	Stages    []string          `yaml:"stages"`
 	Variables map[string]string `yaml:"variables,omitempty"`
 	Template  string            `yaml:"template,omitempty"`
@@ -25,6 +25,12 @@ type File struct {
 	// runs) or "serial" (one run at a time — subsequent triggers
 	// queue behind the running one).
 	Concurrency string `yaml:"concurrency,omitempty"`
+	// When configures the pipeline's implicit project material (the
+	// git source bound via scm_source). Mirrors the job-level
+	// WhenDef shape. Today only `event:` is wired — drives which
+	// SCM events create runs. `branch:` / `status:` are reserved
+	// for future use at this level.
+	When *WhenDef `yaml:"when,omitempty"`
 }
 
 type Include struct {
