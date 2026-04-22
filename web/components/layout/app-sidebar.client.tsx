@@ -12,7 +12,7 @@ import {
   Settings,
 } from "lucide-react";
 
-import { Logo } from "@/components/brand/logo";
+import { Logo, Wordmark } from "@/components/brand/logo";
 import { SidebarUserMenu } from "@/components/layout/sidebar-user-menu.client";
 import {
   Sidebar,
@@ -62,13 +62,14 @@ export function AppSidebar({ user, loginBase }: Props) {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-1.5">
-          <Logo size={22} className="text-primary" />
+        <div className="flex items-center gap-2.5 px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+          {/* Hex uses foreground (neutral) — chevron pulls the
+              brand accent from --primary internally, so the mark
+              already has the dual-tone without a prop here. */}
+          <Logo size={32} className="text-foreground" />
           {/* Wordmark hides when the sidebar collapses to icon-only
               mode — the mark alone carries the brand at that size. */}
-          <span className="truncate text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
-            gocdnext
-          </span>
+          <Wordmark className="truncate group-data-[collapsible=icon]:hidden" />
         </div>
       </SidebarHeader>
 

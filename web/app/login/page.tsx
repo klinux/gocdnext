@@ -35,7 +35,7 @@ export default async function LoginPage({ searchParams }: Props) {
     <main className="flex min-h-svh items-center justify-center bg-muted/30 px-4">
       <div className="w-full max-w-sm space-y-6 rounded-xl border bg-background p-8 shadow-sm">
         <header className="flex flex-col items-center text-center">
-          <Logo size={40} className="mb-3 text-primary" />
+          <Logo size={40} className="mb-3 text-foreground" />
           <h1 className="text-lg font-semibold tracking-tight">
             Sign in to gocdnext
           </h1>

@@ -1,13 +1,17 @@
 import { cn } from "@/lib/utils";
 
-// gocdnext mark — three stages connected by pipeline lines.
-// SVG uses currentColor throughout so a single <Logo /> call
-// recolors just by changing text-* on the parent. The shape
-// reads at 16×16 (favicon) and scales cleanly.
+// gocdnext mark — hexagon with rounded-arc corners framing a
+// calligraphic `>` chevron. Three overlapping chevron paths: a
+// filled brand-teal splash behind, a thin top arm, and a thick
+// bottom tail — the stroke-weight contrast gives the mark its
+// hand-drawn, heavier-on-the-bottom silhouette. Hexagon + two
+// chevron strokes use currentColor so the parent's text colour
+// paints them; the accent fill uses --primary so the brand teal
+// survives dark mode without a prop dance.
 //
 // Usage:
-//   <Logo className="size-5 text-primary" />
-//   <Logo wordmark className="size-6 text-foreground" />
+//   <Logo className="size-5" />
+//   <Logo wordmark className="size-6" />
 type LogoProps = {
   className?: string;
   /** Render the "gocdnext" wordmark next to the mark. */
@@ -32,7 +36,7 @@ function Mark({ size, className }: { size: number; className?: string }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 32 32"
+      viewBox="0 0 160 160"
       width={size}
       height={size}
       fill="none"
@@ -40,49 +44,62 @@ function Mark({ size, className }: { size: number; className?: string }) {
       aria-label="gocdnext"
       className={cn("shrink-0", className)}
     >
-      {/* Connectors — the "pipeline" between stages. Subtle so
-          the filled stage circles are the focal point. */}
-      <line
-        x1="9"
-        y1="16"
-        x2="13"
-        y2="16"
+      {/* Hexagon frame with quadratic-arc rounded corners. Uses
+          currentColor so it follows the parent's text colour. */}
+      <path
+        d="M 64.41 21 Q 80 12 95.59 21 L 123.30 37 Q 138.89 46 138.89 64 L 138.89 96 Q 138.89 114 123.30 123 L 95.59 139 Q 80 148 64.41 139 L 36.70 123 Q 21.11 114 21.11 96 L 21.11 64 Q 21.11 46 36.70 37 Z"
         stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        opacity="0.5"
+        strokeWidth="5"
       />
-      <line
-        x1="19"
-        y1="16"
-        x2="23"
-        y2="16"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        opacity="0.5"
-      />
-      {/* Three stages — left slightly lighter, right darker
-          creates a subtle left-to-right flow cue. */}
-      <circle cx="6" cy="16" r="3.5" fill="currentColor" opacity="0.65" />
-      <circle cx="16" cy="16" r="3.5" fill="currentColor" />
-      <circle cx="26" cy="16" r="3.5" fill="currentColor" opacity="0.85" />
+
+      {/* Brand-teal splash (the "fill" layer behind the stroked
+          chevron). Offset centre (84,84) + scale 0.7 copied from
+          the source design so the silhouette matches the mock. */}
+      <g transform="translate(84 84) scale(0.7)">
+        <path
+          d="M -28 -38 Q -30 -44 -22 -42 L 22 -6 Q 30 0 22 6 L -22 42 Q -30 44 -28 38 Q -26 34 -20 30 L 14 0 L -20 -30 Q -26 -34 -28 -38 Z"
+          fill="var(--primary)"
+        />
+      </g>
+
+      {/* Two-weight stroked chevron — thin 3.5 on the top arm,
+          thick 7 on the bottom tail. The weight contrast reads as
+          a calligraphic "next" glyph when the eye lands on the
+          mark. */}
+      <g transform="translate(80 80) scale(0.7)">
+        <path
+          d="M -24 -36 Q -28 -40 -22 -40 L 18 -6 Q 26 0 18 6 L -14 34"
+          stroke="currentColor"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M 22 4 L -22 42 Q -28 44 -26 38 L -16 28"
+          stroke="currentColor"
+          strokeWidth="7"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </g>
     </svg>
   );
 }
 
 export function Wordmark({ className }: { className?: string }) {
-  // Plain text in the system font with tight tracking. No custom
-  // SVG wordmark because it would duplicate the font for little
-  // gain and fight accessibility (screen readers + copy-paste).
+  // Bi-colour wordmark: "gocd" follows the parent text colour,
+  // "next" paints brand teal via text-primary. Two spans so the
+  // accent survives colour changes on the parent (e.g. when the
+  // sidebar fades text-muted-foreground on hover, only "gocd"
+  // desaturates — "next" stays branded).
   return (
     <span
       className={cn(
-        "text-sm font-semibold tracking-tight leading-none",
+        "text-base font-bold tracking-tight leading-none",
         className,
       )}
     >
-      gocdnext
+      gocd<span className="text-primary">next</span>
     </span>
   );
 }
