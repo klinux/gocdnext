@@ -28,6 +28,12 @@ type setSecretRequest struct {
 
 type secretsListResponse struct {
 	Secrets []store.Secret `json:"secrets"`
+	// Inherited is the set of global-scope secrets that apply to
+	// this project at resolution time unless the same name is
+	// defined locally. Surface names + timestamps so the UI can
+	// show "X comes from global scope" without leaking values;
+	// admins manage these on /settings/secrets.
+	Inherited []store.Secret `json:"inherited,omitempty"`
 }
 
 // SetSecret handles POST /api/v1/projects/{slug}/secrets.
@@ -120,8 +126,33 @@ func (h *Handler) ListSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter globals down to names the project hasn't shadowed —
+	// same rule the resolver applies at runtime. A project-scoped
+	// "FOO" hides the global "FOO"; no point showing it as
+	// inherited when the project one already wins.
+	globals, err := h.store.ListGlobalSecrets(r.Context())
+	if err != nil {
+		h.log.Error("list global secrets: store", "slug", slug, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	local := make(map[string]struct{}, len(secrets))
+	for _, s := range secrets {
+		local[s.Name] = struct{}{}
+	}
+	inherited := make([]store.Secret, 0, len(globals))
+	for _, g := range globals {
+		if _, shadowed := local[g.Name]; shadowed {
+			continue
+		}
+		inherited = append(inherited, g)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(secretsListResponse{Secrets: secrets})
+	_ = json.NewEncoder(w).Encode(secretsListResponse{
+		Secrets:   secrets,
+		Inherited: inherited,
+	})
 }
 
 // DeleteSecret handles DELETE /api/v1/projects/{slug}/secrets/{name}.

@@ -50,15 +50,17 @@ export default async function SecretsPage({
     throw err;
   }
 
-  let secrets;
+  let data;
   try {
-    secrets = await listSecrets(slug);
+    data = await listSecrets(slug);
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 503) {
       return <SubsystemDisabled slug={slug} />;
     }
     throw err;
   }
+  const secrets = data.secrets;
+  const inherited = data.inherited ?? [];
 
   return (
     <section className="space-y-6">
@@ -130,6 +132,55 @@ export default async function SecretsPage({
           </TableBody>
         </Table>
       )}
+
+      {inherited.length > 0 ? (
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-lg font-semibold tracking-tight">
+              Inherited from global scope
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Available to every pipeline here unless a same-name secret is
+              defined above. Editing lives in{" "}
+              <Link
+                href={"/settings/secrets" as Route}
+                className="underline underline-offset-4 hover:text-foreground"
+              >
+                /settings/secrets
+              </Link>{" "}
+              (admins only).
+            </p>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead>Updated</TableHead>
+                <TableHead className="text-right">Scope</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {inherited.map((s) => (
+                <TableRow key={`inh-${s.name}`}>
+                  <TableCell className="font-mono">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={s.created_at} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={s.updated_at} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                      global
+                    </span>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </section>
+      ) : null}
     </section>
   );
 }

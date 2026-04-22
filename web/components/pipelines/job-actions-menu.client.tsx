@@ -96,7 +96,7 @@ export function JobActionsMenu({ children, label, runId }: Props) {
             className="whitespace-nowrap"
           >
             <RotateCcw className="size-3.5" />
-            {pending ? "Re-queuing…" : "Re-run pipeline"}
+            {pending ? "Re-queuing…" : "Re-run this commit"}
           </DropdownMenuItem>
         ) : (
           <DropdownMenuItem disabled className="whitespace-nowrap">

@@ -178,6 +178,10 @@ export type Secret = {
 
 export type SecretsList = {
   secrets: Secret[];
+  // Globals the project will resolve at runtime because no
+  // same-name local secret shadows them. Read-only on the
+  // project page — editing lives in /settings/secrets (admin).
+  inherited?: Secret[];
 };
 
 export type VSMNode = {

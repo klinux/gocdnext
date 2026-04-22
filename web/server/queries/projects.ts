@@ -129,9 +129,8 @@ export async function getAgentDetail(id: string): Promise<AgentDetail> {
   return readJSON<AgentDetail>(`/api/v1/agents/${encodeURIComponent(id)}`);
 }
 
-export async function listSecrets(slug: string) {
-  const { secrets } = await readJSON<SecretsList>(
+export async function listSecrets(slug: string): Promise<SecretsList> {
+  return readJSON<SecretsList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/secrets`,
   );
-  return secrets;
 }

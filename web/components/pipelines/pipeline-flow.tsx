@@ -98,9 +98,19 @@ function PipelineNode({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <h3 className="truncate font-mono text-sm font-semibold">
-              {pipeline.name}
-            </h3>
+            {run ? (
+              <Link
+                href={`/runs/${run.id}` as Route}
+                className="truncate font-mono text-sm font-semibold hover:underline"
+                title={`Open latest run (#${run.counter})`}
+              >
+                {pipeline.name}
+              </Link>
+            ) : (
+              <h3 className="truncate font-mono text-sm font-semibold">
+                {pipeline.name}
+              </h3>
+            )}
             <span className="text-[11px] text-muted-foreground">
               v{pipeline.definition_version}
             </span>
