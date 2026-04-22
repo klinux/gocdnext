@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { Route } from "next";
+import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -20,7 +21,7 @@ import { RunArtifacts } from "@/components/runs/run-artifacts.client";
 import { RunActions } from "@/components/runs/run-actions.client";
 import { PipelineCanvas } from "@/components/runs/pipeline-canvas.client";
 import { isTerminalStatus, statusTone, type StatusTone } from "@/lib/status";
-import type { RunDetail } from "@/types/api";
+import type { LogLine, RunDetail } from "@/types/api";
 
 // LIVE_POLL_MS controls how fast the page requests the server for new log
 // lines + status while the run is running. Small enough to feel live,
@@ -57,6 +58,32 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       return isTerminalStatus(state) ? false : LIVE_POLL_MS;
     },
   });
+
+  // The server returns a tail of LOGS_PER_JOB lines on every poll.
+  // Without merging, a job producing >500 lines causes earlier lines
+  // to slide off the tail and disappear from the UI between polls —
+  // even though they're still in the DB. Keep a per-job seq→line
+  // map across polls and render the merged history.
+  const logsByJobRef = useRef<Map<string, Map<number, LogLine>>>(new Map());
+  const mergedData = useMemo<RunDetail>(() => {
+    const map = logsByJobRef.current;
+    const stages = data.stages.map((stage) => ({
+      ...stage,
+      jobs: stage.jobs.map((job) => {
+        let bucket = map.get(job.id);
+        if (!bucket) {
+          bucket = new Map<number, LogLine>();
+          map.set(job.id, bucket);
+        }
+        for (const line of job.logs ?? []) bucket.set(line.seq, line);
+        const merged = Array.from(bucket.values()).sort(
+          (a, b) => a.seq - b.seq,
+        );
+        return { ...job, logs: merged };
+      }),
+    }));
+    return { ...data, stages };
+  }, [data]);
 
   const upstream =
     data.cause === "upstream" && data.cause_detail
@@ -188,17 +215,17 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       {upstream ? <UpstreamBanner upstream={upstream} /> : null}
       {pullRequest ? <PullRequestBanner pr={pullRequest} /> : null}
 
-      <PipelineCanvas stages={data.stages} />
+      <PipelineCanvas stages={mergedData.stages} />
 
       <Separator />
 
       <div className="space-y-8">
-        {data.stages.length === 0 ? (
+        {mergedData.stages.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             This run has no stages.
           </p>
         ) : (
-          data.stages.map((s) => <StageSection key={s.id} stage={s} />)
+          mergedData.stages.map((s) => <StageSection key={s.id} stage={s} />)
         )}
       </div>
 
