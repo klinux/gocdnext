@@ -158,9 +158,11 @@ func main() {
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
 		WithConfigFetcher(gitHubFetcher)
-	// Auto-register is disabled pending the multi-scm_source
-	// refactor (see autoregister.go). Wiring stays here so the
-	// path is easy to re-enable; WithAutoRegister is a no-op.
+	// Auto-register installs a repo webhook at apply time when
+	// the project binds an scm_source. Requires PublicBase so
+	// the hook URL GitHub pings back is reachable — without it
+	// we skip wiring entirely and the admin UI reports the
+	// feature off.
 	if cfg.PublicBase != "" {
 		projectsHandler = projectsHandler.WithAutoRegister(projectsapi.AutoRegisterConfig{
 			VCS:        vcsRegistry,

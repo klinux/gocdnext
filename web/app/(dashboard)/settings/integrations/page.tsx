@@ -43,7 +43,7 @@ export default async function IntegrationsPage() {
     {
       label: "Auto-register",
       value: gh.auto_register_on,
-      hint: "Disabled pending multi-scm_source refactor.",
+      hint: "Installs a push webhook on the repo when an scm_source is bound.",
     },
   ];
 

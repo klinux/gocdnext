@@ -204,14 +204,19 @@ func (h *Handler) IntegrationGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appActive := h.vcs != nil && h.vcs.GitHubApp() != nil
+	// Auto-register needs both a live GitHub App AND a public
+	// base URL — the webhook points back at this server's
+	// /api/webhooks/github, and without public_base the hook
+	// would be unreachable. The handler only wires
+	// WithAutoRegister when PublicBase is set, so mirroring the
+	// same conjunction here keeps the UI aligned with runtime
+	// behaviour.
+	autoRegisterOn := appActive && h.wiring.PublicBaseSet
 	writeJSON(w, map[string]any{
 		"github_app_configured": appActive,
 		"public_base_set":       h.wiring.PublicBaseSet,
 		"checks_reporter_on":    h.wiring.ChecksReporterOn,
-		// Auto-register is disabled globally pending the multi-
-		// scm_source refactor (see autoregister.go). Report off
-		// so the UI doesn't mislead the operator.
-		"auto_register_on": false,
+		"auto_register_on":      autoRegisterOn,
 	})
 }
 
