@@ -1,21 +1,7 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Metadata, Route } from "next";
-import { ChevronRight } from "lucide-react";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Separator } from "@/components/ui/separator";
-import { RelativeTime } from "@/components/shared/relative-time";
-import { StatusBadge } from "@/components/shared/status-badge";
+import type { Metadata } from "next";
+
 import { PipelineFlow } from "@/components/pipelines/pipeline-flow";
-import { ProjectActionsMenu } from "@/components/projects/project-actions-menu.client";
-import { formatDurationSeconds, durationBetween } from "@/lib/format";
 import {
   GocdnextAPIError,
   getProjectDetail,
@@ -34,7 +20,9 @@ export async function generateMetadata({
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectDetailPage({
+// Pipelines tab body. Layout owns the header + tabs strip, so
+// this page renders only the DAG + a per-pipeline count hint.
+export default async function ProjectPipelinesPage({
   params,
 }: {
   params: Promise<Params>;
@@ -50,118 +38,19 @@ export default async function ProjectDetailPage({
   }
 
   return (
-    <section className="space-y-8">
-      <header>
-        <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
-            Projects
-          </Link>
-          <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
-          <span>{detail.project.slug}</span>
-        </nav>
-        <div className="mt-1 flex items-baseline justify-between gap-4">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            {detail.project.name}
-          </h2>
-          <ProjectActionsMenu
-            project={detail.project}
-            scmSource={detail.scm_source}
-            pipelineCount={detail.pipelines.length}
-            runCount={detail.runs.length}
-          />
-        </div>
-        {detail.project.description ? (
-          <p className="mt-1 text-sm text-muted-foreground">
-            {detail.project.description}
-          </p>
-        ) : null}
-      </header>
-
-      <section>
-        <header className="mb-3 flex items-baseline justify-between">
-          <h3 className="text-lg font-semibold tracking-tight">Pipelines</h3>
-          <span className="text-xs text-muted-foreground">
-            {detail.pipelines.length} definition
-            {detail.pipelines.length === 1 ? "" : "s"}
-          </span>
-        </header>
-        <PipelineFlow
-          projectSlug={detail.project.slug}
-          pipelines={detail.pipelines}
-          edges={detail.edges ?? []}
-        />
-      </section>
-
-      <Separator />
-
-      <section>
-        <header className="mb-3 flex items-baseline justify-between">
-          <h3 className="text-lg font-semibold tracking-tight">Recent runs</h3>
-          <span className="text-xs text-muted-foreground">
-            {detail.runs.length} shown
-          </span>
-        </header>
-        {detail.runs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No runs yet. Trigger one by pushing to a git material or calling the
-            webhook directly.
-          </p>
-        ) : (
-          <RunsTable runs={detail.runs} />
-        )}
-      </section>
-    </section>
-  );
-}
-
-function RunsTable({
-  runs,
-}: {
-  runs: Awaited<ReturnType<typeof getProjectDetail>>["runs"];
-}) {
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-16">#</TableHead>
-          <TableHead>Pipeline</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Cause</TableHead>
-          <TableHead>Started</TableHead>
-          <TableHead>Duration</TableHead>
-          <TableHead className="text-right">Triggered by</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {runs.map((r) => (
-          <TableRow key={r.id} className="font-mono text-xs">
-            <TableCell className="font-semibold">#{r.counter}</TableCell>
-            <TableCell>
-              <Link
-                href={`/runs/${r.id}` as Route}
-                className="hover:underline"
-              >
-                {r.pipeline_name}
-              </Link>
-            </TableCell>
-            <TableCell>
-              <StatusBadge status={r.status} />
-            </TableCell>
-            <TableCell className="text-muted-foreground">{r.cause}</TableCell>
-            <TableCell>
-              <RelativeTime at={r.started_at ?? r.created_at} />
-            </TableCell>
-            <TableCell>
-              {formatDurationSeconds(
-                durationBetween(r.started_at, r.finished_at),
-              )}
-            </TableCell>
-            <TableCell className="text-right text-muted-foreground">
-              {r.triggered_by ?? "—"}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-lg font-semibold tracking-tight">Pipelines</h3>
+        <span className="text-xs text-muted-foreground">
+          {detail.pipelines.length} definition
+          {detail.pipelines.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <PipelineFlow
+        projectSlug={detail.project.slug}
+        pipelines={detail.pipelines}
+        edges={detail.edges ?? []}
+      />
+    </div>
   );
 }

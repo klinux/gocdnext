@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata, Route } from "next";
-import { ChevronRight, Lock } from "lucide-react";
+import { Lock } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -65,30 +65,16 @@ export default async function SecretsPage({
   return (
     <section className="space-y-6">
       <Toaster position="top-right" richColors />
-      <header>
-        <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
-            Projects
-          </Link>
-          <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
-          <Link
-            href={`/projects/${slug}` as Route}
-            className="hover:text-foreground"
-          >
-            {slug}
-          </Link>
-          <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
-          <span>secrets</span>
-        </nav>
-        <div className="mt-2 flex items-baseline justify-between">
-          <h2 className="text-2xl font-semibold tracking-tight">Secrets</h2>
-          <SecretDialog slug={slug} />
+      <div className="flex items-baseline justify-between">
+        <div>
+          <h3 className="text-lg font-semibold tracking-tight">Secrets</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Encrypted at rest and never echoed back. Reference by name from a job&apos;s{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">secrets:</code> list.
+          </p>
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Encrypted at rest and never echoed back. Reference by name from a job&apos;s{" "}
-          <code className="rounded bg-muted px-1 py-0.5 text-xs">secrets:</code> list.
-        </p>
-      </header>
+        <SecretDialog slug={slug} />
+      </div>
 
       {secrets.length === 0 ? (
         <EmptyState slug={slug} />

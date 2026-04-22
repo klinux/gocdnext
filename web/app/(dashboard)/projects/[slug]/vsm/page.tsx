@@ -1,7 +1,5 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Metadata, Route } from "next";
-import { ChevronRight } from "lucide-react";
+import type { Metadata } from "next";
 
 import {
   GocdnextAPIError,
@@ -37,37 +35,16 @@ export default async function VSMPage({
   }
 
   return (
-    <section className="space-y-4">
-      <header>
-        <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
-            Projects
-          </Link>
-          <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
-          <Link
-            href={`/projects/${slug}` as Route}
-            className="hover:text-foreground"
-          >
-            {slug}
-          </Link>
-          <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
-          <span>VSM</span>
-        </nav>
-        <h2 className="mt-1 text-2xl font-semibold tracking-tight">
-          {vsm.project_name}{" "}
-          <span className="text-muted-foreground">Value Stream</span>
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-lg font-semibold tracking-tight">Value Stream</h3>
+        <span className="text-xs text-muted-foreground">
           {vsm.nodes.length} pipeline{vsm.nodes.length === 1 ? "" : "s"}
-          {vsm.edges.length > 0 ? (
-            <>
-              {" "}· {vsm.edges.length} upstream edge
-              {vsm.edges.length === 1 ? "" : "s"}
-            </>
-          ) : null}
-        </p>
-      </header>
-
+          {vsm.edges.length > 0
+            ? ` · ${vsm.edges.length} upstream edge${vsm.edges.length === 1 ? "" : "s"}`
+            : ""}
+        </span>
+      </div>
       {vsm.nodes.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
           This project has no pipelines yet. Apply one with{" "}
@@ -78,6 +55,6 @@ export default async function VSMPage({
           <VSMGraph vsm={vsm} />
         </div>
       )}
-    </section>
+    </div>
   );
 }
