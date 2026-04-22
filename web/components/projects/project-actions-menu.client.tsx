@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  FolderSync,
   MoreHorizontal,
   RefreshCw,
   Trash2,
@@ -32,6 +33,7 @@ import { EditProjectDialog } from "@/components/projects/edit-project-dialog.cli
 import {
   deleteProject,
   rotateWebhookSecret,
+  syncProjectFromRepo,
 } from "@/server/actions/projects";
 import type { ProjectSCMInfo, ProjectSummary } from "@/types/api";
 
@@ -119,6 +121,49 @@ export function ProjectActionsMenu({
     });
   };
 
+  // Sync flow — one-click, no confirm dialog. The underlying
+  // ApplyProject is idempotent, so an accidental click is cheap
+  // (same-shape diff = zero changes). We still show the outcome
+  // in a toast so the user sees what landed.
+  const [syncing, syncStart] = useTransition();
+  const hasSCM = Boolean(scmSource);
+
+  const sync = () => {
+    syncStart(async () => {
+      const res = await syncProjectFromRepo(project.slug);
+      if (!res.ok) {
+        switch (res.status) {
+          case 404:
+            toast.error("Project not found");
+            break;
+          case 409:
+            toast.error("No repo bound to this project yet — connect one first");
+            break;
+          case 502:
+            toast.error(`Couldn't fetch from repo: ${res.error}`, { duration: 8000 });
+            break;
+          case 503:
+            toast.error("Server isn't configured to fetch from SCM (no GitHub App)");
+            break;
+          default:
+            toast.error(`Sync failed: ${res.error}`);
+        }
+        return;
+      }
+      const created = res.pipelines.filter((p) => p.created).length;
+      const updated = res.pipelines.length - created;
+      const removed = res.pipelinesRemoved.length;
+      const parts: string[] = [];
+      if (created) parts.push(`${created} created`);
+      if (updated) parts.push(`${updated} updated`);
+      if (removed) parts.push(`${removed} removed`);
+      const summary = parts.length > 0 ? parts.join(", ") : "no changes";
+      toast.success(`Synced from repo — ${summary}`, { duration: 6000 });
+      for (const w of res.warnings) toast.warning(w, { duration: 8000 });
+      router.refresh();
+    });
+  };
+
   // Delete flow — type-to-confirm gate.
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [typed, setTyped] = useState("");
@@ -158,6 +203,14 @@ export function ProjectActionsMenu({
             }
           />
           <DropdownMenuContent align="end" className="min-w-52">
+            <DropdownMenuItem
+              onClick={sync}
+              disabled={!hasSCM || syncing}
+              className="whitespace-nowrap"
+            >
+              <FolderSync className="size-3.5" />
+              {syncing ? "Syncing…" : "Sync from repo"}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => setRotateConfirmOpen(true)}
               className="whitespace-nowrap"

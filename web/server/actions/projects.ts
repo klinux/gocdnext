@@ -169,6 +169,91 @@ export async function deleteProject(slug: string): Promise<DeleteProjectResult> 
   }
 }
 
+export type SyncPipelineStatus = {
+  name: string;
+  pipeline_id: string;
+  created: boolean;
+  materials_added: number;
+  materials_removed: number;
+};
+
+export type SyncProjectResult =
+  | {
+      ok: true;
+      projectId: string;
+      pipelines: SyncPipelineStatus[];
+      pipelinesRemoved: string[];
+      warnings: string[];
+    }
+  | { ok: false; error: string; status?: number };
+
+// syncProjectFromRepo POSTs /api/v1/projects/{slug}/sync which
+// re-reads the project's `.gocdnext/` folder from the bound
+// scm_source at default-branch HEAD and applies it. Gives the UI a
+// first-class equivalent to `gocdnext apply` without shell access —
+// same endpoint semantics the CLI hits, minus the local files.
+//
+// Common failures the caller should surface distinctly:
+//   - status 404: project slug unknown
+//   - status 409: project has no scm_source yet (connect repo first)
+//   - status 502: fetch from provider failed (token expired, 500 from github, …)
+//   - status 503: server has no configsync.Fetcher wired (dev without GitHub App)
+export async function syncProjectFromRepo(
+  slug: string,
+): Promise<SyncProjectResult> {
+  const parsed = projectSlugSchema.safeParse(slug);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid slug" };
+  }
+
+  const url =
+    env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+    `/api/v1/projects/${encodeURIComponent(parsed.data)}/sync`;
+  const store = await cookies();
+  const session = store.get("gocdnext_session")?.value;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: text.trim().slice(0, 300) || `server ${res.status}`,
+      };
+    }
+    const body = text
+      ? (JSON.parse(text) as {
+          project_id?: string;
+          pipelines?: SyncPipelineStatus[];
+          pipelines_removed?: string[];
+          warnings?: string[];
+        })
+      : {};
+    revalidatePath(`/projects/${parsed.data}`);
+    revalidatePath("/projects");
+    return {
+      ok: true,
+      projectId: body.project_id ?? "",
+      pipelines: body.pipelines ?? [],
+      pipelinesRemoved: body.pipelines_removed ?? [],
+      warnings: body.warnings ?? [],
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export type RotateWebhookOutcome = {
   scm_source_url: string;
   status: string;

@@ -302,6 +302,7 @@ func main() {
 		p.Use(authMiddleware.RequireAuth)
 
 		p.Post("/api/v1/projects/apply", projectsHandler.Apply)
+		p.Post("/api/v1/projects/{slug}/sync", projectsHandler.Sync)
 		p.Get("/api/v1/projects", projectsHandler.List)
 		p.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
 		p.Delete("/api/v1/projects/{slug}", projectsHandler.Delete)
