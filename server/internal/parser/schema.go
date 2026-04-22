@@ -100,7 +100,12 @@ type Cache struct {
 }
 
 type Artifacts struct {
-	Paths    []string `yaml:"paths"`
+	Paths []string `yaml:"paths"`
+	// Optional is a best-effort list — upload failures log but don't
+	// fail the job. Use for coverage, screenshots, debug logs. Paths
+	// listed in both `paths` and `optional` are treated as required
+	// (required wins; see parser).
+	Optional []string `yaml:"optional,omitempty"`
 	ExpireIn string   `yaml:"expire_in,omitempty"`
 	When     string   `yaml:"when,omitempty"` // on_success|on_failure|always
 }

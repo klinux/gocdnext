@@ -153,8 +153,15 @@ type Job struct {
 	Tags []string
 	// ArtifactPaths are the file/directory paths the runner should tar+gz
 	// and upload after the job succeeds. YAML source: `artifacts.paths:`.
-	// Empty means no artefacts expected.
+	// Failure to upload any of these fails the job — the YAML declared
+	// these as part of the build's output contract, so a missing file
+	// means the build didn't deliver what it promised.
 	ArtifactPaths []string
+	// OptionalArtifactPaths are best-effort uploads (`artifacts.optional:`
+	// in YAML). The runner attempts each but logs and continues on
+	// failure — useful for coverage reports, screenshots, or debug logs
+	// that should ship when possible but never gate the build.
+	OptionalArtifactPaths []string
 	// ArtifactDeps declare artefacts this job consumes from earlier jobs
 	// in the same run. Agent downloads each before tasks start; a
 	// missing/not-ready dep fails the job cleanly.

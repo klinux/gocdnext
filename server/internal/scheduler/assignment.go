@@ -107,9 +107,10 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		Checkouts:      checkouts,
 		Workspace:      "/workspace",
 		TimeoutSeconds: 0,
-		LogMasks:          masks,
-		ArtifactPaths:     append([]string(nil), jobDef.ArtifactPaths...),
-		ArtifactDownloads: downloads,
+		LogMasks:              masks,
+		ArtifactPaths:         append([]string(nil), jobDef.ArtifactPaths...),
+		OptionalArtifactPaths: append([]string(nil), jobDef.OptionalArtifactPaths...),
+		ArtifactDownloads:     downloads,
 	}, nil
 }
 

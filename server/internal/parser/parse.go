@@ -146,6 +146,20 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 	}
 	if jd.Artifacts != nil {
 		j.ArtifactPaths = append([]string(nil), jd.Artifacts.Paths...)
+		// De-dup against required — a path in both lists is kept
+		// only in ArtifactPaths (required wins). Rare but possible
+		// when someone adds `optional:` to an existing job without
+		// removing from `paths:`.
+		required := make(map[string]struct{}, len(jd.Artifacts.Paths))
+		for _, p := range jd.Artifacts.Paths {
+			required[p] = struct{}{}
+		}
+		for _, p := range jd.Artifacts.Optional {
+			if _, dup := required[p]; dup {
+				continue
+			}
+			j.OptionalArtifactPaths = append(j.OptionalArtifactPaths, p)
+		}
 	}
 	for _, na := range jd.NeedsArtifacts {
 		if na.FromJob == "" {

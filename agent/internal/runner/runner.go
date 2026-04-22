@@ -151,7 +151,26 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		}
 	}
 
-	refs := r.uploadArtifacts(ctx, workDir, a, &seq)
+	// Artifact paths in YAML are repo-relative (user writes
+	// `bin/gocdnext-agent` because that's where `go build` puts
+	// it from the repo root). The script ran inside scriptWorkDir
+	// (which follows the first checkout's target_dir), so that's
+	// the correct base for resolving artifact paths — passing
+	// workDir would miss the `src/<id>` checkout prefix and 404
+	// on every single-material pipeline.
+	refs, uploadErr := r.uploadArtifacts(ctx, scriptWorkDir, a, &seq)
+	if uploadErr != nil {
+		// Required artifact upload failed — the YAML declared the
+		// file as a build output so a missing file means the build
+		// didn't deliver what it promised. Fail the job loudly
+		// instead of the silent "success with missing artifact" the
+		// old best-effort behaviour allowed.
+		log.Warn("runner: required artifact upload failed",
+			"err", uploadErr, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
+			fmt.Sprintf("artifact upload failed: %v", uploadErr), refs)
+		return
+	}
 
 	log.Info("runner: execute ok", "artifacts", len(refs))
 	r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs)
@@ -190,28 +209,56 @@ func (r *Runner) downloadArtifact(ctx context.Context, workDir string, dl *gocdn
 	return nil
 }
 
-// uploadArtifacts tars + uploads each declared path. Errors are
-// reported as log lines but do NOT fail the job (consistent with
-// GitLab CI — the contract is that artifacts are best-effort after a
-// successful task sequence). Downstream jobs that `needs_artifacts`
-// will fail cleanly when the server reports the missing row.
-func (r *Runner) uploadArtifacts(ctx context.Context, workDir string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) []*gocdnextv1.ArtifactRef {
-	if r.cfg.Uploader == nil || len(a.GetArtifactPaths()) == 0 {
-		return nil
+// uploadArtifacts tars + uploads declared paths. Required paths
+// (from `artifacts.paths:` in YAML) fail the job on any upload
+// error — the YAML declared the file as a build output, so a
+// missing file means the build didn't deliver what it promised.
+// Optional paths (from `artifacts.optional:`) log on failure but
+// don't surface an error, so flaky coverage/screenshot uploads
+// never gate the build. Returns refs for everything that did
+// upload successfully plus the first required-path error (if any).
+func (r *Runner) uploadArtifacts(ctx context.Context, workDir string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) ([]*gocdnextv1.ArtifactRef, error) {
+	if r.cfg.Uploader == nil {
+		return nil, nil
 	}
-	refs, err := r.cfg.Uploader.Upload(ctx, workDir, a.GetRunId(), a.GetJobId(), a.GetArtifactPaths())
-	if err != nil {
-		r.emitLog(a, seq, "stderr", fmt.Sprintf("artifact upload failed: %v", err))
-		r.cfg.Logger.Warn("runner: artifact upload failed", "err", err,
-			"run_id", a.GetRunId(), "job_id", a.GetJobId())
-		return nil
+	var refs []*gocdnextv1.ArtifactRef
+
+	if required := a.GetArtifactPaths(); len(required) > 0 {
+		got, err := r.cfg.Uploader.Upload(ctx, workDir, a.GetRunId(), a.GetJobId(), required)
+		if err != nil {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf("artifact upload failed: %v", err))
+			r.cfg.Logger.Warn("runner: required artifact upload failed", "err", err,
+				"run_id", a.GetRunId(), "job_id", a.GetJobId())
+			return got, err
+		}
+		for _, ref := range got {
+			r.emitLog(a, seq, "stdout", fmt.Sprintf(
+				"artifact uploaded: %s (%d bytes, sha256 %s)",
+				ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+		}
+		refs = append(refs, got...)
 	}
-	for _, ref := range refs {
-		r.emitLog(a, seq, "stdout", fmt.Sprintf(
-			"artifact uploaded: %s (%d bytes, sha256 %s)",
-			ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+
+	if optional := a.GetOptionalArtifactPaths(); len(optional) > 0 {
+		got, err := r.cfg.Uploader.Upload(ctx, workDir, a.GetRunId(), a.GetJobId(), optional)
+		if err != nil {
+			// Optional semantics: log, carry on. The job still
+			// succeeds if everything else did.
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"optional artifact upload failed (continuing): %v", err))
+			r.cfg.Logger.Warn("runner: optional artifact upload failed", "err", err,
+				"run_id", a.GetRunId(), "job_id", a.GetJobId())
+		} else {
+			for _, ref := range got {
+				r.emitLog(a, seq, "stdout", fmt.Sprintf(
+					"optional artifact uploaded: %s (%d bytes, sha256 %s)",
+					ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+			}
+			refs = append(refs, got...)
+		}
 	}
-	return refs
+
+	return refs, nil
 }
 
 func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.MaterialCheckout, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {

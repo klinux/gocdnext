@@ -161,6 +161,36 @@ jobs:
 	}
 }
 
+func TestParse_OptionalArtifactsSplitFromRequired(t *testing.T) {
+	// `artifacts.optional:` is kept separate from `paths:` — the
+	// parser dedups (required wins if a path appears in both).
+	// Runtime semantics: required paths fail the job on upload
+	// error, optional paths are best-effort.
+	y := `
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    script: [make]
+    artifacts:
+      paths: [bin/agent, bin/server]
+      optional: [coverage.xml, bin/agent]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	j := p.Jobs[0]
+	if len(j.ArtifactPaths) != 2 {
+		t.Fatalf("required = %v, want 2", j.ArtifactPaths)
+	}
+	if len(j.OptionalArtifactPaths) != 1 || j.OptionalArtifactPaths[0] != "coverage.xml" {
+		t.Fatalf("optional = %v, want [coverage.xml] (bin/agent deduped)", j.OptionalArtifactPaths)
+	}
+}
+
 func TestParse_NeedsArtifacts(t *testing.T) {
 	y := `
 stages: [build, deploy]

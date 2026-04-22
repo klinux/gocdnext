@@ -138,13 +138,24 @@ message JobAssignment {
   // Artifact paths declared in the job's YAML `artifacts.paths:`. The
   // runner tars each path after tasks succeed, calls
   // RequestArtifactUpload to get signed PUT URLs, and reports what
-  // uploaded back in JobResult.artifacts.
+  // uploaded back in JobResult.artifacts. Upload failure on any
+  // required path fails the job — the YAML declared these as part
+  // of the build's contract, so a missing file means the build
+  // didn't deliver what it promised.
   repeated string artifact_paths = 11;
   // Artifacts this job depends on (`needs_artifacts:` in YAML). Agent
   // downloads + untars each one into `dest` (relative to workspace)
   // before running the first task. Failure to download any dep fails
   // the job before any user code runs.
   repeated ArtifactDownload artifact_downloads = 12;
+  // Best-effort artifact paths from YAML `artifacts.optional:` — the
+  // runner attempts to upload each but only logs on failure instead
+  // of failing the job. Use for logs, coverage reports, screenshots
+  // — anything where "nice to have" beats "fail the build". Kept
+  // separate from artifact_paths so the runner can enforce strict
+  // semantics on the required list without per-entry flags on the
+  // wire.
+  repeated string optional_artifact_paths = 13;
 }
 
 message ArtifactDownload {

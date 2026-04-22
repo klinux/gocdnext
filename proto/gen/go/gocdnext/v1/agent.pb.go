@@ -940,15 +940,26 @@ type JobAssignment struct {
 	// Artifact paths declared in the job's YAML `artifacts.paths:`. The
 	// runner tars each path after tasks succeed, calls
 	// RequestArtifactUpload to get signed PUT URLs, and reports what
-	// uploaded back in JobResult.artifacts.
+	// uploaded back in JobResult.artifacts. Upload failure on any
+	// required path fails the job — the YAML declared these as part
+	// of the build's contract, so a missing file means the build
+	// didn't deliver what it promised.
 	ArtifactPaths []string `protobuf:"bytes,11,rep,name=artifact_paths,json=artifactPaths,proto3" json:"artifact_paths,omitempty"`
 	// Artifacts this job depends on (`needs_artifacts:` in YAML). Agent
 	// downloads + untars each one into `dest` (relative to workspace)
 	// before running the first task. Failure to download any dep fails
 	// the job before any user code runs.
 	ArtifactDownloads []*ArtifactDownload `protobuf:"bytes,12,rep,name=artifact_downloads,json=artifactDownloads,proto3" json:"artifact_downloads,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Best-effort artifact paths from YAML `artifacts.optional:` — the
+	// runner attempts to upload each but only logs on failure instead
+	// of failing the job. Use for logs, coverage reports, screenshots
+	// — anything where "nice to have" beats "fail the build". Kept
+	// separate from artifact_paths so the runner can enforce strict
+	// semantics on the required list without per-entry flags on the
+	// wire.
+	OptionalArtifactPaths []string `protobuf:"bytes,13,rep,name=optional_artifact_paths,json=optionalArtifactPaths,proto3" json:"optional_artifact_paths,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *JobAssignment) Reset() {
@@ -1061,6 +1072,13 @@ func (x *JobAssignment) GetArtifactPaths() []string {
 func (x *JobAssignment) GetArtifactDownloads() []*ArtifactDownload {
 	if x != nil {
 		return x.ArtifactDownloads
+	}
+	return nil
+}
+
+func (x *JobAssignment) GetOptionalArtifactPaths() []string {
+	if x != nil {
+		return x.OptionalArtifactPaths
 	}
 	return nil
 }
@@ -1541,7 +1559,7 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06assign\x18\x01 \x01(\v2\x1a.gocdnext.v1.JobAssignmentH\x00R\x06assign\x120\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x16.gocdnext.v1.CancelJobH\x00R\x06cancel\x12'\n" +
 	"\x04pong\x18\x03 \x01(\v2\x11.gocdnext.v1.PongH\x00R\x04pongB\x06\n" +
-	"\x04kind\"\x99\x04\n" +
+	"\x04kind\"\xd1\x04\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x12\n" +
@@ -1555,7 +1573,8 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\tlog_masks\x18\n" +
 	" \x03(\tR\blogMasks\x12%\n" +
 	"\x0eartifact_paths\x18\v \x03(\tR\rartifactPaths\x12L\n" +
-	"\x12artifact_downloads\x18\f \x03(\v2\x1d.gocdnext.v1.ArtifactDownloadR\x11artifactDownloads\x1a6\n" +
+	"\x12artifact_downloads\x18\f \x03(\v2\x1d.gocdnext.v1.ArtifactDownloadR\x11artifactDownloads\x126\n" +
+	"\x17optional_artifact_paths\x18\r \x03(\tR\x15optionalArtifactPaths\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb6\x01\n" +

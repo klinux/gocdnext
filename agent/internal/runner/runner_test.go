@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -302,4 +303,129 @@ func setupLocalGitRepo(t *testing.T) string {
 
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// fakeUploader records every Upload call and returns a canned
+// outcome. The runner treats required vs. optional paths
+// differently, so tests drive both lists via a single mock that
+// can be configured to succeed on one call and fail on another.
+type fakeUploader struct {
+	mu    sync.Mutex
+	calls [][]string // paths passed per call, in order
+	// failWhen returns a non-nil error for a given call index to
+	// simulate a partial failure; nil = success and caller gets
+	// one ArtifactRef per input path.
+	failWhen func(idx int) error
+}
+
+func (f *fakeUploader) Upload(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ string,
+	paths []string,
+) ([]*gocdnextv1.ArtifactRef, error) {
+	f.mu.Lock()
+	idx := len(f.calls)
+	f.calls = append(f.calls, append([]string(nil), paths...))
+	fail := f.failWhen
+	f.mu.Unlock()
+
+	if fail != nil {
+		if err := fail(idx); err != nil {
+			return nil, err
+		}
+	}
+	refs := make([]*gocdnextv1.ArtifactRef, 0, len(paths))
+	for _, p := range paths {
+		refs = append(refs, &gocdnextv1.ArtifactRef{
+			Path: p, Size: 1, ContentSha256: "deadbeef",
+		})
+	}
+	return refs, nil
+}
+
+func runnerWithUploader(t *testing.T, u runner.ArtifactUploader) (*runner.Runner, *collector) {
+	t.Helper()
+	c := &collector{}
+	r := runner.New(runner.Config{
+		WorkspaceRoot: t.TempDir(),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Send:          c.Send,
+		Uploader:      u,
+	})
+	return r, c
+}
+
+func TestExecute_RequiredArtifactUploadFailureFailsJob(t *testing.T) {
+	up := &fakeUploader{failWhen: func(idx int) error {
+		// First call = required upload; fail it.
+		if idx == 0 {
+			return fmt.Errorf("stat bin/gocdnext-agent: no such file")
+		}
+		return nil
+	}}
+	r, c := runnerWithUploader(t, up)
+	a := assignment("echo ran")
+	a.ArtifactPaths = []string{"bin/gocdnext-agent"}
+
+	r.Execute(context.Background(), a)
+
+	if c.result == nil || c.result.Status != gocdnextv1.RunStatus_RUN_STATUS_FAILED {
+		t.Fatalf("want FAILED, got %+v", c.result)
+	}
+	if !strings.Contains(c.result.Error, "artifact upload failed") {
+		t.Fatalf("error should mention upload: %q", c.result.Error)
+	}
+	if !strings.Contains(c.allLogText(), "artifact upload failed") {
+		t.Fatalf("stderr should include upload failure:\n%s", c.allLogText())
+	}
+}
+
+func TestExecute_OptionalArtifactUploadFailureDoesNotFailJob(t *testing.T) {
+	// Two calls: required succeeds, optional fails.
+	up := &fakeUploader{failWhen: func(idx int) error {
+		if idx == 1 {
+			return fmt.Errorf("coverage.xml not found")
+		}
+		return nil
+	}}
+	r, c := runnerWithUploader(t, up)
+	a := assignment("echo ran")
+	a.ArtifactPaths = []string{"bin/agent"}
+	a.OptionalArtifactPaths = []string{"coverage.xml"}
+
+	r.Execute(context.Background(), a)
+
+	if c.result == nil || c.result.Status != gocdnextv1.RunStatus_RUN_STATUS_SUCCESS {
+		t.Fatalf("want SUCCESS (optional failure), got %+v", c.result)
+	}
+	// Required ref should be reported; optional ref should not.
+	if len(c.result.Artifacts) != 1 || c.result.Artifacts[0].Path != "bin/agent" {
+		t.Fatalf("artifacts = %+v, want only the required one", c.result.Artifacts)
+	}
+	logs := c.allLogText()
+	if !strings.Contains(logs, "optional artifact upload failed") {
+		t.Fatalf("expected optional-failure log line:\n%s", logs)
+	}
+}
+
+func TestExecute_BothArtifactListsUploadedOnSuccess(t *testing.T) {
+	up := &fakeUploader{}
+	r, c := runnerWithUploader(t, up)
+	a := assignment("echo ran")
+	a.ArtifactPaths = []string{"bin/agent"}
+	a.OptionalArtifactPaths = []string{"coverage.xml", "screenshots/"}
+
+	r.Execute(context.Background(), a)
+
+	if c.result == nil || c.result.Status != gocdnextv1.RunStatus_RUN_STATUS_SUCCESS {
+		t.Fatalf("want SUCCESS, got %+v", c.result)
+	}
+	if len(up.calls) != 2 {
+		t.Fatalf("uploader called %d times, want 2 (required + optional)", len(up.calls))
+	}
+	if len(c.result.Artifacts) != 3 {
+		t.Fatalf("artifacts count = %d, want 3", len(c.result.Artifacts))
+	}
 }
