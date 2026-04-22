@@ -1,21 +1,30 @@
 import type { Metadata, Route } from "next";
 import type { ReactNode } from "react";
+import {
+  Activity,
+  KeyRound,
+  Lock,
+  Plug,
+  Archive,
+  Webhook,
+} from "lucide-react";
 
-import { SettingsTabs } from "@/components/settings/settings-tabs.client";
+import {
+  SettingsTabs,
+  type SettingsTab,
+} from "@/components/settings/settings-tabs.client";
 
 export const metadata: Metadata = {
   title: "Settings — gocdnext",
 };
 
-type Tab = { label: string; href: Route; matchPrefix: string };
-
-const tabs: Tab[] = [
-  { label: "Health", href: "/settings/health" as Route, matchPrefix: "/settings/health" },
-  { label: "Webhooks", href: "/settings/webhooks" as Route, matchPrefix: "/settings/webhooks" },
-  { label: "Retention", href: "/settings/retention" as Route, matchPrefix: "/settings/retention" },
-  { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations" },
-  { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth" },
-  { label: "Secrets", href: "/settings/secrets" as Route, matchPrefix: "/settings/secrets" },
+const tabs: SettingsTab[] = [
+  { label: "Health", href: "/settings/health" as Route, matchPrefix: "/settings/health", icon: Activity },
+  { label: "Webhooks", href: "/settings/webhooks" as Route, matchPrefix: "/settings/webhooks", icon: Webhook },
+  { label: "Retention", href: "/settings/retention" as Route, matchPrefix: "/settings/retention", icon: Archive },
+  { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations", icon: Plug },
+  { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth", icon: Lock },
+  { label: "Secrets", href: "/settings/secrets" as Route, matchPrefix: "/settings/secrets", icon: KeyRound },
 ];
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {
@@ -31,8 +40,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
           provider integrations.
         </p>
       </header>
-      <SettingsTabs tabs={tabs} />
-      <div>{children}</div>
+      <div className="flex flex-col gap-6 md:flex-row md:items-start">
+        <SettingsTabs tabs={tabs} />
+        <div className="min-w-0 flex-1">{children}</div>
+      </div>
     </div>
   );
 }
