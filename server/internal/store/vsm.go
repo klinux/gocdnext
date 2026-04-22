@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
 
@@ -32,11 +33,15 @@ type VSM struct {
 // when present (accurate to what actually executed) and left nil
 // otherwise — the frontend falls back to "unknown structure".
 type VSMNode struct {
-	PipelineID        uuid.UUID   `json:"pipeline_id"`
-	Name              string      `json:"name"`
-	DefinitionVersion int         `json:"definition_version"`
-	GitMaterials      []GitRef    `json:"git_materials,omitempty"`
-	LatestRun         *RunSummary `json:"latest_run,omitempty"`
+	PipelineID        uuid.UUID        `json:"pipeline_id"`
+	Name              string           `json:"name"`
+	DefinitionVersion int              `json:"definition_version"`
+	GitMaterials      []GitRef         `json:"git_materials,omitempty"`
+	LatestRun         *RunSummary      `json:"latest_run,omitempty"`
+	// Metrics mirror the PipelineSummary.Metrics shape so the VSM
+	// node can render p50 + pass rate + bottleneck indicators with
+	// the same client-side formatting helpers as the pipeline card.
+	Metrics *PipelineMetrics `json:"metrics,omitempty"`
 }
 
 // GitRef is the minimum the UI needs to surface "this pipeline feeds
@@ -48,12 +53,17 @@ type GitRef struct {
 
 // VSMEdge is one upstream relationship. From is the pipeline name
 // whose stage completion triggers To. Stage + Status make the edge
-// self-descriptive on hover.
+// self-descriptive on hover. WaitTimeP50Sec surfaces the observed
+// median wait between upstream.finished and downstream.started so
+// the VSM can label arrows with real-world latency ("18s artifact
+// upload", "3m env warm-up" from the design reference).
 type VSMEdge struct {
-	FromPipeline string `json:"from_pipeline"`
-	ToPipeline   string `json:"to_pipeline"`
-	Stage        string `json:"stage"`
-	Status       string `json:"status,omitempty"` // "success" etc.
+	FromPipeline   string  `json:"from_pipeline"`
+	ToPipeline     string  `json:"to_pipeline"`
+	Stage          string  `json:"stage"`
+	Status         string  `json:"status,omitempty"` // "success" etc.
+	WaitTimeP50Sec float64 `json:"wait_time_p50_seconds,omitempty"`
+	WaitSamples    int     `json:"wait_samples,omitempty"`
 }
 
 // GetProjectVSM assembles the graph for a project. Three DB queries
@@ -85,6 +95,14 @@ func (s *Store) GetProjectVSM(ctx context.Context, slug string) (VSM, error) {
 		return VSM{}, fmt.Errorf("store: latest runs for vsm: %w", err)
 	}
 
+	// Share the metrics query with project-detail — same window,
+	// same shape. Empty map when the project has no terminal runs,
+	// which keeps the VSM usable for fresh projects.
+	metricsByID, err := s.pipelineMetricsByID(ctx, slug)
+	if err != nil {
+		return VSM{}, fmt.Errorf("store: pipeline metrics for vsm: %w", err)
+	}
+
 	// pipeline_id → index in nodes, so we can attach materials + runs
 	// without quadratic lookups.
 	nodes := make([]VSMNode, 0, len(pipelines))
@@ -98,6 +116,7 @@ func (s *Store) GetProjectVSM(ctx context.Context, slug string) (VSM, error) {
 			PipelineID:        pid,
 			Name:              pl.Name,
 			DefinitionVersion: int(pl.DefinitionVersion),
+			Metrics:           metricsByID[pid],
 		})
 	}
 
@@ -151,6 +170,41 @@ func (s *Store) GetProjectVSM(ctx context.Context, slug string) (VSM, error) {
 					Status:       u.Status,
 				})
 			}
+		}
+	}
+
+	// Attach median wait times to each edge. Edge timing is a
+	// "nice-to-have" — a missing row just leaves WaitTimeP50Sec at
+	// 0 and the UI falls back to rendering the stage label only.
+	// Keyed by (from_pipeline_id, to_pipeline_id) so fan-out from a
+	// single upstream to multiple downstreams gets a wait per arrow.
+	timingRows, err := s.q.VSMEdgeTimingByProjectSlug(ctx, db.VSMEdgeTimingByProjectSlugParams{
+		Slug:        slug,
+		SinceWindow: intervalDays(MetricsWindowDays),
+	})
+	if err != nil {
+		return VSM{}, fmt.Errorf("store: vsm edge timing: %w", err)
+	}
+	type edgeKey struct{ from, to uuid.UUID }
+	waitByKey := make(map[edgeKey]struct {
+		wait    float64
+		samples int
+	}, len(timingRows))
+	for _, r := range timingRows {
+		waitByKey[edgeKey{from: fromPgUUID(r.FromPipelineID), to: fromPgUUID(r.ToPipelineID)}] = struct {
+			wait    float64
+			samples int
+		}{wait: r.WaitP50S, samples: int(r.Samples)}
+	}
+	for i := range edges {
+		fromID, fromOk := byName[edges[i].FromPipeline]
+		toID, toOk := byName[edges[i].ToPipeline]
+		if !fromOk || !toOk {
+			continue
+		}
+		if t, ok := waitByKey[edgeKey{from: fromID, to: toID}]; ok {
+			edges[i].WaitTimeP50Sec = t.wait
+			edges[i].WaitSamples = t.samples
 		}
 	}
 

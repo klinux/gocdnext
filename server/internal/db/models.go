@@ -62,6 +62,12 @@ type AuthState struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type CronState struct {
+	MaterialID  pgtype.UUID
+	LastFiredAt pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type GithubCheckRun struct {
 	RunID          pgtype.UUID
 	InstallationID int64
@@ -203,6 +209,12 @@ type User struct {
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
 	PasswordHash []byte
+}
+
+type UserPreference struct {
+	UserID      pgtype.UUID
+	Preferences []byte
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type UserSession struct {

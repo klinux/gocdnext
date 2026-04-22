@@ -119,6 +119,105 @@ func TestGetProjectDetail_ReturnsPipelinesAndRuns(t *testing.T) {
 	}
 }
 
+func TestGetProjectDetail_MetricsNilWhenNoTerminalRuns(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	// Freshly-created run is queued — not a terminal status, so the
+	// metrics aggregate should stay unset. Regression guard: a
+	// COALESCE(..., 0) elsewhere could easily let zeroed stats leak
+	// through as if they were real values.
+	if _, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1)); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	got, err := s.GetProjectDetail(ctx, "demo", 10)
+	if err != nil {
+		t.Fatalf("GetProjectDetail: %v", err)
+	}
+	if got.Pipelines[0].Metrics != nil {
+		t.Fatalf("Metrics populated without terminal runs: %+v", got.Pipelines[0].Metrics)
+	}
+}
+
+func TestGetProjectDetail_MetricsAggregatesTerminalRuns(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	r1, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	in2 := baseTriggerInput(pipelineID, materialID, 2)
+	in2.Revision = "b111111111111111111111111111111111111111"
+	r2, err := s.CreateRunFromModification(ctx, in2)
+	if err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+
+	// Mark both runs as finished with a known duration so the p50
+	// math is predictable. Direct SQL because the production code
+	// path to terminal status is orchestration-driven (stage
+	// completion → run update) — way more setup than a metrics
+	// assertion needs.
+	now := time.Now().UTC()
+	mark := func(runID [16]byte, status string, leadSec int) {
+		t.Helper()
+		start := now.Add(-time.Duration(leadSec+60) * time.Second)
+		end := start.Add(time.Duration(leadSec) * time.Second)
+		if _, err := pool.Exec(ctx,
+			`UPDATE runs SET status=$1, started_at=$2, finished_at=$3 WHERE id=$4`,
+			status, start, end, runID,
+		); err != nil {
+			t.Fatalf("update run: %v", err)
+		}
+		// Stage timings: build half + test half, so the sum equals
+		// the overall run duration. Process time p50 should match
+		// lead time p50 in this fixture.
+		mid := start.Add(time.Duration(leadSec/2) * time.Second)
+		if _, err := pool.Exec(ctx,
+			`UPDATE stage_runs SET status='success', started_at=$1, finished_at=$2 WHERE run_id=$3 AND ordinal=0`,
+			start, mid, runID,
+		); err != nil {
+			t.Fatalf("update stage build: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE stage_runs SET status=$1, started_at=$2, finished_at=$3 WHERE run_id=$4 AND ordinal=1`,
+			status, mid, end, runID,
+		); err != nil {
+			t.Fatalf("update stage test: %v", err)
+		}
+	}
+	mark(r1.RunID, "success", 60)
+	mark(r2.RunID, "failed", 120)
+
+	got, err := s.GetProjectDetail(ctx, "demo", 10)
+	if err != nil {
+		t.Fatalf("GetProjectDetail: %v", err)
+	}
+	m := got.Pipelines[0].Metrics
+	if m == nil {
+		t.Fatalf("Metrics nil after two terminal runs")
+	}
+	if m.RunsConsidered != 2 {
+		t.Fatalf("RunsConsidered = %d, want 2", m.RunsConsidered)
+	}
+	if m.SuccessRate != 0.5 {
+		t.Fatalf("SuccessRate = %v, want 0.5", m.SuccessRate)
+	}
+	// p50 of {60, 120} = 90. Allow small float slack.
+	if m.LeadTimeP50Sec < 89 || m.LeadTimeP50Sec > 91 {
+		t.Fatalf("LeadTimeP50Sec = %v, want ~90", m.LeadTimeP50Sec)
+	}
+	if len(m.StageStats) != 2 {
+		t.Fatalf("StageStats = %d, want 2", len(m.StageStats))
+	}
+}
+
 func TestGetRunDetail_NotFound(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

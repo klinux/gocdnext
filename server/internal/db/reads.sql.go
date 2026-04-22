@@ -91,6 +91,151 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 	return i, err
 }
 
+const latestRunMetaByProjectSlug = `-- name: LatestRunMetaByProjectSlug :many
+WITH latest AS (
+    SELECT DISTINCT ON (r.pipeline_id)
+        r.pipeline_id, r.id AS run_id, r.revisions, r.triggered_by
+    FROM runs r
+    JOIN pipelines pl ON pl.id = r.pipeline_id
+    JOIN projects p ON p.id = pl.project_id
+    WHERE p.slug = $1
+    ORDER BY r.pipeline_id, r.created_at DESC
+),
+expanded AS (
+    SELECT l.pipeline_id,
+           l.triggered_by,
+           (key)::uuid AS material_id,
+           (value->>'revision')::text AS revision,
+           (value->>'branch')::text AS branch
+    FROM latest l, jsonb_each(l.revisions)
+),
+joined AS (
+    SELECT DISTINCT ON (e.pipeline_id)
+        e.pipeline_id, e.material_id, e.revision, e.branch,
+        m.message, m.author, e.triggered_by
+    FROM expanded e
+    LEFT JOIN modifications m
+        ON m.material_id = e.material_id AND m.revision = e.revision
+    ORDER BY e.pipeline_id, e.material_id
+)
+SELECT pipeline_id, revision, branch, message, author, triggered_by
+FROM joined
+`
+
+type LatestRunMetaByProjectSlugRow struct {
+	PipelineID  pgtype.UUID
+	Revision    string
+	Branch      string
+	Message     *string
+	Author      *string
+	TriggeredBy *string
+}
+
+// Per-pipeline latest run with the triggering modification's
+// commit metadata (branch, message, author, short revision). The
+// runs.revisions JSONB is keyed by material_id; we unpack it and
+// match each (material_id, revision) to the modification row
+// that actually produced the run. LIMIT/DISTINCT ON at each level
+// keeps the output one row per pipeline even when a run snapshots
+// multiple materials — we pick the first match deterministically
+// (order by material_id) so the card shows a stable ref.
+func (q *Queries) LatestRunMetaByProjectSlug(ctx context.Context, slug string) ([]LatestRunMetaByProjectSlugRow, error) {
+	rows, err := q.db.Query(ctx, latestRunMetaByProjectSlug, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LatestRunMetaByProjectSlugRow{}
+	for rows.Next() {
+		var i LatestRunMetaByProjectSlugRow
+		if err := rows.Scan(
+			&i.PipelineID,
+			&i.Revision,
+			&i.Branch,
+			&i.Message,
+			&i.Author,
+			&i.TriggeredBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const latestRunMetaPerProject = `-- name: LatestRunMetaPerProject :many
+WITH latest AS (
+    SELECT DISTINCT ON (pl.project_id)
+        pl.project_id, r.id AS run_id, r.revisions, r.triggered_by
+    FROM runs r
+    JOIN pipelines pl ON pl.id = r.pipeline_id
+    ORDER BY pl.project_id, r.created_at DESC
+),
+expanded AS (
+    SELECT l.project_id,
+           l.triggered_by,
+           (key)::uuid AS material_id,
+           (value->>'revision')::text AS revision,
+           (value->>'branch')::text AS branch
+    FROM latest l, jsonb_each(l.revisions)
+),
+joined AS (
+    SELECT DISTINCT ON (e.project_id)
+        e.project_id, e.revision, e.branch, m.message, m.author, e.triggered_by
+    FROM expanded e
+    LEFT JOIN modifications m
+        ON m.material_id = e.material_id AND m.revision = e.revision
+    ORDER BY e.project_id, e.material_id
+)
+SELECT project_id, revision, branch, message, author, triggered_by
+FROM joined
+`
+
+type LatestRunMetaPerProjectRow struct {
+	ProjectID   pgtype.UUID
+	Revision    string
+	Branch      string
+	Message     *string
+	Author      *string
+	TriggeredBy *string
+}
+
+// Per-project commit metadata from the most recent run across all
+// of the project's pipelines. Same JSONB-expand pattern as the
+// per-slug variant, just without the slug filter so one query
+// serves the whole projects list. triggered_by is kept so the UI
+// can fall back to the manual-trigger user when author is null
+// (manual runs don't create webhook-driven modifications).
+func (q *Queries) LatestRunMetaPerProject(ctx context.Context) ([]LatestRunMetaPerProjectRow, error) {
+	rows, err := q.db.Query(ctx, latestRunMetaPerProject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LatestRunMetaPerProjectRow{}
+	for rows.Next() {
+		var i LatestRunMetaPerProjectRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.Revision,
+			&i.Branch,
+			&i.Message,
+			&i.Author,
+			&i.TriggeredBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const latestRunPerPipelineByProjectSlug = `-- name: LatestRunPerPipelineByProjectSlug :many
 SELECT DISTINCT ON (r.pipeline_id)
   r.pipeline_id, r.id, r.counter, r.cause, r.status,
@@ -639,7 +784,7 @@ FROM (
     LIMIT 1
   ) lr ON true
 ) ranked
-WHERE rn <= 3
+WHERE rn <= 20
 ORDER BY project_id, rn
 `
 
@@ -655,9 +800,11 @@ type ListTopPipelinesPerProjectRow struct {
 
 // Per-project top-N (most recently updated) pipelines with their
 // latest run status. Used to render the "mini stack" inside each
-// project card without issuing one query per card (N+1). Currently
-// capped at 3 entries per project via ROW_NUMBER partition — the
-// UI appends a "+K more" link when pipeline_count > 3.
+// project card without issuing one query per card (N+1). Capped at
+// 20 entries per project via ROW_NUMBER partition — the side-by-
+// side pipeline layout in the card fits comfortably up to ~10
+// pipelines; projects beyond that surface a "+K more" hint. Bump
+// the cap further if real-world projects regularly cross it.
 //
 // Also returns:
 //   - latest_run_id: zero-UUID when the pipeline has never run.
@@ -683,6 +830,211 @@ func (q *Queries) ListTopPipelinesPerProject(ctx context.Context) ([]ListTopPipe
 			&i.LatestRunStatus,
 			&i.LatestRunAt,
 			&i.Definition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pipelineMetricsByProjectSlug = `-- name: PipelineMetricsByProjectSlug :many
+WITH per_run AS (
+    SELECT r.id AS run_id, r.pipeline_id, r.status,
+           EXTRACT(EPOCH FROM (r.finished_at - r.started_at))::double precision AS lead_s,
+           COALESCE((
+                SELECT SUM(EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at)))
+                FROM stage_runs sr
+                WHERE sr.run_id = r.id
+                  AND sr.finished_at IS NOT NULL AND sr.started_at IS NOT NULL
+           ), 0)::double precision AS process_s
+    FROM runs r
+    JOIN pipelines pl ON pl.id = r.pipeline_id
+    JOIN projects p ON p.id = pl.project_id
+    WHERE p.slug = $1
+      AND r.created_at >= now() - $2::interval
+      AND r.status IN ('success','failed','canceled','skipped')
+      AND r.started_at IS NOT NULL
+      AND r.finished_at IS NOT NULL
+)
+SELECT pipeline_id,
+       COUNT(*)::bigint AS runs_considered,
+       COUNT(*) FILTER (WHERE status = 'success')::bigint AS passed,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s), 0)::double precision AS lead_time_p50_s,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY process_s), 0)::double precision AS process_time_p50_s
+FROM per_run
+GROUP BY pipeline_id
+`
+
+type PipelineMetricsByProjectSlugParams struct {
+	Slug        string
+	SinceWindow pgtype.Interval
+}
+
+type PipelineMetricsByProjectSlugRow struct {
+	PipelineID      pgtype.UUID
+	RunsConsidered  int64
+	Passed          int64
+	LeadTimeP50S    float64
+	ProcessTimeP50S float64
+}
+
+// Per-pipeline aggregate stats over the last $2 interval. Terminal
+// runs only — queued/running are excluded so the medians don't move
+// during active work. `process_time_p50_seconds` is the median of
+// the per-run sum of stage_run durations (actual busy time),
+// distinct from `lead_time_p50_seconds` (wall-clock run duration).
+func (q *Queries) PipelineMetricsByProjectSlug(ctx context.Context, arg PipelineMetricsByProjectSlugParams) ([]PipelineMetricsByProjectSlugRow, error) {
+	rows, err := q.db.Query(ctx, pipelineMetricsByProjectSlug, arg.Slug, arg.SinceWindow)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PipelineMetricsByProjectSlugRow{}
+	for rows.Next() {
+		var i PipelineMetricsByProjectSlugRow
+		if err := rows.Scan(
+			&i.PipelineID,
+			&i.RunsConsidered,
+			&i.Passed,
+			&i.LeadTimeP50S,
+			&i.ProcessTimeP50S,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pipelineStageMetricsByProjectSlug = `-- name: PipelineStageMetricsByProjectSlug :many
+WITH scope AS (
+    SELECT r.pipeline_id, sr.name AS stage_name, sr.status AS stage_status,
+           EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at))::double precision AS duration_s
+    FROM runs r
+    JOIN pipelines pl ON pl.id = r.pipeline_id
+    JOIN projects p ON p.id = pl.project_id
+    JOIN stage_runs sr ON sr.run_id = r.id
+    WHERE p.slug = $1
+      AND r.created_at >= now() - $2::interval
+      AND sr.started_at IS NOT NULL
+      AND sr.finished_at IS NOT NULL
+      AND sr.status IN ('success','failed','canceled','skipped')
+)
+SELECT pipeline_id,
+       stage_name,
+       COUNT(*)::bigint AS runs_considered,
+       COUNT(*) FILTER (WHERE stage_status = 'success')::bigint AS passed,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_s), 0)::double precision AS duration_p50_s
+FROM scope
+GROUP BY pipeline_id, stage_name
+ORDER BY pipeline_id, stage_name
+`
+
+type PipelineStageMetricsByProjectSlugParams struct {
+	Slug        string
+	SinceWindow pgtype.Interval
+}
+
+type PipelineStageMetricsByProjectSlugRow struct {
+	PipelineID     pgtype.UUID
+	StageName      string
+	RunsConsidered int64
+	Passed         int64
+	DurationP50S   float64
+}
+
+// Per-stage aggregates over the same window. Feeds the card's
+// per-stage duration badge (p50) and bottleneck call-out (success
+// rate under threshold). Only terminal stage_runs count — a
+// running/cancelled stage without finished_at would poison the
+// median.
+func (q *Queries) PipelineStageMetricsByProjectSlug(ctx context.Context, arg PipelineStageMetricsByProjectSlugParams) ([]PipelineStageMetricsByProjectSlugRow, error) {
+	rows, err := q.db.Query(ctx, pipelineStageMetricsByProjectSlug, arg.Slug, arg.SinceWindow)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PipelineStageMetricsByProjectSlugRow{}
+	for rows.Next() {
+		var i PipelineStageMetricsByProjectSlugRow
+		if err := rows.Scan(
+			&i.PipelineID,
+			&i.StageName,
+			&i.RunsConsidered,
+			&i.Passed,
+			&i.DurationP50S,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const projectMetricsAggregated = `-- name: ProjectMetricsAggregated :many
+WITH per_run AS (
+    SELECT pl.project_id, r.status,
+           EXTRACT(EPOCH FROM (r.finished_at - r.started_at))::double precision AS lead_s,
+           COALESCE((
+                SELECT SUM(EXTRACT(EPOCH FROM (sr.finished_at - sr.started_at)))
+                FROM stage_runs sr
+                WHERE sr.run_id = r.id
+                  AND sr.finished_at IS NOT NULL AND sr.started_at IS NOT NULL
+           ), 0)::double precision AS process_s
+    FROM runs r
+    JOIN pipelines pl ON pl.id = r.pipeline_id
+    WHERE r.created_at >= now() - $1::interval
+      AND r.status IN ('success','failed','canceled','skipped')
+      AND r.started_at IS NOT NULL
+      AND r.finished_at IS NOT NULL
+)
+SELECT project_id,
+       COUNT(*)::bigint AS runs_considered,
+       COUNT(*) FILTER (WHERE status = 'success')::bigint AS passed,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s), 0)::double precision AS lead_time_p50_s,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY process_s), 0)::double precision AS process_time_p50_s
+FROM per_run
+GROUP BY project_id
+`
+
+type ProjectMetricsAggregatedRow struct {
+	ProjectID       pgtype.UUID
+	RunsConsidered  int64
+	Passed          int64
+	LeadTimeP50S    float64
+	ProcessTimeP50S float64
+}
+
+// Per-project roll-up of terminal runs over the last $1 interval.
+// Same math as PipelineMetricsByProjectSlug but grouped by project
+// instead of pipeline — the projects list card shows one KPI strip
+// per project, so aggregating in SQL saves an N×round-trip dance
+// when compared with looping the per-slug query per project.
+func (q *Queries) ProjectMetricsAggregated(ctx context.Context, sinceWindow pgtype.Interval) ([]ProjectMetricsAggregatedRow, error) {
+	rows, err := q.db.Query(ctx, projectMetricsAggregated, sinceWindow)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectMetricsAggregatedRow{}
+	for rows.Next() {
+		var i ProjectMetricsAggregatedRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.RunsConsidered,
+			&i.Passed,
+			&i.LeadTimeP50S,
+			&i.ProcessTimeP50S,
 		); err != nil {
 			return nil, err
 		}
@@ -734,6 +1086,76 @@ func (q *Queries) TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobPa
 			&i.Stream,
 			&i.At,
 			&i.Text,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const vSMEdgeTimingByProjectSlug = `-- name: VSMEdgeTimingByProjectSlug :many
+WITH pairs AS (
+    SELECT
+        up_pl.id AS from_pipeline_id,
+        down_pl.id AS to_pipeline_id,
+        EXTRACT(EPOCH FROM (down.started_at - up.finished_at))::double precision AS wait_s
+    FROM runs down
+    JOIN pipelines down_pl ON down_pl.id = down.pipeline_id
+    JOIN projects p ON p.id = down_pl.project_id
+    JOIN runs up ON up.id = (down.cause_detail->>'upstream_run_id')::uuid
+    JOIN pipelines up_pl ON up_pl.id = up.pipeline_id
+    WHERE p.slug = $1
+      AND down.cause = 'upstream'
+      AND down.cause_detail->>'upstream_run_id' IS NOT NULL
+      AND down.started_at IS NOT NULL
+      AND up.finished_at IS NOT NULL
+      AND down.started_at >= up.finished_at
+      AND down.created_at >= now() - $2::interval
+)
+SELECT from_pipeline_id, to_pipeline_id,
+       COUNT(*)::bigint AS samples,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY wait_s), 0)::double precision AS wait_p50_s
+FROM pairs
+GROUP BY from_pipeline_id, to_pipeline_id
+`
+
+type VSMEdgeTimingByProjectSlugParams struct {
+	Slug        string
+	SinceWindow pgtype.Interval
+}
+
+type VSMEdgeTimingByProjectSlugRow struct {
+	FromPipelineID pgtype.UUID
+	ToPipelineID   pgtype.UUID
+	Samples        int64
+	WaitP50S       float64
+}
+
+// Median wait time per upstream→downstream edge in the project's
+// VSM. Wait = downstream.started_at − upstream.finished_at, over
+// terminal-or-dispatched runs where cause='upstream' and the
+// cause_detail's upstream_run_id resolves to a real upstream run.
+// Grouping by (from_pipeline_id, to_pipeline_id) so multiple edges
+// from the same upstream to different downstreams each get their
+// own median — the VSM graph labels arrows with these numbers.
+func (q *Queries) VSMEdgeTimingByProjectSlug(ctx context.Context, arg VSMEdgeTimingByProjectSlugParams) ([]VSMEdgeTimingByProjectSlugRow, error) {
+	rows, err := q.db.Query(ctx, vSMEdgeTimingByProjectSlug, arg.Slug, arg.SinceWindow)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VSMEdgeTimingByProjectSlugRow{}
+	for rows.Next() {
+		var i VSMEdgeTimingByProjectSlugRow
+		if err := rows.Scan(
+			&i.FromPipelineID,
+			&i.ToPipelineID,
+			&i.Samples,
+			&i.WaitP50S,
 		); err != nil {
 			return nil, err
 		}

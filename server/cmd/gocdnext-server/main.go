@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/api/account"
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
@@ -176,6 +177,7 @@ func main() {
 		runsHandler = runsHandler.WithArtifactStore(artifactStore)
 	}
 	dashboardHandler := dashboardapi.NewHandler(st, logger)
+	accountHandler := account.New(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
@@ -315,6 +317,8 @@ func main() {
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 		p.Get("/api/v1/agents", dashboardHandler.Agents)
 		p.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
+		p.Get("/api/v1/account/preferences", accountHandler.GetPreferences)
+		p.Put("/api/v1/account/preferences", accountHandler.PutPreferences)
 	})
 
 	// Admin API is gated on role=admin on top of RequireAuth. Users

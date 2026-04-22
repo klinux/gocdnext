@@ -197,6 +197,11 @@ type Querier interface {
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
+	// Returns the stored preferences blob for a user. Callers treat
+	// the "no row" case as "empty preferences" (pgx.ErrNoRows); this
+	// query stays minimal so the shape follows the JSONB document
+	// rather than forcing a struct on every new key.
+	GetUserPreferences(ctx context.Context, userID pgtype.UUID) (GetUserPreferencesRow, error)
 	// Returns the session + its user row. Expired rows are filtered in
 	// the query so a single round-trip tells the handler "yes/no".
 	GetUserSession(ctx context.Context, id []byte) (GetUserSessionRow, error)
@@ -229,6 +234,22 @@ type Querier interface {
 	// show signature-rejected and drift-only deliveries too, not just
 	// the ones that produced a modification.
 	InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDeliveryParams) (InsertWebhookDeliveryRow, error)
+	// Per-pipeline latest run with the triggering modification's
+	// commit metadata (branch, message, author, short revision). The
+	// runs.revisions JSONB is keyed by material_id; we unpack it and
+	// match each (material_id, revision) to the modification row
+	// that actually produced the run. LIMIT/DISTINCT ON at each level
+	// keeps the output one row per pipeline even when a run snapshots
+	// multiple materials — we pick the first match deterministically
+	// (order by material_id) so the card shows a stable ref.
+	LatestRunMetaByProjectSlug(ctx context.Context, slug string) ([]LatestRunMetaByProjectSlugRow, error)
+	// Per-project commit metadata from the most recent run across all
+	// of the project's pipelines. Same JSONB-expand pattern as the
+	// per-slug variant, just without the slug filter so one query
+	// serves the whole projects list. triggered_by is kept so the UI
+	// can fall back to the manual-trigger user when author is null
+	// (manual runs don't create webhook-driven modifications).
+	LatestRunMetaPerProject(ctx context.Context) ([]LatestRunMetaPerProjectRow, error)
 	// DISTINCT ON picks the most recent run per pipeline. Pipelines with
 	// no runs yet are absent from the result; the handler merges with
 	// ListPipelinesByProjectSlug to produce node entries.
@@ -348,9 +369,11 @@ type Querier interface {
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
 	// Per-project top-N (most recently updated) pipelines with their
 	// latest run status. Used to render the "mini stack" inside each
-	// project card without issuing one query per card (N+1). Currently
-	// capped at 3 entries per project via ROW_NUMBER partition — the
-	// UI appends a "+K more" link when pipeline_count > 3.
+	// project card without issuing one query per card (N+1). Capped at
+	// 20 entries per project via ROW_NUMBER partition — the side-by-
+	// side pipeline layout in the card fits comfortably up to ~10
+	// pipelines; projects beyond that surface a "+K more" hint. Bump
+	// the cap further if real-world projects regularly cross it.
 	//
 	// Also returns:
 	//   * latest_run_id: zero-UUID when the pipeline has never run.
@@ -384,6 +407,24 @@ type Querier interface {
 	// Excluded self so a re-entrant tick (scheduler evaluates the
 	// same run twice) doesn't see itself as a blocker.
 	OtherRunningRunExistsForPipeline(ctx context.Context, arg OtherRunningRunExistsForPipelineParams) (bool, error)
+	// Per-pipeline aggregate stats over the last $2 interval. Terminal
+	// runs only — queued/running are excluded so the medians don't move
+	// during active work. `process_time_p50_seconds` is the median of
+	// the per-run sum of stage_run durations (actual busy time),
+	// distinct from `lead_time_p50_seconds` (wall-clock run duration).
+	PipelineMetricsByProjectSlug(ctx context.Context, arg PipelineMetricsByProjectSlugParams) ([]PipelineMetricsByProjectSlugRow, error)
+	// Per-stage aggregates over the same window. Feeds the card's
+	// per-stage duration badge (p50) and bottleneck call-out (success
+	// rate under threshold). Only terminal stage_runs count — a
+	// running/cancelled stage without finished_at would poison the
+	// median.
+	PipelineStageMetricsByProjectSlug(ctx context.Context, arg PipelineStageMetricsByProjectSlugParams) ([]PipelineStageMetricsByProjectSlugRow, error)
+	// Per-project roll-up of terminal runs over the last $1 interval.
+	// Same math as PipelineMetricsByProjectSlug but grouped by project
+	// instead of pipeline — the projects list card shows one KPI strip
+	// per project, so aggregating in SQL saves an N×round-trip dance
+	// when compared with looping the per-slug query per project.
+	ProjectMetricsAggregated(ctx context.Context, sinceWindow pgtype.Interval) ([]ProjectMetricsAggregatedRow, error)
 	// Flips a running job back to queued, IF it is still running AND still under
 	// the retry cap. Returns the new attempt number; ErrNoRows signals the caller
 	// should take a different code path (failed-at-max or already-handled).
@@ -463,11 +504,24 @@ type Querier interface {
 	// NOT overwritten on conflict — it's admin-assigned and must not
 	// revert to 'user' just because the IdP doesn't carry it.
 	UpsertUserByProvider(ctx context.Context, arg UpsertUserByProviderParams) (UpsertUserByProviderRow, error)
+	// Writes the full preferences document for a user. Upsert so the
+	// caller doesn't have to branch on "first save vs. update" — the
+	// web action uses a PUT-style full-document replace, not a
+	// field-level merge, so this is the only write the domain needs.
+	UpsertUserPreferences(ctx context.Context, arg UpsertUserPreferencesParams) (UpsertUserPreferencesRow, error)
 	// ON CONFLICT (name) DO UPDATE refreshes every field EXCEPT
 	// private_key + webhook_secret when the caller passes NULL.
 	// The handler interprets an empty string from the dialog as
 	// "keep existing ciphertext", mirroring auth_providers.
 	UpsertVCSIntegration(ctx context.Context, arg UpsertVCSIntegrationParams) (VcsIntegration, error)
+	// Median wait time per upstream→downstream edge in the project's
+	// VSM. Wait = downstream.started_at − upstream.finished_at, over
+	// terminal-or-dispatched runs where cause='upstream' and the
+	// cause_detail's upstream_run_id resolves to a real upstream run.
+	// Grouping by (from_pipeline_id, to_pipeline_id) so multiple edges
+	// from the same upstream to different downstreams each get their
+	// own median — the VSM graph labels arrows with these numbers.
+	VSMEdgeTimingByProjectSlug(ctx context.Context, arg VSMEdgeTimingByProjectSlugParams) ([]VSMEdgeTimingByProjectSlugRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

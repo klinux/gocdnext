@@ -50,6 +50,16 @@ type ProjectSummary struct {
 	// Populated by ListProjects via ListTopPipelinesPerProject; empty
 	// when the project has no pipelines yet.
 	TopPipelines []PipelinePreview `json:"top_pipelines,omitempty"`
+	// Metrics aggregate the per-pipeline metrics across the project
+	// with runs-weighted averages — the projects list card shows
+	// success/p50/runs at the project scope without the UI having
+	// to compute them. Nil when the project has no terminal runs.
+	Metrics *PipelineMetrics `json:"metrics,omitempty"`
+	// LatestRunMeta is the commit info of the most recently kicked
+	// run across the project's pipelines — branch/sha/message/author
+	// — so the card can show the commit line without a second
+	// roundtrip to project detail.
+	LatestRunMeta *RunMeta `json:"latest_run_meta,omitempty"`
 }
 
 // PipelinePreview is the shape shown inside a project card: name,
@@ -107,6 +117,50 @@ type PipelineSummary struct {
 	// second round-trip. Each stage carries its job_runs so the
 	// GitLab-style pipeline flow can render a row per job.
 	LatestRunStages []StageRunSummary `json:"latest_run_stages,omitempty"`
+	// Metrics are aggregate stats over a rolling window (7 days
+	// by default). Nil when no terminal run exists in the window
+	// — the UI degrades gracefully to "not enough data" instead
+	// of rendering zeroed-out medians as legitimate values.
+	Metrics *PipelineMetrics `json:"metrics,omitempty"`
+	// LatestRunMeta carries the commit metadata (branch, message,
+	// author, revision) that triggered the latest run — lifted
+	// out of runs.revisions JSONB + modifications join so the
+	// card header can show "feat/idempotency-v2 · fix: idempotency
+	// key leak" without a second round-trip.
+	LatestRunMeta *RunMeta `json:"latest_run_meta,omitempty"`
+}
+
+type RunMeta struct {
+	Revision string `json:"revision,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Author   string `json:"author,omitempty"`
+	// TriggeredBy is the user or system that kicked the run off.
+	// For webhook-driven runs Author usually carries the real
+	// identity (git commit author), but manual triggers have no
+	// modification row → Author is empty and the UI falls back to
+	// TriggeredBy so the card still shows "who did this".
+	TriggeredBy string `json:"triggered_by,omitempty"`
+}
+
+// PipelineMetrics feeds the card's footer strip: lead time (wall
+// clock), process time (summed busy stages), success rate across
+// recent terminal runs. StageStats drives the per-stage duration
+// badge + bottleneck call-out.
+type PipelineMetrics struct {
+	WindowDays        int         `json:"window_days"`
+	RunsConsidered    int         `json:"runs_considered"`
+	SuccessRate       float64     `json:"success_rate"`
+	LeadTimeP50Sec    float64     `json:"lead_time_p50_seconds"`
+	ProcessTimeP50Sec float64     `json:"process_time_p50_seconds"`
+	StageStats        []StageStat `json:"stage_stats,omitempty"`
+}
+
+type StageStat struct {
+	Name           string  `json:"name"`
+	RunsConsidered int     `json:"runs_considered"`
+	SuccessRate    float64 `json:"success_rate"`
+	DurationP50Sec float64 `json:"duration_p50_seconds"`
 }
 
 // StageRunSummary is the thin shape the pipeline card needs to
@@ -314,7 +368,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 	// Third query: stage_runs for every latest run in the preview
 	// stack. Single batch regardless of project/pipeline count,
 	// matching the pattern GetProjectDetail already uses for the
-	// pipeline cards on the detail page.
+	// pipeline cards on the detail page. Also indexes (stage_run_id
+	// → preview slot) so the job_runs pass below can attach jobs on
+	// top of the stage_runs without rescanning.
+	type stagePos struct{ proj, prev, stage int }
+	stageByID := make(map[uuid.UUID]stagePos)
 	if len(runIDs) > 0 {
 		stageRows, err := s.q.ListStageRunsForRuns(ctx, runIDs)
 		if err != nil {
@@ -325,10 +383,15 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 			if !ok {
 				continue
 			}
+			stageID := fromPgUUID(sr.ID)
+			stageIdx := len(out[slot.proj].TopPipelines[slot.prev].LatestRunStages)
+			stageByID[stageID] = stagePos{
+				proj: slot.proj, prev: slot.prev, stage: stageIdx,
+			}
 			out[slot.proj].TopPipelines[slot.prev].LatestRunStages = append(
 				out[slot.proj].TopPipelines[slot.prev].LatestRunStages,
 				StageRunSummary{
-					ID:         fromPgUUID(sr.ID),
+					ID:         stageID,
 					Name:       sr.Name,
 					Ordinal:    int(sr.Ordinal),
 					Status:     sr.Status,
@@ -337,7 +400,74 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 				},
 			)
 		}
+
+		// Batch job_runs across the same set of latest runs. Without
+		// this the projects list renders empty job-dot rows — the
+		// stages strip design (one circle per job) depends on the
+		// job_runs being attached to their stage_runs here.
+		jobRows, err := s.q.ListJobRunsForRuns(ctx, runIDs)
+		if err != nil {
+			return nil, fmt.Errorf("store: list project-card job runs: %w", err)
+		}
+		for _, jr := range jobRows {
+			pos, ok := stageByID[fromPgUUID(jr.StageRunID)]
+			if !ok {
+				continue
+			}
+			stage := &out[pos.proj].TopPipelines[pos.prev].LatestRunStages[pos.stage]
+			stage.Jobs = append(stage.Jobs, JobRunSummaryLite{
+				ID:         fromPgUUID(jr.ID),
+				Name:       jr.Name,
+				Status:     jr.Status,
+				StartedAt:  pgTimePtr(jr.StartedAt),
+				FinishedAt: pgTimePtr(jr.FinishedAt),
+			})
+		}
 	}
+
+	// Fourth query: per-project aggregate metrics. One scan for the
+	// full list — failures here are non-fatal, projects without a
+	// terminal run simply lack Metrics (the card falls back to "no
+	// data yet" text). Same window as the per-pipeline metrics.
+	metricRows, err := s.q.ProjectMetricsAggregated(ctx, intervalDays(MetricsWindowDays))
+	if err != nil {
+		return nil, fmt.Errorf("store: project metrics: %w", err)
+	}
+	for _, r := range metricRows {
+		idx, ok := byID[fromPgUUID(r.ProjectID)]
+		if !ok || r.RunsConsidered == 0 {
+			continue
+		}
+		out[idx].Metrics = &PipelineMetrics{
+			WindowDays:        MetricsWindowDays,
+			RunsConsidered:    int(r.RunsConsidered),
+			SuccessRate:       float64(r.Passed) / float64(r.RunsConsidered),
+			LeadTimeP50Sec:    r.LeadTimeP50S,
+			ProcessTimeP50Sec: r.ProcessTimeP50S,
+		}
+	}
+
+	// Fifth query: per-project latest run commit metadata (branch,
+	// message, author, revision). Same JSONB-expand pattern as the
+	// per-slug variant, fans out once for the whole projects list.
+	metaRows, err := s.q.LatestRunMetaPerProject(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: latest run meta per project: %w", err)
+	}
+	for _, m := range metaRows {
+		idx, ok := byID[fromPgUUID(m.ProjectID)]
+		if !ok {
+			continue
+		}
+		out[idx].LatestRunMeta = &RunMeta{
+			Revision:    m.Revision,
+			Branch:      m.Branch,
+			Message:     stringValue(m.Message),
+			Author:      stringValue(m.Author),
+			TriggeredBy: stringValue(m.TriggeredBy),
+		}
+	}
+
 	return out, nil
 }
 
@@ -572,6 +702,36 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Stage:        u.Stage,
 			Status:       u.Status,
 		})
+	}
+
+	// Pipeline metrics — aggregate stats over the 7-day window fuel
+	// the card footer (lead/process p50, success rate) and the per
+	// stage call-outs. Failures here are non-fatal: the card still
+	// renders without the strip, just without the metrics.
+	if err := s.attachPipelineMetrics(ctx, slug, detail.Pipelines, pipelineIdx); err != nil {
+		return ProjectDetail{}, fmt.Errorf("store: pipeline metrics: %w", err)
+	}
+
+	// Commit metadata for the latest run — one extra query, same
+	// pattern as metrics: failures bubble up so the endpoint is
+	// transparent about partial data instead of silently omitting
+	// the branch/commit pill.
+	metaRows, err := s.q.LatestRunMetaByProjectSlug(ctx, slug)
+	if err != nil {
+		return ProjectDetail{}, fmt.Errorf("store: latest run meta: %w", err)
+	}
+	for _, m := range metaRows {
+		idx, ok := pipelineIdx[fromPgUUID(m.PipelineID)]
+		if !ok {
+			continue
+		}
+		detail.Pipelines[idx].LatestRunMeta = &RunMeta{
+			Revision:    m.Revision,
+			Branch:      m.Branch,
+			Message:     stringValue(m.Message),
+			Author:      stringValue(m.Author),
+			TriggeredBy: stringValue(m.TriggeredBy),
+		}
 	}
 
 	// Bind info is optional — projects scaffolded via the Empty
