@@ -492,45 +492,80 @@ function ArtifactsPanel({
 }
 
 function YAMLPanel({ pipeline }: { pipeline: PipelineSummary }) {
-  // The raw YAML isn't persisted today — only the parsed JSONB
-  // in pipelines.definition. Reconstruct a canonical pseudo-YAML
-  // from the stages + jobs we already have so the tab shows
-  // *something* meaningful. When the day comes that the original
-  // YAML is stored (or re-fetched from the scm_source), this
-  // panel swaps to the real thing.
-  const yaml = useMemo(() => reconstructYAML(pipeline), [pipeline]);
+  // Lazy-fetch the server's emitter output (domain.Pipeline → YAML
+  // via parser.Emit) so the tab shows every field we actually
+  // stored: image, script, needs, artifacts, docker, matrix, …
+  // Local fallback keeps something on-screen if the fetch dies.
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; yaml: string; reconstructed: boolean }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ kind: "loading" });
+    fetch(
+      `${env.GOCDNEXT_API_URL.replace(/\/+$/, "")}/api/v1/pipelines/${encodeURIComponent(pipeline.id)}/yaml`,
+      { cache: "no-store", credentials: "include" },
+    )
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setState({ kind: "error", message: `HTTP ${res.status}` });
+          return;
+        }
+        const body = (await res.json()) as {
+          yaml?: string;
+          reconstructed?: boolean;
+        };
+        setState({
+          kind: "ok",
+          yaml: body.yaml ?? "",
+          reconstructed: body.reconstructed ?? true,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({
+          kind: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pipeline.id]);
+
+  if (state.kind === "loading" || state.kind === "idle") {
+    return (
+      <p className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" aria-hidden />
+        Loading YAML…
+      </p>
+    );
+  }
+  if (state.kind === "error") {
+    return (
+      <p className="text-xs text-red-500">
+        Couldn&apos;t load YAML: {state.message}
+      </p>
+    );
+  }
   return (
     <div className="space-y-2">
       <p className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <FileCode className="size-3.5" aria-hidden />
-        Reconstructed from v{pipeline.definition_version} — the original YAML
-        isn&apos;t stored yet.
+        {state.reconstructed
+          ? `Reconstructed from v${pipeline.definition_version} — the original YAML isn't stored yet.`
+          : `Source — v${pipeline.definition_version}.`}
       </p>
       <pre className="overflow-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-[11px] leading-5 text-foreground">
-        {yaml}
+        {state.yaml}
       </pre>
     </div>
   );
-}
-
-function reconstructYAML(pipeline: PipelineSummary): string {
-  const lines: string[] = [];
-  lines.push(`name: ${pipeline.name}`);
-  lines.push(`version: ${pipeline.definition_version}`);
-  const stages = pipeline.definition_stages ?? [];
-  if (stages.length > 0) {
-    lines.push("stages:");
-    for (const s of stages) lines.push(`  - ${s}`);
-  }
-  const jobs = pipeline.definition_jobs ?? [];
-  if (jobs.length > 0) {
-    lines.push("jobs:");
-    for (const j of jobs) {
-      lines.push(`  - name: ${j.name}`);
-      lines.push(`    stage: ${j.stage}`);
-    }
-  }
-  return lines.join("\n");
 }
 
 function Kpi({

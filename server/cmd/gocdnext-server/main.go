@@ -26,6 +26,7 @@ import (
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
+	pipelinesapi "github.com/gocdnext/gocdnext/server/internal/api/pipelines"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
 	"github.com/gocdnext/gocdnext/server/internal/auth"
@@ -178,6 +179,7 @@ func main() {
 	}
 	dashboardHandler := dashboardapi.NewHandler(st, logger)
 	accountHandler := account.New(st, logger)
+	pipelinesHandler := pipelinesapi.NewHandler(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
@@ -313,6 +315,7 @@ func main() {
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
 		p.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
+		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 		p.Get("/api/v1/agents", dashboardHandler.Agents)
