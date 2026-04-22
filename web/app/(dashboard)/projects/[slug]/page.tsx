@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
-import { PipelineFlow } from "@/components/pipelines/pipeline-flow";
+import { PipelineFlowExplorer } from "@/components/pipelines/pipeline-flow-explorer.client";
 import {
   GocdnextAPIError,
   getProjectDetail,
@@ -38,10 +38,11 @@ export default async function ProjectPipelinesPage({
   }
 
   return (
-    <PipelineFlow
+    <PipelineFlowExplorer
       projectSlug={detail.project.slug}
       pipelines={detail.pipelines}
       edges={detail.edges ?? []}
+      runs={detail.runs}
     />
   );
 }

@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { env } from "@/lib/env";
+import { getRunDetail, GocdnextAPIError } from "@/server/queries/projects";
+import type { JobDetail, RunDetail } from "@/types/api";
 
 // All three action endpoints share the same wire shape on the client
 // side: either { ok: true, data } with whatever the server returned,
@@ -75,6 +77,67 @@ export async function triggerPipelineRun(
     revalidatePath("/");
   }
   return res;
+}
+
+const jobDetailSchema = z.object({
+  runId: uuidSchema,
+  jobId: uuidSchema,
+  logLines: z.number().int().min(0).max(500).optional(),
+});
+
+export type JobDetailResult =
+  | {
+      ok: true;
+      job: JobDetail;
+      run: Pick<
+        RunDetail,
+        "id" | "counter" | "status" | "pipeline_name" | "project_slug"
+      >;
+      stageName: string;
+    }
+  | { ok: false; error: string; status?: number };
+
+// Drawer-oriented fetch: we pluck the requested job from the full
+// run detail. Logs are capped small so the drawer pops fast — the
+// full run page is linked for the deep-dive view.
+export async function fetchJobDetail(
+  input: z.infer<typeof jobDetailSchema>,
+): Promise<JobDetailResult> {
+  const parsed = jobDetailSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const detail = await getRunDetail(parsed.data.runId, parsed.data.logLines ?? 50);
+    for (const stage of detail.stages) {
+      const job = stage.jobs.find((j) => j.id === parsed.data.jobId);
+      if (!job) continue;
+      return {
+        ok: true,
+        job,
+        stageName: stage.name,
+        run: {
+          id: detail.id,
+          counter: detail.counter,
+          status: detail.status,
+          pipeline_name: detail.pipeline_name,
+          project_slug: detail.project_slug,
+        },
+      };
+    }
+    return { ok: false, error: "job not found in this run", status: 404 };
+  } catch (err) {
+    if (err instanceof GocdnextAPIError) {
+      return { ok: false, error: err.message, status: err.status };
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 async function postJSON(path: string, body: unknown): Promise<RunActionResult> {

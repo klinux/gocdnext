@@ -1,56 +1,90 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
-import type { Route } from "next";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  Check,
-  CheckCircle2,
-  ChevronsRight,
   CircleDashed,
   GitBranch,
-  Loader2,
-  Minus,
+  LayoutGrid,
+  List,
+  RefreshCw,
   Search,
-  TriangleAlert,
-  X,
-  XCircle,
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { RelativeTime } from "@/components/shared/relative-time";
-import { statusTone, type StatusTone } from "@/lib/status";
+import { FilterPill } from "@/components/projects/project-filter-pills";
+import { ProjectCard } from "@/components/projects/project-card";
+import { ProjectRow } from "@/components/projects/project-row";
+import { VisibleProjectsMenu } from "@/components/projects/visible-projects-menu.client";
+import {
+  countBy,
+  providerLabel,
+  statusLabel,
+  statusToTone,
+} from "@/components/projects/project-ui-helpers";
 import type {
-  PipelinePreview,
   ProjectProvider,
   ProjectStatus,
   ProjectSummary,
-  StageRunSummary,
 } from "@/types/api";
 
-type Props = { projects: ProjectSummary[] };
+type Props = {
+  projects: ProjectSummary[];
+  initialHiddenProjects: string[];
+};
+type ViewMode = "grid" | "list";
+const VIEW_STORAGE_KEY = "gocdnext.projects.view";
 
-// ProjectsExplorer owns the Fuselet-style list: search + filter
-// pills + card grid. Stays client-side because search and filter
-// state should feel instant; the dataset is small enough (dozens
-// of projects) that filtering in memory is cheaper than a
-// round-trip. If it ever outgrows that, move to Server Actions
-// with query params.
-export function ProjectsExplorer({ projects }: Props) {
+// ProjectsExplorer owns the toolbar (search + filter pills + view
+// toggle) and swaps between the grid/list views. State is all
+// client-side — dataset is small enough (dozens of projects) that
+// filtering in memory beats a round-trip. View choice is persisted
+// to localStorage so the user's preference survives navigation.
+export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<ProjectStatus | "all">("all");
   const [provider, setProvider] = useState<ProjectProvider | "all">("all");
+  const [view, setView] = useState<ViewMode>("grid");
+  // Local mirror of the hide-list — the menu writes here on every
+  // toggle for instant UX, while the debounced save persists to the
+  // server in the background. Server value flows back on refresh.
+  const [hiddenProjects, setHiddenProjects] =
+    useState<string[]>(initialHiddenProjects);
+  const activeCount = useMemo(() => countActive(projects), [projects]);
+  useLiveRefresh(activeCount > 0);
 
-  const statusCounts = useMemo(() => countBy(projects, (p) => p.status), [projects]);
+  useEffect(() => {
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    if (stored === "grid" || stored === "list") setView(stored);
+  }, []);
+
+  const setViewAndPersist = (next: ViewMode) => {
+    setView(next);
+    window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+  };
+
+  // Hide-list is applied before counts + filter so the status pills
+  // (`Running 2`, `Failing 1`) reflect what the user actually sees,
+  // not the whole org. Keeps the pill numbers honest vs. the grid.
+  const visibleProjects = useMemo(() => {
+    if (hiddenProjects.length === 0) return projects;
+    const hide = new Set(hiddenProjects);
+    return projects.filter((p) => !hide.has(p.id));
+  }, [projects, hiddenProjects]);
+
+  const statusCounts = useMemo(
+    () => countBy(visibleProjects, (p) => p.status),
+    [visibleProjects],
+  );
   const providerCounts = useMemo(
-    () => countBy(projects, (p) => p.provider ?? ""),
-    [projects],
+    () => countBy(visibleProjects, (p) => p.provider ?? ""),
+    [visibleProjects],
   );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return projects.filter((p) => {
+    return visibleProjects.filter((p) => {
       if (status !== "all" && p.status !== status) return false;
       if (provider !== "all" && (p.provider ?? "") !== provider) return false;
       if (!q) return true;
@@ -60,33 +94,45 @@ export function ProjectsExplorer({ projects }: Props) {
         (p.description ?? "").toLowerCase().includes(q)
       );
     });
-  }, [projects, query, status, provider]);
+  }, [visibleProjects, query, status, provider]);
 
   return (
     <div className="space-y-5">
-      <div className="relative">
-        <Search
-          className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-          aria-hidden
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="relative flex-1">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={query}
+            onValueChange={(next: string) => setQuery(next)}
+            placeholder="Search by slug, name or description..."
+            className="h-10 pl-9 text-sm"
+            aria-label="Search projects"
+          />
+        </div>
+        {activeCount > 0 ? (
+          <span
+            className="inline-flex items-center gap-1.5 text-xs text-sky-500"
+            title="Auto-refreshing while runs are active"
+          >
+            <RefreshCw className="size-3 animate-spin" aria-hidden />
+            live · {activeCount} active
+          </span>
+        ) : null}
+        <VisibleProjectsMenu
+          projects={projects}
+          initialHidden={hiddenProjects}
+          onLocalChange={setHiddenProjects}
         />
-        <Input
-          value={query}
-          // base-ui's Input primitive emits change via onValueChange
-          // (see @base-ui/react/input.d.ts). Using the native onChange
-          // against the controlled `value` leaves the component stuck
-          // on the initial empty string — search would render but never
-          // filter.
-          onValueChange={(next: string) => setQuery(next)}
-          placeholder="Search by slug, name or description..."
-          className="h-11 pl-9 text-sm"
-          aria-label="Search projects"
-        />
+        <ViewToggle view={view} onChange={setViewAndPersist} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
         <FilterPill
           label="All"
-          count={projects.length}
+          count={visibleProjects.length}
           active={status === "all"}
           onClick={() => setStatus("all")}
           tone="all"
@@ -132,252 +178,63 @@ export function ProjectsExplorer({ projects }: Props) {
         <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
           No projects match the current filter.
         </p>
-      ) : (
+      ) : view === "grid" ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((p) => (
             <ProjectCard key={p.id} project={p} />
           ))}
         </div>
-      )}
-    </div>
-  );
-}
-
-function ProjectCard({ project }: { project: ProjectSummary }) {
-  return (
-    <Link
-      href={`/projects/${project.slug}` as Route}
-      className="group flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm transition-colors hover:border-primary/40"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          <h3 className="truncate text-sm font-semibold">{project.name}</h3>
-          <code className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
-            {project.slug}
-          </code>
-        </div>
-        <StatusBadgeCard status={project.status} />
-      </div>
-
-      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        <ProviderIcon provider={project.provider} className="size-3.5" />
-        <span>{project.provider ? providerLabel(project.provider) : "no repo"}</span>
-        <span aria-hidden>·</span>
-        <span className="normal-case">
-          {project.pipeline_count} pipeline
-          {project.pipeline_count === 1 ? "" : "s"} · {project.run_count} run
-          {project.run_count === 1 ? "" : "s"}
-        </span>
-      </div>
-
-      {project.description ? (
-        <p className="line-clamp-1 text-xs text-muted-foreground">
-          {project.description}
-        </p>
-      ) : null}
-
-      {project.top_pipelines && project.top_pipelines.length > 0 ? (
-        <div className="space-y-1.5">
-          {project.top_pipelines.map((pl) => (
-            <PipelinePreviewRow key={pl.id} pipeline={pl} />
-          ))}
-          {project.pipeline_count > project.top_pipelines.length ? (
-            <p className="text-[10px] text-muted-foreground/70">
-              +{project.pipeline_count - project.top_pipelines.length} more
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="mt-auto flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground">
-        {project.latest_run_at ? (
-          <span>
-            <RelativeTime at={project.latest_run_at} />
-          </span>
-        ) : (
-          <span className="italic">Never run</span>
-        )}
-      </div>
-    </Link>
-  );
-}
-
-function PipelinePreviewRow({ pipeline }: { pipeline: PipelinePreview }) {
-  // Merge definition stages with stage_runs (keyed by name). When
-  // the pipeline has never run we rely on definition alone — each
-  // stage renders as a neutral pending dot. Same pattern as
-  // PipelineCard on the project detail page, shrunk for the
-  // card-in-grid layout.
-  const runStages = pipeline.latest_run_stages ?? [];
-  const defStages = pipeline.definition_stages ?? [];
-  const runByName = new Map(runStages.map((s) => [s.name, s]));
-  const merged: Array<{ name: string; run?: StageRunSummary }> =
-    defStages.length > 0
-      ? defStages.map((name) => ({ name, run: runByName.get(name) }))
-      : runStages.map((s) => ({ name: s.name, run: s }));
-
-  return (
-    <div className="flex items-center justify-between gap-3 text-xs">
-      <span className="min-w-0 flex-1 truncate font-mono text-foreground">
-        {pipeline.name}
-      </span>
-      {merged.length > 0 ? (
-        <div className="flex shrink-0 items-center gap-0.5">
-          {merged.map((s, i) => (
-            <StageNode
-              key={`${s.name}-${i}`}
-              name={s.name}
-              run={s.run}
-              isLast={i === merged.length - 1}
-            />
-          ))}
-        </div>
       ) : (
-        <span className="shrink-0 text-[11px] italic text-muted-foreground/70">
-          never run
-        </span>
+        <div className="flex flex-col gap-2">
+          {filtered.map((p) => (
+            <ProjectRow key={p.id} project={p} />
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-// StageNode is the GitLab-CI-style status chip: a filled circle
-// carrying a status icon, with a thin connector line to the next
-// stage. Keeps the stage name out of the visual (title/aria carries
-// it) so the strip stays legible inside the project card grid.
-function StageNode({
-  name,
-  run,
-  isLast,
+function ViewToggle({
+  view,
+  onChange,
 }: {
-  name: string;
-  run?: StageRunSummary;
-  isLast: boolean;
+  view: ViewMode;
+  onChange: (v: ViewMode) => void;
 }) {
-  const tone: StatusTone = run ? statusTone(run.status) : "neutral";
-  const label = run ? `${name} — ${run.status}` : `${name} — not run`;
   return (
-    <div className="flex items-center">
-      <span
-        title={label}
-        aria-label={label}
+    <div className="inline-flex shrink-0 rounded-md border border-border bg-background p-0.5">
+      <button
+        type="button"
+        onClick={() => onChange("grid")}
+        aria-pressed={view === "grid"}
+        aria-label="Grid view"
         className={cn(
-          "inline-flex size-5 items-center justify-center rounded-full",
-          stageNodeClasses[tone],
-          run?.status === "running" && "animate-pulse",
+          "inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors",
+          view === "grid"
+            ? "bg-foreground text-background"
+            : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <StageIcon tone={tone} />
-      </span>
-      {!isLast ? (
-        <span
-          aria-hidden
-          className="inline-block h-px w-1.5 bg-muted-foreground/30"
-        />
-      ) : null}
+        <LayoutGrid className="size-3.5" aria-hidden />
+        Grid
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("list")}
+        aria-pressed={view === "list"}
+        aria-label="List view"
+        className={cn(
+          "inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors",
+          view === "list"
+            ? "bg-foreground text-background"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <List className="size-3.5" aria-hidden />
+        List
+      </button>
     </div>
-  );
-}
-
-function StageIcon({ tone }: { tone: StatusTone }) {
-  const shared = "size-3";
-  switch (tone) {
-    case "success":
-      return <Check className={shared} aria-hidden strokeWidth={3} />;
-    case "failed":
-      return <X className={shared} aria-hidden strokeWidth={3} />;
-    case "running":
-      return <Loader2 className={cn(shared, "animate-spin")} aria-hidden />;
-    case "queued":
-    case "warning":
-      return <TriangleAlert className={shared} aria-hidden />;
-    case "canceled":
-      return <Minus className={shared} aria-hidden strokeWidth={3} />;
-    case "skipped":
-    case "neutral":
-    default:
-      return <ChevronsRight className={shared} aria-hidden strokeWidth={2.5} />;
-  }
-}
-
-function FilterPill({
-  label,
-  count,
-  active,
-  onClick,
-  tone,
-  icon,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onClick: () => void;
-  tone: "all" | StatusTone;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium transition-colors",
-        active
-          ? activePillClasses[tone]
-          : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-      )}
-    >
-      {icon}
-      <span>{label}</span>
-      <span
-        className={cn(
-          "rounded-full px-1.5 text-[10px]",
-          active ? "bg-background/40" : "bg-muted",
-        )}
-      >
-        {count}
-      </span>
-    </button>
-  );
-}
-
-function StatusBadgeCard({ status }: { status: ProjectStatus }) {
-  const tone = statusToTone(status);
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-        tonePillClasses[tone],
-      )}
-    >
-      <StatusIcon status={status} />
-      {statusLabel(status)}
-    </span>
-  );
-}
-
-function StatusIcon({ status }: { status: ProjectStatus }) {
-  switch (status) {
-    case "running":
-      return <Loader2 className="size-2.5 animate-spin" aria-hidden />;
-    case "success":
-      return <CheckCircle2 className="size-2.5" aria-hidden />;
-    case "failing":
-      return <XCircle className="size-2.5" aria-hidden />;
-    default:
-      return <CircleDashed className="size-2.5" aria-hidden />;
-  }
-}
-
-function ToneDot({ tone, running }: { tone: StatusTone; running: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-block size-1.5 rounded-full",
-        dotClasses[tone],
-        running && "animate-pulse",
-      )}
-      aria-hidden
-    />
   );
 }
 
@@ -388,110 +245,43 @@ function ProviderIcon({
   provider?: ProjectProvider;
   className?: string;
 }) {
-  // lucide-react in this version doesn't ship brand marks for
-  // GitHub/GitLab — `GitBranch` is the closest semantic icon and
-  // keeps the bundle small. The provider name next to it carries
-  // the actual branding signal anyway.
+  // lucide-react doesn't ship brand marks in this version —
+  // GitBranch is the closest generic "repo" glyph. The provider
+  // label next to it carries the real branding signal.
   if (!provider) return <CircleDashed className={className} aria-hidden />;
   return <GitBranch className={className} aria-hidden />;
 }
 
-function countBy<T, K extends string>(
-  items: T[],
-  keyFn: (item: T) => K,
-): Record<K, number> {
-  const out = {} as Record<K, number>;
-  for (const item of items) {
-    const k = keyFn(item);
-    out[k] = (out[k] ?? 0) + 1;
+// countActive sweeps the project list for anything non-terminal —
+// if any project has a running/queued pipeline, the page should
+// poll so the user doesn't have to F5 while a build is in flight.
+function countActive(projects: ProjectSummary[]): number {
+  let n = 0;
+  for (const p of projects) {
+    if (p.status === "running") {
+      n++;
+      continue;
+    }
+    // status="success"/"failing"/"never_run" are terminal from a
+    // refresh-need perspective; only "running" warrants polling
+    // at the project scope. The pipeline-level live indicator on
+    // the detail page handles per-pipeline queued states.
   }
-  return out;
+  return n;
 }
 
-function statusLabel(s: ProjectStatus): string {
-  switch (s) {
-    case "no_pipelines":
-      return "No pipelines";
-    case "never_run":
-      return "Never run";
-    case "running":
-      return "Running";
-    case "failing":
-      return "Failing";
-    case "success":
-      return "Healthy";
-  }
+// useLiveRefresh polls router.refresh() every 3s while anything
+// is active. Stops the interval as soon as the active count
+// drops to zero, then fires one last refresh so the final status
+// lands in the UI without requiring a manual F5.
+function useLiveRefresh(active: boolean) {
+  const router = useRouter();
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => router.refresh(), 3000);
+    return () => {
+      clearInterval(id);
+      router.refresh();
+    };
+  }, [active, router]);
 }
-
-function statusToTone(s: ProjectStatus): StatusTone {
-  switch (s) {
-    case "running":
-      return "running";
-    case "success":
-      return "success";
-    case "failing":
-      return "failed";
-    case "never_run":
-    case "no_pipelines":
-      return "neutral";
-  }
-}
-
-function providerLabel(p: ProjectProvider): string {
-  if (!p) return "No repo";
-  return p.charAt(0).toUpperCase() + p.slice(1);
-}
-
-const tonePillClasses: Record<StatusTone, string> = {
-  success:
-    "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-  failed: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400",
-  running: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-400",
-  queued:
-    "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  warning:
-    "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  canceled: "border-muted-foreground/30 bg-muted text-muted-foreground",
-  skipped: "border-muted-foreground/20 bg-muted/50 text-muted-foreground",
-  neutral: "border-border bg-muted/40 text-muted-foreground",
-};
-
-// StageNode fill colours — GitLab-style filled circle, white icon
-// inside. Neutral / skipped use a paler ring + muted icon so "not
-// run" still reads as inactive next to a green success chip.
-const stageNodeClasses: Record<StatusTone, string> = {
-  success: "bg-emerald-500 text-white",
-  failed: "bg-red-500 text-white",
-  running: "bg-sky-500 text-white",
-  queued: "bg-amber-500 text-white",
-  warning: "bg-amber-500 text-white",
-  canceled: "bg-muted-foreground/60 text-background",
-  skipped: "bg-muted text-muted-foreground border border-muted-foreground/30",
-  neutral: "bg-muted text-muted-foreground border border-muted-foreground/30",
-};
-
-const dotClasses: Record<StatusTone, string> = {
-  success: "bg-emerald-500",
-  failed: "bg-red-500",
-  running: "bg-sky-500",
-  queued: "bg-amber-500",
-  warning: "bg-amber-500",
-  canceled: "bg-muted-foreground",
-  skipped: "bg-muted-foreground/60",
-  neutral: "bg-muted-foreground/40",
-};
-
-const activePillClasses: Record<"all" | StatusTone, string> = {
-  all: "border-primary bg-primary text-primary-foreground",
-  success:
-    "border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
-  failed: "border-red-500/50 bg-red-500/15 text-red-700 dark:text-red-400",
-  running: "border-sky-500/50 bg-sky-500/15 text-sky-700 dark:text-sky-400",
-  queued:
-    "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  warning:
-    "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  canceled: "border-foreground/40 bg-muted text-foreground",
-  skipped: "border-foreground/30 bg-muted text-foreground",
-  neutral: "border-foreground/40 bg-muted text-foreground",
-};

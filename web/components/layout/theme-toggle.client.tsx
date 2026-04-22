@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
@@ -13,11 +14,14 @@ import {
 
 export function ThemeToggle() {
   const { setTheme, resolvedTheme } = useTheme();
-  // Show the icon that matches the CURRENT rendered theme so the
-  // button signals "you are in X mode" at a glance. resolvedTheme
-  // is undefined during SSR; default to sun to avoid hydration
-  // flicker (the icon will swap client-side once mounted).
-  const Icon = resolvedTheme === "dark" ? Moon : Sun;
+  // resolvedTheme is undefined during SSR. Picking any concrete
+  // icon here causes a hydration mismatch once the client learns
+  // the real theme. Gate the icon behind a mounted flag so the
+  // server emits a stable placeholder and only the client swaps
+  // to the right icon after mount.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const Icon = !mounted ? Sun : resolvedTheme === "dark" ? Moon : Sun;
 
   return (
     <DropdownMenu>

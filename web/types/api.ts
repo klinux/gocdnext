@@ -3,6 +3,15 @@
 // the other. When the backend grows a proto-driven API these should be
 // regenerated from the proto instead of hand-maintained.
 
+export type UserPreferences = {
+  hidden_projects?: string[];
+};
+
+export type UserPreferencesResponse = {
+  preferences: UserPreferences;
+  updated_at?: string;
+};
+
 export type CurrentUser = {
   id: string;
   email: string;
@@ -59,6 +68,8 @@ export type ProjectSummary = {
   provider?: ProjectProvider;
   status: ProjectStatus;
   top_pipelines?: PipelinePreview[];
+  metrics?: PipelineMetrics;
+  latest_run_meta?: RunMeta;
 };
 
 export type ProjectSCMInfo = {
@@ -114,6 +125,32 @@ export type PipelineSummary = {
   definition_jobs?: DefinitionJob[];
   latest_run?: RunSummary;
   latest_run_stages?: StageRunSummary[];
+  metrics?: PipelineMetrics;
+  latest_run_meta?: RunMeta;
+};
+
+export type RunMeta = {
+  revision?: string;
+  branch?: string;
+  message?: string;
+  author?: string;
+  triggered_by?: string;
+};
+
+export type PipelineMetrics = {
+  window_days: number;
+  runs_considered: number;
+  success_rate: number; // 0..1
+  lead_time_p50_seconds: number;
+  process_time_p50_seconds: number;
+  stage_stats?: StageStat[];
+};
+
+export type StageStat = {
+  name: string;
+  runs_considered: number;
+  success_rate: number; // 0..1
+  duration_p50_seconds: number;
 };
 
 export type PipelineEdge = {
@@ -190,6 +227,7 @@ export type VSMNode = {
   definition_version: number;
   git_materials?: { url: string; branch?: string }[];
   latest_run?: RunSummary;
+  metrics?: PipelineMetrics;
 };
 
 export type VSMEdge = {
@@ -197,6 +235,8 @@ export type VSMEdge = {
   to_pipeline: string;
   stage: string;
   status?: string;
+  wait_time_p50_seconds?: number;
+  wait_samples?: number;
 };
 
 export type ProjectVSM = {

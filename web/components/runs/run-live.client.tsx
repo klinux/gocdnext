@@ -3,16 +3,23 @@
 import Link from "next/link";
 import type { Route } from "next";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, GitPullRequest, Radio } from "lucide-react";
+import {
+  ChevronRight,
+  GitBranch,
+  GitPullRequest,
+  Radio,
+} from "lucide-react";
+
+import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
+import { LiveDuration } from "@/components/shared/live-duration";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts } from "@/components/runs/run-artifacts.client";
 import { RunActions } from "@/components/runs/run-actions.client";
 import { PipelineCanvas } from "@/components/runs/pipeline-canvas.client";
-import { durationBetween, formatDurationSeconds } from "@/lib/format";
-import { isTerminalStatus } from "@/lib/status";
+import { isTerminalStatus, statusTone, type StatusTone } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
 
 // LIVE_POLL_MS controls how fast the page requests the server for new log
@@ -51,10 +58,6 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
     },
   });
 
-  const totalDuration = formatDurationSeconds(
-    durationBetween(data.started_at, data.finished_at),
-  );
-
   const upstream =
     data.cause === "upstream" && data.cause_detail
       ? (data.cause_detail as {
@@ -79,12 +82,14 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       : null;
 
   const live = !isTerminalStatus(data.status);
+  const tone: StatusTone = statusTone(data.status);
+  const primaryRevision = pickRevision(data.revisions);
 
   return (
     <section className="space-y-6">
-      <header>
+      <header className="space-y-3">
         <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
+          <Link href="/projects" className="hover:text-foreground">
             Projects
           </Link>
           <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
@@ -100,14 +105,26 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           </span>
         </nav>
 
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            {data.pipeline_name}{" "}
-            <span className="font-mono text-muted-foreground">
-              #{data.counter}
-            </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn(
+              "inline-flex size-3 shrink-0 items-center justify-center rounded-full",
+              toneDotClasses[tone],
+              data.status === "running" && "animate-pulse",
+            )}
+            aria-hidden
+            title={data.status}
+          />
+          <h2 className="font-mono text-xl font-semibold tracking-tight">
+            {data.pipeline_name}
           </h2>
-          <StatusBadge status={data.status} />
+          <Link
+            href={`/runs/${runId}` as Route}
+            className="font-mono text-sm text-muted-foreground hover:text-foreground"
+          >
+            #{data.counter}
+          </Link>
+          <StatusBadge status={data.status} className="text-[10px]" />
           {live ? (
             <span
               role="status"
@@ -123,20 +140,49 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           </div>
         </div>
 
-        <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
-          <Meta k="cause" v={data.cause} />
-          <Meta
-            k="started"
-            v={
-              <RelativeTime
-                at={data.started_at ?? data.created_at}
-                fallback="—"
-              />
-            }
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          {primaryRevision?.branch ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+              title={`Ref: ${primaryRevision.branch}`}
+            >
+              <GitBranch className="size-3" aria-hidden />
+              <span className="max-w-[200px] truncate">
+                {primaryRevision.branch}
+              </span>
+            </span>
+          ) : null}
+          {primaryRevision?.revision ? (
+            <span
+              className="rounded bg-muted/80 px-1.5 py-0.5 font-mono text-[10px] text-foreground/80"
+              title={primaryRevision.revision}
+            >
+              {primaryRevision.revision.slice(0, 7)}
+            </span>
+          ) : null}
+          <LiveDuration
+            startedAt={data.started_at}
+            finishedAt={data.finished_at}
+            className="font-mono tabular-nums text-foreground"
           />
-          <Meta k="duration" v={totalDuration} />
-          {data.triggered_by ? <Meta k="triggered by" v={data.triggered_by} /> : null}
-        </dl>
+          <span>·</span>
+          <RelativeTime at={data.started_at ?? data.created_at} fallback="—" />
+          <span>·</span>
+          <span>
+            cause <span className="font-mono text-foreground">{data.cause}</span>
+          </span>
+          {data.triggered_by ? (
+            <>
+              <span>·</span>
+              <span>
+                by{" "}
+                <span className="font-mono text-foreground">
+                  {data.triggered_by}
+                </span>
+              </span>
+            </>
+          ) : null}
+        </div>
       </header>
 
       {upstream ? <UpstreamBanner upstream={upstream} /> : null}
@@ -172,16 +218,33 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
   );
 }
 
-function Meta({ k, v }: { k: string; v: React.ReactNode }) {
-  return (
-    <div>
-      <dt className="inline text-[10px] uppercase tracking-wide text-muted-foreground/70">
-        {k}
-      </dt>{" "}
-      <dd className="inline font-mono">{v}</dd>
-    </div>
-  );
+// pickRevision chooses a representative (branch, revision) from
+// the run's revisions JSONB. Multiple materials are possible but
+// the header has space for only one — first deterministic entry
+// wins (map key order via Object.keys is stable for string keys
+// in ES2015+ and identical across server/client, which matters
+// for hydration).
+function pickRevision(
+  revisions: RunDetail["revisions"],
+): { revision: string; branch: string } | null {
+  if (!revisions) return null;
+  for (const key of Object.keys(revisions)) {
+    const entry = revisions[key];
+    if (entry && (entry.revision || entry.branch)) return entry;
+  }
+  return null;
 }
+
+const toneDotClasses: Record<StatusTone, string> = {
+  success: "bg-emerald-500",
+  failed: "bg-red-500",
+  running: "bg-sky-500",
+  queued: "bg-amber-500",
+  warning: "bg-amber-500",
+  canceled: "bg-muted-foreground/60",
+  skipped: "bg-muted-foreground/40",
+  neutral: "bg-muted-foreground/40",
+};
 
 function PullRequestBanner({
   pr,

@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { LogViewer } from "./log-viewer";
+import { LogViewer, classifyLine } from "./log-viewer";
 import type { LogLine } from "@/types/api";
 
 const sample: LogLine[] = [
@@ -30,5 +30,44 @@ describe("LogViewer", () => {
   it("shows an empty-state message when there are no logs", () => {
     render(<LogViewer logs={[]} />);
     expect(screen.getByText(/no log lines/i)).toBeTruthy();
+  });
+});
+
+describe("classifyLine", () => {
+  it("bolds command echoes", () => {
+    expect(classifyLine("$ git clone foo", "stdout")).toBe("command");
+  });
+
+  it("flags go test PASS / FAIL markers", () => {
+    expect(classifyLine("--- PASS: TestFoo (0.01s)", "stdout")).toBe("success");
+    expect(classifyLine("--- FAIL: TestBar (0.01s)", "stdout")).toBe("error");
+    expect(classifyLine("ok  	mypkg	0.02s", "stdout")).toBe("success");
+    expect(classifyLine("FAIL	mypkg	0.02s", "stdout")).toBe("error");
+  });
+
+  it("catches conventional log-level prefixes case-sensitively", () => {
+    expect(classifyLine("ERROR: database down", "stdout")).toBe("error");
+    expect(classifyLine("WARN: retrying", "stdout")).toBe("warn");
+    expect(classifyLine("DEBUG: token set", "stdout")).toBe("muted");
+  });
+
+  it("does not over-flag plain English containing the word 'error'", () => {
+    // Regression guard — the heuristic used to paint this red.
+    expect(classifyLine("returned an error code from the parser", "stdout")).toBe("default");
+  });
+
+  it("flags panic stack headers anywhere on the line", () => {
+    expect(classifyLine("goroutine 1 panic: nil deref", "stdout")).toBe("error");
+  });
+
+  it("falls back to stderr=error when no specific pattern matches", () => {
+    expect(classifyLine("some prose", "stderr")).toBe("error");
+    expect(classifyLine("some prose", "stdout")).toBe("default");
+  });
+
+  it("recognises unicode status glyphs as a leading token", () => {
+    expect(classifyLine("✓ all checks passed", "stdout")).toBe("success");
+    expect(classifyLine("✗ deploy aborted", "stdout")).toBe("error");
+    expect(classifyLine("⚠ retention backlog growing", "stdout")).toBe("warn");
   });
 });

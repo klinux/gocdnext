@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { NewProjectDialog } from "@/components/projects/new-project-dialog.client";
 import { ProjectsExplorer } from "@/components/projects/projects-explorer.client";
 import { listProjects } from "@/server/queries/projects";
+import { getUserPreferences } from "@/server/queries/account";
 
 export const metadata: Metadata = {
   title: "Projects — gocdnext",
@@ -11,7 +12,14 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function ProjectsPage() {
-  const projects = await listProjects();
+  // Fire-and-parallel: the projects list and the user's hide-list
+  // are independent GETs and we need both before render. Missing
+  // prefs (auth off, new user) resolves to an empty document — the
+  // explorer handles that as "show all".
+  const [projects, preferences] = await Promise.all([
+    listProjects(),
+    getUserPreferences(),
+  ]);
 
   if (projects.length === 0) {
     return <EmptyState />;
@@ -30,7 +38,10 @@ export default async function ProjectsPage() {
         <NewProjectDialog />
       </header>
 
-      <ProjectsExplorer projects={projects} />
+      <ProjectsExplorer
+        projects={projects}
+        initialHiddenProjects={preferences.hidden_projects ?? []}
+      />
     </section>
   );
 }

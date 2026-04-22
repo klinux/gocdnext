@@ -43,7 +43,7 @@ export default async function VSMPage({
     );
   }
   return (
-    <div className="h-[70vh] rounded-md border border-border bg-card">
+    <div className="overflow-hidden rounded-md border border-border bg-card">
       <VSMGraph vsm={vsm} />
     </div>
   );
