@@ -371,6 +371,13 @@ type Querier interface {
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
+	// Returns true when the pipeline has any run in 'running' status
+	// other than the one we're about to dispatch. The scheduler checks
+	// this for pipelines configured with concurrency: serial and
+	// leaves the run queued when another one is already in flight.
+	// Excluded self so a re-entrant tick (scheduler evaluates the
+	// same run twice) doesn't see itself as a blocker.
+	OtherRunningRunExistsForPipeline(ctx context.Context, arg OtherRunningRunExistsForPipelineParams) (bool, error)
 	// Flips a running job back to queued, IF it is still running AND still under
 	// the retry cap. Returns the new attempt number; ErrNoRows signals the caller
 	// should take a different code path (failed-at-max or already-handled).

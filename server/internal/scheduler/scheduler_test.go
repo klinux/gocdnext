@@ -520,3 +520,104 @@ func TestRun_ReactsToNotify(t *testing.T) {
 		t.Fatalf("scheduler did not stop after ctx cancel")
 	}
 }
+
+// TestDispatchRun_SerialPipelineWaitsForBusyRun exercises the
+// concurrency: serial gate. An earlier run is parked in 'running'
+// and a fresh one is created for the same pipeline — the scheduler
+// must leave it queued instead of dispatching its jobs in parallel.
+func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	fp := domain.GitFingerprint("https://github.com/org/demo", "main")
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "demo", Name: "Demo",
+		Pipelines: []*domain.Pipeline{{
+			Name:        "deploy",
+			Stages:      []string{"deploy"},
+			Concurrency: domain.ConcurrencySerial,
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{
+					URL: "https://github.com/org/demo", Branch: "main",
+					Events: []string{"push"},
+				},
+			}},
+			Jobs: []domain.Job{{
+				Name: "apply", Stage: "deploy", Image: "alpine:3.19",
+				Tasks: []domain.Task{{Script: "echo deploy"}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applyRes.Pipelines[0].PipelineID
+
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint=$1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("mat lookup: %v", err)
+	}
+
+	// Run #1: mark it running by hand — stand-in for "the previous
+	// trigger is still executing".
+	first, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:  pipelineID,
+		MaterialID:  materialID,
+		Revision:    "aaa0123456789aaa0123456789aaa0123456789a",
+		Branch:      "main",
+		Provider:    "github",
+		Delivery:    "t-1",
+		TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if err := s.MarkRunRunning(ctx, first.RunID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	// Run #2: should queue behind the running one.
+	second, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:  pipelineID,
+		MaterialID:  materialID,
+		Revision:    "bbb0123456789bbb0123456789bbb0123456789b",
+		Branch:      "main",
+		Provider:    "github",
+		Delivery:    "t-2",
+		TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "serial-agent")
+	sess := sessions.CreateSession(agentID, nil, 2)
+
+	sched.DispatchRun(ctx, second.RunID)
+
+	select {
+	case msg := <-sess.Out():
+		t.Fatalf("expected no dispatch while busy, got: %+v", msg)
+	case <-time.After(200 * time.Millisecond):
+		// good — stayed queued
+	}
+
+	// Unblock: mark first as finished. Dispatching again should
+	// now deliver the job to the agent without further wait.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, first.RunID); err != nil {
+		t.Fatalf("finish first: %v", err)
+	}
+	sched.DispatchRun(ctx, second.RunID)
+	select {
+	case msg := <-sess.Out():
+		if msg.GetAssign() == nil {
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no dispatch after previous run finished")
+	}
+}

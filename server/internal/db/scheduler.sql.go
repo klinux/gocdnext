@@ -195,3 +195,30 @@ func (q *Queries) MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) 
 	_, err := q.db.Exec(ctx, markStageRunningIfQueued, id)
 	return err
 }
+
+const otherRunningRunExistsForPipeline = `-- name: OtherRunningRunExistsForPipeline :one
+SELECT EXISTS (
+    SELECT 1 FROM runs
+    WHERE pipeline_id = $1
+      AND status = 'running'
+      AND id <> $2
+)::boolean AS running
+`
+
+type OtherRunningRunExistsForPipelineParams struct {
+	PipelineID pgtype.UUID
+	ID         pgtype.UUID
+}
+
+// Returns true when the pipeline has any run in 'running' status
+// other than the one we're about to dispatch. The scheduler checks
+// this for pipelines configured with concurrency: serial and
+// leaves the run queued when another one is already in flight.
+// Excluded self so a re-entrant tick (scheduler evaluates the
+// same run twice) doesn't see itself as a blocker.
+func (q *Queries) OtherRunningRunExistsForPipeline(ctx context.Context, arg OtherRunningRunExistsForPipelineParams) (bool, error) {
+	row := q.db.QueryRow(ctx, otherRunningRunExistsForPipeline, arg.PipelineID, arg.ID)
+	var running bool
+	err := row.Scan(&running)
+	return running, err
+}

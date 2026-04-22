@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -44,12 +45,21 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		return nil, fmt.Errorf("pipeline has no name (set top-level `name:` or pass a filename)")
 	}
 
+	concurrency := strings.ToLower(strings.TrimSpace(f.Concurrency))
+	switch concurrency {
+	case "", domain.ConcurrencyParallel, domain.ConcurrencySerial:
+		// OK
+	default:
+		return nil, fmt.Errorf("concurrency: unknown value %q (want \"parallel\" or \"serial\")", f.Concurrency)
+	}
+
 	p := &domain.Pipeline{
-		ProjectID: projectID,
-		Name:      name,
-		Stages:    f.Stages,
-		Variables: f.Variables,
-		Template:  f.Template,
+		ProjectID:   projectID,
+		Name:        name,
+		Stages:      f.Stages,
+		Variables:   f.Variables,
+		Template:    f.Template,
+		Concurrency: concurrency,
 	}
 
 	for _, m := range f.Materials {

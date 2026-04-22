@@ -21,6 +21,10 @@ type File struct {
 	Variables map[string]string `yaml:"variables,omitempty"`
 	Template  string            `yaml:"template,omitempty"`
 	Jobs      map[string]JobDef `yaml:"jobs"`
+	// Concurrency: "" / "parallel" (default, unlimited concurrent
+	// runs) or "serial" (one run at a time — subsequent triggers
+	// queue behind the running one).
+	Concurrency string `yaml:"concurrency,omitempty"`
 }
 
 type Include struct {

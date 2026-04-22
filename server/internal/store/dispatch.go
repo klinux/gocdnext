@@ -46,6 +46,24 @@ type RunForDispatch struct {
 	ConfigPath string
 }
 
+// OtherRunningRunExistsForPipeline reports whether the pipeline
+// has any run currently in 'running' status other than runID.
+// Used by the scheduler to honour `concurrency: serial` — a serial
+// pipeline leaves a queued run on the backlog while another run
+// is still executing; drainQueued retries it on the next tick or
+// whenever the running one completes.
+func (s *Store) OtherRunningRunExistsForPipeline(ctx context.Context, pipelineID, runID uuid.UUID) (bool, error) {
+	running, err := s.q.OtherRunningRunExistsForPipeline(ctx,
+		db.OtherRunningRunExistsForPipelineParams{
+			PipelineID: pgUUID(pipelineID),
+			ID:         pgUUID(runID),
+		})
+	if err != nil {
+		return false, fmt.Errorf("store: concurrency check: %w", err)
+	}
+	return running, nil
+}
+
 // ListDispatchableJobs returns queued, unassigned jobs in the run's current
 // active stage (lowest ordinal still holding queued/running work).
 func (s *Store) ListDispatchableJobs(ctx context.Context, runID uuid.UUID) ([]DispatchableJob, error) {

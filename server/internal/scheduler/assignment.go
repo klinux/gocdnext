@@ -158,6 +158,21 @@ func jobDefFromDefinition(definition []byte, jobName string) (domain.Job, error)
 	return jobDef, nil
 }
 
+// concurrencyFromDefinition pulls the pipeline-level concurrency
+// setting from the JSONB snapshot. Empty / malformed / unknown
+// values fall back to "" (parallel) so a bad definition never
+// makes the scheduler wait forever — it's safer to race than
+// deadlock.
+func concurrencyFromDefinition(definition []byte) (string, error) {
+	var def struct {
+		Concurrency string `json:"Concurrency"`
+	}
+	if err := json.Unmarshal(definition, &def); err != nil {
+		return "", fmt.Errorf("scheduler: decode pipeline: %w", err)
+	}
+	return def.Concurrency, nil
+}
+
 func findJob(jobs []domain.Job, name string) (domain.Job, bool) {
 	for _, j := range jobs {
 		if j.Name == name {

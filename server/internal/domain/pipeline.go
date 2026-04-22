@@ -65,15 +65,31 @@ func normalizeGitURL(raw string) string {
 	return s
 }
 
+// Concurrency values for the pipeline-level concurrency: knob.
+//   - "parallel" (default): unlimited concurrent runs. Two pushes
+//     to main produce two independent runs that race to finish.
+//   - "serial": at most one run executes at a time. Additional
+//     runs stay queued until the current one reaches a terminal
+//     status, then the next queued one dispatches.
+// Empty string parses as parallel so existing pipelines that
+// never declared the field behave exactly as they did before.
+const (
+	ConcurrencyParallel = "parallel"
+	ConcurrencySerial   = "serial"
+)
+
 type Pipeline struct {
-	ID        string
-	ProjectID string
-	Name      string
-	Materials []Material
-	Stages    []string
-	Jobs      []Job
-	Variables map[string]string
-	Template  string
+	ID          string
+	ProjectID   string
+	Name        string
+	Materials   []Material
+	Stages      []string
+	Jobs        []Job
+	Variables   map[string]string
+	Template    string
+	// Concurrency controls whether multiple runs of this pipeline
+	// can execute side by side. See the constants above.
+	Concurrency string
 }
 
 type MaterialType string

@@ -196,6 +196,24 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		return
 	}
 
+	// Serial pipelines queue behind an already-running run of the
+	// same pipeline. Dispatch resumes via the periodic drainQueued
+	// tick (at most one tick of latency once the predecessor ends)
+	// or via the OnSessionReady hook when an agent reconnects —
+	// both paths self-heal without a dedicated "run finished"
+	// notification channel. A follow-up could wire one for
+	// sub-tick latency on hot serial deploys.
+	if concurrency, _ := concurrencyFromDefinition(run.Definition); concurrency == domain.ConcurrencySerial {
+		busy, err := s.store.OtherRunningRunExistsForPipeline(ctx, run.PipelineID, runID)
+		if err != nil {
+			s.log.Warn("scheduler: concurrency check", "run_id", runID, "err", err)
+		} else if busy {
+			s.log.Info("scheduler: serial pipeline busy, leaving queued",
+				"run_id", runID, "pipeline_id", run.PipelineID)
+			return
+		}
+	}
+
 	jobs, err := s.store.ListDispatchableJobs(ctx, runID)
 	if err != nil {
 		s.log.Warn("scheduler: list jobs", "run_id", runID, "err", err)

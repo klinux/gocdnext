@@ -1,3 +1,17 @@
+-- name: OtherRunningRunExistsForPipeline :one
+-- Returns true when the pipeline has any run in 'running' status
+-- other than the one we're about to dispatch. The scheduler checks
+-- this for pipelines configured with concurrency: serial and
+-- leaves the run queued when another one is already in flight.
+-- Excluded self so a re-entrant tick (scheduler evaluates the
+-- same run twice) doesn't see itself as a blocker.
+SELECT EXISTS (
+    SELECT 1 FROM runs
+    WHERE pipeline_id = $1
+      AND status = 'running'
+      AND id <> $2
+)::boolean AS running;
+
 -- name: ListDispatchableJobs :many
 -- Returns queued jobs in the lowest-ordinal stage that still has queued or
 -- running work. The scheduler does needs-satisfaction checking in Go so the
