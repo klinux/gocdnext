@@ -20,6 +20,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { YAMLView } from "@/components/pipelines/yaml-view";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
@@ -561,9 +562,7 @@ function YAMLPanel({ pipeline }: { pipeline: PipelineSummary }) {
           ? `Reconstructed from v${pipeline.definition_version} — the original YAML isn't stored yet.`
           : `Source — v${pipeline.definition_version}.`}
       </p>
-      <pre className="overflow-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-[11px] leading-5 text-foreground">
-        {state.yaml}
-      </pre>
+      <YAMLView source={state.yaml} />
     </div>
   );
 }
