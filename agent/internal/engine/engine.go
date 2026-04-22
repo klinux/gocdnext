@@ -26,7 +26,12 @@ type ScriptSpec struct {
 	Image   string
 	Env     map[string]string
 	Script  string
-	OnLine  func(stream, text string)
+	// Docker asks the engine to make a Docker API reachable from
+	// inside the script — docker.sock mount for Shell/Docker
+	// engines, DinD sidecar for Kubernetes. Engines that can't
+	// satisfy this should return an error before running.
+	Docker bool
+	OnLine func(stream, text string)
 }
 
 // Engine is the narrow contract: "run this, tell me when each line

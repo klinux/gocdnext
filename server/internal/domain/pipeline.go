@@ -166,6 +166,12 @@ type Job struct {
 	// in the same run. Agent downloads each before tasks start; a
 	// missing/not-ready dep fails the job cleanly.
 	ArtifactDeps []ArtifactDep
+	// Docker asks the agent to expose a Docker API inside the job
+	// (via docker.sock mount or DinD sidecar, depending on engine)
+	// so scripts can spawn containers themselves — testcontainers,
+	// docker compose, buildx. Engines that can't honour this fail
+	// the job instead of silently running without it.
+	Docker bool
 }
 
 // ArtifactDep is one entry in `needs_artifacts`. FromJob is the name

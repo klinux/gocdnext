@@ -25,6 +25,9 @@ jobs:
     stage: test
     image: golang:1.25
     needs: [vet]
+    # cli/internal/admin tests use testcontainers for the Postgres
+    # fixture just like the server suite — docker socket required.
+    docker: true
     script:
       - cd cli && go test -race ./...
 

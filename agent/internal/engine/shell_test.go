@@ -2,6 +2,8 @@ package engine_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -106,5 +108,30 @@ func TestShell_RunScript_ContextCancellation(t *testing.T) {
 func TestShell_Name(t *testing.T) {
 	if n := engine.NewShell().Name(); n != "shell" {
 		t.Errorf("Name = %q, want shell", n)
+	}
+}
+
+func TestShell_DockerFlagFailsWhenSocketMissing(t *testing.T) {
+	// With `docker: true` set, the Shell engine pre-checks the
+	// default docker socket and bails with a clear error if it's
+	// not reachable. Symlink a tempfile over DefaultDockerSocketPath
+	// isn't possible in unit tests, so we exercise the negative
+	// path on any host where /var/run/docker.sock doesn't exist
+	// (containers without docker mounted, CI runners with no
+	// daemon). When the socket DOES exist, the test just skips.
+	if _, err := os.Stat(engine.DefaultDockerSocketPath); err == nil {
+		t.Skipf("host has %s — negative-path test only runs when it's absent", engine.DefaultDockerSocketPath)
+	}
+	sh := engine.NewShell()
+	_, err := sh.RunScript(context.Background(), engine.ScriptSpec{
+		WorkDir: filepath.Join(t.TempDir()),
+		Script:  "true",
+		Docker:  true,
+	})
+	if err == nil {
+		t.Fatal("expected error when docker: true with no socket")
+	}
+	if !strings.Contains(err.Error(), "not reachable") {
+		t.Fatalf("error should mention unreachable socket: %q", err.Error())
 	}
 }

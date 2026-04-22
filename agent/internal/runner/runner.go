@@ -136,7 +136,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: plugin step skipped (local runner MVP)", i))
 			continue
 		}
-		exitCode, err := r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetEnv(), a, &seq)
+		exitCode, err := r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), a.GetEnv(), a, &seq)
 		if err != nil {
 			log.Warn("runner: script error", "err", err, "task", i)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
@@ -295,13 +295,14 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 // The engine calls OnLine for each stdout/stderr line it sees; we
 // turn those into LogLine protos via the same emitLog path used
 // everywhere else (so masking + seq numbering remain centralised).
-func (r *Runner) runScript(ctx context.Context, workDir, script, image string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
+func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
 		WorkDir: workDir,
 		Image:   image,
 		Env:     env,
 		Script:  script,
+		Docker:  docker,
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},

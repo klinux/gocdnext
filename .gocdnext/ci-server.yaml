@@ -26,6 +26,11 @@ jobs:
     stage: test
     image: golang:1.25
     needs: [vet]
+    # testcontainers-go (dbtest package) needs a reachable Docker
+    # API to spin up the Postgres container. docker: true mounts
+    # the host's docker.sock into this job's container so the
+    # test suite can talk to the daemon as a sibling.
+    docker: true
     # Race detector catches the same bugs the contributor guide
     # tells contributors to catch locally.
     script:

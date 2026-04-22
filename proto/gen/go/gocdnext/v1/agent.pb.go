@@ -958,8 +958,17 @@ type JobAssignment struct {
 	// semantics on the required list without per-entry flags on the
 	// wire.
 	OptionalArtifactPaths []string `protobuf:"bytes,13,rep,name=optional_artifact_paths,json=optionalArtifactPaths,proto3" json:"optional_artifact_paths,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// When true the runner must expose a usable Docker API to the
+	// script — via a mounted /var/run/docker.sock (Shell/Docker
+	// engines) or a DinD sidecar (Kubernetes engine). Set by the
+	// YAML `docker: true` flag on a job that needs to spawn
+	// containers itself (testcontainers, docker compose, buildx).
+	// Engines that can't honour this return an error before running
+	// the script — the user asked for capability A, running without
+	// it would surprise them silently.
+	Docker        bool `protobuf:"varint,14,opt,name=docker,proto3" json:"docker,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JobAssignment) Reset() {
@@ -1081,6 +1090,13 @@ func (x *JobAssignment) GetOptionalArtifactPaths() []string {
 		return x.OptionalArtifactPaths
 	}
 	return nil
+}
+
+func (x *JobAssignment) GetDocker() bool {
+	if x != nil {
+		return x.Docker
+	}
+	return false
 }
 
 type ArtifactDownload struct {
@@ -1559,7 +1575,7 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06assign\x18\x01 \x01(\v2\x1a.gocdnext.v1.JobAssignmentH\x00R\x06assign\x120\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x16.gocdnext.v1.CancelJobH\x00R\x06cancel\x12'\n" +
 	"\x04pong\x18\x03 \x01(\v2\x11.gocdnext.v1.PongH\x00R\x04pongB\x06\n" +
-	"\x04kind\"\xd1\x04\n" +
+	"\x04kind\"\xe9\x04\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x12\n" +
@@ -1574,7 +1590,8 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	" \x03(\tR\blogMasks\x12%\n" +
 	"\x0eartifact_paths\x18\v \x03(\tR\rartifactPaths\x12L\n" +
 	"\x12artifact_downloads\x18\f \x03(\v2\x1d.gocdnext.v1.ArtifactDownloadR\x11artifactDownloads\x126\n" +
-	"\x17optional_artifact_paths\x18\r \x03(\tR\x15optionalArtifactPaths\x1a6\n" +
+	"\x17optional_artifact_paths\x18\r \x03(\tR\x15optionalArtifactPaths\x12\x16\n" +
+	"\x06docker\x18\x0e \x01(\bR\x06docker\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb6\x01\n" +

@@ -93,6 +93,35 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 	case "", "shell":
 		logger.Info("agent engine: shell")
 		return engine.NewShell(), nil
+	case "docker":
+		cfg := engine.DockerConfig{
+			SocketPath:   os.Getenv("GOCDNEXT_DOCKER_SOCKET"),
+			DefaultImage: os.Getenv("GOCDNEXT_DOCKER_DEFAULT_IMAGE"),
+			PullPolicy:   os.Getenv("GOCDNEXT_DOCKER_PULL_POLICY"),
+		}
+		if raw := os.Getenv("GOCDNEXT_DOCKER_EXTRA_ARGS"); raw != "" {
+			// Naive split on spaces — doesn't handle quoted values,
+			// but the extra-args knob is rare enough that shellwords
+			// would be overkill. Upgrade if someone files an issue.
+			for _, s := range strings.Split(raw, " ") {
+				if s = strings.TrimSpace(s); s != "" {
+					cfg.ExtraDockerArgs = append(cfg.ExtraDockerArgs, s)
+				}
+			}
+		}
+		// Image-less jobs fall back to Shell by default so existing
+		// YAML keeps working during rollout. Operators that want
+		// "docker or bust" set GOCDNEXT_DOCKER_STRICT=true.
+		var fallback engine.Engine
+		if os.Getenv("GOCDNEXT_DOCKER_STRICT") != "true" {
+			fallback = engine.NewShell()
+		}
+		logger.Info("agent engine: docker",
+			"socket", cfg.SocketPath,
+			"default_image", cfg.DefaultImage,
+			"pull_policy", cfg.PullPolicy,
+			"strict", fallback == nil)
+		return engine.NewDocker(cfg, fallback), nil
 	case "kubernetes":
 		cfg := engine.KubernetesConfig{
 			Namespace:          os.Getenv("GOCDNEXT_K8S_NAMESPACE"),
@@ -121,7 +150,7 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 			"default_image", cfg.DefaultImage)
 		return eng, nil
 	default:
-		return nil, fmt.Errorf("GOCDNEXT_AGENT_ENGINE=%q not supported (use shell or kubernetes)", choice)
+		return nil, fmt.Errorf("GOCDNEXT_AGENT_ENGINE=%q not supported (use shell, docker, or kubernetes)", choice)
 	}
 }
 

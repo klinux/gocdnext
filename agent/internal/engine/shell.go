@@ -3,11 +3,19 @@ package engine
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"sync"
 )
+
+// DefaultDockerSocketPath is where every docker engine (moby +
+// rootful podman compat) puts its API socket on Linux. The Shell
+// and Docker engines both probe this path when a job sets
+// `docker: true`; override via DockerConfig.SocketPath only if the
+// agent runs on a host with a non-default layout.
+const DefaultDockerSocketPath = "/var/run/docker.sock"
 
 // Shell is the dev/local runtime: `sh -c $script` against the
 // agent's own filesystem. Image is ignored — the script executes
@@ -27,6 +35,17 @@ func (*Shell) Name() string { return "shell" }
 // error contract — exit != 0 is returned as (N, nil); fork or pipe
 // failure is returned as (-1, err).
 func (*Shell) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
+	// `docker: true` on the Shell engine means "the script is about
+	// to poke the host's docker daemon". Fail fast if the socket
+	// isn't there so the user gets a clear error instead of a
+	// misleading "docker: command not found" once the script runs.
+	if spec.Docker {
+		if _, err := os.Stat(DefaultDockerSocketPath); err != nil {
+			return -1, fmt.Errorf(
+				"shell engine: docker: true requested but %s is not reachable: %w",
+				DefaultDockerSocketPath, err)
+		}
+	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", spec.Script)
 	if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir

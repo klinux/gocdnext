@@ -161,6 +161,51 @@ jobs:
 	}
 }
 
+func TestParse_DockerFlagParsed(t *testing.T) {
+	// `docker: true` on a job opts into a docker-capable runtime —
+	// the parser just lifts the bool into domain.Job.Docker; the
+	// scheduler wires it into JobAssignment and each engine
+	// decides how to satisfy (socket mount / sidecar). Default is
+	// false so legacy jobs stay unchanged.
+	y := `
+stages: [test]
+materials:
+  - manual: true
+jobs:
+  integration:
+    stage: test
+    image: golang:1.25
+    docker: true
+    script: [go test -tags=integration ./...]
+  unit:
+    stage: test
+    image: golang:1.25
+    script: [go test ./...]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var integration, unit *domain.Job
+	for i := range p.Jobs {
+		switch p.Jobs[i].Name {
+		case "integration":
+			integration = &p.Jobs[i]
+		case "unit":
+			unit = &p.Jobs[i]
+		}
+	}
+	if integration == nil || unit == nil {
+		t.Fatal("expected both jobs parsed")
+	}
+	if !integration.Docker {
+		t.Fatalf("integration should have docker=true")
+	}
+	if unit.Docker {
+		t.Fatalf("unit should have docker=false by default")
+	}
+}
+
 func TestParse_OptionalArtifactsSplitFromRequired(t *testing.T) {
 	// `artifacts.optional:` is kept separate from `paths:` — the
 	// parser dedups (required wins if a path appears in both).

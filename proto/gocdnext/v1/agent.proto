@@ -156,6 +156,15 @@ message JobAssignment {
   // semantics on the required list without per-entry flags on the
   // wire.
   repeated string optional_artifact_paths = 13;
+  // When true the runner must expose a usable Docker API to the
+  // script — via a mounted /var/run/docker.sock (Shell/Docker
+  // engines) or a DinD sidecar (Kubernetes engine). Set by the
+  // YAML `docker: true` flag on a job that needs to spawn
+  // containers itself (testcontainers, docker compose, buildx).
+  // Engines that can't honour this return an error before running
+  // the script — the user asked for capability A, running without
+  // it would surprise them silently.
+  bool docker = 14;
 }
 
 message ArtifactDownload {

@@ -41,6 +41,27 @@ export GOCDNEXT_AGENT_TOKEN="${GOCDNEXT_AGENT_TOKEN:-dev-token}"
 export GOCDNEXT_AGENT_TAGS="${GOCDNEXT_AGENT_TAGS:-docker}"
 export GOCDNEXT_AGENT_CAPACITY="${GOCDNEXT_AGENT_CAPACITY:-2}"
 
+# Agent engine — default "docker" in dev so pipelines with image:
+# (ci-server, ci-agent, ci-cli, ci-web) actually run inside the
+# declared container instead of silently falling back to the host
+# shell. "missing" pull policy means first run pulls + caches, repeat
+# runs reuse. Jobs without image: delegate to the Shell engine
+# fallback (strict=false), so legacy YAML keeps working.
+#
+# Override with GOCDNEXT_AGENT_ENGINE=shell to go back to bare exec,
+# or GOCDNEXT_DOCKER_STRICT=true to make image-less jobs fail instead
+# of falling back.
+export GOCDNEXT_AGENT_ENGINE="${GOCDNEXT_AGENT_ENGINE:-docker}"
+export GOCDNEXT_DOCKER_SOCKET="${GOCDNEXT_DOCKER_SOCKET:-/var/run/docker.sock}"
+export GOCDNEXT_DOCKER_PULL_POLICY="${GOCDNEXT_DOCKER_PULL_POLICY:-missing}"
+export GOCDNEXT_DOCKER_DEFAULT_IMAGE="${GOCDNEXT_DOCKER_DEFAULT_IMAGE:-}"
+export GOCDNEXT_DOCKER_STRICT="${GOCDNEXT_DOCKER_STRICT:-false}"
+# Extra docker-run args. Default adds --init so the PID-1 is a tiny
+# init process that reaps zombies and handles signals — avoids
+# "hung forever" cases when a job's script spawns workers then
+# exits without waiting on them.
+export GOCDNEXT_DOCKER_EXTRA_ARGS="${GOCDNEXT_DOCKER_EXTRA_ARGS:---init}"
+
 export GOCDNEXT_API_URL="${GOCDNEXT_API_URL:-http://localhost:8153}"
 
 # ---- bootstrap ------------------------------------------------------
@@ -60,6 +81,27 @@ check_port_free() {
 check_port_free 8153 "server HTTP"
 check_port_free 8154 "server gRPC"
 check_port_free 3000 "web"
+
+# Docker preflight — the agent runs with engine=docker by default, so
+# jobs with `image: ...` in YAML will spawn containers against the
+# host daemon. Catch "no docker on PATH" / "daemon not running" here
+# instead of letting the first run fail mid-job with a cryptic error.
+if [[ "$GOCDNEXT_AGENT_ENGINE" == "docker" ]]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[dev] GOCDNEXT_AGENT_ENGINE=docker but \`docker\` not on PATH." >&2
+    echo "[dev] install docker or set GOCDNEXT_AGENT_ENGINE=shell and retry." >&2
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "[dev] docker daemon not reachable (\`docker info\` failed)." >&2
+    echo "[dev] start docker daemon or set GOCDNEXT_AGENT_ENGINE=shell and retry." >&2
+    exit 1
+  fi
+  if [[ ! -S "$GOCDNEXT_DOCKER_SOCKET" ]]; then
+    echo "[dev] GOCDNEXT_DOCKER_SOCKET=$GOCDNEXT_DOCKER_SOCKET doesn't exist — pipelines with docker: true will fail." >&2
+    echo "[dev] usually /var/run/docker.sock; adjust if you're on rootless docker or macOS." >&2
+  fi
+fi
 
 mkdir -p .dev/artifacts .dev/logs .dev/tmp/server .dev/tmp/agent
 PIDS_FILE="$REPO_ROOT/.dev/pids"
@@ -150,6 +192,7 @@ echo "  grpc    localhost:8154"
 echo "  web     http://localhost:3000    (logs: .dev/logs/web.log)"
 echo "  artifact root: $GOCDNEXT_ARTIFACTS_FS_ROOT"
 echo "  agent   name=$GOCDNEXT_AGENT_NAME  token=$GOCDNEXT_AGENT_TOKEN"
+echo "  agent engine: $GOCDNEXT_AGENT_ENGINE (pull=$GOCDNEXT_DOCKER_PULL_POLICY)"
 echo
 echo "Ctrl-C to stop (or run \`make stop\` from another shell)."
 echo

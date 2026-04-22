@@ -111,6 +111,7 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		ArtifactPaths:         append([]string(nil), jobDef.ArtifactPaths...),
 		OptionalArtifactPaths: append([]string(nil), jobDef.OptionalArtifactPaths...),
 		ArtifactDownloads:     downloads,
+		Docker:                jobDef.Docker,
 	}, nil
 }
 

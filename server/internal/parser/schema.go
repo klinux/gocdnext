@@ -78,6 +78,10 @@ type JobDef struct {
 	Retry          int                 `yaml:"retry,omitempty"`
 	Secrets        []string            `yaml:"secrets,omitempty"`
 	Tags           []string            `yaml:"tags,omitempty"`
+	// Docker = true asks the agent for docker API access inside the
+	// job (socket mount / DinD sidecar). Pair with `image:` to spawn
+	// sibling containers for testcontainers / docker compose.
+	Docker         bool                `yaml:"docker,omitempty"`
 }
 
 // NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. It

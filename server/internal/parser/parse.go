@@ -143,6 +143,7 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		Variables: jd.Variables,
 		Secrets:   jd.Secrets,
 		Tags:      jd.Tags,
+		Docker:    jd.Docker,
 	}
 	if jd.Artifacts != nil {
 		j.ArtifactPaths = append([]string(nil), jd.Artifacts.Paths...)
