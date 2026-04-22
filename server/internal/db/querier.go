@@ -254,6 +254,12 @@ type Querier interface {
 	// the boolean so admins can see disabled providers they can re-
 	// enable later.
 	ListAuthProviders(ctx context.Context) ([]AuthProvider, error)
+	// Loads every cron material in the system alongside its pipeline
+	// / project id and its last-fired timestamp (NULL when never
+	// fired). The ticker walks this list on every tick; N is bounded
+	// by `pipelines × cron_materials_per_pipeline`, typically a few
+	// dozen at most, so scanning in-process is fine.
+	ListCronMaterials(ctx context.Context) ([]ListCronMaterialsRow, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
 	// running work. The scheduler does needs-satisfaction checking in Go so the
 	// query stays readable; the stage gate is the only SQL-level constraint.
@@ -412,6 +418,10 @@ type Querier interface {
 	// ON CONFLICT (name) DO UPDATE bumps kind + display + id/secret
 	// + issuer + api base + enabled. We never update created_at.
 	UpsertAuthProvider(ctx context.Context, arg UpsertAuthProviderParams) (AuthProvider, error)
+	// Records a fire time for a cron material. The ticker calls this
+	// right after dispatching a run so a crashed server doesn't re-
+	// fire the same tick when it comes back.
+	UpsertCronFired(ctx context.Context, arg UpsertCronFiredParams) error
 	// Called right after CreateCheckRun on GitHub responds; caller may
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.

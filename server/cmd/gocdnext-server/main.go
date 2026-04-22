@@ -32,6 +32,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
+	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
@@ -376,6 +377,13 @@ func main() {
 	go func() {
 		if err := reaper.Run(ctx); err != nil {
 			logger.Error("reaper exited", "err", err)
+		}
+	}()
+
+	cronTicker := cronpkg.New(st, logger)
+	go func() {
+		if err := cronTicker.Run(ctx); err != nil {
+			logger.Error("cron ticker exited", "err", err)
 		}
 	}()
 
