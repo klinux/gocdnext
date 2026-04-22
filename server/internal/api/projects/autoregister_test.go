@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
-	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
 )
@@ -90,9 +89,10 @@ func (f *fakeGitHubAPI) handler(t *testing.T) http.Handler {
 
 func applyHandler(t *testing.T, api *fakeGitHubAPI) *projects.Handler {
 	t.Helper()
-	pool := dbtest.SetupPool(t)
-	h, _ := readsHandler(t)
-	_ = pool
+	// newHandler sets up the store cipher — required so the
+	// scm_source upsert can seal a generated webhook secret,
+	// which auto-register then hands to CreateRepoHook.
+	h, _ := newHandler(t)
 
 	srv := httptest.NewServer(api.handler(t))
 	t.Cleanup(srv.Close)
@@ -125,50 +125,31 @@ func testPEM(t *testing.T) []byte {
 	return keyToPEMInline(t)
 }
 
-func applyRequestWithAutoRegister() map[string]any {
+// applyRequestWithSCMSource builds a minimal apply payload that
+// binds an scm_source without any pipeline files. That's the
+// exact shape the "Connect repo" UI submits and the shape
+// auto-register cares about: it registers one webhook per
+// scm_source, not per material. Slug defaults unique per test
+// via t.Name so concurrent runs don't collide in the shared DB.
+func applyRequestWithSCMSource(slug, url string) map[string]any {
 	return map[string]any{
-		"slug": "autoreg",
-		"name": "autoreg",
-		"files": []map[string]any{
-			{
-				"name": "ci.yaml",
-				"content": `name: ci
-stages: [build]
-materials:
-  - git:
-      url: https://github.com/org/repo
-      branch: main
-      on: [push]
-      auto_register_webhook: true
-jobs:
-  build:
-    stage: build
-    script: [go build]
-`,
-			},
+		"slug":  slug,
+		"name":  slug,
+		"files": []map[string]any{},
+		"scm_source": map[string]any{
+			"provider":       "github",
+			"url":            url,
+			"default_branch": "main",
 		},
 	}
 }
 
-// Auto-register tests are SKIPPED pending a rewrite: UI.10.a
-// switched auto-register from per-material (old
-// `auto_register_webhook: true` YAML flag, one hook per git
-// material) to per-scm_source (one hook per project binding,
-// using the sealed secret). The fixtures below still build the
-// old-shape apply request, so they no longer exercise the live
-// code path. Leaving the tests here as scaffolding — the new
-// test must: (1) bind an scm_source in the apply body,
-// (2) assert one HookRegistration in body.Webhooks keyed by
-// SCMSourceURL, (3) verify the created hook's secret came from
-// scm_source.webhook_secret plaintext.
-const autoRegisterSkipMsg = "auto-register tests need a rewrite for the scm_source-per-project model (UI.10.a)"
-
 func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
-	t.Skip(autoRegisterSkipMsg)
 	api := newFakeGitHubAPI()
 	h := applyHandler(t, api)
 
-	resp := doApplyRequest(t, h, applyRequestWithAutoRegister())
+	resp := doApplyRequest(t, h,
+		applyRequestWithSCMSource("autoreg-create", "https://github.com/org/repo"))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d: %s", resp.StatusCode, readBody(resp))
 	}
@@ -182,7 +163,14 @@ func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 	if w.Status != "registered" || w.HookID != 999 {
 		t.Errorf("webhook = %+v", w)
 	}
+	if w.SCMSourceURL != "https://github.com/org/repo" {
+		t.Errorf("SCMSourceURL = %q", w.SCMSourceURL)
+	}
 
+	// Payload check: the hook was POSTed with our public base URL
+	// and the plaintext of the freshly-minted scm_source secret —
+	// apply returned that in GeneratedWebhookSecret, so the values
+	// must match.
 	ptr := api.createdPayload.Load()
 	if ptr == nil {
 		t.Fatal("no POST body captured")
@@ -192,13 +180,16 @@ func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 	if cfg["url"] != "https://gocdnext.dev/api/webhooks/github" {
 		t.Errorf("hook url = %v", cfg["url"])
 	}
-	if cfg["secret"] != "topsecret" {
-		t.Errorf("secret not passed through")
+	if body.SCMSource == nil || body.SCMSource.GeneratedWebhookSecret == "" {
+		t.Fatalf("expected generated secret in apply response, got %+v", body.SCMSource)
+	}
+	if cfg["secret"] != body.SCMSource.GeneratedWebhookSecret {
+		t.Errorf("hook secret (%v) != apply generated secret (%q)",
+			cfg["secret"], body.SCMSource.GeneratedWebhookSecret)
 	}
 }
 
 func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
-	t.Skip(autoRegisterSkipMsg)
 	api := newFakeGitHubAPI()
 	api.listHooks = []map[string]any{
 		{
@@ -212,7 +203,8 @@ func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
 	}
 	h := applyHandler(t, api)
 
-	resp := doApplyRequest(t, h, applyRequestWithAutoRegister())
+	resp := doApplyRequest(t, h,
+		applyRequestWithSCMSource("autoreg-exists", "https://github.com/org/repo"))
 	var body projects.ApplyResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 
@@ -228,18 +220,21 @@ func TestAutoRegister_SkipsWhenHookAlreadyExists(t *testing.T) {
 }
 
 func TestAutoRegister_SkipsWhenAppNotInstalled(t *testing.T) {
-	t.Skip(autoRegisterSkipMsg)
 	api := newFakeGitHubAPI()
 	api.installStatus = http.StatusNotFound
 	h := applyHandler(t, api)
 
-	resp := doApplyRequest(t, h, applyRequestWithAutoRegister())
+	resp := doApplyRequest(t, h,
+		applyRequestWithSCMSource("autoreg-no-install", "https://github.com/org/repo"))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("apply must still succeed; status = %d", resp.StatusCode)
 	}
 	var body projects.ApplyResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 
+	if len(body.Webhooks) != 1 {
+		t.Fatalf("webhooks = %d", len(body.Webhooks))
+	}
 	if body.Webhooks[0].Status != "skipped_no_install" {
 		t.Errorf("status = %q", body.Webhooks[0].Status)
 	}
@@ -248,14 +243,16 @@ func TestAutoRegister_SkipsWhenAppNotInstalled(t *testing.T) {
 	}
 }
 
-func TestAutoRegister_NoFlagSkipsWebhook(t *testing.T) {
-	t.Skip(autoRegisterSkipMsg)
-	// YAML without auto_register_webhook → no webhooks section.
+func TestAutoRegister_NoSCMSourceSkipsWebhook(t *testing.T) {
+	// Apply without an scm_source — just metadata + pipeline files.
+	// There's no repo to register a hook on, so the Webhooks field
+	// stays empty.
 	api := newFakeGitHubAPI()
 	h := applyHandler(t, api)
 
 	req := map[string]any{
-		"slug": "plain", "name": "plain",
+		"slug": "plain",
+		"name": "plain",
 		"files": []map[string]any{{
 			"name": "ci.yaml",
 			"content": `name: ci
@@ -279,6 +276,41 @@ jobs:
 
 	if len(body.Webhooks) != 0 {
 		t.Errorf("webhooks = %+v, want empty", body.Webhooks)
+	}
+	if api.createdPayload.Load() != nil {
+		t.Error("create hook should not have been called")
+	}
+}
+
+// Provider != github falls through to "skipped_not_github" —
+// GitHubFetcher / the auto-register path only speaks GitHub for
+// now. Keeps the hook list clean when a project is bound to a
+// placeholder manual provider during dev.
+func TestAutoRegister_SkipsNonGitHubProvider(t *testing.T) {
+	api := newFakeGitHubAPI()
+	h := applyHandler(t, api)
+
+	resp := doApplyRequest(t, h, map[string]any{
+		"slug":  "autoreg-manual",
+		"name":  "autoreg-manual",
+		"files": []map[string]any{},
+		"scm_source": map[string]any{
+			"provider":       "manual",
+			"url":            "internal://repo",
+			"default_branch": "main",
+		},
+	})
+	var body projects.ApplyResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	if len(body.Webhooks) != 1 {
+		t.Fatalf("webhooks = %d", len(body.Webhooks))
+	}
+	if body.Webhooks[0].Status != "skipped_not_github" {
+		t.Errorf("status = %q", body.Webhooks[0].Status)
+	}
+	if api.createdPayload.Load() != nil {
+		t.Error("create hook should not have been called for manual provider")
 	}
 }
 
