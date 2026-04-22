@@ -86,7 +86,9 @@ func ParseRepoURL(raw string) (owner, repo string, err error) {
 //
 // configPath is the repo-relative folder (e.g. ".gocdnext",
 // ".woodpecker", "apps/api/.gocdnext"). Empty → ".gocdnext" for
-// backwards-compat with older callers.
+// backwards-compat with older callers. When the path ends in
+// .yaml / .yml it's treated as a single-file config (GitLab-CI
+// style) and a single RawFile is returned.
 func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Config, ref, configPath string) ([]RawFile, error) {
 	if cfg.Owner == "" || cfg.Repo == "" {
 		return nil, fmt.Errorf("github: owner and repo are required")
@@ -102,7 +104,7 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 
-	listURL := fmt.Sprintf(
+	contentsURL := fmt.Sprintf(
 		"%s/repos/%s/%s/contents/%s",
 		strings.TrimRight(apiBase, "/"),
 		url.PathEscape(cfg.Owner),
@@ -110,10 +112,25 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 		escapePath(configPath),
 	)
 	if ref != "" {
-		listURL += "?ref=" + url.QueryEscape(ref)
+		contentsURL += "?ref=" + url.QueryEscape(ref)
 	}
 
-	entries, err := fetchContents(ctx, httpClient, cfg.Token, listURL)
+	if isSingleFileConfigPath(configPath) {
+		// Single-file mode: contents API returns one object, not
+		// an array. Decode as a single contentEntry and wrap it
+		// in a one-element slice so the caller doesn't care.
+		entry, err := fetchSingleContent(ctx, httpClient, cfg.Token, contentsURL)
+		if err != nil {
+			return nil, err
+		}
+		text, err := materialize(ctx, httpClient, cfg.Token, entry)
+		if err != nil {
+			return nil, err
+		}
+		return []RawFile{{Name: entry.Name, Content: text}}, nil
+	}
+
+	entries, err := fetchContents(ctx, httpClient, cfg.Token, contentsURL)
 	if err != nil {
 		return nil, err
 	}
@@ -128,19 +145,32 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 		default:
 			continue
 		}
-		text, err := decodeInlineContent(e)
+		text, err := materialize(ctx, httpClient, cfg.Token, e)
 		if err != nil {
-			// Fall back to download_url when GitHub didn't inline the content
-			// (files >1 MiB). Pipeline YAMLs that large are extremely unusual
-			// but we still handle the case for robustness.
-			text, err = fetchRaw(ctx, httpClient, cfg.Token, e.DownloadURL)
-			if err != nil {
-				return nil, fmt.Errorf("github: fetch %s: %w", e.Name, err)
-			}
+			return nil, fmt.Errorf("github: fetch %s: %w", e.Name, err)
 		}
 		out = append(out, RawFile{Name: e.Name, Content: text})
 	}
 	return out, nil
+}
+
+// materialize returns the plaintext of an inlined content entry,
+// falling back to the download_url when GitHub stubbed the blob
+// (>1 MiB). Extracted so folder and single-file paths share it.
+func materialize(ctx context.Context, client *http.Client, token string, e contentEntry) (string, error) {
+	text, err := decodeInlineContent(e)
+	if err == nil {
+		return text, nil
+	}
+	return fetchRaw(ctx, client, token, e.DownloadURL)
+}
+
+func isSingleFileConfigPath(path string) bool {
+	switch filepath.Ext(path) {
+	case ".yaml", ".yml":
+		return true
+	}
+	return false
 }
 
 type contentEntry struct {
@@ -151,6 +181,45 @@ type contentEntry struct {
 	Encoding    string `json:"encoding"`
 	Content     string `json:"content"`
 	DownloadURL string `json:"download_url"`
+}
+
+// fetchSingleContent expects the GitHub contents API to return a
+// single file object (single-file config_path mode). The same
+// endpoint returns an array for folders and an object for files,
+// so we decode into the right shape based on the caller's intent.
+func fetchSingleContent(ctx context.Context, client *http.Client, token, u string) (contentEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return contentEntry{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return contentEntry{}, fmt.Errorf("github: request %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return contentEntry{}, fmt.Errorf("%w: %s", ErrFolderNotFound, u)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return contentEntry{}, fmt.Errorf("github: %s returned %d: %s",
+			u, resp.StatusCode, strings.TrimSpace(string(body[:min(len(body), 200)])))
+	}
+
+	var entry contentEntry
+	if err := json.Unmarshal(body, &entry); err != nil {
+		return contentEntry{}, fmt.Errorf("github: decode single file: %w", err)
+	}
+	if entry.Type != "file" {
+		return contentEntry{}, fmt.Errorf("github: %s is not a file (type=%q)", u, entry.Type)
+	}
+	return entry, nil
 }
 
 func fetchContents(ctx context.Context, client *http.Client, token, u string) ([]contentEntry, error) {

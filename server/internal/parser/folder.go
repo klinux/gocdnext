@@ -20,12 +20,28 @@ const DefaultConfigFolder = ".gocdnext"
 // are used as the pipeline name fallback when the file has no
 // `name:` field. An empty configPath resolves to DefaultConfigFolder.
 //
+// When configPath ends in .yaml/.yml it's treated as a single-file
+// config (GitLab CI style: one .gocdnext.yml at the root). The
+// same parser runs on the one file; "duplicate name" detection is
+// a no-op since there's only one.
+//
 // Returns a stable, sorted result for reproducible diffs in git / UI.
 func LoadFolder(root, configPath, projectID string) ([]*domain.Pipeline, error) {
 	if configPath == "" {
 		configPath = DefaultConfigFolder
 	}
-	dir := filepath.Join(root, configPath)
+	target := filepath.Join(root, configPath)
+
+	if IsSingleFileConfigPath(configPath) {
+		fallback := strings.TrimSuffix(filepath.Base(configPath), filepath.Ext(configPath))
+		p, err := parseFile(target, projectID, fallback)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", configPath, err)
+		}
+		return []*domain.Pipeline{p}, nil
+	}
+
+	dir := target
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", dir, err)
@@ -84,4 +100,13 @@ func hasPipelineExt(name string) bool {
 		return true
 	}
 	return false
+}
+
+// IsSingleFileConfigPath returns true when the config path points
+// at a single YAML file rather than a folder — i.e. ends in
+// .yaml or .yml. Exported so both the local parser and the
+// remote fetcher (configsync/github.go) classify the path the
+// same way without duplicating the decision.
+func IsSingleFileConfigPath(path string) bool {
+	return hasPipelineExt(path)
 }

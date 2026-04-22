@@ -28,6 +28,10 @@ type Props = {
   // /runs/{id}. Absent → no "View logs" action, only a disabled
   // hint explaining it's not available yet.
   runId?: string;
+  // Optional job_run id. When present, "View logs" appends
+  // #job-<id> so the detail page scrolls + highlights the exact
+  // job instead of dumping the user at the top of the run.
+  jobRunId?: string;
 };
 
 // JobActionsMenu is the per-job kebab on the project DAG cards.
@@ -36,7 +40,7 @@ type Props = {
 // server action). Re-running a specific job is intentionally not
 // on the menu yet — the backend lacks that granularity, and a
 // mislabelled action would violate the user's expectation.
-export function JobActionsMenu({ children, label, runId }: Props) {
+export function JobActionsMenu({ children, label, runId, jobRunId }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -76,7 +80,12 @@ export function JobActionsMenu({ children, label, runId }: Props) {
       <DropdownMenuContent align="start" className="min-w-44">
         {runId ? (
           <DropdownMenuItem
-            onClick={() => router.push(`/runs/${runId}` as Route)}
+            onClick={() => {
+              const target = jobRunId
+                ? `/runs/${runId}#job-${jobRunId}`
+                : `/runs/${runId}`;
+              router.push(target as Route);
+            }}
             className="whitespace-nowrap"
           >
             <ExternalLink className="size-3.5" />

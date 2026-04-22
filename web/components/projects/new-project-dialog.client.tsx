@@ -202,8 +202,8 @@ export function NewProjectDialog() {
           />
         </Field>
         <Field
-          label="Config folder"
-          hint="repo-relative path to pipeline YAMLs · default .gocdnext"
+          label="Config path"
+          hint="folder (.gocdnext) or single file (.gocdnext.yml)"
         >
           <Input
             value={configPath}

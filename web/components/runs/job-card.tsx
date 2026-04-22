@@ -19,7 +19,14 @@ export function JobCard({ job }: Props) {
   return (
     <Card
       id={`job-${job.id}`}
-      className="scroll-mt-20 transition-shadow"
+      // :target highlights the card when the URL hash matches this
+      // id — the project-page "View logs" dropdown deep-links here
+      // and the ring lets the user spot the row after the scroll.
+      // CSS-only so no client component needed.
+      className={cn(
+        "scroll-mt-20 transition-shadow",
+        "[&:target]:ring-2 [&:target]:ring-primary [&:target]:ring-offset-2",
+      )}
     >
       <CardHeader className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex items-center gap-2">

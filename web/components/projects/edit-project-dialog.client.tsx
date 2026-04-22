@@ -117,9 +117,9 @@ export function EditProjectDialog({ project, scmSource }: Props) {
         <DialogHeader>
           <DialogTitle>Edit {project.slug}</DialogTitle>
           <DialogDescription>
-            Slug is locked after creation. Pipelines live in the repo&apos;s{" "}
+            Slug is locked after creation. Pipelines live at{" "}
             <code className="font-mono">{configPath || ".gocdnext"}</code>{" "}
-            folder — edit them by pushing to the branch below.
+            in the repo — edit them by pushing to the branch below.
           </DialogDescription>
         </DialogHeader>
 
@@ -141,8 +141,8 @@ export function EditProjectDialog({ project, scmSource }: Props) {
           />
         </Field>
         <Field
-          label="Config folder"
-          hint="repo-relative path to pipeline YAMLs"
+          label="Config path"
+          hint="folder (.gocdnext) or single file (.gocdnext.yml)"
         >
           <Input
             value={configPath}
