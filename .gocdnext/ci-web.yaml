@@ -1,14 +1,16 @@
 # gocdnext web (Next.js) — type-check, unit tests, production
-# build. The build output is artefacted so a follow-up pipeline
-# (not in this repo yet) could pick it up for a static-hosting
-# deploy if we ever separate web from the server binary.
+# build. Now upstream to ci-server.test so the web bundle is only
+# built after the server tests pass — we don't bake UI artefacts
+# against a server revision that's known-broken. Triggering via
+# upstream also lets the VSM draw a real "ci-server → ci-web"
+# edge so the dependency is visible instead of implicit.
 name: ci-web
 
 materials:
-  - git:
-      url: https://github.com/klinux/gocdnext
-      branch: main
-      on: [push, pull_request]
+  - upstream:
+      pipeline: ci-server
+      stage: test
+      status: success
 
 stages: [install, lint, test, build]
 
