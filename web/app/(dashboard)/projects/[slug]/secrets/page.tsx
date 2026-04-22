@@ -65,14 +65,11 @@ export default async function SecretsPage({
   return (
     <section className="space-y-6">
       <Toaster position="top-right" richColors />
-      <div className="flex items-baseline justify-between">
-        <div>
-          <h3 className="text-lg font-semibold tracking-tight">Secrets</h3>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Encrypted at rest and never echoed back. Reference by name from a job&apos;s{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">secrets:</code> list.
-          </p>
-        </div>
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-sm text-muted-foreground">
+          Encrypted at rest and never echoed back. Reference by name from a job&apos;s{" "}
+          <code className="rounded bg-muted px-1 py-0.5 text-xs">secrets:</code> list.
+        </p>
         <SecretDialog slug={slug} />
       </div>
 

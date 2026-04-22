@@ -38,19 +38,10 @@ export default async function ProjectPipelinesPage({
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-lg font-semibold tracking-tight">Pipelines</h3>
-        <span className="text-xs text-muted-foreground">
-          {detail.pipelines.length} definition
-          {detail.pipelines.length === 1 ? "" : "s"}
-        </span>
-      </div>
-      <PipelineFlow
-        projectSlug={detail.project.slug}
-        pipelines={detail.pipelines}
-        edges={detail.edges ?? []}
-      />
-    </div>
+    <PipelineFlow
+      projectSlug={detail.project.slug}
+      pipelines={detail.pipelines}
+      edges={detail.edges ?? []}
+    />
   );
 }

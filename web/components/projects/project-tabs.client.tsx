@@ -66,7 +66,7 @@ export function ProjectTabs({ slug }: Props) {
 
   return (
     <Tabs value={active}>
-      <TabsList className="w-full justify-start bg-transparent p-0">
+      <TabsList>
         {tabs.map((tab) => {
           const Icon = tab.icon;
           return (
@@ -75,7 +75,6 @@ export function ProjectTabs({ slug }: Props) {
               value={tab.label}
               nativeButton={false}
               render={<Link href={tab.href(slug)} />}
-              className="data-active:bg-accent data-active:text-accent-foreground dark:data-active:bg-accent"
             >
               <Icon className="size-4" aria-hidden />
               {tab.label}

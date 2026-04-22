@@ -52,12 +52,6 @@ export default async function ProjectRunsPage({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-lg font-semibold tracking-tight">Recent runs</h3>
-        <span className="text-xs text-muted-foreground">
-          {detail.runs.length} shown
-        </span>
-      </div>
       {detail.runs.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No runs yet. Trigger one by pushing to a git material or calling the
