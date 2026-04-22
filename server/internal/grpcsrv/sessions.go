@@ -45,6 +45,11 @@ type SessionStore struct {
 	mu         sync.Mutex
 	byID       map[string]*Session
 	latestByAg map[uuid.UUID]string
+	// onReady fires after a session is published — the scheduler
+	// uses this to drain queued runs the moment an agent comes
+	// online instead of waiting up to the next periodic tick.
+	// Called in a goroutine so CreateSession stays non-blocking.
+	onReady func()
 }
 
 // NewSessionStore returns an empty, ready-to-use store.
@@ -79,8 +84,6 @@ func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity 
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if prev, ok := s.latestByAg[agentID]; ok {
 		if prevSess, ok := s.byID[prev]; ok {
 			prevSess.revoked.Store(true)
@@ -90,7 +93,28 @@ func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity 
 	}
 	s.byID[sess.ID] = sess
 	s.latestByAg[agentID] = sess.ID
+	onReady := s.onReady
+	s.mu.Unlock()
+
+	// Fire the ready hook outside the lock so a slow subscriber
+	// (scheduler draining the DB) can't stall agent registration.
+	if onReady != nil {
+		go onReady()
+	}
 	return sess
+}
+
+// SetOnSessionReady registers a callback invoked after every
+// CreateSession. The scheduler uses it to drain the queued-run
+// backlog immediately when an agent connects — without it, a run
+// queued while no agents were online would wait up to one
+// scheduler tick to find its newly-registered agent.
+//
+// Safe to call at any point; nil clears the hook.
+func (s *SessionStore) SetOnSessionReady(fn func()) {
+	s.mu.Lock()
+	s.onReady = fn
+	s.mu.Unlock()
 }
 
 // Lookup returns the Session for the given id and whether it is still valid.

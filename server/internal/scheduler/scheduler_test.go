@@ -425,6 +425,58 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 	}
 }
 
+// TestRun_DispatchesOnAgentRegister exercises the SessionStore hook:
+// a run sits queued because no agent was online when it was created,
+// then an agent registers and the scheduler dispatches it without
+// waiting for the next periodic tick. The tick is set long here so
+// a failure mode where the fix only works via the tick fallback
+// would time out.
+func TestRun_DispatchesOnAgentRegister(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	dsn := dbtest.DSN()
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), dsn).
+		WithTickInterval(30 * time.Second) // too long to save the test
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Seed a run BEFORE any agent is registered.
+	seed(t, pool)
+
+	done := make(chan error, 1)
+	go func() { done <- sched.Run(ctx) }()
+
+	// Let the scheduler finish its priming drainQueued — it'll find
+	// the queued run but no agent, log "leaving queued", and wait.
+	time.Sleep(300 * time.Millisecond)
+
+	// Now bring an agent online; the ready-hook should kick the
+	// scheduler into an immediate drainQueued.
+	agentID := seedAgentRow(t, pool, "late-agent")
+	sess := sessions.CreateSession(agentID, nil, 1)
+
+	select {
+	case msg := <-sess.Out():
+		if msg.GetAssign() == nil {
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no assignment after agent register within 2s")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("scheduler did not stop after ctx cancel")
+	}
+}
+
 // TestRun_ReactsToNotify exercises the LISTEN loop: NOTIFY fires, scheduler
 // picks up the run, dispatches. Uses the dbtest DSN so the LISTEN connection
 // sees commits from the same cluster.

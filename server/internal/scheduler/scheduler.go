@@ -99,7 +99,22 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 
 	runCh := make(chan uuid.UUID, 32)
+	// drainCh is the single-producer signal: on an agent register,
+	// or a tick, we coalesce into one drain without blocking the
+	// signaller. Buffer of 1 because two back-to-back drains add
+	// nothing — the second finds the same (post-drain) state.
+	drainCh := make(chan struct{}, 1)
 	pumpDone := make(chan struct{})
+
+	s.sessions.SetOnSessionReady(func() {
+		select {
+		case drainCh <- struct{}{}:
+		default:
+		}
+	})
+	// Tear the hook down when we exit — a future ctx-cancelled
+	// scheduler must not keep pulling the now-unbuffered channel.
+	defer s.sessions.SetOnSessionReady(nil)
 
 	// Notify pump → runCh. Owns exclusive access to conn while ctx is live.
 	// Must exit before we Close(conn); otherwise pgx's internal conn state is
@@ -146,6 +161,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return nil
 		case runID := <-runCh:
 			s.dispatchRun(ctx, runID)
+		case <-drainCh:
+			// Agent came online — re-try every queued run so jobs
+			// stop sitting around for up to a tick interval just
+			// because nothing was listening when they were created.
+			s.drainQueued(ctx)
 		case <-ticker.C:
 			s.drainQueued(ctx)
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -227,6 +228,32 @@ func TestSessionStore_RevokeClosesChannel(t *testing.T) {
 	if _, ok := <-sess.Out(); ok {
 		t.Fatalf("Out channel still open after Revoke")
 	}
+}
+
+func TestSessionStore_OnSessionReadyFiresAfterCreate(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	fired := make(chan struct{}, 1)
+	s.SetOnSessionReady(func() { fired <- struct{}{} })
+
+	s.CreateSession(uuid.New(), []string{"linux"}, 2)
+
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("OnSessionReady didn't fire within 1s")
+	}
+}
+
+func TestSessionStore_OnSessionReadyNilSafe(t *testing.T) {
+	t.Parallel()
+
+	// No callback registered — CreateSession must not panic or
+	// block. Regression guard for the nil-hook path on boot,
+	// before the scheduler has wired itself in.
+	s := grpcsrv.NewSessionStore()
+	_ = s.CreateSession(uuid.New(), nil, 1)
 }
 
 func TestSessionStore_ConcurrentUse(t *testing.T) {
