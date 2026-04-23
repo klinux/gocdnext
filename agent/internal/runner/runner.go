@@ -118,8 +118,14 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// cleanly with the producing job's name so the user knows where to
 	// look. We don't mask the error message here; artefact paths are
 	// declared config, not secrets.
+	//
+	// Extract into scriptWorkDir — matches the base the scripts run
+	// in AND the base the producer used when taring paths up. Using
+	// plain workDir here landed node_modules at
+	// <workDir>/web/node_modules while `cd web` put scripts inside
+	// <workDir>/<target>/web, so node_modules looked missing.
 	for _, dl := range a.GetArtifactDownloads() {
-		if err := r.downloadArtifact(ctx, workDir, dl, a, &seq); err != nil {
+		if err := r.downloadArtifact(ctx, scriptWorkDir, dl, a, &seq); err != nil {
 			log.Warn("runner: artifact download failed",
 				"err", err, "path", dl.GetPath(), "from", dl.GetFromJob())
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
