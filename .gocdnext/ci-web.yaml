@@ -39,6 +39,14 @@ jobs:
     stage: lint
     image: node:22-alpine
     needs: [deps]
+    # `needs:` only orders jobs — artefacts don't ride along
+    # automatically. Consumers list `needs_artifacts:` to unpack
+    # the producer's tarball into the workspace; without it the
+    # fresh container has no node_modules and `pnpm exec tsc`
+    # comes up empty with ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL.
+    needs_artifacts:
+      - from_job: deps
+        paths: [web/node_modules/]
     script:
       - cd web
       - corepack enable
@@ -49,6 +57,9 @@ jobs:
     stage: test
     image: node:22-alpine
     needs: [deps]
+    needs_artifacts:
+      - from_job: deps
+        paths: [web/node_modules/]
     script:
       - cd web
       - corepack enable
@@ -59,6 +70,9 @@ jobs:
     stage: build
     image: node:22-alpine
     needs: [typecheck, unit]
+    needs_artifacts:
+      - from_job: deps
+        paths: [web/node_modules/]
     script:
       - cd web
       - corepack enable
