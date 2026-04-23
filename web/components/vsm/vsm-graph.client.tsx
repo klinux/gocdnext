@@ -52,12 +52,53 @@ export function VSMGraph({ vsm }: Props) {
   // "everyone ran in parallel, and here's how long each took" —
   // no fake dependency claim. Skipped when real edges exist to
   // avoid doubling up on a pair.
-  // VSM renders all pipelines in a single horizontal row. buildLayers
-  // still runs (its barycenter pass brings parent/child pairs next to
-  // each other and keeps alphabetical order inside sibling groups),
-  // but the resulting layers get flattened for layout — operators read
-  // the VSM as a left-to-right value stream, not a depth diagram.
-  const orderedNodes = useMemo(() => layers.flat(), [layers]);
+  // VSM renders all pipelines in a single horizontal row. The flat
+  // order comes from a DFS that emits each root immediately
+  // followed by its transitively-reachable downstreams: parent and
+  // child always end up adjacent, so the real-upstream arrow
+  // (ci-server → ci-web) stays a short rightward hop instead of
+  // snaking past every unrelated root. A plain layers.flat()
+  // would've dumped all of layer 0 first then layer 1, leaving
+  // ci-web stranded at the end of the row.
+  //
+  // Roots come from layer[0] in barycenter order (alphabetical when
+  // no sibling has a downstream; otherwise parents-with-children
+  // float toward the position their child occupies). Any node the
+  // DFS doesn't reach — shouldn't happen for a well-formed DAG but
+  // we defend against cycles that buildLayers already handled — is
+  // appended in layer/alphabetical order at the tail.
+  const orderedNodes = useMemo(() => {
+    const byName = new Map(vsm.nodes.map((n) => [n.name, n]));
+    const childrenOf = new Map<string, string[]>();
+    for (const e of vsm.edges) {
+      const list = childrenOf.get(e.from_pipeline) ?? [];
+      list.push(e.to_pipeline);
+      childrenOf.set(e.from_pipeline, list);
+    }
+    const seen = new Set<string>();
+    const out: VSMNodeT[] = [];
+    const visit = (name: string) => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      const n = byName.get(name);
+      if (n) out.push(n);
+      for (const child of childrenOf.get(name) ?? []) visit(child);
+    };
+    if (layers.length > 0) {
+      for (const root of layers[0]!) visit(root.name);
+    }
+    // Pick up anything the DFS missed (cycles, disconnected
+    // components). Last-resort tail, alphabetical within layer.
+    for (const layer of layers) {
+      for (const n of layer) {
+        if (!seen.has(n.name)) {
+          seen.add(n.name);
+          out.push(n);
+        }
+      }
+    }
+    return out;
+  }, [layers, vsm.nodes, vsm.edges]);
 
   const implicitEdges = useMemo(() => {
     if (orderedNodes.length < 2) return [];
