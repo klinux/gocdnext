@@ -385,8 +385,15 @@ export function VSMGraph({ vsm }: Props) {
             formally. Overflow scrolls horizontally when the DAG
             is wider than the viewport. */}
         <div className="relative flex min-w-full justify-center">
+          {/* items-center so cards with extra height (e.g. the
+              one carrying a bottleneck sub-row) share the same
+              horizontal midline with their neighbours. The edge
+              anchors use each card's getBoundingClientRect mid-Y
+              too, so arrows stay a straight horizontal line
+              between every pair — no awkward top-anchored
+              desalignment when a single card is taller. */}
           <div
-            className="inline-flex items-start"
+            className="inline-flex items-center"
             style={{ gap: `${COL_GAP}px` }}
           >
             {orderedNodes.map((node) => (
