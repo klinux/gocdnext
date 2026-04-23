@@ -31,6 +31,22 @@ type File struct {
 	// SCM events create runs. `branch:` / `status:` are reserved
 	// for future use at this level.
 	When *WhenDef `yaml:"when,omitempty"`
+	// Services are sidecar containers the agent runs alongside
+	// every job in this pipeline — postgres, redis, localstack,
+	// etc. Jobs reach them by `name` over a shared docker network.
+	// See domain.Service for runtime semantics.
+	Services []ServiceSpec `yaml:"services,omitempty"`
+}
+
+// ServiceSpec is the YAML shape for a pipeline-level sidecar
+// container. Everything is optional except `image` — `name`
+// defaults to the image's short name when omitted so simple
+// single-service pipelines stay concise.
+type ServiceSpec struct {
+	Name    string            `yaml:"name,omitempty"`
+	Image   string            `yaml:"image"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	Command []string          `yaml:"command,omitempty"`
 }
 
 type Include struct {

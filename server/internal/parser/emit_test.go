@@ -194,6 +194,57 @@ func TestEmit_ExplicitMaterialsStillVisible(t *testing.T) {
 	}
 }
 
+func TestEmit_RoundTripsServices(t *testing.T) {
+	// Services (pipeline-level sidecars) must survive parse → emit
+	// → re-parse untouched so the yaml tab reflects what the
+	// operator wrote. Env map + command slice are the fiddly
+	// bits — both need to round-trip structurally, not by pointer
+	// identity.
+	const src = `
+name: ci-integration
+stages: [test]
+materials:
+  - manual: true
+services:
+  - image: postgres:16-alpine
+    env:
+      POSTGRES_PASSWORD: test
+  - name: cache
+    image: redis:7
+    command: [redis-server, --appendonly, "no"]
+jobs:
+  integration:
+    stage: test
+    image: golang:1.25
+    script: [go test ./...]
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "ci-integration")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	second, err := ParseNamed(strings.NewReader(string(out)), "p", "ci-integration")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, out)
+	}
+	if len(second.Services) != 2 {
+		t.Fatalf("services lost in round-trip: %+v\n---\n%s", second.Services, out)
+	}
+	if second.Services[0].Name != "postgres" ||
+		second.Services[0].Image != "postgres:16-alpine" ||
+		second.Services[0].Env["POSTGRES_PASSWORD"] != "test" {
+		t.Errorf("postgres service mangled: %+v", second.Services[0])
+	}
+	if second.Services[1].Name != "cache" ||
+		len(second.Services[1].Command) != 3 ||
+		second.Services[1].Command[0] != "redis-server" {
+		t.Errorf("cache service mangled: %+v", second.Services[1])
+	}
+}
+
 func TestEmit_QuotesAmbiguousScalars(t *testing.T) {
 	// GO_VERSION: "1.25" must round-trip as a quoted string.
 	// Without explicit quoting yaml.v3 emits `1.25` → re-parses as

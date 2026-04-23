@@ -301,6 +301,97 @@ jobs:
 	}
 }
 
+func TestParse_Services(t *testing.T) {
+	// Services are pipeline-level sidecars the agent brings up
+	// alongside every job. `name` defaults to the image's short
+	// form so `image: postgres:16-alpine` implies `name: postgres`
+	// without extra YAML. Env + command pass through verbatim.
+	y := `
+stages: [test]
+materials:
+  - manual: true
+services:
+  - image: postgres:16-alpine
+    env:
+      POSTGRES_PASSWORD: test
+  - name: cache
+    image: redis:7
+    command: ["redis-server", "--appendonly", "no"]
+jobs:
+  integration:
+    stage: test
+    image: golang:1.25
+    script: [go test ./...]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Services) != 2 {
+		t.Fatalf("services = %d, want 2", len(p.Services))
+	}
+	pg := p.Services[0]
+	if pg.Name != "postgres" {
+		t.Errorf("service[0] name = %q, want postgres (derived from image)", pg.Name)
+	}
+	if pg.Image != "postgres:16-alpine" {
+		t.Errorf("service[0] image = %q", pg.Image)
+	}
+	if pg.Env["POSTGRES_PASSWORD"] != "test" {
+		t.Errorf("service[0] env: %+v", pg.Env)
+	}
+	redis := p.Services[1]
+	if redis.Name != "cache" {
+		t.Errorf("service[1] name = %q, want cache (explicit override)", redis.Name)
+	}
+	if len(redis.Command) != 3 || redis.Command[0] != "redis-server" {
+		t.Errorf("service[1] command = %+v", redis.Command)
+	}
+}
+
+func TestParse_ServiceRequiresImage(t *testing.T) {
+	bad := `
+stages: [test]
+materials: [{manual: true}]
+services:
+  - name: broken
+jobs:
+  t:
+    stage: test
+    script: [echo hi]
+`
+	_, err := Parse(strings.NewReader(bad), "p", "n")
+	if err == nil {
+		t.Fatal("expected error for service without image")
+	}
+	if !strings.Contains(err.Error(), "image is required") {
+		t.Errorf("wrong error: %v", err)
+	}
+}
+
+func TestParse_ServiceNameDerivedFromRegistryImage(t *testing.T) {
+	// Registry-qualified images ("registry.local/foo/bar:v1")
+	// should still yield a dns-label name — strip registry, repo
+	// path AND tag.
+	y := `
+stages: [test]
+materials: [{manual: true}]
+services:
+  - image: registry.local/platform/minio:2025-01
+jobs:
+  t:
+    stage: test
+    script: [echo hi]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if p.Services[0].Name != "minio" {
+		t.Fatalf("name = %q, want minio", p.Services[0].Name)
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

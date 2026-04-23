@@ -97,6 +97,24 @@ type Pipeline struct {
 	// an explicit git material — those keep full control via the
 	// material's own events list.
 	TriggerEvents []string
+	// Services are long-running sidecar containers (postgres, redis,
+	// localstack, …) that every job in the pipeline can reach by
+	// hostname. The agent brings them up on a job-scoped docker
+	// network before tasks run, tears them down when the job
+	// finishes (success, failure, or cancel). See runner.Execute.
+	Services []Service
+}
+
+// Service describes a sidecar container that accompanies every
+// job in the pipeline. Jobs reach it by `name` (used as the docker
+// network alias). `command` overrides the image's entrypoint/cmd
+// for cases like `postgres -c fsync=off`. Env is passed through to
+// the service container as-is.
+type Service struct {
+	Name    string
+	Image   string
+	Env     map[string]string
+	Command []string
 }
 
 type MaterialType string

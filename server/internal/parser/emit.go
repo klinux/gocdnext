@@ -40,6 +40,14 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 	if len(p.TriggerEvents) > 0 {
 		f.When = &WhenDef{Event: append([]string(nil), p.TriggerEvents...)}
 	}
+	for _, s := range p.Services {
+		f.Services = append(f.Services, ServiceSpec{
+			Name:    s.Name,
+			Image:   s.Image,
+			Env:     s.Env,
+			Command: append([]string(nil), s.Command...),
+		})
+	}
 	for _, m := range p.Materials {
 		// Implicit materials (project-repo synthesized from
 		// scm_source at apply time) are deliberately hidden — the
@@ -221,6 +229,13 @@ func buildRootNode(p *domain.Pipeline, f File) (*yaml.Node, error) {
 			return nil, err
 		}
 		appendKV(root, "materials", matsNode)
+	}
+	if len(f.Services) > 0 {
+		svcNode, err := marshalInto(f.Services)
+		if err != nil {
+			return nil, err
+		}
+		appendKV(root, "services", svcNode)
 	}
 
 	if len(f.Jobs) > 0 {

@@ -65,6 +65,14 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		p.TriggerEvents = append([]string(nil), f.When.Event...)
 	}
 
+	for _, sv := range f.Services {
+		svc, err := toService(sv)
+		if err != nil {
+			return nil, err
+		}
+		p.Services = append(p.Services, svc)
+	}
+
 	for _, m := range f.Materials {
 		mat, err := toMaterial(m)
 		if err != nil {
@@ -237,5 +245,55 @@ func defaultEvents(ev []string) []string {
 		return []string{"push"}
 	}
 	return ev
+}
+
+// toService validates a service spec and derives a default name
+// when omitted. image is mandatory — a service without one can't
+// start. Name defaults to the image's short form (repository
+// basename, tag stripped) so `image: postgres:16-alpine` implies
+// `name: postgres` without extra YAML. Duplicate names across
+// the pipeline would collide on the docker network alias; that
+// check lives in ApplyProject where all services are visible
+// together.
+func toService(s ServiceSpec) (domain.Service, error) {
+	if strings.TrimSpace(s.Image) == "" {
+		return domain.Service{}, fmt.Errorf("service: image is required")
+	}
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		name = defaultServiceNameFromImage(s.Image)
+	}
+	if name == "" {
+		return domain.Service{}, fmt.Errorf("service: couldn't derive name from image %q; set `name:` explicitly", s.Image)
+	}
+	return domain.Service{
+		Name:    name,
+		Image:   s.Image,
+		Env:     s.Env,
+		Command: append([]string(nil), s.Command...),
+	}, nil
+}
+
+// defaultServiceNameFromImage picks a dns-label-friendly name from
+// a container image reference. "postgres:16-alpine" → "postgres",
+// "registry.local/foo/bar:1" → "bar". Strips registry+repo path
+// and tag.
+func defaultServiceNameFromImage(image string) string {
+	s := image
+	// Strip tag.
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		// Colons in host:port (registry) survive since they appear
+		// BEFORE any slash — only strip when the last colon is
+		// after the last slash.
+		lastSlash := strings.LastIndex(s, "/")
+		if i > lastSlash {
+			s = s[:i]
+		}
+	}
+	// Strip registry + repo path.
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSpace(s)
 }
 
