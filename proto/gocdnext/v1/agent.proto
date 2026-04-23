@@ -165,6 +165,24 @@ message JobAssignment {
   // the script — the user asked for capability A, running without
   // it would surprise them silently.
   bool docker = 14;
+  // Pipeline-level sidecar services (postgres, redis, localstack…)
+  // the agent brings up BEFORE tasks run and tears down when the
+  // job ends. Jobs reach a service by `name` on a job-scoped
+  // docker network the agent provisions per assignment. Empty
+  // list = no sidecars, skip the network plumbing entirely.
+  repeated ServiceSpec services = 15;
+}
+
+// ServiceSpec is the wire shape for a pipeline-level service. The
+// agent's docker engine translates each into a container on a
+// per-job bridge network with `name` as the DNS alias. `command`,
+// when set, overrides the image's default ENTRYPOINT/CMD — matches
+// how GitLab CI / Woodpecker expose the same knob.
+message ServiceSpec {
+  string name                = 1;
+  string image               = 2;
+  map<string, string> env    = 3;
+  repeated string command    = 4;
 }
 
 message ArtifactDownload {

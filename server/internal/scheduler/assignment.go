@@ -97,6 +97,24 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 
 	checkouts := materialCheckouts(materials, revs)
 
+	// Pipeline-level services travel per-assignment so the agent
+	// decides the network shape without re-reading the pipeline
+	// definition. Empty slice (len==0) becomes a nil on the wire —
+	// same as omission — so engines that don't support services
+	// keep their current fast path.
+	var services []*gocdnextv1.ServiceSpec
+	if len(def.Services) > 0 {
+		services = make([]*gocdnextv1.ServiceSpec, 0, len(def.Services))
+		for _, s := range def.Services {
+			services = append(services, &gocdnextv1.ServiceSpec{
+				Name:    s.Name,
+				Image:   s.Image,
+				Env:     s.Env,
+				Command: append([]string(nil), s.Command...),
+			})
+		}
+	}
+
 	return &gocdnextv1.JobAssignment{
 		RunId:          run.ID.String(),
 		JobId:          job.ID.String(),
@@ -112,6 +130,7 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		OptionalArtifactPaths: append([]string(nil), jobDef.OptionalArtifactPaths...),
 		ArtifactDownloads:     downloads,
 		Docker:                jobDef.Docker,
+		Services:              services,
 	}, nil
 }
 

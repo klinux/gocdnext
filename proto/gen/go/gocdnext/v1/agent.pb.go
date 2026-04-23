@@ -966,7 +966,13 @@ type JobAssignment struct {
 	// Engines that can't honour this return an error before running
 	// the script — the user asked for capability A, running without
 	// it would surprise them silently.
-	Docker        bool `protobuf:"varint,14,opt,name=docker,proto3" json:"docker,omitempty"`
+	Docker bool `protobuf:"varint,14,opt,name=docker,proto3" json:"docker,omitempty"`
+	// Pipeline-level sidecar services (postgres, redis, localstack…)
+	// the agent brings up BEFORE tasks run and tears down when the
+	// job ends. Jobs reach a service by `name` on a job-scoped
+	// docker network the agent provisions per assignment. Empty
+	// list = no sidecars, skip the network plumbing entirely.
+	Services      []*ServiceSpec `protobuf:"bytes,15,rep,name=services,proto3" json:"services,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1099,6 +1105,86 @@ func (x *JobAssignment) GetDocker() bool {
 	return false
 }
 
+func (x *JobAssignment) GetServices() []*ServiceSpec {
+	if x != nil {
+		return x.Services
+	}
+	return nil
+}
+
+// ServiceSpec is the wire shape for a pipeline-level service. The
+// agent's docker engine translates each into a container on a
+// per-job bridge network with `name` as the DNS alias. `command`,
+// when set, overrides the image's default ENTRYPOINT/CMD — matches
+// how GitLab CI / Woodpecker expose the same knob.
+type ServiceSpec struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Image         string                 `protobuf:"bytes,2,opt,name=image,proto3" json:"image,omitempty"`
+	Env           map[string]string      `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Command       []string               `protobuf:"bytes,4,rep,name=command,proto3" json:"command,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServiceSpec) Reset() {
+	*x = ServiceSpec{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceSpec) ProtoMessage() {}
+
+func (x *ServiceSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceSpec.ProtoReflect.Descriptor instead.
+func (*ServiceSpec) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ServiceSpec) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ServiceSpec) GetImage() string {
+	if x != nil {
+		return x.Image
+	}
+	return ""
+}
+
+func (x *ServiceSpec) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+func (x *ServiceSpec) GetCommand() []string {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
 type ArtifactDownload struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`                                        // original YAML path of the source artifact
@@ -1113,7 +1199,7 @@ type ArtifactDownload struct {
 
 func (x *ArtifactDownload) Reset() {
 	*x = ArtifactDownload{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1125,7 +1211,7 @@ func (x *ArtifactDownload) String() string {
 func (*ArtifactDownload) ProtoMessage() {}
 
 func (x *ArtifactDownload) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1138,7 +1224,7 @@ func (x *ArtifactDownload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactDownload.ProtoReflect.Descriptor instead.
 func (*ArtifactDownload) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ArtifactDownload) GetPath() string {
@@ -1196,7 +1282,7 @@ type TaskSpec struct {
 
 func (x *TaskSpec) Reset() {
 	*x = TaskSpec{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1208,7 +1294,7 @@ func (x *TaskSpec) String() string {
 func (*TaskSpec) ProtoMessage() {}
 
 func (x *TaskSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1221,7 +1307,7 @@ func (x *TaskSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskSpec.ProtoReflect.Descriptor instead.
 func (*TaskSpec) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{14}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *TaskSpec) GetKind() isTaskSpec_Kind {
@@ -1275,7 +1361,7 @@ type PluginSpec struct {
 
 func (x *PluginSpec) Reset() {
 	*x = PluginSpec{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1287,7 +1373,7 @@ func (x *PluginSpec) String() string {
 func (*PluginSpec) ProtoMessage() {}
 
 func (x *PluginSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1300,7 +1386,7 @@ func (x *PluginSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginSpec.ProtoReflect.Descriptor instead.
 func (*PluginSpec) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PluginSpec) GetImage() string {
@@ -1331,7 +1417,7 @@ type MaterialCheckout struct {
 
 func (x *MaterialCheckout) Reset() {
 	*x = MaterialCheckout{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1343,7 +1429,7 @@ func (x *MaterialCheckout) String() string {
 func (*MaterialCheckout) ProtoMessage() {}
 
 func (x *MaterialCheckout) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1356,7 +1442,7 @@ func (x *MaterialCheckout) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MaterialCheckout.ProtoReflect.Descriptor instead.
 func (*MaterialCheckout) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *MaterialCheckout) GetMaterialId() string {
@@ -1412,7 +1498,7 @@ type CancelJob struct {
 
 func (x *CancelJob) Reset() {
 	*x = CancelJob{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1424,7 +1510,7 @@ func (x *CancelJob) String() string {
 func (*CancelJob) ProtoMessage() {}
 
 func (x *CancelJob) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1437,7 +1523,7 @@ func (x *CancelJob) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelJob.ProtoReflect.Descriptor instead.
 func (*CancelJob) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CancelJob) GetRunId() string {
@@ -1470,7 +1556,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1482,7 +1568,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1495,7 +1581,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Pong) GetAt() *timestamppb.Timestamp {
@@ -1575,7 +1661,7 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06assign\x18\x01 \x01(\v2\x1a.gocdnext.v1.JobAssignmentH\x00R\x06assign\x120\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x16.gocdnext.v1.CancelJobH\x00R\x06cancel\x12'\n" +
 	"\x04pong\x18\x03 \x01(\v2\x11.gocdnext.v1.PongH\x00R\x04pongB\x06\n" +
-	"\x04kind\"\xe9\x04\n" +
+	"\x04kind\"\x9f\x05\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x12\n" +
@@ -1591,7 +1677,16 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x0eartifact_paths\x18\v \x03(\tR\rartifactPaths\x12L\n" +
 	"\x12artifact_downloads\x18\f \x03(\v2\x1d.gocdnext.v1.ArtifactDownloadR\x11artifactDownloads\x126\n" +
 	"\x17optional_artifact_paths\x18\r \x03(\tR\x15optionalArtifactPaths\x12\x16\n" +
-	"\x06docker\x18\x0e \x01(\bR\x06docker\x1a6\n" +
+	"\x06docker\x18\x0e \x01(\bR\x06docker\x124\n" +
+	"\bservices\x18\x0f \x03(\v2\x18.gocdnext.v1.ServiceSpecR\bservices\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbe\x01\n" +
+	"\vServiceSpec\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05image\x18\x02 \x01(\tR\x05image\x123\n" +
+	"\x03env\x18\x03 \x03(\v2!.gocdnext.v1.ServiceSpec.EnvEntryR\x03env\x12\x18\n" +
+	"\acommand\x18\x04 \x03(\tR\acommand\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb6\x01\n" +
@@ -1647,7 +1742,7 @@ func file_gocdnext_v1_agent_proto_rawDescGZIP() []byte {
 	return file_gocdnext_v1_agent_proto_rawDescData
 }
 
-var file_gocdnext_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_gocdnext_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_gocdnext_v1_agent_proto_goTypes = []any{
 	(*RegisterRequest)(nil),               // 0: gocdnext.v1.RegisterRequest
 	(*RegisterResponse)(nil),              // 1: gocdnext.v1.RegisterResponse
@@ -1662,50 +1757,54 @@ var file_gocdnext_v1_agent_proto_goTypes = []any{
 	(*ArtifactUploadTicket)(nil),          // 10: gocdnext.v1.ArtifactUploadTicket
 	(*ServerMessage)(nil),                 // 11: gocdnext.v1.ServerMessage
 	(*JobAssignment)(nil),                 // 12: gocdnext.v1.JobAssignment
-	(*ArtifactDownload)(nil),              // 13: gocdnext.v1.ArtifactDownload
-	(*TaskSpec)(nil),                      // 14: gocdnext.v1.TaskSpec
-	(*PluginSpec)(nil),                    // 15: gocdnext.v1.PluginSpec
-	(*MaterialCheckout)(nil),              // 16: gocdnext.v1.MaterialCheckout
-	(*CancelJob)(nil),                     // 17: gocdnext.v1.CancelJob
-	(*Pong)(nil),                          // 18: gocdnext.v1.Pong
-	nil,                                   // 19: gocdnext.v1.JobAssignment.EnvEntry
-	nil,                                   // 20: gocdnext.v1.PluginSpec.SettingsEntry
-	(*timestamppb.Timestamp)(nil),         // 21: google.protobuf.Timestamp
-	(RunStatus)(0),                        // 22: gocdnext.v1.RunStatus
+	(*ServiceSpec)(nil),                   // 13: gocdnext.v1.ServiceSpec
+	(*ArtifactDownload)(nil),              // 14: gocdnext.v1.ArtifactDownload
+	(*TaskSpec)(nil),                      // 15: gocdnext.v1.TaskSpec
+	(*PluginSpec)(nil),                    // 16: gocdnext.v1.PluginSpec
+	(*MaterialCheckout)(nil),              // 17: gocdnext.v1.MaterialCheckout
+	(*CancelJob)(nil),                     // 18: gocdnext.v1.CancelJob
+	(*Pong)(nil),                          // 19: gocdnext.v1.Pong
+	nil,                                   // 20: gocdnext.v1.JobAssignment.EnvEntry
+	nil,                                   // 21: gocdnext.v1.ServiceSpec.EnvEntry
+	nil,                                   // 22: gocdnext.v1.PluginSpec.SettingsEntry
+	(*timestamppb.Timestamp)(nil),         // 23: google.protobuf.Timestamp
+	(RunStatus)(0),                        // 24: gocdnext.v1.RunStatus
 }
 var file_gocdnext_v1_agent_proto_depIdxs = []int32{
 	3,  // 0: gocdnext.v1.AgentMessage.heartbeat:type_name -> gocdnext.v1.Heartbeat
 	4,  // 1: gocdnext.v1.AgentMessage.progress:type_name -> gocdnext.v1.JobProgress
 	5,  // 2: gocdnext.v1.AgentMessage.log:type_name -> gocdnext.v1.LogLine
 	6,  // 3: gocdnext.v1.AgentMessage.result:type_name -> gocdnext.v1.JobResult
-	21, // 4: gocdnext.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
-	22, // 5: gocdnext.v1.JobProgress.status:type_name -> gocdnext.v1.RunStatus
-	21, // 6: gocdnext.v1.LogLine.at:type_name -> google.protobuf.Timestamp
-	22, // 7: gocdnext.v1.JobResult.status:type_name -> gocdnext.v1.RunStatus
+	23, // 4: gocdnext.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
+	24, // 5: gocdnext.v1.JobProgress.status:type_name -> gocdnext.v1.RunStatus
+	23, // 6: gocdnext.v1.LogLine.at:type_name -> google.protobuf.Timestamp
+	24, // 7: gocdnext.v1.JobResult.status:type_name -> gocdnext.v1.RunStatus
 	7,  // 8: gocdnext.v1.JobResult.artifacts:type_name -> gocdnext.v1.ArtifactRef
 	10, // 9: gocdnext.v1.RequestArtifactUploadResponse.tickets:type_name -> gocdnext.v1.ArtifactUploadTicket
-	21, // 10: gocdnext.v1.ArtifactUploadTicket.expires_at:type_name -> google.protobuf.Timestamp
+	23, // 10: gocdnext.v1.ArtifactUploadTicket.expires_at:type_name -> google.protobuf.Timestamp
 	12, // 11: gocdnext.v1.ServerMessage.assign:type_name -> gocdnext.v1.JobAssignment
-	17, // 12: gocdnext.v1.ServerMessage.cancel:type_name -> gocdnext.v1.CancelJob
-	18, // 13: gocdnext.v1.ServerMessage.pong:type_name -> gocdnext.v1.Pong
-	14, // 14: gocdnext.v1.JobAssignment.tasks:type_name -> gocdnext.v1.TaskSpec
-	19, // 15: gocdnext.v1.JobAssignment.env:type_name -> gocdnext.v1.JobAssignment.EnvEntry
-	16, // 16: gocdnext.v1.JobAssignment.checkouts:type_name -> gocdnext.v1.MaterialCheckout
-	13, // 17: gocdnext.v1.JobAssignment.artifact_downloads:type_name -> gocdnext.v1.ArtifactDownload
-	15, // 18: gocdnext.v1.TaskSpec.plugin:type_name -> gocdnext.v1.PluginSpec
-	20, // 19: gocdnext.v1.PluginSpec.settings:type_name -> gocdnext.v1.PluginSpec.SettingsEntry
-	21, // 20: gocdnext.v1.Pong.at:type_name -> google.protobuf.Timestamp
-	0,  // 21: gocdnext.v1.AgentService.Register:input_type -> gocdnext.v1.RegisterRequest
-	2,  // 22: gocdnext.v1.AgentService.Connect:input_type -> gocdnext.v1.AgentMessage
-	8,  // 23: gocdnext.v1.AgentService.RequestArtifactUpload:input_type -> gocdnext.v1.RequestArtifactUploadRequest
-	1,  // 24: gocdnext.v1.AgentService.Register:output_type -> gocdnext.v1.RegisterResponse
-	11, // 25: gocdnext.v1.AgentService.Connect:output_type -> gocdnext.v1.ServerMessage
-	9,  // 26: gocdnext.v1.AgentService.RequestArtifactUpload:output_type -> gocdnext.v1.RequestArtifactUploadResponse
-	24, // [24:27] is the sub-list for method output_type
-	21, // [21:24] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	18, // 12: gocdnext.v1.ServerMessage.cancel:type_name -> gocdnext.v1.CancelJob
+	19, // 13: gocdnext.v1.ServerMessage.pong:type_name -> gocdnext.v1.Pong
+	15, // 14: gocdnext.v1.JobAssignment.tasks:type_name -> gocdnext.v1.TaskSpec
+	20, // 15: gocdnext.v1.JobAssignment.env:type_name -> gocdnext.v1.JobAssignment.EnvEntry
+	17, // 16: gocdnext.v1.JobAssignment.checkouts:type_name -> gocdnext.v1.MaterialCheckout
+	14, // 17: gocdnext.v1.JobAssignment.artifact_downloads:type_name -> gocdnext.v1.ArtifactDownload
+	13, // 18: gocdnext.v1.JobAssignment.services:type_name -> gocdnext.v1.ServiceSpec
+	21, // 19: gocdnext.v1.ServiceSpec.env:type_name -> gocdnext.v1.ServiceSpec.EnvEntry
+	16, // 20: gocdnext.v1.TaskSpec.plugin:type_name -> gocdnext.v1.PluginSpec
+	22, // 21: gocdnext.v1.PluginSpec.settings:type_name -> gocdnext.v1.PluginSpec.SettingsEntry
+	23, // 22: gocdnext.v1.Pong.at:type_name -> google.protobuf.Timestamp
+	0,  // 23: gocdnext.v1.AgentService.Register:input_type -> gocdnext.v1.RegisterRequest
+	2,  // 24: gocdnext.v1.AgentService.Connect:input_type -> gocdnext.v1.AgentMessage
+	8,  // 25: gocdnext.v1.AgentService.RequestArtifactUpload:input_type -> gocdnext.v1.RequestArtifactUploadRequest
+	1,  // 26: gocdnext.v1.AgentService.Register:output_type -> gocdnext.v1.RegisterResponse
+	11, // 27: gocdnext.v1.AgentService.Connect:output_type -> gocdnext.v1.ServerMessage
+	9,  // 28: gocdnext.v1.AgentService.RequestArtifactUpload:output_type -> gocdnext.v1.RequestArtifactUploadResponse
+	26, // [26:29] is the sub-list for method output_type
+	23, // [23:26] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_gocdnext_v1_agent_proto_init() }
@@ -1725,7 +1824,7 @@ func file_gocdnext_v1_agent_proto_init() {
 		(*ServerMessage_Cancel)(nil),
 		(*ServerMessage_Pong)(nil),
 	}
-	file_gocdnext_v1_agent_proto_msgTypes[14].OneofWrappers = []any{
+	file_gocdnext_v1_agent_proto_msgTypes[15].OneofWrappers = []any{
 		(*TaskSpec_Script)(nil),
 		(*TaskSpec_Plugin)(nil),
 	}
@@ -1735,7 +1834,7 @@ func file_gocdnext_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gocdnext_v1_agent_proto_rawDesc), len(file_gocdnext_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

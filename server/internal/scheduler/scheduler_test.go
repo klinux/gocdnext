@@ -425,6 +425,71 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 	}
 }
 
+func TestBuildAssignment_PropagatesPipelineServices(t *testing.T) {
+	// Pipeline-level services must ride through the assignment so
+	// the agent can stand them up on a job-scoped docker network
+	// before tasks run. Empty services → nil on the wire (the
+	// agent's fast path that skips network plumbing entirely).
+	def := domain.Pipeline{
+		Stages: []string{"test"},
+		Jobs: []domain.Job{
+			{Name: "integration", Stage: "test", Tasks: []domain.Task{{Script: "go test"}}},
+		},
+		Services: []domain.Service{
+			{Name: "postgres", Image: "postgres:16-alpine",
+				Env: map[string]string{"POSTGRES_PASSWORD": "test"}},
+			{Name: "cache", Image: "redis:7",
+				Command: []string{"redis-server", "--appendonly", "no"}},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "integration", Image: "golang:1.25"}
+
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if len(got.Services) != 2 {
+		t.Fatalf("services = %d, want 2", len(got.Services))
+	}
+	if got.Services[0].Name != "postgres" ||
+		got.Services[0].Image != "postgres:16-alpine" ||
+		got.Services[0].Env["POSTGRES_PASSWORD"] != "test" {
+		t.Errorf("postgres spec = %+v", got.Services[0])
+	}
+	if got.Services[1].Name != "cache" ||
+		len(got.Services[1].Command) != 3 ||
+		got.Services[1].Command[0] != "redis-server" {
+		t.Errorf("cache spec = %+v", got.Services[1])
+	}
+}
+
+func TestBuildAssignment_NoServicesWhenPipelineHasNone(t *testing.T) {
+	// Fast path: len(def.Services)==0 → nil on the wire so engines
+	// that skip service plumbing don't pay an empty-slice penalty.
+	def := domain.Pipeline{
+		Stages: []string{"build"},
+		Jobs:   []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "compile"}
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.Services != nil {
+		t.Errorf("services should be nil when empty, got %+v", got.Services)
+	}
+}
+
 // TestRun_DispatchesOnAgentRegister exercises the SessionStore hook:
 // a run sits queued because no agent was online when it was created,
 // then an agent registers and the scheduler dispatches it without
