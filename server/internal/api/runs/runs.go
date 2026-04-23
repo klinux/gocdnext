@@ -10,7 +10,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -167,7 +169,7 @@ func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:     a.ExpiresAt,
 		}
 		if a.Status == "ready" {
-			if url, expires := h.signDownload(r.Context(), a.StorageKey); url != "" {
+			if url, expires := h.signDownload(r.Context(), a.StorageKey, a.Path); url != "" {
 				resp.DownloadURL = url
 				resp.DownloadURLExpiresAt = &expires
 			}
@@ -182,11 +184,43 @@ func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 // signDownload calls the store's pre-sign. Failures are swallowed so
 // one bad row doesn't kill the whole response — the UI just shows the
 // row without a download link.
-func (h *Handler) signDownload(ctx context.Context, storageKey string) (string, time.Time) {
+//
+// `artifactPath` is the YAML-declared path (e.g. "bin/gocdnext-server"
+// or "web/.next/standalone/") and becomes the downloaded file's name
+// via a `?filename=…` hint that the filesystem handler turns into a
+// Content-Disposition header. Without it the browser saves the blob
+// as a random token with no extension, and users end up doing
+// `gunzip` + `tar xf` instead of a single `tar xzf`.
+func (h *Handler) signDownload(ctx context.Context, storageKey, artifactPath string) (string, time.Time) {
 	signed, err := h.artifactStore.SignedGetURL(ctx, storageKey, downloadTTL)
 	if err != nil {
 		h.log.Warn("sign artifact get", "storage_key", storageKey, "err", err)
 		return "", time.Time{}
 	}
-	return signed.URL, signed.ExpiresAt
+	u := signed.URL
+	if name := downloadFilename(artifactPath); name != "" {
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		u += sep + "filename=" + url.QueryEscape(name)
+	}
+	return u, signed.ExpiresAt
+}
+
+// downloadFilename picks a sensible saved-as name from the artifact's
+// source path. File artifacts land as "<basename>.tar.gz"; directory
+// artifacts as "<dirname>.tar.gz". Empty input yields "artifact.tar.gz".
+func downloadFilename(artifactPath string) string {
+	p := strings.TrimRight(artifactPath, "/")
+	if p == "" {
+		return "artifact.tar.gz"
+	}
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		p = p[i+1:]
+	}
+	if p == "" {
+		return "artifact.tar.gz"
+	}
+	return p + ".tar.gz"
 }

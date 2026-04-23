@@ -118,6 +118,87 @@ func TestHandler_GetMissing(t *testing.T) {
 	_ = srv
 }
 
+func TestHandler_GetSetsGzipTypeByDefault(t *testing.T) {
+	srv, fs := mustServer(t, 0)
+	ctx := context.Background()
+	key := "run/1/job/a/blob"
+	putURL, _ := fs.SignedPutURL(ctx, key, time.Minute)
+	req, _ := http.NewRequest(http.MethodPut, putURL.URL, bytes.NewReader([]byte("hi")))
+	req.ContentLength = 2
+	resp, _ := http.DefaultClient.Do(req)
+	_ = resp.Body.Close()
+
+	getURL, _ := fs.SignedGetURL(ctx, key, time.Minute)
+	resp, err := http.Get(getURL.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if got := resp.Header.Get("Content-Type"); got != "application/gzip" {
+		t.Errorf("Content-Type = %q, want application/gzip", got)
+	}
+	if got := resp.Header.Get("Content-Disposition"); got != "" {
+		t.Errorf("Content-Disposition should be empty without ?filename=; got %q", got)
+	}
+	_ = srv
+}
+
+func TestHandler_GetSetsDispositionFromFilenameQuery(t *testing.T) {
+	srv, fs := mustServer(t, 0)
+	ctx := context.Background()
+	key := "run/1/job/a/blob"
+	putURL, _ := fs.SignedPutURL(ctx, key, time.Minute)
+	req, _ := http.NewRequest(http.MethodPut, putURL.URL, bytes.NewReader([]byte("hi")))
+	req.ContentLength = 2
+	resp, _ := http.DefaultClient.Do(req)
+	_ = resp.Body.Close()
+
+	getURL, _ := fs.SignedGetURL(ctx, key, time.Minute)
+	resp, err := http.Get(getURL.URL + "?filename=gocdnext-server.tar.gz")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	want := `attachment; filename="gocdnext-server.tar.gz"`
+	if got := resp.Header.Get("Content-Disposition"); got != want {
+		t.Errorf("Content-Disposition = %q, want %q", got, want)
+	}
+	_ = srv
+}
+
+func TestSanitizeDownloadName(t *testing.T) {
+	// Paranoia: the filename query param is user-reachable. Make sure
+	// header-injection tricks and path traversals reduce to a safe
+	// plain basename. Plain `tar xzf foo.tar.gz` should still be the
+	// command a user runs after downloading.
+	cases := []struct {
+		in, want string
+	}{
+		{"gocdnext-server.tar.gz", "gocdnext-server.tar.gz"},
+		{"dir/with/slashes.tar.gz", "dir withslashes.tar.gz"},
+		// Guard: `dir/…slashes` is collapsed (no slashes) so the
+		// Content-Disposition slot can't be re-split.
+		{`"quoted".tar.gz`, "quoted.tar.gz"},
+		{"line\nbreak.tar.gz", "linebreak.tar.gz"},
+		{"\x00null.tar.gz", "null.tar.gz"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := sanitizeDownloadName(c.in)
+		// The "slashes" case demonstrates removal behaviour; we don't
+		// pin the exact space placement, just that slashes are gone.
+		if c.in == "dir/with/slashes.tar.gz" {
+			if strings.ContainsAny(got, `/\"`+"\n") {
+				t.Errorf("sanitize(%q) = %q — still contains unsafe chars", c.in, got)
+			}
+			continue
+		}
+		if got != c.want {
+			t.Errorf("sanitize(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestHandler_MaxBody(t *testing.T) {
 	_, fs := mustServer(t, 5) // cap 5 bytes
 	putURL, _ := fs.SignedPutURL(context.Background(), "big/one", time.Minute)

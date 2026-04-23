@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -158,6 +159,14 @@ func TestArtifacts_ListsPendingAndReady_WithDownloadOnlyForReady(t *testing.T) {
 	}
 	if ready.DownloadURL == "" {
 		t.Error("ready row should have download URL")
+	}
+	// The filename query param is the bit that turns a raw tarball
+	// blob into `<basename>.tar.gz` in the browser's save-as dialog.
+	// Without it users had to `gunzip` + `tar xf` as two separate
+	// steps; with it a single `tar xzf` works.
+	if !strings.Contains(ready.DownloadURL, "filename=bin%2Fcore.tar.gz") &&
+		!strings.Contains(ready.DownloadURL, "filename=core.tar.gz") {
+		t.Errorf("download URL missing filename= hint: %q", ready.DownloadURL)
 	}
 	if ready.JobName == "" {
 		t.Error("ready row missing job_name")
