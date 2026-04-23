@@ -191,6 +191,32 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 			if err != nil {
 				return RunCreated{}, fmt.Errorf("store: insert job %s[%s]: %w", job.Name, key, err)
 			}
+			// Approval gates get the same INSERT as regular jobs
+			// then a follow-up UPDATE that stamps the gate fields
+			// + flips status to awaiting_approval. Keeping this
+			// out of InsertJobRun avoids regenerating sqlc for a
+			// niche branch; the UPDATE runs in the same tx so a
+			// crash between INSERT and UPDATE rolls everything
+			// back. The scheduler's dispatch query filters on
+			// status='queued' so these rows are invisible to it
+			// until someone approves.
+			if job.Approval != nil {
+				approvers := job.Approval.Approvers
+				if approvers == nil {
+					approvers = []string{}
+				}
+				if _, err := tx.Exec(ctx, `
+					UPDATE job_runs
+					SET approval_gate        = true,
+					    approvers            = $2,
+					    approval_description = $3,
+					    awaiting_since       = NOW(),
+					    status               = 'awaiting_approval'
+					WHERE id = $1
+				`, row.ID, approvers, job.Approval.Description); err != nil {
+					return RunCreated{}, fmt.Errorf("store: mark approval gate %s: %w", job.Name, err)
+				}
+			}
 			result.JobRuns = append(result.JobRuns, JobRunRef{
 				ID:         fromPgUUID(row.ID),
 				StageRunID: stageID,
