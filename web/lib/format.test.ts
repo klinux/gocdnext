@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDurationSeconds, formatRelative } from "./format";
+import { formatBytes, formatDurationSeconds, formatRelative } from "./format";
 
 describe("formatDurationSeconds", () => {
   it("handles sub-second values", () => {
@@ -46,5 +46,26 @@ describe("formatRelative", () => {
 
   it("returns em-dash for null/undefined", () => {
     expect(formatRelative(null, now)).toBe("—");
+  });
+});
+
+describe("formatBytes", () => {
+  it("handles zero and nullish", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(null)).toBe("—");
+    expect(formatBytes(undefined)).toBe("—");
+  });
+
+  it("uses KB up to 1024 and scales units", () => {
+    expect(formatBytes(500)).toBe("500 B");
+    expect(formatBytes(2048)).toBe("2.0 KB");
+    expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+    expect(formatBytes(2 * 1024 * 1024 * 1024)).toBe("2.0 GB");
+  });
+
+  it("rounds integer-style for values >= 10 in the unit", () => {
+    // 12.3 KB → "12 KB" (one-decimal only for single-digit
+    // values — keeps the column narrow in the caches table).
+    expect(formatBytes(12500)).toBe("12 KB");
   });
 });

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
@@ -24,11 +25,20 @@ import (
 const maxApplyBodyBytes = 5 << 20 // 5 MiB — room for large mono-repo configs.
 
 type Handler struct {
-	store        *store.Store
-	log          *slog.Logger
-	cipher       *crypto.Cipher
-	autoRegister *AutoRegisterConfig
-	fetcher      configsync.Fetcher
+	store         *store.Store
+	log           *slog.Logger
+	cipher        *crypto.Cipher
+	autoRegister  *AutoRegisterConfig
+	fetcher       configsync.Fetcher
+	artifactStore artifacts.Store
+}
+
+// WithArtifactStore enables the cache purge endpoint. Without it
+// the endpoint returns 503 — a manual purge would delete the row
+// but leave the blob orphaned, which is worse than just refusing.
+func (h *Handler) WithArtifactStore(st artifacts.Store) *Handler {
+	h.artifactStore = st
+	return h
 }
 
 func NewHandler(s *store.Store, log *slog.Logger) *Handler {

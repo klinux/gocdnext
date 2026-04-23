@@ -160,6 +160,9 @@ func main() {
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
 		WithConfigFetcher(gitHubFetcher)
+	if artifactStore != nil {
+		projectsHandler = projectsHandler.WithArtifactStore(artifactStore)
+	}
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it
@@ -319,6 +322,8 @@ func main() {
 		p.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
 		p.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
 		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
+		p.Get("/api/v1/projects/{slug}/caches", projectsHandler.ListCaches)
+		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)

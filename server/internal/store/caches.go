@@ -265,6 +265,67 @@ func (s *Store) ListOldestCachesGlobally(ctx context.Context, limit int) ([]Expi
 	return out, rows.Err()
 }
 
+// ListCachesByProject returns every cache row owned by the
+// project, ready or pending. Ordered by last_accessed_at DESC so
+// the UI surfaces the most recently used keys at the top — what
+// an operator usually wants when eyeballing "what's live?".
+// Pending rows are included so an operator debugging a stuck
+// upload sees them in the same list instead of hunting for a
+// ghost.
+func (s *Store) ListCachesByProject(ctx context.Context, projectID uuid.UUID) ([]Cache, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, project_id, key, storage_key, size_bytes,
+		       COALESCE(content_sha256, ''), status,
+		       created_at, updated_at, last_accessed_at
+		FROM caches
+		WHERE project_id = $1
+		ORDER BY last_accessed_at DESC, key ASC
+	`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list caches by project: %w", err)
+	}
+	defer rows.Close()
+	var out []Cache
+	for rows.Next() {
+		var c Cache
+		if err := rows.Scan(
+			&c.ID, &c.ProjectID, &c.Key, &c.StorageKey, &c.SizeBytes,
+			&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan cache: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// GetCacheForProject fetches a row by (project_id, id) so the
+// ownership check happens in the same query that resolves the
+// row — no TOCTOU window where a handler reads one thing and
+// deletes another. Returns ErrCacheNotFound for both "id doesn't
+// exist" and "id belongs to a different project" (treat as the
+// same leak-preventing 404 at the HTTP layer).
+func (s *Store) GetCacheForProject(ctx context.Context, projectID, cacheID uuid.UUID) (Cache, error) {
+	var c Cache
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, project_id, key, storage_key, size_bytes,
+		       COALESCE(content_sha256, ''), status,
+		       created_at, updated_at, last_accessed_at
+		FROM caches
+		WHERE id = $1 AND project_id = $2
+	`, cacheID, projectID).Scan(
+		&c.ID, &c.ProjectID, &c.Key, &c.StorageKey, &c.SizeBytes,
+		&c.ContentSHA256, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.LastAccessedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Cache{}, ErrCacheNotFound
+	}
+	if err != nil {
+		return Cache{}, fmt.Errorf("store: get cache for project: %w", err)
+	}
+	return c, nil
+}
+
 // DeleteCacheRow removes one row by id. Idempotent: a missing row
 // returns nil (another sweeper beat us to it, which is fine —
 // nothing to reclaim).

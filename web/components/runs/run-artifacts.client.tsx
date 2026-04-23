@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusPill } from "@/components/shared/status-pill";
+import { formatBytes } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/status";
 import type { StatusTone } from "@/lib/status";
 import type { RunArtifact } from "@/types/api";
@@ -159,10 +160,3 @@ function groupByJob(
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
-function formatBytes(n: number): string {
-  if (n === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
-  const v = n / Math.pow(1024, i);
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
-}

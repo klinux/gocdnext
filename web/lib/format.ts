@@ -47,6 +47,18 @@ function plural(n: number, singular: string): string {
   return n === 1 ? singular : `${singular}s`;
 }
 
+export function formatBytes(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(
+    Math.floor(Math.log(n) / Math.log(1024)),
+    units.length - 1,
+  );
+  const v = n / Math.pow(1024, i);
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
 export function durationBetween(
   startedAt: string | null | undefined,
   finishedAt: string | null | undefined,

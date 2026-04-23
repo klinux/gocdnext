@@ -253,6 +253,61 @@ func TestCaches_GlobalUsageAndOldestList(t *testing.T) {
 	}
 }
 
+func TestCaches_ListCachesByProject_IncludesPendingAndReady(t *testing.T) {
+	// Operator-facing list: both statuses show up so a stuck
+	// upload can be spotted + cleaned manually. Ordering is
+	// last_accessed_at DESC so the live keys lead the list.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "list-proj")
+
+	ready, _ := s.UpsertPendingCache(ctx, projectID, "live-key")
+	_ = s.MarkCacheReady(ctx, ready.ID, 999, "sha")
+	pending, _ := s.UpsertPendingCache(ctx, projectID, "stuck-key")
+
+	// Backdate the pending row so list ordering is deterministic.
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '1 day' WHERE id = $1`, pending.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListCachesByProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2 (both statuses): %+v", len(got), got)
+	}
+	if got[0].Status != "ready" || got[1].Status != "pending" {
+		t.Errorf("ordering wrong: %s then %s", got[0].Status, got[1].Status)
+	}
+}
+
+func TestCaches_GetCacheForProject_CrossProjectIsolation(t *testing.T) {
+	// Row id from project A must not leak across project B's
+	// GetCacheForProject call. Ensures purge handlers can trust
+	// the ownership guard without re-checking in app code.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projA := seedProject(t, s, "own-a")
+	projB := seedProject(t, s, "own-b")
+
+	c, _ := s.UpsertPendingCache(ctx, projA, "k")
+	_ = s.MarkCacheReady(ctx, c.ID, 1, "x")
+
+	// Owner lookup succeeds.
+	if _, err := s.GetCacheForProject(ctx, projA, c.ID); err != nil {
+		t.Fatalf("owner lookup: %v", err)
+	}
+	// Foreign lookup surfaces ErrCacheNotFound (same treatment
+	// as "id doesn't exist", no leaking existence).
+	if _, err := s.GetCacheForProject(ctx, projB, c.ID); !errors.Is(err, store.ErrCacheNotFound) {
+		t.Errorf("foreign lookup err = %v, want ErrCacheNotFound", err)
+	}
+}
+
 func TestCaches_StorageKeyDeterministic(t *testing.T) {
 	// CacheStorageKey is public and consumed by the eviction
 	// sweeper to call storage.Delete. Pin the shape so a future

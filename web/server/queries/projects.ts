@@ -8,6 +8,7 @@ import { env } from "@/lib/env";
 import type {
   AgentDetail,
   AgentSummary,
+  CachesList,
   DashboardMetrics,
   GlobalRunSummary,
   ProjectDetail,
@@ -132,5 +133,11 @@ export async function getAgentDetail(id: string): Promise<AgentDetail> {
 export async function listSecrets(slug: string): Promise<SecretsList> {
   return readJSON<SecretsList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/secrets`,
+  );
+}
+
+export async function listCaches(slug: string): Promise<CachesList> {
+  return readJSON<CachesList>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/caches`,
   );
 }

@@ -221,6 +221,25 @@ export type SecretsList = {
   inherited?: Secret[];
 };
 
+export type CacheSummary = {
+  id: string;
+  key: string;
+  size_bytes: number;
+  status: "pending" | "ready" | string;
+  content_sha256?: string;
+  created_at: string;
+  updated_at: string;
+  last_accessed_at: string;
+};
+
+export type CachesList = {
+  caches: CacheSummary[];
+  // Sum of size_bytes across `ready` rows only — matches what
+  // the sweeper sees on disk, so the UI's "footprint" number
+  // and the sweeper's quota logic stay in sync.
+  total_bytes: number;
+};
+
 export type VSMNode = {
   pipeline_id: string;
   name: string;
