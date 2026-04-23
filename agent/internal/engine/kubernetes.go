@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,13 @@ type KubernetesConfig struct {
 	DefaultImage       string // fallback when ScriptSpec.Image is empty
 	ImagePullSecrets   []string
 	NodeSelector       map[string]string
+
+	// DinDImage is the image used for the Docker-in-Docker sidecar
+	// when a job sets `docker: true`. Default "docker:24-dind".
+	// Operators who need a pinned-digest or mirror-sourced image
+	// override here; anyone on the default gets the upstream
+	// moby/dind release stream.
+	DinDImage string
 
 	// PollInterval controls how often we poll the Pod status
 	// transition. Default 1s; tests set lower.
@@ -99,6 +107,9 @@ func applyKubernetesDefaults(cfg *KubernetesConfig) {
 	if cfg.DefaultImage == "" {
 		cfg.DefaultImage = "alpine:3.19"
 	}
+	if cfg.DinDImage == "" {
+		cfg.DinDImage = "docker:24-dind"
+	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = time.Second
 	}
@@ -106,6 +117,18 @@ func applyKubernetesDefaults(cfg *KubernetesConfig) {
 		cfg.StartupTimeout = 5 * time.Minute
 	}
 }
+
+// TCP port the DinD sidecar listens on. localhost-only (same Pod =
+// same netns), TLS off by way of DOCKER_TLS_CERTDIR="". MVP picks
+// unencrypted intra-pod over the cert-dance because the daemon
+// is already privileged — the trust boundary is the Pod, not the
+// socket layer.
+const dindTCPPort = 2375
+
+// dindHost is what the task container's DOCKER_HOST points at.
+// Exposed as a const so tests can assert on the value without
+// hardcoding the port in two places.
+const dindHost = "tcp://localhost:2375"
 
 // Name identifies the engine for log/metric labels.
 func (*Kubernetes) Name() string { return "kubernetes" }
@@ -133,13 +156,22 @@ func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error
 			defer close(streamDone)
 			k.streamLogs(ctx, name, spec.OnLine)
 		}()
-		exit, err := k.waitForTerminal(ctx, name)
+		exit, err := k.waitForTaskTerminated(ctx, name)
 		<-streamDone
 		finalExit = exit
 		return err
 	}()
 
-	k.maybeCleanup(ctx, name, runErr == nil && finalExit == 0)
+	// DinD never self-terminates — when the task exits, the Pod
+	// phase would stay Running until the sidecar is killed. Force
+	// cleanup on Docker jobs so the daemon doesn't leak into the
+	// next scheduled Pod on the same node.
+	success := runErr == nil && finalExit == 0
+	if spec.Docker {
+		_ = k.client.CoreV1().Pods(k.cfg.Namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	} else {
+		k.maybeCleanup(ctx, name, success)
+	}
 
 	if runErr != nil {
 		return -1, runErr
@@ -160,9 +192,19 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		workDir = k.cfg.WorkspaceMountPath
 	}
 
-	env := make([]corev1.EnvVar, 0, len(spec.Env))
+	env := make([]corev1.EnvVar, 0, len(spec.Env)+1)
 	for k, v := range spec.Env {
 		env = append(env, corev1.EnvVar{Name: k, Value: v})
+	}
+	if spec.Docker {
+		// Point the task container's Docker clients at the DinD
+		// sidecar over localhost TCP. `DOCKER_TLS_CERTDIR=""` is
+		// honoured by the official dind image to disable TLS,
+		// which keeps the port the same on both sides.
+		env = append(env,
+			corev1.EnvVar{Name: "DOCKER_HOST", Value: dindHost},
+			corev1.EnvVar{Name: "DOCKER_TLS_CERTDIR", Value: ""},
+		)
 	}
 
 	pullSecrets := make([]corev1.LocalObjectReference, 0, len(k.cfg.ImagePullSecrets))
@@ -188,13 +230,53 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		}
 	}
 
+	containers := []corev1.Container{{
+		Name:       "task",
+		Image:      image,
+		Command:    []string{"sh", "-c", spec.Script},
+		WorkingDir: workDir,
+		Env:        env,
+		VolumeMounts: []corev1.VolumeMount{{
+			Name:      "workspace",
+			MountPath: k.cfg.WorkspaceMountPath,
+		}},
+	}}
+
+	if spec.Docker {
+		// DinD runs as a plain sibling container (not an init
+		// sidecar) for compatibility with k8s < 1.29 that don't
+		// have the native sidecar pattern. The task typically
+		// sleeps a beat before its first docker call, or uses a
+		// retry loop — dind needs ~1-2s to come up. We do NOT
+		// wait ourselves: the daemon readiness check belongs in
+		// user code, same as real-world Woodpecker/GitLab setups.
+		privileged := true
+		containers = append(containers, corev1.Container{
+			Name:  "dind",
+			Image: k.cfg.DinDImage,
+			Env: []corev1.EnvVar{
+				{Name: "DOCKER_TLS_CERTDIR", Value: ""},
+			},
+			Args: []string{
+				"--host=tcp://0.0.0.0:" + strconv.Itoa(dindTCPPort),
+				"--host=unix:///var/run/docker.sock",
+			},
+			SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+			Ports: []corev1.ContainerPort{{
+				Name:          "docker",
+				ContainerPort: int32(dindTCPPort),
+				Protocol:      corev1.ProtocolTCP,
+			}},
+		})
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      k.nowName(),
 			Namespace: k.cfg.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":      "gocdnext-job",
-				"app.kubernetes.io/component": "task",
+				"app.kubernetes.io/name":       "gocdnext-job",
+				"app.kubernetes.io/component":  "task",
 				"app.kubernetes.io/managed-by": "gocdnext-agent",
 			},
 		},
@@ -203,17 +285,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 			NodeSelector:     k.cfg.NodeSelector,
 			ImagePullSecrets: pullSecrets,
 			Volumes:          []corev1.Volume{workspaceVolume},
-			Containers: []corev1.Container{{
-				Name:       "task",
-				Image:      image,
-				Command:    []string{"sh", "-c", spec.Script},
-				WorkingDir: workDir,
-				Env:        env,
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      "workspace",
-					MountPath: k.cfg.WorkspaceMountPath,
-				}},
-			}},
+			Containers:       containers,
 		},
 	}
 }
@@ -239,11 +311,16 @@ func (k *Kubernetes) waitForRunning(ctx context.Context, name string) error {
 	})
 }
 
-// waitForTerminal blocks until Pod reaches Succeeded/Failed, then
-// returns the exit code from the task container's terminated state.
-// Phase Succeeded implies exit=0; Phase Failed uses the container
-// state (or -1 if we can't read it, which means Pod-level failure).
-func (k *Kubernetes) waitForTerminal(ctx context.Context, name string) (int, error) {
+// waitForTaskTerminated polls the task container's status and
+// returns its exit code as soon as it reaches Terminated —
+// regardless of whether other containers in the Pod are still
+// running. This matters for DinD jobs: the dind sidecar doesn't
+// self-exit, so Pod phase never reaches Succeeded/Failed, but
+// the user's script (the task container) is already done and
+// we can report the result. Falls back to pod phase for older
+// fake clients in tests that only update phase without per-
+// container status.
+func (k *Kubernetes) waitForTaskTerminated(ctx context.Context, name string) (int, error) {
 	var pod *corev1.Pod
 	err := wait.PollUntilContextCancel(ctx, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
 		p, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
@@ -251,6 +328,14 @@ func (k *Kubernetes) waitForTerminal(ctx context.Context, name string) (int, err
 			return false, err
 		}
 		pod = p
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Name == "task" && cs.State.Terminated != nil {
+				return true, nil
+			}
+		}
+		// Fallback for minimal test fixtures (or Pods that
+		// failed so early no container status exists): if the
+		// Pod itself reports terminal, stop polling.
 		switch pod.Status.Phase {
 		case corev1.PodSucceeded, corev1.PodFailed:
 			return true, nil

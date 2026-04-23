@@ -268,6 +268,144 @@ func TestKubernetes_Name(t *testing.T) {
 	}
 }
 
+func TestKubernetes_BuildPodSpec_DinDSidecarWhenDockerRequested(t *testing.T) {
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Image:  "node:22",
+		Script: "docker run --rm hello-world",
+		Docker: true,
+	})
+	if len(pod.Spec.Containers) != 2 {
+		t.Fatalf("containers = %d, want 2 (task + dind)", len(pod.Spec.Containers))
+	}
+
+	var task, dind *corev1.Container
+	for i := range pod.Spec.Containers {
+		switch pod.Spec.Containers[i].Name {
+		case "task":
+			task = &pod.Spec.Containers[i]
+		case "dind":
+			dind = &pod.Spec.Containers[i]
+		}
+	}
+	if task == nil {
+		t.Fatal("task container missing")
+	}
+	if dind == nil {
+		t.Fatal("dind container missing")
+	}
+
+	// Task must know where to find the daemon — docker clients
+	// auto-detect via DOCKER_HOST; anything else is opt-in.
+	var gotHost string
+	for _, e := range task.Env {
+		if e.Name == "DOCKER_HOST" {
+			gotHost = e.Value
+		}
+	}
+	if gotHost != "tcp://localhost:2375" {
+		t.Errorf("DOCKER_HOST = %q, want tcp://localhost:2375", gotHost)
+	}
+
+	// DinD must be privileged — non-privileged DinD cannot manage
+	// the kernel namespaces it needs. If this assertion ever
+	// regresses the daemon fails at boot with a cryptic error.
+	if dind.SecurityContext == nil || dind.SecurityContext.Privileged == nil || !*dind.SecurityContext.Privileged {
+		t.Errorf("dind not privileged: %+v", dind.SecurityContext)
+	}
+
+	// Port exposed so the test documents the contract the task
+	// env var points at — matches the single source of truth.
+	if len(dind.Ports) != 1 || dind.Ports[0].ContainerPort != 2375 {
+		t.Errorf("dind ports = %+v", dind.Ports)
+	}
+}
+
+func TestKubernetes_BuildPodSpec_NoDinDByDefault(t *testing.T) {
+	// Default job must stay single-container — a DinD leak into
+	// every pipeline Pod would be a surprise rollout cost (extra
+	// image pull per job) even before anyone opts into docker:true.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{})
+	pod := k.BuildPodSpec(engine.ScriptSpec{Image: "alpine", Script: "true"})
+	if len(pod.Spec.Containers) != 1 {
+		t.Errorf("containers = %d, want 1 when Docker=false", len(pod.Spec.Containers))
+	}
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == "DOCKER_HOST" {
+			t.Errorf("DOCKER_HOST set without Docker=true: %q", e.Value)
+		}
+	}
+}
+
+func TestKubernetes_RunScript_DinDReturnsExitOnTaskCompletionEvenIfSidecarLive(t *testing.T) {
+	// The core DinD invariant: task container terminates but the
+	// dind sidecar keeps running → we must still report exit from
+	// the task container without waiting for Pod.Phase to flip to
+	// Succeeded/Failed (it never will while dind lives).
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{})
+
+	var mu sync.Mutex
+	driven := false
+	cli.PrependReactor("get", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if driven {
+			return false, nil, nil
+		}
+		driven = true
+		name := a.(k8stesting.GetAction).GetName()
+		// Patch task=Terminated(0) BUT keep pod Running (dind
+		// still alive): the engine must return exit=0 regardless.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			pod, err := cli.CoreV1().Pods("gocdnext-tests").Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				t.Errorf("get: %v", err)
+				return
+			}
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{
+					Name: "task",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{ExitCode: 0},
+					},
+				},
+				{
+					Name:  "dind",
+					State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				},
+			}
+			if _, err := cli.CoreV1().Pods("gocdnext-tests").UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
+				t.Errorf("updateStatus: %v", err)
+			}
+		}()
+		return false, nil, nil
+	})
+
+	exit, err := k.RunScript(context.Background(), engine.ScriptSpec{
+		Image:  "node:22",
+		Script: "docker run hello-world",
+		Docker: true,
+	})
+	if err != nil {
+		t.Fatalf("RunScript: %v", err)
+	}
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0", exit)
+	}
+	// Pod must have been deleted regardless of CleanupOnSuccess —
+	// otherwise dind would leak indefinitely.
+	if _, err := cli.CoreV1().Pods("gocdnext-tests").Get(context.Background(), "", metav1.GetOptions{}); err == nil {
+		// An empty name lookup always errors; walk the list to be sure.
+	}
+	list, _ := cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
+	if len(list.Items) != 0 {
+		t.Errorf("pod not force-cleaned after DinD run: %d remaining", len(list.Items))
+	}
+}
+
 func TestNewKubernetes_RejectsMissingNamespace(t *testing.T) {
 	_, err := engine.NewKubernetes(engine.KubernetesConfig{})
 	if err == nil {
