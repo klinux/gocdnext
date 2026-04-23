@@ -125,6 +125,145 @@ func TestEmit_StageOrderStable(t *testing.T) {
 	}
 }
 
+func TestEmit_SkipsImplicitMaterials(t *testing.T) {
+	// Implicit materials (project repo synthesized at apply time
+	// from scm_source) must not appear in the emitted YAML — the
+	// "yaml" tab is meant to mirror what the operator wrote, not
+	// the stored+synthesized form. They'll be re-synthesized on
+	// the next apply either way.
+	p := &domain.Pipeline{
+		Name:   "ci-server",
+		Stages: []string{"build"},
+		Materials: []domain.Material{
+			{
+				Type:        domain.MaterialGit,
+				Fingerprint: domain.GitFingerprint("https://github.com/klinux/gocdnext", "main"),
+				Implicit:    true,
+				Git: &domain.GitMaterial{
+					URL: "https://github.com/klinux/gocdnext", Branch: "main",
+					Events: []string{"push", "pull_request"}, AutoRegisterWebhook: true,
+				},
+			},
+		},
+		Jobs: []domain.Job{{Name: "one", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+	}
+	out, err := Emit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "materials:") {
+		t.Errorf("implicit materials should be hidden; emitted:\n%s", out)
+	}
+	if strings.Contains(string(out), "github.com/klinux/gocdnext") {
+		t.Errorf("implicit material url leaked; emitted:\n%s", out)
+	}
+}
+
+func TestEmit_ExplicitMaterialsStillVisible(t *testing.T) {
+	// Upstream / template / sibling-repo materials are operator
+	// intent — they must survive round-trip even when an implicit
+	// material rides alongside.
+	p := &domain.Pipeline{
+		Name:   "ci-web",
+		Stages: []string{"build"},
+		Materials: []domain.Material{
+			{
+				Type:        domain.MaterialUpstream,
+				Fingerprint: domain.UpstreamFingerprint("ci-server", "test"),
+				Upstream:    &domain.UpstreamMaterial{Pipeline: "ci-server", Stage: "test"},
+			},
+			{
+				Type:        domain.MaterialGit,
+				Fingerprint: domain.GitFingerprint("https://github.com/klinux/gocdnext", "main"),
+				Implicit:    true, // synthesized — hide
+				Git: &domain.GitMaterial{URL: "https://github.com/klinux/gocdnext", Branch: "main"},
+			},
+		},
+		Jobs: []domain.Job{{Name: "bundle", Stage: "build", Tasks: []domain.Task{{Script: "pnpm build"}}}},
+	}
+	out, err := Emit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "upstream:") || !strings.Contains(s, "ci-server") {
+		t.Errorf("explicit upstream material missing; emitted:\n%s", s)
+	}
+	if strings.Contains(s, "github.com/klinux/gocdnext") {
+		t.Errorf("implicit material leaked through despite explicit upstream; emitted:\n%s", s)
+	}
+}
+
+func TestEmit_QuotesAmbiguousScalars(t *testing.T) {
+	// GO_VERSION: "1.25" must round-trip as a quoted string.
+	// Without explicit quoting yaml.v3 emits `1.25` → re-parses as
+	// a float, breaking the map[string]string round-trip.
+	p := &domain.Pipeline{
+		Name:   "demo",
+		Stages: []string{"build"},
+		Materials: []domain.Material{
+			{Type: domain.MaterialManual, Fingerprint: domain.ManualFingerprint()},
+		},
+		Variables: map[string]string{
+			"GO_VERSION": "1.25",
+			"DEBUG":      "true",
+			"ENV":        "prod",
+		},
+		Jobs: []domain.Job{{Name: "one", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+	}
+	out, err := Emit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `GO_VERSION: "1.25"`) {
+		t.Errorf("numeric-looking version should be quoted; emitted:\n%s", s)
+	}
+	if !strings.Contains(s, `DEBUG: "true"`) {
+		t.Errorf("boolean-looking value should be quoted; emitted:\n%s", s)
+	}
+	// Plain strings shouldn't get over-quoted — keeps the emit
+	// readable. `ENV: prod` is unambiguous and stays unquoted.
+	if strings.Contains(s, `ENV: "prod"`) {
+		t.Errorf("unambiguous string got over-quoted; emitted:\n%s", s)
+	}
+}
+
+func TestEmit_SmallSequencesUseFlowStyle(t *testing.T) {
+	// Short scalar lists (stages, needs, events, paths) should be
+	// inline `[a, b, c]` — matches how operators write them by
+	// hand and keeps the tab compact.
+	p := &domain.Pipeline{
+		Name:   "demo",
+		Stages: []string{"build", "test"},
+		Materials: []domain.Material{
+			{Type: domain.MaterialManual, Fingerprint: domain.ManualFingerprint()},
+		},
+		TriggerEvents: []string{"push", "pull_request"},
+		Jobs: []domain.Job{
+			{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}},
+				ArtifactPaths: []string{"bin/x"}},
+			{Name: "unit", Stage: "test", Needs: []string{"compile"},
+				Tasks: []domain.Task{{Script: "go test"}}},
+		},
+	}
+	out, err := Emit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		"stages: [build, test]",
+		"event: [push, pull_request]",
+		"needs: [compile]",
+		"paths: [bin/x]",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("expected flow-style %q in output:\n%s", want, s)
+		}
+	}
+}
+
 func TestEmit_MinimalPipeline(t *testing.T) {
 	// Minimal: one manual material, one stage, one image-less job.
 	// Ensures Emit doesn't crash on the smallest valid pipeline and

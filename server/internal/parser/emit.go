@@ -3,6 +3,7 @@ package parser
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -39,6 +40,14 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 		f.When = &WhenDef{Event: append([]string(nil), p.TriggerEvents...)}
 	}
 	for _, m := range p.Materials {
+		// Implicit materials (project-repo synthesized from
+		// scm_source at apply time) are deliberately hidden — the
+		// yaml tab should mirror the operator's source, not the
+		// expanded+stored form. They'll be re-synthesized on the
+		// next apply/sync either way.
+		if m.Implicit {
+			continue
+		}
 		f.Materials = append(f.Materials, materialToSpec(m))
 	}
 
@@ -56,6 +65,16 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("emit: build node: %w", err)
 	}
+
+	// Post-process the node tree: small scalar sequences go to flow
+	// style (`[a, b, c]`) and string values that could be mistaken
+	// for YAML scalars (numbers, bools, nulls) get explicitly
+	// quoted. Makes the emitted YAML read closer to what an
+	// operator would hand-write — without these passes short lists
+	// spread across multiple lines and `"1.25"` degrades to
+	// `1.25`, losing the string intent.
+	flowifySmallSequences(root)
+	quoteAmbiguousScalars(root)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -280,4 +299,105 @@ func appendKV(parent *yaml.Node, key string, value *yaml.Node) {
 		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
 		value,
 	)
+}
+
+// flowSequenceMaxLen is the upper bound for "short enough to inline".
+// Six entries covers every sequence the pipeline YAML routinely
+// carries (stages, events, needs, paths); longer lists stay in block
+// style where they're easier to diff.
+const flowSequenceMaxLen = 6
+
+// flowifySmallSequences walks a yaml.Node tree and rewrites any
+// sequence of ≤flowSequenceMaxLen scalar entries to flow style.
+// Matches the way a human tends to write short lists
+// (`stages: [lint, test, build]` / `needs: [vet]`) while leaving
+// multi-line script arrays and richer list-of-map structures
+// untouched.
+func flowifySmallSequences(n *yaml.Node) {
+	if n == nil {
+		return
+	}
+	if n.Kind == yaml.SequenceNode &&
+		len(n.Content) > 0 &&
+		len(n.Content) <= flowSequenceMaxLen &&
+		allSimpleScalars(n.Content) {
+		n.Style = yaml.FlowStyle
+	}
+	for _, c := range n.Content {
+		flowifySmallSequences(c)
+	}
+}
+
+func allSimpleScalars(nodes []*yaml.Node) bool {
+	for _, n := range nodes {
+		if n == nil || n.Kind != yaml.ScalarNode {
+			return false
+		}
+		// Multi-line / very long scalars force block style
+		// downstream anyway, and mixing them into a flow sequence
+		// reads worse than block.
+		if len(n.Value) > 64 {
+			return false
+		}
+		for _, r := range n.Value {
+			if r == '\n' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// yamlReservedScalar matches strings that would re-parse as a
+// non-string scalar without explicit quotes: numbers (including
+// scientific notation), booleans, nulls. Anything that matches gets
+// forced to double-quoted style in the output.
+var yamlReservedScalar = regexp.MustCompile(
+	`^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|yes|no|on|off|null|~)$`,
+)
+
+// quoteAmbiguousScalars flips the style of scalar string values
+// whose content would otherwise be parsed back as a different YAML
+// type. E.g. `GO_VERSION: "1.25"` survives the round-trip instead
+// of collapsing to `GO_VERSION: 1.25` (float) on re-emit — the
+// source YAML explicitly quoted it, and losing that intent makes
+// the tab misrepresent the stored definition.
+//
+// Only touches ScalarNode values we know are strings (we flip them
+// regardless of current style, since yaml.v3's default scalar-style
+// detection drops the quotes for these). Keys are left alone.
+func quoteAmbiguousScalars(n *yaml.Node) {
+	if n == nil {
+		return
+	}
+	switch n.Kind {
+	case yaml.MappingNode:
+		// MappingNode.Content is [key, value, key, value, …] —
+		// quote values only.
+		for i := 1; i < len(n.Content); i += 2 {
+			quoteIfAmbiguous(n.Content[i])
+			quoteAmbiguousScalars(n.Content[i])
+		}
+	case yaml.SequenceNode, yaml.DocumentNode:
+		for _, c := range n.Content {
+			quoteIfAmbiguous(c)
+			quoteAmbiguousScalars(c)
+		}
+	}
+}
+
+func quoteIfAmbiguous(n *yaml.Node) {
+	if n == nil || n.Kind != yaml.ScalarNode {
+		return
+	}
+	// Leave real bools / ints / floats alone — encoders stamp
+	// those with an explicit !!bool / !!int / !!float tag, and
+	// quoting them would break round-trip (re-parse fails when
+	// the target field is a typed Go bool/int/float).
+	if n.Tag != "" && n.Tag != "!!str" {
+		return
+	}
+	if yamlReservedScalar.MatchString(n.Value) {
+		n.Style = yaml.DoubleQuotedStyle
+	}
 }

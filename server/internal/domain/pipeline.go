@@ -113,6 +113,12 @@ type Material struct {
 	Type        MaterialType `json:"type"`
 	Fingerprint string       `json:"fingerprint"`
 	AutoUpdate  bool         `json:"auto_update"`
+	// Implicit marks materials the apply layer synthesized (today:
+	// the project-repo git material inferred from scm_source). The
+	// runtime treats them like any other material, but the YAML
+	// emitter hides them so the "yaml" tab mirrors what the operator
+	// actually wrote instead of the stored+synthesized form.
+	Implicit bool `json:"implicit,omitempty"`
 
 	Git      *GitMaterial      `json:"git,omitempty"`
 	Upstream *UpstreamMaterial `json:"upstream,omitempty"`

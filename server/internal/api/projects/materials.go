@@ -46,6 +46,7 @@ func injectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMS
 			Type:        domain.MaterialGit,
 			Fingerprint: domain.GitFingerprint(scm.URL, branch),
 			AutoUpdate:  true,
+			Implicit:    true,
 			Git: &domain.GitMaterial{
 				URL:                 scm.URL,
 				Branch:              branch,
