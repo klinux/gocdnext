@@ -111,7 +111,16 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 		logsPerJob = int32(parsed)
 	}
 
-	detail, err := h.store.GetRunDetail(r.Context(), runID, logsPerJob)
+	// Optional per-job cursors: `?since=<job_run_uuid>:<last_seq>`
+	// (repeatable). When a cursor is present for a job, the store
+	// returns only lines with seq > cursor instead of the last N
+	// tail. Lets the polling client stream deltas without
+	// re-paying the tail cost on every tick — and without losing
+	// the middle chunk when a job produces >N lines between two
+	// polls.
+	since := parseSinceQuery(r.URL.Query()["since"])
+
+	detail, err := h.store.GetRunDetail(r.Context(), runID, logsPerJob, since)
 	if err != nil {
 		if errors.Is(err, store.ErrRunNotFound) {
 			http.Error(w, "run not found", http.StatusNotFound)
@@ -237,4 +246,36 @@ func downloadFilename(artifactPath string) string {
 		return "artifact.tar.gz"
 	}
 	return p + ".tar.gz"
+}
+
+// parseSinceQuery turns `?since=<uuid>:<seq>&since=<uuid>:<seq>`
+// into a map the store consumes. Silently skips malformed entries
+// — a bad cursor falls back to the tail behaviour for that job,
+// which is the right degradation (logs re-fetch as if the client
+// had just mounted). Returns nil when no since params are present
+// so the store's fast-path tail query stays hot.
+func parseSinceQuery(raw []string) map[uuid.UUID]int64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[uuid.UUID]int64, len(raw))
+	for _, entry := range raw {
+		colon := strings.IndexByte(entry, ':')
+		if colon <= 0 || colon == len(entry)-1 {
+			continue
+		}
+		id, err := uuid.Parse(entry[:colon])
+		if err != nil {
+			continue
+		}
+		seq, err := strconv.ParseInt(entry[colon+1:], 10, 64)
+		if err != nil || seq < 0 {
+			continue
+		}
+		out[id] = seq
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

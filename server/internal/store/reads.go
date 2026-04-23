@@ -758,7 +758,15 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 // GetRunDetail returns the run + all stages + all jobs + tail logs per job.
 // logsPerJob caps lines per job; 0 disables log fetching (UI falls back to
 // the run page's "load logs" action, not yet built).
-func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob int32) (RunDetail, error) {
+//
+// When `since` carries a cursor for a job_run_id, only log lines
+// with `seq > cursor` are returned for that job (ordered oldest-
+// first, capped at logsPerJob lines). Jobs missing from the map
+// fall back to the tail behaviour. Lets the polling client pull
+// pure deltas instead of re-fetching the last N lines every tick
+// — survives bursty jobs that produce >N lines between polls,
+// which the tail-only path silently drops.
+func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob int32, since map[uuid.UUID]int64) (RunDetail, error) {
 	run, err := s.q.GetRunWithPipeline(ctx, pgUUID(runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -814,18 +822,32 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 			jd.AgentID = &aid
 		}
 		if logsPerJob > 0 {
-			logs, err := s.q.TailLogLinesByJob(ctx, db.TailLogLinesByJobParams{
-				JobRunID: j.ID, Limit: logsPerJob,
-			})
-			if err != nil {
-				return RunDetail{}, fmt.Errorf("store: tail logs: %w", err)
-			}
-			jd.Logs = make([]LogLineSummary, 0, len(logs))
-			for _, l := range logs {
-				jd.Logs = append(jd.Logs, LogLineSummary{
-					Seq: l.Seq, Stream: l.Stream, At: l.At.Time, Text: l.Text,
+			var logs []LogLineSummary
+			jobUUID := fromPgUUID(j.ID)
+			if cursor, has := since[jobUUID]; has {
+				// Delta fetch: lines strictly after the cursor,
+				// oldest-first, capped at logsPerJob.
+				logs, err = s.logLinesAfterSeq(ctx, jobUUID, cursor, int64(logsPerJob))
+			} else {
+				// Tail fetch (initial load / no cursor yet):
+				// last N lines, oldest-first within the window.
+				rows, tailErr := s.q.TailLogLinesByJob(ctx, db.TailLogLinesByJobParams{
+					JobRunID: j.ID, Limit: logsPerJob,
 				})
+				if tailErr != nil {
+					return RunDetail{}, fmt.Errorf("store: tail logs: %w", tailErr)
+				}
+				logs = make([]LogLineSummary, 0, len(rows))
+				for _, l := range rows {
+					logs = append(logs, LogLineSummary{
+						Seq: l.Seq, Stream: l.Stream, At: l.At.Time, Text: l.Text,
+					})
+				}
 			}
+			if err != nil {
+				return RunDetail{}, fmt.Errorf("store: logs: %w", err)
+			}
+			jd.Logs = logs
 		}
 		jobsByStage[jd.StageRunID] = append(jobsByStage[jd.StageRunID], jd)
 	}
@@ -847,4 +869,39 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 		detail.Stages = append(detail.Stages, sd)
 	}
 	return detail, nil
+}
+
+// logLinesAfterSeq returns log lines strictly after `sinceSeq` for
+// a given job_run, ordered oldest-first, capped at `limit`. Used
+// by the polling client's delta-fetch path so a job that produces
+// more lines than the tail window can keep stays streamable
+// without losing the middle chunk. Raw SQL — a single query that
+// doesn't warrant a sqlc entry alongside the existing
+// TailLogLinesByJob.
+func (s *Store) logLinesAfterSeq(ctx context.Context, jobRunID uuid.UUID, sinceSeq int64, limit int64) ([]LogLineSummary, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT seq, stream, at, text
+		FROM log_lines
+		WHERE job_run_id = $1 AND seq > $2
+		ORDER BY seq ASC
+		LIMIT $3
+	`, jobRunID, sinceSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]LogLineSummary, 0, 64)
+	for rows.Next() {
+		var l LogLineSummary
+		var at time.Time
+		if err := rows.Scan(&l.Seq, &l.Stream, &at, &l.Text); err != nil {
+			return nil, err
+		}
+		l.At = at
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }

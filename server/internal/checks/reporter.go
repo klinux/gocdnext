@@ -218,7 +218,7 @@ type runContext struct {
 }
 
 func (r *Reporter) resolveRunContext(ctx context.Context, runID uuid.UUID) (*runContext, error) {
-	detail, err := r.store.GetRunDetail(ctx, runID, 0)
+	detail, err := r.store.GetRunDetail(ctx, runID, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get run detail: %w", err)
 	}

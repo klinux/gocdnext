@@ -3,8 +3,11 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -222,7 +225,7 @@ func TestGetRunDetail_NotFound(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 
-	_, err := s.GetRunDetail(context.Background(), nonexistentUUID(), 0)
+	_, err := s.GetRunDetail(context.Background(), nonexistentUUID(), 0, nil)
 	if !errors.Is(err, store.ErrRunNotFound) {
 		t.Fatalf("err = %v, want ErrRunNotFound", err)
 	}
@@ -248,7 +251,7 @@ func TestGetRunDetail_StagesJobsAndOptionalLogs(t *testing.T) {
 		t.Fatalf("log: %v", err)
 	}
 
-	got, err := s.GetRunDetail(ctx, run.RunID, 50)
+	got, err := s.GetRunDetail(ctx, run.RunID, 50, nil)
 	if err != nil {
 		t.Fatalf("GetRunDetail: %v", err)
 	}
@@ -282,6 +285,54 @@ func TestGetRunDetail_StagesJobsAndOptionalLogs(t *testing.T) {
 	}
 }
 
+func TestGetRunDetail_LogCursorReturnsOnlyDelta(t *testing.T) {
+	// When the caller passes a per-job cursor, the store returns
+	// only lines with seq > cursor — the polling client's delta
+	// fetch. Jobs without a cursor in the map fall back to tail
+	// behaviour so the same endpoint still serves the initial load.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	jobID := run.JobRuns[0].ID
+	now := time.Now().UTC()
+	for seq := int64(1); seq <= 5; seq++ {
+		if err := s.InsertLogLine(ctx, store.LogLine{
+			JobRunID: jobID, Seq: seq, Stream: "stdout",
+			At: now.Add(time.Duration(seq) * time.Millisecond),
+			Text: fmt.Sprintf("line %d", seq),
+		}); err != nil {
+			t.Fatalf("log %d: %v", seq, err)
+		}
+	}
+
+	got, err := s.GetRunDetail(ctx, run.RunID, 100, map[uuid.UUID]int64{jobID: 3})
+	if err != nil {
+		t.Fatalf("GetRunDetail: %v", err)
+	}
+
+	// Only lines 4 and 5 should come back for the cursor'd job.
+	var seqs []int64
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID != jobID {
+				continue
+			}
+			for _, l := range j.Logs {
+				seqs = append(seqs, l.Seq)
+			}
+		}
+	}
+	if len(seqs) != 2 || seqs[0] != 4 || seqs[1] != 5 {
+		t.Fatalf("cursor delta returned seqs=%v, want [4 5]", seqs)
+	}
+}
+
 func TestGetRunDetail_LogsSkippedWhenLimitZero(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
@@ -299,7 +350,7 @@ func TestGetRunDetail_LogsSkippedWhenLimitZero(t *testing.T) {
 		t.Fatalf("log: %v", err)
 	}
 
-	got, err := s.GetRunDetail(ctx, run.RunID, 0)
+	got, err := s.GetRunDetail(ctx, run.RunID, 0, nil)
 	if err != nil {
 		t.Fatalf("GetRunDetail: %v", err)
 	}

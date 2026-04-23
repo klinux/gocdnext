@@ -3,19 +3,18 @@ import { describe, expect, it } from "vitest";
 import type { ProjectVSM, VSMEdge, VSMNode } from "@/types/api";
 import { buildLayers } from "@/components/vsm/vsm-layout";
 
-const node = (name: string): VSMNode => ({
-  id: name,
-  name,
-  // pipeline_id/metrics/run are unused by buildLayers but the type
-  // shape requires them; leave permissive so a type change surfaces
-  // here instead of a hundred call sites.
-} as VSMNode);
+// Stub nodes / edges with only the fields buildLayers touches.
+// Cast through `unknown` so the compiler lets us skip the unused
+// ones (pipeline_id, metrics, etc.) — if buildLayers ever reads a
+// new field, the test suite fails loud instead of silently.
+const node = (name: string): VSMNode =>
+  ({ id: name, name } as unknown as VSMNode);
 
-const edge = (from: string, to: string, stage = "test"): VSMEdge => ({
-  from_pipeline: from,
-  to_pipeline: to,
-  stage,
-});
+const edge = (from: string, to: string, stage = "test"): VSMEdge =>
+  ({ from_pipeline: from, to_pipeline: to, stage } as unknown as VSMEdge);
+
+const vsm = (nodes: VSMNode[], edges: VSMEdge[]): ProjectVSM =>
+  ({ nodes, edges } as unknown as ProjectVSM);
 
 const names = (layer: VSMNode[]) => layer.map((n) => n.name);
 
@@ -28,18 +27,18 @@ describe("buildLayers", () => {
     // column 1, so the arrow zigzagged across two unrelated cards.
     // After the up-sweep ci-server should pop to the top of column
     // 0 — horizontal arrow, zero crossings.
-    const vsm: ProjectVSM = {
-      nodes: [
+    const g = vsm(
+      [
         node("ci-agent"),
         node("ci-cli"),
         node("ci-server"),
         node("ci-web"),
         node("lint"),
       ],
-      edges: [edge("ci-server", "ci-web")],
-    };
+      [edge("ci-server", "ci-web")],
+    );
 
-    const layers = buildLayers(vsm);
+    const layers = buildLayers(g);
     expect(layers).toHaveLength(2);
     expect(names(layers[0]!)).toEqual(["ci-server", "ci-agent", "ci-cli", "lint"]);
     expect(names(layers[1]!)).toEqual(["ci-web"]);
@@ -50,22 +49,19 @@ describe("buildLayers", () => {
     // ordering logic should fall through to the alphabetical tie-
     // break — no surprises for projects that haven't opted into
     // upstream triggers yet.
-    const vsm: ProjectVSM = {
-      nodes: [node("zeta"), node("alpha"), node("beta")],
-      edges: [],
-    };
-    const layers = buildLayers(vsm);
+    const g = vsm([node("zeta"), node("alpha"), node("beta")], []);
+    const layers = buildLayers(g);
     expect(layers).toHaveLength(1);
     expect(names(layers[0]!)).toEqual(["alpha", "beta", "zeta"]);
   });
 
   it("depths multi-level chains correctly", () => {
     // Deeper DAGs (a → b → c) should spread across three layers.
-    const vsm: ProjectVSM = {
-      nodes: [node("a"), node("b"), node("c")],
-      edges: [edge("a", "b"), edge("b", "c")],
-    };
-    const layers = buildLayers(vsm);
+    const g = vsm(
+      [node("a"), node("b"), node("c")],
+      [edge("a", "b"), edge("b", "c")],
+    );
+    const layers = buildLayers(g);
     expect(names(layers[0]!)).toEqual(["a"]);
     expect(names(layers[1]!)).toEqual(["b"]);
     expect(names(layers[2]!)).toEqual(["c"]);
@@ -75,16 +71,16 @@ describe("buildLayers", () => {
     // Two roots each feeding one child — the children should line
     // up with their parents (no cross). If we sorted children
     // alphabetically we'd swap them and create a cross.
-    const vsm: ProjectVSM = {
-      nodes: [
+    const g = vsm(
+      [
         node("parent-a"),
         node("parent-b"),
         node("child-of-b"), // alphabetical would place this first
         node("child-of-a"),
       ],
-      edges: [edge("parent-a", "child-of-a"), edge("parent-b", "child-of-b")],
-    };
-    const layers = buildLayers(vsm);
+      [edge("parent-a", "child-of-a"), edge("parent-b", "child-of-b")],
+    );
+    const layers = buildLayers(g);
     expect(layers).toHaveLength(2);
     // Parents alphabetical by default; children ordered by their
     // parent's index in layer 0.
@@ -97,11 +93,11 @@ describe("buildLayers", () => {
     // the depth pass has an in-flight guard that bails to 0. The
     // test just confirms we return in finite time and produce
     // something non-empty rather than hanging or throwing.
-    const vsm: ProjectVSM = {
-      nodes: [node("a"), node("b")],
-      edges: [edge("a", "b"), edge("b", "a")],
-    };
-    const layers = buildLayers(vsm);
+    const g = vsm(
+      [node("a"), node("b")],
+      [edge("a", "b"), edge("b", "a")],
+    );
+    const layers = buildLayers(g);
     const flat = layers.flat().map((n) => n.name);
     expect(flat.sort()).toEqual(["a", "b"]);
   });

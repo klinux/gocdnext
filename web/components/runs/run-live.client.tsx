@@ -35,23 +35,63 @@ type Props = {
   apiBaseURL: string;
 };
 
-async function fetchRun(apiBaseURL: string, id: string): Promise<RunDetail> {
-  const res = await fetch(
-    `${apiBaseURL.replace(/\/+$/, "")}/api/v1/runs/${encodeURIComponent(id)}?logs=${LOGS_PER_JOB}`,
+async function fetchRun(
+  apiBaseURL: string,
+  id: string,
+  cursors: Record<string, number>,
+): Promise<RunDetail> {
+  const base = apiBaseURL.replace(/\/+$/, "");
+  const url = new URL(`${base}/api/v1/runs/${encodeURIComponent(id)}`);
+  url.searchParams.set("logs", String(LOGS_PER_JOB));
+  // Per-job cursors: `?since=<job_id>:<last_seen_seq>` (repeated).
+  // When present, the server returns only lines with seq > cursor
+  // for that job, which keeps the delta small AND makes bursty
+  // jobs (go test -v, webpack builds) that produce >LOGS_PER_JOB
+  // lines between polls no longer drop the middle chunk. Jobs
+  // missing from the map fall back to the tail — that's what the
+  // first fetch after mount gets.
+  for (const [jobID, seq] of Object.entries(cursors)) {
+    url.searchParams.append("since", `${jobID}:${seq}`);
+  }
+  const res = await fetch(url.toString(), {
     // credentials: "include" forwards the session cookie cross-
     // origin (web dev on :3000 → control plane on :8153). The
     // control plane's devCORS echoes the Origin and sets
     // Access-Control-Allow-Credentials=true to let it through.
-    { cache: "no-store", credentials: "include" },
-  );
+    cache: "no-store",
+    credentials: "include",
+  });
   if (!res.ok) throw new Error(`run fetch ${res.status}`);
   return (await res.json()) as RunDetail;
 }
 
 export function RunLive({ initial, runId, apiBaseURL }: Props) {
+  // The log state that survives across polls. Each bucket is a
+  // seq→line map so deltas coming back from the server merge in
+  // O(lines) via Map.set. A separate ref tracks the last seen
+  // status so a rerun (terminal → queued/running, seq counter
+  // resets to 0) clears the bucket before the new lines land —
+  // otherwise the cursor from the old attempt would filter out
+  // every line of the new one.
+  const logsByJobRef = useRef<Map<string, Map<number, LogLine>>>(new Map());
+  const prevStatusRef = useRef<Map<string, string>>(new Map());
+
   const { data = initial } = useQuery({
     queryKey: ["run", runId],
-    queryFn: () => fetchRun(apiBaseURL, runId),
+    queryFn: () => {
+      // Derive cursors from the in-flight merge state right before
+      // firing the fetch so we pick up any lines the previous
+      // poll already filed.
+      const cursors: Record<string, number> = {};
+      for (const [jobID, bucket] of logsByJobRef.current) {
+        let maxSeq = -1;
+        for (const seq of bucket.keys()) {
+          if (seq > maxSeq) maxSeq = seq;
+        }
+        if (maxSeq >= 0) cursors[jobID] = maxSeq;
+      }
+      return fetchRun(apiBaseURL, runId, cursors);
+    },
     initialData: initial,
     refetchInterval: (query) => {
       const state = query.state.data?.status ?? initial.status;
@@ -59,17 +99,25 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
     },
   });
 
-  // The server returns a tail of LOGS_PER_JOB lines on every poll.
-  // Without merging, a job producing >500 lines causes earlier lines
-  // to slide off the tail and disappear from the UI between polls —
-  // even though they're still in the DB. Keep a per-job seq→line
-  // map across polls and render the merged history.
-  const logsByJobRef = useRef<Map<string, Map<number, LogLine>>>(new Map());
   const mergedData = useMemo<RunDetail>(() => {
     const map = logsByJobRef.current;
+    const prevStatus = prevStatusRef.current;
     const stages = data.stages.map((stage) => ({
       ...stage,
       jobs: stage.jobs.map((job) => {
+        // Rerun detection: prior status was terminal and the new
+        // one is queued/running → wipe the bucket so the old
+        // attempt's lines don't hang around AND the cursor resets.
+        const prior = prevStatus.get(job.id);
+        if (
+          prior &&
+          isTerminalStatus(prior) &&
+          (job.status === "queued" || job.status === "running")
+        ) {
+          map.delete(job.id);
+        }
+        prevStatus.set(job.id, job.status);
+
         let bucket = map.get(job.id);
         if (!bucket) {
           bucket = new Map<number, LogLine>();
