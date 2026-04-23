@@ -392,6 +392,78 @@ jobs:
 	}
 }
 
+func TestParse_PluginJobViaUsesWith(t *testing.T) {
+	// `uses:` + `with:` is the ergonomic sugar for a plugin job —
+	// parser produces a single PluginStep task carrying image +
+	// settings. No `script:` on the job: the plugin image's
+	// ENTRYPOINT IS the logic.
+	y := `
+stages: [deploy]
+materials:
+  - manual: true
+jobs:
+  publish:
+    stage: deploy
+    uses: gocdnext/node
+    with:
+      command: build
+      node-version: "22"
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Jobs) != 1 {
+		t.Fatalf("jobs = %d", len(p.Jobs))
+	}
+	job := p.Jobs[0]
+	if len(job.Tasks) != 1 || job.Tasks[0].Plugin == nil {
+		t.Fatalf("task shape = %+v", job.Tasks)
+	}
+	plug := job.Tasks[0].Plugin
+	if plug.Image != "gocdnext/node" {
+		t.Errorf("plugin image = %q", plug.Image)
+	}
+	if plug.Settings["command"] != "build" || plug.Settings["node-version"] != "22" {
+		t.Errorf("settings round-trip lost: %+v", plug.Settings)
+	}
+}
+
+func TestParse_PluginRejectsMixedSpellings(t *testing.T) {
+	// A job that sets both `uses:` and `image:` is ambiguous — the
+	// parser refuses instead of picking one silently. Same for
+	// `uses:` alongside `script:`: the plugin's entrypoint runs
+	// the logic, a trailing user script would be ignored.
+	cases := map[string]string{
+		"uses + image": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: deploy
+    uses: plugins/slack
+    image: alpine
+`,
+		"uses + script": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: deploy
+    uses: plugins/slack
+    script: [echo hi]
+`,
+	}
+	for label, y := range cases {
+		t.Run(label, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(y), "p", "n")
+			if err == nil {
+				t.Fatalf("expected parse error, got nil")
+			}
+		})
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

@@ -245,6 +245,90 @@ jobs:
 	}
 }
 
+func TestEmit_RoundTripsPluginJobs(t *testing.T) {
+	// Plugin jobs emit as `uses:` + `with:` (the ergonomic
+	// spelling), not the legacy `image:` + `settings:` form — a
+	// parsed legacy job migrates forward on its next emit, which
+	// is a deliberate one-way conversion so the yaml tab shows
+	// one canonical shape.
+	const src = `
+name: deploy-flow
+stages: [deploy]
+materials:
+  - manual: true
+jobs:
+  publish:
+    stage: deploy
+    uses: gocdnext/node
+    with:
+      command: build
+      node-version: "22"
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "deploy-flow")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "uses: gocdnext/node") {
+		t.Errorf("emit missing uses: — got:\n%s", s)
+	}
+	if !strings.Contains(s, "with:") {
+		t.Errorf("emit missing with: — got:\n%s", s)
+	}
+	if strings.Contains(s, "settings:") || strings.Contains(s, "image:") {
+		t.Errorf("emit leaked legacy spelling — got:\n%s", s)
+	}
+	// Re-parse round-trip to confirm the emitted form stays
+	// structurally equivalent.
+	second, err := ParseNamed(strings.NewReader(s), "p", "deploy-flow")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, s)
+	}
+	plug := second.Jobs[0].Tasks[0].Plugin
+	if plug == nil || plug.Image != "gocdnext/node" ||
+		plug.Settings["command"] != "build" ||
+		plug.Settings["node-version"] != "22" {
+		t.Errorf("round-trip lost plugin data: %+v", plug)
+	}
+}
+
+func TestEmit_LegacyImageSettingsMigratesToUsesWith(t *testing.T) {
+	// YAMLs written before uses/with used the legacy `image:` +
+	// `settings:` plugin shape. Parsing them still works, but
+	// emit writes the new spelling — one canonical form on disk.
+	const legacy = `
+name: x
+stages: [deploy]
+materials:
+  - manual: true
+jobs:
+  notify:
+    stage: deploy
+    image: plugins/slack
+    settings:
+      channel: "#deploys"
+`
+	p, err := ParseNamed(strings.NewReader(legacy), "p", "x")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out, err := Emit(p)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "uses: plugins/slack") {
+		t.Errorf("legacy didn't migrate to uses: — %s", s)
+	}
+	if strings.Contains(s, "settings:") {
+		t.Errorf("legacy settings: leaked to emit — %s", s)
+	}
+}
+
 func TestEmit_QuotesAmbiguousScalars(t *testing.T) {
 	// GO_VERSION: "1.25" must round-trip as a quoted string.
 	// Without explicit quoting yaml.v3 emits `1.25` → re-parses as

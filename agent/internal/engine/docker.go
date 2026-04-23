@@ -250,6 +250,16 @@ func (d *Docker) buildArgs(image string, spec ScriptSpec, cidFile string) []stri
 		args = append(args, d.cfg.ExtraDockerArgs...)
 	}
 
+	if spec.Script == "" {
+		// Plugin-style task: the image's own ENTRYPOINT is the
+		// logic, no shell wrapper. Skip the gitSafe preamble and
+		// `sh -c` entirely — `docker run <image>` with no extra
+		// cmd lets the image run its declared entrypoint /
+		// default cmd. PLUGIN_* env vars are already in `-e …`.
+		args = append(args, image)
+		return args
+	}
+
 	// Git 2.35+ refuses to operate on a repo whose filesystem
 	// owner differs from the process UID — the workspace was
 	// cloned by the agent (some UID X) and the container runs

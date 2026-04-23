@@ -191,16 +191,30 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	defer serviceCleanup()
 
 	for i, task := range a.GetTasks() {
-		script := task.GetScript()
-		if script == "" {
-			// Plugin tasks aren't supported by the local runner yet — skip with
-			// a log line so the user sees why nothing happened.
-			r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: plugin step skipped (local runner MVP)", i))
-			continue
+		var (
+			exitCode int
+			err      error
+		)
+		if plugin := task.GetPlugin(); plugin != nil {
+			// Plugin task: run the plugin's own container image
+			// with PLUGIN_* env vars derived from `with:` settings.
+			// No user script — the image's ENTRYPOINT IS the logic
+			// (Woodpecker's model: plugins are regular containers,
+			// their contract is "look at PLUGIN_FOO env, do X").
+			exitCode, err = r.runPlugin(ctx, scriptWorkDir, plugin, network, a.GetEnv(), a, &seq)
+		} else {
+			script := task.GetScript()
+			if script == "" {
+				// Neither script nor plugin — malformed task. Skip
+				// with a loud log so the operator notices instead
+				// of watching the job succeed silently.
+				r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: empty task (no script, no plugin); skipping", i))
+				continue
+			}
+			exitCode, err = r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), network, a.GetEnv(), a, &seq)
 		}
-		exitCode, err := r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), network, a.GetEnv(), a, &seq)
 		if err != nil {
-			log.Warn("runner: script error", "err", err, "task", i)
+			log.Warn("runner: task error", "err", err, "task", i)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
 				fmt.Sprintf("task %d: %v", i, err))
 			return

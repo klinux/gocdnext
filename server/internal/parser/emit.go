@@ -151,10 +151,27 @@ func jobToDef(j domain.Job) JobDef {
 			// `set -e` lines on every round-trip.
 			def.Script = append(def.Script, splitScriptLines(t.Script)...)
 		}
-		// Plugin-only jobs are re-serialised via image+settings on the
-		// JobDef itself (see parser.go where a single plugin task is
-		// synthesised from image+settings). We don't emit the task
-		// here because JobDef has no list-of-tasks slot.
+		if t.Plugin != nil {
+			// Plugin tasks surface as the `uses:` + `with:` sugar —
+			// matches the YAML the operator wrote and keeps a
+			// plugin job ergonomically distinct from a plain
+			// `image:` container-runner job. Legacy YAMLs that
+			// used `image:` + `settings:` still parse into the
+			// same PluginStep, so round-tripping one converts it
+			// to the newer shape (intentional — forward-only
+			// migration to one spelling).
+			def.Uses = t.Plugin.Image
+			if len(t.Plugin.Settings) > 0 {
+				def.With = t.Plugin.Settings
+			}
+			// Plugin jobs don't carry a script or an image on the
+			// JobDef — `uses:` IS the image and the entrypoint
+			// runs the logic. Clear either if they slipped in
+			// from an earlier emit pass.
+			def.Image = ""
+			def.Script = nil
+			def.Settings = nil
+		}
 	}
 	if len(j.ArtifactPaths) > 0 || len(j.OptionalArtifactPaths) > 0 {
 		def.Artifacts = &Artifacts{

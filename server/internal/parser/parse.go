@@ -197,9 +197,36 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		j.Tasks = append(j.Tasks, domain.Task{Script: joined})
 	}
 
-	// If image starts with "plugins/" treat the whole job as a single plugin step.
-	// (Woodpecker-style single-step jobs are common; multi-step jobs mix `script:` tasks.)
-	if len(jd.Script) == 0 && jd.Image != "" && jd.Settings != nil {
+	// Plugin step via the explicit `uses:` + `with:` sugar (matches
+	// the GitHub-Actions shape operators already know, but the
+	// execution model is Woodpecker's — the agent translates `with:`
+	// to PLUGIN_* env vars and runs the image's own entrypoint).
+	// Disallow mixing with `script:` on the same job: the plugin's
+	// entrypoint IS the logic, a trailing `script:` would just be
+	// ignored and confuse the operator.
+	if jd.Uses != "" {
+		if len(jd.Script) > 0 {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: `uses:` is mutually exclusive with `script:` — a plugin step runs the image's entrypoint on its own",
+				name,
+			)
+		}
+		if jd.Image != "" {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: `uses:` and `image:` both set — pick one (`uses:` IS the image for plugin jobs)",
+				name,
+			)
+		}
+		j.Tasks = append(j.Tasks, domain.Task{
+			Plugin: &domain.PluginStep{
+				Image:    jd.Uses,
+				Settings: jd.With,
+			},
+		})
+	} else if len(jd.Script) == 0 && jd.Image != "" && jd.Settings != nil {
+		// Legacy single-step plugin shape: `image:` + `settings:`
+		// with no script. Kept for backwards-compat with YAMLs
+		// written before `uses:`/`with:` landed.
 		j.Tasks = append(j.Tasks, domain.Task{
 			Plugin: &domain.PluginStep{
 				Image:    jd.Image,

@@ -88,7 +88,16 @@ type JobDef struct {
 	Extends   string            `yaml:"extends,omitempty"`
 	Needs     []string          `yaml:"needs,omitempty"`
 	Script    []string          `yaml:"script,omitempty"`
-	Settings  map[string]string `yaml:"settings,omitempty"` // plugin step
+	Settings  map[string]string `yaml:"settings,omitempty"` // plugin step (legacy)
+	// Uses + With are the GH-Actions-flavoured sugar for a plugin
+	// job: `uses:` names a container image that ships its own
+	// entrypoint, `with:` is the settings map the agent translates
+	// to PLUGIN_* env vars before `docker run`ing the image. No
+	// `script:` needed — the plugin's entrypoint IS the logic.
+	// Mutually exclusive with `image` + `settings` on the same job;
+	// parser rejects the combination.
+	Uses string            `yaml:"uses,omitempty"`
+	With map[string]string `yaml:"with,omitempty"`
 	Variables map[string]string `yaml:"variables,omitempty"`
 	Cache          *Cache              `yaml:"cache,omitempty"`
 	Artifacts      *Artifacts          `yaml:"artifacts,omitempty"`

@@ -46,6 +46,16 @@ func (*Shell) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 				DefaultDockerSocketPath, err)
 		}
 	}
+	if spec.Script == "" {
+		// Plugin task: nothing we can usefully do on the host
+		// shell. The plugin's logic lives in a container image
+		// and we have no runtime to run it here. Report a clear
+		// error instead of silently succeeding — the operator
+		// declared a plugin step expecting something to happen.
+		return -1, fmt.Errorf(
+			"shell engine: plugin task (image=%q) cannot run — use the docker engine for plugins",
+			spec.Image)
+	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", spec.Script)
 	if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir
