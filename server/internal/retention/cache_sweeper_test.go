@@ -173,16 +173,123 @@ func TestSweeper_CacheStorageDeleteFailure_KeepsRow(t *testing.T) {
 	}
 }
 
+func TestSweeper_CacheProjectQuota_EvictsOldestUntilUnderLimit(t *testing.T) {
+	// Quota = 150 bytes. Seed three 100-byte caches with
+	// successively older last_accessed_at. The sweeper should
+	// evict `c1` (oldest, 100 bytes) — that alone brings the
+	// project from 300 → 200 → past quota-then-under: actually
+	// 200 still > 150, so evict c2 too → total 100 < 150, stop.
+	// Never touch c3 (newest) so the active build keeps warmth.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projectID := seedCacheProject(t, pool, "cache-quota")
+
+	c1, _ := s.UpsertPendingCache(ctx, projectID, "oldest")
+	_ = s.MarkCacheReady(ctx, c1.ID, 100, "x")
+	c2, _ := s.UpsertPendingCache(ctx, projectID, "middle")
+	_ = s.MarkCacheReady(ctx, c2.ID, 100, "x")
+	c3, _ := s.UpsertPendingCache(ctx, projectID, "newest")
+	_ = s.MarkCacheReady(ctx, c3.ID, 100, "x")
+
+	// Stagger last_accessed_at so LRU ordering is deterministic.
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '3 hours' WHERE id = $1`, c1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '2 hours' WHERE id = $1`, c2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '1 hour' WHERE id = $1`, c3.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := retention.New(s, fs, silent()).
+		WithCacheTTL(0). // Isolate the quota path — no TTL interference.
+		WithCacheProjectQuotaBytes(150)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.CachesDeletedByQuota != 2 {
+		t.Fatalf("CachesDeletedByQuota = %d, want 2 (stats=%+v)", stats.CachesDeletedByQuota, stats)
+	}
+	if stats.CachesDeleted != 0 {
+		t.Errorf("CachesDeleted = %d (quota evictions should not count under the TTL counter)", stats.CachesDeleted)
+	}
+	if stats.CacheBytesFreed != 200 {
+		t.Errorf("CacheBytesFreed = %d, want 200", stats.CacheBytesFreed)
+	}
+	// c3 (newest) must still be present — otherwise we over-evicted
+	// and the next build pays for a miss that didn't help disk at all.
+	if _, err := s.GetReadyCacheByKey(ctx, projectID, "newest"); err != nil {
+		t.Errorf("newest cache was evicted: %v", err)
+	}
+	// c1 + c2 should be gone.
+	if _, err := s.GetReadyCacheByKey(ctx, projectID, "oldest"); err == nil {
+		t.Error("oldest cache still present after quota eviction")
+	}
+	if _, err := s.GetReadyCacheByKey(ctx, projectID, "middle"); err == nil {
+		t.Error("middle cache still present after quota eviction")
+	}
+}
+
+func TestSweeper_CacheProjectQuota_UnderLimitNoOp(t *testing.T) {
+	// Usage below quota → nothing evicted. Pin the "don't
+	// over-evict" invariant separately from the positive case.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projectID := seedCacheProject(t, pool, "cache-quota-under")
+
+	c, _ := s.UpsertPendingCache(ctx, projectID, "k")
+	_ = s.MarkCacheReady(ctx, c.ID, 100, "x")
+
+	sw := retention.New(s, fs, silent()).
+		WithCacheTTL(0).
+		WithCacheProjectQuotaBytes(1024)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.CachesDeletedByQuota != 0 {
+		t.Errorf("under-quota project had evictions: %+v", stats)
+	}
+}
+
+func TestSweeper_CacheProjectQuotaDisabled_NoSweep(t *testing.T) {
+	// Operator didn't set a quota (default 0). Even an absurd
+	// accumulation must be preserved — ops opted out, we oblige.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projectID := seedCacheProject(t, pool, "cache-quota-off")
+
+	c, _ := s.UpsertPendingCache(ctx, projectID, "k")
+	_ = s.MarkCacheReady(ctx, c.ID, 10_000_000_000, "x") // 10 GB
+
+	sw := retention.New(s, fs, silent()).WithCacheTTL(0) // Quota default 0.
+	stats := sw.SweepOnce(ctx)
+	if stats.CachesDeletedByQuota != 0 {
+		t.Errorf("quota=0 should disable: %+v", stats)
+	}
+}
+
 func TestSweeper_CacheTTL_HonorsSnapshot(t *testing.T) {
-	// Admin page reads Snapshot() — the cache_ttl must round-trip
-	// so ops can eyeball the effective window.
+	// Admin page reads Snapshot() — the cache knobs must round-
+	// trip so ops can eyeball the effective window and cap.
 	pool := dbtest.SetupPool(t)
 	sw := retention.New(store.New(pool), newFakeStore(), silent()).
-		WithCacheTTL(7 * 24 * time.Hour)
+		WithCacheTTL(7 * 24 * time.Hour).
+		WithCacheProjectQuotaBytes(2 * 1024 * 1024 * 1024)
 
 	snap := sw.Snapshot()
 	if snap.CacheTTL != 7*24*time.Hour {
 		t.Errorf("CacheTTL = %v, want 7d", snap.CacheTTL)
+	}
+	if snap.CacheProjectQuotaBytes != 2*1024*1024*1024 {
+		t.Errorf("CacheProjectQuotaBytes = %d, want 2 GiB", snap.CacheProjectQuotaBytes)
 	}
 }
 

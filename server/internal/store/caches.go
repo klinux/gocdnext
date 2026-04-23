@@ -145,6 +145,77 @@ func (s *Store) ListExpiredCaches(ctx context.Context, ttl time.Duration, limit 
 	return out, rows.Err()
 }
 
+// ProjectCacheUsage pairs a project id with its current total
+// `ready` cache bytes. Returned by ListProjectsOverCacheQuota so
+// the sweeper can compute `excess = Bytes - quota` per project.
+type ProjectCacheUsage struct {
+	ProjectID uuid.UUID
+	Bytes     int64
+}
+
+// ListProjectsOverCacheQuota returns every project whose total
+// `ready` cache bytes exceeds `quotaBytes`. Called once per
+// sweeper tick; projects under quota aren't returned so a 10k-
+// project deployment doesn't iterate the world. Pending rows
+// don't count — they're ephemeral and still in flight.
+func (s *Store) ListProjectsOverCacheQuota(ctx context.Context, quotaBytes int64) ([]ProjectCacheUsage, error) {
+	if quotaBytes <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT project_id, SUM(size_bytes)::bigint
+		FROM caches
+		WHERE status = 'ready'
+		GROUP BY project_id
+		HAVING SUM(size_bytes) > $1
+	`, quotaBytes)
+	if err != nil {
+		return nil, fmt.Errorf("store: list over-quota projects: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectCacheUsage
+	for rows.Next() {
+		var u ProjectCacheUsage
+		if err := rows.Scan(&u.ProjectID, &u.Bytes); err != nil {
+			return nil, fmt.Errorf("store: scan project usage: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ListOldestCachesInProject returns the N oldest-accessed `ready`
+// rows in a project, bounded by `limit`. Caller picks enough rows
+// off this list to free `bytesToFree`, then deletes them (blob +
+// row) with the same loop the TTL sweep uses. LRU by
+// last_accessed_at so active builds keep their caches and
+// abandoned keys go first.
+func (s *Store) ListOldestCachesInProject(ctx context.Context, projectID uuid.UUID, limit int) ([]ExpiredCache, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, storage_key, size_bytes
+		FROM caches
+		WHERE status = 'ready' AND project_id = $1
+		ORDER BY last_accessed_at ASC
+		LIMIT $2
+	`, projectID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list oldest caches: %w", err)
+	}
+	defer rows.Close()
+	var out []ExpiredCache
+	for rows.Next() {
+		var ec ExpiredCache
+		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
+			return nil, fmt.Errorf("store: scan oldest cache: %w", err)
+		}
+		out = append(out, ec)
+	}
+	return out, rows.Err()
+}
+
 // DeleteCacheRow removes one row by id. Idempotent: a missing row
 // returns nil (another sweeper beat us to it, which is fine —
 // nothing to reclaim).

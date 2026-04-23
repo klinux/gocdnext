@@ -38,12 +38,17 @@ const (
 	DefaultGraceMinutes      = 5
 	DefaultKeepLast          = 30
 	DefaultProjectQuotaBytes = 100 * 1024 * 1024 * 1024 // 100 GiB
-	DefaultGlobalQuotaBytes  = 0                          // 0 = disabled
+	DefaultGlobalQuotaBytes  = 0                        // 0 = disabled
 	// DefaultCacheTTL: 30 days is long enough for weekly builds to
 	// keep their cache warm, short enough that abandoned projects
-	// surrender disk within a month. Quota-based eviction comes
-	// later; TTL alone already prevents unbounded growth.
+	// surrender disk within a month.
 	DefaultCacheTTL = 30 * 24 * time.Hour
+	// DefaultCacheProjectQuotaBytes: 0 = disabled. Quotas are
+	// opt-in because a sensible default needs real-world data
+	// (how big does a pnpm-store tree really get? a Go module
+	// cache? a gradle cache?). Operators who care set it; the
+	// rest rely on TTL.
+	DefaultCacheProjectQuotaBytes = 0
 )
 
 // Sweeper is the long-running task. Call Run inside a goroutine; it
@@ -57,10 +62,11 @@ type Sweeper struct {
 	batchSize    int
 	graceMinutes int
 
-	keepLast          int
-	projectQuotaBytes int64
-	globalQuotaBytes  int64
-	cacheTTL          time.Duration
+	keepLast               int
+	projectQuotaBytes      int64
+	globalQuotaBytes       int64
+	cacheTTL               time.Duration
+	cacheProjectQuotaBytes int64
 
 	mu          sync.Mutex
 	lastStats   SweepStats
@@ -75,17 +81,29 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		log = slog.Default()
 	}
 	return &Sweeper{
-		store:             s,
-		storage:           storage,
-		log:               log,
-		tick:              DefaultTick,
-		batchSize:         DefaultBatchSize,
-		graceMinutes:      DefaultGraceMinutes,
-		keepLast:          DefaultKeepLast,
-		projectQuotaBytes: DefaultProjectQuotaBytes,
-		globalQuotaBytes:  DefaultGlobalQuotaBytes,
-		cacheTTL:          DefaultCacheTTL,
+		store:                  s,
+		storage:                storage,
+		log:                    log,
+		tick:                   DefaultTick,
+		batchSize:              DefaultBatchSize,
+		graceMinutes:           DefaultGraceMinutes,
+		keepLast:               DefaultKeepLast,
+		projectQuotaBytes:      DefaultProjectQuotaBytes,
+		globalQuotaBytes:       DefaultGlobalQuotaBytes,
+		cacheTTL:               DefaultCacheTTL,
+		cacheProjectQuotaBytes: DefaultCacheProjectQuotaBytes,
 	}
+}
+
+// WithCacheProjectQuotaBytes sets the per-project cache size cap.
+// 0 disables — TTL alone governs eviction. When a project's
+// `ready` cache total exceeds this limit, the sweeper deletes
+// oldest-accessed rows until the project is back under quota.
+func (s *Sweeper) WithCacheProjectQuotaBytes(b int64) *Sweeper {
+	if b >= 0 {
+		s.cacheProjectQuotaBytes = b
+	}
+	return s
 }
 
 // WithCacheTTL overrides the cache eviction window. 0 disables the
@@ -183,9 +201,9 @@ type SweepStats struct {
 	// Demotions: rows that had their expires_at bumped to NOW by the
 	// keep-last / project-quota / global-quota layers. They become
 	// delete candidates on the SAME tick (the TTL claim below).
-	DemotedKeepLast    int64
-	DemotedProjectCap  int64
-	DemotedGlobalCap   int64
+	DemotedKeepLast   int64
+	DemotedProjectCap int64
+	DemotedGlobalCap  int64
 
 	// Actual delete pass.
 	Claimed         int
@@ -196,11 +214,14 @@ type SweepStats struct {
 
 	// Cache sweep (piggybacks on the same tick — no separate
 	// sweeper goroutine). Expired caches are ready rows whose
-	// last_accessed_at fell past the cache TTL.
-	CachesDeleted         int
-	CacheStorageFailures  int
-	CacheDBFailures       int
-	CacheBytesFreed       int64
+	// last_accessed_at fell past the cache TTL. Quota-evicted
+	// rows are counted separately so ops can tell "abandoned
+	// caches" apart from "active project pushed past quota".
+	CachesDeleted        int
+	CachesDeletedByQuota int
+	CacheStorageFailures int
+	CacheDBFailures      int
+	CacheBytesFreed      int64
 }
 
 // SweepOnce runs a single batch and returns what happened. Exported so
@@ -303,23 +324,43 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		if err != nil {
 			s.log.Warn("retention: list expired caches", "err", err)
 		}
-		for _, c := range expired {
-			if err := s.storage.Delete(ctx, c.StorageKey); err != nil {
-				if !errors.Is(err, artifacts.ErrNotFound) {
-					s.log.Warn("retention: cache storage delete failed",
-						"storage_key", c.StorageKey, "err", err)
-					stats.CacheStorageFailures++
-					continue
-				}
-			}
-			if err := s.store.DeleteCacheRow(ctx, c.ID); err != nil {
-				s.log.Warn("retention: cache row delete failed",
-					"cache_id", c.ID, "err", err)
-				stats.CacheDBFailures++
+		s.deleteCaches(ctx, expired, &stats, false)
+	}
+
+	// Per-project quota runs AFTER TTL: a TTL pass may have
+	// already brought the project back under quota, so
+	// re-computing usage here avoids over-eviction. LRU across
+	// the project's remaining `ready` rows until enough bytes
+	// are reclaimed to fall under the limit.
+	if s.cacheProjectQuotaBytes > 0 {
+		over, err := s.store.ListProjectsOverCacheQuota(ctx, s.cacheProjectQuotaBytes)
+		if err != nil {
+			s.log.Warn("retention: list over-cache-quota projects", "err", err)
+		}
+		for _, p := range over {
+			excess := p.Bytes - s.cacheProjectQuotaBytes
+			candidates, err := s.store.ListOldestCachesInProject(ctx, p.ProjectID, s.batchSize)
+			if err != nil {
+				s.log.Warn("retention: list oldest caches",
+					"project_id", p.ProjectID, "err", err)
 				continue
 			}
-			stats.CachesDeleted++
-			stats.CacheBytesFreed += c.SizeBytes
+			// Take the minimal prefix whose sizes sum to `excess`.
+			// Picking the full `candidates` list would trim more
+			// than needed and hurt the next build's hit rate.
+			var toDelete []store.ExpiredCache
+			var freed int64
+			for _, c := range candidates {
+				if freed >= excess {
+					break
+				}
+				toDelete = append(toDelete, c)
+				freed += c.SizeBytes
+			}
+			s.log.Info("retention: cache project over quota",
+				"project_id", p.ProjectID, "bytes", p.Bytes,
+				"quota", s.cacheProjectQuotaBytes, "targeted", len(toDelete))
+			s.deleteCaches(ctx, toDelete, &stats, true)
 		}
 	}
 
@@ -345,6 +386,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		"storage_failures", stats.StorageFailures,
 		"db_failures", stats.DBFailures,
 		"caches_deleted", stats.CachesDeleted,
+		"caches_deleted_by_quota", stats.CachesDeletedByQuota,
 		"cache_bytes_freed", stats.CacheBytesFreed,
 		"cache_storage_failures", stats.CacheStorageFailures,
 		"cache_db_failures", stats.CacheDBFailures)
@@ -356,20 +398,51 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 	return stats
 }
 
+// deleteCaches is the shared blob+row delete loop behind both the
+// TTL sweep and the per-project quota sweep. `byQuota=true`
+// counts successes under CachesDeletedByQuota so ops can tell the
+// two eviction modes apart in metrics; either way, bytes freed
+// and failures aggregate into the same stats fields.
+func (s *Sweeper) deleteCaches(ctx context.Context, rows []store.ExpiredCache, stats *SweepStats, byQuota bool) {
+	for _, c := range rows {
+		if err := s.storage.Delete(ctx, c.StorageKey); err != nil {
+			if !errors.Is(err, artifacts.ErrNotFound) {
+				s.log.Warn("retention: cache storage delete failed",
+					"storage_key", c.StorageKey, "err", err, "by_quota", byQuota)
+				stats.CacheStorageFailures++
+				continue
+			}
+		}
+		if err := s.store.DeleteCacheRow(ctx, c.ID); err != nil {
+			s.log.Warn("retention: cache row delete failed",
+				"cache_id", c.ID, "err", err, "by_quota", byQuota)
+			stats.CacheDBFailures++
+			continue
+		}
+		if byQuota {
+			stats.CachesDeletedByQuota++
+		} else {
+			stats.CachesDeleted++
+		}
+		stats.CacheBytesFreed += c.SizeBytes
+	}
+}
+
 // Snapshot is the admin-page view of what the sweeper is configured
 // to do and what the last tick produced. Zero LastSweepAt means the
 // sweeper hasn't ticked yet (fresh boot or storage-disabled).
 type Snapshot struct {
-	Enabled           bool          `json:"enabled"`
-	Tick              time.Duration `json:"tick"`
-	BatchSize         int           `json:"batch_size"`
-	GraceMinutes      int           `json:"grace_minutes"`
-	KeepLast          int           `json:"keep_last"`
-	ProjectQuotaBytes int64         `json:"project_quota_bytes"`
-	GlobalQuotaBytes  int64         `json:"global_quota_bytes"`
-	CacheTTL          time.Duration `json:"cache_ttl"`
-	LastSweepAt       time.Time     `json:"last_sweep_at,omitempty"`
-	Last              SweepStats    `json:"last_stats"`
+	Enabled                bool          `json:"enabled"`
+	Tick                   time.Duration `json:"tick"`
+	BatchSize              int           `json:"batch_size"`
+	GraceMinutes           int           `json:"grace_minutes"`
+	KeepLast               int           `json:"keep_last"`
+	ProjectQuotaBytes      int64         `json:"project_quota_bytes"`
+	GlobalQuotaBytes       int64         `json:"global_quota_bytes"`
+	CacheTTL               time.Duration `json:"cache_ttl"`
+	CacheProjectQuotaBytes int64         `json:"cache_project_quota_bytes"`
+	LastSweepAt            time.Time     `json:"last_sweep_at,omitempty"`
+	Last                   SweepStats    `json:"last_stats"`
 }
 
 // Snapshot returns the current config + the last tick's stats. Safe
@@ -378,15 +451,16 @@ func (s *Sweeper) Snapshot() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Snapshot{
-		Enabled:           s.storage != nil,
-		Tick:              s.tick,
-		BatchSize:         s.batchSize,
-		GraceMinutes:      s.graceMinutes,
-		KeepLast:          s.keepLast,
-		ProjectQuotaBytes: s.projectQuotaBytes,
-		GlobalQuotaBytes:  s.globalQuotaBytes,
-		CacheTTL:          s.cacheTTL,
-		LastSweepAt:       s.lastSweepAt,
-		Last:              s.lastStats,
+		Enabled:                s.storage != nil,
+		Tick:                   s.tick,
+		BatchSize:              s.batchSize,
+		GraceMinutes:           s.graceMinutes,
+		KeepLast:               s.keepLast,
+		ProjectQuotaBytes:      s.projectQuotaBytes,
+		GlobalQuotaBytes:       s.globalQuotaBytes,
+		CacheTTL:               s.cacheTTL,
+		CacheProjectQuotaBytes: s.cacheProjectQuotaBytes,
+		LastSweepAt:            s.lastSweepAt,
+		Last:                   s.lastStats,
 	}
 }
