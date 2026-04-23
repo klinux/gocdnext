@@ -44,7 +44,21 @@ func TarGzPath(workDir, path string, dst io.Writer) (sha string, size int64, err
 	tw := tar.NewWriter(gz)
 
 	addEntry := func(abs, rel string, fi os.FileInfo) error {
-		hdr, err := tar.FileInfoHeader(fi, "")
+		// Detect symlinks and pull their targets — pnpm's
+		// node_modules is dense with them (`node_modules/react →
+		// .pnpm/react@X/node_modules/react`) and an empty-link tar
+		// header makes the extractor either skip the entry or
+		// recreate a dangling link. tar.FileInfoHeader needs the
+		// target as its second arg to stamp TypeSymlink + Linkname.
+		var linkTarget string
+		if fi.Mode()&os.ModeSymlink != 0 {
+			t, err := os.Readlink(abs)
+			if err != nil {
+				return fmt.Errorf("artifact: readlink %q: %w", rel, err)
+			}
+			linkTarget = t
+		}
+		hdr, err := tar.FileInfoHeader(fi, linkTarget)
 		if err != nil {
 			return fmt.Errorf("artifact: header %q: %w", rel, err)
 		}
@@ -53,6 +67,9 @@ func TarGzPath(workDir, path string, dst io.Writer) (sha string, size int64, err
 			return fmt.Errorf("artifact: write header %q: %w", rel, err)
 		}
 		if !fi.Mode().IsRegular() {
+			// Symlinks/dirs/etc. carry no content past the header.
+			// os.Open would follow the symlink (wrong) and ReadDir
+			// isn't our job here.
 			return nil
 		}
 		in, err := os.Open(abs)
@@ -191,10 +208,39 @@ func UntarGz(dest string, src io.Reader, wantSHA string) error {
 			if err := out.Close(); err != nil {
 				return fmt.Errorf("artifact: close %q: %w", full, err)
 			}
+		case tar.TypeSymlink:
+			// Recreate relative symlinks — pnpm node_modules is
+			// full of them (`node_modules/react →
+			// .pnpm/react@X/node_modules/react`). Reject absolute
+			// targets + any relative target that resolves outside
+			// dest so a malicious producer can't drop links at
+			// /etc/passwd or ../../host-sensitive.
+			if filepath.IsAbs(hdr.Linkname) {
+				return fmt.Errorf(
+					"artifact: symlink %q has absolute target %q — refused",
+					hdr.Name, hdr.Linkname)
+			}
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(full), hdr.Linkname))
+			linkRel, err := filepath.Rel(destAbs, resolved)
+			if err != nil || strings.HasPrefix(linkRel, "..") {
+				return fmt.Errorf(
+					"artifact: symlink %q target %q escapes dest — refused",
+					hdr.Name, hdr.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return fmt.Errorf("artifact: mkdir parent %q: %w", full, err)
+			}
+			// Idempotent extract: remove a pre-existing entry so
+			// Symlink doesn't fail with EEXIST on re-runs.
+			_ = os.Remove(full)
+			if err := os.Symlink(hdr.Linkname, full); err != nil {
+				return fmt.Errorf("artifact: symlink %q: %w", full, err)
+			}
 		default:
-			// Symlinks / other types: ignored rather than refused —
-			// tar.FileInfoHeader on a plain file/dir never creates
-			// these, but we may encounter them from other producers.
+			// Other types (fifos, devices, hard links) are rare
+			// in build outputs and we'd rather refuse than silently
+			// drop them — producers shouldn't be putting these in
+			// artefact paths anyway.
 		}
 	}
 	// Drain any trailing gzip bytes so the hash includes every byte

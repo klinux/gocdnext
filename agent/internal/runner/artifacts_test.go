@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gocdnext/gocdnext/agent/internal/runner"
@@ -131,6 +132,106 @@ func TestTarGzPath_NestedDirPreservesFullPath(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected tar entry web/node_modules/.bin/tsc, not found")
+	}
+}
+
+func TestTarGzPath_RoundTripsSymlinks(t *testing.T) {
+	// Regression: pnpm's node_modules uses symlinks heavily
+	// (`node_modules/react → .pnpm/react@X/node_modules/react`).
+	// An earlier version wrote the tar header with an empty link
+	// target and UntarGz ignored non-dir/non-reg entries entirely,
+	// so every symlink got stripped. Consumers then saw a
+	// `node_modules/` missing every top-level package → `pnpm exec`
+	// couldn't find anything.
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "pkg", "real", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "pkg", "real", "bin", "tsc"),
+		[]byte("#!/bin/sh\necho tsc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// pnpm-style relative symlink: node_modules/react →
+	// .pnpm/react@X/node_modules/react. Here we simplify to
+	// `pkg/link -> real/bin` which exercises the same mechanism.
+	if err := os.Symlink("real/bin", filepath.Join(src, "pkg", "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	sha, _, err := runner.TarGzPath(src, "pkg", &buf)
+	if err != nil {
+		t.Fatalf("tar: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := runner.UntarGz(dest, &buf, sha); err != nil {
+		t.Fatalf("untar: %v", err)
+	}
+
+	// Link must exist and point at its original target.
+	linkAbs := filepath.Join(dest, "pkg", "link")
+	got, err := os.Readlink(linkAbs)
+	if err != nil {
+		t.Fatalf("readlink %q: %v", linkAbs, err)
+	}
+	if got != "real/bin" {
+		t.Errorf("symlink target = %q, want %q", got, "real/bin")
+	}
+	// Following the symlink must resolve to the real file.
+	tscAbs := filepath.Join(linkAbs, "tsc")
+	content, err := os.ReadFile(tscAbs)
+	if err != nil {
+		t.Fatalf("read through symlink: %v", err)
+	}
+	if !strings.Contains(string(content), "echo tsc") {
+		t.Errorf("content via symlink: %q", content)
+	}
+}
+
+func TestUntarGz_RejectsAbsoluteSymlinks(t *testing.T) {
+	// Guard: a producer that writes a symlink with target
+	// `/etc/passwd` would let the extracted node_modules reach
+	// sensitive host files. Reject on extract.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "evil",
+		Typeflag: tar.TypeSymlink,
+		Linkname: "/etc/passwd",
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+
+	err := runner.UntarGz(t.TempDir(), &buf, "")
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected absolute-symlink refusal, got %v", err)
+	}
+}
+
+func TestUntarGz_RejectsEscapingSymlinks(t *testing.T) {
+	// Relative symlinks that resolve above dest are path traversal.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "sneaky",
+		Typeflag: tar.TypeSymlink,
+		Linkname: "../../etc/passwd",
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+
+	err := runner.UntarGz(t.TempDir(), &buf, "")
+	if err == nil || !strings.Contains(err.Error(), "escapes dest") {
+		t.Fatalf("expected escape refusal, got %v", err)
 	}
 }
 
