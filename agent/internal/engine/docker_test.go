@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 )
@@ -111,6 +113,59 @@ func TestDockerEngine_RunsScriptInContainer(t *testing.T) {
 	}
 	if !strings.Contains(lines, "hi from host") {
 		t.Fatalf("workspace not mounted:\n%s", lines)
+	}
+}
+
+func TestDockerEngine_JoinsProvisionedNetwork(t *testing.T) {
+	// When the runner creates a job-scoped docker network and
+	// passes its name through ScriptSpec.Network, the task
+	// container must join that network — otherwise pipeline
+	// services (on that same network with DNS aliases) are
+	// unreachable from scripts. Full end-to-end: create a
+	// network, stand up a tiny echo service with an alias, run
+	// a script that resolves it, verify the output.
+	if !dockerAvailable(t) {
+		t.Skip("docker daemon not available")
+	}
+	netName := "gocdnext-test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if out, err := exec.Command("docker", "network", "create", netName).CombinedOutput(); err != nil {
+		t.Fatalf("create network: %v (%s)", err, out)
+	}
+	defer exec.Command("docker", "network", "rm", netName).Run()
+
+	// Service: alpine container sitting idle on the network with
+	// a "svc" alias. Scripts in the sibling container resolve
+	// "svc" by DNS when they share the network.
+	svcName := "gocdnext-test-svc-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if out, err := exec.Command("docker", "run", "-d", "--rm",
+		"--name", svcName,
+		"--network", netName,
+		"--network-alias", "svc",
+		"alpine:3.19", "sleep", "60").CombinedOutput(); err != nil {
+		t.Fatalf("start svc: %v (%s)", err, out)
+	}
+	defer exec.Command("docker", "rm", "-f", svcName).Run()
+
+	d := engine.NewDocker(engine.DockerConfig{PullPolicy: "missing"}, nil)
+	cap := &captured{}
+	code, err := d.RunScript(context.Background(), engine.ScriptSpec{
+		WorkDir: t.TempDir(),
+		Image:   "alpine:3.19",
+		// getent returns the alias's resolved IP; a failure here
+		// would mean the task container wasn't on the network.
+		Script:  `getent hosts svc`,
+		Network: netName,
+		OnLine:  cap.onLine,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — logs:\n%s", code, strings.Join(cap.snapshot(), "\n"))
+	}
+	if !strings.Contains(strings.Join(cap.snapshot(), "\n"), "svc") {
+		t.Fatalf("svc hostname didn't resolve — network not attached. logs:\n%s",
+			strings.Join(cap.snapshot(), "\n"))
 	}
 }
 

@@ -31,7 +31,13 @@ type ScriptSpec struct {
 	// engines, DinD sidecar for Kubernetes. Engines that can't
 	// satisfy this should return an error before running.
 	Docker bool
-	OnLine func(stream, text string)
+	// Network, when non-empty, joins the task container to the
+	// named docker network — how pipeline-level services get
+	// reached by hostname. The runner creates the network + brings
+	// service containers up on it BEFORE calling RunScript. Shell
+	// engine ignores this field (no container to attach).
+	Network string
+	OnLine  func(stream, text string)
 }
 
 // Engine is the narrow contract: "run this, tell me when each line

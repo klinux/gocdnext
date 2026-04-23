@@ -209,6 +209,15 @@ func (d *Docker) buildArgs(image string, spec ScriptSpec, cidFile string) []stri
 		args = append(args, "-e", kv)
 	}
 
+	if spec.Network != "" {
+		// Join the job-scoped docker network the runner provisioned
+		// for this assignment. Service containers sit on the same
+		// network with a DNS alias matching their declared name, so
+		// a script saying `psql -h postgres` resolves to the sidecar
+		// without any extra env.
+		args = append(args, "--network", spec.Network)
+	}
+
 	if spec.Docker {
 		// Base plumbing: mount the host socket at a stable path and
 		// point DOCKER_HOST at it so docker CLI, docker-go, and any

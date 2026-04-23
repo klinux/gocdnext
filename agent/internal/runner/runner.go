@@ -175,6 +175,21 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		}
 	}
 
+	// Pipeline services: spin up sidecar containers on a
+	// job-scoped docker network and pass that network name down to
+	// the engine so the task container can resolve services by
+	// hostname. Empty services → no network, no cleanup. Cleanup
+	// is deferred so it runs on task failure, cancel, or
+	// successful exit alike.
+	network, serviceCleanup, svcErr := r.startServices(ctx, a, &seq)
+	if svcErr != nil {
+		log.Warn("runner: services startup failed", "err", svcErr)
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
+			fmt.Sprintf("services: %v", svcErr))
+		return
+	}
+	defer serviceCleanup()
+
 	for i, task := range a.GetTasks() {
 		script := task.GetScript()
 		if script == "" {
@@ -183,7 +198,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: plugin step skipped (local runner MVP)", i))
 			continue
 		}
-		exitCode, err := r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), a.GetEnv(), a, &seq)
+		exitCode, err := r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), network, a.GetEnv(), a, &seq)
 		if err != nil {
 			log.Warn("runner: script error", "err", err, "task", i)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
@@ -342,7 +357,7 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 // The engine calls OnLine for each stdout/stderr line it sees; we
 // turn those into LogLine protos via the same emitLog path used
 // everywhere else (so masking + seq numbering remain centralised).
-func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
+func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, network string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
 		WorkDir: workDir,
@@ -350,6 +365,7 @@ func (r *Runner) runScript(ctx context.Context, workDir, script, image string, d
 		Env:     env,
 		Script:  script,
 		Docker:  docker,
+		Network: network,
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
