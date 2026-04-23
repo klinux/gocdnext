@@ -88,6 +88,36 @@ describe("buildLayers", () => {
     expect(names(layers[1]!)).toEqual(["child-of-a", "child-of-b"]);
   });
 
+  it("motivating case: children sit right after their parent in flat order", () => {
+    // Regression harness for commit c7e9247 — the VSM's flat
+    // rendering path DFSes each root so ci-web (downstream of
+    // ci-server) ends up immediately after ci-server instead of
+    // stranded at the end of the row past every unrelated root.
+    // buildLayers doesn't do the DFS itself (the graph renderer
+    // does, reading the downstream map), but the barycenter
+    // ordering it produces is what makes parent/child-adjacent
+    // placement possible in the first place. Verify the layer
+    // ordering this test depends on.
+    const g = vsm(
+      [
+        node("ci-agent"),
+        node("ci-cli"),
+        node("ci-server"),
+        node("ci-web"),
+        node("lint"),
+      ],
+      [edge("ci-server", "ci-web")],
+    );
+    const layers = buildLayers(g);
+    // Layer 0 must have ci-server at index 0 (barycenter pulled
+    // it there because its only child ci-web is alone in
+    // layer 1 at index 0). Everything else falls back to
+    // alphabetical after it.
+    expect(names(layers[0]!).indexOf("ci-server")).toBe(0);
+    // Layer 1 holds just the downstream.
+    expect(names(layers[1]!)).toEqual(["ci-web"]);
+  });
+
   it("handles cycles defensively (no infinite recursion)", () => {
     // Cycles shouldn't happen in a well-formed pipeline DAG, but
     // the depth pass has an in-flight guard that bails to 0. The
