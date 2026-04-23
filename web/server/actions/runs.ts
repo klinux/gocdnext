@@ -18,6 +18,10 @@ const uuidSchema = z.string().uuid({ message: "expected UUID" });
 
 const cancelSchema = z.object({ runId: uuidSchema });
 const rerunSchema = z.object({ runId: uuidSchema, triggeredBy: z.string().optional() });
+const rerunJobSchema = z.object({
+  jobRunId: uuidSchema,
+  triggeredBy: z.string().optional(),
+});
 const triggerSchema = z.object({
   pipelineId: uuidSchema,
   projectSlug: z.string().min(1),
@@ -55,6 +59,34 @@ export async function rerunRun(
     triggered_by: parsed.data.triggeredBy ?? "",
   });
   if (res.ok) {
+    revalidatePath("/runs");
+    revalidatePath("/");
+  }
+  return res;
+}
+
+// rerunJob re-executes a single terminal job within its existing run
+// instead of spawning a whole new pipeline. Reuses the run's
+// artefacts + revisions, bumps the job's attempt counter on the
+// server. 409 when the job is still active (cancel first).
+export async function rerunJob(
+  input: z.infer<typeof rerunJobSchema>,
+): Promise<RunActionResult> {
+  const parsed = rerunJobSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  const res = await postJSON(`/api/v1/job_runs/${parsed.data.jobRunId}/rerun`, {
+    triggered_by: parsed.data.triggeredBy ?? "",
+  });
+  if (res.ok) {
+    // The server returns the parent run_id so the UI can navigate
+    // or revalidate the right page.
+    const runID = typeof res.data.run_id === "string" ? res.data.run_id : "";
+    if (runID) revalidatePath(`/runs/${runID}`);
     revalidatePath("/runs");
     revalidatePath("/");
   }

@@ -18,7 +18,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
-import { rerunRun } from "@/server/actions/runs";
+import { rerunJob, rerunRun } from "@/server/actions/runs";
 import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
 import { LiveDuration } from "@/components/shared/live-duration";
 import type {
@@ -228,7 +228,13 @@ function JobCard({ job, runId }: { job: MergedJob; runId?: string }) {
             {job.name}
           </span>
         )}
-        {runId ? <JobRetryButton runId={runId} jobName={job.name} /> : null}
+        {runId ? (
+          <JobRetryButton
+            runId={runId}
+            jobName={job.name}
+            jobRunId={job.run?.id}
+          />
+        ) : null}
       </div>
       {showDuration ? (
         <LiveDuration
@@ -244,9 +250,17 @@ function JobCard({ job, runId }: { job: MergedJob; runId?: string }) {
 function JobRetryButton({
   runId,
   jobName,
+  jobRunId,
 }: {
   runId: string;
   jobName: string;
+  // When set, clicking reruns JUST this job within the current
+  // run (bumps attempt, reuses artefacts). When null (the job has
+  // never executed — pure definition row), we fall back to a
+  // full-pipeline rerun. The fallback keeps the affordance useful
+  // for "project card" views where the latest run happened but
+  // some stages never started.
+  jobRunId?: string;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -254,13 +268,35 @@ function JobRetryButton({
     e.preventDefault();
     e.stopPropagation();
     startTransition(async () => {
+      if (jobRunId) {
+        const res = await rerunJob({ jobRunId });
+        if (!res.ok) {
+          if (res.status === 409) {
+            toast.error(`${jobName} is still active — cancel it first`);
+          } else {
+            toast.error(`Re-run ${jobName} failed: ${res.error}`);
+          }
+          return;
+        }
+        const attempt =
+          typeof res.data.attempt === "number" ? res.data.attempt : undefined;
+        toast.success(
+          attempt != null
+            ? `Re-running ${jobName} (attempt ${attempt})`
+            : `Re-running ${jobName}`,
+        );
+        router.refresh();
+        return;
+      }
+      // Never-ran job: rerun the whole pipeline so the user sees
+      // something happen instead of a no-op.
       const res = await rerunRun({ runId });
       if (!res.ok) {
         toast.error(`Re-run failed: ${res.error}`);
         return;
       }
       const newID = String(res.data.run_id ?? "");
-      toast.success(`Re-ran ${jobName}`, {
+      toast.success(`Re-ran pipeline`, {
         action: newID
           ? {
               label: "Open",

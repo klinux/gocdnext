@@ -19,6 +19,8 @@ var (
 	ErrRunAlreadyTerminal        = errors.New("store: run already terminal")
 	ErrNoModificationForPipeline = errors.New("store: no modification for pipeline")
 	ErrRunRevisionsMissing       = errors.New("store: run has no revisions to replay")
+	ErrJobRunNotFound            = errors.New("store: job_run not found")
+	ErrJobRunActive              = errors.New("store: job_run still active (queued/running)")
 )
 
 // RunningJobRef points the HTTP handler at a job_run that was still
@@ -256,6 +258,116 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 		Revisions:   json.RawMessage(`{}`),
 		TriggeredBy: triggeredBy,
 	})
+}
+
+// RerunJobInput points at one job_run to re-execute inside its
+// existing run. Cheaper than a full-pipeline rerun: reuses the
+// same workspace revisions, the same run_id, and — crucially —
+// already-uploaded artefacts from sibling jobs, so a failing
+// typecheck can be retried without paying the pnpm install of
+// the deps stage again.
+type RerunJobInput struct {
+	JobRunID    uuid.UUID
+	TriggeredBy string
+}
+
+type RerunJobResult struct {
+	RunID    uuid.UUID
+	JobRunID uuid.UUID
+	Attempt  int32
+}
+
+// RerunJob flips one terminal job_run back to queued (bumping its
+// attempt counter), wipes its log lines, and un-finishes the
+// parent stage + run so the scheduler picks the job up on the
+// next NOTIFY. Refuses when the target is still queued or running
+// — operator has to Cancel first. Parent runs that were terminal
+// (success / failed / canceled) get bumped to `running` so the UI
+// stops showing a fake final state.
+//
+// Per-attempt log separation is not kept (same trade-off as the
+// reaper's retry path — see migration 00003). The old attempt's
+// log lines are deleted before the new dispatch so the consumer
+// sees a clean slate instead of the previous run's output
+// intermixed with this one.
+func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var runID, stageRunID uuid.UUID
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT run_id, stage_run_id, status FROM job_runs WHERE id = $1
+	`, in.JobRunID).Scan(&runID, &stageRunID, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RerunJobResult{}, ErrJobRunNotFound
+	}
+	if err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: lookup: %w", err)
+	}
+	if status == "queued" || status == "running" {
+		return RerunJobResult{}, ErrJobRunActive
+	}
+
+	var attempt int32
+	err = tx.QueryRow(ctx, `
+		UPDATE job_runs SET
+			status      = 'queued',
+			agent_id    = NULL,
+			started_at  = NULL,
+			finished_at = NULL,
+			exit_code   = NULL,
+			error       = NULL,
+			attempt     = attempt + 1
+		WHERE id = $1
+		RETURNING attempt
+	`, in.JobRunID).Scan(&attempt)
+	if err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: reset: %w", err)
+	}
+
+	// Clear the previous attempt's logs — mirrors what
+	// ReclaimJobForRetry does for reaper-driven retries and keeps
+	// the log tab honest about what the new attempt produced.
+	if _, err := tx.Exec(ctx, `DELETE FROM log_lines WHERE job_run_id = $1`, in.JobRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: clear logs: %w", err)
+	}
+
+	// Un-finish the parent stage + run so dispatch + UI stop
+	// treating them as done. Leaves sibling jobs / stages alone —
+	// those already terminal with their real outcome.
+	if _, err := tx.Exec(ctx, `
+		UPDATE stage_runs
+		SET status = 'running', finished_at = NULL
+		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
+	`, stageRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen stage: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = 'running', finished_at = NULL
+		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
+	`, runID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen run: %w", err)
+	}
+
+	// Notify the scheduler the same way a fresh run does — it'll
+	// pick up the newly-queued job on its next LISTEN tick.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, RunQueuedChannel, runID.String()); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: notify: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: commit: %w", err)
+	}
+	return RerunJobResult{
+		RunID:    runID,
+		JobRunID: in.JobRunID,
+		Attempt:  attempt,
+	}, nil
 }
 
 // pipelineHasGitMaterial reports whether any of the pipeline's

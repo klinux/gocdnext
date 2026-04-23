@@ -240,6 +240,113 @@ func TestRerun_Success(t *testing.T) {
 	}
 }
 
+func TestRerunJob_ReusesRunAndBumpsAttempt(t *testing.T) {
+	// Re-run a single terminal job inside its existing run — should
+	// flip the job back to queued, bump attempt, wipe logs, and
+	// re-open the parent stage+run so the scheduler picks it up.
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+
+	ctx := context.Background()
+	// Mark run + stage + job terminal like a real failed run, then
+	// drop a log line so we can assert it gets wiped.
+	var jobID, stageID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`UPDATE job_runs SET status='failed', started_at=NOW()-interval '1m',
+		                     finished_at=NOW(), exit_code=1, error='boom'
+		 WHERE run_id=$1 RETURNING id, stage_run_id`, runID).
+		Scan(&jobID, &stageID); err != nil {
+		t.Fatalf("fail job: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='failed', finished_at=NOW() WHERE id=$1`, stageID); err != nil {
+		t.Fatalf("fail stage: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='failed', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO log_lines (job_run_id, seq, stream, at, text)
+		 VALUES ($1, 1, 'stdout', NOW(), 'old attempt output')`, jobID); err != nil {
+		t.Fatalf("insert log: %v", err)
+	}
+
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/rerun", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		JobRunID string `json:"job_run_id"`
+		RunID    string `json:"run_id"`
+		Attempt  int    `json:"attempt"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if body.JobRunID != jobID.String() {
+		t.Errorf("job_run_id = %q, want %s", body.JobRunID, jobID)
+	}
+	if body.RunID != runID.String() {
+		t.Errorf("run_id = %q, want %s (same run, not a new one)", body.RunID, runID)
+	}
+	if body.Attempt != 1 {
+		t.Errorf("attempt = %d, want 1 (was 0 pre-rerun)", body.Attempt)
+	}
+
+	// Job back to queued, run+stage back to running.
+	var jobStatus, stageStatus, runStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus)
+	_ = pool.QueryRow(ctx, `SELECT status FROM stage_runs WHERE id=$1`, stageID).Scan(&stageStatus)
+	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, runID).Scan(&runStatus)
+	if jobStatus != "queued" {
+		t.Errorf("job_run status = %q, want queued", jobStatus)
+	}
+	if stageStatus != "running" {
+		t.Errorf("stage status = %q, want running (un-finished)", stageStatus)
+	}
+	if runStatus != "running" {
+		t.Errorf("run status = %q, want running (un-finished)", runStatus)
+	}
+
+	// Old attempt's logs should be gone.
+	var logCount int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id=$1`, jobID).Scan(&logCount)
+	if logCount != 0 {
+		t.Errorf("log_lines = %d, want 0 (previous attempt should be wiped)", logCount)
+	}
+}
+
+func TestRerunJob_RefusesActiveJob(t *testing.T) {
+	// Rerunning a job that's still queued or running would double-
+	// schedule it. Operator has to cancel first.
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	var jobID uuid.UUID
+	_ = pool.QueryRow(context.Background(),
+		`SELECT id FROM job_runs WHERE run_id=$1 LIMIT 1`, runID).Scan(&jobID)
+
+	// Job starts as 'queued' from the seed; hit the rerun endpoint.
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/rerun", nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d want 409, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRerunJob_NotFound(t *testing.T) {
+	h, _ := handler(t)
+	rr := doPost(h, "/api/v1/job_runs/"+uuid.NewString()+"/rerun", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d want 404", rr.Code)
+	}
+}
+
+func TestRerunJob_InvalidID(t *testing.T) {
+	h, _ := handler(t)
+	rr := doPost(h, "/api/v1/job_runs/not-a-uuid/rerun", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d want 400", rr.Code)
+	}
+}
+
 func TestRerun_InvalidBody(t *testing.T) {
 	h, pool := handler(t)
 	runID, _ := seedRunWithModification(t, pool)
@@ -367,11 +474,13 @@ func TestTriggerPipeline_InvalidID(t *testing.T) {
 func doPost(h interface {
 	Cancel(http.ResponseWriter, *http.Request)
 	Rerun(http.ResponseWriter, *http.Request)
+	RerunJob(http.ResponseWriter, *http.Request)
 	TriggerPipeline(http.ResponseWriter, *http.Request)
 }, path string, body []byte) *httptest.ResponseRecorder {
 	r := chi.NewRouter()
 	r.Post("/api/v1/runs/{id}/cancel", h.Cancel)
 	r.Post("/api/v1/runs/{id}/rerun", h.Rerun)
+	r.Post("/api/v1/job_runs/{id}/rerun", h.RerunJob)
 	r.Post("/api/v1/pipelines/{id}/trigger", h.TriggerPipeline)
 
 	var reader *bytes.Reader

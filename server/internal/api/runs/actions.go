@@ -138,6 +138,51 @@ func (h *Handler) Rerun(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// RerunJob handles POST /api/v1/job_runs/{id}/rerun — re-executes a
+// single terminal job inside its existing run. Returns:
+//   202 Accepted → { job_run_id, run_id, attempt }
+//   404          → unknown job_run id
+//   409          → job still active (queued/running); cancel first
+func (h *Handler) RerunJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := chi.URLParam(r, "id")
+	jobRunID, err := uuid.Parse(raw)
+	if err != nil {
+		http.Error(w, "invalid job_run id", http.StatusBadRequest)
+		return
+	}
+	body, ok := decodeOptionalBody[rerunBody](w, r)
+	if !ok {
+		return
+	}
+
+	res, err := h.store.RerunJob(r.Context(), store.RerunJobInput{
+		JobRunID:    jobRunID,
+		TriggeredBy: body.TriggeredBy,
+	})
+	switch {
+	case err == nil:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_run_id": res.JobRunID.String(),
+			"run_id":     res.RunID.String(),
+			"attempt":    res.Attempt,
+		})
+	case errors.Is(err, store.ErrJobRunNotFound):
+		http.Error(w, "job_run not found", http.StatusNotFound)
+	case errors.Is(err, store.ErrJobRunActive):
+		http.Error(w, "job is still active — cancel first", http.StatusConflict)
+	default:
+		h.log.Error("rerun job", "job_run_id", jobRunID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
 type triggerBody struct {
 	TriggeredBy string `json:"triggered_by,omitempty"`
 }
