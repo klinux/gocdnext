@@ -85,16 +85,21 @@ func (f *FilesystemStore) SignedPutURL(_ context.Context, key string, ttl time.D
 	}, nil
 }
 
-func (f *FilesystemStore) SignedGetURL(_ context.Context, key string, ttl time.Duration) (SignedURL, error) {
+func (f *FilesystemStore) SignedGetURL(_ context.Context, key string, ttl time.Duration, opts ...GetOption) (SignedURL, error) {
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
 	exp := time.Now().Add(ttl)
 	tok := f.signer.Sign(key, VerbGET, exp)
-	return SignedURL{
-		URL:       f.publicBase + "/artifacts/" + url.PathEscape(tok),
-		ExpiresAt: exp,
-	}, nil
+	u := f.publicBase + "/artifacts/" + url.PathEscape(tok)
+	// Filename hint is plain query concatenation — the signed token
+	// sits in the PATH, so appending a query param doesn't invalidate
+	// any signature (contrast S3/GCS which must bake this into the
+	// presigned URL before signing).
+	if req := ResolveGetOptions(opts); req.Filename != "" {
+		u += "?filename=" + url.QueryEscape(req.Filename)
+	}
+	return SignedURL{URL: u, ExpiresAt: exp}, nil
 }
 
 func (f *FilesystemStore) Head(_ context.Context, key string) (int64, error) {

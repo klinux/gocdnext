@@ -30,8 +30,11 @@ type Store interface {
 	SignedPutURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error)
 
 	// SignedGetURL returns a URL + expiry that the agent can GET bytes
-	// from for a previously uploaded storage_key.
-	SignedGetURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error)
+	// from for a previously uploaded storage_key. Accepts optional
+	// GetOptions — today only WithContentDisposition is supported, which
+	// bakes a Content-Disposition header into the response so browsers
+	// save the blob with a useful name instead of the raw token.
+	SignedGetURL(ctx context.Context, key string, ttl time.Duration, opts ...GetOption) (SignedURL, error)
 
 	// Head returns the object's size in bytes and an existence bool.
 	// Returns ErrNotFound if the backend has no record.
@@ -56,4 +59,44 @@ type Store interface {
 type SignedURL struct {
 	URL       string
 	ExpiresAt time.Time
+}
+
+// GetOption modifies a SignedGetURL request. Backends read these
+// through the GetRequest helper — keeps the interface surface small
+// while letting each store do whatever it needs (filesystem appends
+// a query param, S3 uses ResponseContentDisposition on the presign,
+// GCS uses QueryParameters).
+type GetOption func(*GetRequest)
+
+// GetRequest is the resolved bag of options SignedGetURL backends
+// consume. Exported so concrete stores (in this package) can read
+// it; callers always construct it via GetOption functions.
+type GetRequest struct {
+	// Filename, when non-empty, asks the backend to emit
+	// Content-Disposition: attachment; filename="<Filename>" on the
+	// response. Undefined for PUT flows. Already sanitized by the
+	// caller — backends should not re-escape.
+	Filename string
+}
+
+// WithContentDisposition asks the backend to stamp the pre-signed
+// response with `Content-Disposition: attachment; filename="<name>"`
+// so browsers save the download under a meaningful name. Callers
+// typically derive `name` from the artifact's declared path (e.g.
+// "bin/gocdnext-server" → "gocdnext-server.tar.gz").
+func WithContentDisposition(filename string) GetOption {
+	return func(r *GetRequest) { r.Filename = filename }
+}
+
+// ResolveGetOptions folds a slice of options into a GetRequest.
+// Nil/empty input yields a zero-value GetRequest — the backend's
+// "no extras" fast path.
+func ResolveGetOptions(opts []GetOption) GetRequest {
+	var r GetRequest
+	for _, o := range opts {
+		if o != nil {
+			o(&r)
+		}
+	}
+	return r
 }

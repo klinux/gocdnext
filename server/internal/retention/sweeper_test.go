@@ -46,7 +46,7 @@ func (f *fakeStore) Delete(_ context.Context, key string) error {
 func (f *fakeStore) SignedPutURL(context.Context, string, time.Duration) (artifacts.SignedURL, error) {
 	return artifacts.SignedURL{}, errors.New("fakeStore: not used")
 }
-func (f *fakeStore) SignedGetURL(context.Context, string, time.Duration) (artifacts.SignedURL, error) {
+func (f *fakeStore) SignedGetURL(context.Context, string, time.Duration, ...artifacts.GetOption) (artifacts.SignedURL, error) {
 	return artifacts.SignedURL{}, errors.New("fakeStore: not used")
 }
 func (f *fakeStore) Head(context.Context, string) (int64, error) {

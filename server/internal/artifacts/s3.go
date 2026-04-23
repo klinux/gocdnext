@@ -105,14 +105,25 @@ func (s *S3Store) SignedPutURL(ctx context.Context, key string, ttl time.Duratio
 	return SignedURL{URL: req.URL, ExpiresAt: time.Now().Add(ttl)}, nil
 }
 
-func (s *S3Store) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error) {
+func (s *S3Store) SignedGetURL(ctx context.Context, key string, ttl time.Duration, opts ...GetOption) (SignedURL, error) {
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
-	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+	in := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
-	}, s3.WithPresignExpires(ttl))
+	}
+	// ResponseContentDisposition is the S3-native way to stamp a
+	// Content-Disposition header onto the pre-signed GET response.
+	// Baking it into the presign (not the URL) is required — every
+	// query param is part of the signature, so appending
+	// `?filename=…` after the fact breaks the signature.
+	if req := ResolveGetOptions(opts); req.Filename != "" {
+		in.ResponseContentDisposition = aws.String(
+			`attachment; filename="` + req.Filename + `"`,
+		)
+	}
+	req, err := s.presigner.PresignGetObject(ctx, in, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return SignedURL{}, fmt.Errorf("artifacts: s3: presign get: %w", err)
 	}

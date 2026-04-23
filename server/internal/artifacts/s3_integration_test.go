@@ -198,3 +198,50 @@ func TestS3_SignedGet_Works(t *testing.T) {
 		t.Errorf("body mismatch")
 	}
 }
+
+func TestS3_SignedGet_WithContentDisposition(t *testing.T) {
+	// Passing WithContentDisposition must bake
+	// `response-content-disposition` into the pre-signed query. S3
+	// signs every query parameter, so we can't append after the
+	// fact — the backend has to set ResponseContentDisposition on
+	// the PresignGetObject input. End-to-end check that LocalStack
+	// echoes the header back on the real HTTP GET.
+	endpoint := localStack(t)
+	s := newS3Store(t, endpoint, "artifact-content-disposition")
+	ctx := context.Background()
+
+	key := "signed/cd"
+	body := []byte("payload for cd test")
+	if _, err := s.Put(ctx, key, bytes.NewReader(body)); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	su, err := s.SignedGetURL(ctx, key, time.Minute,
+		artifacts.WithContentDisposition("gocdnext-server.tar.gz"))
+	if err != nil {
+		t.Fatalf("sign get: %v", err)
+	}
+	// The signed URL encodes the desired response header in its
+	// query string. Exact encoding varies by SDK version so we do a
+	// substring check on the parameter name + filename, not the full
+	// value.
+	if !strings.Contains(su.URL, "response-content-disposition=") {
+		t.Errorf("signed URL missing response-content-disposition: %q", su.URL)
+	}
+	if !strings.Contains(su.URL, "gocdnext-server.tar.gz") {
+		t.Errorf("signed URL missing filename payload: %q", su.URL)
+	}
+
+	resp, err := http.Get(su.URL)
+	if err != nil {
+		t.Fatalf("get via signed url: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, "gocdnext-server.tar.gz") {
+		t.Errorf("Content-Disposition on response = %q, want attachment with filename", got)
+	}
+	drained, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(drained, body) {
+		t.Errorf("body mismatch")
+	}
+}

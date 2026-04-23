@@ -10,7 +10,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -206,25 +205,21 @@ func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 //
 // `artifactPath` is the YAML-declared path (e.g. "bin/gocdnext-server"
 // or "web/.next/standalone/") and becomes the downloaded file's name
-// via a `?filename=…` hint that the filesystem handler turns into a
-// Content-Disposition header. Without it the browser saves the blob
-// as a random token with no extension, and users end up doing
-// `gunzip` + `tar xf` instead of a single `tar xzf`.
+// via WithContentDisposition — filesystem encodes it as a query param,
+// S3/GCS bake it into the pre-signed URL's ResponseContentDisposition
+// so browsers save the blob with a useful name instead of the raw
+// token. Without this, users had to gunzip+untar as two steps.
 func (h *Handler) signDownload(ctx context.Context, storageKey, artifactPath string) (string, time.Time) {
-	signed, err := h.artifactStore.SignedGetURL(ctx, storageKey, downloadTTL)
+	var opts []artifacts.GetOption
+	if name := downloadFilename(artifactPath); name != "" {
+		opts = append(opts, artifacts.WithContentDisposition(name))
+	}
+	signed, err := h.artifactStore.SignedGetURL(ctx, storageKey, downloadTTL, opts...)
 	if err != nil {
 		h.log.Warn("sign artifact get", "storage_key", storageKey, "err", err)
 		return "", time.Time{}
 	}
-	u := signed.URL
-	if name := downloadFilename(artifactPath); name != "" {
-		sep := "?"
-		if strings.Contains(u, "?") {
-			sep = "&"
-		}
-		u += sep + "filename=" + url.QueryEscape(name)
-	}
-	return u, signed.ExpiresAt
+	return signed.URL, signed.ExpiresAt
 }
 
 // downloadFilename picks a sensible saved-as name from the artifact's

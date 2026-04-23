@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"time"
 
@@ -95,14 +96,14 @@ func (g *GCSStore) Client() *storage.Client { return g.client }
 func (g *GCSStore) Bucket() string { return g.bucket }
 
 func (g *GCSStore) SignedPutURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error) {
-	return g.sign(ctx, key, ttl, "PUT")
+	return g.sign(ctx, key, ttl, "PUT", GetRequest{})
 }
 
-func (g *GCSStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (SignedURL, error) {
-	return g.sign(ctx, key, ttl, "GET")
+func (g *GCSStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration, opts ...GetOption) (SignedURL, error) {
+	return g.sign(ctx, key, ttl, "GET", ResolveGetOptions(opts))
 }
 
-func (g *GCSStore) sign(_ context.Context, key string, ttl time.Duration, method string) (SignedURL, error) {
+func (g *GCSStore) sign(_ context.Context, key string, ttl time.Duration, method string, req GetRequest) (SignedURL, error) {
 	if g.signerEmail == "" || len(g.signerKeyPEM) == 0 {
 		return SignedURL{}, errors.New("artifacts: gcs: signing key unavailable (configure CredentialsJSON/CredentialsFile)")
 	}
@@ -116,11 +117,23 @@ func (g *GCSStore) sign(_ context.Context, key string, ttl time.Duration, method
 		Expires:        time.Now().Add(ttl),
 		Scheme:         storage.SigningSchemeV4,
 	}
-	url, err := storage.SignedURL(g.bucket, key, opts)
+	// GCS V4 signing folds reserved response-* query params into the
+	// signature the same way S3's ResponseContentDisposition does —
+	// setting it here makes the browser save the blob under a
+	// meaningful name, and appending it post-sign would break the
+	// signature.
+	if req.Filename != "" {
+		opts.QueryParameters = url.Values{
+			"response-content-disposition": []string{
+				`attachment; filename="` + req.Filename + `"`,
+			},
+		}
+	}
+	signedURL, err := storage.SignedURL(g.bucket, key, opts)
 	if err != nil {
 		return SignedURL{}, fmt.Errorf("artifacts: gcs: sign %s: %w", method, err)
 	}
-	return SignedURL{URL: url, ExpiresAt: opts.Expires}, nil
+	return SignedURL{URL: signedURL, ExpiresAt: opts.Expires}, nil
 }
 
 func (g *GCSStore) Head(ctx context.Context, key string) (int64, error) {

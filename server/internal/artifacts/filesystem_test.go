@@ -90,6 +90,33 @@ func TestFilesystem_SignedPutURL_Format(t *testing.T) {
 	}
 }
 
+func TestFilesystem_SignedGetURL_AppendsFilenameHint(t *testing.T) {
+	// WithContentDisposition must survive the filesystem backend's
+	// URL shape — the signer lives in the PATH so we can append a
+	// plain `?filename=…` query without invalidating anything. The
+	// handler reads this param and turns it into Content-Disposition
+	// so the user's browser saves the blob with a useful name.
+	fs := mustFS(t)
+	ctx := context.Background()
+
+	plain, err := fs.SignedGetURL(ctx, "obj/2", time.Minute)
+	if err != nil {
+		t.Fatalf("sign plain: %v", err)
+	}
+	if strings.Contains(plain.URL, "filename=") {
+		t.Errorf("plain get URL shouldn't carry filename: %q", plain.URL)
+	}
+
+	hinted, err := fs.SignedGetURL(ctx, "obj/2", time.Minute,
+		WithContentDisposition("gocdnext-server.tar.gz"))
+	if err != nil {
+		t.Fatalf("sign hinted: %v", err)
+	}
+	if !strings.Contains(hinted.URL, "?filename=gocdnext-server.tar.gz") {
+		t.Errorf("hinted URL missing filename param: %q", hinted.URL)
+	}
+}
+
 func TestFilesystem_PathTraversal_Rejected(t *testing.T) {
 	fs := mustFS(t)
 	ctx := context.Background()
