@@ -90,6 +90,57 @@ func TestExecute_SingleSuccessfulScript(t *testing.T) {
 	}
 }
 
+func TestExecute_CancelMidRunAbortsJob(t *testing.T) {
+	// Regression cover for the cancel-kills-container flow. The job
+	// runs a script that sleeps longer than the test's patience;
+	// we Cancel() after it's clearly started and expect the shell
+	// engine's context to be canceled so the script exits early
+	// and the runner reports a non-success result within seconds.
+	r, c := newRunner(t)
+	a := assignment("sleep 30")
+
+	done := make(chan struct{})
+	go func() {
+		r.Execute(context.Background(), a)
+		close(done)
+	}()
+
+	// Give Execute enough time to reach the script loop and
+	// register itself in the in-flight map.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if r.Cancel(a.GetJobId()) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("job never registered in-flight within 3s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return within 5s after Cancel")
+	}
+
+	if c.result == nil {
+		t.Fatal("no result emitted")
+	}
+	if c.result.Status == gocdnextv1.RunStatus_RUN_STATUS_SUCCESS {
+		t.Fatalf("status = SUCCESS, want FAILED/CANCELED after cancel")
+	}
+}
+
+func TestRunner_CancelUnknownReturnsFalse(t *testing.T) {
+	// Late-arriving Cancel (job already finished or never ran on
+	// this agent) is a no-op — caller logs it and moves on.
+	r, _ := newRunner(t)
+	if r.Cancel("ghost-job-id") {
+		t.Fatal("Cancel on unknown job should return false")
+	}
+}
+
 func TestExecute_FailingScriptReportsExitCode(t *testing.T) {
 	r, c := newRunner(t)
 	ctx := context.Background()

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -97,6 +98,90 @@ func TestCancel_Success(t *testing.T) {
 	_ = pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM job_runs WHERE run_id = $1 AND status = 'queued'`, runID).Scan(&queuedJobs)
 	if queuedStages != 0 || queuedJobs != 0 {
 		t.Fatalf("leftover queued: stages=%d jobs=%d", queuedStages, queuedJobs)
+	}
+}
+
+// fakeDispatcher captures CancelJob pushes so the test can assert
+// that the right jobs were signaled on the right agents. Matches the
+// narrow CancelDispatcher interface the Handler depends on — keeps
+// the test from needing the full grpcsrv stack.
+type fakeDispatcher struct {
+	calls []dispatchCall
+}
+
+type dispatchCall struct {
+	agentID uuid.UUID
+	runID   string
+	jobID   string
+}
+
+func (f *fakeDispatcher) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage) error {
+	c := msg.GetCancel()
+	if c == nil {
+		return nil
+	}
+	f.calls = append(f.calls, dispatchCall{
+		agentID: agentID,
+		runID:   c.GetRunId(),
+		jobID:   c.GetJobId(),
+	})
+	return nil
+}
+
+func TestCancel_DispatchesCancelJobToRunningAgents(t *testing.T) {
+	// Regression cover for the cancel-kills-container fix: running
+	// jobs assigned to an agent must receive a CancelJob push so the
+	// agent can kill its container. Without this, cancel is DB-only
+	// and the container keeps burning.
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+
+	// Promote the seeded compile job to running + assign it to a
+	// fake agent. Seed an agents row first because job_runs.agent_id
+	// has an FK.
+	agentID := uuid.New()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO agents (id, name, token_hash) VALUES ($1, 'test-agent', 'x')`,
+		agentID)
+	if err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+	var jobID uuid.UUID
+	if err := pool.QueryRow(context.Background(),
+		`UPDATE job_runs SET status = 'running', agent_id = $1, started_at = NOW()
+		 WHERE run_id = $2 AND status = 'queued' RETURNING id`,
+		agentID, runID).Scan(&jobID); err != nil {
+		t.Fatalf("promote job: %v", err)
+	}
+
+	disp := &fakeDispatcher{}
+	h = h.WithCancelDispatcher(disp)
+
+	rr := doPost(h, "/api/v1/runs/"+runID.String()+"/cancel", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher called %d times, want 1", len(disp.calls))
+	}
+	call := disp.calls[0]
+	if call.agentID != agentID {
+		t.Errorf("dispatched to %s, want %s", call.agentID, agentID)
+	}
+	if call.jobID != jobID.String() {
+		t.Errorf("dispatched job %s, want %s", call.jobID, jobID)
+	}
+	if call.runID != runID.String() {
+		t.Errorf("dispatched run %s, want %s", call.runID, runID)
+	}
+	// Response body should expose the number of agents signaled so
+	// the UI can show an honest "cancel requested" state.
+	var body struct {
+		SignaledJobs int `json:"signaled_jobs"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if body.SignaledJobs != 1 {
+		t.Errorf("signaled_jobs = %d, want 1", body.SignaledJobs)
 	}
 }
 

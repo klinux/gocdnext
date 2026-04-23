@@ -21,23 +21,53 @@ var (
 	ErrRunRevisionsMissing       = errors.New("store: run has no revisions to replay")
 )
 
+// RunningJobRef points the HTTP handler at a job_run that was still
+// executing on an agent when CancelRun fired. The handler uses the
+// pair to dispatch a `CancelJob` gRPC message down the owning
+// agent's session — without that push, the run-level DB cancel
+// would leave the container burning until it finished naturally.
+type RunningJobRef struct {
+	JobID   uuid.UUID
+	AgentID uuid.UUID
+}
+
+// CancelRunResult surfaces what CancelRun touched. Today only
+// RunningJobs is actionable, but keeping it in a struct leaves
+// room for future signals (e.g. "queued jobs we skipped").
+type CancelRunResult struct {
+	RunningJobs []RunningJobRef
+}
+
 // CancelRun marks a run and its queued/running descendants as
-// canceled. Running jobs keep executing on the agent (cancel is
-// best-effort on the control plane side for now — agent-dispatch of
-// CancelJob messages lands in a follow-up slice). Idempotent: second
-// call on a terminal run returns ErrRunAlreadyTerminal.
-func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) error {
+// canceled and returns the agent-assigned jobs that were still
+// running so the caller can push CancelJob messages through the
+// gRPC stream. Idempotent: second call on a terminal run returns
+// ErrRunAlreadyTerminal.
+//
+// Queued jobs are flipped to canceled directly here (they haven't
+// reached an agent yet). Running jobs stay marked `running` until
+// the agent reports a final JobResult — that keeps the audit
+// trail honest about when each one actually stopped.
+func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult, error) {
 	// Check that the run exists before we start. Distinguishing "not
 	// found" from "already terminal" matters for 404 vs 409.
 	row, err := s.q.GetRunForAction(ctx, pgUUID(runID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrRunNotFound
+		return CancelRunResult{}, ErrRunNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("store: cancel run: lookup: %w", err)
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: lookup: %w", err)
 	}
 	if row.Status != "queued" && row.Status != "running" {
-		return ErrRunAlreadyTerminal
+		return CancelRunResult{}, ErrRunAlreadyTerminal
+	}
+
+	// Snapshot the set of jobs we need to push Cancel messages to
+	// BEFORE touching run/stage state. Doing it after would race
+	// the agent's own JobResult (which clears agent_id).
+	running, err := s.listRunningJobsForRun(ctx, runID)
+	if err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: list running: %w", err)
 	}
 
 	// Cancel the run row first so any racing scheduler pass sees the
@@ -47,18 +77,45 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) error {
 	// are still safe because they gate on status='queued'.
 	if _, err := s.q.CancelActiveRun(ctx, pgUUID(runID)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrRunAlreadyTerminal
+			return CancelRunResult{}, ErrRunAlreadyTerminal
 		}
-		return fmt.Errorf("store: cancel run: update: %w", err)
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: update: %w", err)
 	}
 
 	if err := s.q.CancelQueuedStagesInRun(ctx, pgUUID(runID)); err != nil {
-		return fmt.Errorf("store: cancel run: stages: %w", err)
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: stages: %w", err)
 	}
 	if err := s.q.CancelQueuedJobsInRun(ctx, pgUUID(runID)); err != nil {
-		return fmt.Errorf("store: cancel run: jobs: %w", err)
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: jobs: %w", err)
 	}
-	return nil
+	return CancelRunResult{RunningJobs: running}, nil
+}
+
+// listRunningJobsForRun returns (job_run_id, agent_id) pairs for
+// every running job under a run that's actually been dispatched.
+// Raw SQL — not worth a sqlc entry for a single query that's only
+// used from CancelRun. `agent_id IS NOT NULL` guard skips queued
+// jobs that hadn't reached an agent yet; those are handled by
+// CancelQueuedJobsInRun.
+func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]RunningJobRef, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, agent_id
+		FROM job_runs
+		WHERE run_id = $1 AND status = 'running' AND agent_id IS NOT NULL
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RunningJobRef
+	for rows.Next() {
+		var jobID, agentID uuid.UUID
+		if err := rows.Scan(&jobID, &agentID); err != nil {
+			return nil, err
+		}
+		out = append(out, RunningJobRef{JobID: jobID, AgentID: agentID})
+	}
+	return out, rows.Err()
 }
 
 // RerunRunInput configures a rerun. TriggeredBy lands on the new run

@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -30,10 +31,21 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	switch err := h.store.CancelRun(r.Context(), runID); {
+	res, err := h.store.CancelRun(r.Context(), runID)
+	switch {
 	case err == nil:
+		// Fan CancelJob messages out to every agent running one of
+		// the run's jobs. Without this push the DB is flipped to
+		// canceled but the container keeps burning — see the
+		// cancel-kills-container roadmap for the incident that
+		// motivated this wiring.
+		h.dispatchCancel(runID, res.RunningJobs)
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": runID.String(), "status": "canceled"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"run_id":        runID.String(),
+			"status":        "canceled",
+			"signaled_jobs": len(res.RunningJobs),
+		})
 	case errors.Is(err, store.ErrRunNotFound):
 		http.Error(w, "run not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrRunAlreadyTerminal):
@@ -41,6 +53,37 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.log.Error("cancel run", "run_id", runID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+// dispatchCancel pushes a CancelJob frame per running job to the
+// owning agent's session. Best-effort: a missing/busy session is
+// logged and skipped — the job's container eventually exits on
+// its own and the server reconciles via the resulting JobResult.
+// The dispatcher stays optional so unit tests + "DB-only" mode
+// don't need the gRPC machinery wired.
+func (h *Handler) dispatchCancel(runID uuid.UUID, jobs []store.RunningJobRef) {
+	if h.dispatcher == nil {
+		if len(jobs) > 0 {
+			h.log.Warn("cancel: no gRPC dispatcher wired; containers keep running",
+				"run_id", runID, "running_jobs", len(jobs))
+		}
+		return
+	}
+	for _, ref := range jobs {
+		msg := &gocdnextv1.ServerMessage{
+			Kind: &gocdnextv1.ServerMessage_Cancel{
+				Cancel: &gocdnextv1.CancelJob{
+					RunId:  runID.String(),
+					JobId:  ref.JobID.String(),
+					Reason: "user canceled",
+				},
+			},
+		}
+		if err := h.dispatcher.Dispatch(ref.AgentID, msg); err != nil {
+			h.log.Warn("cancel: dispatch failed",
+				"run_id", runID, "job_id", ref.JobID, "agent_id", ref.AgentID, "err", err)
+		}
 	}
 }
 

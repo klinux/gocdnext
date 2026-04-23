@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -31,10 +32,19 @@ const defaultLogsPerJob int32 = 200
 // same cadence as the run detail (client-side polling).
 const downloadTTL = 5 * time.Minute
 
+// CancelDispatcher is the narrow slice of grpcsrv.SessionStore the
+// Cancel handler needs to push CancelJob messages down to the agent
+// that's running a given job. Defined locally so this package
+// doesn't need to import grpcsrv just for the type.
+type CancelDispatcher interface {
+	Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage) error
+}
+
 type Handler struct {
 	store         *store.Store
 	artifactStore artifacts.Store
 	fetcher       configsync.Fetcher
+	dispatcher    CancelDispatcher
 	log           *slog.Logger
 }
 
@@ -43,6 +53,15 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{store: s, log: log}
+}
+
+// WithCancelDispatcher wires the gRPC session registry. When present,
+// cancelling a run pushes CancelJob messages to every agent running
+// one of the run's jobs so the container actually stops. Without it
+// the handler falls back to "DB-only" cancel — the pre-C6 behaviour.
+func (h *Handler) WithCancelDispatcher(d CancelDispatcher) *Handler {
+	h.dispatcher = d
+	return h
 }
 
 // WithArtifactStore enables the /artifacts endpoint. Without it the

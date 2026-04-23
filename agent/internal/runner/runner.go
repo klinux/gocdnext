@@ -48,9 +48,14 @@ type Config struct {
 }
 
 // Runner is safe to share across concurrent Execute calls — each call uses
-// its own workspace subdirectory. No per-runner state mutates.
+// its own workspace subdirectory. The in-flight registry (inflight + mu)
+// lets the server push a CancelJob mid-execution and have the runner
+// cancel that specific job's context without affecting siblings.
 type Runner struct {
 	cfg Config
+
+	inflightMu sync.Mutex
+	inflight   map[string]context.CancelFunc // job_id → cancel
 }
 
 func New(cfg Config) *Runner {
@@ -63,13 +68,49 @@ func New(cfg Config) *Runner {
 	if cfg.Engine == nil {
 		cfg.Engine = engine.NewShell()
 	}
-	return &Runner{cfg: cfg}
+	return &Runner{cfg: cfg, inflight: map[string]context.CancelFunc{}}
+}
+
+// Cancel signals the in-flight job with the given ID to stop. Returns
+// true when a matching job was running (and its context was canceled),
+// false when the job had already finished or never registered. Safe to
+// call concurrently with Execute from the gRPC message dispatch loop.
+func (r *Runner) Cancel(jobID string) bool {
+	r.inflightMu.Lock()
+	cancel, ok := r.inflight[jobID]
+	r.inflightMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (r *Runner) registerInflight(jobID string, cancel context.CancelFunc) {
+	r.inflightMu.Lock()
+	r.inflight[jobID] = cancel
+	r.inflightMu.Unlock()
+}
+
+func (r *Runner) deregisterInflight(jobID string) {
+	r.inflightMu.Lock()
+	delete(r.inflight, jobID)
+	r.inflightMu.Unlock()
 }
 
 // Execute runs the assignment to completion: checkout each material, run
 // each script task until one fails, emit a JobResult. Never panics on task
 // failure — exit != 0 and checkout errors both resolve to RUN_STATUS_FAILED.
 func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
+	// Derive a cancelable context scoped to this one job and register
+	// it so the gRPC side can `Cancel(jobID)` mid-run. Deferred
+	// deregister ensures a late Cancel after the job finished is a
+	// no-op instead of racing with a newer job on the same ID.
+	ctx, cancelJob := context.WithCancel(ctx)
+	defer cancelJob()
+	r.registerInflight(a.GetJobId(), cancelJob)
+	defer r.deregisterInflight(a.GetJobId())
+
 	log := r.cfg.Logger.With("run_id", a.GetRunId(), "job_id", a.GetJobId(), "name", a.GetName())
 	log.Info("runner: execute start", "tasks", len(a.GetTasks()), "checkouts", len(a.GetCheckouts()))
 

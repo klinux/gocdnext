@@ -182,6 +182,11 @@ func main() {
 	pipelinesHandler := pipelinesapi.NewHandler(st, logger)
 
 	sessions := grpcsrv.NewSessionStore()
+	// Wire the session registry into the Cancel endpoint so
+	// canceling a run actually pushes CancelJob frames to the
+	// agents running jobs — otherwise cancel is DB-only and the
+	// container keeps burning until it finishes naturally.
+	runsHandler = runsHandler.WithCancelDispatcher(sessions)
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
 		WithChecksReporter(checksReporter)
 	if artifactStore != nil {

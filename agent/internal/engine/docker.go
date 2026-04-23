@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // Docker runs each script inside a `docker run ...` against the
@@ -71,6 +74,15 @@ func (*Docker) Name() string { return "docker" }
 // for docker lifecycle problems (image pull failed, socket
 // missing, etc.). On image-less jobs delegates to the fallback
 // engine.
+//
+// Cancellation: `docker run` does NOT forward SIGTERM to the
+// container by default — killing the CLI process (what
+// exec.CommandContext does on ctx.Done) leaves the container
+// running. We work around that by passing `--cidfile <path>`
+// and spawning a watchdog goroutine: when ctx is canceled, read
+// the cid and issue `docker kill <cid>`. The CLI process is
+// still killed as a belt-and-suspenders step so a hung docker
+// CLI doesn't pin the runner goroutine.
 func (d *Docker) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 	image := spec.Image
 	if image == "" {
@@ -91,8 +103,18 @@ func (d *Docker) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 		}
 	}
 
-	args := d.buildArgs(image, spec)
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	// cidfile lets us recover the container id for a forced kill
+	// even if the CLI process hasn't logged it. `docker run` creates
+	// the file atomically right before the container starts; we
+	// remove it on exit.
+	cidFile := filepath.Join(os.TempDir(), "gocdnext-"+uuid.NewString()+".cid")
+	defer func() { _ = os.Remove(cidFile) }()
+
+	args := d.buildArgs(image, spec, cidFile)
+	// Intentionally NOT exec.CommandContext: we manage cancellation
+	// manually so we can `docker kill` the container before the CLI
+	// process dies, not after.
+	cmd := exec.Command("docker", args...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -106,24 +128,72 @@ func (d *Docker) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 		return -1, fmt.Errorf("docker engine: start: %w", err)
 	}
 
+	// Watchdog: if ctx is canceled while the container is running,
+	// read the cid and kill the container. Also kill the CLI in case
+	// it's wedged (e.g. waiting on image pull) — otherwise ctx cancel
+	// would hang waiting for Wait() to return.
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if cid := readCIDFile(cidFile); cid != "" {
+				// best-effort; container may already have exited
+				_ = exec.Command("docker", "kill", cid).Run()
+			}
+			_ = cmd.Process.Kill()
+		case <-done:
+		}
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go streamLines(stdout, "stdout", spec.OnLine, &wg)
 	go streamLines(stderr, "stderr", spec.OnLine, &wg)
 	wg.Wait()
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	close(done)
+
+	// Ctx already canceled means the caller asked for a cancel —
+	// surface that explicitly so the runner reports "canceled"
+	// instead of whatever docker's exit code happened to be
+	// (typically 137/SIGKILL).
+	if ctx.Err() != nil {
+		return -1, ctx.Err()
+	}
+	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
-		return -1, fmt.Errorf("docker engine: wait: %w", err)
+		return -1, fmt.Errorf("docker engine: wait: %w", waitErr)
 	}
 	return 0, nil
 }
 
-func (d *Docker) buildArgs(image string, spec ScriptSpec) []string {
+// readCIDFile returns the container id docker wrote into the
+// cidfile, or "" when the file never appeared (container didn't
+// start yet, e.g. ctx canceled during image pull). Trims the
+// trailing newline docker writes.
+func readCIDFile(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func (d *Docker) buildArgs(image string, spec ScriptSpec, cidFile string) []string {
 	args := []string{"run", "--rm", "-i"}
+
+	if cidFile != "" {
+		// Used by the cancel watchdog to find the container id and
+		// issue `docker kill` when ctx is canceled mid-run. Docker
+		// writes the file atomically right before starting the
+		// container; refuses to overwrite an existing one, so we
+		// pass a fresh tmp path per invocation.
+		args = append(args, "--cidfile", cidFile)
+	}
 
 	if spec.WorkDir != "" {
 		// Bind the host workspace so the container sees the same

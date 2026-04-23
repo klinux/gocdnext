@@ -229,7 +229,17 @@ func (c *Client) handleServerMessage(ctx context.Context, msg *gocdnextv1.Server
 		// same outbound channel as heartbeats — single-writer on stream.Send.
 		go rn.Execute(ctx, a)
 	case *gocdnextv1.ServerMessage_Cancel:
-		c.log.Info("cancel (not implemented yet)")
+		req := k.Cancel
+		ok := rn.Cancel(req.GetJobId())
+		c.log.Info("cancel requested",
+			"run_id", req.GetRunId(),
+			"job_id", req.GetJobId(),
+			"reason", req.GetReason(),
+			"matched_inflight", ok)
+		// Runner.Cancel returning false is expected when the job
+		// already finished or never reached this agent — we log
+		// it and move on. The server relies on the eventual
+		// JobResult to reconcile DB state anyway.
 	default:
 		c.log.Warn("unknown server message kind")
 	}
