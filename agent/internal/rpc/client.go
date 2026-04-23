@@ -110,23 +110,25 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 
 	uploader := NewArtifactUploader(cli, reg.SessionId, nil)
-	return c.runStream(ctx, stream, hb, uploader)
+	cache := NewCacheClient(cli, reg.SessionId, nil)
+	return c.runStream(ctx, stream, hb, uploader, cache)
 }
 
 // buildRunner constructs the per-session runner. Its Send callback is wired
 // to the outbound channel so logs and results fan into the same single-writer
 // stream pump as heartbeats.
-func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader runner.ArtifactUploader) *runner.Runner {
+func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader runner.ArtifactUploader, cache runner.CacheClient) *runner.Runner {
 	return runner.New(runner.Config{
 		WorkspaceRoot: c.cfg.WorkspaceRoot,
 		Logger:        c.log,
 		Send:          send,
 		Uploader:      uploader,
+		Cache:         cache,
 		Engine:        c.cfg.Engine,
 	})
 }
 
-func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader runner.ArtifactUploader) error {
+func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader runner.ArtifactUploader, cache runner.CacheClient) error {
 	// Single-writer invariant for gRPC ClientStream: sendLoop is the only
 	// goroutine that calls stream.Send / CloseSend. Heartbeats (ticker) and
 	// runner-produced messages (logs, results) both flow through `outbound`
@@ -141,7 +143,7 @@ func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_C
 		case <-streamCtx.Done():
 		}
 	}
-	rn := c.buildRunner(sendOutbound, uploader)
+	rn := c.buildRunner(sendOutbound, uploader, cache)
 
 	recvErrCh := make(chan error, 1)
 	go func() {

@@ -143,6 +143,110 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// TarGzPaths is the multi-path counterpart of TarGzPath: one
+// tarball holds every declared path so a cache key can address
+// a whole "bundle" (e.g. `.pnpm-store` + `node_modules` under
+// one key). Missing entries are SKIPPED rather than errored —
+// the paths are hints declared before the script runs, and a
+// never-created dir is a perfectly normal outcome on cold
+// start (the cache is just the empty shape). Returns sha + size
+// over every byte that made it into the gzip stream.
+func TarGzPaths(workDir string, paths []string, dst io.Writer) (sha string, size int64, err error) {
+	hasher := sha256.New()
+	counter := &countingWriter{}
+	mw := io.MultiWriter(dst, hasher, counter)
+
+	gz := gzip.NewWriter(mw)
+	tw := tar.NewWriter(gz)
+
+	addEntry := func(abs, rel string, fi os.FileInfo) error {
+		var linkTarget string
+		if fi.Mode()&os.ModeSymlink != 0 {
+			t, err := os.Readlink(abs)
+			if err != nil {
+				return fmt.Errorf("cache: readlink %q: %w", rel, err)
+			}
+			linkTarget = t
+		}
+		hdr, err := tar.FileInfoHeader(fi, linkTarget)
+		if err != nil {
+			return fmt.Errorf("cache: header %q: %w", rel, err)
+		}
+		hdr.Name = rel
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("cache: write header %q: %w", rel, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
+		in, err := os.Open(abs)
+		if err != nil {
+			return fmt.Errorf("cache: open %q: %w", rel, err)
+		}
+		defer func() { _ = in.Close() }()
+		if _, err := io.Copy(tw, in); err != nil {
+			return fmt.Errorf("cache: copy %q: %w", rel, err)
+		}
+		return nil
+	}
+
+	toSlash := func(p string) string {
+		return strings.ReplaceAll(p, string(filepath.Separator), "/")
+	}
+
+	for _, path := range paths {
+		abs := filepath.Join(workDir, path)
+		info, statErr := os.Stat(abs)
+		if os.IsNotExist(statErr) {
+			// Path declared but doesn't exist yet — cold start, nothing
+			// to cache. Skip silently; the caller already logged the
+			// "storing cache" prelude.
+			continue
+		}
+		if statErr != nil {
+			return "", 0, fmt.Errorf("cache: stat %q: %w", path, statErr)
+		}
+		cleanedPath := toSlash(filepath.Clean(path))
+
+		if info.Mode().IsRegular() {
+			if err := addEntry(abs, cleanedPath, info); err != nil {
+				return "", 0, err
+			}
+			continue
+		}
+		if info.IsDir() {
+			root := abs
+			err := filepath.Walk(root, func(p string, fi os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					return walkErr
+				}
+				rel, err := filepath.Rel(root, p)
+				if err != nil {
+					return err
+				}
+				if rel == "." {
+					return nil
+				}
+				name := cleanedPath + "/" + toSlash(rel)
+				return addEntry(p, name, fi)
+			})
+			if err != nil {
+				return "", 0, err
+			}
+			continue
+		}
+		return "", 0, fmt.Errorf("cache: %q is neither file nor directory", path)
+	}
+
+	if err := tw.Close(); err != nil {
+		return "", 0, fmt.Errorf("cache: close tar: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		return "", 0, fmt.Errorf("cache: close gzip: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), counter.n, nil
+}
+
 // UntarGz writes the gzip-compressed tar read from `src` into `dest`,
 // creating directories as needed, while verifying the stream's sha256
 // matches `wantSHA` (hex). Rejects entries that would escape `dest`

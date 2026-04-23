@@ -37,6 +37,13 @@ type Config struct {
 	// but no refs are attached to JobResult.
 	Uploader ArtifactUploader
 
+	// Cache handles pipeline cache fetch/store when a job declares
+	// `cache: [{key, paths}]`. Nil means "no-op" — the job runs
+	// without any pre-populated cache dir and never uploads one.
+	// Cache failures never fail a job: it's acceleration, not
+	// correctness.
+	Cache CacheClient
+
 	// Engine executes each script task. Nil defaults to engine.Shell
 	// — the pre-F3 behaviour (`sh -c` on the agent host). K8s-native
 	// deployments set engine.Kubernetes.
@@ -190,6 +197,14 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	}
 	defer serviceCleanup()
 
+	// Cache fetch happens AFTER services come up (so a cache-hit
+	// doesn't block on a broken postgres sidecar) but BEFORE tasks
+	// run — the whole point of the cache is to pre-populate the
+	// dirs the scripts are about to touch. Misses and transport
+	// errors log but never escalate: cache is acceleration, not
+	// correctness.
+	r.fetchCaches(ctx, scriptWorkDir, a, &seq)
+
 	for i, task := range a.GetTasks() {
 		var (
 			exitCode int
@@ -226,6 +241,13 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			return
 		}
 	}
+
+	// Cache store runs after every task succeeded — there's no
+	// point caching a half-built node_modules from a failed
+	// `pnpm install`. Same scriptWorkDir base as fetch so the
+	// paths round-trip exactly. Failures log but don't block
+	// the successful JobResult below.
+	r.storeCaches(ctx, scriptWorkDir, a, &seq)
 
 	// Artifact paths in YAML are repo-relative (user writes
 	// `bin/gocdnext-agent` because that's where `go build` puts
