@@ -99,6 +99,62 @@ func (s *Store) MarkCacheReady(ctx context.Context, cacheID uuid.UUID, size int6
 	return nil
 }
 
+// ExpiredCache is what the sweeper needs to evict one row: the id
+// to DELETE and the storage key to hand to the blob backend. Size
+// rides along so the sweep stats can report bytes reclaimed.
+type ExpiredCache struct {
+	ID         uuid.UUID
+	StorageKey string
+	SizeBytes  int64
+}
+
+// ListExpiredCaches returns ready rows whose last_accessed_at fell
+// past the TTL window. Bounded by `limit` so a sweep tick doesn't
+// try to reclaim 100k rows in one pass. Caller must delete the
+// blob first, then DeleteCacheRow — order matters for the failure
+// modes (blob lingers > row lingers, both are self-healing via
+// next tick).
+func (s *Store) ListExpiredCaches(ctx context.Context, ttl time.Duration, limit int) ([]ExpiredCache, error) {
+	if ttl <= 0 {
+		return nil, fmt.Errorf("store: cache ttl must be positive")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, storage_key, size_bytes
+		FROM caches
+		WHERE status = 'ready'
+		  AND last_accessed_at < NOW() - make_interval(secs => $1)
+		ORDER BY last_accessed_at ASC
+		LIMIT $2
+	`, ttl.Seconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list expired caches: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ExpiredCache
+	for rows.Next() {
+		var ec ExpiredCache
+		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
+			return nil, fmt.Errorf("store: scan expired cache: %w", err)
+		}
+		out = append(out, ec)
+	}
+	return out, rows.Err()
+}
+
+// DeleteCacheRow removes one row by id. Idempotent: a missing row
+// returns nil (another sweeper beat us to it, which is fine —
+// nothing to reclaim).
+func (s *Store) DeleteCacheRow(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM caches WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("store: delete cache row: %w", err)
+	}
+	return nil
+}
+
 // GetReadyCacheByKey returns the ready blob for (project_id, key)
 // or ErrCacheNotFound when there's no row, or one exists but is
 // still pending. Bumps last_accessed_at so the eviction sweeper

@@ -200,7 +200,8 @@ func main() {
 	sweeper := retention.New(st, artifactStore, logger).
 		WithKeepLast(cfg.ArtifactsKeepLast).
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
-		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes)
+		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes).
+		WithCacheTTL(time.Duration(cfg.CacheTTLDays) * 24 * time.Hour)
 
 	// WiringState carries the env-derived wiring only. The
 	// dynamic bits (GitHub App active, auto-register effective)

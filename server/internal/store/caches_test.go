@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -143,6 +144,69 @@ func TestCaches_MarkReady_UnknownIDErrors(t *testing.T) {
 	err := s.MarkCacheReady(context.Background(), uuid.New(), 10, "x")
 	if !errors.Is(err, store.ErrCacheNotFound) {
 		t.Fatalf("unknown id err = %v, want ErrCacheNotFound", err)
+	}
+}
+
+func TestCaches_ListExpiredCaches(t *testing.T) {
+	// Sweeper contract: only `ready` rows past the TTL are
+	// returned; pending rows and fresh-access rows stay put.
+	// Ordering is oldest-first so a bounded batch always
+	// reclaims the most stale rows.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "evict")
+
+	// Three rows: stale-ready, fresh-ready, stale-pending.
+	staleReady, _ := s.UpsertPendingCache(ctx, projectID, "stale-ready")
+	_ = s.MarkCacheReady(ctx, staleReady.ID, 100, "a")
+	freshReady, _ := s.UpsertPendingCache(ctx, projectID, "fresh-ready")
+	_ = s.MarkCacheReady(ctx, freshReady.ID, 200, "b")
+	stalePending, _ := s.UpsertPendingCache(ctx, projectID, "stale-pending")
+
+	// Backdate the stale ones well past any reasonable TTL.
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '90 days' WHERE id = ANY($1)`,
+		[]uuid.UUID{staleReady.ID, stalePending.ID}); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	got, err := s.ListExpiredCaches(ctx, 30*24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("list expired: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 stale-ready row, got %d: %+v", len(got), got)
+	}
+	if got[0].ID != staleReady.ID {
+		t.Errorf("wrong row returned: %s (want %s)", got[0].ID, staleReady.ID)
+	}
+	if got[0].SizeBytes != 100 {
+		t.Errorf("size = %d, want 100", got[0].SizeBytes)
+	}
+}
+
+func TestCaches_DeleteCacheRow(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID := seedProject(t, s, "evict-delete")
+
+	c, _ := s.UpsertPendingCache(ctx, projectID, "k")
+	_ = s.MarkCacheReady(ctx, c.ID, 1, "x")
+
+	if err := s.DeleteCacheRow(ctx, c.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.GetReadyCacheByKey(ctx, projectID, "k"); !errors.Is(err, store.ErrCacheNotFound) {
+		t.Fatalf("row still present after delete: err=%v", err)
+	}
+
+	// Idempotent: deleting an already-gone id is not an error.
+	// The sweeper relies on this — two instances racing would
+	// otherwise spam the logs with "missing row" warnings.
+	if err := s.DeleteCacheRow(ctx, c.ID); err != nil {
+		t.Errorf("second delete should be no-op, got: %v", err)
 	}
 }
 

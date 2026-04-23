@@ -39,6 +39,11 @@ const (
 	DefaultKeepLast          = 30
 	DefaultProjectQuotaBytes = 100 * 1024 * 1024 * 1024 // 100 GiB
 	DefaultGlobalQuotaBytes  = 0                          // 0 = disabled
+	// DefaultCacheTTL: 30 days is long enough for weekly builds to
+	// keep their cache warm, short enough that abandoned projects
+	// surrender disk within a month. Quota-based eviction comes
+	// later; TTL alone already prevents unbounded growth.
+	DefaultCacheTTL = 30 * 24 * time.Hour
 )
 
 // Sweeper is the long-running task. Call Run inside a goroutine; it
@@ -55,6 +60,7 @@ type Sweeper struct {
 	keepLast          int
 	projectQuotaBytes int64
 	globalQuotaBytes  int64
+	cacheTTL          time.Duration
 
 	mu          sync.Mutex
 	lastStats   SweepStats
@@ -78,7 +84,19 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		keepLast:          DefaultKeepLast,
 		projectQuotaBytes: DefaultProjectQuotaBytes,
 		globalQuotaBytes:  DefaultGlobalQuotaBytes,
+		cacheTTL:          DefaultCacheTTL,
 	}
+}
+
+// WithCacheTTL overrides the cache eviction window. 0 disables the
+// cache sweep entirely — for deployments that want to keep caches
+// forever (tiny project, generous disk). Any positive duration is
+// accepted; operator discretion.
+func (s *Sweeper) WithCacheTTL(d time.Duration) *Sweeper {
+	if d >= 0 {
+		s.cacheTTL = d
+	}
+	return s
 }
 
 // WithKeepLast overrides the per-pipeline keep-last-N policy. 0
@@ -175,6 +193,14 @@ type SweepStats struct {
 	StorageFailures int
 	DBFailures      int
 	BytesFreed      int64
+
+	// Cache sweep (piggybacks on the same tick — no separate
+	// sweeper goroutine). Expired caches are ready rows whose
+	// last_accessed_at fell past the cache TTL.
+	CachesDeleted         int
+	CacheStorageFailures  int
+	CacheDBFailures       int
+	CacheBytesFreed       int64
 }
 
 // SweepOnce runs a single batch and returns what happened. Exported so
@@ -235,12 +261,11 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 	claimed, err := s.store.ClaimArtifactsForSweep(ctx, s.batchSize, s.graceMinutes)
 	if err != nil {
 		s.log.Warn("retention: claim failed", "err", err)
-		return stats
+		// Don't early-return: cache eviction + auth hygiene still
+		// need to run on this tick even when the artifact claim
+		// itself failed or returned zero rows.
 	}
 	stats.Claimed = len(claimed)
-	if stats.Claimed == 0 {
-		return stats
-	}
 
 	for _, row := range claimed {
 		if err := s.storage.Delete(ctx, row.StorageKey); err != nil {
@@ -266,6 +291,38 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		stats.BytesFreed += row.SizeBytes
 	}
 
+	// Cache eviction runs on the same tick so a single batch cap
+	// bounds the whole sweep. Simple model: fetch expired rows,
+	// delete blob, delete row. No "deleting" intermediate state —
+	// if the blob delete fails the row stays and next tick tries
+	// again; if the row delete fails the blob is gone but a
+	// subsequent fetch returns 404 (which the agent already treats
+	// as a miss). Self-healing either way.
+	if s.cacheTTL > 0 {
+		expired, err := s.store.ListExpiredCaches(ctx, s.cacheTTL, s.batchSize)
+		if err != nil {
+			s.log.Warn("retention: list expired caches", "err", err)
+		}
+		for _, c := range expired {
+			if err := s.storage.Delete(ctx, c.StorageKey); err != nil {
+				if !errors.Is(err, artifacts.ErrNotFound) {
+					s.log.Warn("retention: cache storage delete failed",
+						"storage_key", c.StorageKey, "err", err)
+					stats.CacheStorageFailures++
+					continue
+				}
+			}
+			if err := s.store.DeleteCacheRow(ctx, c.ID); err != nil {
+				s.log.Warn("retention: cache row delete failed",
+					"cache_id", c.ID, "err", err)
+				stats.CacheDBFailures++
+				continue
+			}
+			stats.CachesDeleted++
+			stats.CacheBytesFreed += c.SizeBytes
+		}
+	}
+
 	// Auth hygiene: expired sessions + OAuth state rows aren't part
 	// of the artifact pipeline, but they accumulate in the same DB
 	// and we already have a goroutine ticking — piggyback so ops
@@ -286,7 +343,11 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		"deleted", stats.Deleted,
 		"bytes_freed", stats.BytesFreed,
 		"storage_failures", stats.StorageFailures,
-		"db_failures", stats.DBFailures)
+		"db_failures", stats.DBFailures,
+		"caches_deleted", stats.CachesDeleted,
+		"cache_bytes_freed", stats.CacheBytesFreed,
+		"cache_storage_failures", stats.CacheStorageFailures,
+		"cache_db_failures", stats.CacheDBFailures)
 
 	s.mu.Lock()
 	s.lastStats = stats
@@ -306,6 +367,7 @@ type Snapshot struct {
 	KeepLast          int           `json:"keep_last"`
 	ProjectQuotaBytes int64         `json:"project_quota_bytes"`
 	GlobalQuotaBytes  int64         `json:"global_quota_bytes"`
+	CacheTTL          time.Duration `json:"cache_ttl"`
 	LastSweepAt       time.Time     `json:"last_sweep_at,omitempty"`
 	Last              SweepStats    `json:"last_stats"`
 }
@@ -323,6 +385,7 @@ func (s *Sweeper) Snapshot() Snapshot {
 		KeepLast:          s.keepLast,
 		ProjectQuotaBytes: s.projectQuotaBytes,
 		GlobalQuotaBytes:  s.globalQuotaBytes,
+		CacheTTL:          s.cacheTTL,
 		LastSweepAt:       s.lastSweepAt,
 		Last:              s.lastStats,
 	}

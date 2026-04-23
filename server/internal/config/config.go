@@ -46,6 +46,9 @@ type Config struct {
 	ArtifactsProjectQuotaBytes int64 // per-project soft cap; 0 disables
 	ArtifactsGlobalQuotaBytes  int64 // global hard cap; 0 disables
 
+	// Cache eviction. Default is 30 days of inactivity; 0 disables.
+	CacheTTLDays int
+
 	// GitHub App (optional): enables auto-register webhook + Checks
 	// API status reporting. AppID + (PrivateKey OR PrivateKeyFile)
 	// must all be set to enable; empty = App disabled, webhooks
@@ -176,6 +179,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES: %w", err)
 	}
 	c.ArtifactsGlobalQuotaBytes = globalQuota
+
+	cacheTTLDays, err := strconv.Atoi(env("GOCDNEXT_CACHE_TTL_DAYS", "30"))
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_CACHE_TTL_DAYS: %w", err)
+	}
+	c.CacheTTLDays = cacheTTLDays
 
 	if raw := env("GOCDNEXT_GITHUB_APP_ID", ""); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
