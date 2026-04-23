@@ -107,6 +107,37 @@ export function VSMGraph({ vsm }: Props) {
       if (!container) return;
       const cRect = container.getBoundingClientRect();
       const next: EdgePath[] = [];
+      // anchorFor picks exit/entry points on each card that sit
+      // on the axis where the two cards are most separated. In
+      // the row-per-layer layout parent→child goes bottom→top
+      // (vertical); within a single row an implicit edge between
+      // siblings goes right→left (horizontal). Picking the axis
+      // dynamically lets the same routing code serve both.
+      const anchorFor = (f: DOMRect, t: DOMRect) => {
+        const dxCenter = t.left + t.width / 2 - (f.left + f.width / 2);
+        const dyCenter = t.top + t.height / 2 - (f.top + f.height / 2);
+        if (Math.abs(dyCenter) > Math.abs(dxCenter)) {
+          // Vertical edge — anchor on top/bottom edges.
+          const fromY = dyCenter > 0 ? f.bottom : f.top;
+          const toY = dyCenter > 0 ? t.top : t.bottom;
+          return {
+            fromX: f.left + f.width / 2 - cRect.left + container.scrollLeft,
+            fromY: fromY - cRect.top + container.scrollTop,
+            toX: t.left + t.width / 2 - cRect.left + container.scrollLeft,
+            toY: toY - cRect.top + container.scrollTop,
+          };
+        }
+        // Horizontal edge — anchor on left/right edges.
+        const fromX = dxCenter > 0 ? f.right : f.left;
+        const toX = dxCenter > 0 ? t.left : t.right;
+        return {
+          fromX: fromX - cRect.left + container.scrollLeft,
+          fromY: f.top + f.height / 2 - cRect.top + container.scrollTop,
+          toX: toX - cRect.left + container.scrollLeft,
+          toY: t.top + t.height / 2 - cRect.top + container.scrollTop,
+        };
+      };
+
       for (const e of renderableEdges) {
         const fromID = byName.get(e.from_pipeline);
         const toID = byName.get(e.to_pipeline);
@@ -114,34 +145,24 @@ export function VSMGraph({ vsm }: Props) {
         const from = nodeRefs.current.get(fromID);
         const to = nodeRefs.current.get(toID);
         if (!from || !to) continue;
-        const f = from.getBoundingClientRect();
-        const t = to.getBoundingClientRect();
         next.push({
           key: `real-${e.from_pipeline}->${e.to_pipeline}`,
           kind: "real",
           stage: e.stage,
           waitSec: e.wait_time_p50_seconds,
-          fromX: f.right - cRect.left + container.scrollLeft,
-          fromY: f.top + f.height / 2 - cRect.top + container.scrollTop,
-          toX: t.left - cRect.left + container.scrollLeft,
-          toY: t.top + t.height / 2 - cRect.top + container.scrollTop,
+          ...anchorFor(from.getBoundingClientRect(), to.getBoundingClientRect()),
         });
       }
       for (const ie of implicitEdges) {
         const from = nodeRefs.current.get(ie.fromID);
         const to = nodeRefs.current.get(ie.toID);
         if (!from || !to) continue;
-        const f = from.getBoundingClientRect();
-        const t = to.getBoundingClientRect();
         next.push({
           key: `implicit-${ie.fromID}->${ie.toID}`,
           kind: "implicit",
           sourceP50Sec: p50ByID.get(ie.sourcePipelineID),
           isOffender: ie.sourcePipelineID === slowestPipelineID,
-          fromX: f.right - cRect.left + container.scrollLeft,
-          fromY: f.top + f.height / 2 - cRect.top + container.scrollTop,
-          toX: t.left - cRect.left + container.scrollLeft,
-          toY: t.top + t.height / 2 - cRect.top + container.scrollTop,
+          ...anchorFor(from.getBoundingClientRect(), to.getBoundingClientRect()),
         });
       }
       setPaths(next);
@@ -225,14 +246,28 @@ export function VSMGraph({ vsm }: Props) {
               </marker>
             </defs>
             {paths.map((p) => {
-              const dx = Math.max(40, (p.toX - p.fromX) / 2);
+              // Choose the bezier control-point axis so the curve
+              // bulges along the dominant travel direction.
+              // Row-per-layer layouts make most edges primarily
+              // vertical (parent in row N, child in row N+1); a
+              // pure-X offset would draw a horizontal S-curve
+              // between two vertically-aligned points, which reads
+              // nonsensical. Pick whichever delta is larger.
+              const dxRaw = p.toX - p.fromX;
+              const dyRaw = p.toY - p.fromY;
+              const vertical = Math.abs(dyRaw) > Math.abs(dxRaw);
+              const offset = Math.max(40, Math.abs(vertical ? dyRaw : dxRaw) / 2);
+              const c1x = vertical ? p.fromX : p.fromX + Math.sign(dxRaw || 1) * offset;
+              const c1y = vertical ? p.fromY + Math.sign(dyRaw || 1) * offset : p.fromY;
+              const c2x = vertical ? p.toX : p.toX - Math.sign(dxRaw || 1) * offset;
+              const c2y = vertical ? p.toY - Math.sign(dyRaw || 1) * offset : p.toY;
               const midX = (p.fromX + p.toX) / 2;
               const midY = (p.fromY + p.toY) / 2;
               const isImplicit = p.kind === "implicit";
               return (
                 <g key={p.key}>
                   <path
-                    d={`M ${p.fromX} ${p.fromY} C ${p.fromX + dx} ${p.fromY}, ${p.toX - dx} ${p.toY}, ${p.toX} ${p.toY}`}
+                    d={`M ${p.fromX} ${p.fromY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p.toX} ${p.toY}`}
                     className={
                       isImplicit
                         ? "fill-none stroke-muted-foreground/30"
@@ -290,52 +325,41 @@ export function VSMGraph({ vsm }: Props) {
           </svg>
         ) : null}
 
-        {/* Outer flex with min-w-full + justify-center: when the
-            DAG is narrower than the viewport it centres; when it's
-            wider the overflow on containerRef scrolls horizontally
-            — no scaling, no fitView surprises. */}
+        {/* Layout orientation: each dependency layer is a ROW of
+            pipelines, and layers stack top-to-bottom. Makes roots
+            read left-to-right (what a VSM is for) regardless of
+            how many are in parallel — the prior
+            "column-per-layer" nested layout collapsed into a tall
+            vertical strip whenever one layer had more than a
+            couple of roots (four roots + one downstream = 4-high
+            left column that dominates the viewport).
+            Downstreams still appear AFTER their parents because
+            they're in the next row down — same visual dependency
+            direction, just rotated 90°. Overflow scrolls
+            vertically when the DAG is deep and horizontally when
+            a layer has many siblings. */}
         <div className="relative flex min-w-full justify-center">
           <div
-            className="inline-flex items-start"
-            style={{ gap: `${COL_GAP}px` }}
+            className="inline-flex flex-col items-start"
+            style={{ gap: `${ROW_GAP}px` }}
           >
-            {layers.length === 1 ? (
-              // No dependencies: render the single layer as a
-              // horizontal row so the VSM reads left-to-right (like
-              // parallel tracks from one push) instead of stacking
-              // vertically in a lone column.
-              <div
-                className="flex items-start"
-                style={{ gap: `${COL_GAP}px` }}
-              >
-                {layers[0]!.map((node) => (
-                  <PipelineNode
-                    key={node.pipeline_id}
-                    ref={setNodeRef(node.pipeline_id)}
-                    pipeline={node}
-                    bottleneck={node.pipeline_id === bottleneckID}
-                  />
-                ))}
-              </div>
-            ) : (
-              layers.map((layer, layerIdx) => (
-                <Fragment key={`layer-${layerIdx}`}>
-                  <div
-                    className="flex flex-col"
-                    style={{ gap: `${ROW_GAP}px` }}
-                  >
-                    {layer.map((node) => (
-                      <PipelineNode
-                        key={node.pipeline_id}
-                        ref={setNodeRef(node.pipeline_id)}
-                        pipeline={node}
-                        bottleneck={node.pipeline_id === bottleneckID}
-                      />
-                    ))}
-                  </div>
-                </Fragment>
-              ))
-            )}
+            {layers.map((layer, layerIdx) => (
+              <Fragment key={`layer-${layerIdx}`}>
+                <div
+                  className="flex items-start"
+                  style={{ gap: `${COL_GAP}px` }}
+                >
+                  {layer.map((node) => (
+                    <PipelineNode
+                      key={node.pipeline_id}
+                      ref={setNodeRef(node.pipeline_id)}
+                      pipeline={node}
+                      bottleneck={node.pipeline_id === bottleneckID}
+                    />
+                  ))}
+                </div>
+              </Fragment>
+            ))}
           </div>
         </div>
       </div>
