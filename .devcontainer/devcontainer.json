@@ -1,0 +1,57 @@
+{
+  "name": "gocdnext",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.25-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": "false",
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "forwardPorts": [3000, 8153, 8154, 5432],
+  "portsAttributes": {
+    "3000": {
+      "label": "web (Next.js)",
+      "onAutoForward": "notify"
+    },
+    "8153": {
+      "label": "server HTTP",
+      "onAutoForward": "notify"
+    },
+    "8154": {
+      "label": "server gRPC",
+      "onAutoForward": "silent"
+    },
+    "5432": {
+      "label": "postgres",
+      "onAutoForward": "silent"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "redhat.vscode-yaml",
+        "bufbuild.vscode-buf",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint"
+      ],
+      "settings": {
+        "go.toolsManagement.autoUpdate": false,
+        "editor.formatOnSave": true,
+        "[go]": {
+          "editor.defaultFormatter": "golang.go"
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[typescriptreact]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        }
+      }
+    }
+  }
+}

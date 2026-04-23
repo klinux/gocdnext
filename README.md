@@ -7,6 +7,9 @@
 
 Status: **alpha / internal use**. Not open to public yet.
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/klinux/gocdnext)
+[![Open in Gitpod](https://img.shields.io/badge/Gitpod-ready--to--code-908a85?logo=gitpod)](https://gitpod.io/#https://github.com/klinux/gocdnext)
+
 ## Why another CI tool?
 
 We loved GoCD's model (explicit stage → job → task, dependency materials, VSM)
@@ -35,6 +38,27 @@ charts/      Helm chart (server + agents)
 examples/    Sample .gocdnext.yaml files
 docs/        Architecture & pipeline spec
 ```
+
+## Cloud dev (Codespaces / Gitpod)
+
+Zero local setup + **public URLs** so GitHub webhooks can actually land
+during development — key for exercising the `auto_register_webhook`
++ push → run flow end-to-end.
+
+- Click **Open in GitHub Codespaces** or **Open in Gitpod** above.
+- The devcontainer / `.gitpod.yml` bootstrap seeds `.env`, installs
+  `air` + `goose`, `pnpm install`s the web, and builds the plugin
+  images (`gocdnext/node`, etc.).
+- Run `make dev` to bring up postgres + server + agent + web with
+  hot reload.
+- **Webhook testing**:
+  - *Gitpod*: port `8153` is flagged `visibility: public` in
+    `.gitpod.yml`; GitHub can POST directly at
+    `https://8153-<workspace>.<region>.gitpod.io/api/webhooks/github`.
+  - *Codespaces*: forward port `8153` as **Public**
+    (`gh codespace ports visibility 8153:public` or right-click the
+    port in VS Code). The post-create already sets
+    `GOCDNEXT_PUBLIC_BASE` to the workspace URL.
 
 ## Quick start (dev)
 

@@ -1,0 +1,75 @@
+# Gitpod workspace spec. Reuses the devcontainer (.devcontainer/) for
+# the base image + tooling so Codespaces and Gitpod converge on the
+# same environment. This file layers the Gitpod-specific bits on top:
+#   - port visibility (`public` = webhook-reachable URL)
+#   - prebuild config so the first workspace opens hot
+#   - VS Code extensions that the Gitpod extension manifest needs
+#     separately from the devcontainer's `customizations` block
+
+# Use the same Microsoft devcontainer image the Codespaces /
+# VS Code Dev Containers path uses so both environments converge.
+# docker-in-docker comes from Gitpod's runtime — no feature block
+# needed here (Gitpod ignores devcontainer features, which is why
+# we can't just point at .devcontainer/devcontainer.json verbatim).
+image: mcr.microsoft.com/devcontainers/go:1-1.25-bookworm
+
+tasks:
+  - name: bootstrap
+    before: |
+      # .devcontainer/post-create.sh handles .env seeding, tool
+      # installs, plugin image builds — reuse it so Gitpod +
+      # Codespaces don't drift.
+      bash .devcontainer/post-create.sh
+    command: |
+      echo "run 'make dev' in a new terminal to boot the stack"
+
+  - name: dev
+    # openMode "tab-after" puts this in a second terminal tab so the
+    # bootstrap output stays scrollback-readable.
+    openMode: tab-after
+    command: |
+      gp sync-await dev-ready 2>/dev/null || true
+      make dev
+
+ports:
+  - name: web
+    port: 3000
+    # "open-preview" opens Gitpod's built-in preview panel on the UI
+    # — faster first impression than hunting through the Ports tab.
+    onOpen: open-preview
+    # public = the URL is reachable from the public internet.
+    # Required for GitHub to actually deliver webhooks at the
+    # forwarded host — without this gocdnext's `scm_source` +
+    # `auto_register_webhook` flow registers a hook GitHub can't
+    # reach and every push silently 000s.
+    visibility: public
+  - name: server-http
+    port: 8153
+    onOpen: ignore
+    visibility: public
+  - name: server-grpc
+    port: 8154
+    onOpen: ignore
+    # gRPC stream only the agent hits — no reason to expose it
+    # externally.
+    visibility: private
+  - name: postgres
+    port: 5432
+    onOpen: ignore
+    visibility: private
+
+vscode:
+  extensions:
+    - golang.go
+    - redhat.vscode-yaml
+    - bufbuild.vscode-buf
+    - esbenp.prettier-vscode
+    - dbaeumer.vscode-eslint
+
+github:
+  prebuilds:
+    master: true
+    branches: false
+    pullRequests: true
+    pullRequestsFromForks: false
+    addCheck: true
