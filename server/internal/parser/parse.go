@@ -197,6 +197,29 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		})
 	}
 
+	// Approval gates are a pure state-machine construct — they
+	// dispatch nothing. Reject any execution knob on the same
+	// job: silently ignoring them would let a misconfigured YAML
+	// look like it'd run something, when in fact it only parks
+	// on the gate. Downstream jobs still wait on `needs:` of an
+	// approval job; that's the whole point of the gate.
+	if jd.Approval != nil {
+		if len(jd.Script) > 0 || jd.Uses != "" || jd.Image != "" ||
+			jd.Settings != nil || jd.Artifacts != nil ||
+			len(jd.NeedsArtifacts) > 0 || len(jd.Cache) > 0 ||
+			jd.Docker {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker — it only blocks on a human decision",
+				name,
+			)
+		}
+		j.Approval = &domain.ApprovalSpec{
+			Approvers:   append([]string(nil), jd.Approval.Approvers...),
+			Description: jd.Approval.Description,
+		}
+		return j, nil
+	}
+
 	// Concatenate all `script:` entries into a single Task so they
 	// execute in the same shell session. Previously each line
 	// became its own Task → its own `docker run --rm`, so state

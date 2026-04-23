@@ -540,6 +540,114 @@ jobs:
 	}
 }
 
+func TestParse_ApprovalGate(t *testing.T) {
+	// Minimal approval job: no script, no image, just the
+	// `approval:` sub-object with approvers + description. Parser
+	// must translate it into domain.Job.Approval and leave Tasks
+	// empty so the scheduler's dispatch path never tries to run
+	// it as a script job.
+	y := `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  release-prod:
+    stage: deploy
+    approval:
+      approvers: [alice, bob]
+      description: "Ready to ship prod?"
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Jobs) != 1 {
+		t.Fatalf("jobs = %d", len(p.Jobs))
+	}
+	j := p.Jobs[0]
+	if j.Approval == nil {
+		t.Fatal("Approval nil on approval job")
+	}
+	if got := j.Approval.Approvers; len(got) != 2 || got[0] != "alice" || got[1] != "bob" {
+		t.Errorf("approvers = %+v", got)
+	}
+	if j.Approval.Description != "Ready to ship prod?" {
+		t.Errorf("description = %q", j.Approval.Description)
+	}
+	if len(j.Tasks) != 0 {
+		t.Errorf("Tasks = %+v; approval gates must have no tasks", j.Tasks)
+	}
+}
+
+func TestParse_ApprovalRejectsMixedWithExecutionKnobs(t *testing.T) {
+	// An approval gate that also declares script/image/etc is a
+	// config bug: the scheduler never dispatches an approval job,
+	// so any execution field the user wrote would silently never
+	// run. Fail loudly so the bug surfaces at apply time, not six
+	// pushes later when someone notices the script didn't run.
+	cases := map[string]string{
+		"approval + script": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: deploy
+    approval: {approvers: [a]}
+    script: [echo not-this]
+`,
+		"approval + image": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: deploy
+    approval: {approvers: [a]}
+    image: alpine
+`,
+		"approval + uses": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: deploy
+    approval: {approvers: [a]}
+    uses: gocdnext/node
+`,
+	}
+	for label, y := range cases {
+		t.Run(label, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(y), "p", "n")
+			if err == nil {
+				t.Fatal("expected parse error")
+			}
+		})
+	}
+}
+
+func TestParse_ApprovalEmptyApproversAllowed(t *testing.T) {
+	// Empty approvers = "any authenticated user". Fine for dev
+	// and demo pipelines; prod-grade policies layer on top via
+	// RBAC later. Don't reject at parse time.
+	y := `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  gate:
+    stage: deploy
+    approval:
+      description: "Promote?"
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if p.Jobs[0].Approval == nil {
+		t.Fatal("Approval nil")
+	}
+	if got := p.Jobs[0].Approval.Approvers; len(got) != 0 {
+		t.Errorf("approvers = %+v, want empty", got)
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

@@ -185,6 +185,12 @@ func jobToDef(j domain.Job) JobDef {
 			Paths: append([]string(nil), c.Paths...),
 		})
 	}
+	if j.Approval != nil {
+		def.Approval = &ApprovalDef{
+			Approvers:   append([]string(nil), j.Approval.Approvers...),
+			Description: j.Approval.Description,
+		}
+	}
 	for _, dep := range j.ArtifactDeps {
 		def.NeedsArtifacts = append(def.NeedsArtifacts, NeedsArtifactDef{
 			FromJob:      dep.FromJob,

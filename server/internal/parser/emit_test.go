@@ -370,6 +370,54 @@ jobs:
 	}
 }
 
+func TestEmit_RoundTripsApprovalGate(t *testing.T) {
+	// An approval job survives parse → emit → re-parse with its
+	// approvers + description intact, and does NOT grow a
+	// phantom script/image on the way back out (the YAML tab
+	// would lie to the operator otherwise).
+	const src = `
+name: release
+stages: [deploy]
+materials:
+  - manual: true
+jobs:
+  gate:
+    stage: deploy
+    approval:
+      approvers: [alice, bob]
+      description: Ready to ship?
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "release")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "approval:") || !strings.Contains(s, "alice") {
+		t.Errorf("approval block missing from emit:\n%s", s)
+	}
+	if strings.Contains(s, "script:") || strings.Contains(s, "image:") {
+		t.Errorf("approval emit leaked execution knobs:\n%s", s)
+	}
+	second, err := ParseNamed(strings.NewReader(s), "p", "release")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, s)
+	}
+	gate := second.Jobs[0]
+	if gate.Approval == nil || len(gate.Approval.Approvers) != 2 {
+		t.Fatalf("approval lost in round-trip: %+v", gate.Approval)
+	}
+	if gate.Approval.Description != "Ready to ship?" {
+		t.Errorf("description lost: %q", gate.Approval.Description)
+	}
+	if len(gate.Tasks) != 0 {
+		t.Errorf("tasks leaked onto approval gate: %+v", gate.Tasks)
+	}
+}
+
 func TestEmit_QuotesAmbiguousScalars(t *testing.T) {
 	// GO_VERSION: "1.25" must round-trip as a quoted string.
 	// Without explicit quoting yaml.v3 emits `1.25` → re-parses as

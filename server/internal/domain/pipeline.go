@@ -211,6 +211,25 @@ type Job struct {
 	// Cache misses are silent — the job runs without a pre-
 	// populated directory and the post-run upload seeds it.
 	Cache []CacheSpec
+	// Approval, when non-nil, marks this job as a manual gate:
+	// scheduler never dispatches it, it parks in `awaiting_approval`
+	// until a user with permission calls the approve endpoint.
+	// Reject transitions the job to `failed` with reason
+	// "rejected by <user>". Jobs downstream via `needs:` stay
+	// queued until approval fires. Approval jobs MUST NOT declare
+	// `image:`, `tasks:`, `uses:`, or `artifacts:` — their only
+	// side effect is the state transition, not execution.
+	Approval *ApprovalSpec
+}
+
+// ApprovalSpec is the shape of a manual-gate job. `Approvers`
+// is an allow-list of usernames that can approve; empty means
+// "any authenticated user" (bad default for prod, but fine for
+// dev/demo pipelines). `Description` is surfaced in the UI as
+// the prompt the approver sees before clicking Approve/Reject.
+type ApprovalSpec struct {
+	Approvers   []string
+	Description string
 }
 
 // CacheSpec pairs a cache key with the directories the agent

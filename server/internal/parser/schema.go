@@ -119,7 +119,23 @@ type JobDef struct {
 	// Docker = true asks the agent for docker API access inside the
 	// job (socket mount / DinD sidecar). Pair with `image:` to spawn
 	// sibling containers for testcontainers / docker compose.
-	Docker         bool                `yaml:"docker,omitempty"`
+	Docker bool `yaml:"docker,omitempty"`
+	// Approval flags this job as a manual gate. When set the job
+	// never dispatches to an agent — it parks in awaiting_approval
+	// and transitions via the approve/reject HTTP endpoints. No
+	// `script`, `uses`, `image`, or `artifacts` allowed alongside
+	// it; parser rejects the combination.
+	Approval *ApprovalDef `yaml:"approval,omitempty"`
+}
+
+// ApprovalDef is the YAML shape of a manual approval gate. Kept
+// explicit (`approval:` sub-object) rather than a top-level
+// `type: approval` field because the other knobs (approvers,
+// description) only make sense in the approval context — a
+// sub-object keeps unrelated schema from bleeding across the job.
+type ApprovalDef struct {
+	Approvers   []string `yaml:"approvers,omitempty"`
+	Description string   `yaml:"description,omitempty"`
 }
 
 // NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. It
