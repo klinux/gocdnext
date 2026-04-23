@@ -49,6 +49,11 @@ const (
 	// cache? a gradle cache?). Operators who care set it; the
 	// rest rely on TTL.
 	DefaultCacheProjectQuotaBytes = 0
+	// DefaultCacheGlobalQuotaBytes: 0 = disabled. Same default as
+	// artifact global quota — only multi-tenant deployments with
+	// shared disk tend to care, and a one-size-fits-all number
+	// would be fiction.
+	DefaultCacheGlobalQuotaBytes = 0
 )
 
 // Sweeper is the long-running task. Call Run inside a goroutine; it
@@ -67,6 +72,7 @@ type Sweeper struct {
 	globalQuotaBytes       int64
 	cacheTTL               time.Duration
 	cacheProjectQuotaBytes int64
+	cacheGlobalQuotaBytes  int64
 
 	mu          sync.Mutex
 	lastStats   SweepStats
@@ -92,7 +98,21 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		globalQuotaBytes:       DefaultGlobalQuotaBytes,
 		cacheTTL:               DefaultCacheTTL,
 		cacheProjectQuotaBytes: DefaultCacheProjectQuotaBytes,
+		cacheGlobalQuotaBytes:  DefaultCacheGlobalQuotaBytes,
 	}
+}
+
+// WithCacheGlobalQuotaBytes sets the global cache size cap
+// across every project. 0 disables. When the total `ready`
+// cache bytes exceed this limit, the sweeper evicts oldest-
+// accessed rows globally (LRU across projects) until under. Runs
+// AFTER per-project quota so a single tenant hogging everything
+// loses their own caches before the pain spreads to neighbours.
+func (s *Sweeper) WithCacheGlobalQuotaBytes(b int64) *Sweeper {
+	if b >= 0 {
+		s.cacheGlobalQuotaBytes = b
+	}
+	return s
 }
 
 // WithCacheProjectQuotaBytes sets the per-project cache size cap.
@@ -217,11 +237,12 @@ type SweepStats struct {
 	// last_accessed_at fell past the cache TTL. Quota-evicted
 	// rows are counted separately so ops can tell "abandoned
 	// caches" apart from "active project pushed past quota".
-	CachesDeleted        int
-	CachesDeletedByQuota int
-	CacheStorageFailures int
-	CacheDBFailures      int
-	CacheBytesFreed      int64
+	CachesDeleted              int
+	CachesDeletedByQuota       int
+	CachesDeletedByGlobalQuota int
+	CacheStorageFailures       int
+	CacheDBFailures            int
+	CacheBytesFreed            int64
 }
 
 // SweepOnce runs a single batch and returns what happened. Exported so
@@ -324,7 +345,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		if err != nil {
 			s.log.Warn("retention: list expired caches", "err", err)
 		}
-		s.deleteCaches(ctx, expired, &stats, false)
+		s.deleteCaches(ctx, expired, &stats, cacheEvictTTL)
 	}
 
 	// Per-project quota runs AFTER TTL: a TTL pass may have
@@ -360,7 +381,37 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 			s.log.Info("retention: cache project over quota",
 				"project_id", p.ProjectID, "bytes", p.Bytes,
 				"quota", s.cacheProjectQuotaBytes, "targeted", len(toDelete))
-			s.deleteCaches(ctx, toDelete, &stats, true)
+			s.deleteCaches(ctx, toDelete, &stats, cacheEvictProjectQuota)
+		}
+	}
+
+	// Global cache quota runs last so per-project quota had a
+	// chance to bring the worst offenders under their own caps
+	// first. LRU across the whole table — the oldest idle key
+	// from any project goes before a fresh hit from another.
+	if s.cacheGlobalQuotaBytes > 0 {
+		total, err := s.store.GlobalCacheUsage(ctx)
+		if err != nil {
+			s.log.Warn("retention: global cache usage", "err", err)
+		} else if total > s.cacheGlobalQuotaBytes {
+			excess := total - s.cacheGlobalQuotaBytes
+			candidates, err := s.store.ListOldestCachesGlobally(ctx, s.batchSize)
+			if err != nil {
+				s.log.Warn("retention: list oldest caches globally", "err", err)
+			} else {
+				var toDelete []store.ExpiredCache
+				var freed int64
+				for _, c := range candidates {
+					if freed >= excess {
+						break
+					}
+					toDelete = append(toDelete, c)
+					freed += c.SizeBytes
+				}
+				s.log.Info("retention: cache global over quota",
+					"bytes", total, "quota", s.cacheGlobalQuotaBytes, "targeted", len(toDelete))
+				s.deleteCaches(ctx, toDelete, &stats, cacheEvictGlobalQuota)
+			}
 		}
 	}
 
@@ -387,6 +438,7 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		"db_failures", stats.DBFailures,
 		"caches_deleted", stats.CachesDeleted,
 		"caches_deleted_by_quota", stats.CachesDeletedByQuota,
+		"caches_deleted_by_global_quota", stats.CachesDeletedByGlobalQuota,
 		"cache_bytes_freed", stats.CacheBytesFreed,
 		"cache_storage_failures", stats.CacheStorageFailures,
 		"cache_db_failures", stats.CacheDBFailures)
@@ -398,30 +450,55 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 	return stats
 }
 
-// deleteCaches is the shared blob+row delete loop behind both the
-// TTL sweep and the per-project quota sweep. `byQuota=true`
-// counts successes under CachesDeletedByQuota so ops can tell the
-// two eviction modes apart in metrics; either way, bytes freed
-// and failures aggregate into the same stats fields.
-func (s *Sweeper) deleteCaches(ctx context.Context, rows []store.ExpiredCache, stats *SweepStats, byQuota bool) {
+// cacheEvictionKind labels which pass triggered a delete so the
+// stats + logs stay legible. TTL (time-based) and the two quota
+// passes need distinct counters so ops can tell "abandoned
+// caches ageing out" from "active project hit the ceiling".
+type cacheEvictionKind int
+
+const (
+	cacheEvictTTL cacheEvictionKind = iota
+	cacheEvictProjectQuota
+	cacheEvictGlobalQuota
+)
+
+func (k cacheEvictionKind) String() string {
+	switch k {
+	case cacheEvictProjectQuota:
+		return "project_quota"
+	case cacheEvictGlobalQuota:
+		return "global_quota"
+	default:
+		return "ttl"
+	}
+}
+
+// deleteCaches is the shared blob+row delete loop behind every
+// cache eviction path. The kind flag routes successes into the
+// right stats counter; bytes freed and failures aggregate into
+// the same fields regardless of which pass triggered the call.
+func (s *Sweeper) deleteCaches(ctx context.Context, rows []store.ExpiredCache, stats *SweepStats, kind cacheEvictionKind) {
 	for _, c := range rows {
 		if err := s.storage.Delete(ctx, c.StorageKey); err != nil {
 			if !errors.Is(err, artifacts.ErrNotFound) {
 				s.log.Warn("retention: cache storage delete failed",
-					"storage_key", c.StorageKey, "err", err, "by_quota", byQuota)
+					"storage_key", c.StorageKey, "err", err, "kind", kind.String())
 				stats.CacheStorageFailures++
 				continue
 			}
 		}
 		if err := s.store.DeleteCacheRow(ctx, c.ID); err != nil {
 			s.log.Warn("retention: cache row delete failed",
-				"cache_id", c.ID, "err", err, "by_quota", byQuota)
+				"cache_id", c.ID, "err", err, "kind", kind.String())
 			stats.CacheDBFailures++
 			continue
 		}
-		if byQuota {
+		switch kind {
+		case cacheEvictProjectQuota:
 			stats.CachesDeletedByQuota++
-		} else {
+		case cacheEvictGlobalQuota:
+			stats.CachesDeletedByGlobalQuota++
+		default:
 			stats.CachesDeleted++
 		}
 		stats.CacheBytesFreed += c.SizeBytes
@@ -441,6 +518,7 @@ type Snapshot struct {
 	GlobalQuotaBytes       int64         `json:"global_quota_bytes"`
 	CacheTTL               time.Duration `json:"cache_ttl"`
 	CacheProjectQuotaBytes int64         `json:"cache_project_quota_bytes"`
+	CacheGlobalQuotaBytes  int64         `json:"cache_global_quota_bytes"`
 	LastSweepAt            time.Time     `json:"last_sweep_at,omitempty"`
 	Last                   SweepStats    `json:"last_stats"`
 }
@@ -460,6 +538,7 @@ func (s *Sweeper) Snapshot() Snapshot {
 		GlobalQuotaBytes:       s.globalQuotaBytes,
 		CacheTTL:               s.cacheTTL,
 		CacheProjectQuotaBytes: s.cacheProjectQuotaBytes,
+		CacheGlobalQuotaBytes:  s.cacheGlobalQuotaBytes,
 		LastSweepAt:            s.lastSweepAt,
 		Last:                   s.lastStats,
 	}

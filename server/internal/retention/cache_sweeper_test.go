@@ -276,13 +276,82 @@ func TestSweeper_CacheProjectQuotaDisabled_NoSweep(t *testing.T) {
 	}
 }
 
+func TestSweeper_CacheGlobalQuota_EvictsLRUAcrossProjects(t *testing.T) {
+	// Global cap = 150 bytes, two projects each holding 100 bytes.
+	// Total 200 → excess 50. The oldest row across both
+	// projects must be evicted (LRU crosses tenant boundaries);
+	// the younger row stays even though its project is under
+	// any per-project quota. Global is explicitly "disk pressure
+	// outranks tenancy fairness".
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projA := seedCacheProject(t, pool, "global-a")
+	projB := seedCacheProject(t, pool, "global-b")
+
+	older, _ := s.UpsertPendingCache(ctx, projA, "older")
+	_ = s.MarkCacheReady(ctx, older.ID, 100, "x")
+	newer, _ := s.UpsertPendingCache(ctx, projB, "newer")
+	_ = s.MarkCacheReady(ctx, newer.ID, 100, "x")
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '2 hours' WHERE id = $1`, older.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '1 hour' WHERE id = $1`, newer.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	sw := retention.New(s, fs, silent()).
+		WithCacheTTL(0).               // Only global path active.
+		WithCacheProjectQuotaBytes(0). // Only global path active.
+		WithCacheGlobalQuotaBytes(150)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.CachesDeletedByGlobalQuota != 1 {
+		t.Fatalf("CachesDeletedByGlobalQuota = %d, want 1 (stats=%+v)", stats.CachesDeletedByGlobalQuota, stats)
+	}
+	if stats.CacheBytesFreed != 100 {
+		t.Errorf("CacheBytesFreed = %d, want 100", stats.CacheBytesFreed)
+	}
+	if _, err := s.GetReadyCacheByKey(ctx, projA, "older"); err == nil {
+		t.Error("older cache survived global quota sweep")
+	}
+	if _, err := s.GetReadyCacheByKey(ctx, projB, "newer"); err != nil {
+		t.Errorf("newer cache was over-evicted: %v", err)
+	}
+}
+
+func TestSweeper_CacheGlobalQuota_UnderLimitNoOp(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	fs := newFakeStore()
+	ctx := context.Background()
+	projectID := seedCacheProject(t, pool, "global-under")
+
+	c, _ := s.UpsertPendingCache(ctx, projectID, "k")
+	_ = s.MarkCacheReady(ctx, c.ID, 100, "x")
+
+	sw := retention.New(s, fs, silent()).
+		WithCacheTTL(0).
+		WithCacheGlobalQuotaBytes(1024)
+	stats := sw.SweepOnce(ctx)
+
+	if stats.CachesDeletedByGlobalQuota != 0 {
+		t.Errorf("under-quota should no-op: %+v", stats)
+	}
+}
+
 func TestSweeper_CacheTTL_HonorsSnapshot(t *testing.T) {
 	// Admin page reads Snapshot() — the cache knobs must round-
 	// trip so ops can eyeball the effective window and cap.
 	pool := dbtest.SetupPool(t)
 	sw := retention.New(store.New(pool), newFakeStore(), silent()).
 		WithCacheTTL(7 * 24 * time.Hour).
-		WithCacheProjectQuotaBytes(2 * 1024 * 1024 * 1024)
+		WithCacheProjectQuotaBytes(2 * 1024 * 1024 * 1024).
+		WithCacheGlobalQuotaBytes(10 * 1024 * 1024 * 1024)
 
 	snap := sw.Snapshot()
 	if snap.CacheTTL != 7*24*time.Hour {
@@ -290,6 +359,9 @@ func TestSweeper_CacheTTL_HonorsSnapshot(t *testing.T) {
 	}
 	if snap.CacheProjectQuotaBytes != 2*1024*1024*1024 {
 		t.Errorf("CacheProjectQuotaBytes = %d, want 2 GiB", snap.CacheProjectQuotaBytes)
+	}
+	if snap.CacheGlobalQuotaBytes != 10*1024*1024*1024 {
+		t.Errorf("CacheGlobalQuotaBytes = %d, want 10 GiB", snap.CacheGlobalQuotaBytes)
 	}
 }
 

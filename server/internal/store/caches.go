@@ -216,6 +216,55 @@ func (s *Store) ListOldestCachesInProject(ctx context.Context, projectID uuid.UU
 	return out, rows.Err()
 }
 
+// GlobalCacheUsage returns the total byte count across every
+// `ready` cache row. Used by the sweeper's global quota pass to
+// decide whether any eviction is needed this tick. Pending rows
+// are excluded — they're still in flight and their declared size
+// is zero until MarkCacheReady fires.
+func (s *Store) GlobalCacheUsage(ctx context.Context) (int64, error) {
+	var total int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(size_bytes), 0)::bigint
+		FROM caches
+		WHERE status = 'ready'
+	`).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("store: global cache usage: %w", err)
+	}
+	return total, nil
+}
+
+// ListOldestCachesGlobally returns the N oldest-accessed `ready`
+// rows across the whole table, regardless of project. The global
+// quota pass picks the minimum prefix of this list whose byte sum
+// covers the overshoot. LRU ordering means abandoned projects
+// lose their caches before an actively-building project does.
+func (s *Store) ListOldestCachesGlobally(ctx context.Context, limit int) ([]ExpiredCache, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, storage_key, size_bytes
+		FROM caches
+		WHERE status = 'ready'
+		ORDER BY last_accessed_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list oldest caches globally: %w", err)
+	}
+	defer rows.Close()
+	var out []ExpiredCache
+	for rows.Next() {
+		var ec ExpiredCache
+		if err := rows.Scan(&ec.ID, &ec.StorageKey, &ec.SizeBytes); err != nil {
+			return nil, fmt.Errorf("store: scan global oldest cache: %w", err)
+		}
+		out = append(out, ec)
+	}
+	return out, rows.Err()
+}
+
 // DeleteCacheRow removes one row by id. Idempotent: a missing row
 // returns nil (another sweeper beat us to it, which is fine —
 // nothing to reclaim).

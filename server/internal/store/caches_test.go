@@ -210,6 +210,49 @@ func TestCaches_DeleteCacheRow(t *testing.T) {
 	}
 }
 
+func TestCaches_GlobalUsageAndOldestList(t *testing.T) {
+	// The global quota pass needs two inputs: total ready bytes
+	// and an LRU-ordered candidate list that crosses project
+	// boundaries. Pin both together so a future refactor can't
+	// silently change the contract the sweeper relies on.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projA := seedProject(t, s, "proj-a")
+	projB := seedProject(t, s, "proj-b")
+
+	ca, _ := s.UpsertPendingCache(ctx, projA, "a")
+	_ = s.MarkCacheReady(ctx, ca.ID, 100, "x")
+	cb, _ := s.UpsertPendingCache(ctx, projB, "b")
+	_ = s.MarkCacheReady(ctx, cb.ID, 200, "y")
+	// Pending row must NOT count — still in flight.
+	_, _ = s.UpsertPendingCache(ctx, projA, "pending")
+
+	total, err := s.GlobalCacheUsage(ctx)
+	if err != nil {
+		t.Fatalf("global usage: %v", err)
+	}
+	if total != 300 {
+		t.Errorf("GlobalCacheUsage = %d, want 300 (pending excluded)", total)
+	}
+
+	// ca is older → comes first in LRU.
+	if _, err := pool.Exec(ctx,
+		`UPDATE caches SET last_accessed_at = NOW() - interval '1 hour' WHERE id = $1`, ca.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListOldestCachesGlobally(ctx, 10)
+	if err != nil {
+		t.Fatalf("list oldest: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2 (pending excluded): %+v", len(got), got)
+	}
+	if got[0].ID != ca.ID {
+		t.Errorf("LRU head = %s, want %s (older project-A row)", got[0].ID, ca.ID)
+	}
+}
+
 func TestCaches_StorageKeyDeterministic(t *testing.T) {
 	// CacheStorageKey is public and consumed by the eviction
 	// sweeper to call storage.Delete. Pin the shape so a future

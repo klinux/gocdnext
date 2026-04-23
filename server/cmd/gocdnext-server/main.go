@@ -202,7 +202,8 @@ func main() {
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).
 		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes).
 		WithCacheTTL(time.Duration(cfg.CacheTTLDays) * 24 * time.Hour).
-		WithCacheProjectQuotaBytes(cfg.CacheProjectQuotaBytes)
+		WithCacheProjectQuotaBytes(cfg.CacheProjectQuotaBytes).
+		WithCacheGlobalQuotaBytes(cfg.CacheGlobalQuotaBytes)
 
 	// WiringState carries the env-derived wiring only. The
 	// dynamic bits (GitHub App active, auto-register effective)

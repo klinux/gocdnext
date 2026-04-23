@@ -50,6 +50,8 @@ type Config struct {
 	CacheTTLDays int
 	// Cache per-project size cap. 0 disables — TTL-only eviction.
 	CacheProjectQuotaBytes int64
+	// Cache global size cap. 0 disables.
+	CacheGlobalQuotaBytes int64
 
 	// GitHub App (optional): enables auto-register webhook + Checks
 	// API status reporting. AppID + (PrivateKey OR PrivateKeyFile)
@@ -193,6 +195,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES: %w", err)
 	}
 	c.CacheProjectQuotaBytes = cacheProjectQuota
+
+	cacheGlobalQuota, err := strconv.ParseInt(env("GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES", "0"), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES: %w", err)
+	}
+	c.CacheGlobalQuotaBytes = cacheGlobalQuota
 
 	if raw := env("GOCDNEXT_GITHUB_APP_ID", ""); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
