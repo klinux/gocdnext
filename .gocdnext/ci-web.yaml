@@ -1,9 +1,9 @@
 # gocdnext web (Next.js) — type-check, unit tests, production
-# build. Now upstream to ci-server.test so the web bundle is only
+# build. Every job uses the gocdnext/node plugin so the corepack +
+# pnpm setup lives in one image instead of four identical shell
+# scripts. Upstream to ci-server.test so the web bundle is only
 # built after the server tests pass — we don't bake UI artefacts
-# against a server revision that's known-broken. Triggering via
-# upstream also lets the VSM draw a real "ci-server → ci-web"
-# edge so the dependency is visible instead of implicit.
+# against a server revision that's known-broken.
 name: ci-web
 
 materials:
@@ -14,71 +14,55 @@ materials:
 
 stages: [install, lint, test, build]
 
-variables:
-  NODE_VERSION: "22"
-  PNPM_VERSION: "9"
-
 jobs:
   deps:
     stage: install
-    image: node:22-alpine
-    script:
-      # `cd web` first so corepack picks up `packageManager` from
-      # web/package.json — `prepare --activate` without a spec
-      # reads it there. `prepare --activate` forces the binary
-      # download now instead of on the first pnpm call (which can
-      # silently fail with "pnpm: not found" otherwise).
-      - cd web
-      - corepack enable
-      - corepack prepare --activate
-      - pnpm install --frozen-lockfile
+    uses: gocdnext/node
+    with:
+      working-dir: web
+      command: install --frozen-lockfile
     artifacts:
       paths: [web/node_modules/]
 
   typecheck:
     stage: lint
-    image: node:22-alpine
+    uses: gocdnext/node
     needs: [deps]
-    # `needs:` only orders jobs — artefacts don't ride along
-    # automatically. Consumers list `needs_artifacts:` to unpack
-    # the producer's tarball into the workspace; without it the
-    # fresh container has no node_modules and `pnpm exec tsc`
-    # comes up empty with ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL.
+    # needs_artifacts because `needs:` only orders jobs — the
+    # downstream job starts in a fresh container and gets
+    # node_modules back via the tar from deps.
     needs_artifacts:
       - from_job: deps
         paths: [web/node_modules/]
-    script:
-      - cd web
-      - corepack enable
-      - corepack prepare --activate
-      - pnpm exec tsc --noEmit
+    with:
+      working-dir: web
+      command: exec tsc --noEmit
 
   unit:
     stage: test
-    image: node:22-alpine
+    uses: gocdnext/node
     needs: [deps]
     needs_artifacts:
       - from_job: deps
         paths: [web/node_modules/]
-    script:
-      - cd web
-      - corepack enable
-      - corepack prepare --activate
-      - pnpm test --run
+    with:
+      working-dir: web
+      command: test --run
 
   bundle:
     stage: build
-    image: node:22-alpine
+    uses: gocdnext/node
     needs: [typecheck, unit]
     needs_artifacts:
       - from_job: deps
         paths: [web/node_modules/]
-    script:
-      - cd web
-      - corepack enable
-      - corepack prepare --activate
-      # GOCDNEXT_API_URL is only needed at runtime; build uses a
-      # placeholder so the bundle still generates deterministically.
-      - GOCDNEXT_API_URL=http://localhost:8153 pnpm build
+    # GOCDNEXT_API_URL is only needed at runtime; build uses a
+    # placeholder so the bundle still generates deterministically.
+    # Job variables layer on top of PLUGIN_* env in the runner.
+    variables:
+      GOCDNEXT_API_URL: http://localhost:8153
+    with:
+      working-dir: web
+      command: build
     artifacts:
       paths: [web/.next/standalone/, web/.next/static/]

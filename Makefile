@@ -43,6 +43,18 @@ lint:
 proto:
 	cd proto && buf generate
 
+## plugins: build all plugin images locally (gocdnext/<name>:latest). Pipelines
+## that reference these images via `uses:` pick them up without needing a
+## registry push while we're still in the internal-first rollout phase.
+plugins:
+	@for dir in plugins/*/; do \
+		name=$$(basename $$dir); \
+		if [ -f $$dir/Dockerfile ]; then \
+			echo "==> building gocdnext/$$name"; \
+			docker build -t gocdnext/$$name:latest $$dir; \
+		fi; \
+	done
+
 ## dev: boot the full local stack (postgres + server + agent + web) with hot reload
 dev:
 	@bash scripts/dev.sh
@@ -82,4 +94,4 @@ admin-reset-password: build
 	fi
 	./$(BIN_DIR)/gocdnext admin reset-password --email "$(EMAIL)"
 
-.PHONY: help env-setup build test lint proto dev stop db-up db-down migrate-up migrate-status admin-create-user admin-reset-password
+.PHONY: help env-setup build test lint proto plugins dev stop db-up db-down migrate-up migrate-status admin-create-user admin-reset-password
