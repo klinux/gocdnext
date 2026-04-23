@@ -20,6 +20,7 @@ import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
 import { rerunRun } from "@/server/actions/runs";
 import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
+import { LiveDuration } from "@/components/shared/live-duration";
 import type {
   MergedJob,
   StageColumn,
@@ -181,12 +182,13 @@ function StageConnector({ gapSec }: { gapSec: number | null }) {
 // shouting over the pipeline layout.
 function JobCard({ job, runId }: { job: MergedJob; runId?: string }) {
   const tone: StatusTone = job.run ? statusTone(job.run.status) : "neutral";
-  const duration =
-    job.run && job.run.started_at
-      ? formatDurationSeconds(
-          secondsDiff(job.run.started_at, job.run.finished_at),
-        )
-      : null;
+  // Jobs in progress compute duration from Date.now(), which
+  // drifts between SSR and hydrate and trips a hydration mismatch
+  // error. LiveDuration renders the same string on both sides via
+  // suppressHydrationWarning + a mounted gate, then ticks on the
+  // client. Terminal jobs (finished_at set) render deterministic
+  // values either way.
+  const showDuration = Boolean(job.run?.started_at);
 
   return (
     <div
@@ -228,10 +230,12 @@ function JobCard({ job, runId }: { job: MergedJob; runId?: string }) {
         )}
         {runId ? <JobRetryButton runId={runId} jobName={job.name} /> : null}
       </div>
-      {duration ? (
-        <div className="mt-0.5 pl-4 font-mono text-[10px] tabular-nums text-muted-foreground">
-          {duration}
-        </div>
+      {showDuration ? (
+        <LiveDuration
+          startedAt={job.run?.started_at}
+          finishedAt={job.run?.finished_at}
+          className="mt-0.5 block pl-4 font-mono text-[10px] tabular-nums text-muted-foreground"
+        />
       ) : null}
     </div>
   );
@@ -278,16 +282,6 @@ function JobRetryButton({
       <RotateCcw className={cn("size-2.5", pending && "animate-spin")} />
     </button>
   );
-}
-
-function secondsDiff(
-  start: string,
-  end: string | undefined,
-): number | null {
-  const s = Date.parse(start);
-  const e = end ? Date.parse(end) : Date.now();
-  if (Number.isNaN(s) || Number.isNaN(e) || e < s) return null;
-  return (e - s) / 1000;
 }
 
 function ToneIcon({
