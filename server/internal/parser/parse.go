@@ -173,6 +173,18 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 			j.OptionalArtifactPaths = append(j.OptionalArtifactPaths, p)
 		}
 	}
+	for _, c := range jd.Cache {
+		if c.Key == "" {
+			return domain.Job{}, fmt.Errorf("job %q: cache entry missing `key`", name)
+		}
+		if len(c.Paths) == 0 {
+			return domain.Job{}, fmt.Errorf("job %q: cache entry %q has empty `paths` — nothing to cache", name, c.Key)
+		}
+		j.Cache = append(j.Cache, domain.CacheSpec{
+			Key:   c.Key,
+			Paths: append([]string(nil), c.Paths...),
+		})
+	}
 	for _, na := range jd.NeedsArtifacts {
 		if na.FromJob == "" {
 			return domain.Job{}, fmt.Errorf("job %q: needs_artifacts entry missing from_job", name)

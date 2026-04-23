@@ -179,6 +179,12 @@ func jobToDef(j domain.Job) JobDef {
 			Optional: j.OptionalArtifactPaths,
 		}
 	}
+	for _, c := range j.Cache {
+		def.Cache = append(def.Cache, CacheSpec{
+			Key:   c.Key,
+			Paths: append([]string(nil), c.Paths...),
+		})
+	}
 	for _, dep := range j.ArtifactDeps {
 		def.NeedsArtifacts = append(def.NeedsArtifacts, NeedsArtifactDef{
 			FromJob:      dep.FromJob,

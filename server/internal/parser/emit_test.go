@@ -329,6 +329,47 @@ jobs:
 	}
 }
 
+func TestEmit_RoundTripsJobCache(t *testing.T) {
+	// Cache entries survive parse → emit → re-parse with their
+	// keys and paths intact. Structural round-trip is what the
+	// yaml tab relies on to show the operator what they wrote.
+	const src = `
+name: cached
+stages: [test]
+materials:
+  - manual: true
+jobs:
+  deps:
+    stage: test
+    image: golang:1.25
+    script: [go build ./...]
+    cache:
+      - key: go-build
+        paths: [~/.cache/go-build]
+      - key: pnpm-store
+        paths: [web/.pnpm-store]
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "cached")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "cache:") || !strings.Contains(s, "key: go-build") {
+		t.Errorf("emit missing cache block:\n%s", s)
+	}
+	second, err := ParseNamed(strings.NewReader(s), "p", "cached")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, s)
+	}
+	if len(second.Jobs[0].Cache) != 2 {
+		t.Fatalf("cache lost in round-trip: %+v", second.Jobs[0].Cache)
+	}
+}
+
 func TestEmit_QuotesAmbiguousScalars(t *testing.T) {
 	// GO_VERSION: "1.25" must round-trip as a quoted string.
 	// Without explicit quoting yaml.v3 emits `1.25` → re-parses as

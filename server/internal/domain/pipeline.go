@@ -203,6 +203,25 @@ type Job struct {
 	// docker compose, buildx. Engines that can't honour this fail
 	// the job instead of silently running without it.
 	Docker bool
+	// Caches the agent should fetch before tasks run and re-upload
+	// after a successful run. Each entry is keyed by name with a
+	// list of directories to tar up. Same key across runs hits the
+	// same blob (project-scoped) so a pnpm store or a go build
+	// cache carries over without round-tripping a full artifact.
+	// Cache misses are silent — the job runs without a pre-
+	// populated directory and the post-run upload seeds it.
+	Cache []CacheSpec
+}
+
+// CacheSpec pairs a cache key with the directories the agent
+// should persist between runs. `Key` is the string identifier
+// (project-scoped); `Paths` are workspace-relative directories
+// tar'd up into the cache blob after the job succeeds and
+// extracted into the workspace before tasks start on a later
+// run with the same key.
+type CacheSpec struct {
+	Key   string
+	Paths []string
 }
 
 // ArtifactDep is one entry in `needs_artifacts`. FromJob is the name

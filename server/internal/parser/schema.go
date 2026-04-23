@@ -99,7 +99,14 @@ type JobDef struct {
 	Uses string            `yaml:"uses,omitempty"`
 	With map[string]string `yaml:"with,omitempty"`
 	Variables map[string]string `yaml:"variables,omitempty"`
-	Cache          *Cache              `yaml:"cache,omitempty"`
+	// Cache entries let this job reuse tar'd directories across
+	// runs, keyed by name. The agent fetches each cache BEFORE
+	// tasks (cache miss = silent skip) and uploads it after
+	// success. Scope is per-project: two pipelines using the
+	// same key intentionally share the blob. Dead schema before
+	// — wired end-to-end starting with commit that lands this
+	// comment.
+	Cache          []CacheSpec         `yaml:"cache,omitempty"`
 	Artifacts      *Artifacts          `yaml:"artifacts,omitempty"`
 	NeedsArtifacts []NeedsArtifactDef  `yaml:"needs_artifacts,omitempty"`
 	Parallel       *Parallel           `yaml:"parallel,omitempty"`
@@ -129,8 +136,14 @@ type NeedsArtifactDef struct {
 	Dest         string   `yaml:"dest,omitempty"`           // default "./"
 }
 
-type Cache struct {
-	Key   string   `yaml:"key,omitempty"`
+// CacheSpec is one entry in a job's `cache:` list. `key` identifies
+// the cache blob across runs within a project; `paths` are the
+// directories the agent tars up after the job succeeds and untars
+// before the next job with the same key. Empty `paths` is a config
+// error (the parser rejects it) — a keyed cache with nothing to
+// save is just noise.
+type CacheSpec struct {
+	Key   string   `yaml:"key"`
 	Paths []string `yaml:"paths"`
 }
 

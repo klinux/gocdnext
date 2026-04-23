@@ -464,6 +464,82 @@ jobs:
 	}
 }
 
+func TestParse_JobCache(t *testing.T) {
+	// Jobs opt into named caches via a list of {key, paths}
+	// entries. The agent will fetch each cache (silent miss on
+	// first run) before tasks and re-upload after success, so a
+	// pnpm store / go build cache survives across runs without
+	// paying artifact transfer on every job.
+	y := `
+stages: [test]
+materials:
+  - manual: true
+jobs:
+  deps:
+    stage: test
+    image: golang:1.25
+    script: [go build ./...]
+    cache:
+      - key: go-build
+        paths: [~/.cache/go-build]
+      - key: pnpm-store
+        paths: [web/.pnpm-store, web/node_modules/.cache]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	j := p.Jobs[0]
+	if len(j.Cache) != 2 {
+		t.Fatalf("cache entries = %d, want 2", len(j.Cache))
+	}
+	if j.Cache[0].Key != "go-build" || j.Cache[0].Paths[0] != "~/.cache/go-build" {
+		t.Errorf("cache[0] = %+v", j.Cache[0])
+	}
+	if j.Cache[1].Key != "pnpm-store" || len(j.Cache[1].Paths) != 2 {
+		t.Errorf("cache[1] = %+v", j.Cache[1])
+	}
+}
+
+func TestParse_JobCacheRequiresKeyAndPaths(t *testing.T) {
+	// Missing key or empty paths is a config bug — the agent
+	// would have nothing to store or nothing to fetch. Fail
+	// loud at parse time.
+	cases := map[string]string{
+		"missing key": `
+stages: [test]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: test
+    image: alpine
+    script: [echo]
+    cache:
+      - paths: [some/path]
+`,
+		"empty paths": `
+stages: [test]
+materials: [{manual: true}]
+jobs:
+  x:
+    stage: test
+    image: alpine
+    script: [echo]
+    cache:
+      - key: noop
+        paths: []
+`,
+	}
+	for label, y := range cases {
+		t.Run(label, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(y), "p", "n")
+			if err == nil {
+				t.Fatalf("expected parse error, got nil")
+			}
+		})
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]
