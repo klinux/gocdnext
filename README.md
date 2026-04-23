@@ -60,6 +60,9 @@ during development — key for exercising the `auto_register_webhook`
     port in VS Code). The post-create already sets
     `GOCDNEXT_PUBLIC_BASE` to the workspace URL.
 
+See [docs/cloud-dev.md](docs/cloud-dev.md) for the full workflow,
+port map, cost budgets, and troubleshooting.
+
 ## Quick start (dev)
 
 ```bash
