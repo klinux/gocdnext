@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import type { Route } from "next";
 import {
@@ -499,53 +500,39 @@ function ArtifactsPanel({
 }
 
 function YAMLPanel({ pipeline }: { pipeline: PipelineSummary }) {
-  // Lazy-fetch the server's emitter output (domain.Pipeline → YAML
-  // via parser.Emit) so the tab shows every field we actually
-  // stored: image, script, needs, artifacts, docker, matrix, …
-  // Local fallback keeps something on-screen if the fetch dies.
-  const [state, setState] = useState<
-    | { kind: "idle" }
-    | { kind: "loading" }
-    | { kind: "ok"; yaml: string; reconstructed: boolean }
-    | { kind: "error"; message: string }
-  >({ kind: "idle" });
+  // Fetch the server-emitted YAML keyed on (id, definition_version).
+  // Apply/sync bumps the version, so the query key changes and
+  // TanStack Query fires a fresh fetch automatically — previously
+  // the useEffect only keyed on id, so a sync while the sheet was
+  // mounted (or a tab-switch after sync without unmount) left the
+  // stale first-render copy on screen.
+  const { data, isLoading, error } = useQuery<{
+    yaml: string;
+    reconstructed: boolean;
+  }>({
+    queryKey: ["pipeline-yaml", pipeline.id, pipeline.definition_version],
+    queryFn: async () => {
+      const res = await fetch(
+        `${env.GOCDNEXT_API_URL.replace(/\/+$/, "")}/api/v1/pipelines/${encodeURIComponent(pipeline.id)}/yaml`,
+        { cache: "no-store", credentials: "include" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as {
+        yaml?: string;
+        reconstructed?: boolean;
+      };
+      return {
+        yaml: body.yaml ?? "",
+        reconstructed: body.reconstructed ?? true,
+      };
+    },
+    // Refetch on focus so jumping away to sync + back surfaces
+    // fresh YAML without needing a full page reload.
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    setState({ kind: "loading" });
-    fetch(
-      `${env.GOCDNEXT_API_URL.replace(/\/+$/, "")}/api/v1/pipelines/${encodeURIComponent(pipeline.id)}/yaml`,
-      { cache: "no-store", credentials: "include" },
-    )
-      .then(async (res) => {
-        if (cancelled) return;
-        if (!res.ok) {
-          setState({ kind: "error", message: `HTTP ${res.status}` });
-          return;
-        }
-        const body = (await res.json()) as {
-          yaml?: string;
-          reconstructed?: boolean;
-        };
-        setState({
-          kind: "ok",
-          yaml: body.yaml ?? "",
-          reconstructed: body.reconstructed ?? true,
-        });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setState({
-          kind: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [pipeline.id]);
-
-  if (state.kind === "loading" || state.kind === "idle") {
+  if (isLoading) {
     return (
       <p className="inline-flex items-center gap-2 text-xs text-muted-foreground">
         <Loader2 className="size-3 animate-spin" aria-hidden />
@@ -553,10 +540,10 @@ function YAMLPanel({ pipeline }: { pipeline: PipelineSummary }) {
       </p>
     );
   }
-  if (state.kind === "error") {
+  if (error || !data) {
     return (
       <p className="text-xs text-red-500">
-        Couldn&apos;t load YAML: {state.message}
+        Couldn&apos;t load YAML: {error instanceof Error ? error.message : "unknown"}
       </p>
     );
   }
@@ -564,11 +551,11 @@ function YAMLPanel({ pipeline }: { pipeline: PipelineSummary }) {
     <div className="space-y-2">
       <p className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <FileCode className="size-3.5" aria-hidden />
-        {state.reconstructed
+        {data.reconstructed
           ? `Reconstructed from v${pipeline.definition_version} — the original YAML isn't stored yet.`
           : `Source — v${pipeline.definition_version}.`}
       </p>
-      <YAMLView source={state.yaml} />
+      <YAMLView source={data.yaml} />
     </div>
   );
 }
