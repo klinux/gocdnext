@@ -115,6 +115,21 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		}
 	}
 
+	// Cache entries ride per-job (not pipeline-level) — each job
+	// declares what it wants to persist. Agent will GET each
+	// before tasks and PUT after success. Same shape as services:
+	// empty = nil on wire, fast path stays hot.
+	var caches []*gocdnextv1.CacheEntry
+	if len(jobDef.Cache) > 0 {
+		caches = make([]*gocdnextv1.CacheEntry, 0, len(jobDef.Cache))
+		for _, c := range jobDef.Cache {
+			caches = append(caches, &gocdnextv1.CacheEntry{
+				Key:   c.Key,
+				Paths: append([]string(nil), c.Paths...),
+			})
+		}
+	}
+
 	return &gocdnextv1.JobAssignment{
 		RunId:          run.ID.String(),
 		JobId:          job.ID.String(),
@@ -131,6 +146,7 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		ArtifactDownloads:     downloads,
 		Docker:                jobDef.Docker,
 		Services:              services,
+		Caches:                caches,
 	}, nil
 }
 

@@ -190,7 +190,7 @@ func main() {
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
 		WithChecksReporter(checksReporter)
 	if artifactStore != nil {
-		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*24*time.Hour)
+		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour)
 	}
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
 	if artifactStore != nil {

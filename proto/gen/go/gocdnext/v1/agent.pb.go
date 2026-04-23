@@ -637,6 +637,404 @@ func (x *ArtifactRef) GetContentSha256() string {
 	return ""
 }
 
+// RequestCacheGet asks the server for a signed download of a
+// previously-uploaded cache blob. When the cache doesn't exist
+// yet (first run for this key) or is still pending an upload,
+// `found` is false and the agent continues without a pre-
+// populated directory.
+type RequestCacheGetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	JobId         string                 `protobuf:"bytes,3,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Key           string                 `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestCacheGetRequest) Reset() {
+	*x = RequestCacheGetRequest{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestCacheGetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestCacheGetRequest) ProtoMessage() {}
+
+func (x *RequestCacheGetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestCacheGetRequest.ProtoReflect.Descriptor instead.
+func (*RequestCacheGetRequest) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *RequestCacheGetRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *RequestCacheGetRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *RequestCacheGetRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *RequestCacheGetRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type RequestCacheGetResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Found         bool                   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	GetUrl        string                 `protobuf:"bytes,2,opt,name=get_url,json=getUrl,proto3" json:"get_url,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	ContentSha256 string                 `protobuf:"bytes,4,opt,name=content_sha256,json=contentSha256,proto3" json:"content_sha256,omitempty"`
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestCacheGetResponse) Reset() {
+	*x = RequestCacheGetResponse{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestCacheGetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestCacheGetResponse) ProtoMessage() {}
+
+func (x *RequestCacheGetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestCacheGetResponse.ProtoReflect.Descriptor instead.
+func (*RequestCacheGetResponse) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RequestCacheGetResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *RequestCacheGetResponse) GetGetUrl() string {
+	if x != nil {
+		return x.GetUrl
+	}
+	return ""
+}
+
+func (x *RequestCacheGetResponse) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *RequestCacheGetResponse) GetContentSha256() string {
+	if x != nil {
+		return x.ContentSha256
+	}
+	return ""
+}
+
+func (x *RequestCacheGetResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+// RequestCachePut asks the server to mint a signed PUT URL the
+// agent uploads the cache tarball at. `cache_id` is the opaque
+// token the agent feeds back to MarkCacheReady after the upload
+// lands so the server flips the row from pending to ready.
+type RequestCachePutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	JobId         string                 `protobuf:"bytes,3,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Key           string                 `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestCachePutRequest) Reset() {
+	*x = RequestCachePutRequest{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestCachePutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestCachePutRequest) ProtoMessage() {}
+
+func (x *RequestCachePutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestCachePutRequest.ProtoReflect.Descriptor instead.
+func (*RequestCachePutRequest) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RequestCachePutRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *RequestCachePutRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *RequestCachePutRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *RequestCachePutRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type RequestCachePutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CacheId       string                 `protobuf:"bytes,1,opt,name=cache_id,json=cacheId,proto3" json:"cache_id,omitempty"`
+	PutUrl        string                 `protobuf:"bytes,2,opt,name=put_url,json=putUrl,proto3" json:"put_url,omitempty"`
+	StorageKey    string                 `protobuf:"bytes,3,opt,name=storage_key,json=storageKey,proto3" json:"storage_key,omitempty"`
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestCachePutResponse) Reset() {
+	*x = RequestCachePutResponse{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestCachePutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestCachePutResponse) ProtoMessage() {}
+
+func (x *RequestCachePutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestCachePutResponse.ProtoReflect.Descriptor instead.
+func (*RequestCachePutResponse) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RequestCachePutResponse) GetCacheId() string {
+	if x != nil {
+		return x.CacheId
+	}
+	return ""
+}
+
+func (x *RequestCachePutResponse) GetPutUrl() string {
+	if x != nil {
+		return x.PutUrl
+	}
+	return ""
+}
+
+func (x *RequestCachePutResponse) GetStorageKey() string {
+	if x != nil {
+		return x.StorageKey
+	}
+	return ""
+}
+
+func (x *RequestCachePutResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+// MarkCacheReady flips a pending cache row to ready with the
+// finalised size + sha. Called after the agent confirms the PUT
+// succeeded end-to-end — before this RPC lands, any concurrent
+// GET treats the cache as missing to avoid handing out partial
+// data.
+type MarkCacheReadyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	CacheId       string                 `protobuf:"bytes,2,opt,name=cache_id,json=cacheId,proto3" json:"cache_id,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	ContentSha256 string                 `protobuf:"bytes,4,opt,name=content_sha256,json=contentSha256,proto3" json:"content_sha256,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkCacheReadyRequest) Reset() {
+	*x = MarkCacheReadyRequest{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkCacheReadyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkCacheReadyRequest) ProtoMessage() {}
+
+func (x *MarkCacheReadyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkCacheReadyRequest.ProtoReflect.Descriptor instead.
+func (*MarkCacheReadyRequest) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *MarkCacheReadyRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *MarkCacheReadyRequest) GetCacheId() string {
+	if x != nil {
+		return x.CacheId
+	}
+	return ""
+}
+
+func (x *MarkCacheReadyRequest) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *MarkCacheReadyRequest) GetContentSha256() string {
+	if x != nil {
+		return x.ContentSha256
+	}
+	return ""
+}
+
+type MarkCacheReadyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkCacheReadyResponse) Reset() {
+	*x = MarkCacheReadyResponse{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkCacheReadyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkCacheReadyResponse) ProtoMessage() {}
+
+func (x *MarkCacheReadyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkCacheReadyResponse.ProtoReflect.Descriptor instead.
+func (*MarkCacheReadyResponse) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{13}
+}
+
 type RequestArtifactUploadRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"` // autentica o agent (emitido no Register)
@@ -649,7 +1047,7 @@ type RequestArtifactUploadRequest struct {
 
 func (x *RequestArtifactUploadRequest) Reset() {
 	*x = RequestArtifactUploadRequest{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[8]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -661,7 +1059,7 @@ func (x *RequestArtifactUploadRequest) String() string {
 func (*RequestArtifactUploadRequest) ProtoMessage() {}
 
 func (x *RequestArtifactUploadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[8]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -674,7 +1072,7 @@ func (x *RequestArtifactUploadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestArtifactUploadRequest.ProtoReflect.Descriptor instead.
 func (*RequestArtifactUploadRequest) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RequestArtifactUploadRequest) GetSessionId() string {
@@ -714,7 +1112,7 @@ type RequestArtifactUploadResponse struct {
 
 func (x *RequestArtifactUploadResponse) Reset() {
 	*x = RequestArtifactUploadResponse{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[9]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -726,7 +1124,7 @@ func (x *RequestArtifactUploadResponse) String() string {
 func (*RequestArtifactUploadResponse) ProtoMessage() {}
 
 func (x *RequestArtifactUploadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[9]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -739,7 +1137,7 @@ func (x *RequestArtifactUploadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestArtifactUploadResponse.ProtoReflect.Descriptor instead.
 func (*RequestArtifactUploadResponse) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{9}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RequestArtifactUploadResponse) GetTickets() []*ArtifactUploadTicket {
@@ -766,7 +1164,7 @@ type ArtifactUploadTicket struct {
 
 func (x *ArtifactUploadTicket) Reset() {
 	*x = ArtifactUploadTicket{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[10]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -778,7 +1176,7 @@ func (x *ArtifactUploadTicket) String() string {
 func (*ArtifactUploadTicket) ProtoMessage() {}
 
 func (x *ArtifactUploadTicket) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[10]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -791,7 +1189,7 @@ func (x *ArtifactUploadTicket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactUploadTicket.ProtoReflect.Descriptor instead.
 func (*ArtifactUploadTicket) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ArtifactUploadTicket) GetPath() string {
@@ -837,7 +1235,7 @@ type ServerMessage struct {
 
 func (x *ServerMessage) Reset() {
 	*x = ServerMessage{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[11]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -849,7 +1247,7 @@ func (x *ServerMessage) String() string {
 func (*ServerMessage) ProtoMessage() {}
 
 func (x *ServerMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[11]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -862,7 +1260,7 @@ func (x *ServerMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerMessage.ProtoReflect.Descriptor instead.
 func (*ServerMessage) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ServerMessage) GetKind() isServerMessage_Kind {
@@ -972,14 +1370,19 @@ type JobAssignment struct {
 	// job ends. Jobs reach a service by `name` on a job-scoped
 	// docker network the agent provisions per assignment. Empty
 	// list = no sidecars, skip the network plumbing entirely.
-	Services      []*ServiceSpec `protobuf:"bytes,15,rep,name=services,proto3" json:"services,omitempty"`
+	Services []*ServiceSpec `protobuf:"bytes,15,rep,name=services,proto3" json:"services,omitempty"`
+	// Cache entries declared on this job. Agent calls
+	// RequestCacheGet for each before tasks (silent miss on first
+	// run) and RequestCachePut + MarkCacheReady for each after a
+	// successful run. Empty list = no cache plumbing.
+	Caches        []*CacheEntry `protobuf:"bytes,16,rep,name=caches,proto3" json:"caches,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JobAssignment) Reset() {
 	*x = JobAssignment{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[12]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -991,7 +1394,7 @@ func (x *JobAssignment) String() string {
 func (*JobAssignment) ProtoMessage() {}
 
 func (x *JobAssignment) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[12]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1004,7 +1407,7 @@ func (x *JobAssignment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobAssignment.ProtoReflect.Descriptor instead.
 func (*JobAssignment) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *JobAssignment) GetRunId() string {
@@ -1112,6 +1515,71 @@ func (x *JobAssignment) GetServices() []*ServiceSpec {
 	return nil
 }
 
+func (x *JobAssignment) GetCaches() []*CacheEntry {
+	if x != nil {
+		return x.Caches
+	}
+	return nil
+}
+
+// CacheEntry on the wire mirrors parser.CacheSpec — the key the
+// server indexes by and the workspace-relative paths the agent
+// tars up. Renamed from `CacheSpec` to avoid collision with the
+// existing Kubernetes-style name in future proto evolution;
+// the domain-layer name stays `CacheSpec` where the overlap
+// doesn't matter.
+type CacheEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Paths         []string               `protobuf:"bytes,2,rep,name=paths,proto3" json:"paths,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CacheEntry) Reset() {
+	*x = CacheEntry{}
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CacheEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CacheEntry) ProtoMessage() {}
+
+func (x *CacheEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CacheEntry.ProtoReflect.Descriptor instead.
+func (*CacheEntry) Descriptor() ([]byte, []int) {
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *CacheEntry) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CacheEntry) GetPaths() []string {
+	if x != nil {
+		return x.Paths
+	}
+	return nil
+}
+
 // ServiceSpec is the wire shape for a pipeline-level service. The
 // agent's docker engine translates each into a container on a
 // per-job bridge network with `name` as the DNS alias. `command`,
@@ -1129,7 +1597,7 @@ type ServiceSpec struct {
 
 func (x *ServiceSpec) Reset() {
 	*x = ServiceSpec{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1141,7 +1609,7 @@ func (x *ServiceSpec) String() string {
 func (*ServiceSpec) ProtoMessage() {}
 
 func (x *ServiceSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[13]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1154,7 +1622,7 @@ func (x *ServiceSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceSpec.ProtoReflect.Descriptor instead.
 func (*ServiceSpec) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ServiceSpec) GetName() string {
@@ -1199,7 +1667,7 @@ type ArtifactDownload struct {
 
 func (x *ArtifactDownload) Reset() {
 	*x = ArtifactDownload{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1211,7 +1679,7 @@ func (x *ArtifactDownload) String() string {
 func (*ArtifactDownload) ProtoMessage() {}
 
 func (x *ArtifactDownload) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[14]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1224,7 +1692,7 @@ func (x *ArtifactDownload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactDownload.ProtoReflect.Descriptor instead.
 func (*ArtifactDownload) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{14}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ArtifactDownload) GetPath() string {
@@ -1282,7 +1750,7 @@ type TaskSpec struct {
 
 func (x *TaskSpec) Reset() {
 	*x = TaskSpec{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1294,7 +1762,7 @@ func (x *TaskSpec) String() string {
 func (*TaskSpec) ProtoMessage() {}
 
 func (x *TaskSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[15]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1307,7 +1775,7 @@ func (x *TaskSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskSpec.ProtoReflect.Descriptor instead.
 func (*TaskSpec) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *TaskSpec) GetKind() isTaskSpec_Kind {
@@ -1361,7 +1829,7 @@ type PluginSpec struct {
 
 func (x *PluginSpec) Reset() {
 	*x = PluginSpec{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1373,7 +1841,7 @@ func (x *PluginSpec) String() string {
 func (*PluginSpec) ProtoMessage() {}
 
 func (x *PluginSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[16]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1386,7 +1854,7 @@ func (x *PluginSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginSpec.ProtoReflect.Descriptor instead.
 func (*PluginSpec) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PluginSpec) GetImage() string {
@@ -1417,7 +1885,7 @@ type MaterialCheckout struct {
 
 func (x *MaterialCheckout) Reset() {
 	*x = MaterialCheckout{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1429,7 +1897,7 @@ func (x *MaterialCheckout) String() string {
 func (*MaterialCheckout) ProtoMessage() {}
 
 func (x *MaterialCheckout) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[17]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1442,7 +1910,7 @@ func (x *MaterialCheckout) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MaterialCheckout.ProtoReflect.Descriptor instead.
 func (*MaterialCheckout) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *MaterialCheckout) GetMaterialId() string {
@@ -1498,7 +1966,7 @@ type CancelJob struct {
 
 func (x *CancelJob) Reset() {
 	*x = CancelJob{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1510,7 +1978,7 @@ func (x *CancelJob) String() string {
 func (*CancelJob) ProtoMessage() {}
 
 func (x *CancelJob) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[18]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1523,7 +1991,7 @@ func (x *CancelJob) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelJob.ProtoReflect.Descriptor instead.
 func (*CancelJob) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CancelJob) GetRunId() string {
@@ -1556,7 +2024,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[19]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1568,7 +2036,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_gocdnext_v1_agent_proto_msgTypes[19]
+	mi := &file_gocdnext_v1_agent_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1581,7 +2049,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{19}
+	return file_gocdnext_v1_agent_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *Pong) GetAt() *timestamppb.Timestamp {
@@ -1641,7 +2109,42 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\vstorage_key\x18\x02 \x01(\tR\n" +
 	"storageKey\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x12%\n" +
-	"\x0econtent_sha256\x18\x04 \x01(\tR\rcontentSha256\"\x81\x01\n" +
+	"\x0econtent_sha256\x18\x04 \x01(\tR\rcontentSha256\"w\n" +
+	"\x16RequestCacheGetRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x15\n" +
+	"\x06job_id\x18\x03 \x01(\tR\x05jobId\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\tR\x03key\"\xc9\x01\n" +
+	"\x17RequestCacheGetResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12\x17\n" +
+	"\aget_url\x18\x02 \x01(\tR\x06getUrl\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12%\n" +
+	"\x0econtent_sha256\x18\x04 \x01(\tR\rcontentSha256\x129\n" +
+	"\n" +
+	"expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"w\n" +
+	"\x16RequestCachePutRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x15\n" +
+	"\x06job_id\x18\x03 \x01(\tR\x05jobId\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\tR\x03key\"\xa9\x01\n" +
+	"\x17RequestCachePutResponse\x12\x19\n" +
+	"\bcache_id\x18\x01 \x01(\tR\acacheId\x12\x17\n" +
+	"\aput_url\x18\x02 \x01(\tR\x06putUrl\x12\x1f\n" +
+	"\vstorage_key\x18\x03 \x01(\tR\n" +
+	"storageKey\x129\n" +
+	"\n" +
+	"expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\x97\x01\n" +
+	"\x15MarkCacheReadyRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
+	"\bcache_id\x18\x02 \x01(\tR\acacheId\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12%\n" +
+	"\x0econtent_sha256\x18\x04 \x01(\tR\rcontentSha256\"\x18\n" +
+	"\x16MarkCacheReadyResponse\"\x81\x01\n" +
 	"\x1cRequestArtifactUploadRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x15\n" +
@@ -1661,7 +2164,7 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06assign\x18\x01 \x01(\v2\x1a.gocdnext.v1.JobAssignmentH\x00R\x06assign\x120\n" +
 	"\x06cancel\x18\x02 \x01(\v2\x16.gocdnext.v1.CancelJobH\x00R\x06cancel\x12'\n" +
 	"\x04pong\x18\x03 \x01(\v2\x11.gocdnext.v1.PongH\x00R\x04pongB\x06\n" +
-	"\x04kind\"\x9f\x05\n" +
+	"\x04kind\"\xd0\x05\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x12\n" +
@@ -1678,10 +2181,15 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x12artifact_downloads\x18\f \x03(\v2\x1d.gocdnext.v1.ArtifactDownloadR\x11artifactDownloads\x126\n" +
 	"\x17optional_artifact_paths\x18\r \x03(\tR\x15optionalArtifactPaths\x12\x16\n" +
 	"\x06docker\x18\x0e \x01(\bR\x06docker\x124\n" +
-	"\bservices\x18\x0f \x03(\v2\x18.gocdnext.v1.ServiceSpecR\bservices\x1a6\n" +
+	"\bservices\x18\x0f \x03(\v2\x18.gocdnext.v1.ServiceSpecR\bservices\x12/\n" +
+	"\x06caches\x18\x10 \x03(\v2\x17.gocdnext.v1.CacheEntryR\x06caches\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbe\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"4\n" +
+	"\n" +
+	"CacheEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05paths\x18\x02 \x03(\tR\x05paths\"\xbe\x01\n" +
 	"\vServiceSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05image\x18\x02 \x01(\tR\x05image\x123\n" +
@@ -1724,10 +2232,13 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"2\n" +
 	"\x04Pong\x12*\n" +
-	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at2\x8d\x02\n" +
+	"\x02at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02at2\xa4\x04\n" +
 	"\fAgentService\x12G\n" +
 	"\bRegister\x12\x1c.gocdnext.v1.RegisterRequest\x1a\x1d.gocdnext.v1.RegisterResponse\x12D\n" +
-	"\aConnect\x12\x19.gocdnext.v1.AgentMessage\x1a\x1a.gocdnext.v1.ServerMessage(\x010\x01\x12n\n" +
+	"\aConnect\x12\x19.gocdnext.v1.AgentMessage\x1a\x1a.gocdnext.v1.ServerMessage(\x010\x01\x12\\\n" +
+	"\x0fRequestCacheGet\x12#.gocdnext.v1.RequestCacheGetRequest\x1a$.gocdnext.v1.RequestCacheGetResponse\x12\\\n" +
+	"\x0fRequestCachePut\x12#.gocdnext.v1.RequestCachePutRequest\x1a$.gocdnext.v1.RequestCachePutResponse\x12Y\n" +
+	"\x0eMarkCacheReady\x12\".gocdnext.v1.MarkCacheReadyRequest\x1a#.gocdnext.v1.MarkCacheReadyResponse\x12n\n" +
 	"\x15RequestArtifactUpload\x12).gocdnext.v1.RequestArtifactUploadRequest\x1a*.gocdnext.v1.RequestArtifactUploadResponseBBZ@github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1;gocdnextv1b\x06proto3"
 
 var (
@@ -1742,7 +2253,7 @@ func file_gocdnext_v1_agent_proto_rawDescGZIP() []byte {
 	return file_gocdnext_v1_agent_proto_rawDescData
 }
 
-var file_gocdnext_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_gocdnext_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_gocdnext_v1_agent_proto_goTypes = []any{
 	(*RegisterRequest)(nil),               // 0: gocdnext.v1.RegisterRequest
 	(*RegisterResponse)(nil),              // 1: gocdnext.v1.RegisterResponse
@@ -1752,59 +2263,75 @@ var file_gocdnext_v1_agent_proto_goTypes = []any{
 	(*LogLine)(nil),                       // 5: gocdnext.v1.LogLine
 	(*JobResult)(nil),                     // 6: gocdnext.v1.JobResult
 	(*ArtifactRef)(nil),                   // 7: gocdnext.v1.ArtifactRef
-	(*RequestArtifactUploadRequest)(nil),  // 8: gocdnext.v1.RequestArtifactUploadRequest
-	(*RequestArtifactUploadResponse)(nil), // 9: gocdnext.v1.RequestArtifactUploadResponse
-	(*ArtifactUploadTicket)(nil),          // 10: gocdnext.v1.ArtifactUploadTicket
-	(*ServerMessage)(nil),                 // 11: gocdnext.v1.ServerMessage
-	(*JobAssignment)(nil),                 // 12: gocdnext.v1.JobAssignment
-	(*ServiceSpec)(nil),                   // 13: gocdnext.v1.ServiceSpec
-	(*ArtifactDownload)(nil),              // 14: gocdnext.v1.ArtifactDownload
-	(*TaskSpec)(nil),                      // 15: gocdnext.v1.TaskSpec
-	(*PluginSpec)(nil),                    // 16: gocdnext.v1.PluginSpec
-	(*MaterialCheckout)(nil),              // 17: gocdnext.v1.MaterialCheckout
-	(*CancelJob)(nil),                     // 18: gocdnext.v1.CancelJob
-	(*Pong)(nil),                          // 19: gocdnext.v1.Pong
-	nil,                                   // 20: gocdnext.v1.JobAssignment.EnvEntry
-	nil,                                   // 21: gocdnext.v1.ServiceSpec.EnvEntry
-	nil,                                   // 22: gocdnext.v1.PluginSpec.SettingsEntry
-	(*timestamppb.Timestamp)(nil),         // 23: google.protobuf.Timestamp
-	(RunStatus)(0),                        // 24: gocdnext.v1.RunStatus
+	(*RequestCacheGetRequest)(nil),        // 8: gocdnext.v1.RequestCacheGetRequest
+	(*RequestCacheGetResponse)(nil),       // 9: gocdnext.v1.RequestCacheGetResponse
+	(*RequestCachePutRequest)(nil),        // 10: gocdnext.v1.RequestCachePutRequest
+	(*RequestCachePutResponse)(nil),       // 11: gocdnext.v1.RequestCachePutResponse
+	(*MarkCacheReadyRequest)(nil),         // 12: gocdnext.v1.MarkCacheReadyRequest
+	(*MarkCacheReadyResponse)(nil),        // 13: gocdnext.v1.MarkCacheReadyResponse
+	(*RequestArtifactUploadRequest)(nil),  // 14: gocdnext.v1.RequestArtifactUploadRequest
+	(*RequestArtifactUploadResponse)(nil), // 15: gocdnext.v1.RequestArtifactUploadResponse
+	(*ArtifactUploadTicket)(nil),          // 16: gocdnext.v1.ArtifactUploadTicket
+	(*ServerMessage)(nil),                 // 17: gocdnext.v1.ServerMessage
+	(*JobAssignment)(nil),                 // 18: gocdnext.v1.JobAssignment
+	(*CacheEntry)(nil),                    // 19: gocdnext.v1.CacheEntry
+	(*ServiceSpec)(nil),                   // 20: gocdnext.v1.ServiceSpec
+	(*ArtifactDownload)(nil),              // 21: gocdnext.v1.ArtifactDownload
+	(*TaskSpec)(nil),                      // 22: gocdnext.v1.TaskSpec
+	(*PluginSpec)(nil),                    // 23: gocdnext.v1.PluginSpec
+	(*MaterialCheckout)(nil),              // 24: gocdnext.v1.MaterialCheckout
+	(*CancelJob)(nil),                     // 25: gocdnext.v1.CancelJob
+	(*Pong)(nil),                          // 26: gocdnext.v1.Pong
+	nil,                                   // 27: gocdnext.v1.JobAssignment.EnvEntry
+	nil,                                   // 28: gocdnext.v1.ServiceSpec.EnvEntry
+	nil,                                   // 29: gocdnext.v1.PluginSpec.SettingsEntry
+	(*timestamppb.Timestamp)(nil),         // 30: google.protobuf.Timestamp
+	(RunStatus)(0),                        // 31: gocdnext.v1.RunStatus
 }
 var file_gocdnext_v1_agent_proto_depIdxs = []int32{
 	3,  // 0: gocdnext.v1.AgentMessage.heartbeat:type_name -> gocdnext.v1.Heartbeat
 	4,  // 1: gocdnext.v1.AgentMessage.progress:type_name -> gocdnext.v1.JobProgress
 	5,  // 2: gocdnext.v1.AgentMessage.log:type_name -> gocdnext.v1.LogLine
 	6,  // 3: gocdnext.v1.AgentMessage.result:type_name -> gocdnext.v1.JobResult
-	23, // 4: gocdnext.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
-	24, // 5: gocdnext.v1.JobProgress.status:type_name -> gocdnext.v1.RunStatus
-	23, // 6: gocdnext.v1.LogLine.at:type_name -> google.protobuf.Timestamp
-	24, // 7: gocdnext.v1.JobResult.status:type_name -> gocdnext.v1.RunStatus
+	30, // 4: gocdnext.v1.Heartbeat.at:type_name -> google.protobuf.Timestamp
+	31, // 5: gocdnext.v1.JobProgress.status:type_name -> gocdnext.v1.RunStatus
+	30, // 6: gocdnext.v1.LogLine.at:type_name -> google.protobuf.Timestamp
+	31, // 7: gocdnext.v1.JobResult.status:type_name -> gocdnext.v1.RunStatus
 	7,  // 8: gocdnext.v1.JobResult.artifacts:type_name -> gocdnext.v1.ArtifactRef
-	10, // 9: gocdnext.v1.RequestArtifactUploadResponse.tickets:type_name -> gocdnext.v1.ArtifactUploadTicket
-	23, // 10: gocdnext.v1.ArtifactUploadTicket.expires_at:type_name -> google.protobuf.Timestamp
-	12, // 11: gocdnext.v1.ServerMessage.assign:type_name -> gocdnext.v1.JobAssignment
-	18, // 12: gocdnext.v1.ServerMessage.cancel:type_name -> gocdnext.v1.CancelJob
-	19, // 13: gocdnext.v1.ServerMessage.pong:type_name -> gocdnext.v1.Pong
-	15, // 14: gocdnext.v1.JobAssignment.tasks:type_name -> gocdnext.v1.TaskSpec
-	20, // 15: gocdnext.v1.JobAssignment.env:type_name -> gocdnext.v1.JobAssignment.EnvEntry
-	17, // 16: gocdnext.v1.JobAssignment.checkouts:type_name -> gocdnext.v1.MaterialCheckout
-	14, // 17: gocdnext.v1.JobAssignment.artifact_downloads:type_name -> gocdnext.v1.ArtifactDownload
-	13, // 18: gocdnext.v1.JobAssignment.services:type_name -> gocdnext.v1.ServiceSpec
-	21, // 19: gocdnext.v1.ServiceSpec.env:type_name -> gocdnext.v1.ServiceSpec.EnvEntry
-	16, // 20: gocdnext.v1.TaskSpec.plugin:type_name -> gocdnext.v1.PluginSpec
-	22, // 21: gocdnext.v1.PluginSpec.settings:type_name -> gocdnext.v1.PluginSpec.SettingsEntry
-	23, // 22: gocdnext.v1.Pong.at:type_name -> google.protobuf.Timestamp
-	0,  // 23: gocdnext.v1.AgentService.Register:input_type -> gocdnext.v1.RegisterRequest
-	2,  // 24: gocdnext.v1.AgentService.Connect:input_type -> gocdnext.v1.AgentMessage
-	8,  // 25: gocdnext.v1.AgentService.RequestArtifactUpload:input_type -> gocdnext.v1.RequestArtifactUploadRequest
-	1,  // 26: gocdnext.v1.AgentService.Register:output_type -> gocdnext.v1.RegisterResponse
-	11, // 27: gocdnext.v1.AgentService.Connect:output_type -> gocdnext.v1.ServerMessage
-	9,  // 28: gocdnext.v1.AgentService.RequestArtifactUpload:output_type -> gocdnext.v1.RequestArtifactUploadResponse
-	26, // [26:29] is the sub-list for method output_type
-	23, // [23:26] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	30, // 9: gocdnext.v1.RequestCacheGetResponse.expires_at:type_name -> google.protobuf.Timestamp
+	30, // 10: gocdnext.v1.RequestCachePutResponse.expires_at:type_name -> google.protobuf.Timestamp
+	16, // 11: gocdnext.v1.RequestArtifactUploadResponse.tickets:type_name -> gocdnext.v1.ArtifactUploadTicket
+	30, // 12: gocdnext.v1.ArtifactUploadTicket.expires_at:type_name -> google.protobuf.Timestamp
+	18, // 13: gocdnext.v1.ServerMessage.assign:type_name -> gocdnext.v1.JobAssignment
+	25, // 14: gocdnext.v1.ServerMessage.cancel:type_name -> gocdnext.v1.CancelJob
+	26, // 15: gocdnext.v1.ServerMessage.pong:type_name -> gocdnext.v1.Pong
+	22, // 16: gocdnext.v1.JobAssignment.tasks:type_name -> gocdnext.v1.TaskSpec
+	27, // 17: gocdnext.v1.JobAssignment.env:type_name -> gocdnext.v1.JobAssignment.EnvEntry
+	24, // 18: gocdnext.v1.JobAssignment.checkouts:type_name -> gocdnext.v1.MaterialCheckout
+	21, // 19: gocdnext.v1.JobAssignment.artifact_downloads:type_name -> gocdnext.v1.ArtifactDownload
+	20, // 20: gocdnext.v1.JobAssignment.services:type_name -> gocdnext.v1.ServiceSpec
+	19, // 21: gocdnext.v1.JobAssignment.caches:type_name -> gocdnext.v1.CacheEntry
+	28, // 22: gocdnext.v1.ServiceSpec.env:type_name -> gocdnext.v1.ServiceSpec.EnvEntry
+	23, // 23: gocdnext.v1.TaskSpec.plugin:type_name -> gocdnext.v1.PluginSpec
+	29, // 24: gocdnext.v1.PluginSpec.settings:type_name -> gocdnext.v1.PluginSpec.SettingsEntry
+	30, // 25: gocdnext.v1.Pong.at:type_name -> google.protobuf.Timestamp
+	0,  // 26: gocdnext.v1.AgentService.Register:input_type -> gocdnext.v1.RegisterRequest
+	2,  // 27: gocdnext.v1.AgentService.Connect:input_type -> gocdnext.v1.AgentMessage
+	8,  // 28: gocdnext.v1.AgentService.RequestCacheGet:input_type -> gocdnext.v1.RequestCacheGetRequest
+	10, // 29: gocdnext.v1.AgentService.RequestCachePut:input_type -> gocdnext.v1.RequestCachePutRequest
+	12, // 30: gocdnext.v1.AgentService.MarkCacheReady:input_type -> gocdnext.v1.MarkCacheReadyRequest
+	14, // 31: gocdnext.v1.AgentService.RequestArtifactUpload:input_type -> gocdnext.v1.RequestArtifactUploadRequest
+	1,  // 32: gocdnext.v1.AgentService.Register:output_type -> gocdnext.v1.RegisterResponse
+	17, // 33: gocdnext.v1.AgentService.Connect:output_type -> gocdnext.v1.ServerMessage
+	9,  // 34: gocdnext.v1.AgentService.RequestCacheGet:output_type -> gocdnext.v1.RequestCacheGetResponse
+	11, // 35: gocdnext.v1.AgentService.RequestCachePut:output_type -> gocdnext.v1.RequestCachePutResponse
+	13, // 36: gocdnext.v1.AgentService.MarkCacheReady:output_type -> gocdnext.v1.MarkCacheReadyResponse
+	15, // 37: gocdnext.v1.AgentService.RequestArtifactUpload:output_type -> gocdnext.v1.RequestArtifactUploadResponse
+	32, // [32:38] is the sub-list for method output_type
+	26, // [26:32] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_gocdnext_v1_agent_proto_init() }
@@ -1819,12 +2346,12 @@ func file_gocdnext_v1_agent_proto_init() {
 		(*AgentMessage_Log)(nil),
 		(*AgentMessage_Result)(nil),
 	}
-	file_gocdnext_v1_agent_proto_msgTypes[11].OneofWrappers = []any{
+	file_gocdnext_v1_agent_proto_msgTypes[17].OneofWrappers = []any{
 		(*ServerMessage_Assign)(nil),
 		(*ServerMessage_Cancel)(nil),
 		(*ServerMessage_Pong)(nil),
 	}
-	file_gocdnext_v1_agent_proto_msgTypes[15].OneofWrappers = []any{
+	file_gocdnext_v1_agent_proto_msgTypes[22].OneofWrappers = []any{
 		(*TaskSpec_Script)(nil),
 		(*TaskSpec_Plugin)(nil),
 	}
@@ -1834,7 +2361,7 @@ func file_gocdnext_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gocdnext_v1_agent_proto_rawDesc), len(file_gocdnext_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   23,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

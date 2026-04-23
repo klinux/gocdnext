@@ -18,6 +18,18 @@ service AgentService {
   //   agent → server: heartbeat, progresso de job, logs, resultado
   rpc Connect(stream AgentMessage) returns (stream ServerMessage);
 
+  // RequestCacheGet / RequestCachePut / MarkCacheReady: trio que
+  // alimenta o ciclo de vida dos caches persistentes por projeto.
+  // Agent chama Get ANTES das tasks (miss = segue vida sem cache
+  // pré-populado); chama Put depois do sucesso pra subir o tar e
+  // MarkCacheReady pra marcar visível ao próximo run.
+  rpc RequestCacheGet(RequestCacheGetRequest)
+      returns (RequestCacheGetResponse);
+  rpc RequestCachePut(RequestCachePutRequest)
+      returns (RequestCachePutResponse);
+  rpc MarkCacheReady(MarkCacheReadyRequest)
+      returns (MarkCacheReadyResponse);
+
   // RequestArtifactUpload: agent pede URLs assinadas para subir N
   // artefatos de um job. Servidor cria rows pendentes em `artifacts` e
   // devolve um ticket por path. Agent faz PUT HTTP em cada URL; server
@@ -87,6 +99,55 @@ message ArtifactRef {
   int64  size           = 3;
   string content_sha256 = 4; // hex; agent calcula ao tar+stream
 }
+
+// RequestCacheGet asks the server for a signed download of a
+// previously-uploaded cache blob. When the cache doesn't exist
+// yet (first run for this key) or is still pending an upload,
+// `found` is false and the agent continues without a pre-
+// populated directory.
+message RequestCacheGetRequest {
+  string session_id = 1;
+  string run_id     = 2;
+  string job_id     = 3;
+  string key        = 4;
+}
+message RequestCacheGetResponse {
+  bool   found          = 1;
+  string get_url        = 2;
+  int64  size_bytes     = 3;
+  string content_sha256 = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+// RequestCachePut asks the server to mint a signed PUT URL the
+// agent uploads the cache tarball at. `cache_id` is the opaque
+// token the agent feeds back to MarkCacheReady after the upload
+// lands so the server flips the row from pending to ready.
+message RequestCachePutRequest {
+  string session_id = 1;
+  string run_id     = 2;
+  string job_id     = 3;
+  string key        = 4;
+}
+message RequestCachePutResponse {
+  string cache_id    = 1;
+  string put_url     = 2;
+  string storage_key = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+// MarkCacheReady flips a pending cache row to ready with the
+// finalised size + sha. Called after the agent confirms the PUT
+// succeeded end-to-end — before this RPC lands, any concurrent
+// GET treats the cache as missing to avoid handing out partial
+// data.
+message MarkCacheReadyRequest {
+  string session_id     = 1;
+  string cache_id       = 2;
+  int64  size_bytes     = 3;
+  string content_sha256 = 4;
+}
+message MarkCacheReadyResponse {}
 
 message RequestArtifactUploadRequest {
   string          session_id = 1; // autentica o agent (emitido no Register)
@@ -171,6 +232,22 @@ message JobAssignment {
   // docker network the agent provisions per assignment. Empty
   // list = no sidecars, skip the network plumbing entirely.
   repeated ServiceSpec services = 15;
+  // Cache entries declared on this job. Agent calls
+  // RequestCacheGet for each before tasks (silent miss on first
+  // run) and RequestCachePut + MarkCacheReady for each after a
+  // successful run. Empty list = no cache plumbing.
+  repeated CacheEntry caches = 16;
+}
+
+// CacheEntry on the wire mirrors parser.CacheSpec — the key the
+// server indexes by and the workspace-relative paths the agent
+// tars up. Renamed from `CacheSpec` to avoid collision with the
+// existing Kubernetes-style name in future proto evolution;
+// the domain-layer name stays `CacheSpec` where the overlap
+// doesn't matter.
+message CacheEntry {
+  string key               = 1;
+  repeated string paths    = 2;
 }
 
 // ServiceSpec is the wire shape for a pipeline-level service. The

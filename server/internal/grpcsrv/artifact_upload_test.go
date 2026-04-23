@@ -44,7 +44,7 @@ func bootServerWithArtifacts(t *testing.T) (*pgxpool.Pool, gocdnextv1.AgentServi
 
 	svc := grpcsrv.NewAgentService(s, grpcsrv.NewSessionStore(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), heartbeatSecs).
-		WithArtifactStore(fs, 5*time.Minute, 24*time.Hour)
+		WithArtifactStore(fs, 5*time.Minute, 5*time.Minute, 24*time.Hour)
 
 	lis := bufconn.Listen(1 << 20)
 	grpcSrv := grpc.NewServer()

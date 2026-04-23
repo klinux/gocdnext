@@ -34,6 +34,7 @@ type AgentService struct {
 	// what we stamp into `expires_at` when the YAML doesn't override.
 	artifactStore            artifacts.Store
 	artifactPutURLTTL        time.Duration
+	artifactGetURLTTL        time.Duration
 	artifactDefaultRetention time.Duration
 
 	// checksReporter: optional; nil means "don't report back to GitHub
@@ -58,19 +59,24 @@ func NewAgentService(s *store.Store, sessions *SessionStore, log *slog.Logger, h
 	}
 }
 
-// WithArtifactStore enables the RequestArtifactUpload RPC. Without this
-// the RPC returns Unimplemented — tests that don't exercise artifacts
-// don't need to wire a backend. TTLs of zero fall back to 15 min for
-// the PUT URL and 30 days for the retention stamp.
-func (a *AgentService) WithArtifactStore(st artifacts.Store, putURLTTL, retention time.Duration) *AgentService {
+// WithArtifactStore enables the RequestArtifactUpload + cache RPCs.
+// Without this the RPCs return Unimplemented — tests that don't
+// exercise artifacts don't need to wire a backend. TTLs of zero fall
+// back to 15 min for the PUT URL, 30 min for the GET URL (cache
+// download can queue a bit), and 30 days for the retention stamp.
+func (a *AgentService) WithArtifactStore(st artifacts.Store, putURLTTL, getURLTTL, retention time.Duration) *AgentService {
 	if putURLTTL <= 0 {
 		putURLTTL = 15 * time.Minute
+	}
+	if getURLTTL <= 0 {
+		getURLTTL = 30 * time.Minute
 	}
 	if retention <= 0 {
 		retention = 30 * 24 * time.Hour
 	}
 	a.artifactStore = st
 	a.artifactPutURLTTL = putURLTTL
+	a.artifactGetURLTTL = getURLTTL
 	a.artifactDefaultRetention = retention
 	return a
 }

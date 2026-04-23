@@ -21,6 +21,9 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	AgentService_Register_FullMethodName              = "/gocdnext.v1.AgentService/Register"
 	AgentService_Connect_FullMethodName               = "/gocdnext.v1.AgentService/Connect"
+	AgentService_RequestCacheGet_FullMethodName       = "/gocdnext.v1.AgentService/RequestCacheGet"
+	AgentService_RequestCachePut_FullMethodName       = "/gocdnext.v1.AgentService/RequestCachePut"
+	AgentService_MarkCacheReady_FullMethodName        = "/gocdnext.v1.AgentService/MarkCacheReady"
 	AgentService_RequestArtifactUpload_FullMethodName = "/gocdnext.v1.AgentService/RequestArtifactUpload"
 )
 
@@ -38,6 +41,14 @@ type AgentServiceClient interface {
 	//	server → agent: despacho de job, cancelamento
 	//	agent → server: heartbeat, progresso de job, logs, resultado
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AgentMessage, ServerMessage], error)
+	// RequestCacheGet / RequestCachePut / MarkCacheReady: trio que
+	// alimenta o ciclo de vida dos caches persistentes por projeto.
+	// Agent chama Get ANTES das tasks (miss = segue vida sem cache
+	// pré-populado); chama Put depois do sucesso pra subir o tar e
+	// MarkCacheReady pra marcar visível ao próximo run.
+	RequestCacheGet(ctx context.Context, in *RequestCacheGetRequest, opts ...grpc.CallOption) (*RequestCacheGetResponse, error)
+	RequestCachePut(ctx context.Context, in *RequestCachePutRequest, opts ...grpc.CallOption) (*RequestCachePutResponse, error)
+	MarkCacheReady(ctx context.Context, in *MarkCacheReadyRequest, opts ...grpc.CallOption) (*MarkCacheReadyResponse, error)
 	// RequestArtifactUpload: agent pede URLs assinadas para subir N
 	// artefatos de um job. Servidor cria rows pendentes em `artifacts` e
 	// devolve um ticket por path. Agent faz PUT HTTP em cada URL; server
@@ -76,6 +87,36 @@ func (c *agentServiceClient) Connect(ctx context.Context, opts ...grpc.CallOptio
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentService_ConnectClient = grpc.BidiStreamingClient[AgentMessage, ServerMessage]
 
+func (c *agentServiceClient) RequestCacheGet(ctx context.Context, in *RequestCacheGetRequest, opts ...grpc.CallOption) (*RequestCacheGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestCacheGetResponse)
+	err := c.cc.Invoke(ctx, AgentService_RequestCacheGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) RequestCachePut(ctx context.Context, in *RequestCachePutRequest, opts ...grpc.CallOption) (*RequestCachePutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestCachePutResponse)
+	err := c.cc.Invoke(ctx, AgentService_RequestCachePut_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) MarkCacheReady(ctx context.Context, in *MarkCacheReadyRequest, opts ...grpc.CallOption) (*MarkCacheReadyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MarkCacheReadyResponse)
+	err := c.cc.Invoke(ctx, AgentService_MarkCacheReady_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) RequestArtifactUpload(ctx context.Context, in *RequestArtifactUploadRequest, opts ...grpc.CallOption) (*RequestArtifactUploadResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RequestArtifactUploadResponse)
@@ -100,6 +141,14 @@ type AgentServiceServer interface {
 	//	server → agent: despacho de job, cancelamento
 	//	agent → server: heartbeat, progresso de job, logs, resultado
 	Connect(grpc.BidiStreamingServer[AgentMessage, ServerMessage]) error
+	// RequestCacheGet / RequestCachePut / MarkCacheReady: trio que
+	// alimenta o ciclo de vida dos caches persistentes por projeto.
+	// Agent chama Get ANTES das tasks (miss = segue vida sem cache
+	// pré-populado); chama Put depois do sucesso pra subir o tar e
+	// MarkCacheReady pra marcar visível ao próximo run.
+	RequestCacheGet(context.Context, *RequestCacheGetRequest) (*RequestCacheGetResponse, error)
+	RequestCachePut(context.Context, *RequestCachePutRequest) (*RequestCachePutResponse, error)
+	MarkCacheReady(context.Context, *MarkCacheReadyRequest) (*MarkCacheReadyResponse, error)
 	// RequestArtifactUpload: agent pede URLs assinadas para subir N
 	// artefatos de um job. Servidor cria rows pendentes em `artifacts` e
 	// devolve um ticket por path. Agent faz PUT HTTP em cada URL; server
@@ -119,6 +168,15 @@ func (UnimplementedAgentServiceServer) Register(context.Context, *RegisterReques
 }
 func (UnimplementedAgentServiceServer) Connect(grpc.BidiStreamingServer[AgentMessage, ServerMessage]) error {
 	return status.Error(codes.Unimplemented, "method Connect not implemented")
+}
+func (UnimplementedAgentServiceServer) RequestCacheGet(context.Context, *RequestCacheGetRequest) (*RequestCacheGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestCacheGet not implemented")
+}
+func (UnimplementedAgentServiceServer) RequestCachePut(context.Context, *RequestCachePutRequest) (*RequestCachePutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestCachePut not implemented")
+}
+func (UnimplementedAgentServiceServer) MarkCacheReady(context.Context, *MarkCacheReadyRequest) (*MarkCacheReadyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MarkCacheReady not implemented")
 }
 func (UnimplementedAgentServiceServer) RequestArtifactUpload(context.Context, *RequestArtifactUploadRequest) (*RequestArtifactUploadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestArtifactUpload not implemented")
@@ -168,6 +226,60 @@ func _AgentService_Connect_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type AgentService_ConnectServer = grpc.BidiStreamingServer[AgentMessage, ServerMessage]
 
+func _AgentService_RequestCacheGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestCacheGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RequestCacheGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RequestCacheGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RequestCacheGet(ctx, req.(*RequestCacheGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_RequestCachePut_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestCachePutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RequestCachePut(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RequestCachePut_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RequestCachePut(ctx, req.(*RequestCachePutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_MarkCacheReady_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MarkCacheReadyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).MarkCacheReady(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_MarkCacheReady_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).MarkCacheReady(ctx, req.(*MarkCacheReadyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentService_RequestArtifactUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RequestArtifactUploadRequest)
 	if err := dec(in); err != nil {
@@ -196,6 +308,18 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Register",
 			Handler:    _AgentService_Register_Handler,
+		},
+		{
+			MethodName: "RequestCacheGet",
+			Handler:    _AgentService_RequestCacheGet_Handler,
+		},
+		{
+			MethodName: "RequestCachePut",
+			Handler:    _AgentService_RequestCachePut_Handler,
+		},
+		{
+			MethodName: "MarkCacheReady",
+			Handler:    _AgentService_MarkCacheReady_Handler,
 		},
 		{
 			MethodName: "RequestArtifactUpload",
