@@ -52,17 +52,26 @@ export function VSMGraph({ vsm }: Props) {
   // "everyone ran in parallel, and here's how long each took" —
   // no fake dependency claim. Skipped when real edges exist to
   // avoid doubling up on a pair.
+  // VSM renders all pipelines in a single horizontal row. buildLayers
+  // still runs (its barycenter pass brings parent/child pairs next to
+  // each other and keeps alphabetical order inside sibling groups),
+  // but the resulting layers get flattened for layout — operators read
+  // the VSM as a left-to-right value stream, not a depth diagram.
+  const orderedNodes = useMemo(() => layers.flat(), [layers]);
+
   const implicitEdges = useMemo(() => {
-    if (layers.length !== 1) return [];
-    const row = layers[0]!;
-    if (row.length < 2) return [];
+    if (orderedNodes.length < 2) return [];
+    // Skip pairs that already have a real upstream edge — drawing
+    // both a dashed-sequence arrow AND the solid-dependency arrow
+    // between the same two cards doubles the visual noise without
+    // extra info.
     const realPairs = new Set(
       renderableEdges.map((e) => `${e.from_pipeline}->${e.to_pipeline}`),
     );
     const out: { fromID: string; toID: string; sourcePipelineID: string }[] = [];
-    for (let i = 0; i < row.length - 1; i++) {
-      const from = row[i]!;
-      const to = row[i + 1]!;
+    for (let i = 0; i < orderedNodes.length - 1; i++) {
+      const from = orderedNodes[i]!;
+      const to = orderedNodes[i + 1]!;
       if (realPairs.has(`${from.name}->${to.name}`)) continue;
       out.push({
         fromID: from.pipeline_id,
@@ -71,7 +80,7 @@ export function VSMGraph({ vsm }: Props) {
       });
     }
     return out;
-  }, [layers, renderableEdges]);
+  }, [orderedNodes, renderableEdges]);
 
   // Slowest pipeline across the VSM — the "offender" whose outgoing
   // implicit edge is tinted amber so the eye lands on it first.
@@ -325,40 +334,27 @@ export function VSMGraph({ vsm }: Props) {
           </svg>
         ) : null}
 
-        {/* Layout orientation: each dependency layer is a ROW of
-            pipelines, and layers stack top-to-bottom. Makes roots
-            read left-to-right (what a VSM is for) regardless of
-            how many are in parallel — the prior
-            "column-per-layer" nested layout collapsed into a tall
-            vertical strip whenever one layer had more than a
-            couple of roots (four roots + one downstream = 4-high
-            left column that dominates the viewport).
-            Downstreams still appear AFTER their parents because
-            they're in the next row down — same visual dependency
-            direction, just rotated 90°. Overflow scrolls
-            vertically when the DAG is deep and horizontally when
-            a layer has many siblings. */}
+        {/* Single horizontal row. Barycenter ordering inside
+            buildLayers already put parent/child pairs side-by-side
+            (ci-server next to its downstream ci-web) and left the
+            rest alphabetical. Implicit dashed edges connect every
+            adjacent pair that doesn't have a real upstream edge
+            so the "this came before that" sequence stays readable
+            even when pipelines don't depend on each other
+            formally. Overflow scrolls horizontally when the DAG
+            is wider than the viewport. */}
         <div className="relative flex min-w-full justify-center">
           <div
-            className="inline-flex flex-col items-start"
-            style={{ gap: `${ROW_GAP}px` }}
+            className="inline-flex items-start"
+            style={{ gap: `${COL_GAP}px` }}
           >
-            {layers.map((layer, layerIdx) => (
-              <Fragment key={`layer-${layerIdx}`}>
-                <div
-                  className="flex items-start"
-                  style={{ gap: `${COL_GAP}px` }}
-                >
-                  {layer.map((node) => (
-                    <PipelineNode
-                      key={node.pipeline_id}
-                      ref={setNodeRef(node.pipeline_id)}
-                      pipeline={node}
-                      bottleneck={node.pipeline_id === bottleneckID}
-                    />
-                  ))}
-                </div>
-              </Fragment>
+            {orderedNodes.map((node) => (
+              <PipelineNode
+                key={node.pipeline_id}
+                ref={setNodeRef(node.pipeline_id)}
+                pipeline={node}
+                bottleneck={node.pipeline_id === bottleneckID}
+              />
             ))}
           </div>
         </div>
