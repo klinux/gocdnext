@@ -96,13 +96,20 @@ function groupBy<T, K>(items: T[], keyFn: (t: T) => K): Map<K, T[]> {
   return out;
 }
 
+// Stages without a finish timestamp are still running; returning
+// null here instead of reading `Date.now()` keeps buildColumns
+// output stable between SSR and client hydration. The bottleneck
+// callout (the sole consumer of durationSec) then reacts only to
+// stages that actually terminated — prevents hydration mismatches
+// on a long-running job that'd otherwise flip the "slow" verdict
+// as the clock ticks past p50 * 1.5 thresholds mid-render.
 function durationSec(
   start: string | undefined,
   end: string | undefined,
 ): number | null {
-  if (!start) return null;
+  if (!start || !end) return null;
   const s = Date.parse(start);
-  const e = end ? Date.parse(end) : Date.now();
+  const e = Date.parse(end);
   if (Number.isNaN(s) || Number.isNaN(e) || e < s) return null;
   return (e - s) / 1000;
 }

@@ -13,7 +13,7 @@ import {
 import type { ComponentType } from "react";
 
 import { cn } from "@/lib/utils";
-import { durationBetween, formatDurationSeconds } from "@/lib/format";
+import { LiveDuration } from "@/components/shared/live-duration";
 import type { JobDetail, StageDetail } from "@/types/api";
 
 type Props = {
@@ -53,9 +53,6 @@ export function PipelineCanvas({ stages }: Props) {
 
 function StageColumn({ stage }: { stage: StageDetail }) {
   const tone = statusTone(stage.status);
-  const duration = formatDurationSeconds(
-    durationBetween(stage.started_at, stage.finished_at),
-  );
   return (
     <div
       className={cn(
@@ -77,9 +74,11 @@ function StageColumn({ stage }: { stage: StageDetail }) {
           </span>
           {stage.name}
         </span>
-        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-          {duration}
-        </span>
+        <LiveDuration
+          startedAt={stage.started_at}
+          finishedAt={stage.finished_at}
+          className="ml-auto font-mono text-[10px] text-muted-foreground"
+        />
       </header>
       <div className="flex flex-col gap-1.5 p-2">
         {stage.jobs.length === 0 ? (
@@ -98,9 +97,6 @@ function StageColumn({ stage }: { stage: StageDetail }) {
 
 function JobPill({ job }: { job: JobDetail }) {
   const tone = statusTone(job.status);
-  const duration = formatDurationSeconds(
-    durationBetween(job.started_at, job.finished_at),
-  );
   const label = job.matrix_key
     ? `${job.name} [${job.matrix_key}]`
     : job.name;
@@ -130,9 +126,11 @@ function JobPill({ job }: { job: JobDetail }) {
     >
       <StatusGlyph status={job.status} className={cn("size-3.5", tone.glyph)} />
       <span className={cn("flex-1 truncate font-mono", tone.text)}>{label}</span>
-      <span className="font-mono text-[10px] text-muted-foreground/80">
-        {duration}
-      </span>
+      <LiveDuration
+        startedAt={job.started_at}
+        finishedAt={job.finished_at}
+        className="font-mono text-[10px] text-muted-foreground/80"
+      />
     </button>
   );
 }

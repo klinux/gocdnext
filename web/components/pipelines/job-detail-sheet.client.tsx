@@ -16,7 +16,7 @@ import {
 import { StatusBadge } from "@/components/shared/status-badge";
 import { LogViewer } from "@/components/runs/log-viewer";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { durationBetween, formatDurationSeconds } from "@/lib/format";
+import { LiveDuration } from "@/components/shared/live-duration";
 import {
   fetchJobDetail,
   type JobDetailResult,
@@ -83,9 +83,6 @@ export function JobDetailSheet({ runId, jobId, jobName, trigger }: Props) {
 
 function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true }> }) {
   const { job, run, stageName } = result;
-  const duration = job.started_at
-    ? formatDurationSeconds(durationBetween(job.started_at, job.finished_at))
-    : null;
 
   return (
     <>
@@ -124,7 +121,15 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
           )}
         </Field>
         <Field label="Duration">
-          <span className="font-mono text-xs">{duration ?? "—"}</span>
+          {job.started_at ? (
+            <LiveDuration
+              startedAt={job.started_at}
+              finishedAt={job.finished_at}
+              className="font-mono text-xs"
+            />
+          ) : (
+            <span className="font-mono text-xs">—</span>
+          )}
         </Field>
         {typeof job.exit_code === "number" ? (
           <Field label="Exit code">
