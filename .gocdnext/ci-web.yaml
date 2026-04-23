@@ -21,6 +21,15 @@ jobs:
     with:
       working-dir: web
       command: install --frozen-lockfile
+    # Cache node_modules across runs: when pnpm-lock.yaml is
+    # unchanged, `install --frozen-lockfile` against a pre-
+    # populated tree is a near-instant verify. A lockfile change
+    # makes pnpm error loudly — at which point a human bumps the
+    # key suffix (cache key templating is on the roadmap; see the
+    # eviction/invalidation tracking doc).
+    cache:
+      - key: web-node-modules-v1
+        paths: [web/node_modules/]
     artifacts:
       paths: [web/node_modules/]
 
