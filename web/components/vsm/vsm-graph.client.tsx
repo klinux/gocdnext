@@ -4,6 +4,7 @@ import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { ProjectVSM, VSMNode as VSMNodeT } from "@/types/api";
 import { PipelineNode } from "@/components/vsm/pipeline-node.client";
+import { buildLayers } from "@/components/vsm/vsm-layout";
 import {
   VSMMetricsStrip,
   pickBottleneckID,
@@ -392,58 +393,4 @@ function firstMetricsWindow(nodes: VSMNodeT[]): number {
   return 7;
 }
 
-// buildLayers groups pipelines by dependency depth. Roots (no
-// upstream) are layer 0; each downstream pipeline sits one layer
-// deeper than its deepest parent. Same-depth siblings stack
-// vertically inside the layer. When there are no edges at all
-// every pipeline is depth 0 — the rendering code above lays those
-// siblings vertically inside the single layer, which looks right
-// for the "parallel tracks from one push" case.
-function buildLayers(vsm: ProjectVSM): VSMNodeT[][] {
-  const nodeByName = new Map(vsm.nodes.map((n) => [n.name, n]));
-  const upstream = new Map<string, string[]>();
-  for (const e of vsm.edges) {
-    const list = upstream.get(e.to_pipeline) ?? [];
-    list.push(e.from_pipeline);
-    upstream.set(e.to_pipeline, list);
-  }
-
-  const depthMemo = new Map<string, number>();
-  const inFlight = new Set<string>();
-  function depthOf(name: string): number {
-    const cached = depthMemo.get(name);
-    if (cached != null) return cached;
-    if (inFlight.has(name)) return 0;
-    inFlight.add(name);
-    const parents = upstream.get(name) ?? [];
-    const d =
-      parents.length === 0
-        ? 0
-        : 1 +
-          Math.max(
-            ...parents
-              .filter((p) => nodeByName.has(p))
-              .map((p) => depthOf(p)),
-          );
-    inFlight.delete(name);
-    depthMemo.set(name, d);
-    return d;
-  }
-
-  const byDepth = new Map<number, VSMNodeT[]>();
-  for (const node of vsm.nodes) {
-    const d = depthOf(node.name);
-    const list = byDepth.get(d) ?? [];
-    list.push(node);
-    byDepth.set(d, list);
-  }
-  const maxDepth = Math.max(0, ...Array.from(byDepth.keys()));
-  const layers: VSMNodeT[][] = [];
-  for (let i = 0; i <= maxDepth; i++) {
-    const list = byDepth.get(i) ?? [];
-    list.sort((a, b) => a.name.localeCompare(b.name));
-    layers.push(list);
-  }
-  return layers;
-}
 
