@@ -23,10 +23,15 @@ jobs:
     stage: install
     image: node:22-alpine
     script:
-      # pnpm is fetched via corepack; frozen-lockfile makes CI
-      # fail rather than regenerate the lockfile on drift.
+      # `cd web` first so corepack picks up `packageManager` from
+      # web/package.json — `prepare --activate` without a spec
+      # reads it there. `prepare --activate` forces the binary
+      # download now instead of on the first pnpm call (which can
+      # silently fail with "pnpm: not found" otherwise).
+      - cd web
       - corepack enable
-      - cd web && pnpm install --frozen-lockfile
+      - corepack prepare --activate
+      - pnpm install --frozen-lockfile
     artifacts:
       paths: [web/node_modules/]
 
@@ -35,25 +40,31 @@ jobs:
     image: node:22-alpine
     needs: [deps]
     script:
+      - cd web
       - corepack enable
-      - cd web && pnpm exec tsc --noEmit
+      - corepack prepare --activate
+      - pnpm exec tsc --noEmit
 
   unit:
     stage: test
     image: node:22-alpine
     needs: [deps]
     script:
+      - cd web
       - corepack enable
-      - cd web && pnpm test --run
+      - corepack prepare --activate
+      - pnpm test --run
 
   bundle:
     stage: build
     image: node:22-alpine
     needs: [typecheck, unit]
     script:
+      - cd web
       - corepack enable
+      - corepack prepare --activate
       # GOCDNEXT_API_URL is only needed at runtime; build uses a
       # placeholder so the bundle still generates deterministically.
-      - cd web && GOCDNEXT_API_URL=http://localhost:8153 pnpm build
+      - GOCDNEXT_API_URL=http://localhost:8153 pnpm build
     artifacts:
       paths: [web/.next/standalone/, web/.next/static/]
