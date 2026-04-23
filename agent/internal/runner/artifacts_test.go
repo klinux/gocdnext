@@ -90,6 +90,50 @@ func TestTarGzPath_Directory(t *testing.T) {
 	}
 }
 
+func TestTarGzPath_NestedDirPreservesFullPath(t *testing.T) {
+	// Regression: `artifacts: paths: [web/node_modules/]` used to
+	// land as `node_modules/...` in the tar (basename-only), so a
+	// consumer that `cd web` to use pnpm found nothing — the unpack
+	// ended up at scriptWorkDir/node_modules instead of
+	// scriptWorkDir/web/node_modules. Full relative path must be
+	// preserved so the producer + consumer agree on the layout.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "web", "node_modules", ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "web", "node_modules", ".bin", "tsc"),
+		[]byte("#!/bin/sh\necho tsc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if _, _, err := runner.TarGzPath(dir, "web/node_modules/", &buf); err != nil {
+		t.Fatalf("TarGzPath: %v", err)
+	}
+
+	gr, _ := gzip.NewReader(&buf)
+	tr := tar.NewReader(gr)
+	found := false
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar: %v", err)
+		}
+		if h.Name == "web/node_modules/.bin/tsc" {
+			found = true
+		}
+		if h.Name == "node_modules/.bin/tsc" {
+			t.Errorf("tar entry %q is flattened — producer/consumer path mismatch", h.Name)
+		}
+	}
+	if !found {
+		t.Error("expected tar entry web/node_modules/.bin/tsc, not found")
+	}
+}
+
 func TestTarGzPath_Missing(t *testing.T) {
 	dir := t.TempDir()
 	_, _, err := runner.TarGzPath(dir, "nope", io.Discard)

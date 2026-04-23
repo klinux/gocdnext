@@ -66,10 +66,24 @@ func TarGzPath(workDir, path string, dst io.Writer) (sha string, size int64, err
 		return nil
 	}
 
+	// Tar entries preserve the full relative path the operator
+	// declared (e.g. `web/node_modules/` → entries under
+	// `web/node_modules/...`). An earlier version used
+	// filepath.Base(path) which flattened nested paths — `bin/x`
+	// round-tripped fine because `./bin/` and `./x` collide, but
+	// needs_artifacts consumers that cd'd into a subdir couldn't
+	// find anything (producer wrote web/node_modules to
+	// <scriptWorkDir>/web/node_modules, old tar flattened it to
+	// node_modules/…, UntarGz extracted under scriptWorkDir → files
+	// landed at scriptWorkDir/node_modules instead of the expected
+	// scriptWorkDir/web/node_modules).
+	toSlash := func(p string) string {
+		return strings.ReplaceAll(p, string(filepath.Separator), "/")
+	}
+	cleanedPath := toSlash(filepath.Clean(path))
+
 	if info.Mode().IsRegular() {
-		// Single file: store under its basename so untar drops it next
-		// to whatever extracts it.
-		if err := addEntry(abs, filepath.Base(path), info); err != nil {
+		if err := addEntry(abs, cleanedPath, info); err != nil {
 			return "", 0, err
 		}
 	} else if info.IsDir() {
@@ -86,11 +100,8 @@ func TarGzPath(workDir, path string, dst io.Writer) (sha string, size int64, err
 			if rel == "." {
 				return nil
 			}
-			// Store paths relative to `path` so `artifacts: [bin/]`
-			// unpacks cleanly. Convert to forward slashes for tar
-			// portability.
-			name := filepath.Join(filepath.Base(path), rel)
-			return addEntry(p, strings.ReplaceAll(name, string(filepath.Separator), "/"), fi)
+			name := cleanedPath + "/" + toSlash(rel)
+			return addEntry(p, name, fi)
 		})
 		if err != nil {
 			return "", 0, err
