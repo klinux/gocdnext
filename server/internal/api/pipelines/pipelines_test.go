@@ -83,8 +83,7 @@ func TestYAML_RendersStoredDefinition(t *testing.T) {
 		"image: golang:1.25",
 		"go test -race ./...",
 		"docker: true",
-		"needs:",
-		"- vet",
+		"needs: [vet]",
 	} {
 		if !strings.Contains(body.YAML, want) {
 			t.Errorf("YAML missing %q, got:\n%s", want, body.YAML)

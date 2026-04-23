@@ -177,8 +177,16 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		})
 	}
 
-	for _, line := range jd.Script {
-		j.Tasks = append(j.Tasks, domain.Task{Script: line})
+	// Concatenate all `script:` entries into a single Task so they
+	// execute in the same shell session. Previously each line
+	// became its own Task → its own `docker run --rm`, so state
+	// set by one line (env vars, installed tools like corepack +
+	// pnpm) didn't survive to the next. `set -e` makes the chain
+	// fail-fast: any line that exits non-zero aborts the rest,
+	// matching what GitLab CI / Woodpecker do out of the box.
+	if len(jd.Script) > 0 {
+		joined := "set -e\n" + strings.Join(jd.Script, "\n")
+		j.Tasks = append(j.Tasks, domain.Task{Script: joined})
 	}
 
 	// If image starts with "plugins/" treat the whole job as a single plugin step.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -134,7 +135,13 @@ func jobToDef(j domain.Job) JobDef {
 	}
 	for _, t := range j.Tasks {
 		if t.Script != "" {
-			def.Script = append(def.Script, t.Script)
+			// Parser concatenates `script:` list entries into a
+			// single multi-line Task with a leading `set -e`.
+			// Reverse that here so the emitted YAML mirrors the
+			// user's original block-list of commands instead of a
+			// single fused string — avoids accumulating more
+			// `set -e` lines on every round-trip.
+			def.Script = append(def.Script, splitScriptLines(t.Script)...)
 		}
 		// Plugin-only jobs are re-serialised via image+settings on the
 		// JobDef itself (see parser.go where a single plugin task is
@@ -299,6 +306,21 @@ func appendKV(parent *yaml.Node, key string, value *yaml.Node) {
 		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
 		value,
 	)
+}
+
+// splitScriptLines reverses the parser's "join into one shell
+// session" step. Drops the leading `set -e` (which parser adds
+// unconditionally, not something the operator wrote), splits on
+// newlines, and returns the raw command list the YAML originally
+// contained. Idempotent on inputs that lack the `set -e` prefix
+// (external callers, older stored definitions) — in that case we
+// just split on newlines.
+func splitScriptLines(s string) []string {
+	trimmed := strings.TrimPrefix(s, "set -e\n")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
 }
 
 // flowSequenceMaxLen is the upper bound for "short enough to inline".
