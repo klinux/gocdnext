@@ -83,6 +83,22 @@ const registry: Record<string, Entry> = {
     label: () => "Account",
     href: () => "/account",
   },
+  admin: {
+    label: () => "Admin",
+    href: () => null,
+  },
+  users: {
+    label: () => "Users",
+    href: () => "/admin/users",
+  },
+  audit: {
+    label: () => "Audit log",
+    href: () => "/admin/audit",
+  },
+  plugins: {
+    label: () => "Plugins",
+    href: () => "/admin/plugins",
+  },
 };
 
 export function RouteBreadcrumbs() {

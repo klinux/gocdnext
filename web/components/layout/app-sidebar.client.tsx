@@ -7,9 +7,13 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Boxes,
+  ClipboardList,
+  KeyRound,
   LayoutDashboard,
+  Package,
   Server,
   Settings,
+  Users,
 } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/brand/logo";
@@ -52,8 +56,19 @@ const primaryNav: NavItem[] = [
   { label: "Agents", href: "/agents", icon: Server },
 ];
 
+// Admin-scoped pages live at /admin/<thing> so the URL reads
+// "this is privileged" at a glance. Settings keeps the
+// control-plane config bucket (health/webhooks/retention/
+// integrations/auth); user management, audit, secrets, and the
+// plugin catalog get their own top-level sidebar entries because
+// operators hit them often enough that an extra tab click is
+// friction.
 const adminNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
+  { label: "Users", href: "/admin/users", icon: Users },
+  { label: "Audit", href: "/admin/audit", icon: ClipboardList },
+  { label: "Secrets", href: "/admin/secrets", icon: KeyRound },
+  { label: "Plugins", href: "/admin/plugins", icon: Package },
 ];
 
 export function AppSidebar({ user, loginBase }: Props) {

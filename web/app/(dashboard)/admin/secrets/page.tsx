@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Lock } from "lucide-react";
+import { KeyRound, Lock } from "lucide-react";
 
 import {
   Table,
@@ -44,9 +44,10 @@ export default async function GlobalSecretsPage() {
       <Toaster position="top-right" richColors />
       <header className="flex items-baseline justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <KeyRound className="h-6 w-6" aria-hidden />
             Global secrets
-          </h2>
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Available to every pipeline. A project secret with the same name
             takes precedence — useful for overriding a shared default.

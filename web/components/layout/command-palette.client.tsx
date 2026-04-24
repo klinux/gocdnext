@@ -7,13 +7,17 @@ import { useTheme } from "next-themes";
 import {
   Activity,
   Boxes,
+  ClipboardList,
+  KeyRound,
   LayoutDashboard,
   Monitor,
   Moon,
+  Package,
   Search,
   Server,
   Settings,
   Sun,
+  Users,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -89,6 +93,24 @@ export function CommandPalette() {
             <CommandItem onSelect={() => go("/settings" as Route)}>
               <Settings className="size-4" />
               Settings
+            </CommandItem>
+          </CommandGroup>
+          <CommandGroup heading="Admin">
+            <CommandItem onSelect={() => go("/admin/users" as Route)}>
+              <Users className="size-4" />
+              Users
+            </CommandItem>
+            <CommandItem onSelect={() => go("/admin/audit" as Route)}>
+              <ClipboardList className="size-4" />
+              Audit log
+            </CommandItem>
+            <CommandItem onSelect={() => go("/admin/secrets" as Route)}>
+              <KeyRound className="size-4" />
+              Global secrets
+            </CommandItem>
+            <CommandItem onSelect={() => go("/admin/plugins" as Route)}>
+              <Package className="size-4" />
+              Plugins
             </CommandItem>
           </CommandGroup>
           <CommandSeparator />

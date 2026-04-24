@@ -48,8 +48,8 @@ export async function setUserRole(
         error: `server ${res.status}: ${body.trim().slice(0, 200) || "role change failed"}`,
       };
     }
-    revalidatePath("/settings/users");
-    revalidatePath("/settings/audit");
+    revalidatePath("/admin/users");
+    revalidatePath("/admin/audit");
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

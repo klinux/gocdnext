@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ClipboardList } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -13,7 +14,7 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { listAuditEvents } from "@/server/queries/admin";
 
 export const metadata: Metadata = {
-  title: "Settings — Audit log",
+  title: "Audit log — gocdnext",
 };
 
 export const dynamic = "force-dynamic";
@@ -42,6 +43,10 @@ export default async function AuditPage({
   return (
     <section className="space-y-6">
       <header className="space-y-1">
+        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <ClipboardList className="h-6 w-6" aria-hidden />
+          Audit log
+        </h1>
         <p className="text-sm text-muted-foreground">
           Every RBAC&apos;d write emits an event here — project apply,
           secrets, cache purge, runs, approvals, role changes.

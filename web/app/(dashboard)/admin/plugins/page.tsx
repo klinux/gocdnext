@@ -22,7 +22,7 @@ import { listPlugins } from "@/server/queries/projects";
 import type { PluginSummary } from "@/types/api";
 
 export const metadata: Metadata = {
-  title: "Settings — Plugins",
+  title: "Plugins — gocdnext",
 };
 
 // Forcing dynamic so a newly-shipped plugin shows up after a
@@ -37,6 +37,10 @@ export default async function PluginsPage() {
   return (
     <section className="space-y-6">
       <header className="space-y-1">
+        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <Package className="h-6 w-6" aria-hidden />
+          Plugins
+        </h1>
         <p className="text-sm text-muted-foreground">
           Plugins registered in the server&apos;s catalog. Each one maps to a
           container image invoked via{" "}

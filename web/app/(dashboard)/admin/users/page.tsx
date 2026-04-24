@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Users } from "lucide-react";
 
 import {
   Table,
@@ -15,7 +16,7 @@ import { listAdminUsers } from "@/server/queries/admin";
 import { resolveAuthState } from "@/server/queries/auth";
 
 export const metadata: Metadata = {
-  title: "Settings — Users",
+  title: "Users — gocdnext",
 };
 
 // Forcing dynamic so a role change from another tab shows up on
@@ -35,6 +36,10 @@ export default async function UsersPage() {
     <section className="space-y-6">
       <Toaster position="top-right" richColors />
       <header className="space-y-1">
+        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <Users className="h-6 w-6" aria-hidden />
+          Users
+        </h1>
         <p className="text-sm text-muted-foreground">
           Every user known to this control plane. Roles follow a
           hierarchy: admin ≥ maintainer ≥ viewer. Viewers can read the

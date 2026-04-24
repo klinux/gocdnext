@@ -88,7 +88,7 @@ export async function setGlobalSecret(
       name: parsed.data.name,
       value: parsed.data.value,
     });
-    revalidatePath(`/settings/secrets`);
+    revalidatePath(`/admin/secrets`);
     return { ok: true, created: res.created ?? false };
   } catch (err) {
     return { ok: false, error: errorMessage(err) };
@@ -119,7 +119,7 @@ export async function deleteGlobalSecret(
         error: `server ${res.status}: ${body.trim().slice(0, 200) || "delete failed"}`,
       };
     }
-    revalidatePath(`/settings/secrets`);
+    revalidatePath(`/admin/secrets`);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: errorMessage(err) };
