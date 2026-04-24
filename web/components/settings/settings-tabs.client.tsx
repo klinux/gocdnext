@@ -6,10 +6,12 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Archive,
+  ClipboardList,
   KeyRound,
   Lock,
   Package,
   Plug,
+  Users,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
@@ -36,6 +38,8 @@ const tabs: Tab[] = [
   { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth", icon: Lock },
   { label: "Secrets", href: "/settings/secrets" as Route, matchPrefix: "/settings/secrets", icon: KeyRound },
   { label: "Plugins", href: "/settings/plugins" as Route, matchPrefix: "/settings/plugins", icon: Package },
+  { label: "Users", href: "/settings/users" as Route, matchPrefix: "/settings/users", icon: Users },
+  { label: "Audit", href: "/settings/audit" as Route, matchPrefix: "/settings/audit", icon: ClipboardList },
 ];
 
 // SettingsTabs drives base-ui's controlled Tabs with the URL —

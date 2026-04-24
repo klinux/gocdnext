@@ -8,10 +8,12 @@ import { cookies } from "next/headers";
 import { env } from "@/lib/env";
 import type {
   AdminHealth,
+  AuditEventsList,
   AuthProvidersAdmin,
   GitHubIntegration,
   RetentionSnapshot,
   SecretsList,
+  UsersList,
   VCSIntegrationsAdmin,
   WebhookDeliveriesResponse,
   WebhookDeliveryDetail,
@@ -91,4 +93,25 @@ export async function listVCSIntegrations(): Promise<VCSIntegrationsAdmin> {
 export async function listGlobalSecrets(): Promise<SecretsList["secrets"]> {
   const { secrets } = await readJSON<SecretsList>("/api/v1/admin/secrets");
   return secrets;
+}
+
+export async function listAdminUsers(): Promise<UsersList> {
+  return readJSON<UsersList>("/api/v1/admin/users");
+}
+
+export async function listAuditEvents(
+  params?: {
+    action?: string;
+    targetType?: string;
+    actor?: string;
+    limit?: number;
+  },
+): Promise<AuditEventsList> {
+  const q = new URLSearchParams();
+  if (params?.action) q.set("action", params.action);
+  if (params?.targetType) q.set("target_type", params.targetType);
+  if (params?.actor) q.set("actor", params.actor);
+  if (params?.limit) q.set("limit", String(params.limit));
+  const suffix = q.toString() ? `?${q.toString()}` : "";
+  return readJSON<AuditEventsList>(`/api/v1/admin/audit${suffix}`);
 }

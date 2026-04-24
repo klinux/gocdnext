@@ -271,6 +271,40 @@ export type PluginsList = {
   plugins: PluginSummary[];
 };
 
+// Admin: user list + audit events.
+export type AdminUser = {
+  id: string;
+  email: string;
+  name: string;
+  avatar_url?: string;
+  provider: string;
+  external_id: string;
+  role: "admin" | "maintainer" | "viewer" | string;
+  disabled_at?: string;
+  last_login_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UsersList = {
+  users: AdminUser[];
+};
+
+export type AuditEventRow = {
+  id: string;
+  actor_id?: string;
+  actor_email?: string;
+  action: string;
+  target_type: string;
+  target_id?: string;
+  metadata: Record<string, unknown>;
+  at: string;
+};
+
+export type AuditEventsList = {
+  events: AuditEventRow[];
+};
+
 export type VSMNode = {
   pipeline_id: string;
   name: string;
