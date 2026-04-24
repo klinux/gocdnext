@@ -171,6 +171,7 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		Docker:                jobDef.Docker,
 		Services:              services,
 		Caches:                caches,
+		TestReports:           append([]string(nil), jobDef.TestReports...),
 	}, nil
 }
 

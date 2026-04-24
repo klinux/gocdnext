@@ -143,6 +143,9 @@ func mergeJobDef(base, child JobDef) JobDef {
 	if child.Rules != nil {
 		out.Rules = append([]RuleDef(nil), child.Rules...)
 	}
+	if child.TestReports != nil {
+		out.TestReports = append([]string(nil), child.TestReports...)
+	}
 
 	// --- maps: key-level overlay (parent keys stay, child wins on conflict) ---
 	out.Settings = overlayStrMap(base.Settings, child.Settings)

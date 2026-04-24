@@ -327,6 +327,10 @@ type Job struct {
 	// `image:`, `tasks:`, `uses:`, or `artifacts:` — their only
 	// side effect is the state transition, not execution.
 	Approval *ApprovalSpec
+	// TestReports is the glob list the agent scans after tasks
+	// complete, parses as JUnit XML, and sends back as a
+	// TestResultBatch so the server can render a Tests tab.
+	TestReports []string
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`

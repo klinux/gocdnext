@@ -56,10 +56,11 @@ message RegisterResponse {
 // ── Mensagens AGENT → SERVER ─────────────────────────────────────────
 message AgentMessage {
   oneof kind {
-    Heartbeat     heartbeat     = 1;
-    JobProgress   progress      = 2;
-    LogLine       log           = 3;
-    JobResult     result        = 4;
+    Heartbeat         heartbeat      = 1;
+    JobProgress       progress       = 2;
+    LogLine           log            = 3;
+    JobResult         result         = 4;
+    TestResultBatch   test_results   = 5;
   }
 }
 
@@ -98,6 +99,36 @@ message ArtifactRef {
   string storage_key    = 2; // chave opaca no backend (devolvida pelo ticket)
   int64  size           = 3;
   string content_sha256 = 4; // hex; agent calcula ao tar+stream
+}
+
+// TestResult is one parsed test case from a JUnit/xUnit XML
+// report. Agent parses the XML locally (no XML on the wire) and
+// ships a flat list per job. `status` is one of
+// "passed" / "failed" / "skipped" / "errored" — server clamps
+// anything else to "errored" so a weird upstream report never
+// corrupts the stored state.
+message TestResult {
+  string suite            = 1;
+  string classname        = 2;
+  string name             = 3;
+  string status           = 4;
+  int64  duration_millis  = 5;
+  string failure_type     = 6;
+  string failure_message  = 7;
+  string failure_detail   = 8;
+  string system_out       = 9;
+  string system_err       = 10;
+}
+
+// TestResultBatch bundles every case parsed from a job's test
+// reports into a single message. Sent BEFORE JobResult so the
+// server can persist results before the job's terminal cascade
+// fires (keeps the "tests for this run" query consistent with
+// `run status = terminal`).
+message TestResultBatch {
+  string              run_id  = 1;
+  string              job_id  = 2;
+  repeated TestResult results = 3;
 }
 
 // RequestCacheGet asks the server for a signed download of a
@@ -237,6 +268,12 @@ message JobAssignment {
   // run) and RequestCachePut + MarkCacheReady for each after a
   // successful run. Empty list = no cache plumbing.
   repeated CacheEntry caches = 16;
+  // Glob patterns the agent scans after tasks complete, parses
+  // as JUnit XML, and ships back as a TestResultBatch. Empty =
+  // no test reporting for this job. Globs are workspace-relative;
+  // no match is a silent no-op (the job may have legitimately
+  // produced nothing, e.g. when tests were skipped entirely).
+  repeated string test_reports = 17;
 }
 
 // CacheEntry on the wire mirrors parser.CacheSpec — the key the

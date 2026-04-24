@@ -230,17 +230,30 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		}
 		if err != nil {
 			log.Warn("runner: task error", "err", err, "task", i)
+			// Tests often produce reports even on failure — a test
+			// runner exits non-zero precisely BECAUSE cases failed,
+			// but the XML file it wrote is what the Tests tab needs
+			// to render the per-case breakdown. Scan before reporting
+			// so failed runs surface their evidence.
+			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
 				fmt.Sprintf("task %d: %v", i, err))
 			return
 		}
 		if exitCode != 0 {
 			log.Info("runner: task exited non-zero", "task", i, "exit", exitCode)
+			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
 				fmt.Sprintf("task %d exited with %d", i, exitCode))
 			return
 		}
 	}
+
+	// Successful task loop — scan any declared test_reports and
+	// ship them before the artifact upload so the server has the
+	// per-case tally persisted by the time JobResult lands and
+	// the cascade fires.
+	r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 
 	// Cache store runs after every task succeeded — there's no
 	// point caching a half-built node_modules from a failed

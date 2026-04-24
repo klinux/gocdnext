@@ -104,6 +104,8 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 			log.Debug("agent progress", "kind", kindName(msg))
 		case *gocdnextv1.AgentMessage_Result:
 			a.handleJobResult(stream.Context(), log, agentID, kind.Result)
+		case *gocdnextv1.AgentMessage_TestResults:
+			a.handleTestResultBatch(stream.Context(), log, kind.TestResults)
 		default:
 			log.Warn("stream msg: unknown kind", "kind_type", kind)
 		}
@@ -177,6 +179,52 @@ func (a *AgentService) runIDForJob(ctx context.Context, jobID uuid.UUID) (uuid.U
 	}
 	a.jobRunIDCache.Store(jobID, runID)
 	return runID, nil
+}
+
+// maxTestFieldBytes caps the size of free-text fields we ingest
+// from a JUnit report. A pathologically noisy test (huge stderr
+// dumps) shouldn't make the wire payload — or the stored row —
+// unbounded. Truncation is silent; the UI renders what landed.
+const maxTestFieldBytes = 64 << 10 // 64 KiB per field
+
+// handleTestResultBatch persists every test case in `batch`
+// under its owning job_run. Errors are logged and swallowed:
+// tests are a nice-to-have layer on top of the run result, a
+// DB hiccup shouldn't fail the agent's stream or block the
+// JobResult that comes right after.
+func (a *AgentService) handleTestResultBatch(ctx context.Context, log logger, batch *gocdnextv1.TestResultBatch) {
+	jobID, err := uuid.Parse(batch.GetJobId())
+	if err != nil {
+		log.Warn("agent test results: bad job_id", "job_id", batch.GetJobId())
+		return
+	}
+	in := make([]store.TestResultIn, 0, len(batch.GetResults()))
+	for _, r := range batch.GetResults() {
+		in = append(in, store.TestResultIn{
+			Suite:          r.GetSuite(),
+			Classname:      r.GetClassname(),
+			Name:           r.GetName(),
+			Status:         store.TestResultStatus(r.GetStatus()),
+			DurationMillis: r.GetDurationMillis(),
+			FailureType:    clampBytes(r.GetFailureType(), maxTestFieldBytes),
+			FailureMessage: clampBytes(r.GetFailureMessage(), maxTestFieldBytes),
+			FailureDetail:  clampBytes(r.GetFailureDetail(), maxTestFieldBytes),
+			SystemOut:      clampBytes(r.GetSystemOut(), maxTestFieldBytes),
+			SystemErr:      clampBytes(r.GetSystemErr(), maxTestFieldBytes),
+		})
+	}
+	if err := a.store.WriteTestResults(ctx, jobID, in); err != nil {
+		log.Warn("agent test results: persist failed", "err", err, "job_id", jobID, "count", len(in))
+		return
+	}
+	log.Info("agent test results persisted", "job_id", jobID, "count", len(in))
+}
+
+func clampBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 // handleJobResult flips the job terminal, cascades into stage + run, releases

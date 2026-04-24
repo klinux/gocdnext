@@ -125,6 +125,11 @@ type JobDef struct {
 	Cache          []CacheSpec         `yaml:"cache,omitempty"`
 	Artifacts      *Artifacts          `yaml:"artifacts,omitempty"`
 	NeedsArtifacts []NeedsArtifactDef  `yaml:"needs_artifacts,omitempty"`
+	// TestReports is a list of glob patterns the agent scans
+	// after tasks complete. Each match is parsed as JUnit/xUnit
+	// XML and the per-case results ship back as a TestResultBatch
+	// alongside the JobResult. Empty list = no test reporting.
+	TestReports    []string            `yaml:"test_reports,omitempty"`
 	Parallel       *Parallel           `yaml:"parallel,omitempty"`
 	Rules          []RuleDef           `yaml:"rules,omitempty"`
 	When           *WhenDef            `yaml:"when,omitempty"`

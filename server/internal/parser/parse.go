@@ -223,6 +223,10 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 			Paths: append([]string(nil), c.Paths...),
 		})
 	}
+	if len(jd.TestReports) > 0 {
+		j.TestReports = append([]string(nil), jd.TestReports...)
+	}
+
 	for _, na := range jd.NeedsArtifacts {
 		if na.FromJob == "" {
 			return domain.Job{}, fmt.Errorf("job %q: needs_artifacts entry missing from_job", name)
