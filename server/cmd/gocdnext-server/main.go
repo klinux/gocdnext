@@ -324,33 +324,22 @@ func main() {
 	// path — it authenticates via HMAC signature, not sessions.
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
 
-	// Protected API surface: every mutation + every read that could
-	// leak internal state sits inside this group. RequireAuth is a
-	// pass-through when auth is globally disabled, so dev workflows
-	// without GOCDNEXT_AUTH_ENABLED keep working.
+	// Read-only API: any authenticated user (viewer ≥). Secret
+	// names + cache keys appear here but values stay masked, so
+	// "can I see these exist?" tracks "can I see the project?".
+	// PUT /account/preferences lives here because it's self-state
+	// (hidden_projects list) — a viewer legitimately toggles their
+	// own UI even if they can't act on the projects themselves.
 	r.Group(func(p chi.Router) {
 		p.Use(authMiddleware.RequireAuth)
 
-		p.Post("/api/v1/projects/apply", projectsHandler.Apply)
-		p.Post("/api/v1/projects/{slug}/sync", projectsHandler.Sync)
 		p.Get("/api/v1/projects", projectsHandler.List)
 		p.Get("/api/v1/projects/{slug}", projectsHandler.Detail)
-		p.Delete("/api/v1/projects/{slug}", projectsHandler.Delete)
 		p.Get("/api/v1/projects/{slug}/vsm", projectsHandler.VSM)
-		p.Post("/api/v1/projects/{slug}/scm-sources/rotate-webhook-secret", projectsHandler.RotateWebhookSecret)
-		p.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
 		p.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
-		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 		p.Get("/api/v1/projects/{slug}/caches", projectsHandler.ListCaches)
-		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
-		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
-		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
-		p.Post("/api/v1/job_runs/{id}/rerun", runsHandler.RerunJob)
-		p.Post("/api/v1/job_runs/{id}/approve", runsHandler.Approve)
-		p.Post("/api/v1/job_runs/{id}/reject", runsHandler.Reject)
-		p.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
 		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
 		p.Get("/api/v1/plugins", pluginsHandler.List)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
@@ -361,11 +350,34 @@ func main() {
 		p.Put("/api/v1/account/preferences", accountHandler.PutPreferences)
 	})
 
-	// Admin API is gated on role=admin on top of RequireAuth. Users
-	// and viewers get 403 even when authenticated.
+	// Write API: maintainer ≥. These mutate project state, fire
+	// runs, flip approval gates, or rotate secrets — a viewer
+	// touching any of these would cross the read/write line the
+	// role split exists to enforce.
 	r.Group(func(p chi.Router) {
-		p.Use(authMiddleware.RequireAuth)
-		p.Use(authMiddleware.RequireRole("admin"))
+		p.Use(authMiddleware.RequireMinRole(store.RoleMaintainer))
+
+		p.Post("/api/v1/projects/apply", projectsHandler.Apply)
+		p.Post("/api/v1/projects/{slug}/sync", projectsHandler.Sync)
+		p.Delete("/api/v1/projects/{slug}", projectsHandler.Delete)
+		p.Post("/api/v1/projects/{slug}/scm-sources/rotate-webhook-secret", projectsHandler.RotateWebhookSecret)
+		p.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
+		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
+		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
+		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
+		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
+		p.Post("/api/v1/job_runs/{id}/rerun", runsHandler.RerunJob)
+		p.Post("/api/v1/job_runs/{id}/approve", runsHandler.Approve)
+		p.Post("/api/v1/job_runs/{id}/reject", runsHandler.Reject)
+		p.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
+	})
+
+	// Admin API: admin-only. The control-plane config surface
+	// (retention policy, webhook audit, integrations, auth
+	// providers, global secrets, user mgmt) lives here — maintainers
+	// can run CI/CD; only admins edit the server's own posture.
+	r.Group(func(p chi.Router) {
+		p.Use(authMiddleware.RequireMinRole(store.RoleAdmin))
 
 		p.Get("/api/v1/admin/retention", adminHandler.Retention)
 		p.Get("/api/v1/admin/webhooks", adminHandler.Webhooks)
