@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,18 +15,19 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gocdnext/gocdnext/server/internal/scm"
 )
 
 // DefaultAPIBase is the GitHub.com v3 REST API root. Override via Config for
 // GitHub Enterprise.
 const DefaultAPIBase = "https://api.github.com"
 
-// ErrFolderNotFound is returned by FetchGocdnextFolder when the
-// configured config folder doesn't exist on the given ref — lets
-// the caller distinguish "repo reachable, folder absent" (a valid
-// bind state, maybe the user hasn't pushed yet) from transport or
-// auth errors, which should hard-fail.
-var ErrFolderNotFound = errors.New("github: config folder not found")
+// ErrFolderNotFound is re-exported for backwards compat with
+// callers that imported it from this package before the shared
+// scm package existed. New code should use scm.ErrFolderNotFound
+// directly — they compare equal via errors.Is.
+var ErrFolderNotFound = scm.ErrFolderNotFound
 
 // Config wires one call to the Contents API. Token is optional.
 type Config struct {
@@ -37,12 +37,9 @@ type Config struct {
 	Token   string // personal access token; empty means unauthenticated
 }
 
-// RawFile is the shape the caller can hand straight to the apply HTTP
-// endpoint or to `parser.ParseNamed`.
-type RawFile struct {
-	Name    string
-	Content string
-}
+// RawFile is an alias for the provider-agnostic scm.RawFile so
+// existing call sites keep compiling after the type moved.
+type RawFile = scm.RawFile
 
 // ParseRepoURL extracts (owner, repo) from a common git URL. It accepts
 // https://github.com/<owner>/<repo>[.git] and git@github.com:<owner>/<repo>.

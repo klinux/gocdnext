@@ -156,7 +156,12 @@ func main() {
 	// initial-sync path (bind → pull pipelines from HEAD). Reusing
 	// one instance means connection-pool churn stays low when both
 	// paths fire close together.
-	gitHubFetcher := &configsync.GitHubFetcher{}
+	// MultiFetcher dispatches to GitHub / GitLab / Bitbucket by
+// scm.Provider, so the same instance covers every provider the
+// webhook + apply paths will ever see. The local variable name
+// stays "gitHubFetcher" to minimise downstream churn; it's a
+// MultiFetcher now but backwards-compat at the call sites.
+gitHubFetcher := &configsync.MultiFetcher{}
 
 	webhookHandler := webhook.NewHandler(st, logger).
 		WithConfigFetcher(gitHubFetcher).
@@ -333,6 +338,8 @@ func main() {
 	// /api/webhooks stays outside the auth middleware's enforcement
 	// path — it authenticates via HMAC signature, not sessions.
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
+	r.Post("/api/webhooks/gitlab", webhookHandler.HandleGitLab)
+	r.Post("/api/webhooks/bitbucket", webhookHandler.HandleBitbucket)
 
 	// Read-only API: any authenticated user (viewer ≥). Secret
 	// names + cache keys appear here but values stay masked, so

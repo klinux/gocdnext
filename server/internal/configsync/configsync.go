@@ -23,21 +23,24 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/parser"
+	"github.com/gocdnext/gocdnext/server/internal/scm"
+	"github.com/gocdnext/gocdnext/server/internal/scm/bitbucket"
 	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
+	"github.com/gocdnext/gocdnext/server/internal/scm/gitlab"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// ErrFolderNotFound mirrors github.ErrFolderNotFound at this layer
-// so callers don't have to import the github package just to
+// ErrFolderNotFound re-exports the scm-layer sentinel at this
+// layer so callers don't need to import the scm package just to
 // distinguish "repo reachable but folder absent" from a hard
 // transport/auth error. Call sites match via errors.Is.
-var ErrFolderNotFound = gh.ErrFolderNotFound
+var ErrFolderNotFound = scm.ErrFolderNotFound
 
-// Fetcher resolves the pipeline config folder for a known scm_source
-// at a given revision. Implementations wrap a provider-specific
-// contents API (GitHub today; GitLab/Bitbucket later). Tests supply
-// an in-memory impl so the sync path can exercise end-to-end
-// without a network call.
+// Fetcher resolves the pipeline config folder for a known
+// scm_source at a given revision. Implementations wrap one
+// provider's contents API (GitHub, GitLab, Bitbucket Cloud).
+// Tests supply an in-memory impl so the sync path can exercise
+// end-to-end without a network call.
 //
 // configPath is the repo-relative folder (e.g. ".gocdnext",
 // ".woodpecker", "apps/api/.gocdnext"). Empty → ".gocdnext" for
@@ -49,56 +52,145 @@ var ErrFolderNotFound = gh.ErrFolderNotFound
 // default branch, insert a modification row, and run against it
 // so "Run latest" works on freshly-bound projects.
 type Fetcher interface {
-	Fetch(ctx context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error)
-	HeadSHA(ctx context.Context, scm store.SCMSource, branch string) (string, error)
+	Fetch(ctx context.Context, source store.SCMSource, ref, configPath string) ([]scm.RawFile, error)
+	HeadSHA(ctx context.Context, source store.SCMSource, branch string) (string, error)
 }
 
-// GitHubFetcher is the default Fetcher for github-hosted repos.
-// Parses owner/repo out of scm.URL, passes scm.AuthRef as the
-// bearer token when set. Returns an error when the scm.Provider
-// isn't "github" — other providers add their own Fetcher impl.
-type GitHubFetcher struct {
-	Client  *http.Client
-	APIBase string // empty -> github.DefaultAPIBase
+// MultiFetcher routes by source.Provider to the matching provider
+// client. Clients are constructed on demand with a shared
+// http.Client so connection reuse works across provider switches
+// inside a single server process.
+//
+// APIBase overrides are per-provider so an operator with
+// self-hosted GitLab CE + GitHub.com + Bitbucket Cloud can point
+// each at the right endpoint.
+type MultiFetcher struct {
+	Client             *http.Client
+	GitHubAPIBase      string // empty → gh.DefaultAPIBase
+	GitLabAPIBase      string // empty → gitlab.DefaultAPIBase
+	BitbucketAPIBase   string // empty → bitbucket.DefaultAPIBase
 }
 
-func (f *GitHubFetcher) Fetch(ctx context.Context, scm store.SCMSource, ref, configPath string) ([]gh.RawFile, error) {
-	cfg, err := f.configFor(scm)
-	if err != nil {
-		return nil, err
-	}
-	return gh.FetchGocdnextFolder(ctx, f.client(), cfg, ref, configPath)
-}
-
-func (f *GitHubFetcher) HeadSHA(ctx context.Context, scm store.SCMSource, branch string) (string, error) {
-	cfg, err := f.configFor(scm)
-	if err != nil {
-		return "", err
-	}
-	return gh.GetBranchHead(ctx, f.client(), cfg, branch)
-}
-
-func (f *GitHubFetcher) client() *http.Client {
+func (f *MultiFetcher) client() *http.Client {
 	if f.Client != nil {
 		return f.Client
 	}
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-func (f *GitHubFetcher) configFor(scm store.SCMSource) (gh.Config, error) {
-	if scm.Provider != "github" {
-		return gh.Config{}, fmt.Errorf("configsync: provider %q not supported by GitHubFetcher", scm.Provider)
+// Fetch dispatches by provider. Unknown providers get a typed
+// error so misconfiguration surfaces loud instead of silently
+// returning empty.
+func (f *MultiFetcher) Fetch(
+	ctx context.Context, source store.SCMSource, ref, configPath string,
+) ([]scm.RawFile, error) {
+	switch source.Provider {
+	case "github":
+		owner, repo, err := gh.ParseRepoURL(source.URL)
+		if err != nil {
+			return nil, fmt.Errorf("configsync: parse github url: %w", err)
+		}
+		return gh.FetchGocdnextFolder(ctx, f.client(), gh.Config{
+			APIBase: f.GitHubAPIBase,
+			Owner:   owner,
+			Repo:    repo,
+			Token:   source.AuthRef,
+		}, ref, configPath)
+	case "gitlab":
+		path, err := gitlab.ParseRepoURL(source.URL)
+		if err != nil {
+			return nil, fmt.Errorf("configsync: parse gitlab url: %w", err)
+		}
+		return gitlab.FetchGocdnextFolder(ctx, f.client(), gitlab.Config{
+			APIBase:     f.GitLabAPIBase,
+			ProjectPath: path,
+			Token:       source.AuthRef,
+		}, ref, configPath)
+	case "bitbucket":
+		ws, repo, err := bitbucket.ParseRepoURL(source.URL)
+		if err != nil {
+			return nil, fmt.Errorf("configsync: parse bitbucket url: %w", err)
+		}
+		return bitbucket.FetchGocdnextFolder(ctx, f.client(), bitbucket.Config{
+			APIBase:   f.BitbucketAPIBase,
+			Workspace: ws,
+			RepoSlug:  repo,
+			// Bitbucket convention: store the token as a raw OAuth /
+			// "access token" string in auth_ref. Basic (App Password)
+			// flow needs username + password, which means a richer
+			// auth_ref shape — punt until the UI grows it.
+			Token: source.AuthRef,
+		}, ref, configPath)
+	default:
+		return nil, fmt.Errorf("configsync: provider %q not supported", source.Provider)
 	}
-	owner, repo, err := gh.ParseRepoURL(scm.URL)
-	if err != nil {
-		return gh.Config{}, fmt.Errorf("configsync: parse repo url: %w", err)
+}
+
+// HeadSHA dispatches by provider like Fetch. Returns the commit
+// SHA at the tip of `branch`.
+func (f *MultiFetcher) HeadSHA(
+	ctx context.Context, source store.SCMSource, branch string,
+) (string, error) {
+	switch source.Provider {
+	case "github":
+		owner, repo, err := gh.ParseRepoURL(source.URL)
+		if err != nil {
+			return "", fmt.Errorf("configsync: parse github url: %w", err)
+		}
+		return gh.GetBranchHead(ctx, f.client(), gh.Config{
+			APIBase: f.GitHubAPIBase,
+			Owner:   owner,
+			Repo:    repo,
+			Token:   source.AuthRef,
+		}, branch)
+	case "gitlab":
+		path, err := gitlab.ParseRepoURL(source.URL)
+		if err != nil {
+			return "", fmt.Errorf("configsync: parse gitlab url: %w", err)
+		}
+		return gitlab.GetBranchHead(ctx, f.client(), gitlab.Config{
+			APIBase:     f.GitLabAPIBase,
+			ProjectPath: path,
+			Token:       source.AuthRef,
+		}, branch)
+	case "bitbucket":
+		ws, repo, err := bitbucket.ParseRepoURL(source.URL)
+		if err != nil {
+			return "", fmt.Errorf("configsync: parse bitbucket url: %w", err)
+		}
+		return bitbucket.GetBranchHead(ctx, f.client(), bitbucket.Config{
+			APIBase:   f.BitbucketAPIBase,
+			Workspace: ws,
+			RepoSlug:  repo,
+			Token:     source.AuthRef,
+		}, branch)
+	default:
+		return "", fmt.Errorf("configsync: provider %q not supported", source.Provider)
 	}
-	return gh.Config{
-		APIBase: f.APIBase,
-		Owner:   owner,
-		Repo:    repo,
-		Token:   scm.AuthRef,
-	}, nil
+}
+
+// GitHubFetcher is the GitHub-only Fetcher kept for tests and
+// call sites that explicitly want to pin to GitHub. New code
+// should use MultiFetcher so provider switching is free. The
+// interface it implements is identical to MultiFetcher so a
+// caller can swap one for the other without changes.
+type GitHubFetcher struct {
+	Client  *http.Client
+	APIBase string
+}
+
+func (f *GitHubFetcher) Fetch(
+	ctx context.Context, source store.SCMSource, ref, configPath string,
+) ([]scm.RawFile, error) {
+	m := &MultiFetcher{Client: f.Client, GitHubAPIBase: f.APIBase}
+	return m.Fetch(ctx, source, ref, configPath)
+}
+
+func (f *GitHubFetcher) HeadSHA(
+	ctx context.Context, source store.SCMSource, branch string,
+) (string, error) {
+	m := &MultiFetcher{Client: f.Client, GitHubAPIBase: f.APIBase}
+	return m.HeadSHA(ctx, source, branch)
 }
 
 // ParseFiles turns the raw contents-API payload into domain
@@ -108,7 +200,7 @@ func (f *GitHubFetcher) configFor(scm store.SCMSource) (gh.Config, error) {
 //
 // Empty f yields an empty slice (not an error) — the caller
 // decides whether that's valid (bind with no pipelines yet).
-func ParseFiles(files []gh.RawFile) ([]*domain.Pipeline, error) {
+func ParseFiles(files []scm.RawFile) ([]*domain.Pipeline, error) {
 	seen := map[string]string{}
 	out := make([]*domain.Pipeline, 0, len(files))
 	for _, f := range files {

@@ -58,6 +58,15 @@ Two discovery triggers:
 - **First push webhook** (Phase 1): if an incoming webhook matches a git URL
   we know but has no pipelines yet, we clone, parse, and persist.
 
+Provider support: GitHub, GitLab, and Bitbucket Cloud. Each has its own
+thin REST client under `server/internal/scm/<provider>/` and its own
+webhook handler under `server/internal/webhook/<provider>/`; the
+`configsync.MultiFetcher` dispatcher picks by `scm_source.provider`.
+Webhook endpoints:
+- `POST /api/webhooks/github` — HMAC-SHA256 via `X-Hub-Signature-256`
+- `POST /api/webhooks/gitlab` — shared-secret token via `X-Gitlab-Token`
+- `POST /api/webhooks/bitbucket` — HMAC-SHA256 via `X-Hub-Signature`
+
 ## Why these choices
 
 - **Postgres LISTEN/NOTIFY** over Kafka/NATS for MVP: 1 less dep, fine for
