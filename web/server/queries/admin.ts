@@ -144,6 +144,8 @@ export async function listAuditEvents(
     action?: string;
     targetType?: string;
     actor?: string;
+    from?: string;
+    to?: string;
     limit?: number;
     offset?: number;
   },
@@ -152,6 +154,8 @@ export async function listAuditEvents(
   if (params?.action) q.set("action", params.action);
   if (params?.targetType) q.set("target_type", params.targetType);
   if (params?.actor) q.set("actor", params.actor);
+  if (params?.from) q.set("from", params.from);
+  if (params?.to) q.set("to", params.to);
   if (params?.limit) q.set("limit", String(params.limit));
   if (params?.offset) q.set("offset", String(params.offset));
   const suffix = q.toString() ? `?${q.toString()}` : "";

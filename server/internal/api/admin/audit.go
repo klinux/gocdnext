@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -16,6 +17,8 @@ import (
 //	?target_type=project        — exact target-type match
 //	?actor=alice                — actor_email ILIKE match
 //	?actor_id=<uuid>            — exact actor id match
+//	?from=2026-04-24T00:00:00Z  — inclusive lower bound (RFC3339 or date)
+//	?to=2026-04-25T00:00:00Z    — exclusive upper bound (RFC3339 or date)
 //	?limit=50                   — cap page size (default 100, max 500)
 //
 // Admin-only. The admin UI renders the event stream + filters;
@@ -62,6 +65,22 @@ func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
 		}
 		f.ActorID = id
 	}
+	if raw := q.Get("from"); raw != "" {
+		t, err := parseAuditTime(raw)
+		if err != nil {
+			http.Error(w, "from must be RFC3339 or YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		f.FromAt = t
+	}
+	if raw := q.Get("to"); raw != "" {
+		t, err := parseAuditTime(raw)
+		if err != nil {
+			http.Error(w, "to must be RFC3339 or YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		f.ToAt = t
+	}
 
 	page, err := h.store.ListAuditEvents(r.Context(), f)
 	if err != nil {
@@ -75,4 +94,23 @@ func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
 		"limit":  page.Limit,
 		"offset": page.Offset,
 	})
+}
+
+// parseAuditTime accepts two common shapes the admin UI sends:
+//
+//   - full RFC3339 ("2026-04-24T00:00:00Z") — what the `<input
+//     type="datetime-local">` submits after a timezone offset is
+//     applied client-side.
+//   - bare date ("2026-04-24") — what `<input type="date">`
+//     submits. Interpreted as 00:00:00 UTC; the half-open window
+//     in the SQL means a caller passing ("2026-04-24",
+//     "2026-04-25") hits exactly day 24.
+//
+// Returns an error on any other shape so junk params don't
+// silently widen the window.
+func parseAuditTime(raw string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02", raw)
 }

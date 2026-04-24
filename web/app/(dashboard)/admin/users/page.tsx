@@ -1,16 +1,7 @@
 import type { Metadata } from "next";
 import { Users } from "lucide-react";
 
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { RelativeTime } from "@/components/shared/relative-time";
-import { RoleSelect } from "@/components/users/role-select.client";
+import { UsersTable } from "@/components/users/users-table.client";
 import { listAdminUsers } from "@/server/queries/admin";
 import { resolveAuthState } from "@/server/queries/auth";
 
@@ -48,54 +39,7 @@ export default async function UsersPage() {
         </p>
       </header>
 
-      <div className="overflow-hidden rounded-lg border border-border bg-card">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>User</TableHead>
-              <TableHead>Provider</TableHead>
-              <TableHead>Role</TableHead>
-              <TableHead>Last login</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.users.map((u) => {
-              const self = u.id === currentID;
-              return (
-                <TableRow key={u.id}>
-                  <TableCell>
-                    <div className="flex flex-col">
-                      <span className="font-medium">{u.name || u.email}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {u.email}
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {u.provider}
-                  </TableCell>
-                  <TableCell>
-                    <RoleSelect
-                      userID={u.id}
-                      email={u.email}
-                      currentRole={u.role}
-                      self={self}
-                    />
-                    {self ? (
-                      <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-                        you
-                      </span>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    <RelativeTime at={u.last_login_at ?? null} fallback="never" />
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+      <UsersTable users={data.users} currentID={currentID} />
     </section>
   );
 }

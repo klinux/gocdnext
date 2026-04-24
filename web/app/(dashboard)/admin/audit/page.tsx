@@ -13,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { AuditPresets } from "@/components/admin/audit-presets.client";
 import { Pagination } from "@/components/shared/pagination";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listAuditEvents } from "@/server/queries/admin";
@@ -29,6 +30,8 @@ type SearchParams = Promise<{
   action?: string;
   target_type?: string;
   actor?: string;
+  from?: string;
+  to?: string;
   offset?: string;
 }>;
 
@@ -46,6 +49,8 @@ export default async function AuditPage({
     action: params.action || undefined,
     targetType: params.target_type || undefined,
     actor: params.actor || undefined,
+    from: params.from || undefined,
+    to: params.to || undefined,
     limit: PAGE_SIZE,
     offset,
   });
@@ -70,6 +75,8 @@ export default async function AuditPage({
         action={params.action ?? ""}
         targetType={params.target_type ?? ""}
         actor={params.actor ?? ""}
+        from={params.from ?? ""}
+        to={params.to ?? ""}
       />
 
       {events.length === 0 ? (
@@ -142,6 +149,8 @@ export default async function AuditPage({
           action: params.action,
           target_type: params.target_type,
           actor: params.actor,
+          from: params.from,
+          to: params.to,
         }}
       />
     </section>
@@ -150,67 +159,102 @@ export default async function AuditPage({
 
 // FilterForm is a plain GET form so the active filters live in the
 // URL — bookmarkable, shareable, survives a reload. The server
-// re-renders the RSC with the new query params. Wrapped in the
-// same border + bg-card shell as the other shadcn-flavoured list
-// pages so the chrome reads consistently across /runs,
-// /projects/[slug]/runs, and /admin/audit.
+// re-renders the RSC with the new query params. A tiny preset
+// row below the date inputs writes common windows ("Today",
+// "7d", "30d") into the from/to fields before the user even
+// clicks Filter — all via <label htmlFor=…> links that flip the
+// value via uncontrolled DOM so the whole thing stays RSC.
 function FilterForm({
   action,
   targetType,
   actor,
+  from,
+  to,
 }: {
   action: string;
   targetType: string;
   actor: string;
+  from: string;
+  to: string;
 }) {
   return (
     <form
       method="get"
-      className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-[repeat(3,1fr)_auto]"
+      className="space-y-3 rounded-lg border border-border bg-card p-4"
     >
-      <div className="space-y-1.5">
-        <Label htmlFor="audit-action" className="text-xs">
-          Action
-        </Label>
-        <Input
-          id="audit-action"
-          type="text"
-          name="action"
-          defaultValue={action}
-          placeholder="e.g. project.apply"
-          className="font-mono text-xs"
-        />
+      <div className="grid gap-3 sm:grid-cols-[repeat(3,1fr)_auto]">
+        <div className="space-y-1.5">
+          <Label htmlFor="audit-action" className="text-xs">
+            Action
+          </Label>
+          <Input
+            id="audit-action"
+            type="text"
+            name="action"
+            defaultValue={action}
+            placeholder="e.g. project.apply"
+            className="font-mono text-xs"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="audit-target-type" className="text-xs">
+            Target type
+          </Label>
+          <Input
+            id="audit-target-type"
+            type="text"
+            name="target_type"
+            defaultValue={targetType}
+            placeholder="e.g. project"
+            className="font-mono text-xs"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="audit-actor" className="text-xs">
+            Actor (email)
+          </Label>
+          <Input
+            id="audit-actor"
+            type="text"
+            name="actor"
+            defaultValue={actor}
+            placeholder="partial match"
+            className="text-xs"
+          />
+        </div>
+        <div className="flex items-end">
+          <Button type="submit" size="sm">
+            Filter
+          </Button>
+        </div>
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="audit-target-type" className="text-xs">
-          Target type
-        </Label>
-        <Input
-          id="audit-target-type"
-          type="text"
-          name="target_type"
-          defaultValue={targetType}
-          placeholder="e.g. project"
-          className="font-mono text-xs"
-        />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="audit-actor" className="text-xs">
-          Actor (email)
-        </Label>
-        <Input
-          id="audit-actor"
-          type="text"
-          name="actor"
-          defaultValue={actor}
-          placeholder="partial match"
-          className="text-xs"
-        />
-      </div>
-      <div className="flex items-end">
-        <Button type="submit" size="sm">
-          Filter
-        </Button>
+
+      <div className="grid gap-3 sm:grid-cols-[repeat(2,1fr)_auto]">
+        <div className="space-y-1.5">
+          <Label htmlFor="audit-from" className="text-xs">
+            From (inclusive)
+          </Label>
+          <Input
+            id="audit-from"
+            type="date"
+            name="from"
+            defaultValue={from}
+            className="text-xs"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="audit-to" className="text-xs">
+            To (exclusive)
+          </Label>
+          <Input
+            id="audit-to"
+            type="date"
+            name="to"
+            defaultValue={to}
+            className="text-xs"
+          />
+        </div>
+        <AuditPresets />
       </div>
     </form>
   );

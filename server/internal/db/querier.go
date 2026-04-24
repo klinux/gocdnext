@@ -361,7 +361,11 @@ type Querier interface {
 	// pagination. Empty string on action / target_type / actor
 	// disables that filter; nil actor_id_filter disables actor
 	// filtering (applied separately because typing empty UUID as
-	// "no filter" leaks).
+	// "no filter" leaks). from_at / to_at are nullable timestamps
+	// — pass NULL on either end for open-ended ranges.
+	// Half-open [from_at, to_at) so callers can pass midnight
+	// boundaries ("2026-04-24T00:00" to "2026-04-25T00:00" = all
+	// of 2026-04-24) without worrying about boundary overlap.
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
 	// Returns every row regardless of `enabled`. The UI filters on
 	// the boolean so admins can see disabled providers they can re-

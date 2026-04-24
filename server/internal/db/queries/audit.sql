@@ -11,15 +11,21 @@ RETURNING id, actor_id, actor_email, action, target_type, target_id, metadata, a
 -- pagination. Empty string on action / target_type / actor
 -- disables that filter; nil actor_id_filter disables actor
 -- filtering (applied separately because typing empty UUID as
--- "no filter" leaks).
+-- "no filter" leaks). from_at / to_at are nullable timestamps
+-- — pass NULL on either end for open-ended ranges.
+-- Half-open [from_at, to_at) so callers can pass midnight
+-- boundaries ("2026-04-24T00:00" to "2026-04-25T00:00" = all
+-- of 2026-04-24) without worrying about boundary overlap.
 SELECT id, actor_id, actor_email, action, target_type, target_id, metadata, at
 FROM audit_events
 WHERE ($1::TEXT = '' OR action = $1)
   AND ($2::TEXT = '' OR target_type = $2)
   AND ($3::TEXT = '' OR actor_email ILIKE '%' || $3 || '%')
   AND ($4::UUID IS NULL OR actor_id = $4)
+  AND ($5::TIMESTAMPTZ IS NULL OR at >= $5)
+  AND ($6::TIMESTAMPTZ IS NULL OR at <  $6)
 ORDER BY at DESC, id DESC
-LIMIT $5 OFFSET $6;
+LIMIT $7 OFFSET $8;
 
 -- name: CountAuditEvents :one
 -- Matching total for the same filter set ListAuditEvents reads.
@@ -31,4 +37,6 @@ FROM audit_events
 WHERE ($1::TEXT = '' OR action = $1)
   AND ($2::TEXT = '' OR target_type = $2)
   AND ($3::TEXT = '' OR actor_email ILIKE '%' || $3 || '%')
-  AND ($4::UUID IS NULL OR actor_id = $4);
+  AND ($4::UUID IS NULL OR actor_id = $4)
+  AND ($5::TIMESTAMPTZ IS NULL OR at >= $5)
+  AND ($6::TIMESTAMPTZ IS NULL OR at <  $6);

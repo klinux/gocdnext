@@ -111,14 +111,22 @@ func (s *Store) EmitAuditEvent(ctx context.Context, in AuditEmit) (AuditEvent, e
 
 // ListAuditEventsFilter captures every filter the admin UI
 // surfaces. Zero value on any field disables that filter —
-// empty string skips string filters, uuid.Nil skips actor.
+// empty string skips string filters, uuid.Nil skips actor,
+// zero time.Time skips the date filter.
+//
+// FromAt / ToAt form a half-open [FromAt, ToAt) window. Either
+// side can be zero for an open-ended range. Admin UI normally
+// passes midnight boundaries so "2026-04-24" as a day selection
+// hits [2026-04-24T00:00, 2026-04-25T00:00).
 type ListAuditEventsFilter struct {
-	Action      string
-	TargetType  string
-	ActorEmail  string
-	ActorID     uuid.UUID
-	Limit       int32
-	Offset      int32
+	Action     string
+	TargetType string
+	ActorEmail string
+	ActorID    uuid.UUID
+	FromAt     time.Time
+	ToAt       time.Time
+	Limit      int32
+	Offset     int32
 }
 
 // AuditEventsPage is the paginated response shape: the current
@@ -148,6 +156,8 @@ func (s *Store) ListAuditEvents(ctx context.Context, f ListAuditEventsFilter) (A
 		Column2: f.TargetType,
 		Column3: f.ActorEmail,
 		Column4: nullableUUID(f.ActorID),
+		Column5: timestampOrNull(f.FromAt),
+		Column6: timestampOrNull(f.ToAt),
 		Limit:   f.Limit,
 		Offset:  f.Offset,
 	})
@@ -159,6 +169,8 @@ func (s *Store) ListAuditEvents(ctx context.Context, f ListAuditEventsFilter) (A
 		Column2: f.TargetType,
 		Column3: f.ActorEmail,
 		Column4: nullableUUID(f.ActorID),
+		Column5: timestampOrNull(f.FromAt),
+		Column6: timestampOrNull(f.ToAt),
 	})
 	if err != nil {
 		return AuditEventsPage{}, fmt.Errorf("store: count audit: %w", err)
