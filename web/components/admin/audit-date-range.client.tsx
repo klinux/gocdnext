@@ -93,8 +93,8 @@ export function AuditDateRange({ from, to }: Props) {
   const label = formatRangeLabel(range);
 
   return (
-    <div className="space-y-1.5">
-      <label className="text-xs font-medium text-muted-foreground">
+    <div className="space-y-1">
+      <label className="text-[11px] font-medium text-muted-foreground">
         Date range
       </label>
       {/* Hidden inputs ride inside the enclosing <form> so GET
@@ -109,12 +109,12 @@ export function AuditDateRange({ from, to }: Props) {
               variant="outline"
               size="sm"
               className={cn(
-                "w-full justify-start font-normal",
+                "h-8 w-full justify-start text-xs font-normal",
                 !range && "text-muted-foreground",
               )}
             >
-              <CalendarIcon className="mr-2 size-3.5" aria-hidden />
-              {label}
+              <CalendarIcon className="mr-2 size-3.5 shrink-0" aria-hidden />
+              <span className="truncate">{label}</span>
             </Button>
           }
         />

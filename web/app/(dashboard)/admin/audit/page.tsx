@@ -180,58 +180,57 @@ function FilterForm({
   return (
     <form
       method="get"
-      className="space-y-3 rounded-lg border border-border bg-card p-4"
+      className="grid grid-cols-1 gap-2 rounded-lg border border-border bg-card p-3 sm:grid-cols-2 md:grid-cols-[repeat(4,minmax(0,1fr))_auto] md:items-end"
     >
-      <div className="grid gap-3 sm:grid-cols-[repeat(3,1fr)_auto]">
-        <div className="space-y-1.5">
-          <Label htmlFor="audit-action" className="text-xs">
-            Action
-          </Label>
-          <Input
-            id="audit-action"
-            type="text"
-            name="action"
-            defaultValue={action}
-            placeholder="e.g. project.apply"
-            className="font-mono text-xs"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="audit-target-type" className="text-xs">
-            Target type
-          </Label>
-          <Input
-            id="audit-target-type"
-            type="text"
-            name="target_type"
-            defaultValue={targetType}
-            placeholder="e.g. project"
-            className="font-mono text-xs"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="audit-actor" className="text-xs">
-            Actor (email)
-          </Label>
-          <Input
-            id="audit-actor"
-            type="text"
-            name="actor"
-            defaultValue={actor}
-            placeholder="partial match"
-            className="text-xs"
-          />
-        </div>
-        <div className="flex items-end">
-          <Button type="submit" size="sm">
-            Filter
-          </Button>
-        </div>
+      <div className="space-y-1">
+        <Label htmlFor="audit-action" className="text-[11px] text-muted-foreground">
+          Action
+        </Label>
+        <Input
+          id="audit-action"
+          type="text"
+          name="action"
+          defaultValue={action}
+          placeholder="project.apply"
+          className="h-8 font-mono text-xs"
+        />
       </div>
-
-      <div className="max-w-sm">
-        <AuditDateRange from={from} to={to} />
+      <div className="space-y-1">
+        <Label
+          htmlFor="audit-target-type"
+          className="text-[11px] text-muted-foreground"
+        >
+          Target
+        </Label>
+        <Input
+          id="audit-target-type"
+          type="text"
+          name="target_type"
+          defaultValue={targetType}
+          placeholder="project"
+          className="h-8 font-mono text-xs"
+        />
       </div>
+      <div className="space-y-1">
+        <Label
+          htmlFor="audit-actor"
+          className="text-[11px] text-muted-foreground"
+        >
+          Actor
+        </Label>
+        <Input
+          id="audit-actor"
+          type="text"
+          name="actor"
+          defaultValue={actor}
+          placeholder="email…"
+          className="h-8 text-xs"
+        />
+      </div>
+      <AuditDateRange from={from} to={to} />
+      <Button type="submit" size="sm" className="h-8">
+        Filter
+      </Button>
     </form>
   );
 }
