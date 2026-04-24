@@ -1,0 +1,61 @@
+name: release-notes
+category: release
+description: >
+  Generate a changelog between two git refs and write it to a
+  workspace file. Two formats: `plain` (one bullet per commit —
+  works with any repo) and `conventional` (groups commits into
+  Features / Bug Fixes / Chores / Other via the Conventional
+  Commits prefix; unclassifiable commits fall through to Other,
+  nothing gets dropped). Downstream plugins like
+  gocdnext/github-release and gocdnext/email can read the
+  resulting file directly.
+
+inputs:
+  from:
+    required: false
+    description: >
+      Starting ref (exclusive). Defaults to the nearest prior
+      tag via `git describe --tags --abbrev=0`; on a
+      never-tagged repo it falls back to the root commit so
+      the first release still produces notes.
+  to:
+    required: false
+    default: HEAD
+    description: Ending ref (inclusive).
+  output:
+    required: false
+    default: RELEASE_NOTES.md
+    description: Workspace-relative output file.
+  format:
+    required: false
+    default: plain
+    description: "plain | conventional"
+  heading:
+    required: false
+    description: >
+      First-line heading written above the body, e.g. "## v1.2.3".
+      Empty = no heading; body starts at the first bullet.
+
+examples:
+  - name: plain notes for a release step
+    description: >
+      Build notes from the prior tag to HEAD, then hand the file
+      to gocdnext/github-release as the body.
+    yaml: |
+      uses: gocdnext/release-notes@v1
+      with:
+        output: RELEASE_NOTES.md
+        heading: "## ${RELEASE_TAG}"
+
+  - name: conventional commits changelog
+    description: >
+      Grouped by commit type. Pairs well with a `tag:` step that
+      used the same ${RELEASE_TAG} env var upstream.
+    yaml: |
+      uses: gocdnext/release-notes@v1
+      with:
+        format: conventional
+        from: ${PREVIOUS_TAG}
+        to: ${RELEASE_TAG}
+        output: CHANGELOG-${RELEASE_TAG}.md
+        heading: "# ${RELEASE_TAG} — $(date +%Y-%m-%d)"

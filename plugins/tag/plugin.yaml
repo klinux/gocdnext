@@ -1,0 +1,77 @@
+name: tag
+category: release
+description: >
+  Create a git tag on the current commit and push it to origin.
+  Annotated when `message:` is set (needed for GitHub Releases +
+  semver tooling); lightweight otherwise. Auth over HTTPS only —
+  pipe a Personal Access Token / Job Token via `secrets:`. SSH
+  remotes aren't supported in v1; fall back to `script:` + git
+  for those.
+
+inputs:
+  name:
+    required: true
+    description: Tag name, e.g. "v1.2.3" or "latest".
+  message:
+    required: false
+    description: >
+      Annotated-tag message. When set the tag is created with
+      `-a -m`; when omitted a lightweight (ref-only) tag is
+      pushed instead — fine for floating markers, not great for
+      release tooling.
+  revision:
+    required: false
+    default: HEAD
+    description: Commit SHA to tag. Defaults to the run's HEAD.
+  remote:
+    required: false
+    default: origin
+    description: Git remote name.
+  username:
+    required: false
+    description: >
+      HTTPS auth user. Providers ignore/require different values:
+      GitHub "x-access-token", GitLab "oauth2", Bitbucket the
+      account name. Defaults to "git" which most of them accept
+      next to a token.
+  token:
+    required: true
+    description: >
+      HTTPS auth token. Populate via secrets: — the only
+      credential on the wire.
+  force:
+    required: false
+    default: "false"
+    description: >
+      Set "true" to push with --force. Useful for moving a
+      "latest" pointer tag; never use for a semver release tag.
+
+examples:
+  - name: annotated release tag
+    description: >
+      Standard semver release flow — annotate with the changelog
+      entry and push. Uses the pipeline-computed RELEASE_TAG var
+      (typically set by a `release-notes:` step upstream).
+    yaml: |
+      secrets:
+        - RELEASE_TOKEN
+      uses: gocdnext/tag@v1
+      with:
+        name: ${RELEASE_TAG}
+        message: "Release ${RELEASE_TAG} (${CI_COMMIT_SHORT_SHA})"
+        username: x-access-token
+        token: ${{ RELEASE_TOKEN }}
+
+  - name: move "latest" pointer
+    description: >
+      Floating lightweight tag that always points at the newest
+      main commit.
+    yaml: |
+      secrets:
+        - RELEASE_TOKEN
+      uses: gocdnext/tag@v1
+      with:
+        name: latest
+        force: "true"
+        username: x-access-token
+        token: ${{ RELEASE_TOKEN }}
