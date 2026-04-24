@@ -231,6 +231,16 @@ export function ProjectActionsMenu({
   return (
     <>
       <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={runAll}
+          disabled={!hasPipelines || runningAll}
+          aria-label="Run all pipelines"
+        >
+          <Play className="size-3.5" />
+          {runningAll ? "Queuing…" : "Run all"}
+        </Button>
         <EditProjectDialog project={project} scmSource={scmSource} />
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -241,15 +251,6 @@ export function ProjectActionsMenu({
             }
           />
           <DropdownMenuContent align="end" className="min-w-52">
-            <DropdownMenuItem
-              onClick={runAll}
-              disabled={!hasPipelines || runningAll}
-              className="whitespace-nowrap"
-            >
-              <Play className="size-3.5" />
-              {runningAll ? "Queuing…" : "Run all pipelines"}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={sync}
               disabled={!hasSCM || syncing}
