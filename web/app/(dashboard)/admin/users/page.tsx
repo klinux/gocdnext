@@ -9,7 +9,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Toaster } from "@/components/ui/sonner";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { RoleSelect } from "@/components/users/role-select.client";
 import { listAdminUsers } from "@/server/queries/admin";
@@ -34,7 +33,6 @@ export default async function UsersPage() {
 
   return (
     <section className="space-y-6">
-      <Toaster position="top-right" richColors />
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
           <Users className="h-6 w-6" aria-hidden />

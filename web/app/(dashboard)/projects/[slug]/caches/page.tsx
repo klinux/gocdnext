@@ -10,7 +10,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Toaster } from "@/components/ui/sonner";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { PurgeCacheButton } from "@/components/caches/purge-cache-button.client";
 import { formatBytes } from "@/lib/format";
@@ -56,8 +55,6 @@ export default async function CachesPage({
 
   return (
     <section className="space-y-6">
-      <Toaster position="top-right" richColors />
-
       <header className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">
           Pipeline caches persist tarred directories across runs, keyed by

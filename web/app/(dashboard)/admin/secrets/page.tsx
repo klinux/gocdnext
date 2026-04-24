@@ -10,7 +10,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { Toaster } from "@/components/ui/sonner";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
 import { DeleteSecretButton } from "@/components/secrets/delete-secret-button.client";
@@ -41,7 +40,6 @@ export default async function GlobalSecretsPage() {
 
   return (
     <section className="space-y-6">
-      <Toaster position="top-right" richColors />
       <header className="flex items-baseline justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">

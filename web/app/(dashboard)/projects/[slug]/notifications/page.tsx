@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
-import { Toaster } from "@/components/ui/sonner";
 import { ProjectNotificationsEditor } from "@/components/notifications/project-notifications-editor.client";
 import {
   GocdnextAPIError,
@@ -43,7 +42,6 @@ export default async function ProjectNotificationsPage({
 
   return (
     <section className="space-y-6">
-      <Toaster position="top-right" richColors />
       <div className="space-y-1">
         <p className="text-sm text-muted-foreground">
           Post-run notifications inherited by every pipeline under this

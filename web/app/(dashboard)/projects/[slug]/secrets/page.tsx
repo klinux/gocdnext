@@ -14,7 +14,6 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
 import { DeleteSecretButton } from "@/components/secrets/delete-secret-button.client";
 import { Button } from "@/components/ui/button";
-import { Toaster } from "@/components/ui/sonner";
 import {
   GocdnextAPIError,
   getProjectDetail,
@@ -64,7 +63,6 @@ export default async function SecretsPage({
 
   return (
     <section className="space-y-6">
-      <Toaster position="top-right" richColors />
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">
           Encrypted at rest and never echoed back. Reference by name from a job&apos;s{" "}
