@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -71,6 +72,10 @@ func (h *GlobalSecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("global secret set", "name", req.Name, "created", created)
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionGlobalSecretSet, "global_secret", req.Name,
+		map[string]any{"name": req.Name, "created": created})
+
 	w.Header().Set("Content-Type", "application/json")
 	if created {
 		w.WriteHeader(http.StatusCreated)
@@ -112,6 +117,9 @@ func (h *GlobalSecretsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	err := h.store.DeleteGlobalSecret(r.Context(), name)
 	switch {
 	case err == nil:
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionGlobalSecretDelete, "global_secret", name,
+			map[string]any{"name": name})
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, store.ErrSecretNotFound):
 		http.Error(w, "secret not found", http.StatusNotFound)

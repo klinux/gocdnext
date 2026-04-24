@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -82,6 +83,19 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 					"run_id", res.RunID, "err", nerr)
 			}
 		}
+		action := store.AuditActionApprovalApprove
+		if !approve {
+			action = store.AuditActionApprovalReject
+		}
+		audit.Emit(r.Context(), h.log, h.store,
+			action, "job_run", jobRunID.String(),
+			map[string]any{
+				"run_id":          res.RunID.String(),
+				"stage_completed": res.StageCompleted,
+				"stage_status":    res.StageStatus,
+				"run_completed":   res.RunCompleted,
+				"run_status":      res.RunStatus,
+			})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{

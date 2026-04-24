@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -60,6 +61,15 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		"runs", counts.Runs,
 		"secrets", counts.Secrets,
 		"scm_sources", counts.SCMSources)
+
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionProjectDelete, "project", slug,
+		map[string]any{
+			"pipelines_deleted":   counts.Pipelines,
+			"runs_deleted":        counts.Runs,
+			"secrets_deleted":     counts.Secrets,
+			"scm_sources_deleted": counts.SCMSources,
+		})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(DeleteProjectResponse{

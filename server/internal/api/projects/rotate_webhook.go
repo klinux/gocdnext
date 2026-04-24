@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -80,6 +81,14 @@ func (h *Handler) RotateWebhookSecret(w http.ResponseWriter, r *http.Request) {
 	if hr := h.reconcileSCMSourceWebhook(r.Context(), applied, plain); hr != nil {
 		resp["webhook"] = hr
 	}
+
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionWebhookSecretRotate, "scm_source", scm.ID.String(),
+		map[string]any{
+			"slug":     slug,
+			"provider": scm.Provider,
+			"url":      scm.URL,
+		})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

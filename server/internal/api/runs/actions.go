@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -40,6 +41,9 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		// cancel-kills-container roadmap for the incident that
 		// motivated this wiring.
 		h.dispatchCancel(runID, res.RunningJobs)
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionRunCancel, "run", runID.String(),
+			map[string]any{"signaled_jobs": len(res.RunningJobs)})
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"run_id":        runID.String(),
@@ -120,6 +124,9 @@ func (h *Handler) Rerun(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case err == nil:
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionRunRerun, "run", res.RunID.String(),
+			map[string]any{"rerun_of": runID.String(), "counter": res.Counter})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -166,6 +173,9 @@ func (h *Handler) RerunJob(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case err == nil:
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionJobRerun, "job_run", res.JobRunID.String(),
+			map[string]any{"run_id": res.RunID.String(), "attempt": res.Attempt})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -225,6 +235,9 @@ func (h *Handler) TriggerPipeline(w http.ResponseWriter, r *http.Request) {
 	res, err := h.store.TriggerManualRun(r.Context(), in)
 	switch {
 	case err == nil:
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionRunTrigger, "pipeline", pipelineID.String(),
+			map[string]any{"run_id": res.RunID.String(), "counter": res.Counter})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{

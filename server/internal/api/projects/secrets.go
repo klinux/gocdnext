@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -86,6 +87,10 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Info("secret set", "slug", slug, "name", req.Name, "created", created)
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionSecretSet, "project_secret", slug+"/"+req.Name,
+		map[string]any{"slug": slug, "name": req.Name, "created": created})
+
 	w.Header().Set("Content-Type", "application/json")
 	if created {
 		w.WriteHeader(http.StatusCreated)
@@ -189,6 +194,10 @@ func (h *Handler) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Info("secret deleted", "slug", slug, "name", name)
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionSecretDelete, "project_secret", slug+"/"+name,
+		map[string]any{"slug": slug, "name": name})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

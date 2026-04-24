@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -143,6 +144,14 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		"pipelines", len(result.Pipelines),
 		"pipelines_removed", len(result.PipelinesRemoved),
 		"revision", ref)
+
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionProjectSync, "project", slug,
+		map[string]any{
+			"pipelines":         len(result.Pipelines),
+			"pipelines_removed": len(result.PipelinesRemoved),
+			"revision":          ref,
+		})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

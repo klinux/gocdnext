@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -146,5 +147,14 @@ func (h *Handler) PurgeCache(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("cache purged",
 		"project", detail.Project.ID, "slug", slug,
 		"cache_id", c.ID, "key", c.Key, "bytes", c.SizeBytes)
+
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionCachePurge, "cache", c.ID.String(),
+		map[string]any{
+			"slug":  slug,
+			"key":   c.Key,
+			"bytes": c.SizeBytes,
+		})
+
 	w.WriteHeader(http.StatusNoContent)
 }

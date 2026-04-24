@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
@@ -316,6 +317,14 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		"project_created", result.ProjectCreated,
 		"pipelines", len(result.Pipelines),
 		"pipelines_removed", len(result.PipelinesRemoved))
+
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionProjectApply, "project", req.Slug,
+		map[string]any{
+			"project_created":   result.ProjectCreated,
+			"pipelines":         len(result.Pipelines),
+			"pipelines_removed": len(result.PipelinesRemoved),
+		})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
