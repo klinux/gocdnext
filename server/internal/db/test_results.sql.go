@@ -127,6 +127,76 @@ func (q *Queries) InsertTestResult(ctx context.Context, arg InsertTestResultPara
 	return err
 }
 
+const listTestCaseHistory = `-- name: ListTestCaseHistory :many
+SELECT tr.id, tr.status, tr.duration_ms, tr.created_at,
+       tr.failure_message,
+       r.id          AS run_id,
+       r.counter     AS run_counter,
+       pl.name       AS pipeline_name,
+       p.slug        AS project_slug
+FROM test_results tr
+JOIN job_runs jr ON jr.id = tr.job_run_id
+JOIN runs r      ON r.id = jr.run_id
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p  ON p.id = pl.project_id
+WHERE tr.classname = $1 AND tr.name = $2
+ORDER BY tr.created_at DESC
+LIMIT $3
+`
+
+type ListTestCaseHistoryParams struct {
+	Classname string
+	Name      string
+	Limit     int32
+}
+
+type ListTestCaseHistoryRow struct {
+	ID             pgtype.UUID
+	Status         string
+	DurationMs     int64
+	CreatedAt      pgtype.Timestamptz
+	FailureMessage *string
+	RunID          pgtype.UUID
+	RunCounter     int64
+	PipelineName   string
+	ProjectSlug    string
+}
+
+// Returns the last N executions of a single case across every
+// run of every pipeline. Used by the Tests-tab "history" popup
+// so a dev chasing a flake can see the green/red pattern over
+// time. The (classname, name, created_at DESC) index covers
+// this access pattern directly.
+func (q *Queries) ListTestCaseHistory(ctx context.Context, arg ListTestCaseHistoryParams) ([]ListTestCaseHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listTestCaseHistory, arg.Classname, arg.Name, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTestCaseHistoryRow{}
+	for rows.Next() {
+		var i ListTestCaseHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.DurationMs,
+			&i.CreatedAt,
+			&i.FailureMessage,
+			&i.RunID,
+			&i.RunCounter,
+			&i.PipelineName,
+			&i.ProjectSlug,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTestResultsByRun = `-- name: ListTestResultsByRun :many
 SELECT id, job_run_id, suite, classname, name, status,
        duration_ms, failure_type, failure_message, failure_detail

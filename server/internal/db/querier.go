@@ -429,6 +429,12 @@ type Querier interface {
 	// @staleness. The reaper walks this list every tick and either re-queues or
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
+	// Returns the last N executions of a single case across every
+	// run of every pipeline. Used by the Tests-tab "history" popup
+	// so a dev chasing a flake can see the green/red pattern over
+	// time. The (classname, name, created_at DESC) index covers
+	// this access pattern directly.
+	ListTestCaseHistory(ctx context.Context, arg ListTestCaseHistoryParams) ([]ListTestCaseHistoryRow, error)
 	// Returns every case across every job in a run. The Tests tab
 	// groups them by job_run_id in-memory — cheaper than JOINing
 	// job_runs here because the UI already has the job list from

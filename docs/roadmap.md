@@ -174,6 +174,11 @@ Entradas da decisão:
   cards por job, drill-down em failures. Job declara
   `test_reports: [glob]` no YAML; agent faz parse depois das
   tasks (sucesso OU falha) e shippa um batch via gRPC.
+- ✅ **Flakiness history popover** (TBD commit). Clock icon em
+  cada case row abre strip das últimas 14 execuções + lista com
+  links pros runs. Contagem de "flips" de status vira badge
+  `flaky · N flips` vs `stable`. Usa o índice
+  `idx_test_results_case_at`.
 
 ### Próximas ondas (tamanho estimado)
 
@@ -182,10 +187,6 @@ Entradas da decisão:
   `extends:` dentro do mesmo arquivo já shipped (commit TBD);
   `include: [{local: "shared/x.yaml"}]` fica pra depois (precisa
   path-resolution segura + multi-file merge). Padrão GitLab CI.
-- 💡 **Test flakiness history** — o ingest já guarda 1 row por
-  `(classname, name, created_at)`; próximo passo é um drawer
-  "últimas 14 execuções" na aba Tests usando o índice
-  `idx_test_results_case_at`.
 
 **Medium (1-2 dias cada)**
 - 💡 **Notifications — personal subscriptions.** Terceira camada

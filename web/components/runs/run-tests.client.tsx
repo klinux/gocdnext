@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import type { Route } from "next";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -7,6 +9,8 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  History,
+  Loader2,
   MinusCircle,
   TestTube,
   XCircle,
@@ -17,6 +21,8 @@ import { isTerminalStatus } from "@/lib/status";
 import type {
   RunDetail,
   TestCase,
+  TestCaseHistoryEntry,
+  TestCaseHistoryResponse,
   TestResultsResponse,
   TestSummary,
 } from "@/types/api";
@@ -88,6 +94,7 @@ export function RunTests({ runId, runStatus, run, apiBaseURL }: Props) {
           summary={s}
           jobLabel={jobLabel[s.job_run_id] ?? s.job_run_id.slice(0, 8)}
           cases={casesByJob[s.job_run_id] ?? []}
+          apiBaseURL={apiBaseURL}
         />
       ))}
     </div>
@@ -129,10 +136,12 @@ function JobCard({
   summary,
   jobLabel,
   cases,
+  apiBaseURL,
 }: {
   summary: TestSummary;
   jobLabel: string;
   cases: TestCase[];
+  apiBaseURL: string;
 }) {
   // Failing + errored cases open by default — that's why someone
   // is reading this tab. Passed/skipped cases collapsed behind a
@@ -170,7 +179,7 @@ function JobCard({
       ) : (
         <div className="divide-y divide-border/50">
           {visible.map((c) => (
-            <CaseRow key={c.id} c={c} />
+            <CaseRow key={c.id} c={c} apiBaseURL={apiBaseURL} />
           ))}
           {rest.length > 0 && !showAll ? (
             <button
@@ -188,44 +197,60 @@ function JobCard({
   );
 }
 
-function CaseRow({ c }: { c: TestCase }) {
+function CaseRow({ c, apiBaseURL }: { c: TestCase; apiBaseURL: string }) {
   const [open, setOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const canExpand =
     (c.failure_message ?? "").length > 0 || (c.failure_detail ?? "").length > 0;
 
   return (
     <div className="px-4 py-2.5">
-      <button
-        type="button"
-        onClick={() => canExpand && setOpen((o) => !o)}
-        className={cn(
-          "flex w-full items-center gap-3 text-left",
-          canExpand && "cursor-pointer",
-        )}
-        aria-expanded={open}
-      >
-        <StatusGlyph status={c.status} />
-        <div className="min-w-0 flex-1">
-          <span className="font-mono text-sm">{c.name}</span>
-          {c.classname ? (
-            <span className="ml-2 font-mono text-[11px] text-muted-foreground">
-              {c.classname}
-            </span>
+      <div className="flex w-full items-center gap-3">
+        <button
+          type="button"
+          onClick={() => canExpand && setOpen((o) => !o)}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-3 text-left",
+            canExpand && "cursor-pointer",
+          )}
+          aria-expanded={open}
+        >
+          <StatusGlyph status={c.status} />
+          <div className="min-w-0 flex-1">
+            <span className="font-mono text-sm">{c.name}</span>
+            {c.classname ? (
+              <span className="ml-2 font-mono text-[11px] text-muted-foreground">
+                {c.classname}
+              </span>
+            ) : null}
+          </div>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {formatDuration(c.duration_ms)}
+          </span>
+          {canExpand ? (
+            <ChevronRight
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground transition-transform",
+                open && "rotate-90",
+              )}
+              aria-hidden
+            />
           ) : null}
-        </div>
-        <span className="font-mono text-[11px] text-muted-foreground">
-          {formatDuration(c.duration_ms)}
-        </span>
-        {canExpand ? (
-          <ChevronRight
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              open && "rotate-90",
-            )}
-            aria-hidden
-          />
-        ) : null}
-      </button>
+        </button>
+        <button
+          type="button"
+          onClick={() => setHistoryOpen((o) => !o)}
+          aria-label={`Show history for ${c.name}`}
+          aria-expanded={historyOpen}
+          className={cn(
+            "shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+            historyOpen && "bg-muted text-foreground",
+          )}
+          title="Flakiness history"
+        >
+          <History className="size-3.5" aria-hidden />
+        </button>
+      </div>
 
       {open && canExpand ? (
         <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/30 p-3">
@@ -246,8 +271,184 @@ function CaseRow({ c }: { c: TestCase }) {
           ) : null}
         </div>
       ) : null}
+
+      {historyOpen ? (
+        <CaseHistory
+          classname={c.classname ?? ""}
+          name={c.name}
+          apiBaseURL={apiBaseURL}
+        />
+      ) : null}
     </div>
   );
+}
+
+function CaseHistory({
+  classname,
+  name,
+  apiBaseURL,
+}: {
+  classname: string;
+  name: string;
+  apiBaseURL: string;
+}) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["test-history", classname, name],
+    queryFn: () => fetchCaseHistory(apiBaseURL, classname, name),
+    // Once loaded, keep for the session — flake history doesn't
+    // change while the tab is open (new runs wouldn't be visible
+    // without a refetch anyway; users reopen the popover to see
+    // the newest entry).
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-muted/20 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+        <History className="size-3.5" aria-hidden />
+        Last executions
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          Loading history…
+        </div>
+      ) : isError ? (
+        <p className="text-xs text-muted-foreground">Couldn&apos;t load history.</p>
+      ) : (data?.entries.length ?? 0) === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No prior executions recorded.
+        </p>
+      ) : (
+        <>
+          <HistoryStrip entries={data!.entries} />
+          <HistoryList entries={data!.entries} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// HistoryStrip shows a row of colored squares — one per run —
+// newest on the LEFT (matches the reversed chronological order
+// the API returns). Hovering a square reveals the per-run
+// status + counter via the native title tooltip so the mental
+// model is "rightmost is oldest, scan-left to see recency".
+function HistoryStrip({ entries }: { entries: TestCaseHistoryEntry[] }) {
+  // Flakiness score: number of status transitions across the
+  // visible window. Zero transitions = stable (all green or
+  // all red). One or more transitions = has flaked at least once.
+  let transitions = 0;
+  for (let i = 1; i < entries.length; i++) {
+    if (entries[i]!.status !== entries[i - 1]!.status) transitions++;
+  }
+  const flaky = transitions > 0;
+
+  return (
+    <div className="mb-3 flex items-center gap-2">
+      <div className="flex items-center gap-0.5">
+        {entries.map((e) => (
+          <span
+            key={e.id}
+            title={`${e.pipeline_name} #${e.run_counter} · ${e.status}`}
+            className={cn(
+              "size-3 rounded-sm border",
+              dotClassForStatus(e.status),
+            )}
+            aria-hidden
+          />
+        ))}
+      </div>
+      <span
+        className={cn(
+          "rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+          flaky
+            ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            : entries[0]?.status === "passed"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+              : "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400",
+        )}
+      >
+        {flaky ? `flaky · ${transitions} flip${transitions === 1 ? "" : "s"}` : "stable"}
+      </span>
+    </div>
+  );
+}
+
+function HistoryList({ entries }: { entries: TestCaseHistoryEntry[] }) {
+  return (
+    <ul className="space-y-1">
+      {entries.map((e) => (
+        <li
+          key={e.id}
+          className="flex items-center gap-3 text-xs text-muted-foreground"
+        >
+          <StatusGlyph status={e.status} />
+          <Link
+            href={`/runs/${e.run_id}` as Route}
+            className="font-mono text-foreground hover:underline"
+          >
+            {e.pipeline_name} #{e.run_counter}
+          </Link>
+          <span className="ml-auto font-mono tabular-nums">
+            {formatDuration(e.duration_ms)}
+          </span>
+          <time dateTime={e.at} className="tabular-nums">
+            {formatRelativeShort(e.at)}
+          </time>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+async function fetchCaseHistory(
+  apiBaseURL: string,
+  classname: string,
+  name: string,
+): Promise<TestCaseHistoryResponse> {
+  const base = apiBaseURL.replace(/\/+$/, "");
+  const url = new URL(`${base}/api/v1/tests/history`);
+  if (classname) url.searchParams.set("classname", classname);
+  url.searchParams.set("name", name);
+  const res = await fetch(url.toString(), {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`history fetch ${res.status}`);
+  return (await res.json()) as TestCaseHistoryResponse;
+}
+
+function dotClassForStatus(status: string): string {
+  switch (status) {
+    case "passed":
+      return "bg-emerald-500 border-emerald-600";
+    case "failed":
+      return "bg-red-500 border-red-600";
+    case "errored":
+      return "bg-red-500 border-red-600";
+    case "skipped":
+      return "bg-muted-foreground/40 border-muted-foreground/60";
+    default:
+      return "bg-muted-foreground/30 border-muted-foreground/40";
+  }
+}
+
+// formatRelativeShort is a minimal "how long ago" stamp for the
+// history list. We import the app's RelativeTime elsewhere but
+// it's a full component with live updates — overkill for a
+// static history entry. This one-shot format keeps the popover
+// cheap.
+function formatRelativeShort(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "—";
+  const diff = (Date.now() - then) / 1000;
+  if (diff < 60) return `${Math.floor(diff)}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 function Tally({

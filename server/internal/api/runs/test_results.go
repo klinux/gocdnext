@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -115,6 +117,94 @@ func (h *Handler) TestResults(w http.ResponseWriter, r *http.Request) {
 			FailureType:    c.FailureType,
 			FailureMessage: c.FailureMessage,
 			FailureDetail:  c.FailureDetail,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+type testCaseHistoryDTO struct {
+	ID             string `json:"id"`
+	RunID          string `json:"run_id"`
+	RunCounter     int64  `json:"run_counter"`
+	PipelineName   string `json:"pipeline_name"`
+	ProjectSlug    string `json:"project_slug"`
+	Status         string `json:"status"`
+	DurationMs     int64  `json:"duration_ms"`
+	FailureMessage string `json:"failure_message,omitempty"`
+	At             string `json:"at"`
+}
+
+type testCaseHistoryResponse struct {
+	Entries []testCaseHistoryDTO `json:"entries"`
+}
+
+// defaultHistoryLimit covers "has this flaked in the last two
+// weeks?" comfortably without forcing a big scan; callers that
+// want more pass ?limit= up to historyHardCap.
+const (
+	defaultHistoryLimit = 14
+	historyHardCap      = 100
+)
+
+// TestCaseHistory handles GET /api/v1/tests/history?classname=X&name=Y[&limit=N].
+// Returns the most recent N executions of (classname, name)
+// across every run of every pipeline so the Tests tab can show
+// a green/red dot strip and identify flaky tests. No run id in
+// the path — flakiness is a per-case property independent of
+// any particular run.
+func (h *Handler) TestCaseHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	classname := r.URL.Query().Get("classname")
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "`name` query param is required", http.StatusBadRequest)
+		return
+	}
+	// classname CAN be empty — some frameworks (Go's testing) omit
+	// it; in that case we look up by name alone, which may pull
+	// same-named cases from unrelated packages. Users who want
+	// precision will typically have a non-empty classname.
+
+	limit := int32(defaultHistoryLimit)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || parsed <= 0 {
+			http.Error(w, "invalid `limit`", http.StatusBadRequest)
+			return
+		}
+		if parsed > historyHardCap {
+			parsed = historyHardCap
+		}
+		limit = int32(parsed)
+	}
+
+	entries, err := h.store.TestCaseHistory(r.Context(), classname, name, limit)
+	if err != nil {
+		h.log.Error("test case history", "classname", classname, "name", name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	out := testCaseHistoryResponse{
+		Entries: make([]testCaseHistoryDTO, 0, len(entries)),
+	}
+	for _, e := range entries {
+		out.Entries = append(out.Entries, testCaseHistoryDTO{
+			ID:             e.ID.String(),
+			RunID:          e.RunID.String(),
+			RunCounter:     e.RunCounter,
+			PipelineName:   e.PipelineName,
+			ProjectSlug:    e.ProjectSlug,
+			Status:         e.Status,
+			DurationMs:     e.DurationMs,
+			FailureMessage: e.FailureMessage,
+			At:             e.CreatedAt.Format(time.RFC3339Nano),
 		})
 	}
 

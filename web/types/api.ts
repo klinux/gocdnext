@@ -558,6 +558,22 @@ export type TestResultsResponse = {
   cases: TestCase[];
 };
 
+export type TestCaseHistoryEntry = {
+  id: string;
+  run_id: string;
+  run_counter: number;
+  pipeline_name: string;
+  project_slug: string;
+  status: TestCaseStatus | string;
+  duration_ms: number;
+  failure_message?: string;
+  at: string;
+};
+
+export type TestCaseHistoryResponse = {
+  entries: TestCaseHistoryEntry[];
+};
+
 export type RunArtifact = {
   id: string;
   job_run_id: string;

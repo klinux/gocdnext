@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -115,6 +116,58 @@ type TestResultCase struct {
 	FailureType    string
 	FailureMessage string
 	FailureDetail  string
+}
+
+// TestCaseHistoryEntry is one row of the flake-chasing history
+// strip: last N executions of a single case across every run.
+// Only surfaces the context the drawer needs — no failure
+// detail / system output here; those load on the per-run page
+// if the user clicks through.
+type TestCaseHistoryEntry struct {
+	ID             uuid.UUID
+	RunID          uuid.UUID
+	RunCounter     int64
+	PipelineName   string
+	ProjectSlug    string
+	Status         string
+	DurationMs     int64
+	FailureMessage string
+	CreatedAt      time.Time
+}
+
+// TestCaseHistory returns up to `limit` most-recent executions
+// of the (classname, name) pair, newest first. Backs the Tests-
+// tab history popover: "has this flaked in the last N runs?".
+// The (classname, name, created_at DESC) index covers the
+// lookup directly so a clicked case is cheap even on a large
+// test_results table.
+func (s *Store) TestCaseHistory(ctx context.Context, classname, name string, limit int32) ([]TestCaseHistoryEntry, error) {
+	if limit <= 0 {
+		limit = 14
+	}
+	rows, err := s.q.ListTestCaseHistory(ctx, db.ListTestCaseHistoryParams{
+		Classname: classname,
+		Name:      name,
+		Limit:     limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: test case history: %w", err)
+	}
+	out := make([]TestCaseHistoryEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, TestCaseHistoryEntry{
+			ID:             fromPgUUID(r.ID),
+			RunID:          fromPgUUID(r.RunID),
+			RunCounter:     r.RunCounter,
+			PipelineName:   r.PipelineName,
+			ProjectSlug:    r.ProjectSlug,
+			Status:         r.Status,
+			DurationMs:     r.DurationMs,
+			FailureMessage: stringValue(r.FailureMessage),
+			CreatedAt:      r.CreatedAt.Time,
+		})
+	}
+	return out, nil
 }
 
 // TestResultsByRun returns both the full case list and the
