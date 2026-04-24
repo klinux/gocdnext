@@ -1,0 +1,114 @@
+name: playwright
+category: quality
+description: >
+  Run Playwright end-to-end tests with Chromium + Firefox +
+  WebKit pre-installed (via Microsoft's official image — saves
+  the ~1.2 GB browser download per run). Detects pnpm / yarn /
+  npm from the lockfile, installs deps, then invokes
+  `playwright test` with the operator's filters (project, grep,
+  shard, config). JUnit report is pinned to
+  test-results/junit.xml so the pipeline's `test_reports:`
+  block picks it up without extra config.
+
+inputs:
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under workspace to cd into first.
+  command:
+    required: false
+    default: test
+    description: >
+      Sub-command passed to `npx playwright`. "test" is the
+      default; "show-report" + "install" also valid.
+  config:
+    required: false
+    description: >
+      --config path override. Playwright auto-loads
+      playwright.config.{ts,js} from working-dir when omitted.
+  project:
+    required: false
+    description: >
+      --project filter — run a single project from the config
+      (chromium, firefox, mobile-chrome, …).
+  grep:
+    required: false
+    description: --grep regex, scopes tests by title.
+  shard:
+    required: false
+    description: >
+      --shard=N/M for parallel fan-out. "1/4" runs slice 1 of 4
+      — pair with a pipeline matrix to spread across jobs.
+  reporter:
+    required: false
+    description: >
+      --reporter=<list>. Default "junit,html" — JUnit for the
+      Tests tab ingest + HTML for the playwright-report/
+      artifact.
+  extra-args:
+    required: false
+    description: >
+      Freeform trailing flags forwarded verbatim to
+      `playwright test` (--retries=2, --workers=4, …).
+  install-deps:
+    required: false
+    default: "true"
+    description: >
+      Runs the detected manager's install before the tests.
+      Set "false" when a prior job already warmed node_modules
+      via gocdnext/node + `cache:`.
+
+examples:
+  - name: e2e chromium only
+    description: >
+      Run the chromium project against a preview URL. The
+      Playwright image ships with browsers pre-installed so no
+      separate `playwright install` step needed. test_reports
+      + artifacts are the gocdnext conventions that surface the
+      JUnit + HTML outputs for the Tests tab and artifact viewer.
+    yaml: |
+      uses: gocdnext/playwright@v1
+      with:
+        working-dir: web
+        project: chromium
+      test_reports:
+        - web/test-results/junit.xml
+      artifacts:
+        optional:
+          - web/playwright-report
+          - web/test-results
+
+  - name: sharded run (4-way matrix)
+    description: >
+      Spread tests across four parallel jobs via a matrix + the
+      SHARD_INDEX env injected by the matrix expansion. The
+      pipeline matrix is the idiomatic way to fan shards out;
+      each job picks its own slice via ${SHARD_INDEX}/4.
+    yaml: |
+      parallel:
+        matrix:
+          - SHARD_INDEX: ["1", "2", "3", "4"]
+      uses: gocdnext/playwright@v1
+      with:
+        working-dir: web
+        project: chromium
+        shard: "${SHARD_INDEX}/4"
+      test_reports:
+        - web/test-results/junit.xml
+
+  - name: reuse warmed node_modules
+    description: >
+      Prior job in the same pipeline installed deps via
+      gocdnext/node + `cache:`. Skip the install step here
+      since node_modules is already on disk.
+    yaml: |
+      cache:
+        - key: pnpm-store-${CI_COMMIT_BRANCH}
+          paths: [web/.pnpm-store, web/node_modules]
+      uses: gocdnext/playwright@v1
+      with:
+        working-dir: web
+        install-deps: "false"
+        project: chromium
+      test_reports:
+        - web/test-results/junit.xml

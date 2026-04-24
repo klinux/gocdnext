@@ -238,7 +238,7 @@ Entradas da decisão:
 
 ## Plugin catalog
 
-### Shipped (34)
+### Shipped (35)
 
 - **build**: `node`, `go`, `maven`, `gradle`, `python`, `rust`.
 - **container**: `docker`, `kaniko`, `buildx`, `docker-push`.
@@ -248,7 +248,7 @@ Entradas da decisão:
 - **registry**: `nexus`, `artifactory`, `s3`, `helm-push`.
 - **release**: `github-release`, `tag`, `release-notes`.
 - **notifications**: `slack`, `discord`, `email`, `teams`, `matrix`.
-- **quality**: `codecov`, `coveralls`, `lighthouse-ci`.
+- **quality**: `codecov`, `coveralls`, `lighthouse-ci`, `playwright`.
 
 Notas de design:
 - Plugins de linguagem (node/go/maven/gradle/python/rust) já
