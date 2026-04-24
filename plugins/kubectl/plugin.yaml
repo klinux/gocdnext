@@ -1,0 +1,26 @@
+name: kubectl
+description: >
+  Run any `kubectl` subcommand against a cluster — apply, rollout
+  status, scale, get, delete, etc. Kubeconfig comes from the
+  optional `kubeconfig` input (path under the workspace OR
+  inline YAML OR base64-encoded YAML); leave it empty when the
+  agent runs in-cluster and should use its service account.
+
+inputs:
+  command:
+    required: true
+    description: >
+      kubectl subcommand + args, word-split. Examples: "apply -f k8s/",
+      "rollout status deploy/api -n prod", "get pods -l app=api -o wide".
+  kubeconfig:
+    required: false
+    description: >
+      Kubeconfig source. Accepts a path relative to the workspace,
+      a raw YAML blob, or a base64-encoded YAML blob — auto-detected.
+      Empty = use the agent's in-cluster service account.
+  namespace:
+    required: false
+    description: >
+      Default namespace for the command (equivalent to `-n`).
+      Commands that already specify `-n` override this at their own
+      position in the arg list.

@@ -1,0 +1,51 @@
+name: docker
+description: >
+  Build + push a container image. Pairs with `docker: true` on
+  the job so the agent exposes a Docker daemon (socket mount on
+  Shell/Docker engines, DinD sidecar on Kubernetes). Registry
+  login is done per-run from username/password inputs — pipe
+  them from `secrets:` so the plaintext never lands in a log.
+
+inputs:
+  image:
+    required: true
+    description: >
+      Target image repo without a tag, e.g. "ghcr.io/org/app".
+      Tags come from the `tags` input.
+  tags:
+    required: false
+    default: latest
+    description: >
+      Comma- or space-separated tag list. "latest, v1" builds
+      both in one pass so layers aren't re-unpacked per tag.
+  dockerfile:
+    required: false
+    default: Dockerfile
+    description: Path to the Dockerfile, relative to the build context.
+  context:
+    required: false
+    default: "."
+    description: Build context directory, relative to the workspace.
+  build-args:
+    required: false
+    description: >
+      KEY=VALUE list (comma- or newline-separated) forwarded as
+      `--build-arg` to `docker build`.
+  push:
+    required: false
+    default: "true"
+    description: Set to "false" to build-only (useful on PR previews).
+  registry:
+    required: false
+    description: >
+      Registry hostname for login. Defaults to the hostname
+      prefix of `image` up to the first "/". Irrelevant when
+      `username` is empty (no login, anonymous push or build-only).
+  username:
+    required: false
+    description: Registry username. Empty = anonymous (no login).
+  password:
+    required: false
+    description: >
+      Registry token/password. Populate via the job's
+      `secrets:` list so the plaintext stays out of the log.

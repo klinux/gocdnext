@@ -1,0 +1,25 @@
+name: slack
+description: >
+  Post a notification to a Slack incoming webhook. Defaults to a
+  concise "pipeline #N → status (sha)" line using the CI_* env
+  vars the agent injects; override via `template:` for richer
+  copy. Minimal by design — the richer "blocks" shape lands if
+  operators ask.
+
+inputs:
+  webhook:
+    required: true
+    description: >
+      Slack incoming webhook URL. Populate via the job's
+      `secrets:` list so the token-bearing URL stays out of logs.
+  channel:
+    required: false
+    description: >
+      Override the webhook's default channel (e.g. "#deploys").
+      Empty = use whatever the webhook's Slack config routes to.
+  template:
+    required: false
+    description: >
+      Message body. Defaults to a short status line built from
+      CI_PIPELINE, CI_RUN_COUNTER, CI_PIPELINE_STATUS and
+      CI_COMMIT_SHA. Supports Slack mrkdwn.

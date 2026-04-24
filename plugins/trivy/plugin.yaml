@@ -1,0 +1,50 @@
+name: trivy
+description: >
+  Scan images, filesystems, git repos, or Kubernetes manifests
+  for CVEs and leaked secrets using Aqua's Trivy. By default
+  fails the job on HIGH/CRITICAL findings that have a fix
+  available — tune severity + exit_code to make the scan
+  advisory instead of blocking.
+
+inputs:
+  scan-type:
+    required: false
+    default: fs
+    description: >
+      What to scan: "image", "fs", "repo", or "config".
+      Defaults to "fs" (the workspace tree).
+  target:
+    required: false
+    description: >
+      What to point the scan at. Required for image + repo;
+      defaults to `/workspace` for fs + config.
+  severity:
+    required: false
+    default: HIGH,CRITICAL
+    description: >
+      Comma-separated severity filter. Anything below the
+      threshold is ignored for exit-code purposes but still
+      appears in the report.
+  exit-code:
+    required: false
+    default: "1"
+    description: >
+      Exit code when the scan finds anything in the severity
+      filter. Set to "0" to make the scan advisory.
+  ignore-unfixed:
+    required: false
+    default: "true"
+    description: >
+      When "true", CVEs without an upstream fix are skipped —
+      reduces noise on libraries you can't patch anyway.
+  format:
+    required: false
+    default: table
+    description: >
+      Report format — table (human), json, sarif, or template.
+  output:
+    required: false
+    description: >
+      Path (under the workspace) to write the report to.
+      Pairs well with `artifacts.paths:` to attach the report
+      to the run.
