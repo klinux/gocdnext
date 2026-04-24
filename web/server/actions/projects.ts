@@ -17,6 +17,11 @@ const scmSourceSchema = z.object({
   url: z.string().url(),
   default_branch: z.string().min(1).optional(),
   webhook_secret: z.string().max(256).optional(),
+  // auth_ref is the provider credential — PAT for GitLab,
+  // user:app_password or OAuth token for Bitbucket, not used
+  // for GitHub (App-based). Empty string stripped upstream so
+  // the backend's COALESCE preserves an existing value.
+  auth_ref: z.string().max(512).optional(),
 });
 
 // Config path shape: same rule as the backend — letters, digits,

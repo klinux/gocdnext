@@ -657,10 +657,11 @@ type Querier interface {
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
 	// Bind a project to its SCM source. updated_at only bumps when
 	// something meaningful changes, so idempotent re-applies don't
-	// spam the timeline. webhook_secret is BYTEA ciphertext (sealed
-	// in the store layer via crypto.Cipher); sending NULL means
-	// "keep the existing ciphertext" so rotation is explicit — a
-	// Plain upsert without a secret doesn't wipe an existing one.
+	// spam the timeline. webhook_secret and auth_ref both use
+	// COALESCE "sticky" semantics: sending NULL means "keep the
+	// existing value" so a re-apply that didn't re-enter the PAT
+	// doesn't wipe the stored one. Rotation is explicit — callers
+	// pass the new value to overwrite.
 	UpsertScmSource(ctx context.Context, arg UpsertScmSourceParams) (UpsertScmSourceRow, error)
 	// Upserts a (project_id, name) -> value_enc pair. updated_at always bumps on
 	// update because the ciphertext changes (random nonce) even for identical

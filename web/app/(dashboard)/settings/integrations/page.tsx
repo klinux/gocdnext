@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { Check, X } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 
+import { ProviderCard } from "@/components/settings/provider-card.client";
 import { VCSIntegrationsAdminView } from "@/components/settings/vcs-integrations.client";
-import { WebhookEndpointRow } from "@/components/settings/webhook-endpoint-row.client";
 import {
   Card,
   CardContent,
@@ -10,7 +10,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { StatusPill } from "@/components/shared/status-pill";
 import {
   getIntegrationsSummary,
   listVCSIntegrations,
@@ -28,149 +27,130 @@ export default async function IntegrationsPage() {
     listVCSIntegrations(),
   ]);
 
-  const wiringRows: { label: string; value: boolean; hint?: string }[] = [
-    {
-      label: "Public base URL",
-      value: summary.public_base_set,
-      hint: "Required for auto-register across every provider.",
-    },
-    {
-      label: "GitHub App",
-      value: summary.github.app_configured,
-      hint: "An App client is active (from env or DB).",
-    },
-    {
-      label: "Checks reporter",
-      value: summary.github.checks_reporter_on,
-      hint: "Posts run status to GitHub Checks API.",
-    },
-    {
-      label: "GitHub auto-register",
-      value: summary.github.auto_register_on,
-      hint: "Installs push webhook on bound GitHub repos.",
-    },
-    {
-      label: "GitLab auto-register",
-      value: summary.gitlab.auto_register_on,
-      hint: "Ready to install hooks; per-project PAT lives on scm_source.",
-    },
-    {
-      label: "Bitbucket auto-register",
-      value: summary.bitbucket.auto_register_on,
-      hint: "Ready to install hooks; per-project App Password lives on scm_source.",
-    },
-  ];
+  const githubTone: "ready" | "partial" | "off" =
+    summary.github.auto_register_on
+      ? "ready"
+      : summary.github.app_configured
+        ? "partial"
+        : "off";
+
+  const gitlabTone: "ready" | "partial" | "off" =
+    summary.public_base_set ? "ready" : "off";
+
+  const bitbucketTone: "ready" | "partial" | "off" =
+    summary.public_base_set ? "ready" : "off";
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Wiring summary</CardTitle>
-          <CardDescription>
-            Which control-plane features are reachable right now. Configure
-            integrations below — the flags refresh on save.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ul className="divide-y">
-            {wiringRows.map((r) => (
-              <li
-                key={r.label}
-                className="flex items-center justify-between py-3"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">{r.label}</p>
-                  {r.hint ? (
-                    <p className="text-xs text-muted-foreground">{r.hint}</p>
-                  ) : null}
-                </div>
-                {r.value ? (
-                  <StatusPill tone="success" icon={Check}>
-                    configured
-                  </StatusPill>
-                ) : (
-                  <StatusPill tone="neutral" icon={X}>
-                    off
-                  </StatusPill>
-                )}
-              </li>
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
+    <div className="space-y-6">
+      {!summary.public_base_set ? (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardHeader className="flex-row items-start gap-3 space-y-0">
+            <AlertCircle className="mt-0.5 size-5 shrink-0 text-amber-500" />
+            <div>
+              <CardTitle className="text-base">
+                Public base URL not configured
+              </CardTitle>
+              <CardDescription className="mt-1">
+                Set{" "}
+                <code className="rounded bg-muted px-1 text-xs">
+                  GOCDNEXT_PUBLIC_BASE
+                </code>{" "}
+                to the URL where this server is reachable from the internet
+                (or from your SCM provider) so auto-register can install push
+                webhooks. Without it, every provider card below stays in
+                read-only mode.
+              </CardDescription>
+            </div>
+          </CardHeader>
+        </Card>
+      ) : null}
 
+      <div>
+        <h3 className="text-sm font-medium text-muted-foreground">
+          SCM providers
+        </h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Bind a repo on a project and gocdnext installs the webhook for you
+          — no paste, no script.
+        </p>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <ProviderCard
+          provider="github"
+          tone={githubTone}
+          statusLabel={
+            githubTone === "ready"
+              ? "auto-register on"
+              : githubTone === "partial"
+                ? "app configured"
+                : "app not configured"
+          }
+          headline="GitHub"
+          description="App-based integration. Install the gocdnext App on your org or repos; no per-project token required."
+          webhookEndpoint={summary.github.webhook_endpoint}
+          authSummary={
+            <>
+              Uses an installed GitHub App. Configure the app credentials
+              below. Per-project <code>auth_ref</code> is only needed for
+              fine-grained PAT fallback.
+            </>
+          }
+        />
+
+        <ProviderCard
+          provider="gitlab"
+          tone={gitlabTone}
+          statusLabel={gitlabTone === "ready" ? "ready" : "needs public base"}
+          headline="GitLab"
+          description="PAT-based. Works with gitlab.com and self-hosted — the clone URL determines the API host."
+          webhookEndpoint={summary.gitlab.webhook_endpoint}
+          authSummary={
+            <>
+              Per-project Personal Access Token pasted as{" "}
+              <code>auth_ref</code> at repo bind time. Required scope:{" "}
+              <code className="rounded bg-muted px-1">api</code>{" "}
+              (<em>not</em>{" "}
+              <code className="rounded bg-muted px-1">read_api</code> —
+              hook-write needs the broader scope).
+            </>
+          }
+        />
+
+        <ProviderCard
+          provider="bitbucket"
+          tone={bitbucketTone}
+          statusLabel={bitbucketTone === "ready" ? "ready" : "needs public base"}
+          headline="Bitbucket Cloud"
+          description="OAuth token or user:app_password. Bitbucket Server (self-hosted) not supported yet."
+          webhookEndpoint={summary.bitbucket.webhook_endpoint}
+          authSummary={
+            <>
+              Per-project credential as <code>auth_ref</code>: either an OAuth
+              access token or{" "}
+              <code className="rounded bg-muted px-1">user:app_password</code>.
+              Required App Password scopes:{" "}
+              <code className="rounded bg-muted px-1">webhooks</code> +{" "}
+              <code className="rounded bg-muted px-1">repositories:read</code>.
+            </>
+          }
+        />
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium text-muted-foreground">
+          GitHub App credentials
+        </h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Manage installed Apps below. Only GitHub uses this tab — GitLab /
+          Bitbucket auth lives per-project on the scm_source binding.
+        </p>
+      </div>
       <VCSIntegrationsAdminView
         integrations={vcs.integrations}
         active={vcs.active}
       />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">GitLab</CardTitle>
-          <CardDescription>
-            Bind a GitLab project to a gocdnext project, paste a Personal
-            Access Token with <code className="rounded bg-muted px-1 text-xs">
-              api
-            </code>{" "}
-            scope as the auth_ref, and gocdnext installs the push webhook for
-            you. Self-hosted GitLab works the same way — the auto-register
-            call follows the clone URL back to the host.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div>
-            <p className="mb-1 text-xs font-medium text-muted-foreground">
-              Webhook endpoint
-            </p>
-            <WebhookEndpointRow endpoint={summary.gitlab.webhook_endpoint} />
-          </div>
-          <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs">
-            <div>
-              <p className="font-medium">Required PAT scope</p>
-              <p className="mt-0.5 text-muted-foreground">
-                <code className="rounded bg-muted px-1">api</code> (not{" "}
-                <code className="rounded bg-muted px-1">read_api</code> —
-                we need hook-write access).
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Bitbucket Cloud</CardTitle>
-          <CardDescription>
-            Paste either a Bitbucket OAuth access token or a{" "}
-            <code className="rounded bg-muted px-1 text-xs">
-              user:app_password
-            </code>{" "}
-            as the auth_ref. gocdnext installs an HMAC-signed push webhook at
-            bind time.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div>
-            <p className="mb-1 text-xs font-medium text-muted-foreground">
-              Webhook endpoint
-            </p>
-            <WebhookEndpointRow endpoint={summary.bitbucket.webhook_endpoint} />
-          </div>
-          <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs">
-            <div>
-              <p className="font-medium">Required App Password scope</p>
-              <p className="mt-0.5 text-muted-foreground">
-                <code className="rounded bg-muted px-1">webhooks</code>{" "}
-                (read + write) plus{" "}
-                <code className="rounded bg-muted px-1">
-                  repositories:read
-                </code>{" "}
-                to fetch pipeline YAML.
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
+

@@ -64,6 +64,11 @@ export function NewProjectDialog() {
   const [scmURL, setScmURL] = useState("");
   const [scmBranch, setScmBranch] = useState("main");
   const [scmSecret, setScmSecret] = useState("");
+  // PAT (GitLab) / App Password (Bitbucket) / OAuth token.
+  // Optional for GitHub when the gocdnext App is installed;
+  // required for GitLab + Bitbucket or we can't fetch
+  // .gocdnext/ at bind time.
+  const [scmAuthRef, setScmAuthRef] = useState("");
 
   // Template tab.
   const [templateID, setTemplateID] = useState(pipelineTemplates[0]!.id);
@@ -90,6 +95,7 @@ export function NewProjectDialog() {
     setScmURL("");
     setScmBranch("main");
     setScmSecret("");
+    setScmAuthRef("");
     setTemplateID(pipelineTemplates[0]!.id);
     setTemplateYAML(pipelineTemplates[0]!.yaml);
     setTemplateTouched(false);
@@ -133,11 +139,13 @@ export function NewProjectDialog() {
         config_path: configPath.trim() || undefined,
       };
       if (mode === "repo") {
+        const trimmedAuth = scmAuthRef.trim();
         input.scm_source = {
           provider: scmProvider,
           url: scmURL.trim(),
           default_branch: scmBranch.trim() || "main",
           webhook_secret: scmSecret.trim() || undefined,
+          ...(trimmedAuth ? { auth_ref: trimmedAuth } : {}),
         };
       } else if (mode === "template") {
         const tpl = pipelineTemplates.find((t) => t.id === templateID);
@@ -338,7 +346,33 @@ export function NewProjectDialog() {
                   <Input
                     value={scmSecret}
                     onValueChange={setScmSecret}
-                    placeholder="same value you'll configure in the provider UI"
+                    placeholder="auto-generated if left empty"
+                  />
+                </Field>
+                <Field
+                  label={
+                    scmProvider === "github"
+                      ? "Auth token (optional — public repos don't need one)"
+                      : scmProvider === "gitlab"
+                      ? "Personal Access Token (api scope)"
+                      : scmProvider === "bitbucket"
+                      ? "OAuth token or user:app_password (webhooks scope)"
+                      : "Auth ref (optional)"
+                  }
+                >
+                  <Input
+                    type="password"
+                    value={scmAuthRef}
+                    onValueChange={setScmAuthRef}
+                    placeholder={
+                      scmProvider === "github"
+                        ? "glpat-... or ghp_..."
+                        : scmProvider === "gitlab"
+                        ? "glpat-..."
+                        : scmProvider === "bitbucket"
+                        ? "user:app_password or OAuth token"
+                        : ""
+                    }
                   />
                 </Field>
               </TabsContent>

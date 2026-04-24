@@ -75,6 +75,7 @@ export function EditProjectDialog({ project, scmSource }: Props) {
         config_path: configPath.trim() || undefined,
       };
       if (bindRepo) {
+        const trimmedAuth = authRef.trim();
         input.scm_source = {
           provider,
           url: url.trim(),
@@ -82,6 +83,10 @@ export function EditProjectDialog({ project, scmSource }: Props) {
           // webhook_secret omitted on purpose — preserves the
           // sealed ciphertext already in the DB. Rotation is a
           // separate explicit action.
+          // auth_ref: only send when non-empty so the backend's
+          // COALESCE keeps the previously-stored PAT on edits
+          // that don't re-enter credentials.
+          ...(trimmedAuth ? { auth_ref: trimmedAuth } : {}),
         };
       }
 

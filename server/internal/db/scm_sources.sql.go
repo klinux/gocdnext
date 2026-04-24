@@ -266,14 +266,15 @@ ON CONFLICT (project_id) DO UPDATE SET
     url            = EXCLUDED.url,
     default_branch = EXCLUDED.default_branch,
     webhook_secret = COALESCE(EXCLUDED.webhook_secret, scm_sources.webhook_secret),
-    auth_ref       = EXCLUDED.auth_ref,
+    auth_ref       = COALESCE(EXCLUDED.auth_ref, scm_sources.auth_ref),
     updated_at = CASE
         WHEN scm_sources.provider = EXCLUDED.provider
              AND scm_sources.url = EXCLUDED.url
              AND scm_sources.default_branch = EXCLUDED.default_branch
              AND (EXCLUDED.webhook_secret IS NULL
                   OR scm_sources.webhook_secret IS NOT DISTINCT FROM EXCLUDED.webhook_secret)
-             AND scm_sources.auth_ref IS NOT DISTINCT FROM EXCLUDED.auth_ref
+             AND (EXCLUDED.auth_ref IS NULL
+                  OR scm_sources.auth_ref IS NOT DISTINCT FROM EXCLUDED.auth_ref)
         THEN scm_sources.updated_at
         ELSE NOW()
     END
@@ -306,10 +307,11 @@ type UpsertScmSourceRow struct {
 
 // Bind a project to its SCM source. updated_at only bumps when
 // something meaningful changes, so idempotent re-applies don't
-// spam the timeline. webhook_secret is BYTEA ciphertext (sealed
-// in the store layer via crypto.Cipher); sending NULL means
-// "keep the existing ciphertext" so rotation is explicit — a
-// Plain upsert without a secret doesn't wipe an existing one.
+// spam the timeline. webhook_secret and auth_ref both use
+// COALESCE "sticky" semantics: sending NULL means "keep the
+// existing value" so a re-apply that didn't re-enter the PAT
+// doesn't wipe the stored one. Rotation is explicit — callers
+// pass the new value to overwrite.
 func (q *Queries) UpsertScmSource(ctx context.Context, arg UpsertScmSourceParams) (UpsertScmSourceRow, error) {
 	row := q.db.QueryRow(ctx, upsertScmSource,
 		arg.ProjectID,
