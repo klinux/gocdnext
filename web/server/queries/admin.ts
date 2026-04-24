@@ -13,6 +13,7 @@ import type {
   GitHubIntegration,
   IntegrationsSummary,
   RetentionSnapshot,
+  SCMCredentialsList,
   SecretsList,
   UsersList,
   VCSIntegrationsAdmin,
@@ -56,6 +57,10 @@ export async function getGitHubIntegration(): Promise<GitHubIntegration> {
 
 export async function getIntegrationsSummary(): Promise<IntegrationsSummary> {
   return readJSON<IntegrationsSummary>("/api/v1/admin/integrations");
+}
+
+export async function listSCMCredentials(): Promise<SCMCredentialsList> {
+  return readJSON<SCMCredentialsList>("/api/v1/admin/scm-credentials");
 }
 
 export type WebhookDeliveriesQuery = {

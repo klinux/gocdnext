@@ -214,9 +214,16 @@ func (h *Handler) reconcileGitLab(
 	plaintextSecret string, res *HookRegistration,
 ) *HookRegistration {
 	cfg := h.autoRegister
-	if applied.AuthRef == "" {
+	// Per-project auth_ref wins; fall back to the org-level
+	// scm_credentials row matching the repo's host. Same
+	// resolver the fetcher + poll worker consult — three
+	// subsystems agree on which token speaks for the repo.
+	authRef, apiBase := h.store.ResolveAuthRef(
+		ctx, "gitlab", applied.URL, applied.AuthRef,
+	)
+	if authRef == "" {
 		res.Status = "skipped_no_install"
-		res.Error = "scm_source has no auth_ref (GitLab auto-register needs a PAT with api scope)"
+		res.Error = "no credential available (bind a per-project PAT or add a GitLab credential in /settings/integrations)"
 		return res
 	}
 	path, err := gitlab.ParseRepoURL(applied.URL)
@@ -226,12 +233,9 @@ func (h *Handler) reconcileGitLab(
 		return res
 	}
 	glCfg := gitlab.Config{
+		APIBase:     apiBase, // empty = gitlab.com default
 		ProjectPath: path,
-		Token:       applied.AuthRef,
-		// APIBase stays default (gitlab.com) — self-hosted would
-		// need a per-source override, parked until we grow a UI
-		// for it. Parsing applied.URL lets us detect self-hosted
-		// and wire an override here if needed.
+		Token:       authRef,
 	}
 	client := autoHTTPClient()
 
@@ -288,9 +292,12 @@ func (h *Handler) reconcileBitbucket(
 	plaintextSecret string, res *HookRegistration,
 ) *HookRegistration {
 	cfg := h.autoRegister
-	if applied.AuthRef == "" {
+	authRef, apiBase := h.store.ResolveAuthRef(
+		ctx, "bitbucket", applied.URL, applied.AuthRef,
+	)
+	if authRef == "" {
 		res.Status = "skipped_no_install"
-		res.Error = "scm_source has no auth_ref (Bitbucket auto-register needs a webhooks-scoped token)"
+		res.Error = "no credential available (bind a per-project token or add a Bitbucket credential in /settings/integrations)"
 		return res
 	}
 	ws, repo, err := bitbucket.ParseRepoURL(applied.URL)
@@ -300,17 +307,18 @@ func (h *Handler) reconcileBitbucket(
 		return res
 	}
 	bbCfg := bitbucket.Config{
+		APIBase:   apiBase,
 		Workspace: ws,
 		RepoSlug:  repo,
 	}
 	// auth_ref convention for Bitbucket: "user:app_password" →
 	// Basic; anything else → Bearer. Mirrors how the Fetcher
 	// splits it when scm_source is consulted for reads.
-	if idx := splitBasic(applied.AuthRef); idx > 0 {
-		bbCfg.Username = applied.AuthRef[:idx]
-		bbCfg.AppPassword = applied.AuthRef[idx+1:]
+	if idx := splitBasic(authRef); idx > 0 {
+		bbCfg.Username = authRef[:idx]
+		bbCfg.AppPassword = authRef[idx+1:]
 	} else {
-		bbCfg.Token = applied.AuthRef
+		bbCfg.Token = authRef
 	}
 	client := autoHTTPClient()
 

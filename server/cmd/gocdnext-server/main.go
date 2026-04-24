@@ -158,10 +158,13 @@ func main() {
 	// paths fire close together.
 	// MultiFetcher dispatches to GitHub / GitLab / Bitbucket by
 // scm.Provider, so the same instance covers every provider the
-// webhook + apply paths will ever see. The local variable name
-// stays "gitHubFetcher" to minimise downstream churn; it's a
-// MultiFetcher now but backwards-compat at the call sites.
-gitHubFetcher := &configsync.MultiFetcher{}
+// webhook + apply paths will ever see. Wires the store as the
+// CredentialResolver so org-level scm_credentials (set in
+// /settings/integrations) fill in when a per-project auth_ref
+// is empty. The local variable name stays "gitHubFetcher" to
+// minimise downstream churn; it's a MultiFetcher now but
+// backwards-compat at the call sites.
+gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 
 	webhookHandler := webhook.NewHandler(st, logger).
 		WithConfigFetcher(gitHubFetcher).
@@ -417,6 +420,9 @@ gitHubFetcher := &configsync.MultiFetcher{}
 		p.Get("/api/v1/admin/users", adminHandler.Users)
 		p.Put("/api/v1/admin/users/{id}/role", adminHandler.SetUserRole)
 		p.Get("/api/v1/admin/audit", adminHandler.Audit)
+		p.Get("/api/v1/admin/scm-credentials", adminHandler.SCMCredentials)
+		p.Post("/api/v1/admin/scm-credentials", adminHandler.UpsertSCMCredential)
+		p.Delete("/api/v1/admin/scm-credentials/{id}", adminHandler.DeleteSCMCredential)
 		p.Get("/api/v1/admin/groups", adminHandler.Groups)
 		p.Post("/api/v1/admin/groups", adminHandler.CreateGroup)
 		p.Put("/api/v1/admin/groups/{id}", adminHandler.UpdateGroup)

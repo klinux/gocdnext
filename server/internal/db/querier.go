@@ -115,6 +115,7 @@ type Querier interface {
 	// scm_sources, etc.), so this single statement is enough.
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
+	DeleteSCMCredential(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
 	// Called before an agent retry re-ingests a rerun's results, so
 	// the UI doesn't show a mix of old and new outcomes. The FK's
@@ -245,6 +246,9 @@ type Querier interface {
 	// response but avoids a per-run "did this pipeline have
 	// notifications?" lookup.
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
+	// Resolver hot path. Nil rows silently fall through to
+	// scm_source.auth_ref at the caller.
+	GetSCMCredentialByProviderHost(ctx context.Context, arg GetSCMCredentialByProviderHostParams) (ScmCredential, error)
 	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (GetScmSourceByProjectRow, error)
 	// Webhook-handler path: pulls the sealed secret + the scm_source
 	// id for a given clone_url so HandleGitHub can verify HMAC with
@@ -469,6 +473,10 @@ type Querier interface {
 	// so the same query drives the dashboard widget (no filters) and
 	// the /runs page (every filter the UI exposes).
 	ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) ([]ListRunsGlobalRow, error)
+	// Admin UI: list every org-level credential. Ciphertext comes
+	// along because admins who can read this table already hold the
+	// keys; the decrypt step lives in the store layer.
+	ListSCMCredentials(ctx context.Context) ([]ScmCredential, error)
 	// Lists names + timestamps only — values never leave the DB without going
 	// through GetSecretValuesByProject below.
 	ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error)
@@ -655,6 +663,10 @@ type Querier interface {
 	// that default naturally via COALESCE on the column-side default.
 	// Callers that DO set it override via ON CONFLICT.
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
+	// Insert-or-rotate. ON CONFLICT flips auth_ref_encrypted + api_base
+	// + display_name but preserves id + created_at + created_by so
+	// audit trails point to the original provisioning.
+	UpsertSCMCredential(ctx context.Context, arg UpsertSCMCredentialParams) (UpsertSCMCredentialRow, error)
 	// Bind a project to its SCM source. updated_at only bumps when
 	// something meaningful changes, so idempotent re-applies don't
 	// spam the timeline. webhook_secret and auth_ref both use

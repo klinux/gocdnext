@@ -537,6 +537,21 @@ export type GitHubIntegration = {
   auto_register_on: boolean;
 };
 
+export type SCMCredential = {
+  id: string;
+  provider: "gitlab" | "bitbucket";
+  host: string;
+  api_base?: string;
+  display_name?: string;
+  auth_ref_preview?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SCMCredentialsList = {
+  credentials: SCMCredential[];
+};
+
 export type IntegrationsSummary = {
   public_base: string;
   public_base_set: boolean;

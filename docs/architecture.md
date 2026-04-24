@@ -86,6 +86,25 @@ which bubbles into the apply response as
 `webhooks: [{ status: "failed", error: "..." }]` — the operator sees
 exactly which credential to rotate.
 
+### Credential resolution
+
+Three layers, in priority order:
+
+1. **Per-project `scm_source.auth_ref`** — pasted on the project dialog at
+   bind time. Scoped to one repo.
+2. **Org-level `scm_credentials`** — keyed by `(provider, host)`. Admins add
+   them at `/settings/integrations`; all projects whose clone URL maps to
+   the same host share the token. Stored as AES-GCM ciphertext alongside
+   an optional `api_base` override for self-hosted GitLab / Bitbucket
+   Server.
+3. **Unauthenticated** — when neither layer supplies a token, the fetcher
+   calls the provider anonymously. Public repos work; private ones 401.
+
+The `configsync.MultiFetcher` consults the resolver before every call, so
+a pipeline poll, a webhook drift re-apply, and the auto-register path all
+agree on which token speaks for a given repo. GitHub has its own App-based
+credential system in `vcs_integrations` and skips this table entirely.
+
 ## Why these choices
 
 - **Postgres LISTEN/NOTIFY** over Kafka/NATS for MVP: 1 less dep, fine for

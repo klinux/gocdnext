@@ -44,6 +44,8 @@ const (
 	AuditActionGroupDelete         = "group.delete"
 	AuditActionGroupMemberAdd      = "group.member_add"
 	AuditActionGroupMemberRemove   = "group.member_remove"
+	AuditActionSCMCredentialSet    = "scm_credential.set"
+	AuditActionSCMCredentialDelete = "scm_credential.delete"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata

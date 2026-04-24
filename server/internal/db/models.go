@@ -243,6 +243,18 @@ type Run struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type ScmCredential struct {
+	ID               pgtype.UUID
+	Provider         string
+	Host             string
+	ApiBase          string
+	DisplayName      string
+	AuthRefEncrypted []byte
+	CreatedBy        pgtype.UUID
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
 type ScmSource struct {
 	ID                 pgtype.UUID
 	ProjectID          pgtype.UUID

@@ -2,16 +2,17 @@ import type { Metadata } from "next";
 import { AlertCircle } from "lucide-react";
 
 import { ProviderCard } from "@/components/settings/provider-card.client";
+import { SCMCredentialManager } from "@/components/settings/scm-credential-manager.client";
 import { VCSIntegrationsAdminView } from "@/components/settings/vcs-integrations.client";
 import {
   Card,
-  CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import {
   getIntegrationsSummary,
+  listSCMCredentials,
   listVCSIntegrations,
 } from "@/server/queries/admin";
 
@@ -22,10 +23,16 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
-  const [summary, vcs] = await Promise.all([
+  const [summary, vcs, creds] = await Promise.all([
     getIntegrationsSummary(),
     listVCSIntegrations(),
+    listSCMCredentials().catch(() => ({ credentials: [] })),
   ]);
+
+  const gitlabCreds = creds.credentials.filter((c) => c.provider === "gitlab");
+  const bitbucketCreds = creds.credentials.filter(
+    (c) => c.provider === "bitbucket",
+  );
 
   const githubTone: "ready" | "partial" | "off" =
     summary.github.auto_register_on
@@ -107,15 +114,21 @@ export default async function IntegrationsPage() {
           webhookEndpoint={summary.gitlab.webhook_endpoint}
           authSummary={
             <>
-              Per-project Personal Access Token pasted as{" "}
-              <code>auth_ref</code> at repo bind time. Required scope:{" "}
-              <code className="rounded bg-muted px-1">api</code>{" "}
-              (<em>not</em>{" "}
-              <code className="rounded bg-muted px-1">read_api</code> —
-              hook-write needs the broader scope).
+              Per-project or org-level Personal Access Token with scope{" "}
+              <code className="rounded bg-muted px-1">api</code>. Org-level
+              credentials below cover every project whose clone URL matches
+              the host.
             </>
           }
-        />
+        >
+          <SCMCredentialManager
+            provider="gitlab"
+            credentials={gitlabCreds}
+            defaultHost="gitlab.com"
+            apiBasePlaceholder="https://gitlab.internal/api/v4"
+            authHint="Personal Access Token"
+          />
+        </ProviderCard>
 
         <ProviderCard
           provider="bitbucket"
@@ -126,15 +139,22 @@ export default async function IntegrationsPage() {
           webhookEndpoint={summary.bitbucket.webhook_endpoint}
           authSummary={
             <>
-              Per-project credential as <code>auth_ref</code>: either an OAuth
-              access token or{" "}
+              OAuth access token or{" "}
               <code className="rounded bg-muted px-1">user:app_password</code>.
               Required App Password scopes:{" "}
               <code className="rounded bg-muted px-1">webhooks</code> +{" "}
               <code className="rounded bg-muted px-1">repositories:read</code>.
             </>
           }
-        />
+        >
+          <SCMCredentialManager
+            provider="bitbucket"
+            credentials={bitbucketCreds}
+            defaultHost="bitbucket.org"
+            apiBasePlaceholder="(leave empty for bitbucket.org)"
+            authHint="OAuth token or user:app_password"
+          />
+        </ProviderCard>
       </div>
 
       <div>
