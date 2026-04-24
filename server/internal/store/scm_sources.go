@@ -34,8 +34,14 @@ type SCMSource struct {
 	AuthRef            string
 	LastSyncedAt       *time.Time
 	LastSyncedRevision string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// PollInterval is the project-level fallback applied to the
+	// synthesized implicit material. Per-material poll_interval
+	// on a declared git material wins; this is the default used
+	// when a project wants "poll every 5m regardless of what any
+	// pipeline declared". Zero disables.
+	PollInterval time.Duration
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // ProjectInfo is the thin shape used by drift re-apply to
@@ -70,6 +76,7 @@ func (s *Store) FindSCMSourceByURL(ctx context.Context, rawURL string) (SCMSourc
 		AuthRef:            stringValue(row.AuthRef),
 		LastSyncedAt:       pgTimePtr(row.LastSyncedAt),
 		LastSyncedRevision: stringValue(row.LastSyncedRevision),
+		PollInterval:       time.Duration(row.PollIntervalNs),
 		CreatedAt:          row.CreatedAt.Time,
 		UpdatedAt:          row.UpdatedAt.Time,
 	}, nil
@@ -97,9 +104,26 @@ func (s *Store) FindSCMSourceByProjectSlug(ctx context.Context, slug string) (SC
 		AuthRef:            stringValue(row.AuthRef),
 		LastSyncedAt:       pgTimePtr(row.LastSyncedAt),
 		LastSyncedRevision: stringValue(row.LastSyncedRevision),
+		PollInterval:       time.Duration(row.PollIntervalNs),
 		CreatedAt:          row.CreatedAt.Time,
 		UpdatedAt:          row.UpdatedAt.Time,
 	}, nil
+}
+
+// UpdateSCMSourcePollInterval sets the project-level poll fallback.
+// Zero disables polling for the implicit project material. Material
+// -level poll_interval in a declared git material overrides this.
+func (s *Store) UpdateSCMSourcePollInterval(ctx context.Context, id uuid.UUID, interval time.Duration) error {
+	if interval < 0 {
+		return fmt.Errorf("store: negative poll interval")
+	}
+	if err := s.q.UpdateScmSourcePollInterval(ctx, db.UpdateScmSourcePollIntervalParams{
+		ID:             pgUUID(id),
+		PollIntervalNs: int64(interval),
+	}); err != nil {
+		return fmt.Errorf("store: update scm_source poll_interval: %w", err)
+	}
+	return nil
 }
 
 // SCMSourceWebhookAuth is the slim shape the webhook handler

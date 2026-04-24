@@ -4,11 +4,46 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
+
+// Poll interval bounds on the git material. 1-minute floor keeps
+// the poll worker from flooding provider APIs (GitHub 5k req/hr
+// PAT limit divided by N materials). 24h ceiling is long enough
+// for "daily sanity" polls but short enough that a misconfigured
+// never-firing material gets noticed quickly. Zero means disabled.
+const (
+	MinPollInterval = time.Minute
+	MaxPollInterval = 24 * time.Hour
+)
+
+// ParsePollInterval returns (duration, error) for a YAML-supplied
+// poll_interval string. Empty is (0, nil) — caller treats zero as
+// "polling disabled". Format is Go's time.ParseDuration ("5m",
+// "1h30m", "2h"). Out-of-bounds values return an error so invalid
+// config never silently becomes a runaway loop or effectively-off
+// misconfiguration.
+func ParsePollInterval(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("poll_interval: parse %q: %w", raw, err)
+	}
+	if d < MinPollInterval {
+		return 0, fmt.Errorf("poll_interval %q is below minimum %s", raw, MinPollInterval)
+	}
+	if d > MaxPollInterval {
+		return 0, fmt.Errorf("poll_interval %q exceeds maximum %s", raw, MaxPollInterval)
+	}
+	return d, nil
+}
 
 // Parse reads a single pipeline file and returns a domain.Pipeline.
 // The pipelineName argument is used verbatim (caller is responsible for naming).
@@ -142,6 +177,10 @@ func toMaterial(m MaterialSpec) (domain.Material, error) {
 	switch {
 	case m.Git != nil:
 		branch := defaultStr(m.Git.Branch, "main")
+		poll, err := ParsePollInterval(m.Git.PollInterval)
+		if err != nil {
+			return domain.Material{}, err
+		}
 		return domain.Material{
 			Type:        domain.MaterialGit,
 			Fingerprint: domain.GitFingerprint(m.Git.URL, branch),
@@ -152,6 +191,7 @@ func toMaterial(m MaterialSpec) (domain.Material, error) {
 				Events:              defaultEvents(m.Git.On),
 				AutoRegisterWebhook: m.Git.AutoRegisterWebhook,
 				SecretRef:           m.Git.SecretRef,
+				PollInterval:        poll,
 			},
 		}, nil
 	case m.Upstream != nil:

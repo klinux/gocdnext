@@ -78,6 +78,9 @@ export type ProjectSCMInfo = {
   url: string;
   default_branch: string;
   auth_ref?: string;
+  // poll_interval_ns is the project-level fallback applied to
+  // the synthesized implicit material. 0 disables.
+  poll_interval_ns?: number;
 };
 
 export type RunSummary = {

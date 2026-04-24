@@ -34,6 +34,7 @@ const (
 	AuditActionUserRoleChange      = "user.role_change"
 	AuditActionWebhookSecretRotate = "webhook_secret.rotate"
 	AuditActionProjectNotifsSet    = "project_notifications.set"
+	AuditActionProjectPollSet      = "project_poll.set"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata

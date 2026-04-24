@@ -14,7 +14,7 @@ import (
 const findScmSourceBySlug = `-- name: FindScmSourceBySlug :one
 SELECT s.id, s.project_id, s.provider, s.url, s.default_branch,
        s.auth_ref, s.last_synced_at, s.last_synced_revision,
-       s.created_at, s.updated_at
+       s.poll_interval_ns, s.created_at, s.updated_at
 FROM scm_sources s
 JOIN projects p ON p.id = s.project_id
 WHERE p.slug = $1
@@ -30,6 +30,7 @@ type FindScmSourceBySlugRow struct {
 	AuthRef            *string
 	LastSyncedAt       pgtype.Timestamptz
 	LastSyncedRevision *string
+	PollIntervalNs     int64
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
 }
@@ -48,6 +49,7 @@ func (q *Queries) FindScmSourceBySlug(ctx context.Context, slug string) (FindScm
 		&i.AuthRef,
 		&i.LastSyncedAt,
 		&i.LastSyncedRevision,
+		&i.PollIntervalNs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -56,7 +58,8 @@ func (q *Queries) FindScmSourceBySlug(ctx context.Context, slug string) (FindScm
 
 const findScmSourceByURL = `-- name: FindScmSourceByURL :one
 SELECT id, project_id, provider, url, default_branch, auth_ref,
-       last_synced_at, last_synced_revision, created_at, updated_at
+       last_synced_at, last_synced_revision, poll_interval_ns,
+       created_at, updated_at
 FROM scm_sources
 WHERE url = $1
 LIMIT 1
@@ -71,6 +74,7 @@ type FindScmSourceByURLRow struct {
 	AuthRef            *string
 	LastSyncedAt       pgtype.Timestamptz
 	LastSyncedRevision *string
+	PollIntervalNs     int64
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
 }
@@ -91,6 +95,7 @@ func (q *Queries) FindScmSourceByURL(ctx context.Context, url string) (FindScmSo
 		&i.AuthRef,
 		&i.LastSyncedAt,
 		&i.LastSyncedRevision,
+		&i.PollIntervalNs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -131,7 +136,8 @@ func (q *Queries) GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjec
 
 const getScmSourceByProject = `-- name: GetScmSourceByProject :one
 SELECT id, project_id, provider, url, default_branch, auth_ref,
-       last_synced_at, last_synced_revision, created_at, updated_at
+       last_synced_at, last_synced_revision, poll_interval_ns,
+       created_at, updated_at
 FROM scm_sources
 WHERE project_id = $1
 LIMIT 1
@@ -146,6 +152,7 @@ type GetScmSourceByProjectRow struct {
 	AuthRef            *string
 	LastSyncedAt       pgtype.Timestamptz
 	LastSyncedRevision *string
+	PollIntervalNs     int64
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
 }
@@ -162,6 +169,7 @@ func (q *Queries) GetScmSourceByProject(ctx context.Context, projectID pgtype.UU
 		&i.AuthRef,
 		&i.LastSyncedAt,
 		&i.LastSyncedRevision,
+		&i.PollIntervalNs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -191,6 +199,26 @@ func (q *Queries) GetScmSourceWebhookSecretByURL(ctx context.Context, url string
 	var i GetScmSourceWebhookSecretByURLRow
 	err := row.Scan(&i.ID, &i.ProjectID, &i.WebhookSecret)
 	return i, err
+}
+
+const updateScmSourcePollInterval = `-- name: UpdateScmSourcePollInterval :exec
+UPDATE scm_sources
+SET poll_interval_ns = $2, updated_at = NOW()
+WHERE id = $1
+`
+
+type UpdateScmSourcePollIntervalParams struct {
+	ID             pgtype.UUID
+	PollIntervalNs int64
+}
+
+// Project-level poll fallback applied to the synthesized implicit
+// material. Zero nanoseconds disables polling (default). UI at
+// /projects/{slug}/settings writes through this. updated_at only
+// bumps because poll changes are rare but operationally visible.
+func (q *Queries) UpdateScmSourcePollInterval(ctx context.Context, arg UpdateScmSourcePollIntervalParams) error {
+	_, err := q.db.Exec(ctx, updateScmSourcePollInterval, arg.ID, arg.PollIntervalNs)
+	return err
 }
 
 const updateScmSourceSynced = `-- name: UpdateScmSourceSynced :exec

@@ -85,6 +85,11 @@ type GitSpec struct {
 	On                  []string `yaml:"on,omitempty"` // push, pull_request
 	AutoRegisterWebhook bool     `yaml:"auto_register_webhook,omitempty"`
 	SecretRef           string   `yaml:"secret_ref,omitempty"`
+	// PollInterval is a Go duration string ("5m", "30m", "1h").
+	// When set, the server checks branch HEAD every N and creates
+	// a modification when it advances — covers firewall-bound
+	// repos that can't reach us via webhook. Zero/empty disables.
+	PollInterval string `yaml:"poll_interval,omitempty"`
 }
 
 type UpstreamSpec struct {

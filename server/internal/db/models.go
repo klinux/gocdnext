@@ -146,6 +146,14 @@ type Material struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type MaterialPollState struct {
+	MaterialID    pgtype.UUID
+	LastPolledAt  pgtype.Timestamptz
+	LastHeadSha   *string
+	LastPollError *string
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type Modification struct {
 	ID          int64
 	MaterialID  pgtype.UUID
@@ -207,6 +215,7 @@ type ScmSource struct {
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
 	WebhookSecret      []byte
+	PollIntervalNs     int64
 }
 
 type Secret struct {

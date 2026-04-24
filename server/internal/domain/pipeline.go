@@ -259,6 +259,15 @@ type GitMaterial struct {
 	Events              []string `json:"events,omitempty"`
 	AutoRegisterWebhook bool     `json:"auto_register_webhook,omitempty"`
 	SecretRef           string   `json:"secret_ref,omitempty"`
+	// PollInterval triggers a server-side check of the branch
+	// HEAD every N duration. Zero (default) disables polling —
+	// the material only advances on webhook or explicit sync.
+	// Parser clamps to [1m, 24h] so the tick worker isn't
+	// hammered and very-stale polls don't masquerade as webhook
+	// replacements. Stored as int64 nanoseconds in the JSONB
+	// config column; the poll worker parses back via the normal
+	// time.Duration path.
+	PollInterval time.Duration `json:"poll_interval,omitempty"`
 }
 
 type UpstreamMaterial struct {

@@ -93,6 +93,11 @@ type ProjectSCMInfo struct {
 	URL           string    `json:"url"`
 	DefaultBranch string    `json:"default_branch"`
 	AuthRef       string    `json:"auth_ref,omitempty"`
+	// PollIntervalNs is the project-level poll fallback in
+	// nanoseconds. Zero disables; wire shape stays machine-
+	// friendly so the UI formats via Go-style duration without
+	// re-encoding.
+	PollIntervalNs int64 `json:"poll_interval_ns,omitempty"`
 }
 
 type PipelineSummary struct {
@@ -760,11 +765,12 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 	scm, err := s.FindSCMSourceByProjectSlug(ctx, slug)
 	if err == nil {
 		detail.SCMSource = &ProjectSCMInfo{
-			ID:            scm.ID,
-			Provider:      scm.Provider,
-			URL:           scm.URL,
-			DefaultBranch: scm.DefaultBranch,
-			AuthRef:       scm.AuthRef,
+			ID:             scm.ID,
+			Provider:       scm.Provider,
+			URL:            scm.URL,
+			DefaultBranch:  scm.DefaultBranch,
+			AuthRef:        scm.AuthRef,
+			PollIntervalNs: int64(scm.PollInterval),
 		}
 	} else if !errors.Is(err, ErrSCMSourceNotFound) {
 		return ProjectDetail{}, fmt.Errorf("store: detail scm_source: %w", err)

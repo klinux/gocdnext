@@ -40,6 +40,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
+	"github.com/gocdnext/gocdnext/server/internal/polling"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
@@ -377,6 +378,7 @@ func main() {
 		p.Post("/api/v1/projects/{slug}/secrets", projectsHandler.SetSecret)
 		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 		p.Put("/api/v1/projects/{slug}/notifications", projectsHandler.SetNotifications)
+		p.Put("/api/v1/projects/{slug}/poll-interval", projectsHandler.SetPollInterval)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
@@ -460,6 +462,13 @@ func main() {
 	go func() {
 		if err := cronTicker.Run(ctx); err != nil {
 			logger.Error("cron ticker exited", "err", err)
+		}
+	}()
+
+	pollTicker := polling.New(st, gitHubFetcher, logger)
+	go func() {
+		if err := pollTicker.Run(ctx); err != nil {
+			logger.Error("poll ticker exited", "err", err)
 		}
 	}()
 

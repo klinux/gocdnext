@@ -384,6 +384,18 @@ type Querier interface {
 	// stage names from the YAML when the pipeline has never run
 	// (no stage_runs yet → no history to render from).
 	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
+	// Every git material in the system + the project-level scm_source
+	// context (provider, url, auth_ref, default_branch) the poller
+	// needs to resolve branch HEAD, plus the per-material poll state.
+	//
+	// Effective-interval filtering (material-level poll_interval from
+	// JSONB config OR scm_source fallback) happens in Go because a
+	// WHERE clause can only see one side at a time and the JSONB-path
+	// arithmetic gets ugly. N is bounded by `sum(git_materials per
+	// pipeline)`, typically a few dozen, so scanning in-process is
+	// fine. LEFT JOIN on scm_sources: a detached project (no binding)
+	// simply has NULL columns and the Go layer skips polling it.
+	ListPollableGitMaterials(ctx context.Context) ([]ListPollableGitMaterialsRow, error)
 	// Projects whose total live artefact bytes (pending + ready, non-
 	// deleted, non-pinned) exceed the configured soft cap. Returned once
 	// per tick so the sweeper can ExpireOldestInProjectByExcess against
@@ -538,6 +550,11 @@ type Querier interface {
 	// own password from /settings/account — we never want to let the
 	// admin also flip their role through that surface.
 	UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUserPasswordParams) error
+	// Project-level poll fallback applied to the synthesized implicit
+	// material. Zero nanoseconds disables polling (default). UI at
+	// /projects/{slug}/settings writes through this. updated_at only
+	// bumps because poll changes are rare but operationally visible.
+	UpdateScmSourcePollInterval(ctx context.Context, arg UpdateScmSourcePollIntervalParams) error
 	// Stamp the last successful config sync. Called after a drift re-apply so
 	// operators can see whether the live config tracks HEAD.
 	UpdateScmSourceSynced(ctx context.Context, arg UpdateScmSourceSyncedParams) error
@@ -570,6 +587,15 @@ type Querier interface {
 	// the email so the (provider, external_id) unique key covers us.
 	UpsertLocalUser(ctx context.Context, arg UpsertLocalUserParams) (UpsertLocalUserRow, error)
 	UpsertMaterial(ctx context.Context, arg UpsertMaterialParams) (UpsertMaterialRow, error)
+	// Records the outcome of one poll. Three cases, same query:
+	//  - success, unchanged HEAD: last_head_sha unchanged, error NULL
+	//  - success, new HEAD:       last_head_sha advanced,  error NULL
+	//  - failure:                 last_head_sha unchanged (callers pass
+	//                             the prior value), error message set
+	// The "unchanged prior value" contract keeps the UI display
+	// stable across transient provider blips — operators see the
+	// last-known-good SHA alongside the error rather than a blank.
+	UpsertMaterialPollState(ctx context.Context, arg UpsertMaterialPollStateParams) error
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	// config_path defaults to '.gocdnext' at the SQL level. Apply
 	// callers that don't set it (legacy path, drift re-apply) get

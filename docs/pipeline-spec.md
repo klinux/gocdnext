@@ -46,6 +46,7 @@ materials:
       branch: main               # default "main"; supports glob for feature branches
       on: [push, pull_request]   # default [push]
       auto_register_webhook: true
+      poll_interval: 5m          # optional; server polls HEAD every N when webhooks can't reach us
       secret_ref: github-app-org # k8s secret or secret-manager ref
   - upstream:
       pipeline: build-core
@@ -55,6 +56,24 @@ materials:
       expression: "0 */2 * * *"
   - manual: true
 ```
+
+### Polling vs. webhook
+
+Webhooks are the default — `auto_register_webhook: true` makes the server
+install a hook on the repo and fire a run on every push. When the repo can't
+reach us (corporate firewall, self-hosted Git behind VPN), set
+`poll_interval:` and the server checks the branch HEAD every N duration
+instead. Both can coexist: the server deduplicates via the modification's
+unique `(material_id, revision, branch)` key, so a webhook arrival between
+polls doesn't create a duplicate run.
+
+`poll_interval` accepts Go duration strings (`1m`, `5m`, `1h30m`, `2h`) with
+bounds `[1m, 24h]`. Empty / unset disables polling for this material.
+
+Project-level fallback: operators can also set polling at the project level
+from `/projects/{slug}/settings` — that interval applies to the synthesized
+implicit project material (the repo bound via scm_source). Per-material
+`poll_interval:` in YAML wins over the project default when both are set.
 
 ## Jobs
 

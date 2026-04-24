@@ -32,14 +32,16 @@ RETURNING id, project_id, provider, url, default_branch, auth_ref,
 -- GetScmSourceWebhookSecret to keep ciphertext out of the general
 -- read path.
 SELECT id, project_id, provider, url, default_branch, auth_ref,
-       last_synced_at, last_synced_revision, created_at, updated_at
+       last_synced_at, last_synced_revision, poll_interval_ns,
+       created_at, updated_at
 FROM scm_sources
 WHERE url = $1
 LIMIT 1;
 
 -- name: GetScmSourceByProject :one
 SELECT id, project_id, provider, url, default_branch, auth_ref,
-       last_synced_at, last_synced_revision, created_at, updated_at
+       last_synced_at, last_synced_revision, poll_interval_ns,
+       created_at, updated_at
 FROM scm_sources
 WHERE project_id = $1
 LIMIT 1;
@@ -49,11 +51,20 @@ LIMIT 1;
 -- the caller having to resolve the project id first.
 SELECT s.id, s.project_id, s.provider, s.url, s.default_branch,
        s.auth_ref, s.last_synced_at, s.last_synced_revision,
-       s.created_at, s.updated_at
+       s.poll_interval_ns, s.created_at, s.updated_at
 FROM scm_sources s
 JOIN projects p ON p.id = s.project_id
 WHERE p.slug = $1
 LIMIT 1;
+
+-- name: UpdateScmSourcePollInterval :exec
+-- Project-level poll fallback applied to the synthesized implicit
+-- material. Zero nanoseconds disables polling (default). UI at
+-- /projects/{slug}/settings writes through this. updated_at only
+-- bumps because poll changes are rare but operationally visible.
+UPDATE scm_sources
+SET poll_interval_ns = $2, updated_at = NOW()
+WHERE id = $1;
 
 -- name: GetScmSourceWebhookSecretByURL :one
 -- Webhook-handler path: pulls the sealed secret + the scm_source
