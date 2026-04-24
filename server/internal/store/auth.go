@@ -141,6 +141,34 @@ func (s *Store) UpsertUserByProvider(ctx context.Context, in UpsertUserInput) (U
 // map this to 400 so typos in admin UIs surface cleanly.
 var ErrInvalidRole = errors.New("store: invalid role")
 
+// ListAllUsers returns every user row, email-sorted (the sqlc
+// query enforces the order). Admin UI consumes this straight —
+// no pagination yet since the list is expected to be dozens,
+// not millions; grow a cursor when a deployment proves it.
+func (s *Store) ListAllUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.q.ListUsers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: list users: %w", err)
+	}
+	out := make([]User, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, User{
+			ID:          fromPgUUID(row.ID),
+			Email:       row.Email,
+			Name:        row.Name,
+			AvatarURL:   row.AvatarUrl,
+			Provider:    row.Provider,
+			ExternalID:  row.ExternalID,
+			Role:        row.Role,
+			DisabledAt:  pgTimePtr(row.DisabledAt),
+			LastLoginAt: pgTimePtr(row.LastLoginAt),
+			CreatedAt:   row.CreatedAt.Time,
+			UpdatedAt:   row.UpdatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
 // UpdateUserRole flips the role on an existing user. Refuses
 // unknown role values before hitting Postgres so the caller
 // doesn't rely on interpreting the CHECK violation error.

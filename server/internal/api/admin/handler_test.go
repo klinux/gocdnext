@@ -195,6 +195,9 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Get("/api/v1/admin/webhooks/{id}", h.WebhookDetail)
 	r.Get("/api/v1/admin/health", h.Health)
 	r.Get("/api/v1/admin/integrations/github", h.IntegrationGitHub)
+	r.Get("/api/v1/admin/users", h.Users)
+	r.Put("/api/v1/admin/users/{id}/role", h.SetUserRole)
+	r.Get("/api/v1/admin/audit", h.Audit)
 	return r
 }
 
