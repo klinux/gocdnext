@@ -219,6 +219,10 @@ type Querier interface {
 	// empty. Used for the global hard cap.
 	GlobalArtifactUsage(ctx context.Context) (int64, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
+	// Write-only hot path — every RBAC'd mutation fires one of these.
+	// at is stamped by the DB so clock skew on multi-replica setups
+	// doesn't re-order events inside a single tick.
+	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (AuditEvent, error)
 	InsertAuthState(ctx context.Context, arg InsertAuthStateParams) error
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
@@ -276,6 +280,12 @@ type Querier interface {
 	// can group artefacts by the job that produced them without an extra
 	// per-artifact lookup. Returns ALL statuses — callers filter as needed.
 	ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UUID) ([]ListArtifactsWithJobByRunRow, error)
+	// Reverse-chrono listing with optional filters. Empty string on
+	// action_filter / target_type_filter / actor_email_filter
+	// disables that filter; nil actor_id_filter disables actor
+	// filtering (applied separately because typing empty UUID as
+	// "no filter" leaks).
+	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]AuditEvent, error)
 	// Returns every row regardless of `enabled`. The UI filters on
 	// the boolean so admins can see disabled providers they can re-
 	// enable later.

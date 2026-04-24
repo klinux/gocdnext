@@ -39,6 +39,17 @@ type Artifact struct {
 	CreatedAt     pgtype.Timestamptz
 }
 
+type AuditEvent struct {
+	ID         pgtype.UUID
+	ActorID    pgtype.UUID
+	ActorEmail string
+	Action     string
+	TargetType string
+	TargetID   string
+	Metadata   []byte
+	At         pgtype.Timestamptz
+}
+
 type AuthProvider struct {
 	ID            pgtype.UUID
 	Name          string
