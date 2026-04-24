@@ -124,6 +124,37 @@ jobs:
     retry: 2
 ```
 
+### Approval gates
+
+A job can block the pipeline on a human decision by setting `approval:`
+instead of `script:`/`uses:`. The gate parks in `awaiting_approval` until
+someone votes through the web UI or the `POST /api/v1/job_runs/{id}/approve`
+endpoint.
+
+```yaml
+jobs:
+  approve-prod:
+    stage: deploy
+    approval:
+      approvers: [alice, bob]          # individual users (name OR email)
+      approver_groups: [sre, leads]    # groups — any member can approve
+      required: 2                      # quorum — default 1
+      description: "Deploy to prod?"
+```
+
+- **`approvers:`** and **`approver_groups:`** combine permissively — a user
+  qualifies if they're either named in `approvers:` OR a member of any
+  group in `approver_groups:`. Empty on both sides means "any authenticated
+  user".
+- **`required:`** is the quorum. Defaults to 1 (legacy single-approver
+  behaviour). A parser-side check rejects values that exceed the combined
+  size of `approvers + approver_groups` so an un-passable gate surfaces at
+  apply time.
+- **Reject always wins** — any single rejection from an allowed user ends
+  the gate immediately, regardless of how high `required` is.
+- Groups are managed at `/admin/groups` (admin-only). Rename is safe:
+  gates store group **names** so a rename propagates cleanly.
+
 ### Plugin vs. script job
 
 - **Script job** has `script:` list → tasks run inside `image`.

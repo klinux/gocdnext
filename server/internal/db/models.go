@@ -103,6 +103,22 @@ type GithubCheckRun struct {
 	UpdatedAt      pgtype.Timestamptz
 }
 
+type Group struct {
+	ID          pgtype.UUID
+	Name        string
+	Description string
+	CreatedBy   pgtype.UUID
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type GroupMember struct {
+	GroupID pgtype.UUID
+	UserID  pgtype.UUID
+	AddedBy pgtype.UUID
+	AddedAt pgtype.Timestamptz
+}
+
 type JobRun struct {
 	ID                  pgtype.UUID
 	RunID               pgtype.UUID
@@ -125,6 +141,17 @@ type JobRun struct {
 	DecidedBy           *string
 	DecidedAt           pgtype.Timestamptz
 	Decision            *string
+	ApproverGroups      []string
+	ApprovalRequired    int32
+}
+
+type JobRunApproval struct {
+	JobRunID  pgtype.UUID
+	UserID    pgtype.UUID
+	UserLabel string
+	Decision  string
+	Comment   string
+	DecidedAt pgtype.Timestamptz
 }
 
 type LogLine struct {

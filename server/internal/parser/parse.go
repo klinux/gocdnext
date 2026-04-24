@@ -295,9 +295,30 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 				name,
 			)
 		}
+		required := jd.Approval.Required
+		if required < 0 {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: approval.required must be >= 1 (got %d)",
+				name, required)
+		}
+		if required == 0 {
+			required = 1
+		}
+		// Sanity cap so a typo (`required: 100`) with only a couple
+		// approvers listed doesn't produce an un-passable gate.
+		// Allow room for generous quorums but fail fast when the
+		// combined list couldn't possibly satisfy Required.
+		listSize := len(jd.Approval.Approvers) + len(jd.Approval.ApproverGroups)
+		if listSize > 0 && required > listSize {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: approval.required=%d exceeds approvers+approver_groups=%d — gate would be un-passable",
+				name, required, listSize)
+		}
 		j.Approval = &domain.ApprovalSpec{
-			Approvers:   append([]string(nil), jd.Approval.Approvers...),
-			Description: jd.Approval.Description,
+			Approvers:      append([]string(nil), jd.Approval.Approvers...),
+			ApproverGroups: append([]string(nil), jd.Approval.ApproverGroups...),
+			Required:       required,
+			Description:    jd.Approval.Description,
 		}
 		return j, nil
 	}

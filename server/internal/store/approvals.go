@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,7 +34,19 @@ var ErrApproverNotAllowed = errors.New("store: user not in approvers list")
 // move (decided-by comes from session context, not the POST body).
 type ApprovalDecision struct {
 	JobRunID uuid.UUID
-	User     string // empty = anonymous (dev/demo; prod enforces auth at HTTP)
+	// UserID is the authenticated user's uuid — the primary
+	// identity for group-membership checks and the stable key
+	// for job_run_approvals. uuid.Nil is only acceptable in dev/
+	// demo modes with anonymous access, in which case User below
+	// still records who (the prod HTTP path never passes nil).
+	UserID uuid.UUID
+	// User is the display label for audit trails — name preferred,
+	// email as fallback. Matched against the gate's approvers
+	// array (string-compare), distinct from UserID.
+	User string
+	// Comment is optional — "LGTM, merging after 2pm" etc. Shown
+	// in the detail trail alongside the vote.
+	Comment string
 }
 
 // ApprovalResult is returned from Approve/RejectGate so the HTTP
@@ -41,12 +54,21 @@ type ApprovalDecision struct {
 // the transition left the run in a state the scheduler should
 // re-evaluate) and what status the stage/run eventually settled
 // on.
+//
+// PendingQuorum is true when this approval counted but more votes
+// are still needed before the gate passes — the HTTP layer then
+// returns 202 Accepted with "n of m" info instead of the 200 that
+// signals a final transition.
 type ApprovalResult struct {
 	RunID          uuid.UUID
 	StageCompleted bool
 	StageStatus    string
 	RunCompleted   bool
 	RunStatus      string
+
+	PendingQuorum      bool
+	ApprovalsNow       int
+	ApprovalsRequired  int
 }
 
 // ApproveGate flips an awaiting approval row directly to 'success'
@@ -84,23 +106,25 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Load the row under the tx so the allow-list check, the
-	// "is it pending?" check, and the UPDATE all see the same
-	// snapshot. Checking approvers in Go (vs. in SQL) keeps the
+	// Load the gate row under the tx so the allow-list check, the
+	// "is it pending?" check, and any UPDATE all see the same
+	// snapshot. Checking allow-list in Go (vs. in SQL) keeps the
 	// error ergonomics distinct: "not allowed" vs. "not pending"
 	// vs. "not found" each surface a dedicated sentinel.
 	var (
-		gate       bool
-		status     string
-		approvers  []string
-		parentRun  pgtype.UUID
-		stageRunID pgtype.UUID
+		gate           bool
+		status         string
+		approvers      []string
+		approverGroups []string
+		required       int32
+		parentRun      pgtype.UUID
+		stageRunID     pgtype.UUID
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT approval_gate, status, approvers, run_id, stage_run_id
+		SELECT approval_gate, status, approvers, approver_groups, approval_required, run_id, stage_run_id
 		FROM job_runs
 		WHERE id = $1
-	`, d.JobRunID).Scan(&gate, &status, &approvers, &parentRun, &stageRunID)
+	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
@@ -113,13 +137,84 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	if status != "awaiting_approval" {
 		return ApprovalResult{}, ErrApprovalNotPending
 	}
-	// Empty approvers list = "any authenticated user" (same
-	// parse-time decision: permissive default, RBAC layers on
-	// top). A non-empty list enforces membership.
-	if len(approvers) > 0 && d.User != "" && !slices.Contains(approvers, d.User) {
-		return ApprovalResult{}, ErrApproverNotAllowed
+	if required < 1 {
+		required = 1
 	}
 
+	// Allow-list check: the user is either in `approvers` by name
+	// OR in one of the groups listed in `approver_groups`. Empty
+	// BOTH lists = "any authenticated user" (permissive default,
+	// same as the pre-groups era). Group intersection requires a
+	// second read, skipped when the gate lists no groups.
+	if len(approvers) > 0 || len(approverGroups) > 0 {
+		allowed := d.User != "" && slices.Contains(approvers, d.User)
+		if !allowed && len(approverGroups) > 0 && d.UserID != uuid.Nil {
+			q := s.q.WithTx(tx)
+			names, err := q.ListUserGroupNames(ctx, pgUUID(d.UserID))
+			if err != nil {
+				return ApprovalResult{}, fmt.Errorf("store: load user groups: %w", err)
+			}
+			for _, n := range names {
+				if slices.Contains(approverGroups, n) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			return ApprovalResult{}, ErrApproverNotAllowed
+		}
+	}
+
+	// Quorum accounting only runs when the caller supplied a
+	// UserID — that's the authenticated HTTP path. Anonymous
+	// callers (dev/demo mode, legacy tests without auth) skip
+	// the vote table and fall through to the single-flip path,
+	// preserving pre-groups semantics bit-for-bit.
+	if d.UserID != uuid.Nil {
+		// Record the vote. Unique (job_run_id, user_id) prevents
+		// a user from double-counting toward quorum. ON CONFLICT
+		// DO NOTHING makes re-posts idempotent — we still evaluate
+		// quorum after so a duplicate approve call converges on
+		// the same outcome.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO job_run_approvals
+			    (job_run_id, user_id, user_label, decision, comment)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (job_run_id, user_id) DO NOTHING
+		`, d.JobRunID, d.UserID, d.User, decision, d.Comment); err != nil {
+			return ApprovalResult{}, fmt.Errorf("store: record vote: %w", err)
+		}
+
+		// Reject path: one rejection from an allowed user fails
+		// the gate immediately. No quorum accumulation.
+		//
+		// Approve path: count approved votes. If >= required,
+		// flip to success + cascade. Otherwise keep the gate
+		// pending and return PendingQuorum=true.
+		if decision == "approved" {
+			var approvedCount int32
+			if err := tx.QueryRow(ctx, `
+				SELECT COUNT(*) FROM job_run_approvals
+				WHERE job_run_id = $1 AND decision = 'approved'
+			`, d.JobRunID).Scan(&approvedCount); err != nil {
+				return ApprovalResult{}, fmt.Errorf("store: count approvals: %w", err)
+			}
+			if approvedCount < required {
+				if err := tx.Commit(ctx); err != nil {
+					return ApprovalResult{}, fmt.Errorf("store: approval commit: %w", err)
+				}
+				return ApprovalResult{
+					RunID:             fromPgUUID(parentRun),
+					PendingQuorum:     true,
+					ApprovalsNow:      int(approvedCount),
+					ApprovalsRequired: int(required),
+				}, nil
+			}
+		}
+	}
+
+	// Terminal transition — approved quorum hit, or a rejection.
 	tag, err := tx.Exec(ctx, `
 		UPDATE job_runs
 		SET status      = $2,
@@ -133,7 +228,9 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		return ApprovalResult{}, fmt.Errorf("store: apply approval decision: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		// Concurrent decider won the race.
+		// Concurrent decider won the race (their terminal UPDATE
+		// landed first). Our vote is persisted but the gate is
+		// already decided — report that.
 		return ApprovalResult{}, ErrApprovalNotPending
 	}
 
@@ -152,10 +249,42 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	}
 
 	return ApprovalResult{
-		RunID:          fromPgUUID(parentRun),
-		StageCompleted: comp.StageCompleted,
-		StageStatus:    comp.StageStatus,
-		RunCompleted:   comp.RunCompleted,
-		RunStatus:      comp.RunStatus,
+		RunID:             fromPgUUID(parentRun),
+		StageCompleted:    comp.StageCompleted,
+		StageStatus:       comp.StageStatus,
+		RunCompleted:      comp.RunCompleted,
+		RunStatus:         comp.RunStatus,
+		ApprovalsNow:      int(required), // quorum hit or reject (full if approved)
+		ApprovalsRequired: int(required),
 	}, nil
+}
+
+// JobRunApprovalVote is one entry in the detail trail returned
+// to the UI alongside a gate — "alice approved 2m ago: LGTM".
+type JobRunApprovalVote struct {
+	UserID    uuid.UUID
+	UserLabel string
+	Decision  string
+	Comment   string
+	DecidedAt time.Time
+}
+
+// ListJobRunApprovals returns the per-vote trail for a gate,
+// oldest first. Empty slice when no one has voted yet.
+func (s *Store) ListJobRunApprovals(ctx context.Context, jobRunID uuid.UUID) ([]JobRunApprovalVote, error) {
+	rows, err := s.q.ListJobRunApprovals(ctx, pgUUID(jobRunID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list job_run approvals: %w", err)
+	}
+	out := make([]JobRunApprovalVote, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, JobRunApprovalVote{
+			UserID:    fromPgUUID(r.UserID),
+			UserLabel: r.UserLabel,
+			Decision:  r.Decision,
+			Comment:   r.Comment,
+			DecidedAt: r.DecidedAt.Time,
+		})
+	}
+	return out, nil
 }

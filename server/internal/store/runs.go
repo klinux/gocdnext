@@ -206,15 +206,25 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				if approvers == nil {
 					approvers = []string{}
 				}
+				approverGroups := job.Approval.ApproverGroups
+				if approverGroups == nil {
+					approverGroups = []string{}
+				}
+				required := job.Approval.Required
+				if required < 1 {
+					required = 1
+				}
 				if _, err := tx.Exec(ctx, `
 					UPDATE job_runs
 					SET approval_gate        = true,
 					    approvers            = $2,
-					    approval_description = $3,
+					    approver_groups      = $3,
+					    approval_required    = $4,
+					    approval_description = $5,
 					    awaiting_since       = NOW(),
 					    status               = 'awaiting_approval'
 					WHERE id = $1
-				`, row.ID, approvers, job.Approval.Description); err != nil {
+				`, row.ID, approvers, approverGroups, required, job.Approval.Description); err != nil {
 					return RunCreated{}, fmt.Errorf("store: mark approval gate %s: %w", job.Name, err)
 				}
 			}

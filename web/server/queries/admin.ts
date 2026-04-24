@@ -99,6 +99,36 @@ export async function listAdminUsers(): Promise<UsersList> {
   return readJSON<UsersList>("/api/v1/admin/users");
 }
 
+export type AdminGroup = {
+  id: string;
+  name: string;
+  description: string;
+  member_count: number;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminGroupMember = {
+  user_id: string;
+  email: string;
+  name: string;
+  role: string;
+  added_at: string;
+};
+
+export async function listAdminGroups(): Promise<{ groups: AdminGroup[] }> {
+  return readJSON<{ groups: AdminGroup[] }>("/api/v1/admin/groups");
+}
+
+export async function listAdminGroupMembers(
+  groupID: string,
+): Promise<{ members: AdminGroupMember[] }> {
+  return readJSON<{ members: AdminGroupMember[] }>(
+    `/api/v1/admin/groups/${encodeURIComponent(groupID)}/members`,
+  );
+}
+
 export async function listAuditEvents(
   params?: {
     action?: string;

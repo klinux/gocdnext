@@ -11,6 +11,10 @@ import (
 )
 
 type Querier interface {
+	// Idempotent on (group_id, user_id) — re-adding is a no-op, not
+	// an error, so the UI's "add if not present" flow doesn't need
+	// a pre-check query.
+	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
 	AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error)
@@ -62,6 +66,9 @@ type Querier interface {
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	// Quorum check: how many approved votes (excluding rejects)
+	// has this gate accumulated?
+	CountJobRunApprovals(ctx context.Context, jobRunID pgtype.UUID) (int32, error)
 	// Drives the "show local login form" decision on the login page:
 	// no rows = zero local admins, the form stays hidden so the page
 	// doesn't advertise a dead code path.
@@ -95,6 +102,7 @@ type Querier interface {
 	DeleteExpiredAuthStates(ctx context.Context) error
 	DeleteExpiredUserSessions(ctx context.Context) error
 	DeleteGlobalSecretByName(ctx context.Context, name string) (int64, error)
+	DeleteGroup(ctx context.Context, id pgtype.UUID) error
 	// Called after a successful reclaim so the retry starts with a clean log
 	// window. Loses the old attempt's output — acceptable MVP trade for not
 	// growing the schema to carry per-attempt log namespacing.
@@ -167,6 +175,10 @@ type Querier interface {
 	// the resolver can short-circuit when every name was already
 	// covered at project scope.
 	GetGlobalSecretValues(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretValuesRow, error)
+	GetGroup(ctx context.Context, id pgtype.UUID) (Group, error)
+	// Used on approve: gate carries group NAMES (not ids) so renames
+	// propagate cleanly. Lookup translates name → id → members.
+	GetGroupByName(ctx context.Context, name string) (Group, error)
 	// Used by the reaper to disambiguate "at max attempts" from "already
 	// handled" when ReclaimJobForRetry returned no rows.
 	GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAttemptRow, error)
@@ -273,7 +285,13 @@ type Querier interface {
 	// doesn't re-order events inside a single tick.
 	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (AuditEvent, error)
 	InsertAuthState(ctx context.Context, arg InsertAuthStateParams) error
+	InsertGroup(ctx context.Context, arg InsertGroupParams) (Group, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
+	// Records one vote on a gate. Unique (job_run_id, user_id) —
+	// double-voting is a conflict, not a silent dup. Returns
+	// (id, created) so the caller sees whether the vote actually
+	// landed or was a re-post from the same user.
+	InsertJobRunApproval(ctx context.Context, arg InsertJobRunApprovalParams) (InsertJobRunApprovalRow, error)
 	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
 	// constraint makes retries safe.
 	InsertLogLine(ctx context.Context, arg InsertLogLineParams) error
@@ -368,6 +386,16 @@ type Querier interface {
 	// Admin-only listing of every global (unscoped) secret. Same
 	// "names + timestamps, never values" contract as project secrets.
 	ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow, error)
+	// Join against users so the UI renders name/email without a
+	// second round-trip. Orders by the user's display name so the
+	// admin UI reads alphabetically.
+	ListGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]ListGroupMembersRow, error)
+	// UI: admin-only list of groups + a cheap member count so the
+	// settings page can render "SRE (4 members)" without a second
+	// query per group.
+	ListGroups(ctx context.Context) ([]ListGroupsRow, error)
+	// Detail trail for the UI: every vote in chronological order.
+	ListJobRunApprovals(ctx context.Context, jobRunID pgtype.UUID) ([]ListJobRunApprovalsRow, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)
 	ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error)
 	// Batch-loads job_runs for every run whose id is in the input
@@ -483,6 +511,11 @@ type Querier interface {
 	//     when latest_run_id is zero, and reconciles definition vs.
 	//     stage_runs for mid-run/cancelled states.
 	ListTopPipelinesPerProject(ctx context.Context) ([]ListTopPipelinesPerProjectRow, error)
+	// Permission check hot path: "is this user in any group that's
+	// in the gate's approver_groups?" — we fetch the user's group
+	// names once per approve call and intersect in Go. Names (not
+	// ids) match what the gate stores.
+	ListUserGroupNames(ctx context.Context, userID pgtype.UUID) ([]string, error)
 	ListUsers(ctx context.Context) ([]ListUsersRow, error)
 	// Admin feed. Returns every row regardless of `enabled` so the
 	// /settings/integrations page can surface disabled rows the user
@@ -536,6 +569,7 @@ type Querier interface {
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
+	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
@@ -560,6 +594,7 @@ type Querier interface {
 	// are still alive. Tiny write per heartbeat (default cadence 30s).
 	UpdateAgentLastSeen(ctx context.Context, id pgtype.UUID) error
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
+	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	// Dedicated password-only write. Used when an admin changes their
 	// own password from /settings/account — we never want to let the
 	// admin also flip their role through that surface.

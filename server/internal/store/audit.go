@@ -39,6 +39,11 @@ const (
 	AuditActionProjectCronUpdate   = "project_cron.update"
 	AuditActionProjectCronDelete   = "project_cron.delete"
 	AuditActionProjectRunAll       = "project.run_all"
+	AuditActionGroupCreate         = "group.create"
+	AuditActionGroupUpdate         = "group.update"
+	AuditActionGroupDelete         = "group.delete"
+	AuditActionGroupMemberAdd      = "group.member_add"
+	AuditActionGroupMemberRemove   = "group.member_remove"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata

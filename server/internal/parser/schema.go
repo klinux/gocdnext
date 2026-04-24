@@ -160,8 +160,14 @@ type JobDef struct {
 // description) only make sense in the approval context — a
 // sub-object keeps unrelated schema from bleeding across the job.
 type ApprovalDef struct {
-	Approvers   []string `yaml:"approvers,omitempty"`
-	Description string   `yaml:"description,omitempty"`
+	Approvers      []string `yaml:"approvers,omitempty"`
+	ApproverGroups []string `yaml:"approver_groups,omitempty"`
+	// Required is the quorum: how many distinct allowed users must
+	// approve before the gate passes. Default 1 (any single approver
+	// is enough, matches legacy behaviour). Rejects always fail the
+	// gate immediately regardless of this.
+	Required    int    `yaml:"required,omitempty"`
+	Description string `yaml:"description,omitempty"`
 }
 
 // NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. It

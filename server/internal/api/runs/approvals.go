@@ -49,12 +49,25 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		return
 	}
 
-	decision := store.ApprovalDecision{JobRunID: jobRunID}
+	// Optional JSON body — { "comment": "LGTM" } — surfaces in the
+	// detail trail alongside the vote. Absent / empty body is fine.
+	var body struct {
+		Comment string `json:"comment,omitempty"`
+	}
+	if r.Body != nil && r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+
+	decision := store.ApprovalDecision{JobRunID: jobRunID, Comment: body.Comment}
 	// Pull the authenticated user when present. A deployment
 	// without auth middleware wired will pass through as
 	// anonymous — the store enforces allow-list membership, so
-	// a gate with `approvers:` populated still rejects.
+	// a gate with `approvers:` populated still rejects. The
+	// UserID enables group-membership checks + per-voter quorum
+	// tracking; without it we fall through to the legacy single
+	// -flip path (acceptable only for dev/demo).
 	if u, ok := authapi.UserFromContext(r.Context()); ok {
+		decision.UserID = u.ID
 		decision.User = u.Name
 		if decision.User == "" {
 			decision.User = u.Email
@@ -99,12 +112,15 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_run_id":      jobRunID.String(),
-			"run_id":          res.RunID.String(),
-			"stage_completed": res.StageCompleted,
-			"stage_status":    res.StageStatus,
-			"run_completed":   res.RunCompleted,
-			"run_status":      res.RunStatus,
+			"job_run_id":         jobRunID.String(),
+			"run_id":             res.RunID.String(),
+			"stage_completed":    res.StageCompleted,
+			"stage_status":       res.StageStatus,
+			"run_completed":      res.RunCompleted,
+			"run_status":         res.RunStatus,
+			"pending_quorum":     res.PendingQuorum,
+			"approvals_now":      res.ApprovalsNow,
+			"approvals_required": res.ApprovalsRequired,
 		})
 	case errors.Is(err, store.ErrApprovalGateNotFound):
 		http.Error(w, "approval gate not found", http.StatusNotFound)

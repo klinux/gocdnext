@@ -15,6 +15,7 @@ import {
   Server,
   Settings,
   Users,
+  UsersRound,
 } from "lucide-react";
 
 import { Logo, Wordmark } from "@/components/brand/logo";
@@ -76,6 +77,7 @@ const primaryNav: NavItem[] = [
 const adminNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
   { label: "Users", href: "/admin/users", icon: Users },
+  { label: "Groups", href: "/admin/groups", icon: UsersRound },
   { label: "Audit", href: "/admin/audit", icon: ClipboardList },
   { label: "Secrets", href: "/admin/secrets", icon: KeyRound },
 ];

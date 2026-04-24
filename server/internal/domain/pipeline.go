@@ -349,6 +349,17 @@ type Job struct {
 // the prompt the approver sees before clicking Approve/Reject.
 type ApprovalSpec struct {
 	Approvers   []string
+	// ApproverGroups are group names (not ids) whose members can
+	// approve the gate in addition to the individual Approvers
+	// list. Names (not ids) so renames propagate cleanly without
+	// touching persisted gate rows.
+	ApproverGroups []string
+	// Required is the quorum — minimum distinct approvals before
+	// the gate transitions to success. 1 (default) matches the
+	// original "any single approver" semantics. A single reject
+	// from any allowed user still fails the gate immediately,
+	// regardless of how high Required is set.
+	Required    int
 	Description string
 }
 
