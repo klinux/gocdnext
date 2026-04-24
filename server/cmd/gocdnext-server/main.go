@@ -37,6 +37,7 @@ import (
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
@@ -163,6 +164,22 @@ func main() {
 	if artifactStore != nil {
 		projectsHandler = projectsHandler.WithArtifactStore(artifactStore)
 	}
+	// Plugin catalog: load `plugin.yaml` manifests from disk so
+	// the apply path can validate `with:` maps before pipelines
+	// ever dispatch. Missing dir is a soft no-op (bare server
+	// images ship without the monorepo), load failure on a
+	// misformatted manifest is fatal — surfaces misconfiguration
+	// loud at startup rather than mid-apply.
+	pluginCatalog := plugins.New()
+	if cfg.PluginCatalogDir != "" {
+		if err := pluginCatalog.Load(cfg.PluginCatalogDir); err != nil {
+			logger.Error("plugin catalog: load failed", "dir", cfg.PluginCatalogDir, "err", err)
+			os.Exit(1)
+		}
+		logger.Info("plugin catalog loaded",
+			"dir", cfg.PluginCatalogDir, "plugins", len(pluginCatalog.Names()))
+	}
+	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it

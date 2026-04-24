@@ -1,0 +1,18 @@
+# Plugin manifest — consumed by the gocdnext server at startup to
+# validate `with:` inputs before a run ever dispatches. The plugin
+# image still reads the same PLUGIN_* env vars at runtime; this
+# file is metadata, not code.
+name: node
+description: >
+  Run pnpm commands with corepack + pnpm bootstrap. Handles
+  `install`, `test`, `build`, `exec <cmd>` — whatever pnpm
+  understands, passed through word-split.
+
+inputs:
+  command:
+    required: true
+    description: pnpm subcommand + args, word-split. Example "install --frozen-lockfile".
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into before running pnpm.

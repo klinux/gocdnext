@@ -53,6 +53,14 @@ type Config struct {
 	// Cache global size cap. 0 disables.
 	CacheGlobalQuotaBytes int64
 
+	// PluginCatalogDir is the root the server scans on boot for
+	// `plugin.yaml` manifests — one per `<dir>/plugin.yaml`. Empty
+	// disables catalog loading, which means pipelines using
+	// `uses:` pass validation by default (third-party images).
+	// Typical value: "./plugins" when running the server from the
+	// monorepo, or a volume-mounted path in production images.
+	PluginCatalogDir string
+
 	// GitHub App (optional): enables auto-register webhook + Checks
 	// API status reporting. AppID + (PrivateKey OR PrivateKeyFile)
 	// must all be set to enable; empty = App disabled, webhooks
@@ -201,6 +209,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES: %w", err)
 	}
 	c.CacheGlobalQuotaBytes = cacheGlobalQuota
+
+	c.PluginCatalogDir = env("GOCDNEXT_PLUGIN_CATALOG_DIR", "")
 
 	if raw := env("GOCDNEXT_GITHUB_APP_ID", ""); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)

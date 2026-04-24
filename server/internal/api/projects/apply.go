@@ -19,6 +19,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/parser"
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -31,6 +32,17 @@ type Handler struct {
 	autoRegister  *AutoRegisterConfig
 	fetcher       configsync.Fetcher
 	artifactStore artifacts.Store
+	pluginCatalog *plugins.Catalog
+}
+
+// WithPluginCatalog plugs the catalog used to validate `with:`
+// maps against each known plugin's `plugin.yaml`. Nil-safe: a
+// missing catalog just means "no validation", matching the
+// bare-server behaviour where operators ship their own images
+// without a manifest on disk.
+func (h *Handler) WithPluginCatalog(c *plugins.Catalog) *Handler {
+	h.pluginCatalog = c
+	return h
 }
 
 // WithArtifactStore enables the cache purge endpoint. Without it
@@ -155,7 +167,7 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	// optionally an scm_source). ApplyProject with zero pipelines
 	// is a valid no-op on the pipeline side. The CLI always sends
 	// files via `gocdnext apply` so that path is unaffected.
-	pipelines, err := parseFiles(req.Files)
+	pipelines, err := h.parseFiles(req.Files)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -309,7 +321,7 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func parseFiles(files []ApplyFile) ([]*domain.Pipeline, error) {
+func (h *Handler) parseFiles(files []ApplyFile) ([]*domain.Pipeline, error) {
 	seen := map[string]string{}
 	out := make([]*domain.Pipeline, 0, len(files))
 	for _, f := range files {
@@ -324,10 +336,39 @@ func parseFiles(files []ApplyFile) ([]*domain.Pipeline, error) {
 		if prev, dup := seen[p.Name]; dup {
 			return nil, fmt.Errorf("pipeline %q defined twice: %s and %s", p.Name, prev, f.Name)
 		}
+		// Validate plugin `with:` maps against the catalog so a
+		// typo'd input name surfaces here with file + job context,
+		// not 6 steps into a run when the plugin ignores the ghost
+		// env var. Unknown plugins (third-party images) pass
+		// through — catalog.Validate encodes the policy.
+		if err := h.validatePluginInputs(p); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.Name, err)
+		}
 		seen[p.Name] = f.Name
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// validatePluginInputs walks a parsed pipeline's jobs, finds
+// plugin tasks, and asks the catalog to validate each one's
+// `with:` inputs. Nil catalog → no-op so tests + bare-server
+// deployments still work.
+func (h *Handler) validatePluginInputs(p *domain.Pipeline) error {
+	if h.pluginCatalog == nil {
+		return nil
+	}
+	for _, j := range p.Jobs {
+		for _, t := range j.Tasks {
+			if t.Plugin == nil {
+				continue
+			}
+			if err := h.pluginCatalog.Validate(t.Plugin.Image, t.Plugin.Settings); err != nil {
+				return fmt.Errorf("job %q: %w", j.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // displayConfigPath renders the config path as it appears to the

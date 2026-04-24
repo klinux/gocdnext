@@ -16,6 +16,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	cryptopkg "github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -155,6 +156,85 @@ func TestApply_InvalidYAML(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "bad.yaml") {
 		t.Fatalf("error body missing filename: %s", rr.Body.String())
+	}
+}
+
+func TestApply_RejectsTypoOnPluginWithInput(t *testing.T) {
+	// `uses: gocdnext/node` with an unknown `with:` key must
+	// surface at apply time with a 400 naming the typo — not
+	// as a silent PLUGIN_* env that never takes effect. Pin the
+	// end-to-end wire: plugin catalog → Handler.parseFiles →
+	// Apply HTTP → 400.
+	h, _ := newHandler(t)
+	cat := plugins.New()
+	cat.Register(plugins.Spec{
+		Name: "node",
+		Inputs: map[string]plugins.Input{
+			"command":     {Required: true, Description: "pnpm cmd"},
+			"working-dir": {Required: false, Description: "subdir"},
+		},
+	})
+	h = h.WithPluginCatalog(cat)
+
+	yaml := `name: build
+materials:
+  - git:
+      url: https://github.com/org/demo
+      branch: main
+stages: [build]
+jobs:
+  deps:
+    stage: build
+    uses: gocdnext/node@v1
+    with:
+      command: install
+      workking-dir: web
+`
+	rr := doApply(t, h, map[string]any{
+		"slug": "demo", "name": "Demo",
+		"files": []map[string]string{{"name": "build.yaml", "content": yaml}},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "workking-dir") {
+		t.Errorf("error body should name the typo'd key: %s", body)
+	}
+	if !strings.Contains(body, "build.yaml") {
+		t.Errorf("error body should carry the filename for context: %s", body)
+	}
+	if !strings.Contains(body, "deps") {
+		t.Errorf("error body should name the failing job: %s", body)
+	}
+}
+
+func TestApply_PassesThroughUnknownPlugin(t *testing.T) {
+	// Third-party image not in the catalog must NOT fail apply —
+	// the registry of known plugins grows organically; rejecting
+	// every unseen image would gate legitimate ad-hoc usage.
+	h, _ := newHandler(t)
+	h = h.WithPluginCatalog(plugins.New()) // empty catalog
+
+	yaml := `name: build
+materials:
+  - git:
+      url: https://github.com/org/demo
+      branch: main
+stages: [build]
+jobs:
+  custom:
+    stage: build
+    uses: ghcr.io/third-party/custom@v1
+    with:
+      arbitrary-key: value
+`
+	rr := doApply(t, h, map[string]any{
+		"slug": "demo-tp", "name": "Demo",
+		"files": []map[string]string{{"name": "build.yaml", "content": yaml}},
+	})
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s (unknown plugin should pass through)", rr.Code, rr.Body.String())
 	}
 }
 
