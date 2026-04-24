@@ -32,6 +32,22 @@ export GOCDNEXT_LOG_LEVEL="${GOCDNEXT_LOG_LEVEL:-debug}"
 export GOCDNEXT_ARTIFACTS_BACKEND="${GOCDNEXT_ARTIFACTS_BACKEND:-filesystem}"
 export GOCDNEXT_ARTIFACTS_FS_ROOT="${GOCDNEXT_ARTIFACTS_FS_ROOT:-$REPO_ROOT/.dev/artifacts}"
 export GOCDNEXT_ARTIFACTS_PUBLIC_BASE="${GOCDNEXT_ARTIFACTS_PUBLIC_BASE:-http://localhost:8153}"
+
+# Plugin catalog: resolve to the absolute repo-root path so `server`
+# (which runs from $REPO_ROOT/server/) doesn't look for ./plugins
+# under its own dir. Honours an operator override verbatim —
+# absolute paths pass through, relative paths get resolved against
+# $REPO_ROOT so `.env` entries like "plugins" or "./plugins" just
+# work without the operator knowing which cwd air uses.
+if [[ -n "${GOCDNEXT_PLUGIN_CATALOG_DIR:-}" ]]; then
+  case "${GOCDNEXT_PLUGIN_CATALOG_DIR}" in
+    /*) ;;                                       # absolute, leave alone
+    *) GOCDNEXT_PLUGIN_CATALOG_DIR="$REPO_ROOT/${GOCDNEXT_PLUGIN_CATALOG_DIR#./}" ;;
+  esac
+else
+  GOCDNEXT_PLUGIN_CATALOG_DIR="$REPO_ROOT/plugins"
+fi
+export GOCDNEXT_PLUGIN_CATALOG_DIR
 # Fixed dev key so signed URLs survive server restart — do NOT reuse in prod.
 export GOCDNEXT_ARTIFACTS_SIGN_KEY="${GOCDNEXT_ARTIFACTS_SIGN_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
 
