@@ -294,24 +294,33 @@ func (q *Queries) LatestRunPerPipelineByProjectSlug(ctx context.Context, slug st
 
 const listJobRunsByRunFull = `-- name: ListJobRunsByRunFull :many
 SELECT id, stage_run_id, name, matrix_key, image,
-       status, exit_code, error, started_at, finished_at, agent_id
+       status, exit_code, error, started_at, finished_at, agent_id,
+       approval_gate, approvers, approval_description,
+       awaiting_since, decided_by, decided_at, decision
 FROM job_runs
 WHERE run_id = $1
 ORDER BY name, matrix_key NULLS FIRST
 `
 
 type ListJobRunsByRunFullRow struct {
-	ID         pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-	MatrixKey  *string
-	Image      *string
-	Status     string
-	ExitCode   *int32
-	Error      *string
-	StartedAt  pgtype.Timestamptz
-	FinishedAt pgtype.Timestamptz
-	AgentID    pgtype.UUID
+	ID                  pgtype.UUID
+	StageRunID          pgtype.UUID
+	Name                string
+	MatrixKey           *string
+	Image               *string
+	Status              string
+	ExitCode            *int32
+	Error               *string
+	StartedAt           pgtype.Timestamptz
+	FinishedAt          pgtype.Timestamptz
+	AgentID             pgtype.UUID
+	ApprovalGate        bool
+	Approvers           []string
+	ApprovalDescription *string
+	AwaitingSince       pgtype.Timestamptz
+	DecidedBy           *string
+	DecidedAt           pgtype.Timestamptz
+	Decision            *string
 }
 
 func (q *Queries) ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunFullRow, error) {
@@ -335,6 +344,13 @@ func (q *Queries) ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) (
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.AgentID,
+			&i.ApprovalGate,
+			&i.Approvers,
+			&i.ApprovalDescription,
+			&i.AwaitingSince,
+			&i.DecidedBy,
+			&i.DecidedAt,
+			&i.Decision,
 		); err != nil {
 			return nil, err
 		}

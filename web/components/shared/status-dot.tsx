@@ -51,4 +51,8 @@ const TONE: Record<StatusTone, string> = {
   skipped: "bg-status-skipped",
   warning: "bg-status-warning",
   neutral: "bg-muted-foreground/40",
+  // Shares the amber warning tone with StatusPill.awaiting so
+  // the same visual weight carries across dot + pill views of
+  // the same row.
+  awaiting: "bg-status-warning",
 };

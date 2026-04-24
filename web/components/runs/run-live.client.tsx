@@ -273,7 +273,9 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
             This run has no stages.
           </p>
         ) : (
-          mergedData.stages.map((s) => <StageSection key={s.id} stage={s} />)
+          mergedData.stages.map((s) => (
+            <StageSection key={s.id} stage={s} runID={runId} />
+          ))
         )}
       </div>
 
@@ -316,6 +318,7 @@ const toneDotClasses: Record<StatusTone, string> = {
   running: "bg-sky-500",
   queued: "bg-amber-500",
   warning: "bg-amber-500",
+  awaiting: "bg-amber-500",
   canceled: "bg-muted-foreground/60",
   skipped: "bg-muted-foreground/40",
   neutral: "bg-muted-foreground/40",

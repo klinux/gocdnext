@@ -167,6 +167,7 @@ const toneDotClasses: Record<StatusTone, string> = {
   running: "bg-sky-500",
   queued: "bg-amber-500",
   warning: "bg-amber-500",
+  awaiting: "bg-amber-500",
   canceled: "bg-muted-foreground/60",
   skipped: "bg-muted border border-muted-foreground/30",
   neutral: "bg-muted border border-muted-foreground/30",

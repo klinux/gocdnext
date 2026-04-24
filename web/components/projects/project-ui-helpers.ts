@@ -59,6 +59,8 @@ export const tonePillClasses: Record<StatusTone, string> = {
     "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
   warning:
     "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400",
   canceled: "border-muted-foreground/30 bg-muted text-muted-foreground",
   skipped: "border-muted-foreground/20 bg-muted/50 text-muted-foreground",
   neutral: "border-border bg-muted/40 text-muted-foreground",
@@ -70,6 +72,7 @@ export const toneDotClasses: Record<StatusTone, string> = {
   running: "bg-sky-500",
   queued: "bg-amber-500",
   warning: "bg-amber-500",
+  awaiting: "bg-amber-500",
   canceled: "bg-muted-foreground",
   skipped: "bg-muted-foreground/60",
   neutral: "bg-muted-foreground/40",
@@ -85,6 +88,8 @@ export const activePillClasses: Record<"all" | StatusTone, string> = {
     "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400",
   warning:
     "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "border-amber-500/60 bg-amber-500/20 text-amber-700 dark:text-amber-400",
   canceled: "border-foreground/40 bg-muted text-foreground",
   skipped: "border-foreground/30 bg-muted text-foreground",
   neutral: "border-foreground/40 bg-muted text-foreground",

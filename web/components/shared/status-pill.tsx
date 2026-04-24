@@ -45,4 +45,9 @@ const TONE: Record<StatusTone, string> = {
   skipped: "bg-status-skipped-bg text-status-skipped-fg",
   warning: "bg-status-warning-bg text-status-warning-fg",
   neutral: "bg-muted text-muted-foreground",
+  // Awaiting approval shares the warning palette — amber
+  // reads as "attention needed" without the "failing" weight
+  // of the destructive red. Operator eyes should land on
+  // these pills first when scanning the run page.
+  awaiting: "bg-status-warning-bg text-status-warning-fg",
 };

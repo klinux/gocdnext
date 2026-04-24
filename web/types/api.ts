@@ -188,6 +188,17 @@ export type JobDetail = {
   finished_at?: string;
   agent_id?: string;
   logs?: LogLine[];
+
+  // Approval-gate metadata. Populated only when the job is a
+  // manual approval gate; the server omits these fields on
+  // regular jobs so they stay absent on the wire.
+  approval_gate?: boolean;
+  approvers?: string[];
+  approval_description?: string;
+  awaiting_since?: string;
+  decided_by?: string;
+  decided_at?: string;
+  decision?: "approved" | "rejected" | string;
 };
 
 export type StageDetail = {

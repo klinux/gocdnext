@@ -136,6 +136,8 @@ const jobPillClasses: Record<StatusTone, string> = {
     "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400",
   warning:
     "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "bg-amber-500/15 border-amber-500/50 text-amber-700 dark:text-amber-400",
   canceled:
     "bg-muted-foreground/10 border-muted-foreground/30 text-muted-foreground",
   skipped:

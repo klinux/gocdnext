@@ -17,6 +17,10 @@ import type { StageDetail } from "@/types/api";
 
 type Props = {
   stage: StageDetail;
+  // runID piped through to JobCard so awaiting-approval gates
+  // can POST to the decision endpoint without having to look up
+  // the parent run from the URL on the client side.
+  runID: string;
 };
 
 // StageSection is the outer chrome for a single stage on the run
@@ -25,7 +29,7 @@ type Props = {
 // Mirrors the visual language of the projects page's job pills
 // (circular tone-tinted badge) in the header so the eye treats
 // all "status" cues across the app as one system.
-export function StageSection({ stage }: Props) {
+export function StageSection({ stage, runID }: Props) {
   const tone: StatusTone = statusTone(stage.status);
   return (
     <section
@@ -68,7 +72,7 @@ export function StageSection({ stage }: Props) {
       </header>
       <div className="divide-y divide-border/50">
         {stage.jobs.map((j) => (
-          <JobCard key={j.id} job={j} />
+          <JobCard key={j.id} job={j} runID={runID} />
         ))}
       </div>
     </section>
@@ -105,6 +109,8 @@ const stageGlyphClasses: Record<StatusTone, string> = {
     "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
   warning:
     "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "bg-amber-500/15 border-amber-500/60 text-amber-700 dark:text-amber-400",
   canceled: "bg-muted-foreground/10 border-muted-foreground/40 text-muted-foreground",
   skipped: "bg-muted-foreground/5 border-muted-foreground/30 text-muted-foreground",
   neutral: "bg-muted/40 border-border text-muted-foreground",

@@ -14,6 +14,7 @@ export function statusVariant(status: string): StatusVariant {
     case "running":
       return "default";
     case "queued":
+    case "awaiting_approval":
       return "secondary";
     case "success":
       return "success";
@@ -30,6 +31,9 @@ export function statusVariant(status: string): StatusVariant {
 
 export function statusLabel(status: string): string {
   if (!status) return "";
+  // `awaiting_approval` reads badly capitalised as-is; give the
+  // operator a space-separated form that fits the pill width.
+  if (status === "awaiting_approval") return "Awaiting approval";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
@@ -55,7 +59,8 @@ export type StatusTone =
   | "canceled"
   | "skipped"
   | "warning"
-  | "neutral";
+  | "neutral"
+  | "awaiting";
 
 // statusTone handles the run/stage/job vocabulary. Webhook and
 // agent-health mappings live alongside their consumers (small and
@@ -71,6 +76,8 @@ export function statusTone(status: string): StatusTone {
       return status;
     case "waiting":
       return "queued";
+    case "awaiting_approval":
+      return "awaiting";
     default:
       return "neutral";
   }

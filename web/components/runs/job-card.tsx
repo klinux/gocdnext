@@ -1,6 +1,7 @@
 import {
   Check,
   ChevronsRight,
+  Gavel,
   Loader2,
   Minus,
   TriangleAlert,
@@ -12,19 +13,25 @@ import { statusTone, type StatusTone } from "@/lib/status";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { LogViewer } from "@/components/runs/log-viewer";
+import { ApprovalButtons } from "@/components/runs/approval-buttons.client";
 import type { JobDetail } from "@/types/api";
 
 type Props = {
   job: JobDetail;
+  // runID enables the ApprovalButtons revalidation path — the
+  // server action revalidates `/runs/[runID]` after a decision.
+  runID: string;
 };
 
 // JobCard renders one job inside a stage's section. Visually a row
 // (not a card) so the outer stage-section container owns the
 // border/radius. Circular tone-tinted glyph on the left mirrors the
 // projects page's job pills — same system, different context.
-export function JobCard({ job }: Props) {
+export function JobCard({ job, runID }: Props) {
   const tone: StatusTone = statusTone(job.status);
   const hasLogs = (job.logs?.length ?? 0) > 0;
+  const awaiting = job.status === "awaiting_approval" && job.approval_gate;
+  const decided = job.approval_gate && !!job.decision;
 
   return (
     <div
@@ -85,6 +92,48 @@ export function JobCard({ job }: Props) {
       {job.error ? (
         <p className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
           {job.error}
+        </p>
+      ) : null}
+
+      {awaiting ? (
+        <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
+          <div className="flex items-center gap-2">
+            <Gavel className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
+            <span className="font-medium text-amber-700 dark:text-amber-300">
+              Awaiting approval
+            </span>
+            {job.awaiting_since ? (
+              <span className="text-xs text-muted-foreground">
+                · waiting since{" "}
+                <RelativeTime at={job.awaiting_since} fallback="—" />
+              </span>
+            ) : null}
+          </div>
+          {job.approval_description ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {job.approval_description}
+            </p>
+          ) : null}
+          <ApprovalButtons
+            jobRunID={job.id}
+            runID={runID}
+            jobName={job.name}
+            description={job.approval_description}
+            approvers={job.approvers}
+          />
+        </div>
+      ) : null}
+
+      {decided ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {job.decision === "approved" ? "Approved" : "Rejected"}
+          {job.decided_by ? ` by ${job.decided_by}` : ""}
+          {job.decided_at ? (
+            <>
+              {" · "}
+              <RelativeTime at={job.decided_at} fallback="—" />
+            </>
+          ) : null}
         </p>
       ) : null}
 
@@ -158,6 +207,8 @@ const jobGlyphClasses: Record<StatusTone, string> = {
     "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
   warning:
     "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "bg-amber-500/15 border-amber-500/60 text-amber-700 dark:text-amber-400",
   canceled:
     "bg-muted-foreground/10 border-muted-foreground/40 text-muted-foreground",
   skipped:

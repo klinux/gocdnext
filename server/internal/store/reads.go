@@ -250,6 +250,16 @@ type JobDetail struct {
 	FinishedAt *time.Time       `json:"finished_at,omitempty"`
 	AgentID    *uuid.UUID       `json:"agent_id,omitempty"`
 	Logs       []LogLineSummary `json:"logs,omitempty"`
+
+	// Approval gate fields. Populated only when approval_gate is
+	// true so regular jobs don't carry dead JSON on every response.
+	ApprovalGate        bool       `json:"approval_gate,omitempty"`
+	Approvers           []string   `json:"approvers,omitempty"`
+	ApprovalDescription string     `json:"approval_description,omitempty"`
+	AwaitingSince       *time.Time `json:"awaiting_since,omitempty"`
+	DecidedBy           string     `json:"decided_by,omitempty"`
+	DecidedAt           *time.Time `json:"decided_at,omitempty"`
+	Decision            string     `json:"decision,omitempty"`
 }
 
 type StageDetail struct {
@@ -806,16 +816,23 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 	jobsByStage := map[uuid.UUID][]JobDetail{}
 	for _, j := range jobs {
 		jd := JobDetail{
-			ID:         fromPgUUID(j.ID),
-			StageRunID: fromPgUUID(j.StageRunID),
-			Name:       j.Name,
-			MatrixKey:  stringValue(j.MatrixKey),
-			Image:      stringValue(j.Image),
-			Status:     j.Status,
-			ExitCode:   j.ExitCode,
-			Error:      stringValue(j.Error),
-			StartedAt:  pgTimePtr(j.StartedAt),
-			FinishedAt: pgTimePtr(j.FinishedAt),
+			ID:                  fromPgUUID(j.ID),
+			StageRunID:          fromPgUUID(j.StageRunID),
+			Name:                j.Name,
+			MatrixKey:           stringValue(j.MatrixKey),
+			Image:               stringValue(j.Image),
+			Status:              j.Status,
+			ExitCode:            j.ExitCode,
+			Error:               stringValue(j.Error),
+			StartedAt:           pgTimePtr(j.StartedAt),
+			FinishedAt:          pgTimePtr(j.FinishedAt),
+			ApprovalGate:        j.ApprovalGate,
+			Approvers:           j.Approvers,
+			ApprovalDescription: stringValue(j.ApprovalDescription),
+			AwaitingSince:       pgTimePtr(j.AwaitingSince),
+			DecidedBy:           stringValue(j.DecidedBy),
+			DecidedAt:           pgTimePtr(j.DecidedAt),
+			Decision:            stringValue(j.Decision),
 		}
 		if j.AgentID.Valid {
 			aid := fromPgUUID(j.AgentID)
