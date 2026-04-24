@@ -12,7 +12,7 @@ import {
 type Params = { slug: string };
 type SearchParams = { offset?: string };
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 25;
 
 export async function generateMetadata({
   params,
