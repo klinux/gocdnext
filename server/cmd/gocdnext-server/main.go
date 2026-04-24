@@ -27,6 +27,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
 	pipelinesapi "github.com/gocdnext/gocdnext/server/internal/api/pipelines"
+	pluginsapi "github.com/gocdnext/gocdnext/server/internal/api/plugins"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
 	"github.com/gocdnext/gocdnext/server/internal/auth"
@@ -200,6 +201,7 @@ func main() {
 	dashboardHandler := dashboardapi.NewHandler(st, logger)
 	accountHandler := account.New(st, logger)
 	pipelinesHandler := pipelinesapi.NewHandler(st, logger)
+	pluginsHandler := pluginsapi.NewHandler(logger, pluginCatalog)
 
 	sessions := grpcsrv.NewSessionStore()
 	// Wire the session registry into the Cancel endpoint so
@@ -350,6 +352,7 @@ func main() {
 		p.Post("/api/v1/job_runs/{id}/reject", runsHandler.Reject)
 		p.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
 		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
+		p.Get("/api/v1/plugins", pluginsHandler.List)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 		p.Get("/api/v1/agents", dashboardHandler.Agents)

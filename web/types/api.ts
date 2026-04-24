@@ -251,6 +251,26 @@ export type CachesList = {
   total_bytes: number;
 };
 
+// PluginInput mirrors one row of a `plugin.yaml`'s `inputs:` map
+// as the UI sees it — the catalog endpoint surfaces sorted arrays
+// (not objects) so the docs page iteration is stable.
+export type PluginInput = {
+  name: string;
+  required: boolean;
+  default?: string;
+  description?: string;
+};
+
+export type PluginSummary = {
+  name: string;
+  description?: string;
+  inputs: PluginInput[];
+};
+
+export type PluginsList = {
+  plugins: PluginSummary[];
+};
+
 export type VSMNode = {
   pipeline_id: string;
   name: string;

@@ -11,6 +11,7 @@ import type {
   CachesList,
   DashboardMetrics,
   GlobalRunSummary,
+  PluginsList,
   ProjectDetail,
   ProjectSummary,
   ProjectVSM,
@@ -140,4 +141,8 @@ export async function listCaches(slug: string): Promise<CachesList> {
   return readJSON<CachesList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/caches`,
   );
+}
+
+export async function listPlugins(): Promise<PluginsList> {
+  return readJSON<PluginsList>("/api/v1/plugins");
 }

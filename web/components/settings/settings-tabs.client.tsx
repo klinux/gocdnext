@@ -8,6 +8,7 @@ import {
   Archive,
   KeyRound,
   Lock,
+  Package,
   Plug,
   Webhook,
   type LucideIcon,
@@ -34,6 +35,7 @@ const tabs: Tab[] = [
   { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations", icon: Plug },
   { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth", icon: Lock },
   { label: "Secrets", href: "/settings/secrets" as Route, matchPrefix: "/settings/secrets", icon: KeyRound },
+  { label: "Plugins", href: "/settings/plugins" as Route, matchPrefix: "/settings/plugins", icon: Package },
 ];
 
 // SettingsTabs drives base-ui's controlled Tabs with the URL —
