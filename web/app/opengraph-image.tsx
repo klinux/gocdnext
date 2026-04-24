@@ -76,38 +76,52 @@ export default function OGImage() {
 
 function Mark() {
   // Inline SVG so Satori renders it without needing a font asset.
-  // Mirrors components/brand/logo.tsx exactly — rounded-arc
-  // hexagon + 3-layer chevron (brand-teal fill behind, thin-top
-  // + thick-bottom strokes over). Scaled to 100×100 in the OG.
+  // Mirrors components/brand/logo.tsx — hexagon frame + two
+  // gradient-filled ribbon curves. Satori supports <linearGradient>
+  // with numeric stops, so the same paths used in the favicon
+  // land here too. Scaled to 100×100 in the OG header.
   return (
     <svg width="100" height="100" viewBox="0 0 160 160" fill="none">
+      <defs>
+        <linearGradient
+          id="ogTop"
+          x1="23.796248"
+          y1="62.783008"
+          x2="85.930894"
+          y2="124.91765"
+          gradientTransform="matrix(1.2400315,0.08753382,-0.03824616,0.54180708,17.388739,9.4616189)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0%" stopColor="#8FE4EA" />
+          <stop offset="55%" stopColor={BRAND} />
+          <stop offset="100%" stopColor="#086370" />
+        </linearGradient>
+        <linearGradient
+          id="ogTeal"
+          x1="27.074875"
+          y1="121.03715"
+          x2="85.930894"
+          y2="179.27196"
+          gradientTransform="matrix(1.21055,-0.09023533,0.03942653,0.52892569,10.577888,22.499414)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0%" stopColor="#4FD1DB" />
+          <stop offset="100%" stopColor="#086370" />
+        </linearGradient>
+      </defs>
       <path
         d="M 64.41 21 Q 80 12 95.59 21 L 123.30 37 Q 138.89 46 138.89 64 L 138.89 96 Q 138.89 114 123.30 123 L 95.59 139 Q 80 148 64.41 139 L 36.70 123 Q 21.11 114 21.11 96 L 21.11 64 Q 21.11 46 36.70 37 Z"
         stroke={INK}
         strokeWidth="5"
       />
-      <g transform="translate(84 84) scale(0.7)">
-        <path
-          d="M -28 -38 Q -30 -44 -22 -42 L 22 -6 Q 30 0 22 6 L -22 42 Q -30 44 -28 38 Q -26 34 -20 30 L 14 0 L -20 -30 Q -26 -34 -28 -38 Z"
-          fill={BRAND}
-        />
-      </g>
-      <g transform="translate(80 80) scale(0.7)">
-        <path
-          d="M -24 -36 Q -28 -40 -22 -40 L 18 -6 Q 26 0 18 6 L -14 34"
-          stroke={INK}
-          strokeWidth="3.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M 22 4 L -22 42 Q -28 44 -26 38 L -16 28"
-          stroke={INK}
-          strokeWidth="7"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </g>
+      <path
+        d="M 46.184096,111.57288 C 58.397265,117.09952 75.308755,113.69325 96.918564,101.35407 C 111.29861,92.772312 118.82326,85.774394 119.49252,80.360321 C 107.43841,76.967495 92.461909,77.547436 74.563036,82.100143 C 56.743694,87.71976 60.633741,97.151369 46.184096,111.57288 Z"
+        fill="url(#ogTeal)"
+      />
+      <path
+        d="M 44.235256,49.249387 C 56.719957,43.540652 74.051942,46.960793 96.231212,59.50981 C 110.99169,68.24012 118.72549,75.37608 119.43264,80.91769 C 107.10224,84.44064 91.763168,83.907024 73.415437,79.316842 C 62.408657,75.596959 45.418126,63.611284 44.235256,49.249387 Z"
+        fill="url(#ogTop)"
+      />
     </svg>
   );
 }
