@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AuditPresets } from "@/components/admin/audit-presets.client";
+import { AuditDateRange } from "@/components/admin/audit-date-range.client";
 import { Pagination } from "@/components/shared/pagination";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listAuditEvents } from "@/server/queries/admin";
@@ -229,32 +229,8 @@ function FilterForm({
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-[repeat(2,1fr)_auto]">
-        <div className="space-y-1.5">
-          <Label htmlFor="audit-from" className="text-xs">
-            From (inclusive)
-          </Label>
-          <Input
-            id="audit-from"
-            type="date"
-            name="from"
-            defaultValue={from}
-            className="text-xs"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="audit-to" className="text-xs">
-            To (exclusive)
-          </Label>
-          <Input
-            id="audit-to"
-            type="date"
-            name="to"
-            defaultValue={to}
-            className="text-xs"
-          />
-        </div>
-        <AuditPresets />
+      <div className="max-w-sm">
+        <AuditDateRange from={from} to={to} />
       </div>
     </form>
   );
