@@ -1,21 +1,11 @@
 import Link from "next/link";
 import type { Metadata, Route } from "next";
-import { Activity, ChevronLeft, ChevronRight } from "lucide-react";
+import { Activity } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { RelativeTime } from "@/components/shared/relative-time";
-import { StatusBadge } from "@/components/shared/status-badge";
-import { formatDurationSeconds, durationBetween } from "@/lib/format";
+import { Pagination } from "@/components/shared/pagination";
+import { RunsTable } from "@/components/runs/runs-table";
 import { listGlobalRuns } from "@/server/queries/projects";
 
 export const metadata: Metadata = {
@@ -33,8 +23,8 @@ type SearchParams = {
   offset?: string;
 };
 
-// Valid values for the filter chips. Keep in sync with domain.CauseWebhook
-// etc. and domain.RunStatus on the Go side.
+// Valid values for the filter chips. Keep in sync with
+// domain.CauseWebhook etc. and domain.RunStatus on the Go side.
 const STATUSES = ["queued", "running", "success", "failed", "canceled"] as const;
 const CAUSES = ["webhook", "pull_request", "upstream", "manual"] as const;
 
@@ -71,68 +61,19 @@ export default async function RunsListPage({
 
       <FilterBar current={{ status, cause, project }} total={data.total} />
 
-      <Card>
-        <CardContent className="p-0">
-          {data.runs.length === 0 ? (
-            <div className="py-16 text-center text-sm text-muted-foreground">
-              No runs match your filters.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[120px]">Status</TableHead>
-                  <TableHead>Project / Pipeline</TableHead>
-                  <TableHead className="w-20">#</TableHead>
-                  <TableHead className="w-28">Cause</TableHead>
-                  <TableHead className="w-36">Started</TableHead>
-                  <TableHead className="w-28">Duration</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.runs.map((r) => {
-                  const dur = formatDurationSeconds(
-                    durationBetween(r.started_at, r.finished_at),
-                  );
-                  return (
-                    <TableRow
-                      key={r.id}
-                      className="font-mono text-xs cursor-pointer"
-                    >
-                      <TableCell>
-                        <StatusBadge status={r.status} />
-                      </TableCell>
-                      <TableCell className="truncate">
-                        <Link
-                          href={`/runs/${r.id}` as Route}
-                          className="hover:underline"
-                        >
-                          <span className="text-muted-foreground">
-                            {r.project_slug}
-                          </span>{" "}
-                          / {r.pipeline_name}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="font-semibold">
-                        #{r.counter}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {r.cause}
-                      </TableCell>
-                      <TableCell>
-                        <RelativeTime at={r.started_at ?? r.created_at} />
-                      </TableCell>
-                      <TableCell>{dur}</TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      <RunsTable
+        runs={data.runs}
+        variant="global"
+        emptyMessage="No runs match your filters."
+      />
 
-      <Pagination offset={offset} total={data.total} params={sp} />
+      <Pagination
+        offset={offset}
+        total={data.total}
+        pageSize={PAGE_SIZE}
+        basePath="/runs"
+        params={{ status, cause, project }}
+      />
     </section>
   );
 }
@@ -214,71 +155,9 @@ function FilterGroup<T extends string>({
   );
 }
 
-function Pagination({
-  offset,
-  total,
-  params,
-}: {
-  offset: number;
-  total: number;
-  params: SearchParams;
-}) {
-  const hasPrev = offset > 0;
-  const hasNext = offset + PAGE_SIZE < total;
-  if (!hasPrev && !hasNext) return null;
-
-  const prev = Math.max(0, offset - PAGE_SIZE);
-  const next = offset + PAGE_SIZE;
-  return (
-    <div className="flex items-center justify-between">
-      <p className="text-xs text-muted-foreground tabular-nums">
-        Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
-      </p>
-      <div className="flex gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!hasPrev}
-          render={
-            hasPrev ? (
-              <Link href={qs({ ...params, offset: String(prev) })}>
-                <ChevronLeft className="h-3.5 w-3.5" />
-                Prev
-              </Link>
-            ) : (
-              <span>
-                <ChevronLeft className="h-3.5 w-3.5" />
-                Prev
-              </span>
-            )
-          }
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!hasNext}
-          render={
-            hasNext ? (
-              <Link href={qs({ ...params, offset: String(next) })}>
-                Next
-                <ChevronRight className="h-3.5 w-3.5" />
-              </Link>
-            ) : (
-              <span>
-                Next
-                <ChevronRight className="h-3.5 w-3.5" />
-              </span>
-            )
-          }
-        />
-      </div>
-    </div>
-  );
-}
-
-// qs builds a `/runs?...` Route preserving all non-undefined keys.
-// Kept local so the filter components don't have to import a URL
-// helper for one use case.
+// qs builds a `/runs?...` Route preserving all non-undefined
+// keys. Kept local so the filter components don't have to import
+// a URL helper for one use case.
 function qs(params: Record<string, string | undefined>): Route {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {

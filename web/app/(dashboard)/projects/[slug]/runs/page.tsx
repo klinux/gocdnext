@@ -1,24 +1,18 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Metadata, Route } from "next";
+import type { Metadata } from "next";
 
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { RelativeTime } from "@/components/shared/relative-time";
-import { StatusBadge } from "@/components/shared/status-badge";
-import { durationBetween, formatDurationSeconds } from "@/lib/format";
+import { Pagination } from "@/components/shared/pagination";
+import { RunsTable } from "@/components/runs/runs-table";
 import {
   GocdnextAPIError,
   getProjectDetail,
+  listGlobalRuns,
 } from "@/server/queries/projects";
 
 type Params = { slug: string };
+type SearchParams = { offset?: string };
+
+const PAGE_SIZE = 50;
 
 export async function generateMetadata({
   params,
@@ -31,77 +25,53 @@ export async function generateMetadata({
 
 export const dynamic = "force-dynamic";
 
-// Recent runs tab. Pulls the detail feed with a larger run limit
-// than the layout's lean fetch (which only needed the metadata),
-// so this page actually lists activity instead of the last-one
-// placeholder the layout used for the header chrome.
+// Recent runs tab. Uses the global /api/v1/runs endpoint with
+// the `project=<slug>` filter so pagination + row shape stay
+// identical to the /runs page. Dropping the previous
+// getProjectDetail path here because that endpoint returns a
+// bounded slice (no total / offset) — paginating it would need
+// a separate query anyway, and reusing the global one keeps the
+// two lists visually and mechanically the same.
 export default async function ProjectRunsPage({
   params,
+  searchParams,
 }: {
   params: Promise<Params>;
+  searchParams: Promise<SearchParams>;
 }) {
   const { slug } = await params;
+  const sp = await searchParams;
+  const offset = sp.offset ? Math.max(0, Number.parseInt(sp.offset, 10)) : 0;
 
-  let detail;
+  // 404 early if the project is missing, so the runs fetch isn't
+  // blamed for an invalid slug.
   try {
-    detail = await getProjectDetail(slug, 50);
+    await getProjectDetail(slug, 1);
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 404) notFound();
     throw err;
   }
 
+  const data = await listGlobalRuns({
+    limit: PAGE_SIZE,
+    offset,
+    project: slug,
+  });
+
   return (
-    <div className="space-y-3">
-      {detail.runs.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No runs yet. Trigger one by pushing to a git material or calling the
-          webhook directly.
-        </p>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-16">#</TableHead>
-              <TableHead>Pipeline</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Cause</TableHead>
-              <TableHead>Started</TableHead>
-              <TableHead>Duration</TableHead>
-              <TableHead className="text-right">Triggered by</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {detail.runs.map((r) => (
-              <TableRow key={r.id} className="font-mono text-xs">
-                <TableCell className="font-semibold">#{r.counter}</TableCell>
-                <TableCell>
-                  <Link
-                    href={`/runs/${r.id}` as Route}
-                    className="hover:underline"
-                  >
-                    {r.pipeline_name}
-                  </Link>
-                </TableCell>
-                <TableCell>
-                  <StatusBadge status={r.status} />
-                </TableCell>
-                <TableCell className="text-muted-foreground">{r.cause}</TableCell>
-                <TableCell>
-                  <RelativeTime at={r.started_at ?? r.created_at} />
-                </TableCell>
-                <TableCell>
-                  {formatDurationSeconds(
-                    durationBetween(r.started_at, r.finished_at),
-                  )}
-                </TableCell>
-                <TableCell className="text-right text-muted-foreground">
-                  {r.triggered_by ?? "—"}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </div>
+    <section className="space-y-4">
+      <RunsTable
+        runs={data.runs}
+        variant="project"
+        emptyMessage="No runs yet. Trigger one by pushing to a git material or calling the webhook directly."
+      />
+
+      <Pagination
+        offset={offset}
+        total={data.total}
+        pageSize={PAGE_SIZE}
+        basePath={`/projects/${slug}/runs`}
+      />
+    </section>
   );
 }

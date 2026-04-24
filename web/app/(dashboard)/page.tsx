@@ -17,6 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { StatusDot } from "@/components/shared/status-dot";
+import { RunsTable } from "@/components/runs/runs-table";
 import { formatDurationSeconds } from "@/lib/format";
 import type { StatusTone } from "@/lib/status";
 import {
@@ -24,7 +25,7 @@ import {
   listAgents,
   listGlobalRunsOnly,
 } from "@/server/queries/projects";
-import type { AgentSummary, GlobalRunSummary } from "@/types/api";
+import type { AgentSummary } from "@/types/api";
 
 // Maps the backend's AgentHealthState to a StatusTone for the
 // design-system components. Stays colocated with the dashboard
@@ -116,32 +117,24 @@ export default async function DashboardPage() {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-6">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-              <CardTitle className="text-base">Recent activity</CardTitle>
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-base font-semibold tracking-tight">
+                Recent activity
+              </h3>
               <Link
-                href={"/projects" as Route}
-                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                href={"/runs" as Route}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               >
-                Projects <ArrowRight className="h-3 w-3" />
+                All runs <ArrowRight className="h-3 w-3" />
               </Link>
-            </CardHeader>
-            <CardContent className="px-0 pb-0">
-              {runs.length === 0 ? (
-                <EmptyState
-                  icon={Activity}
-                  title="No runs yet"
-                  body="Push a commit or trigger a manual run to get started."
-                />
-              ) : (
-                <ul className="divide-y divide-border">
-                  {runs.map((r) => (
-                    <RunRow key={r.id} run={r} />
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
+            </div>
+            <RunsTable
+              runs={runs}
+              variant="global"
+              emptyMessage="No runs yet. Push a commit or trigger a manual run to get started."
+            />
+          </section>
 
           {recentFailures.length > 0 ? (
             <Card>
@@ -243,30 +236,6 @@ function Metric({
         <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
       </CardContent>
     </Card>
-  );
-}
-
-function RunRow({ run }: { run: GlobalRunSummary }) {
-  return (
-    <li>
-      <Link
-        href={`/runs/${run.id}` as Route}
-        className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/50 transition-colors"
-      >
-        <StatusBadge status={run.status} />
-        <span className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span className="font-mono text-sm truncate">
-            {run.project_slug} / {run.pipeline_name}
-          </span>
-          <span className="font-mono text-xs text-muted-foreground">
-            #{run.counter}
-          </span>
-        </span>
-        <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-          <RelativeTime at={run.started_at ?? run.created_at} />
-        </span>
-      </Link>
-    </li>
   );
 }
 
