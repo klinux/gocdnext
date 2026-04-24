@@ -28,6 +28,7 @@ export type DocEntry = {
 const ORDER: string[] = [
   "architecture",
   "pipeline-spec",
+  "templates",
   "artifacts-design",
   "design-system",
   "cloud-dev",
@@ -39,6 +40,7 @@ const ORDER: string[] = [
 const TITLES: Record<string, string> = {
   architecture: "Architecture",
   "pipeline-spec": "Pipeline spec",
+  templates: "Pipeline templates",
   "artifacts-design": "Artifacts design",
   "design-system": "Design system",
   "cloud-dev": "Cloud dev environment",
