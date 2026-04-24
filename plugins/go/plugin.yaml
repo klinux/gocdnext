@@ -1,0 +1,17 @@
+name: go
+description: >
+  Run `go` toolchain commands — build, test, vet, mod, etc.
+  Ships with go:1.25-alpine + git + make; operator provides the
+  subcommand + args via `command:` and optionally changes
+  working-dir. Exits with the go CLI's exit code.
+
+inputs:
+  command:
+    required: true
+    description: >
+      go subcommand + args, word-split. Examples: "build ./...",
+      "test -race ./...", "test -cover -coverprofile=cover.out ./...".
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into before running go.
