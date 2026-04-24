@@ -329,6 +329,8 @@ func main() {
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
 		p.Post("/api/v1/job_runs/{id}/rerun", runsHandler.RerunJob)
+		p.Post("/api/v1/job_runs/{id}/approve", runsHandler.Approve)
+		p.Post("/api/v1/job_runs/{id}/reject", runsHandler.Reject)
 		p.Post("/api/v1/pipelines/{id}/trigger", runsHandler.TriggerPipeline)
 		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
