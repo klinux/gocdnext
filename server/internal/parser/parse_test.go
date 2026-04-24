@@ -716,6 +716,22 @@ notifications:
 	}
 }
 
+func TestParse_RejectsReservedStageName(t *testing.T) {
+	y := `
+stages: [build, _notifications]
+materials: [{manual: true}]
+jobs:
+  b:
+    stage: build
+    image: x
+    script: ["true"]
+`
+	if _, err := Parse(strings.NewReader(y), "p", "n"); err == nil ||
+		!strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("want reserved-name error, got %v", err)
+	}
+}
+
 func TestParse_NotificationRequiresUses(t *testing.T) {
 	y := `
 stages: [build]

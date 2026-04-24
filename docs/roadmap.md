@@ -148,7 +148,13 @@ Entradas da decisão:
   lines-per-job como safety-net.
 - ✅ **Notifications — parse + validate slice** (commit 78f2a18).
   `notifications:` top-level parse, domain.Notification, plugin-inputs
-  validator walks it. Dispatcher fica pra follow-up.
+  validator walks it.
+- ✅ **Notifications — dispatcher (Option A)**. Synth `_notifications`
+  stage materializada no run-create com 1 job por entry. Scheduler
+  avalia `on:` contra outcome agregado das user stages e skip-a
+  jobs que não batem. Run status vem das user stages só; falha de
+  notification não vira a run. Fail-fast em user stage preserva o
+  synth para `on: failure` ainda disparar.
 
 ### Próximas ondas (tamanho estimado)
 
@@ -159,14 +165,6 @@ Entradas da decisão:
   history (design em `docs/test-reports-design.md` quando for a vez).
 
 **Medium (1-2 dias cada)**
-- 💡 **Notifications — dispatcher slice.** Parse + validate já em prod
-  (78f2a18). Dispatcher ainda aberto. Design em aberto entre duas rotas:
-  (A) `_notifications` stage sintética materializada no run-create com
-  `when:` avaliado no dispatch (precisa wire de `when:` no scheduler —
-  hoje lê do YAML mas não filtra); (B) dispatcher pós-terminal que
-  injeta jobs só quando `on:` bate com o outcome. (B) é mais simples
-  porque pula a reforma do scheduler; (A) casa melhor com a UI
-  (notificações aparecem no timeline). Pesar na hora.
 - 💡 **PR builds end-to-end** — Checks API status + preview env +
   merge-gate.
 - 💡 **Environments primitive** — `dev/staging/prod` como type + deploy

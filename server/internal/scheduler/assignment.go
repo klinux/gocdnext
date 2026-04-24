@@ -37,7 +37,29 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 
 	jobDef, ok := findJob(def.Jobs, job.Name)
 	if !ok {
-		return nil, fmt.Errorf("scheduler: job %q not in pipeline definition", job.Name)
+		// Synth notification jobs aren't in def.Jobs — they're
+		// materialized at run-create time from def.Notifications.
+		// Rebuild a minimal domain.Job on the fly so the rest of
+		// this function doesn't have to branch.
+		if idx, isNotif := domain.NotificationIndexFromName(job.Name); isNotif {
+			if idx >= len(def.Notifications) {
+				return nil, fmt.Errorf("scheduler: notification idx %d out of range (have %d)", idx, len(def.Notifications))
+			}
+			n := def.Notifications[idx]
+			image, err := domain.ResolvePluginRef(n.Uses)
+			if err != nil {
+				return nil, fmt.Errorf("scheduler: notification %d: %w", idx, err)
+			}
+			jobDef = domain.Job{
+				Name:    job.Name,
+				Stage:   domain.NotificationStageName,
+				Image:   image,
+				Tasks:   []domain.Task{{Plugin: &domain.PluginStep{Image: image, Settings: n.With}}},
+				Secrets: append([]string(nil), n.Secrets...),
+			}
+		} else {
+			return nil, fmt.Errorf("scheduler: job %q not in pipeline definition", job.Name)
+		}
 	}
 
 	revs := map[string]revisionSnapshot{}
@@ -193,6 +215,26 @@ func jobDefFromDefinition(definition []byte, jobName string) (domain.Job, error)
 		return domain.Job{}, fmt.Errorf("scheduler: job %q not in pipeline definition", jobName)
 	}
 	return jobDef, nil
+}
+
+// notificationAtIndex resolves the Nth entry in the pipeline
+// definition's Notifications list. Used by the dispatch path to
+// read back a synth job's `on:` trigger + `with:` without having
+// to expand every synth job into def.Jobs at run-create time.
+// Returns ok=false when the index is out of range — the caller
+// treats that as "spec vanished after apply", dropping the
+// dispatch rather than crashing.
+func notificationAtIndex(definition []byte, idx int) (domain.Notification, bool) {
+	var def struct {
+		Notifications []domain.Notification `json:"Notifications"`
+	}
+	if err := json.Unmarshal(definition, &def); err != nil {
+		return domain.Notification{}, false
+	}
+	if idx < 0 || idx >= len(def.Notifications) {
+		return domain.Notification{}, false
+	}
+	return def.Notifications[idx], true
 }
 
 // concurrencyFromDefinition pulls the pipeline-level concurrency

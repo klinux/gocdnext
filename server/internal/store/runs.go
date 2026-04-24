@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
@@ -226,6 +227,19 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		}
 	}
 
+	// Synth stage for pipeline-level notifications. Appended after
+	// the user's stages so it runs after everything else finishes.
+	// Each notification becomes one job_run keyed by its index in
+	// pipeline.Notifications — the scheduler reads the index back
+	// via domain.NotificationIndexFromName to fetch the spec
+	// (uses/with/secrets) at dispatch time, and the on: trigger
+	// decides whether to actually run the job based on the user
+	// stages' aggregate outcome. Zero notifications → no synth
+	// stage, keeping the hot path free of extra work.
+	if err := synthesizeNotificationStage(ctx, q, runRow.ID, len(def.Stages), def.Notifications, &result); err != nil {
+		return RunCreated{}, err
+	}
+
 	if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", RunQueuedChannel, result.RunID.String()); err != nil {
 		return RunCreated{}, fmt.Errorf("store: notify run_queued: %w", err)
 	}
@@ -234,6 +248,54 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		return RunCreated{}, fmt.Errorf("store: create run: commit: %w", err)
 	}
 	return result, nil
+}
+
+// synthesizeNotificationStage inserts a single `_notifications`
+// stage and one job_run per entry in `notifications`. The
+// scheduler dispatches these after the user stages complete,
+// using the job name's encoded index to resolve back to the
+// pipeline's Notification spec (image/settings/secrets/on).
+func synthesizeNotificationStage(ctx context.Context, q *db.Queries, runID pgtype.UUID, userStageCount int, notifications []domain.Notification, result *RunCreated) error {
+	if len(notifications) == 0 {
+		return nil
+	}
+	stageRow, err := q.InsertStageRun(ctx, db.InsertStageRunParams{
+		RunID:   runID,
+		Name:    domain.NotificationStageName,
+		Ordinal: int32(userStageCount),
+	})
+	if err != nil {
+		return fmt.Errorf("store: insert notifications stage: %w", err)
+	}
+	stageID := fromPgUUID(stageRow.ID)
+	result.StageRuns = append(result.StageRuns, StageRunRef{
+		ID: stageID, Name: domain.NotificationStageName, Ordinal: userStageCount,
+	})
+
+	for i, n := range notifications {
+		image, err := domain.ResolvePluginRef(n.Uses)
+		if err != nil {
+			return fmt.Errorf("store: notifications[%d]: %w", i, err)
+		}
+		name := domain.NotificationJobName(i)
+		row, err := q.InsertJobRun(ctx, db.InsertJobRunParams{
+			RunID:      runID,
+			StageRunID: stageRow.ID,
+			Name:       name,
+			MatrixKey:  nullableString(""),
+			Image:      nullableString(image),
+			Needs:      []string{},
+		})
+		if err != nil {
+			return fmt.Errorf("store: insert notification %d: %w", i, err)
+		}
+		result.JobRuns = append(result.JobRuns, JobRunRef{
+			ID:         fromPgUUID(row.ID),
+			StageRunID: stageID,
+			Name:       name,
+		})
+	}
+	return nil
 }
 
 // expandMatrix returns the cartesian product of a matrix spec. An empty matrix

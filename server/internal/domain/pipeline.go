@@ -6,6 +6,8 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -121,6 +123,83 @@ const (
 	NotifyOnAlways   NotificationTrigger = "always"
 	NotifyOnCanceled NotificationTrigger = "canceled"
 )
+
+// NotificationStageName is the reserved stage name used when the
+// store synthesizes a trailing stage to hold notification jobs.
+// The parser rejects user pipelines that try to declare a stage
+// with this name so a user-written stage doesn't collide with
+// the synth one's ordinal slot.
+const NotificationStageName = "_notifications"
+
+// NotificationJobName builds the synthetic job_run name for a
+// notification at index `idx`. Encoding the index is enough —
+// the trigger is read back from pipeline.Notifications[idx] at
+// dispatch time, so we don't have to pack trigger into the name.
+func NotificationJobName(idx int) string {
+	return fmt.Sprintf("_notify_%d", idx)
+}
+
+// IsNotificationJobName reports whether a job_run name was
+// produced by NotificationJobName. Used by the scheduler +
+// assignment paths to branch into the synth lookup (pull spec
+// from pipeline.Notifications instead of pipeline.Jobs).
+func IsNotificationJobName(name string) bool {
+	return strings.HasPrefix(name, "_notify_")
+}
+
+// NotificationIndexFromName recovers the index out of a synth
+// job_run name. Returns -1 + ok=false when the name wasn't
+// produced by NotificationJobName.
+func NotificationIndexFromName(name string) (int, bool) {
+	if !IsNotificationJobName(name) {
+		return -1, false
+	}
+	rest := strings.TrimPrefix(name, "_notify_")
+	i, err := strconv.Atoi(rest)
+	if err != nil || i < 0 {
+		return -1, false
+	}
+	return i, true
+}
+
+// ResolvePluginRef translates a `uses:` reference into the
+// Docker image spec the runner feeds to `docker run`. Accepted
+// shapes mirror GitHub Actions:
+//
+//	owner/name                     → "owner/name"
+//	owner/name@v1                  → "owner/name:v1"
+//	owner/name@sha256:<hex>        → digest pin, passed through
+//	registry.io/owner/name@v1      → "registry.io/owner/name:v1"
+//
+// Lives in domain (not parser) so the store's run-materialization
+// path can resolve notification refs without importing the parser
+// layer — the boundary stays "parser makes domain, store persists
+// domain". Tag validation is intentionally lax; Docker rejects
+// garbage tags at pull time with a clear error.
+func ResolvePluginRef(uses string) (string, error) {
+	uses = strings.TrimSpace(uses)
+	if uses == "" {
+		return "", fmt.Errorf("`uses:` is empty")
+	}
+	if strings.ContainsAny(uses, " \t\n") {
+		return "", fmt.Errorf("`uses:` contains whitespace: %q", uses)
+	}
+	at := strings.Index(uses, "@")
+	if at < 0 {
+		return uses, nil
+	}
+	base, suffix := uses[:at], uses[at+1:]
+	if base == "" {
+		return "", fmt.Errorf("`uses:` missing image before `@`: %q", uses)
+	}
+	if suffix == "" {
+		return "", fmt.Errorf("`uses:` missing version after `@`: %q", uses)
+	}
+	if strings.HasPrefix(suffix, "sha256:") {
+		return uses, nil
+	}
+	return base + ":" + suffix, nil
+}
 
 // Notification is one post-run side effect. Shape mirrors the
 // plugin-style `uses:` + `with:` + `secrets:` contract so the

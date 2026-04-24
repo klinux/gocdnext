@@ -229,8 +229,48 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		return
 	}
 
+	// Cache the user-stage outcome so we don't re-query it for
+	// every synth notification job in the same tick. nil = not
+	// queried yet; lookup is lazy + at-most-once per tick.
+	var userOutcome *store.UserStageOutcome
+	userOutcomeFor := func() (store.UserStageOutcome, error) {
+		if userOutcome != nil {
+			return *userOutcome, nil
+		}
+		o, err := s.store.GetRunUserStageOutcome(ctx, runID)
+		if err != nil {
+			return store.UserStageOutcome{}, err
+		}
+		userOutcome = &o
+		return o, nil
+	}
+
 	dispatched := 0
 	for _, job := range jobs {
+		// Synth notification jobs: evaluate the `on:` trigger
+		// against the user-stage outcome. Non-matching entries
+		// get skipped in-place (not canceled — skipped means "not
+		// attempted by design") so the notifications stage can
+		// close once the last dispatch or skip lands.
+		if idx, isNotif := domain.NotificationIndexFromName(job.Name); isNotif {
+			notif, ok := notificationAtIndex(run.Definition, idx)
+			if !ok {
+				s.log.Warn("scheduler: notification spec missing", "run_id", runID, "idx", idx)
+				continue
+			}
+			o, err := userOutcomeFor()
+			if err != nil {
+				s.log.Warn("scheduler: user outcome lookup", "run_id", runID, "err", err)
+				continue
+			}
+			if !store.NotificationTriggerMatches(notif.On, o) {
+				if _, _, err := s.store.SkipNotificationJob(ctx, job.ID); err != nil {
+					s.log.Warn("scheduler: skip notification", "job_id", job.ID, "err", err)
+				}
+				continue
+			}
+		}
+
 		requiredTags, tagsErr := JobTagsFromDefinition(run.Definition, job.Name)
 		if tagsErr != nil {
 			s.log.Warn("scheduler: read job tags", "job_id", job.ID, "err", tagsErr)

@@ -53,6 +53,16 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		return nil, fmt.Errorf("concurrency: unknown value %q (want \"parallel\" or \"serial\")", f.Concurrency)
 	}
 
+	// _notifications is a reserved stage name: at run materialization
+	// time the store appends a synthetic stage with that exact name
+	// to hold notification jobs. Colliding with it would break
+	// ordinal math + the cascade's "is this stage synthetic?" check.
+	for _, s := range f.Stages {
+		if s == domain.NotificationStageName {
+			return nil, fmt.Errorf("stage name %q is reserved for server-synthesized notification jobs", s)
+		}
+	}
+
 	p := &domain.Pipeline{
 		ProjectID:   projectID,
 		Name:        name,

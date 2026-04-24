@@ -186,44 +186,130 @@ func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, r
 	comp.StageStatus = stageStatus
 
 	if stageStatus == string(domain.StatusFailed) {
-		// Fail-fast: cancel remaining queued work (including
+		// Fail-fast: cancel remaining queued USER work (including
 		// awaiting_approval gates — a rejected deploy upstream
-		// means the downstream approvals are moot) and mark the
-		// run failed.
+		// means the downstream approvals are moot). The synthetic
+		// `_notifications` stage is preserved on purpose so a
+		// declared `on: failure` notification still fires. We
+		// intentionally DO NOT complete the run yet — if the
+		// pipeline has notifications they need to run first; the
+		// run finalizes once `_notifications` drains (handled by
+		// the run-progress branch below on the notifications
+		// stage's own cascade tick).
 		if err := q.CancelQueuedStagesInRun(ctx, runID); err != nil {
 			return fmt.Errorf("store: cancel stages: %w", err)
 		}
 		if err := q.CancelQueuedJobsInRun(ctx, runID); err != nil {
 			return fmt.Errorf("store: cancel jobs: %w", err)
 		}
-		if err := q.CompleteRun(ctx, db.CompleteRunParams{
-			ID: runID, Status: string(domain.StatusFailed),
-		}); err != nil {
-			return fmt.Errorf("store: complete run: %w", err)
-		}
-		comp.RunCompleted = true
-		comp.RunStatus = string(domain.StatusFailed)
-		return nil
 	}
 
 	run, err := q.GetRunProgress(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("store: run progress: %w", err)
 	}
-	if run.Unfinished == 0 {
-		runStatus := string(domain.StatusSuccess)
-		if run.Failed > 0 {
-			runStatus = string(domain.StatusFailed)
-		}
-		if err := q.CompleteRun(ctx, db.CompleteRunParams{
-			ID: runID, Status: runStatus,
-		}); err != nil {
-			return fmt.Errorf("store: complete run: %w", err)
-		}
-		comp.RunCompleted = true
-		comp.RunStatus = runStatus
+	if run.Unfinished > 0 {
+		return nil
 	}
+	// Everything is done — user stages AND (if any) the
+	// `_notifications` synth stage. Derive the run outcome from
+	// USER stage jobs only so a notifier plugin failing doesn't
+	// flip a passing build to failed or vice versa. The OLD path
+	// keyed the aggregate on run.Failed which counted every
+	// failed job including notifications; that's wrong once the
+	// synth stage exists, and the new query excludes it cleanly.
+	userOutcome, err := q.GetRunUserStageOutcome(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("store: user stage outcome: %w", err)
+	}
+	runStatus := string(domain.StatusSuccess)
+	if userOutcome.Failed > 0 {
+		runStatus = string(domain.StatusFailed)
+	}
+	if err := q.CompleteRun(ctx, db.CompleteRunParams{
+		ID: runID, Status: runStatus,
+	}); err != nil {
+		return fmt.Errorf("store: complete run: %w", err)
+	}
+	comp.RunCompleted = true
+	comp.RunStatus = runStatus
 	return nil
+}
+
+// UserStageOutcome is the aggregate terminal-state tally across
+// a run's user stages only — the synthetic `_notifications`
+// stage is excluded. The scheduler uses it to decide whether a
+// notification's `on:` trigger matches before dispatching.
+type UserStageOutcome struct {
+	Failed   int64
+	Canceled int64
+}
+
+// GetRunUserStageOutcome returns the aggregate tally of user-stage
+// job outcomes for a run. Used by the scheduler's notification
+// dispatch path; zeros on both fields = all user jobs succeeded.
+func (s *Store) GetRunUserStageOutcome(ctx context.Context, runID uuid.UUID) (UserStageOutcome, error) {
+	row, err := s.q.GetRunUserStageOutcome(ctx, pgUUID(runID))
+	if err != nil {
+		return UserStageOutcome{}, fmt.Errorf("store: user stage outcome: %w", err)
+	}
+	return UserStageOutcome{Failed: row.Failed, Canceled: row.Canceled}, nil
+}
+
+// NotificationTriggerMatches reports whether a notification's
+// `on:` value fires given the user stages' aggregated outcome.
+// Shared between the scheduler's dispatch path (decides whether
+// to send the synth job to an agent) and tests.
+func NotificationTriggerMatches(on domain.NotificationTrigger, o UserStageOutcome) bool {
+	switch on {
+	case domain.NotifyOnAlways:
+		return true
+	case domain.NotifyOnFailure:
+		return o.Failed > 0
+	case domain.NotifyOnCanceled:
+		return o.Canceled > 0
+	case domain.NotifyOnSuccess:
+		return o.Failed == 0 && o.Canceled == 0
+	default:
+		return false
+	}
+}
+
+// SkipNotificationJob marks a queued notification job as skipped
+// and cascades — the stage can close once the last notification
+// is either dispatched or skipped. Returns ok=false when the row
+// wasn't in 'queued' (another tick raced us or the job already
+// transitioned). The cascade pass lets the run complete cleanly
+// even when every notification skipped (no dispatches at all).
+func (s *Store) SkipNotificationJob(ctx context.Context, jobRunID uuid.UUID) (JobCompletion, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return JobCompletion{}, false, fmt.Errorf("store: skip job: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	row, err := q.SkipJobRun(ctx, pgUUID(jobRunID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return JobCompletion{}, false, nil
+		}
+		return JobCompletion{}, false, fmt.Errorf("store: skip job: %w", err)
+	}
+
+	comp := JobCompletion{
+		JobRunID:   fromPgUUID(row.ID),
+		RunID:      fromPgUUID(row.RunID),
+		StageRunID: fromPgUUID(row.StageRunID),
+		JobName:    row.Name,
+	}
+	if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+		return JobCompletion{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return JobCompletion{}, false, fmt.Errorf("store: skip job: commit: %w", err)
+	}
+	return comp, true, nil
 }
 
 // NotifyRunQueued emits `run_queued` so the scheduler wakes up for the given

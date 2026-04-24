@@ -22,10 +22,16 @@ type Querier interface {
 	// Pending approval gates in a failed run also get canceled so a
 	// rejected deploy doesn't leave a "ready to approve" ghost sitting
 	// in the UI with no path forward. Reject is the intended decision
-	// path; cancel here only fires on upstream stage failure.
+	// path; cancel here only fires on upstream stage failure. Jobs
+	// inside the synthetic _notifications stage are preserved so
+	// `on: failure` notifications still fire.
 	CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error
-	// When a stage fails we stop dispatching the rest of the run. Running work
-	// stays untouched; the agent will still report its outcome.
+	// When a user stage fails we stop dispatching the rest of the run's user
+	// stages. Running work stays untouched; the agent will still report its
+	// outcome. The synthetic _notifications stage is preserved on purpose —
+	// a pipeline that declared `on: failure` notifications still needs them
+	// to fire. The scheduler filters the notification jobs by `on:` when
+	// dispatching so only the matching ones actually run.
 	CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID) error
 	// Atomically marks a bounded batch of artefacts as 'deleting' and
 	// returns their storage keys so the sweeper can call Store.Delete and
@@ -183,6 +189,11 @@ type Querier interface {
 	// was NOT triggered by an upstream material (cause is 'webhook' /
 	// 'manual'). Caller checks upstream_run_id.Valid.
 	GetRunUpstreamContext(ctx context.Context, id pgtype.UUID) (GetRunUpstreamContextRow, error)
+	// Aggregate job outcomes across USER stages only (everything except
+	// the synthetic _notifications). The cascade uses this to decide the
+	// final run.status when finalizing — notification success/failure
+	// must not flip a user run from success to failed or vice versa.
+	GetRunUserStageOutcome(ctx context.Context, runID pgtype.UUID) (GetRunUserStageOutcomeRow, error)
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (GetScmSourceByProjectRow, error)
 	// Webhook-handler path: pulls the sealed secret + the scm_source
@@ -449,6 +460,13 @@ type Querier interface {
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
+	// Marks a still-queued job as 'skipped' with a terminal finish
+	// time so GetStageProgress stops counting it as unfinished. The
+	// scheduler calls this for synthetic notification jobs whose
+	// `on:` trigger doesn't match the run's user-stage outcome —
+	// skipped is the right semantic (the job was never attempted on
+	// purpose) vs. canceled (user/system stopped it).
+	SkipJobRun(ctx context.Context, id pgtype.UUID) (SkipJobRunRow, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)

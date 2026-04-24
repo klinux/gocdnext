@@ -118,6 +118,84 @@ func TestCreateRunFromModification_CreatesRunStagesJobs(t *testing.T) {
 	}
 }
 
+func TestCreateRunFromModification_SynthesizesNotificationStage(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	url, branch := "https://github.com/org/notif", "main"
+	fp := store.FingerprintFor(url, branch)
+	p := &domain.Pipeline{
+		Name:   "with-notifs",
+		Stages: []string{"build"},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+		}},
+		Jobs: []domain.Job{
+			{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}},
+		},
+		Notifications: []domain.Notification{
+			{On: domain.NotifyOnFailure, Uses: "gocdnext/slack@v1", With: map[string]string{"channel": "#eng"}},
+			{On: domain.NotifyOnSuccess, Uses: "gocdnext/email@v1", With: map[string]string{"host": "smtp.x"}},
+		},
+	}
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "notif", Name: "Notif", Pipelines: []*domain.Pipeline{p},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var mid uuid.UUID
+	_ = pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&mid)
+
+	got, err := s.CreateRunFromModification(ctx, baseTriggerInput(res.Pipelines[0].PipelineID, mid, 0))
+	if err != nil {
+		t.Fatalf("CreateRunFromModification: %v", err)
+	}
+
+	// Expect stages: [build, _notifications] (synth appended).
+	if len(got.StageRuns) != 2 {
+		t.Fatalf("stages = %d, want 2 (build + _notifications)", len(got.StageRuns))
+	}
+	if got.StageRuns[1].Name != domain.NotificationStageName {
+		t.Errorf("stage[1].name = %q, want %q", got.StageRuns[1].Name, domain.NotificationStageName)
+	}
+	if got.StageRuns[1].Ordinal != 1 {
+		t.Errorf("stage[1].ordinal = %d, want 1", got.StageRuns[1].Ordinal)
+	}
+
+	// Expect 3 job_runs total: 1 user (compile) + 2 synth notifications.
+	if len(got.JobRuns) != 3 {
+		t.Fatalf("jobs = %d, want 3", len(got.JobRuns))
+	}
+	var notifyNames []string
+	for _, j := range got.JobRuns {
+		if domain.IsNotificationJobName(j.Name) {
+			notifyNames = append(notifyNames, j.Name)
+			if j.StageRunID != got.StageRuns[1].ID {
+				t.Errorf("synth job %q stage mismatch: %s vs %s",
+					j.Name, j.StageRunID, got.StageRuns[1].ID)
+			}
+		}
+	}
+	if len(notifyNames) != 2 {
+		t.Errorf("want 2 synth jobs, got %v", notifyNames)
+	}
+
+	// Image column should carry the resolved plugin ref so
+	// BuildAssignment can fall back to it if def.Notifications
+	// is ever dropped.
+	var img string
+	_ = pool.QueryRow(ctx,
+		`SELECT image FROM job_runs WHERE name = $1 AND run_id = $2`,
+		domain.NotificationJobName(0), got.RunID,
+	).Scan(&img)
+	if img != "gocdnext/slack:v1" {
+		t.Errorf("synth image = %q, want gocdnext/slack:v1", img)
+	}
+}
+
 func TestCreateRunFromModification_CounterIncrementsPerPipeline(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
