@@ -1,0 +1,64 @@
+name: gitleaks
+category: security
+description: >
+  Secret scanner that catches accidentally-committed credentials,
+  API keys, and tokens. Add at the front of a pipeline so leaks
+  surface before they propagate to downstream jobs. Defaults to
+  scanning the working tree (`dir` mode); `git` mode walks the
+  full commit history for repo-lifetime audits.
+
+inputs:
+  path:
+    required: false
+    default: "."
+    description: >
+      Path under the workspace to scan. Defaults to the whole
+      repo root; point at a subdir to narrow the scope on a
+      monorepo.
+  config:
+    required: false
+    description: >
+      Path to a `gitleaks.toml` config (relative to the workspace).
+      Empty = use the bundled default ruleset.
+  format:
+    required: false
+    default: json
+    description: >
+      Report format — json, sarif, or csv.
+  report:
+    required: false
+    description: >
+      Path under the workspace to write the report to. Pair with
+      `artifacts.optional:` to attach the report to the run.
+  scan-mode:
+    required: false
+    default: dir
+    description: >
+      "dir" scans the current working tree (fast, checks what's
+      checked out). "git" walks commit history (slower, catches
+      secrets buried in old commits).
+  exit-code:
+    required: false
+    default: "1"
+    description: >
+      Exit code when leaks are found. Set to "0" for advisory-
+      only scans that attach a report but don't fail CI.
+
+examples:
+  - name: block PR on leak
+    description: Default mode — scan the working tree, fail on any leak.
+    yaml: |
+      uses: gocdnext/gitleaks@v1
+
+  - name: advisory scan with report
+    description: >
+      Don't fail the build; attach the JSON report so operators
+      can review findings without blocking merges.
+    yaml: |
+      uses: gocdnext/gitleaks@v1
+      with:
+        format: json
+        report: gitleaks-report.json
+        exit-code: "0"
+      artifacts:
+        optional: [gitleaks-report.json]

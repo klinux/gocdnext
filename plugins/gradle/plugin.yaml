@@ -1,0 +1,51 @@
+name: gradle
+category: build
+description: >
+  Run Gradle tasks — build, test, publish, etc. Prefers
+  `./gradlew` when the project ships a wrapper (Gradle's
+  best-practice path since the wrapper pins the exact version);
+  falls back to the bundled `gradle` 8.10 otherwise. Daemon off
+  by default — CI containers are ephemeral so the daemon rarely
+  earns its keep.
+
+inputs:
+  command:
+    required: true
+    description: >
+      gradle tasks + args, word-split. Examples: "build",
+      "test --tests com.acme.AppTest", "publish -Prelease=true".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into before running
+      gradle. Multi-module monorepos with a nested build.gradle
+      set this.
+  gradle-opts:
+    required: false
+    description: >
+      Extra JVM args exported as GRADLE_OPTS. Useful for
+      "-Xmx4g" on big builds.
+  daemon:
+    required: false
+    default: "false"
+    description: >
+      Set to "true" to run with --daemon instead of --no-daemon.
+      Only worthwhile when the runner caches $GRADLE_USER_HOME
+      across runs.
+
+examples:
+  - name: test
+    description: Run the test task via the project's wrapper.
+    yaml: |
+      uses: gocdnext/gradle@v1
+      with:
+        command: test
+
+  - name: publish with big heap
+    description: Publish a release, bumping Gradle's JVM heap.
+    yaml: |
+      uses: gocdnext/gradle@v1
+      with:
+        command: publish -Prelease=true
+        gradle-opts: "-Xmx4g"

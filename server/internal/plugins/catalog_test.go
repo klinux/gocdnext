@@ -7,6 +7,75 @@ import (
 	"testing"
 )
 
+func TestCatalog_LoadSurfacesCategoryAndExamples(t *testing.T) {
+	// Schema extension: category groups plugins on the UI, examples
+	// surface ready-to-copy YAML snippets. Both are optional; the
+	// loader must populate them when set and leave them empty
+	// otherwise (older manifests that predate the fields still parse).
+	root := t.TempDir()
+	writePlugin(t, root, "helm", `
+name: helm
+category: deploy
+description: deploy release
+inputs:
+  command:
+    required: true
+    description: helm subcmd.
+examples:
+  - name: upgrade prod
+    description: typical release
+    yaml: |
+      uses: gocdnext/helm@v1
+      with:
+        command: upgrade --install api ./chart
+`)
+	writePlugin(t, root, "legacy", `
+name: legacy
+description: no extras
+inputs: {}
+`)
+
+	c := New()
+	if err := c.Load(root); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	helm, ok := c.Lookup("gocdnext/helm")
+	if !ok {
+		t.Fatal("helm missing")
+	}
+	if helm.Category != "deploy" {
+		t.Errorf("category = %q", helm.Category)
+	}
+	if len(helm.Examples) != 1 {
+		t.Fatalf("examples = %d, want 1", len(helm.Examples))
+	}
+	ex := helm.Examples[0]
+	if ex.Name != "upgrade prod" {
+		t.Errorf("example name = %q", ex.Name)
+	}
+	if ex.YAML == "" || !strings.Contains(ex.YAML, "uses: gocdnext/helm@v1") {
+		t.Errorf("example yaml missing content:\n%s", ex.YAML)
+	}
+	// Trailing newline from the YAML block scalar must be trimmed
+	// so the frontend can render the snippet flush without an
+	// empty line at the bottom.
+	if strings.HasSuffix(ex.YAML, "\n") {
+		t.Errorf("example yaml ends with trailing newline:\n%q", ex.YAML)
+	}
+
+	legacy, ok := c.Lookup("gocdnext/legacy")
+	if !ok {
+		t.Fatal("legacy missing")
+	}
+	if legacy.Category != "" {
+		t.Errorf("legacy category should be empty, got %q", legacy.Category)
+	}
+	if len(legacy.Examples) != 0 {
+		t.Errorf("legacy examples should be empty, got %d", len(legacy.Examples))
+	}
+}
+
 func TestCatalog_LoadReadsManifests(t *testing.T) {
 	// Seed a temp monorepo shape so the loader exercises the
 	// real filesystem walk without depending on the actual

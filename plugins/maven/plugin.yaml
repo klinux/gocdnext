@@ -1,0 +1,83 @@
+name: maven
+category: build
+description: >
+  Run Maven commands (verify, package, deploy, etc.) with
+  optional Nexus/Artifactory auth via synthesised settings.xml.
+  Ships Maven 3.9 + JDK 21. Pipe credentials from the job's
+  `secrets:` list so the plaintext stays out of logs.
+
+inputs:
+  command:
+    required: true
+    description: >
+      mvn subcommand + args, word-split. Examples: "verify",
+      "clean package -DskipTests", "deploy -Pprod".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into — useful on
+      multi-module builds where the root pom.xml sits deeper
+      than the repo root.
+  settings:
+    required: false
+    description: >
+      Path to a pre-made settings.xml relative to the workspace.
+      When set, the nexus-* inputs are ignored — operators
+      bringing their own file are trusted to encode auth themselves.
+  nexus-url:
+    required: false
+    description: >
+      Base URL of the repository manager. Informational only;
+      currently not injected into settings.xml (Maven reads
+      repositoryManagement from the pom) — set here so the plugin
+      can grow a mirror entry later without a breaking change.
+  nexus-username:
+    required: false
+    description: >
+      Username for the synthesised settings.xml `<server>`
+      entries. Paired with nexus-password; both empty = no
+      settings.xml is synthesised.
+  nexus-password:
+    required: false
+    description: >
+      Password/token for the synthesised settings.xml. Populate
+      via the job's `secrets:` list.
+  snapshot-repo-id:
+    required: false
+    default: snapshots
+    description: >
+      Server id embedded in the synthesised settings.xml for the
+      snapshot repository. Must match the id in the pom's
+      distributionManagement.snapshotRepository.
+  release-repo-id:
+    required: false
+    default: releases
+    description: >
+      Server id for the release repository. Must match the id in
+      the pom's distributionManagement.repository.
+
+examples:
+  - name: test
+    description: Standard CI step — compile + run tests.
+    yaml: |
+      uses: gocdnext/maven@v1
+      with:
+        command: verify
+
+  - name: deploy to Nexus
+    description: >
+      Publish to a private Nexus repository; credentials piped
+      from secrets land in an auto-synthesised settings.xml at
+      /tmp. Plaintext never touches the log.
+    yaml: |
+      secrets:
+        - NEXUS_USERNAME
+        - NEXUS_PASSWORD
+      uses: gocdnext/maven@v1
+      with:
+        command: deploy -Pprod -DskipTests
+        nexus-username: ${{ NEXUS_USERNAME }}
+        nexus-password: ${{ NEXUS_PASSWORD }}
+        snapshot-repo-id: acme-snapshots
+        release-repo-id: acme-releases

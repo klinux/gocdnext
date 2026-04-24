@@ -1,0 +1,90 @@
+name: kaniko
+category: container
+description: >
+  Rootless container build. Complement to gocdnext/docker when
+  the agent runs in Kubernetes without DinD — kaniko writes
+  straight to a remote registry from a userspace container, no
+  daemon/socket/privileged mode required. Slower than a warm
+  docker daemon but far cheaper on K8s.
+
+inputs:
+  image:
+    required: true
+    description: >
+      Fully-qualified target tag (e.g. "ghcr.io/org/app:v1").
+      Kaniko writes straight to the registry, so a bare name
+      without a registry host would fall back to docker.io
+      implicitly — prefer explicit paths in CI.
+  dockerfile:
+    required: false
+    default: Dockerfile
+    description: Path to the Dockerfile, relative to the build context.
+  context:
+    required: false
+    default: "."
+    description: Build context directory, relative to the workspace.
+  build-args:
+    required: false
+    description: >
+      KEY=VALUE list (comma- or newline-separated) forwarded as
+      `--build-arg` to kaniko. Malformed entries (missing `=`)
+      are skipped with a warning.
+  cache:
+    required: false
+    default: "false"
+    description: >
+      Set to "true" to enable layer caching — kaniko writes cached
+      layers to `<image>-cache` in the same registry. Trade-off:
+      faster rebuilds on the same base, extra bandwidth + storage.
+  registry:
+    required: false
+    description: >
+      Registry hostname for auth. Defaults to the prefix of
+      `image` up to the first "/". Irrelevant when `username`
+      is empty (no login, anonymous/no-push builds).
+  username:
+    required: false
+    description: Registry username. Empty = anonymous.
+  password:
+    required: false
+    description: >
+      Registry token/password. Pipe from the job's `secrets:`
+      list so the plaintext never lands in the log.
+  push:
+    required: false
+    default: "true"
+    description: >
+      Set to "false" to skip the registry push — useful on PR
+      preview builds that want to validate the Dockerfile
+      without publishing.
+
+examples:
+  - name: build + push to GHCR
+    description: >
+      Rootless build in the K8s engine — no DinD sidecar
+      required. Credentials piped from secrets.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      uses: gocdnext/kaniko@v1
+      with:
+        image: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+
+  - name: cached multi-stage build
+    description: >
+      Enable layer caching against a cache repo alongside the
+      image — speeds up rebuilds when the base image or early
+      RUN layers don't change.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      uses: gocdnext/kaniko@v1
+      with:
+        image: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
+        cache: "true"
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}

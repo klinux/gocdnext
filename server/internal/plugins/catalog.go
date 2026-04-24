@@ -24,7 +24,9 @@ import (
 type Spec struct {
 	Name        string
 	Description string
+	Category    string
 	Inputs      map[string]Input
+	Examples    []Example
 }
 
 // Input describes one accepted entry of the job's `with:` map.
@@ -36,6 +38,17 @@ type Input struct {
 	Required    bool
 	Default     string
 	Description string
+}
+
+// Example is a documented usage snippet surfaced in the catalog
+// UI. Kept deliberately simple — three fields, plain text — so
+// operators read the YAML and copy/paste without translation.
+// Plugins without examples still validate; the field is meta
+// rather than enforcement.
+type Example struct {
+	Name        string
+	Description string
+	YAML        string
 }
 
 // Catalog is the server-side registry: name → Spec. The zero
@@ -190,15 +203,23 @@ func (c *Catalog) Validate(uses string, with map[string]string) error {
 // --- internals ---
 
 type manifestYAML struct {
-	Name        string                      `yaml:"name"`
-	Description string                      `yaml:"description"`
+	Name        string                       `yaml:"name"`
+	Description string                       `yaml:"description"`
+	Category    string                       `yaml:"category"`
 	Inputs      map[string]manifestInputYAML `yaml:"inputs"`
+	Examples    []manifestExampleYAML        `yaml:"examples"`
 }
 
 type manifestInputYAML struct {
 	Required    bool   `yaml:"required"`
 	Default     string `yaml:"default"`
 	Description string `yaml:"description"`
+}
+
+type manifestExampleYAML struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	YAML        string `yaml:"yaml"`
 }
 
 func readManifest(path string) (Spec, error) {
@@ -213,7 +234,9 @@ func readManifest(path string) (Spec, error) {
 	spec := Spec{
 		Name:        raw.Name,
 		Description: strings.TrimSpace(raw.Description),
+		Category:    strings.TrimSpace(raw.Category),
 		Inputs:      make(map[string]Input, len(raw.Inputs)),
+		Examples:    make([]Example, 0, len(raw.Examples)),
 	}
 	for n, in := range raw.Inputs {
 		spec.Inputs[n] = Input{
@@ -221,6 +244,13 @@ func readManifest(path string) (Spec, error) {
 			Default:     in.Default,
 			Description: in.Description,
 		}
+	}
+	for _, ex := range raw.Examples {
+		spec.Examples = append(spec.Examples, Example{
+			Name:        strings.TrimSpace(ex.Name),
+			Description: strings.TrimSpace(ex.Description),
+			YAML:        strings.TrimRight(ex.YAML, "\n"),
+		})
 	}
 	return spec, nil
 }

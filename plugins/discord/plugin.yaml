@@ -1,0 +1,62 @@
+name: discord
+category: notifications
+description: >
+  Post a message to a Discord channel webhook. Sibling of
+  gocdnext/slack — same job contract, Discord-specific wire
+  format. Default message is a concise "pipeline #N → status
+  (sha)" built from CI_* env; override via `content` for richer
+  copy using Discord markdown (bold, code, mentions).
+
+inputs:
+  webhook:
+    required: true
+    description: >
+      Discord channel webhook URL. Pipe from the job's
+      `secrets:` list so the token-bearing URL stays out of logs.
+  content:
+    required: false
+    description: >
+      Message body. Supports Discord markdown. Defaults to a
+      short status line built from CI_PIPELINE, CI_RUN_COUNTER,
+      CI_PIPELINE_STATUS, CI_COMMIT_SHA.
+  username:
+    required: false
+    description: >
+      Override the bot display name for this message. Empty =
+      whatever Discord's webhook config chose at creation time.
+  avatar:
+    required: false
+    description: >
+      Override the bot avatar with an image URL. Empty = webhook
+      config default.
+  tts:
+    required: false
+    default: "false"
+    description: >
+      "true" sends as text-to-speech. Rarely useful in CI; kept
+      for feature parity with Discord's API.
+
+examples:
+  - name: default status line
+    description: Minimal hit — uses defaults built from CI_* env.
+    yaml: |
+      secrets:
+        - DISCORD_WEBHOOK
+      uses: gocdnext/discord@v1
+      with:
+        webhook: ${{ DISCORD_WEBHOOK }}
+
+  - name: custom copy + bot identity
+    description: >
+      Richer post with Discord mrkdwn + an override bot name for
+      a release channel.
+    yaml: |
+      secrets:
+        - DISCORD_WEBHOOK
+      uses: gocdnext/discord@v1
+      with:
+        webhook: ${{ DISCORD_WEBHOOK }}
+        username: "release-bot"
+        content: |
+          **${CI_PIPELINE}** shipped ✅
+          Commit: `${CI_COMMIT_SHA}`

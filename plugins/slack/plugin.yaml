@@ -1,4 +1,5 @@
 name: slack
+category: notifications
 description: >
   Post a notification to a Slack incoming webhook. Defaults to a
   concise "pipeline #N → status (sha)" line using the CI_* env
@@ -23,3 +24,26 @@ inputs:
       Message body. Defaults to a short status line built from
       CI_PIPELINE, CI_RUN_COUNTER, CI_PIPELINE_STATUS and
       CI_COMMIT_SHA. Supports Slack mrkdwn.
+
+examples:
+  - name: default status line
+    description: >
+      Post the default "pipeline #N → status (sha)" line to the
+      webhook's configured channel.
+    yaml: |
+      secrets:
+        - SLACK_WEBHOOK
+      uses: gocdnext/slack@v1
+      with:
+        webhook: ${{ SLACK_WEBHOOK }}
+
+  - name: custom copy on prod deploy
+    description: Richer notification with explicit channel + mrkdwn.
+    yaml: |
+      secrets:
+        - SLACK_WEBHOOK
+      uses: gocdnext/slack@v1
+      with:
+        webhook: ${{ SLACK_WEBHOOK }}
+        channel: "#deploys"
+        template: ":rocket: *${CI_PIPELINE}* shipped to prod (${CI_COMMIT_SHA})"

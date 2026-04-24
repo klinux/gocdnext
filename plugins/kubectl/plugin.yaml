@@ -1,4 +1,5 @@
 name: kubectl
+category: deploy
 description: >
   Run any `kubectl` subcommand against a cluster — apply, rollout
   status, scale, get, delete, etc. Kubeconfig comes from the
@@ -24,3 +25,26 @@ inputs:
       Default namespace for the command (equivalent to `-n`).
       Commands that already specify `-n` override this at their own
       position in the arg list.
+
+examples:
+  - name: apply manifests with service account
+    description: >
+      Agent runs in-cluster; no kubeconfig needed — SA RBAC
+      decides what the apply touches.
+    yaml: |
+      uses: gocdnext/kubectl@v1
+      with:
+        command: apply -f k8s/
+        namespace: prod
+
+  - name: rollout status from external secret
+    description: >
+      Prod kubeconfig stored as base64 in a secret. The plugin
+      auto-detects the base64 shape and decodes it.
+    yaml: |
+      secrets:
+        - PROD_KUBECONFIG_B64
+      uses: gocdnext/kubectl@v1
+      with:
+        kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
+        command: rollout status deploy/api -n prod

@@ -1,4 +1,5 @@
 name: trivy
+category: security
 description: >
   Scan images, filesystems, git repos, or Kubernetes manifests
   for CVEs and leaked secrets using Aqua's Trivy. By default
@@ -48,3 +49,27 @@ inputs:
       Path (under the workspace) to write the report to.
       Pairs well with `artifacts.paths:` to attach the report
       to the run.
+
+examples:
+  - name: scan built image
+    description: Scan the image just built by gocdnext/docker.
+    yaml: |
+      uses: gocdnext/trivy@v1
+      with:
+        scan-type: image
+        target: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
+        severity: HIGH,CRITICAL
+
+  - name: advisory fs scan
+    description: >
+      Scan the workspace tree but don't fail the build —
+      attach the JSON report as optional artifact.
+    yaml: |
+      uses: gocdnext/trivy@v1
+      with:
+        scan-type: fs
+        format: json
+        output: trivy-report.json
+        exit-code: "0"
+      artifacts:
+        optional: [trivy-report.json]

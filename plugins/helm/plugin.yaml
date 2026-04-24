@@ -1,0 +1,60 @@
+name: helm
+category: deploy
+description: >
+  Run any `helm` subcommand against a cluster — upgrade, install,
+  diff, rollback, repo add/update, etc. Pairs with gocdnext/kubectl
+  for the deploy half of a pipeline. Kubeconfig discovery mirrors
+  the kubectl plugin: path relative to workspace, inline YAML, or
+  base64-encoded YAML, auto-detected. Empty kubeconfig defers to
+  the agent's in-cluster service account.
+
+inputs:
+  command:
+    required: true
+    description: >
+      helm subcommand + args, word-split. Examples:
+      "upgrade --install api ./chart -n prod",
+      "diff upgrade api ./chart",
+      "repo add stable https://charts.helm.sh/stable".
+  kubeconfig:
+    required: false
+    description: >
+      Kubeconfig source (path / raw YAML / base64 YAML).
+      Auto-detected. Empty = use the agent's in-cluster service
+      account.
+  namespace:
+    required: false
+    description: >
+      Default namespace for the command (`--namespace`).
+      Commands with an explicit `-n` flag override this.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into before running
+      helm. Useful when the chart lives at `./deploy/chart`.
+
+examples:
+  - name: upgrade prod release
+    description: >
+      Typical "CI deploys" shape — kubeconfig from a secret,
+      helm upgrade with values file from the repo.
+    yaml: |
+      secrets:
+        - PROD_KUBECONFIG_B64
+      uses: gocdnext/helm@v1
+      with:
+        kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
+        working-dir: deploy/chart
+        command: upgrade --install api . -n prod -f values-prod.yaml
+
+  - name: diff before deploy
+    description: Preview the diff — useful on pull requests.
+    yaml: |
+      secrets:
+        - PROD_KUBECONFIG_B64
+      uses: gocdnext/helm@v1
+      with:
+        kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
+        working-dir: deploy/chart
+        command: diff upgrade api . -n prod -f values-prod.yaml

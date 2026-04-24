@@ -128,21 +128,106 @@ Entradas da decisão:
 - VSM + fanout se mostrou diferencial real?
 - Temos bandwidth pra manter projeto público?
 
-## Parking lot (futuro)
+## Plataforma — próximas ondas
 
-- Multi-tenant + RBAC
-- Marketplace de plugins / modelo de trust
-- Approval gates (stage manual)
-- Cron scheduling
-- Config-as-code em repo separado (estilo GoCD config-repo)
-- Paridade GitLab + Bitbucket (webhooks e config-repo)
-- ClickHouse / Loki pra logs em escala
-- Scheduler distribuído (HA multi-server)
-- **Test Reports** — parser JUnit/Cobertura + aba Tests no UI + histórico
-  de flakiness. Design própria quando for a vez
-  (`docs/test-reports-design.md`).
-- Cache step (`cache:` no YAML) — semântica key-addressed/LRU, separada de
-  artifacts. Ver discussão na seção 6 do `artifacts-design.md`.
-- Adapters de secret externos (Vault, AWS Secrets Manager, GCP Secret
-  Manager) — `Resolver` já está pronto pra receber, implementação quando
-  alguém pedir.
+### Já entregue (2026-04-23/24)
+
+- ✅ **RBAC + audit log** — admin/maintainer/viewer, `/admin/users`,
+  `/admin/audit`, `audit_events` com emissão em todo write. 6 commits
+  (8158d59, 673acbd, 73e9992, 09c1b51, b2c595a, c13b82e).
+- ✅ **Approval gates** — `approval:` no YAML, status `awaiting_approval`,
+  allow-list por gate, UI Approve/Reject. 5 fases.
+- ✅ **Cache step** — `cache:` no YAML + eviction (TTL + project + global
+  quota) + purge UI.
+- ✅ **Plugin system** — `uses: ...@v1`, `plugin.yaml` schema, catálogo
+  in-memory, validação no apply, 6 plugins iniciais.
+- ✅ **Pipeline services** — `services:` top-level com sidecars docker.
+- ✅ **K8s engine + DinD sidecar** — `docker: true` em pipeline K8s.
+
+### Próximas ondas (tamanho estimado)
+
+**Small (≤ meio dia cada)**
+- 💡 **SSE logs** — stream em vez de polling cursor-based.
+- 💡 **Pipeline templates / `!include`** — snippet-sharing entre pipelines.
+- 💡 **Docs site** — consolidar `docs/*.md` num site público + examples repo.
+- 💡 **Test reports** — parser JUnit/Cobertura + aba Tests + flakiness
+  history (design em `docs/test-reports-design.md` quando for a vez).
+
+**Medium (1-2 dias cada)**
+- 💡 **Notifications first-class** — `notifications:` top-level YAML
+  (Slack/email/Discord) em vez de cada pipeline declarar um job.
+- 💡 **PR builds end-to-end** — Checks API status + preview env +
+  merge-gate.
+- 💡 **Environments primitive** — `dev/staging/prod` como type + deploy
+  history + rollback button.
+- 💡 **SCM providers** — GitLab, Bitbucket, Gitea (cada um = adapter
+  novo mas abstração `scm_sources` já suporta).
+- 💡 **External secret managers** — cada provider = 1 adapter de
+  `secrets.Resolver` (interface pronta desde commit `84092ca`).
+  Projeto referencia o secret por nome; o resolver busca no
+  provider configurado via env. Mascaramento automático no log
+  (runner já recebe lista de valores pra substituir por `***`).
+  Ordem sugerida por demanda imediata:
+  - 💡 **HashiCorp Vault** (`VAULT_ADDR` + token/approle auth).
+  - 💡 **AWS Secrets Manager** (SDK v2, IAM role ou static creds).
+  - 💡 **GCP Secret Manager** (Application Default Credentials).
+  - 💡 **Azure Key Vault** (last, menor base de usuários interna).
+
+**Large (semana+)**
+- 💡 **HA scheduler** — advisory lock Postgres OU etcd election.
+- 💡 **Resource quotas por projeto/team** — multi-tenant real.
+- 💡 **Pipeline deployment Argo-style** — `deployment:` primitive com
+  helm/kustomize/manifests + desired/current state + rollback. Ver
+  `roadmap_pipeline_deployment.md`.
+- 💡 **ClickHouse / Loki pra logs em escala** — hoje `log_lines` em
+  Postgres é OK pra dezenas de pipelines, vai apertar com centenas.
+- 💡 **Chaos/resilience testing** — agent crash mid-job, DB failover,
+  webhook duplicado sob carga.
+
+## Plugin catalog
+
+### Shipped (6)
+`node`, `go`, `docker`, `kubectl`, `trivy`, `slack`.
+
+### Próxima onda (ordem de prioridade)
+
+Cada plugin = Dockerfile + entrypoint.sh + plugin.yaml. Template bem
+estabelecido: tempo médio ~30min por plugin shell-thin (wrapper), ~2h
+quando há lógica real (ex: `release-notes` auto-gen).
+
+**Prioridade alta (pedidos imediatos num pipeline típico)**
+1. 💡 `gocdnext/helm` — deploy (fecha o ciclo com `kubectl`).
+2. 💡 `gocdnext/maven` — Java build + Nexus `settings.xml`.
+3. 💡 `gocdnext/gradle` — Java build com wrapper cache.
+4. 💡 `gocdnext/kaniko` — rootless container build (ideal pro K8s engine
+   sem DinD).
+5. 💡 `gocdnext/gitleaks` — secret detection no repo.
+6. 💡 `gocdnext/buildx` — multi-arch container.
+7. 💡 `gocdnext/github-release` — publish release via GitHub API.
+
+**Prioridade média**
+- 💡 `gocdnext/discord`, `gocdnext/email`, `gocdnext/teams`,
+  `gocdnext/matrix` — notifications.
+- 💡 `gocdnext/python` (uv/pip/poetry + pytest).
+- 💡 `gocdnext/rust` (cargo + clippy + fmt).
+- 💡 `gocdnext/nexus-upload`, `gocdnext/artifactory`,
+  `gocdnext/docker-push`, `gocdnext/s3-upload`, `gocdnext/helm-push`.
+- 💡 `gocdnext/cosign` — image signing.
+- 💡 `gocdnext/terraform`, `gocdnext/ansible`, `gocdnext/aws-cli`,
+  `gocdnext/gcloud`.
+- 💡 `gocdnext/tag`, `gocdnext/release-notes`.
+- 💡 `gocdnext/codecov`, `gocdnext/coveralls`,
+  `gocdnext/lighthouse-ci`.
+
+**Prioridade baixa (chegam quando alguém pedir)**
+- 💡 `gocdnext/dotnet`, `gocdnext/semgrep`, `gocdnext/snyk`,
+  `gocdnext/sonarqube-scanner`.
+
+## Parking lot (futuro, não priorizado)
+
+- Marketplace externo de plugins / modelo de trust + signing.
+- Config-as-code em repo separado (estilo GoCD config-repo).
+- Single-job cancel por endpoint dedicado.
+- Graceful SIGTERM→SIGKILL no cancel (hoje vai direto no SIGKILL).
+- Per-attempt log history (job_run_attempt child table).
+- Cascading rerun checks (needs_artifacts consumidos pela retention).

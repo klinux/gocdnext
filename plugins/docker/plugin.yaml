@@ -1,4 +1,5 @@
 name: docker
+category: container
 description: >
   Build + push a container image. Pairs with `docker: true` on
   the job so the agent exposes a Docker daemon (socket mount on
@@ -49,3 +50,30 @@ inputs:
     description: >
       Registry token/password. Populate via the job's
       `secrets:` list so the plaintext stays out of the log.
+
+examples:
+  - name: build + push with registry auth
+    description: >
+      Typical "build + push to ghcr" shape with credentials
+      piped from secrets — plaintext never touches the log.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      docker: true        # job-level flag; agent exposes a daemon
+      uses: gocdnext/docker@v1
+      with:
+        image: ghcr.io/org/app
+        tags: "latest, ${CI_COMMIT_SHORT_SHA}"
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+
+  - name: PR preview (build only)
+    description: Build-only to validate Dockerfile on pull requests.
+    yaml: |
+      docker: true
+      uses: gocdnext/docker@v1
+      with:
+        image: ghcr.io/org/app
+        tags: pr-${CI_PR_NUMBER}
+        push: "false"

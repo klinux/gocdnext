@@ -40,10 +40,18 @@ type inputDTO struct {
 	Description string `json:"description,omitempty"`
 }
 
+type exampleDTO struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	YAML        string `json:"yaml"`
+}
+
 type pluginDTO struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description,omitempty"`
-	Inputs      []inputDTO `json:"inputs"`
+	Name        string       `json:"name"`
+	Description string       `json:"description,omitempty"`
+	Category    string       `json:"category,omitempty"`
+	Inputs      []inputDTO   `json:"inputs"`
+	Examples    []exampleDTO `json:"examples,omitempty"`
 }
 
 type listResponse struct {
@@ -90,9 +98,19 @@ func toPluginDTO(s plugcat.Spec) pluginDTO {
 			Description: in.Description,
 		})
 	}
+	examples := make([]exampleDTO, 0, len(s.Examples))
+	for _, ex := range s.Examples {
+		examples = append(examples, exampleDTO{
+			Name:        ex.Name,
+			Description: ex.Description,
+			YAML:        ex.YAML,
+		})
+	}
 	return pluginDTO{
 		Name:        s.Name,
 		Description: s.Description,
+		Category:    s.Category,
 		Inputs:      inputs,
+		Examples:    examples,
 	}
 }
