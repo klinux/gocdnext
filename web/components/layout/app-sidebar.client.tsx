@@ -54,21 +54,24 @@ const primaryNav: NavItem[] = [
   { label: "Projects", href: "/projects", icon: Boxes },
   { label: "Runs", href: "/runs", icon: Activity },
   { label: "Agents", href: "/agents", icon: Server },
+  // Plugin catalog is documentation-first: every dev authoring a
+  // pipeline needs to know which `uses:` is available and how to
+  // wire secrets. Living under /admin hid it from non-admin devs,
+  // which made copy/pasting a `uses:` block guesswork.
+  { label: "Plugins", href: "/plugins", icon: Package },
 ];
 
 // Admin-scoped pages live at /admin/<thing> so the URL reads
 // "this is privileged" at a glance. Settings keeps the
 // control-plane config bucket (health/webhooks/retention/
-// integrations/auth); user management, audit, secrets, and the
-// plugin catalog get their own top-level sidebar entries because
-// operators hit them often enough that an extra tab click is
-// friction.
+// integrations/auth); user management, audit and secrets get
+// their own top-level sidebar entries because operators hit
+// them often enough that an extra tab click is friction.
 const adminNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
   { label: "Users", href: "/admin/users", icon: Users },
   { label: "Audit", href: "/admin/audit", icon: ClipboardList },
   { label: "Secrets", href: "/admin/secrets", icon: KeyRound },
-  { label: "Plugins", href: "/admin/plugins", icon: Package },
 ];
 
 export function AppSidebar({ user, loginBase }: Props) {

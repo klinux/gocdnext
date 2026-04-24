@@ -97,7 +97,7 @@ const registry: Record<string, Entry> = {
   },
   plugins: {
     label: () => "Plugins",
-    href: () => "/admin/plugins",
+    href: () => "/plugins",
   },
 };
 

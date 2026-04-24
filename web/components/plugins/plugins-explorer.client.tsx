@@ -348,10 +348,12 @@ function PluginSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        // sm:max-w-sm is the shadcn default; override so the
-        // sheet takes roughly half the viewport on desktop, the
-        // operator explicitly asked for that ratio.
-        className="w-full sm:max-w-xl lg:max-w-2xl overflow-y-auto"
+        // shadcn's SheetContent bakes `data-[side=right]:w-3/4` +
+        // `data-[side=right]:sm:max-w-sm`. tailwind-merge only
+        // dedupes when the variant stack matches, so we mirror the
+        // same `data-[side=right]:` prefix to beat the defaults.
+        // Result: full width on mobile, 85vw tablet, 50vw desktop.
+        className="data-[side=right]:w-full data-[side=right]:sm:w-[85vw] data-[side=right]:sm:max-w-none data-[side=right]:lg:w-[50vw] overflow-y-auto"
       >
         <SheetHeader className="space-y-3">
           <div className="flex items-center gap-3">

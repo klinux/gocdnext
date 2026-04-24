@@ -90,6 +90,10 @@ export function CommandPalette() {
               <Server className="size-4" />
               Agents
             </CommandItem>
+            <CommandItem onSelect={() => go("/plugins" as Route)}>
+              <Package className="size-4" />
+              Plugins
+            </CommandItem>
             <CommandItem onSelect={() => go("/settings" as Route)}>
               <Settings className="size-4" />
               Settings
@@ -107,10 +111,6 @@ export function CommandPalette() {
             <CommandItem onSelect={() => go("/admin/secrets" as Route)}>
               <KeyRound className="size-4" />
               Global secrets
-            </CommandItem>
-            <CommandItem onSelect={() => go("/admin/plugins" as Route)}>
-              <Package className="size-4" />
-              Plugins
             </CommandItem>
           </CommandGroup>
           <CommandSeparator />
