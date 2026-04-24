@@ -40,6 +40,19 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 corepack enable
 corepack prepare --activate
 
+# Point pnpm's content-addressable store at a workspace-relative
+# dir so the platform's `cache:` block can tar it across runs.
+# Default store sits under $HOME and isn't reachable by the
+# agent's tar step. --config.store-dir is a per-invocation override;
+# we set it via `pnpm config` once so every subsequent `pnpm`
+# call (install, exec, run) honours it without the plugin having
+# to intercept PLUGIN_COMMAND.
+if [ -z "${PNPM_STORE_DIR:-}" ]; then
+    PNPM_STORE_DIR=/workspace/.pnpm-store
+fi
+mkdir -p "${PNPM_STORE_DIR}"
+pnpm config set store-dir "${PNPM_STORE_DIR}" >/dev/null
+
 # Word-split intentionally — `install --frozen-lockfile` passes two
 # args to pnpm. Operators with whitespace inside a single arg should
 # lean on plain `script:` instead of this plugin.

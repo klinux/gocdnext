@@ -59,3 +59,21 @@ examples:
       uses: gocdnext/rust@v1
       with:
         command: publish --token ${{ CARGO_REGISTRY_TOKEN }}
+
+  - name: cached build
+    description: >
+      Tar + restore the crates.io registry index + crate archives +
+      git DB across runs. The plugin redirects $CARGO_HOME to
+      .cargo-home/ inside the workspace so the `cache:` block
+      covers it. target/ is added to the same cache entry so
+      incremental compilation reuses prior artifacts — shaves
+      most of the cold-start cost off subsequent runs.
+    yaml: |
+      cache:
+        - key: cargo-${CI_COMMIT_BRANCH}
+          paths:
+            - .cargo-home
+            - target
+      uses: gocdnext/rust@v1
+      with:
+        command: test --workspace

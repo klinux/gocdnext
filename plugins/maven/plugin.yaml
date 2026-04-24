@@ -81,3 +81,17 @@ examples:
         nexus-password: ${{ NEXUS_PASSWORD }}
         snapshot-repo-id: acme-snapshots
         release-repo-id: acme-releases
+
+  - name: cached build
+    description: >
+      Tar + restore the local ~/.m2 repo across runs. The plugin
+      redirects -Dmaven.repo.local to .m2-repo/ inside the
+      workspace so the platform's `cache:` block can tar it;
+      huge win once the dependency graph is stable.
+    yaml: |
+      cache:
+        - key: m2-${CI_COMMIT_BRANCH}
+          paths: [.m2-repo]
+      uses: gocdnext/maven@v1
+      with:
+        command: verify

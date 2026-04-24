@@ -20,6 +20,16 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+# Point $GRADLE_USER_HOME at a workspace-relative dir by default
+# so the platform's `cache:` block can tar it up. Gradle normally
+# writes caches + wrapper JARs under $HOME/.gradle, which sits
+# OUTSIDE the workspace the agent tars — the cache key would
+# round-trip an empty blob. Override via `variables:
+# GRADLE_USER_HOME: ...` in YAML for the rare case someone
+# wants a different layout.
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle-home}"
+mkdir -p "${GRADLE_USER_HOME}"
+
 # Gradle wrapper is the best-practice CI entrypoint because it
 # pins the exact Gradle version the project was developed
 # against — avoids "works on my machine" drift. Fall back to

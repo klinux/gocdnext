@@ -49,3 +49,20 @@ examples:
       with:
         command: publish -Prelease=true
         gradle-opts: "-Xmx4g"
+
+  - name: cached build
+    description: >
+      Tar + restore ~/.gradle/caches + wrapper JARs across runs.
+      The plugin points $GRADLE_USER_HOME at .gradle-home/ inside
+      the workspace so the platform's `cache:` block can tar it;
+      the `daemon: "true"` payoff grows with a warm cache.
+    yaml: |
+      cache:
+        - key: gradle-${CI_COMMIT_BRANCH}
+          paths:
+            - .gradle-home/caches
+            - .gradle-home/wrapper
+      uses: gocdnext/gradle@v1
+      with:
+        command: test
+        daemon: "true"

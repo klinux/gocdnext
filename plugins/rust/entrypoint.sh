@@ -13,6 +13,15 @@ fi
 WORKING_DIR="${PLUGIN_WORKING_DIR:-.}"
 TOOLCHAIN="${PLUGIN_TOOLCHAIN:-stable}"
 
+# Point $CARGO_HOME at a workspace-relative dir by default so the
+# platform's `cache:` block can tar the registry index + crate
+# archives + git DB. Without this override they'd land in
+# /usr/local/cargo (the base image's CARGO_HOME) which the agent
+# doesn't tar. RUSTUP_HOME is left untouched — it holds the
+# toolchain binaries; caching those adds GB for no reuse gain.
+export CARGO_HOME="${CARGO_HOME:-/workspace/.cargo-home}"
+mkdir -p "${CARGO_HOME}"
+
 cd "/workspace/${WORKING_DIR}"
 
 # Install the requested toolchain if it's not already present.

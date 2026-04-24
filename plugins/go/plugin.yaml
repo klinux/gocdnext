@@ -33,3 +33,20 @@ examples:
         command: test -cover -coverprofile=cover.out ./...
       artifacts:
         optional: [cover.out]
+
+  - name: cached test run
+    description: >
+      Tar + restore the module + build caches across runs. Plugin
+      redirects $GOMODCACHE and $GOCACHE to .go-mod/ and
+      .go-cache/ inside the workspace so the `cache:` block
+      captures both. Incremental compilation + cached test
+      results shave most of the cold-start from subsequent runs.
+    yaml: |
+      cache:
+        - key: go-${CI_COMMIT_BRANCH}
+          paths:
+            - .go-mod
+            - .go-cache
+      uses: gocdnext/go@v1
+      with:
+        command: test -race ./...

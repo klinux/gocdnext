@@ -34,3 +34,19 @@ examples:
       with:
         working-dir: web
         command: exec tsc --noEmit
+
+  - name: cached install
+    description: >
+      Tar + restore pnpm's content-addressable store across runs.
+      Plugin redirects the store to .pnpm-store/ inside the
+      workspace so the `cache:` block captures it. Keyed on the
+      lockfile hash — different lockfile = fresh cache, no stale
+      packages slipping through.
+    yaml: |
+      cache:
+        - key: pnpm-store-${CI_COMMIT_BRANCH}
+          paths: [.pnpm-store]
+      uses: gocdnext/node@v1
+      with:
+        working-dir: web
+        command: install --frozen-lockfile

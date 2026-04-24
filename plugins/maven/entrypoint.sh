@@ -21,6 +21,17 @@ fi
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+# Point Maven's local repository at a workspace-relative dir by
+# default so the platform's `cache:` block can tar it between
+# runs. Maven normally writes to ~/.m2/repository which sits
+# OUTSIDE the workspace the agent tars. The -Dmaven.repo.local
+# flag on the CLI wins over settings.xml, so this applies
+# universally. Override via `variables: MAVEN_LOCAL_REPO: ...`
+# in YAML when a custom layout is needed.
+export MAVEN_LOCAL_REPO="${MAVEN_LOCAL_REPO:-/workspace/.m2-repo}"
+mkdir -p "${MAVEN_LOCAL_REPO}"
+local_repo_arg=("-Dmaven.repo.local=${MAVEN_LOCAL_REPO}")
+
 settings_arg=()
 if [ -n "${PLUGIN_SETTINGS:-}" ]; then
     # Operator-provided settings.xml wins — they probably
@@ -56,6 +67,6 @@ EOF
     settings_arg+=("--settings" "/tmp/gocdnext-maven-settings.xml")
 fi
 
-echo "==> mvn ${PLUGIN_COMMAND}"
+echo "==> mvn ${PLUGIN_COMMAND} (repo.local=${MAVEN_LOCAL_REPO})"
 # shellcheck disable=SC2086
-exec mvn --batch-mode "${settings_arg[@]}" ${PLUGIN_COMMAND}
+exec mvn --batch-mode "${local_repo_arg[@]}" "${settings_arg[@]}" ${PLUGIN_COMMAND}

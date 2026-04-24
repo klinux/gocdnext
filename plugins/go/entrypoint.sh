@@ -28,6 +28,16 @@ fi
 # plugin that hits `git` on the host-cloned workspace.
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+# Redirect both Go caches into the workspace so the platform's
+# `cache:` block can tar them. GOMODCACHE holds fetched module
+# archives (keyed by module@version — huge reuse win), GOCACHE
+# holds compiled package artefacts (incremental builds + test
+# result memoisation). Base image's defaults sit outside the
+# workspace at /root/go + /root/.cache/go-build.
+export GOMODCACHE="${GOMODCACHE:-/workspace/.go-mod}"
+export GOCACHE="${GOCACHE:-/workspace/.go-cache}"
+mkdir -p "${GOMODCACHE}" "${GOCACHE}"
+
 # Word-split intentionally: `build ./...` is two args. If an
 # operator needs whitespace inside a single arg, drop back to
 # plain `script:`; this plugin optimises the 90% case.

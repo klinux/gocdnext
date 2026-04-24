@@ -62,3 +62,17 @@ examples:
         command: |
           python -m build && \
           twine upload --username __token__ --password "${PYPI_TOKEN}" dist/*
+
+  - name: cached test run
+    description: >
+      Tar + restore the pip/uv/poetry download caches across runs.
+      The plugin redirects PIP_CACHE_DIR, UV_CACHE_DIR and
+      POETRY_CACHE_DIR to .cache/<mgr>/ inside the workspace so a
+      single `paths: [.cache]` entry covers all three.
+    yaml: |
+      cache:
+        - key: py-${CI_COMMIT_BRANCH}
+          paths: [.cache]
+      uses: gocdnext/python@v1
+      with:
+        command: pytest -q
