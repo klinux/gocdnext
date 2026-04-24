@@ -56,6 +56,7 @@ export function Pagination({
           variant="outline"
           size="sm"
           disabled={!hasPrev}
+          nativeButton={false}
           render={
             hasPrev ? (
               <Link
@@ -76,6 +77,7 @@ export function Pagination({
           variant="outline"
           size="sm"
           disabled={!hasNext}
+          nativeButton={false}
           render={
             hasNext ? (
               <Link
