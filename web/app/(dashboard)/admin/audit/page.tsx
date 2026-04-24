@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { ClipboardList } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -10,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Pagination } from "@/components/shared/pagination";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listAuditEvents } from "@/server/queries/admin";
 
@@ -19,11 +23,13 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
+const PAGE_SIZE = 25;
+
 type SearchParams = Promise<{
   action?: string;
   target_type?: string;
   actor?: string;
-  limit?: string;
+  offset?: string;
 }>;
 
 export default async function AuditPage({
@@ -32,12 +38,16 @@ export default async function AuditPage({
   searchParams: SearchParams;
 }) {
   const params = await searchParams;
-  const limit = parseLimit(params.limit);
-  const { events } = await listAuditEvents({
+  const offset = params.offset
+    ? Math.max(0, Number.parseInt(params.offset, 10))
+    : 0;
+
+  const { events, total } = await listAuditEvents({
     action: params.action || undefined,
     targetType: params.target_type || undefined,
     actor: params.actor || undefined,
-    limit,
+    limit: PAGE_SIZE,
+    offset,
   });
 
   return (
@@ -60,144 +70,148 @@ export default async function AuditPage({
         action={params.action ?? ""}
         targetType={params.target_type ?? ""}
         actor={params.actor ?? ""}
-        limit={limit}
       />
 
       {events.length === 0 ? (
-        <p className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No events match. Try widening the filters or bumping the
-          limit.
-        </p>
+        <div className="rounded-lg border border-dashed border-border py-12 text-center text-sm text-muted-foreground">
+          No events match. Try widening the filters.
+        </div>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[160px]">When</TableHead>
-              <TableHead>Actor</TableHead>
-              <TableHead>Action</TableHead>
-              <TableHead>Target</TableHead>
-              <TableHead>Metadata</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {events.map((e) => (
-              <TableRow key={e.id}>
-                <TableCell className="whitespace-nowrap text-muted-foreground">
-                  <RelativeTime at={e.at} />
-                </TableCell>
-                <TableCell>
-                  {e.actor_email ? (
-                    <span className="font-mono text-sm">{e.actor_email}</span>
-                  ) : (
-                    <Badge variant="outline" className="font-normal">
-                      system
-                    </Badge>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="secondary" className="font-mono text-[11px]">
-                    {e.action}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <div className="flex flex-col">
-                    <span className="text-xs uppercase tracking-wide text-muted-foreground">
-                      {e.target_type}
-                    </span>
-                    {e.target_id ? (
-                      <span className="truncate font-mono text-xs">
-                        {e.target_id}
-                      </span>
-                    ) : null}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <MetadataCell metadata={e.metadata} />
-                </TableCell>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[160px]">When</TableHead>
+                <TableHead>Actor</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Target</TableHead>
+                <TableHead>Metadata</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {events.map((e) => (
+                <TableRow key={e.id} className="font-mono text-xs">
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
+                    <RelativeTime at={e.at} />
+                  </TableCell>
+                  <TableCell>
+                    {e.actor_email ? (
+                      <span className="font-mono text-xs">{e.actor_email}</span>
+                    ) : (
+                      <Badge variant="outline" className="font-normal">
+                        system
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="secondary"
+                      className="font-mono text-[11px]"
+                    >
+                      {e.action}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {e.target_type}
+                      </span>
+                      {e.target_id ? (
+                        <span className="truncate font-mono text-xs">
+                          {e.target_id}
+                        </span>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <MetadataCell metadata={e.metadata} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
+
+      <Pagination
+        offset={offset}
+        total={total}
+        pageSize={PAGE_SIZE}
+        basePath="/admin/audit"
+        params={{
+          action: params.action,
+          target_type: params.target_type,
+          actor: params.actor,
+        }}
+      />
     </section>
   );
 }
 
 // FilterForm is a plain GET form so the active filters live in the
 // URL — bookmarkable, shareable, survives a reload. The server
-// re-renders the RSC with the new query params. No client code
-// needed for filtering.
+// re-renders the RSC with the new query params. Wrapped in the
+// same border + bg-card shell as the other shadcn-flavoured list
+// pages so the chrome reads consistently across /runs,
+// /projects/[slug]/runs, and /admin/audit.
 function FilterForm({
   action,
   targetType,
   actor,
-  limit,
 }: {
   action: string;
   targetType: string;
   actor: string;
-  limit: number;
 }) {
   return (
     <form
       method="get"
-      className="grid gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm sm:grid-cols-[repeat(4,1fr)_auto]"
+      className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-[repeat(3,1fr)_auto]"
     >
-      <label className="flex flex-col gap-1">
-        <span className="text-xs uppercase tracking-wide text-muted-foreground">
+      <div className="space-y-1.5">
+        <Label htmlFor="audit-action" className="text-xs">
           Action
-        </span>
-        <input
+        </Label>
+        <Input
+          id="audit-action"
           type="text"
           name="action"
           defaultValue={action}
           placeholder="e.g. project.apply"
-          className="h-8 rounded border border-input bg-background px-2 font-mono text-xs"
+          className="font-mono text-xs"
         />
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className="text-xs uppercase tracking-wide text-muted-foreground">
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="audit-target-type" className="text-xs">
           Target type
-        </span>
-        <input
+        </Label>
+        <Input
+          id="audit-target-type"
           type="text"
           name="target_type"
           defaultValue={targetType}
           placeholder="e.g. project"
-          className="h-8 rounded border border-input bg-background px-2 font-mono text-xs"
+          className="font-mono text-xs"
         />
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className="text-xs uppercase tracking-wide text-muted-foreground">
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="audit-actor" className="text-xs">
           Actor (email)
-        </span>
-        <input
+        </Label>
+        <Input
+          id="audit-actor"
           type="text"
           name="actor"
           defaultValue={actor}
           placeholder="partial match"
-          className="h-8 rounded border border-input bg-background px-2 text-xs"
+          className="text-xs"
         />
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className="text-xs uppercase tracking-wide text-muted-foreground">
-          Limit
-        </span>
-        <input
-          type="number"
-          name="limit"
-          defaultValue={limit}
-          min={1}
-          max={500}
-          className="h-8 rounded border border-input bg-background px-2 text-xs"
-        />
-      </label>
-      <button
-        type="submit"
-        className="h-8 self-end rounded-md border border-input bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
-      >
-        Filter
-      </button>
+      </div>
+      <div className="flex items-end">
+        <Button type="submit" size="sm">
+          Filter
+        </Button>
+      </div>
     </form>
   );
 }
@@ -226,10 +240,4 @@ function MetadataCell({ metadata }: { metadata: Record<string, unknown> }) {
       ) : null}
     </div>
   );
-}
-
-function parseLimit(raw?: string): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 100;
-  return Math.min(Math.max(n, 1), 500);
 }

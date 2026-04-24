@@ -117,7 +117,8 @@ func TestListAuditEvents_NewestFirst(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	got, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{Limit: 10})
+	page, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{Limit: 10})
+	got := page.Events
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -146,9 +147,10 @@ func TestListAuditEvents_FiltersByAction(t *testing.T) {
 		_, _ = s.EmitAuditEvent(ctx, store.AuditEmit{Action: a, TargetType: "t"})
 	}
 
-	got, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{
+	page, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{
 		Action: store.AuditActionProjectApply, Limit: 10,
 	})
+	got := page.Events
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -175,9 +177,10 @@ func TestListAuditEvents_FiltersByActor(t *testing.T) {
 		})
 	}
 
-	got, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{
+	page, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{
 		ActorID: alice, Limit: 10,
 	})
+	got := page.Events
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -199,11 +202,42 @@ func TestListAuditEvents_Limit(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_, _ = s.EmitAuditEvent(ctx, store.AuditEmit{Action: "x", TargetType: "t"})
 	}
-	got, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{Limit: 3})
+	page, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{Limit: 3})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(got) != 3 {
-		t.Errorf("limit honored = %d, want 3", len(got))
+	if len(page.Events) != 3 {
+		t.Errorf("limit honored = %d, want 3", len(page.Events))
+	}
+	if page.Total != 5 {
+		t.Errorf("total = %d, want 5", page.Total)
+	}
+}
+
+func TestListAuditEvents_Offset(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	// Emit 5 events — later offset query pulls a window from the
+	// middle and confirms the total still reflects all 5.
+	for i := 0; i < 5; i++ {
+		_, _ = s.EmitAuditEvent(ctx, store.AuditEmit{Action: "x", TargetType: "t"})
+		time.Sleep(time.Millisecond)
+	}
+	page, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{
+		Limit: 2, Offset: 2,
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(page.Events) != 2 {
+		t.Errorf("window size = %d, want 2", len(page.Events))
+	}
+	if page.Total != 5 {
+		t.Errorf("total = %d, want 5 (offset/limit shouldn't narrow it)", page.Total)
+	}
+	if page.Offset != 2 {
+		t.Errorf("offset echoed = %d, want 2", page.Offset)
 	}
 }

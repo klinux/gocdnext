@@ -105,6 +105,7 @@ export async function listAuditEvents(
     targetType?: string;
     actor?: string;
     limit?: number;
+    offset?: number;
   },
 ): Promise<AuditEventsList> {
   const q = new URLSearchParams();
@@ -112,6 +113,7 @@ export async function listAuditEvents(
   if (params?.targetType) q.set("target_type", params.targetType);
   if (params?.actor) q.set("actor", params.actor);
   if (params?.limit) q.set("limit", String(params.limit));
+  if (params?.offset) q.set("offset", String(params.offset));
   const suffix = q.toString() ? `?${q.toString()}` : "";
   return readJSON<AuditEventsList>(`/api/v1/admin/audit${suffix}`);
 }

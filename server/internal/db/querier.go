@@ -57,6 +57,11 @@ type Querier interface {
 	// Single-use: delete as we read. Returning nothing = no such state
 	// (or it expired and the sweeper got to it first).
 	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
+	// Matching total for the same filter set ListAuditEvents reads.
+	// Surfaces the absolute count so the UI can render a
+	// "showing X–Y of Z" header + Prev/Next bounds without a second
+	// guess-and-check fetch.
+	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	// Drives the "show local login form" decision on the login page:
 	// no rows = zero local admins, the form stays hidden so the page
 	// doesn't advertise a dead code path.
@@ -327,8 +332,8 @@ type Querier interface {
 	// can group artefacts by the job that produced them without an extra
 	// per-artifact lookup. Returns ALL statuses — callers filter as needed.
 	ListArtifactsWithJobByRun(ctx context.Context, runID pgtype.UUID) ([]ListArtifactsWithJobByRunRow, error)
-	// Reverse-chrono listing with optional filters. Empty string on
-	// action_filter / target_type_filter / actor_email_filter
+	// Reverse-chrono listing with optional filters + offset
+	// pagination. Empty string on action / target_type / actor
 	// disables that filter; nil actor_id_filter disables actor
 	// filtering (applied separately because typing empty UUID as
 	// "no filter" leaks).

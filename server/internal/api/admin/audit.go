@@ -37,12 +37,22 @@ func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = int32(n)
 	}
+	var offset int32
+	if raw := q.Get("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			http.Error(w, "offset must be >= 0", http.StatusBadRequest)
+			return
+		}
+		offset = int32(n)
+	}
 
 	f := store.ListAuditEventsFilter{
 		Action:     q.Get("action"),
 		TargetType: q.Get("target_type"),
 		ActorEmail: q.Get("actor"),
 		Limit:      limit,
+		Offset:     offset,
 	}
 	if raw := q.Get("actor_id"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -53,11 +63,16 @@ func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
 		f.ActorID = id
 	}
 
-	events, err := h.store.ListAuditEvents(r.Context(), f)
+	page, err := h.store.ListAuditEvents(r.Context(), f)
 	if err != nil {
 		h.log.Error("admin: list audit events", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"events": events})
+	writeJSON(w, map[string]any{
+		"events": page.Events,
+		"total":  page.Total,
+		"limit":  page.Limit,
+		"offset": page.Offset,
+	})
 }

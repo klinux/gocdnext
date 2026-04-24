@@ -106,15 +106,30 @@ type ListAuditEventsFilter struct {
 	ActorEmail  string
 	ActorID     uuid.UUID
 	Limit       int32
+	Offset      int32
 }
 
-// ListAuditEvents returns the most recent events matching the
-// filter, newest first. Limit caps the page size — the
-// admin UI passes 100; pagination cursor lands in a later
-// iteration if operators need to scroll deeper.
-func (s *Store) ListAuditEvents(ctx context.Context, f ListAuditEventsFilter) ([]AuditEvent, error) {
+// AuditEventsPage is the paginated response shape: the current
+// window of events plus the absolute total (so the UI can draw
+// "showing X–Y of Z" + Prev/Next bounds without a follow-up
+// count query client-side).
+type AuditEventsPage struct {
+	Events []AuditEvent
+	Total  int64
+	Limit  int32
+	Offset int32
+}
+
+// ListAuditEvents returns the paginated events matching the
+// filter, newest first. Runs a COUNT alongside the main query
+// so one round-trip to the admin handler's point of view lands
+// both the rows and the total.
+func (s *Store) ListAuditEvents(ctx context.Context, f ListAuditEventsFilter) (AuditEventsPage, error) {
 	if f.Limit <= 0 {
 		f.Limit = 100
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
 	}
 	rows, err := s.q.ListAuditEvents(ctx, db.ListAuditEventsParams{
 		Column1: f.Action,
@@ -122,15 +137,30 @@ func (s *Store) ListAuditEvents(ctx context.Context, f ListAuditEventsFilter) ([
 		Column3: f.ActorEmail,
 		Column4: nullableUUID(f.ActorID),
 		Limit:   f.Limit,
+		Offset:  f.Offset,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("store: list audit: %w", err)
+		return AuditEventsPage{}, fmt.Errorf("store: list audit: %w", err)
+	}
+	total, err := s.q.CountAuditEvents(ctx, db.CountAuditEventsParams{
+		Column1: f.Action,
+		Column2: f.TargetType,
+		Column3: f.ActorEmail,
+		Column4: nullableUUID(f.ActorID),
+	})
+	if err != nil {
+		return AuditEventsPage{}, fmt.Errorf("store: count audit: %w", err)
 	}
 	out := make([]AuditEvent, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, auditRowToEvent(r))
 	}
-	return out, nil
+	return AuditEventsPage{
+		Events: out,
+		Total:  total,
+		Limit:  f.Limit,
+		Offset: f.Offset,
+	}, nil
 }
 
 // nullableUUID returns a pgtype.UUID where uuid.Nil maps to the

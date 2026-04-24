@@ -11,6 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countAuditEvents = `-- name: CountAuditEvents :one
+SELECT COUNT(*)::bigint AS total
+FROM audit_events
+WHERE ($1::TEXT = '' OR action = $1)
+  AND ($2::TEXT = '' OR target_type = $2)
+  AND ($3::TEXT = '' OR actor_email ILIKE '%' || $3 || '%')
+  AND ($4::UUID IS NULL OR actor_id = $4)
+`
+
+type CountAuditEventsParams struct {
+	Column1 string
+	Column2 string
+	Column3 string
+	Column4 pgtype.UUID
+}
+
+// Matching total for the same filter set ListAuditEvents reads.
+// Surfaces the absolute count so the UI can render a
+// "showing X–Y of Z" header + Prev/Next bounds without a second
+// guess-and-check fetch.
+func (q *Queries) CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditEvents,
+		arg.Column1,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+	)
+	var total int64
+	err := row.Scan(&total)
+	return total, err
+}
+
 const insertAuditEvent = `-- name: InsertAuditEvent :one
 INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -60,7 +92,7 @@ WHERE ($1::TEXT = '' OR action = $1)
   AND ($3::TEXT = '' OR actor_email ILIKE '%' || $3 || '%')
   AND ($4::UUID IS NULL OR actor_id = $4)
 ORDER BY at DESC, id DESC
-LIMIT $5
+LIMIT $5 OFFSET $6
 `
 
 type ListAuditEventsParams struct {
@@ -69,10 +101,11 @@ type ListAuditEventsParams struct {
 	Column3 string
 	Column4 pgtype.UUID
 	Limit   int32
+	Offset  int32
 }
 
-// Reverse-chrono listing with optional filters. Empty string on
-// action_filter / target_type_filter / actor_email_filter
+// Reverse-chrono listing with optional filters + offset
+// pagination. Empty string on action / target_type / actor
 // disables that filter; nil actor_id_filter disables actor
 // filtering (applied separately because typing empty UUID as
 // "no filter" leaks).
@@ -83,6 +116,7 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		arg.Column3,
 		arg.Column4,
 		arg.Limit,
+		arg.Offset,
 	)
 	if err != nil {
 		return nil, err

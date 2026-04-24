@@ -102,12 +102,13 @@ func TestAdmin_SetUserRole_PromotesAndEmitsAudit(t *testing.T) {
 	}
 
 	// Audit emit must fire with before/after captured.
-	events, err := s.ListAuditEvents(context.Background(), store.ListAuditEventsFilter{
+	page, err := s.ListAuditEvents(context.Background(), store.ListAuditEventsFilter{
 		Action: store.AuditActionUserRoleChange, Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("list audit: %v", err)
 	}
+	events := page.Events
 	if len(events) != 1 {
 		t.Fatalf("expected 1 audit event, got %d", len(events))
 	}

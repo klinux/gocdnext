@@ -320,6 +320,12 @@ export type AuditEventRow = {
 
 export type AuditEventsList = {
   events: AuditEventRow[];
+  // Pagination envelope: the server returns the absolute total
+  // + the echoed limit/offset so the UI can render pagination
+  // controls without a follow-up count query.
+  total: number;
+  limit: number;
+  offset: number;
 };
 
 export type VSMNode = {
