@@ -228,6 +228,22 @@ type StageRun struct {
 	FinishedAt pgtype.Timestamptz
 }
 
+type TestResult struct {
+	ID             pgtype.UUID
+	JobRunID       pgtype.UUID
+	Suite          string
+	Classname      string
+	Name           string
+	Status         string
+	DurationMs     int64
+	FailureType    *string
+	FailureMessage *string
+	FailureDetail  *string
+	SystemOut      *string
+	SystemErr      *string
+	CreatedAt      pgtype.Timestamptz
+}
+
 type User struct {
 	ID           pgtype.UUID
 	Email        string

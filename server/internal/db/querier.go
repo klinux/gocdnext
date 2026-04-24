@@ -66,6 +66,11 @@ type Querier interface {
 	// same filter args. Returned as bigint to fit any table; UI only
 	// needs int32 but this avoids cast noise.
 	CountRunsGlobal(ctx context.Context, arg CountRunsGlobalParams) (int64, error)
+	// One aggregate row per job_run covering all statuses — drives
+	// the pill on each job card ("42 passed · 1 failed") without
+	// pulling the full case list. Empty when the job didn't produce
+	// reports.
+	CountTestResultsByJobRun(ctx context.Context, jobRunIds []pgtype.UUID) ([]CountTestResultsByJobRunRow, error)
 	// Pair for ListWebhookDeliveries so the UI can render "N of M".
 	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
 	// Median run duration in seconds across the last 7 days. NULL when
@@ -97,6 +102,12 @@ type Querier interface {
 	// scm_sources, etc.), so this single statement is enough.
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
+	// Called before an agent retry re-ingests a rerun's results, so
+	// the UI doesn't show a mix of old and new outcomes. The FK's
+	// ON DELETE CASCADE handles the job_run → test_results side;
+	// this one targets the "same job_run_id, later agent attempt"
+	// case where the row survives but its results shouldn't.
+	DeleteTestResultsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
@@ -268,6 +279,11 @@ type Querier interface {
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
+	// One INSERT per case. The agent batches N cases into a single
+	// gRPC message; the server handler opens a tx and calls this N
+	// times. Simpler than a COPY FROM for a workload that caps at
+	// a few thousand cases per run.
+	InsertTestResult(ctx context.Context, arg InsertTestResultParams) error
 	InsertUserSession(ctx context.Context, arg InsertUserSessionParams) error
 	// Append-only audit row for every HTTP call that lands on
 	// /api/webhooks/*. Rows outlive the request so the admin page can
@@ -413,6 +429,11 @@ type Querier interface {
 	// @staleness. The reaper walks this list every tick and either re-queues or
 	// fails them.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
+	// Returns every case across every job in a run. The Tests tab
+	// groups them by job_run_id in-memory — cheaper than JOINing
+	// job_runs here because the UI already has the job list from
+	// RunDetail.
+	ListTestResultsByRun(ctx context.Context, jobRunIds []pgtype.UUID) ([]ListTestResultsByRunRow, error)
 	// Per-project top-N (most recently updated) pipelines with their
 	// latest run status. Used to render the "mini stack" inside each
 	// project card without issuing one query per card (N+1). Capped at
