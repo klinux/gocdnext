@@ -261,10 +261,20 @@ export type PluginInput = {
   description?: string;
 };
 
+export type PluginExample = {
+  name?: string;
+  description?: string;
+  yaml: string;
+};
+
 export type PluginSummary = {
   name: string;
   description?: string;
+  // Category groups plugins on the UI (build/container/security/
+  // deploy/notifications/release). Empty on legacy manifests.
+  category?: string;
   inputs: PluginInput[];
+  examples?: PluginExample[];
 };
 
 export type PluginsList = {
