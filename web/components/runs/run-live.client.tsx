@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { Route } from "next";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -23,11 +23,15 @@ import { PipelineCanvas } from "@/components/runs/pipeline-canvas.client";
 import { isTerminalStatus, statusTone, type StatusTone } from "@/lib/status";
 import type { LogLine, RunDetail } from "@/types/api";
 
-// LIVE_POLL_MS controls how fast the page requests the server for new log
-// lines + status while the run is running. Small enough to feel live,
-// big enough not to flood the API.
+// LIVE_POLL_MS controls how fast the page refetches run + stage + job
+// STATUS while the run is running. Log lines now arrive via SSE so
+// the poll itself doesn't need log payloads — we still request a
+// small tail (SAFETY_LOGS_PER_JOB) as a gap-filler in case the SSE
+// handshake dropped a line published between the SSR fetch and the
+// stream's `: ready` comment. Small enough to feel instant on
+// status flips, big enough not to flood the API.
 const LIVE_POLL_MS = 2_000;
-const LOGS_PER_JOB = 500;
+const SAFETY_LOGS_PER_JOB = 50;
 
 type Props = {
   initial: RunDetail;
@@ -42,7 +46,7 @@ async function fetchRun(
 ): Promise<RunDetail> {
   const base = apiBaseURL.replace(/\/+$/, "");
   const url = new URL(`${base}/api/v1/runs/${encodeURIComponent(id)}`);
-  url.searchParams.set("logs", String(LOGS_PER_JOB));
+  url.searchParams.set("logs", String(SAFETY_LOGS_PER_JOB));
   // Per-job cursors: `?since=<job_id>:<last_seen_seq>` (repeated).
   // When present, the server returns only lines with seq > cursor
   // for that job, which keeps the delta small AND makes bursty
@@ -75,6 +79,11 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
   // every line of the new one.
   const logsByJobRef = useRef<Map<string, Map<number, LogLine>>>(new Map());
   const prevStatusRef = useRef<Map<string, string>>(new Map());
+  // sseRev bumps every time an SSE event lands a new line. It exists
+  // only to retrigger the useMemo that flattens logsByJobRef back
+  // into job.logs arrays — the ref itself doesn't trigger a React
+  // re-render, so we need a discrete state handle.
+  const [sseRev, setSseRev] = useState(0);
 
   const { data = initial } = useQuery({
     queryKey: ["run", runId],
@@ -98,6 +107,46 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       return isTerminalStatus(state) ? false : LIVE_POLL_MS;
     },
   });
+
+  // SSE live log stream. Opens while the run is not terminal; the
+  // browser's EventSource auto-reconnects on disconnect with a
+  // Last-Event-ID header matching the last `id:` we emitted, so a
+  // transient proxy blip doesn't tear the stream. We feed each
+  // event into logsByJobRef by (job_id, seq) — the existing merge
+  // path handles dedupe with the polling delta.
+  useEffect(() => {
+    if (isTerminalStatus(data.status)) return;
+    const base = apiBaseURL.replace(/\/+$/, "");
+    const url = `${base}/api/v1/runs/${encodeURIComponent(runId)}/logs/stream`;
+    const es = new EventSource(url, { withCredentials: true });
+    es.addEventListener("log", (ev) => {
+      try {
+        const payload = JSON.parse((ev as MessageEvent).data) as {
+          job_id: string;
+          seq: number;
+          stream: string;
+          at: string;
+          text: string;
+        };
+        let bucket = logsByJobRef.current.get(payload.job_id);
+        if (!bucket) {
+          bucket = new Map<number, LogLine>();
+          logsByJobRef.current.set(payload.job_id, bucket);
+        }
+        bucket.set(payload.seq, {
+          seq: payload.seq,
+          stream: payload.stream,
+          at: payload.at,
+          text: payload.text,
+        });
+        setSseRev((r) => r + 1);
+      } catch {
+        // Malformed frame — drop. The poll path will pick the
+        // line up on the next tick.
+      }
+    });
+    return () => es.close();
+  }, [apiBaseURL, runId, data.status]);
 
   const mergedData = useMemo<RunDetail>(() => {
     const map = logsByJobRef.current;
@@ -131,7 +180,10 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       }),
     }));
     return { ...data, stages };
-  }, [data]);
+    // sseRev deliberately listed so a stream-delivered line forces
+    // the flatten pass to re-run — the ref mutation alone doesn't
+    // trigger a React update.
+  }, [data, sseRev]);
 
   const upstream =
     data.cause === "upstream" && data.cause_detail

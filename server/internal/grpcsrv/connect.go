@@ -16,6 +16,7 @@ import (
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -112,7 +113,8 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 // handleLogLine persists a streamed log line. Errors are logged and swallowed:
 // agents should not retry on DB hiccups because seq numbers are monotonic per
 // job, and the ON CONFLICT (job_run_id, seq) dedupe makes a later ack-less
-// retry safe anyway.
+// retry safe anyway. On success we fan the event out to the in-process log
+// broker (if configured) so the SSE handler can push it live without polling.
 func (a *AgentService) handleLogLine(ctx context.Context, log logger, l *gocdnextv1.LogLine) {
 	jobID, err := uuid.Parse(l.GetJobId())
 	if err != nil {
@@ -131,7 +133,50 @@ func (a *AgentService) handleLogLine(ctx context.Context, log logger, l *gocdnex
 		Text:     l.GetText(),
 	}); err != nil {
 		log.Warn("agent log: persist failed", "err", err, "job_id", jobID, "seq", l.GetSeq())
+		return
 	}
+	a.publishLogLine(ctx, log, jobID, logstream.Event{
+		JobRunID: jobID,
+		Seq:      l.GetSeq(),
+		Stream:   l.GetStream(),
+		At:       at,
+		Text:     l.GetText(),
+	})
+}
+
+// publishLogLine fans a persisted line out to the in-process log broker.
+// No-op when WithLogBroker wasn't called. The jobID→runID map is memoised
+// on the service; a cold miss is one SELECT, warm is a sync.Map load.
+// A missing row (ErrJobRunNotFound) means the job was swept before the
+// agent's in-flight line landed — we silently drop the publish.
+func (a *AgentService) publishLogLine(ctx context.Context, log logger, jobID uuid.UUID, ev logstream.Event) {
+	if a.logBroker == nil {
+		return
+	}
+	runID, err := a.runIDForJob(ctx, jobID)
+	if err != nil {
+		if !errors.Is(err, store.ErrJobRunNotFound) {
+			log.Warn("agent log: run lookup failed", "err", err, "job_id", jobID)
+		}
+		return
+	}
+	ev.RunID = runID
+	a.logBroker.Publish(ev)
+}
+
+// runIDForJob memoises jobID → runID. sync.Map's LoadOrStore keeps the
+// lookup lock-free on the warm path; on a cold miss we take the DB hit
+// once and cache forever (job ids never get reassigned).
+func (a *AgentService) runIDForJob(ctx context.Context, jobID uuid.UUID) (uuid.UUID, error) {
+	if v, ok := a.jobRunIDCache.Load(jobID); ok {
+		return v.(uuid.UUID), nil
+	}
+	runID, err := a.store.RunIDForJobRun(ctx, jobID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	a.jobRunIDCache.Store(jobID, runID)
+	return runID, nil
 }
 
 // handleJobResult flips the job terminal, cascades into stage + run, releases

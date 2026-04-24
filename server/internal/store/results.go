@@ -23,6 +23,44 @@ type LogLine struct {
 	Text     string
 }
 
+// RunExists returns whether a run row is present. Used by the
+// SSE log-stream handler — GetRunDetail would fetch stages + jobs
+// + log tail, none of which we need just to validate the URL.
+// Returns (false, nil) when the run is missing so the caller can
+// distinguish "not found" from "DB error".
+func (s *Store) RunExists(ctx context.Context, runID uuid.UUID) (bool, error) {
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM runs WHERE id = $1`, runID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: run exists: %w", err)
+	}
+	return true, nil
+}
+
+// RunIDForJobRun returns the owning run id for a job-run. Used by
+// the SSE log-stream path, which needs to route live log events
+// by run but only receives jobID from the agent message. Returns
+// uuid.Nil + ErrJobRunNotFound if the row doesn't exist (e.g.
+// the agent replays a log line for a job already wiped by the
+// reaper — we swallow the publish in that case).
+func (s *Store) RunIDForJobRun(ctx context.Context, jobRunID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx,
+		`SELECT run_id FROM job_runs WHERE id = $1`,
+		jobRunID,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrJobRunNotFound
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("store: run id for job run: %w", err)
+	}
+	return id, nil
+}
+
 // InsertLogLine persists one log line. The ON CONFLICT clause makes retries
 // harmless — if the agent re-sends the same (job_run_id, seq) after a
 // disconnect, we keep the first copy.

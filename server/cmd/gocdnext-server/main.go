@@ -38,6 +38,7 @@ import (
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
@@ -193,8 +194,15 @@ func main() {
 			WebhookPublicURL: cfg.WebhookPublicURL,
 		})
 	}
+	// In-process log fan-out: the gRPC log ingester publishes to it,
+	// the SSE handler subscribes per run. One broker per server
+	// instance is fine for today's single-node deploy; the HA story
+	// slots a pubsub backend behind the same interface.
+	logBroker := logstream.New(256, nil)
+
 	runsHandler := runsapi.NewHandler(st, logger).
-		WithConfigFetcher(gitHubFetcher)
+		WithConfigFetcher(gitHubFetcher).
+		WithLogBroker(logBroker)
 	if artifactStore != nil {
 		runsHandler = runsHandler.WithArtifactStore(artifactStore)
 	}
@@ -210,7 +218,8 @@ func main() {
 	// container keeps burning until it finishes naturally.
 	runsHandler = runsHandler.WithCancelDispatcher(sessions)
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
-		WithChecksReporter(checksReporter)
+		WithChecksReporter(checksReporter).
+		WithLogBroker(logBroker)
 	if artifactStore != nil {
 		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour)
 	}
@@ -339,6 +348,7 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/secrets", projectsHandler.ListSecrets)
 		p.Get("/api/v1/projects/{slug}/caches", projectsHandler.ListCaches)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
+		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
 		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
 		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
 		p.Get("/api/v1/plugins", pluginsHandler.List)

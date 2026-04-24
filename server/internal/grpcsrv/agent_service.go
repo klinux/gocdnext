@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/checks"
+	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -40,6 +42,19 @@ type AgentService struct {
 	// checksReporter: optional; nil means "don't report back to GitHub
 	// when a run terminates". Set via WithChecksReporter.
 	checksReporter *checks.Reporter
+
+	// logBroker: optional in-process fan-out so the HTTP SSE handler
+	// can tail live log lines without polling the DB. nil means
+	// "feature off" — handleLogLine still persists, just skips the
+	// publish. Set via WithLogBroker.
+	logBroker *logstream.Broker
+
+	// jobRunIDCache memoises jobID → runID lookups so the log hot
+	// path avoids a DB round-trip per line. Job IDs are stable for
+	// their lifetime (no re-assignment) so the entry never goes
+	// stale; the worst case is the process growing one uuid entry
+	// per job seen since last restart, which is negligible.
+	jobRunIDCache sync.Map
 }
 
 // NewAgentService wires the service. heartbeatSeconds is the cadence the server
@@ -87,6 +102,15 @@ func (a *AgentService) WithArtifactStore(st artifacts.Store, putURLTTL, getURLTT
 // and the handle-result path just skips the report.
 func (a *AgentService) WithChecksReporter(r *checks.Reporter) *AgentService {
 	a.checksReporter = r
+	return a
+}
+
+// WithLogBroker enables live fan-out of log lines to SSE
+// subscribers. Nil-safe: without a broker the log path still
+// persists to Postgres, it just skips the publish (clients fall
+// back to polling).
+func (a *AgentService) WithLogBroker(b *logstream.Broker) *AgentService {
+	a.logBroker = b
 	return a
 }
 

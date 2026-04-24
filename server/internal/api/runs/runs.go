@@ -20,6 +20,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
+	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -44,6 +45,7 @@ type Handler struct {
 	artifactStore artifacts.Store
 	fetcher       configsync.Fetcher
 	dispatcher    CancelDispatcher
+	logBroker     *logstream.Broker
 	log           *slog.Logger
 }
 
