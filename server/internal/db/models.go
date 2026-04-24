@@ -62,6 +62,19 @@ type AuthState struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type Cach struct {
+	ID             pgtype.UUID
+	ProjectID      pgtype.UUID
+	Key            string
+	StorageKey     string
+	SizeBytes      int64
+	ContentSha256  *string
+	Status         string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	LastAccessedAt pgtype.Timestamptz
+}
+
 type CronState struct {
 	MaterialID  pgtype.UUID
 	LastFiredAt pgtype.Timestamptz
@@ -80,20 +93,27 @@ type GithubCheckRun struct {
 }
 
 type JobRun struct {
-	ID         pgtype.UUID
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-	MatrixKey  *string
-	Image      *string
-	AgentID    pgtype.UUID
-	Status     string
-	ExitCode   *int32
-	Error      *string
-	Needs      []string
-	StartedAt  pgtype.Timestamptz
-	FinishedAt pgtype.Timestamptz
-	Attempt    int32
+	ID                  pgtype.UUID
+	RunID               pgtype.UUID
+	StageRunID          pgtype.UUID
+	Name                string
+	MatrixKey           *string
+	Image               *string
+	AgentID             pgtype.UUID
+	Status              string
+	ExitCode            *int32
+	Error               *string
+	Needs               []string
+	StartedAt           pgtype.Timestamptz
+	FinishedAt          pgtype.Timestamptz
+	Attempt             int32
+	ApprovalGate        bool
+	Approvers           []string
+	ApprovalDescription *string
+	AwaitingSince       pgtype.Timestamptz
+	DecidedBy           *string
+	DecidedAt           pgtype.Timestamptz
+	Decision            *string
 }
 
 type LogLine struct {

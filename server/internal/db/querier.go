@@ -19,6 +19,10 @@ type Querier interface {
 	// can answer 409. Returns the row id so the caller can tell the
 	// update happened.
 	CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	// Pending approval gates in a failed run also get canceled so a
+	// rejected deploy doesn't leave a "ready to approve" ghost sitting
+	// in the UI with no path forward. Reject is the intended decision
+	// path; cancel here only fires on upstream stage failure.
 	CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error
 	// When a stage fails we stop dispatching the rest of the run. Running work
 	// stays untouched; the agent will still report its outcome.
@@ -191,7 +195,8 @@ type Querier interface {
 	// the encrypted blobs; the caller decrypts and injects as env vars.
 	GetSecretValuesByProject(ctx context.Context, arg GetSecretValuesByProjectParams) ([]GetSecretValuesByProjectRow, error)
 	// Counts jobs still working vs already-failed within a stage — the numbers
-	// the caller uses to decide whether to promote the stage.
+	// the caller uses to decide whether to promote the stage. `awaiting_approval`
+	// is unfinished too: the gate hasn't decided yet, so the stage can't close.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.

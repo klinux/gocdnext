@@ -109,64 +109,83 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 		JobName:    row.Name,
 	}
 
-	stage, err := q.GetStageProgress(ctx, row.StageRunID)
-	if err != nil {
-		return JobCompletion{}, false, fmt.Errorf("store: stage progress: %w", err)
-	}
-
-	if stage.Unfinished == 0 {
-		stageStatus := string(domain.StatusSuccess)
-		if stage.Failed > 0 {
-			stageStatus = string(domain.StatusFailed)
-		}
-		if err := q.CompleteStageRun(ctx, db.CompleteStageRunParams{
-			ID: row.StageRunID, Status: stageStatus,
-		}); err != nil {
-			return JobCompletion{}, false, fmt.Errorf("store: complete stage: %w", err)
-		}
-		comp.StageCompleted = true
-		comp.StageStatus = stageStatus
-
-		if stageStatus == string(domain.StatusFailed) {
-			// Fail-fast: cancel remaining queued work and mark the run failed.
-			if err := q.CancelQueuedStagesInRun(ctx, row.RunID); err != nil {
-				return JobCompletion{}, false, fmt.Errorf("store: cancel stages: %w", err)
-			}
-			if err := q.CancelQueuedJobsInRun(ctx, row.RunID); err != nil {
-				return JobCompletion{}, false, fmt.Errorf("store: cancel jobs: %w", err)
-			}
-			if err := q.CompleteRun(ctx, db.CompleteRunParams{
-				ID: row.RunID, Status: string(domain.StatusFailed),
-			}); err != nil {
-				return JobCompletion{}, false, fmt.Errorf("store: complete run: %w", err)
-			}
-			comp.RunCompleted = true
-			comp.RunStatus = string(domain.StatusFailed)
-		} else {
-			run, err := q.GetRunProgress(ctx, row.RunID)
-			if err != nil {
-				return JobCompletion{}, false, fmt.Errorf("store: run progress: %w", err)
-			}
-			if run.Unfinished == 0 {
-				runStatus := string(domain.StatusSuccess)
-				if run.Failed > 0 {
-					runStatus = string(domain.StatusFailed)
-				}
-				if err := q.CompleteRun(ctx, db.CompleteRunParams{
-					ID: row.RunID, Status: runStatus,
-				}); err != nil {
-					return JobCompletion{}, false, fmt.Errorf("store: complete run: %w", err)
-				}
-				comp.RunCompleted = true
-				comp.RunStatus = runStatus
-			}
-		}
+	if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+		return JobCompletion{}, false, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return JobCompletion{}, false, fmt.Errorf("store: complete job: commit: %w", err)
 	}
 	return comp, true, nil
+}
+
+// cascadeAfterJobCompletion promotes the stage (and cascades into
+// the run) once a job lands in a terminal state. Shared between
+// CompleteJob (agent-driven) and the approval gate transitions
+// (human-driven) so both paths hit the same fail-fast + final-
+// promotion logic. Callers must pass the same pgx transaction
+// handle (q := s.q.WithTx(tx)) so rollback on error wipes the
+// partially-stamped stage/run rows.
+func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, runID pgtype.UUID, comp *JobCompletion) error {
+	stage, err := q.GetStageProgress(ctx, stageRunID)
+	if err != nil {
+		return fmt.Errorf("store: stage progress: %w", err)
+	}
+	if stage.Unfinished > 0 {
+		return nil
+	}
+
+	stageStatus := string(domain.StatusSuccess)
+	if stage.Failed > 0 {
+		stageStatus = string(domain.StatusFailed)
+	}
+	if err := q.CompleteStageRun(ctx, db.CompleteStageRunParams{
+		ID: stageRunID, Status: stageStatus,
+	}); err != nil {
+		return fmt.Errorf("store: complete stage: %w", err)
+	}
+	comp.StageCompleted = true
+	comp.StageStatus = stageStatus
+
+	if stageStatus == string(domain.StatusFailed) {
+		// Fail-fast: cancel remaining queued work (including
+		// awaiting_approval gates — a rejected deploy upstream
+		// means the downstream approvals are moot) and mark the
+		// run failed.
+		if err := q.CancelQueuedStagesInRun(ctx, runID); err != nil {
+			return fmt.Errorf("store: cancel stages: %w", err)
+		}
+		if err := q.CancelQueuedJobsInRun(ctx, runID); err != nil {
+			return fmt.Errorf("store: cancel jobs: %w", err)
+		}
+		if err := q.CompleteRun(ctx, db.CompleteRunParams{
+			ID: runID, Status: string(domain.StatusFailed),
+		}); err != nil {
+			return fmt.Errorf("store: complete run: %w", err)
+		}
+		comp.RunCompleted = true
+		comp.RunStatus = string(domain.StatusFailed)
+		return nil
+	}
+
+	run, err := q.GetRunProgress(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("store: run progress: %w", err)
+	}
+	if run.Unfinished == 0 {
+		runStatus := string(domain.StatusSuccess)
+		if run.Failed > 0 {
+			runStatus = string(domain.StatusFailed)
+		}
+		if err := q.CompleteRun(ctx, db.CompleteRunParams{
+			ID: runID, Status: runStatus,
+		}); err != nil {
+			return fmt.Errorf("store: complete run: %w", err)
+		}
+		comp.RunCompleted = true
+		comp.RunStatus = runStatus
+	}
+	return nil
 }
 
 // NotifyRunQueued emits `run_queued` so the scheduler wakes up for the given

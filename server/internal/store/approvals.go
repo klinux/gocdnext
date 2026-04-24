@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ErrApprovalGateNotFound signals no matching approval row exists
@@ -35,86 +36,126 @@ type ApprovalDecision struct {
 	User     string // empty = anonymous (dev/demo; prod enforces auth at HTTP)
 }
 
-// ApproveGate flips an awaiting approval row to 'queued' and
-// stamps decided_by + decided_at + decision='approved'. The
-// transition is atomic via a conditional UPDATE so two concurrent
-// approvals converge safely: one wins, the other sees zero rows
-// affected and surfaces ErrApprovalNotPending.
+// ApprovalResult is returned from Approve/RejectGate so the HTTP
+// layer can decide whether to fire run_queued NOTIFY (only when
+// the transition left the run in a state the scheduler should
+// re-evaluate) and what status the stage/run eventually settled
+// on.
+type ApprovalResult struct {
+	RunID          uuid.UUID
+	StageCompleted bool
+	StageStatus    string
+	RunCompleted   bool
+	RunStatus      string
+}
+
+// ApproveGate flips an awaiting approval row directly to 'success'
+// and cascades into stage + run promotion in a single transaction.
+// Skipping the intermediate 'queued' status closes a race where
+// the scheduler could pick up a gate between the flip and the
+// cascade and try to dispatch a job with no tasks. The transition
+// is atomic via a conditional UPDATE so two concurrent approvals
+// converge: one wins, the other sees zero rows affected and gets
+// ErrApprovalNotPending.
 //
-// After approval the scheduler picks the row up on its next tick
-// (same queue as any freshly-materialised job). The caller is
-// responsible for firing a run_queued NOTIFY so dispatch doesn't
-// wait for the polling tick — ApproveGate returns the run id for
-// exactly that purpose.
-func (s *Store) ApproveGate(ctx context.Context, d ApprovalDecision) (runID uuid.UUID, err error) {
-	return s.decideGate(ctx, d, "approved", "queued")
+// Returns the run id so the HTTP layer can fire run_queued NOTIFY
+// when the stage completed (next stage may have waiting work).
+func (s *Store) ApproveGate(ctx context.Context, d ApprovalDecision) (ApprovalResult, error) {
+	return s.decideGate(ctx, d, "approved", "success")
 }
 
 // RejectGate flips an awaiting approval row to 'failed' with
-// decision='rejected'. Downstream jobs `needs:`ing this one will
-// never run — the stage cascade treats the rejection the same
-// way it treats a failed script, which is the right semantics
-// (a rejected deploy shouldn't silently skip the smoke test that
-// follows it).
-func (s *Store) RejectGate(ctx context.Context, d ApprovalDecision) (runID uuid.UUID, err error) {
+// decision='rejected' and cascades the stage failure — which in
+// turn cancels downstream queued work via the shared cascade
+// helper. A rejected deploy won't leave "ready to approve" ghosts
+// sitting in a stage that'll never run.
+func (s *Store) RejectGate(ctx context.Context, d ApprovalDecision) (ApprovalResult, error) {
 	return s.decideGate(ctx, d, "rejected", "failed")
 }
 
-func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, nextStatus string) (uuid.UUID, error) {
+func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, nextStatus string) (ApprovalResult, error) {
 	if d.JobRunID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("store: approval decision: job run id required")
+		return ApprovalResult{}, fmt.Errorf("store: approval decision: job run id required")
 	}
 
-	// Pre-check approvers: ErrApproverNotAllowed must surface
-	// distinctly from "wrong status". Doing the check here (vs.
-	// in SQL) keeps the error ergonomics clean — the single
-	// UPDATE would otherwise conflate "not pending" and "not
-	// allowed" into the same zero-rows-affected outcome.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ApprovalResult{}, fmt.Errorf("store: approval begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Load the row under the tx so the allow-list check, the
+	// "is it pending?" check, and the UPDATE all see the same
+	// snapshot. Checking approvers in Go (vs. in SQL) keeps the
+	// error ergonomics distinct: "not allowed" vs. "not pending"
+	// vs. "not found" each surface a dedicated sentinel.
 	var (
-		gate      bool
-		status    string
-		approvers []string
-		parentRun uuid.UUID
+		gate       bool
+		status     string
+		approvers  []string
+		parentRun  pgtype.UUID
+		stageRunID pgtype.UUID
 	)
-	err := s.pool.QueryRow(ctx, `
-		SELECT approval_gate, status, approvers, run_id
+	err = tx.QueryRow(ctx, `
+		SELECT approval_gate, status, approvers, run_id, stage_run_id
 		FROM job_runs
 		WHERE id = $1
-	`, d.JobRunID).Scan(&gate, &status, &approvers, &parentRun)
+	`, d.JobRunID).Scan(&gate, &status, &approvers, &parentRun, &stageRunID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, ErrApprovalGateNotFound
+		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: load approval row: %w", err)
+		return ApprovalResult{}, fmt.Errorf("store: load approval row: %w", err)
 	}
 	if !gate {
-		return uuid.Nil, ErrApprovalGateNotFound
+		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
 	if status != "awaiting_approval" {
-		return uuid.Nil, ErrApprovalNotPending
+		return ApprovalResult{}, ErrApprovalNotPending
 	}
 	// Empty approvers list = "any authenticated user" (same
 	// parse-time decision: permissive default, RBAC layers on
 	// top). A non-empty list enforces membership.
 	if len(approvers) > 0 && d.User != "" && !slices.Contains(approvers, d.User) {
-		return uuid.Nil, ErrApproverNotAllowed
+		return ApprovalResult{}, ErrApproverNotAllowed
 	}
 
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE job_runs
 		SET status      = $2,
 		    decision    = $3,
 		    decided_by  = $4,
 		    decided_at  = NOW(),
-		    finished_at = CASE WHEN $2 = 'failed' THEN NOW() ELSE finished_at END
+		    finished_at = NOW()
 		WHERE id = $1 AND status = 'awaiting_approval'
 	`, d.JobRunID, nextStatus, decision, d.User)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: apply approval decision: %w", err)
+		return ApprovalResult{}, fmt.Errorf("store: apply approval decision: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		// Concurrent decider won the race.
-		return uuid.Nil, ErrApprovalNotPending
+		return ApprovalResult{}, ErrApprovalNotPending
 	}
-	return parentRun, nil
+
+	// Cascade: same helper CompleteJob uses so a gate's success
+	// promotes its stage (and onto the run) exactly like a
+	// regular job's success would, and a rejection fans out as
+	// a stage failure that cancels downstream queued work.
+	q := s.q.WithTx(tx)
+	var comp JobCompletion
+	if err := cascadeAfterJobCompletion(ctx, q, stageRunID, parentRun, &comp); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return ApprovalResult{}, fmt.Errorf("store: approval commit: %w", err)
+	}
+
+	return ApprovalResult{
+		RunID:          fromPgUUID(parentRun),
+		StageCompleted: comp.StageCompleted,
+		StageStatus:    comp.StageStatus,
+		RunCompleted:   comp.RunCompleted,
+		RunStatus:      comp.RunStatus,
+	}, nil
 }

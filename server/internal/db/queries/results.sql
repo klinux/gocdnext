@@ -17,10 +17,11 @@ RETURNING id, run_id, stage_run_id, agent_id, name;
 
 -- name: GetStageProgress :one
 -- Counts jobs still working vs already-failed within a stage — the numbers
--- the caller uses to decide whether to promote the stage.
+-- the caller uses to decide whether to promote the stage. `awaiting_approval`
+-- is unfinished too: the gate hasn't decided yet, so the stage can't close.
 SELECT
-    COUNT(*) FILTER (WHERE status IN ('queued', 'running'))::BIGINT AS unfinished,
-    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT               AS failed
+    COUNT(*) FILTER (WHERE status IN ('queued', 'running', 'awaiting_approval'))::BIGINT AS unfinished,
+    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT                                    AS failed
 FROM job_runs
 WHERE stage_run_id = $1;
 
@@ -49,6 +50,10 @@ SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
 WHERE run_id = $1 AND status = 'queued';
 
 -- name: CancelQueuedJobsInRun :exec
+-- Pending approval gates in a failed run also get canceled so a
+-- rejected deploy doesn't leave a "ready to approve" ghost sitting
+-- in the UI with no path forward. Reject is the intended decision
+-- path; cancel here only fires on upstream stage failure.
 UPDATE job_runs
 SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
-WHERE run_id = $1 AND status = 'queued';
+WHERE run_id = $1 AND status IN ('queued', 'awaiting_approval');

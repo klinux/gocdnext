@@ -14,9 +14,13 @@ import (
 const cancelQueuedJobsInRun = `-- name: CancelQueuedJobsInRun :exec
 UPDATE job_runs
 SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
-WHERE run_id = $1 AND status = 'queued'
+WHERE run_id = $1 AND status IN ('queued', 'awaiting_approval')
 `
 
+// Pending approval gates in a failed run also get canceled so a
+// rejected deploy doesn't leave a "ready to approve" ghost sitting
+// in the UI with no path forward. Reject is the intended decision
+// path; cancel here only fires on upstream stage failure.
 func (q *Queries) CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, cancelQueuedJobsInRun, runID)
 	return err
@@ -133,8 +137,8 @@ func (q *Queries) GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRun
 
 const getStageProgress = `-- name: GetStageProgress :one
 SELECT
-    COUNT(*) FILTER (WHERE status IN ('queued', 'running'))::BIGINT AS unfinished,
-    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT               AS failed
+    COUNT(*) FILTER (WHERE status IN ('queued', 'running', 'awaiting_approval'))::BIGINT AS unfinished,
+    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT                                    AS failed
 FROM job_runs
 WHERE stage_run_id = $1
 `
@@ -145,7 +149,8 @@ type GetStageProgressRow struct {
 }
 
 // Counts jobs still working vs already-failed within a stage — the numbers
-// the caller uses to decide whether to promote the stage.
+// the caller uses to decide whether to promote the stage. `awaiting_approval`
+// is unfinished too: the gate hasn't decided yet, so the stage can't close.
 func (q *Queries) GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error) {
 	row := q.db.QueryRow(ctx, getStageProgress, stageRunID)
 	var i GetStageProgressRow

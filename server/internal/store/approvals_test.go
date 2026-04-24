@@ -129,21 +129,41 @@ func TestCreateRun_MarksApprovalGateAwaiting(t *testing.T) {
 	}
 }
 
-func TestApproveGate_HappyPathFlipsToQueued(t *testing.T) {
+func TestApproveGate_HappyPathFlipsToSuccessAndPromotes(t *testing.T) {
+	// Approval flips the gate directly to `success` (no
+	// intermediate `queued`) AND cascades so the stage + run
+	// progress without waiting for the scheduler to pick up a
+	// queued-but-task-less row. Skipping `queued` closes the
+	// window where the scheduler could try to dispatch a gate
+	// to an agent.
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	pipelineID, materialID := seedApprovalPipeline(t, pool, "gate-approve", []string{"alice"})
-	_, gateJobID := triggerApprovalRun(t, pool, pipelineID, materialID)
+	parentRunID, gateJobID := triggerApprovalRun(t, pool, pipelineID, materialID)
 
-	runID, err := s.ApproveGate(context.Background(), store.ApprovalDecision{
+	// Move the test stage to a state where the deploy stage is
+	// the only unfinished one — approving the gate in deploy
+	// should then close both the stage and the whole run.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE stage_runs SET status = 'success' WHERE run_id = $1 AND name = 'test'`, parentRunID); err != nil {
+		t.Fatalf("mark test stage success: %v", err)
+	}
+
+	res, err := s.ApproveGate(context.Background(), store.ApprovalDecision{
 		JobRunID: gateJobID,
 		User:     "alice",
 	})
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if runID == uuid.Nil {
-		t.Error("returned run id is nil — scheduler notify would skip")
+	if res.RunID != parentRunID {
+		t.Errorf("returned run id = %s, want %s", res.RunID, parentRunID)
+	}
+	if !res.StageCompleted || res.StageStatus != "success" {
+		t.Errorf("stage cascade = %+v, want completed+success", res)
+	}
+	if !res.RunCompleted || res.RunStatus != "success" {
+		t.Errorf("run cascade = %+v, want completed+success", res)
 	}
 
 	var status, decision, decidedBy string
@@ -153,8 +173,8 @@ func TestApproveGate_HappyPathFlipsToQueued(t *testing.T) {
 	`, gateJobID).Scan(&status, &decision, &decidedBy); err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if status != "queued" {
-		t.Errorf("status = %q, want queued", status)
+	if status != "success" {
+		t.Errorf("status = %q, want success", status)
 	}
 	if decision != "approved" {
 		t.Errorf("decision = %q", decision)
@@ -170,10 +190,17 @@ func TestRejectGate_HappyPathFlipsToFailed(t *testing.T) {
 	pipelineID, materialID := seedApprovalPipeline(t, pool, "gate-reject", []string{"alice"})
 	_, gateJobID := triggerApprovalRun(t, pool, pipelineID, materialID)
 
-	if _, err := s.RejectGate(context.Background(), store.ApprovalDecision{
+	res, err := s.RejectGate(context.Background(), store.ApprovalDecision{
 		JobRunID: gateJobID, User: "alice",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("reject: %v", err)
+	}
+	// Rejection is a terminal stage failure → fail-fast cascade
+	// fires and the whole run lands in failed with downstream
+	// queued work canceled.
+	if res.RunStatus != "failed" {
+		t.Errorf("run cascade status = %q, want failed", res.RunStatus)
 	}
 	var status, decision string
 	var finished *string
@@ -197,6 +224,94 @@ func TestRejectGate_HappyPathFlipsToFailed(t *testing.T) {
 	}
 }
 
+func TestStageProgress_CountsAwaitingApprovalAsUnfinished(t *testing.T) {
+	// Regression lock: a stage that has an approval gate AND a
+	// regular job must NOT complete when only the regular job
+	// finishes. If GetStageProgress stops counting
+	// awaiting_approval as unfinished, the stage would promote
+	// and the gate becomes orphaned in a dead stage. Seed a
+	// fresh pipeline, complete the regular job via CompleteJob
+	// (normal agent path), and assert the stage stays running.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	slug := "gate-progress"
+	url, branch := "https://github.com/org/"+slug, "main"
+	fp := store.FingerprintFor(url, branch)
+	p := &domain.Pipeline{
+		Name:   "build",
+		Stages: []string{"deploy"},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+		}},
+		Jobs: []domain.Job{
+			{Name: "smoke", Stage: "deploy", Tasks: []domain.Task{{Script: "true"}}},
+			{Name: "gate", Stage: "deploy", Approval: &domain.ApprovalSpec{}},
+		},
+	}
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: slug, Name: slug, Pipelines: []*domain.Pipeline{p},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:     res.Pipelines[0].PipelineID,
+		MaterialID:     materialID,
+		ModificationID: 1,
+		Revision:       "deadbeef",
+		Branch:         "main",
+		Provider:       "github",
+		Delivery:       "t",
+		TriggeredBy:    "test",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	var smokeID uuid.UUID
+	for _, jr := range created.JobRuns {
+		if jr.Name == "smoke" {
+			smokeID = jr.ID
+		}
+	}
+	// Simulate dispatch (queued → running) so CompleteJob can flip it.
+	if _, err := pool.Exec(ctx, `UPDATE job_runs SET status='running' WHERE id = $1`, smokeID); err != nil {
+		t.Fatal(err)
+	}
+
+	comp, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID: smokeID, Status: "success", ExitCode: 0,
+	})
+	if err != nil || !ok {
+		t.Fatalf("complete job: ok=%v err=%v", ok, err)
+	}
+	if comp.StageCompleted {
+		t.Errorf("stage completed with gate still awaiting: %+v", comp)
+	}
+
+	// Sanity: the stage is still running and the gate still awaiting.
+	var stageStatus, gateStatus string
+	if err := pool.QueryRow(ctx,
+		`SELECT s.status, g.status
+		 FROM stage_runs s
+		 JOIN job_runs g ON g.stage_run_id = s.id AND g.name = 'gate'
+		 WHERE s.run_id = $1`, created.RunID,
+	).Scan(&stageStatus, &gateStatus); err != nil {
+		t.Fatal(err)
+	}
+	if stageStatus == "success" {
+		t.Errorf("stage promoted to success with gate awaiting")
+	}
+	if gateStatus != "awaiting_approval" {
+		t.Errorf("gate status = %q", gateStatus)
+	}
+}
+
 func TestApproveGate_SecondCallReturnsNotPending(t *testing.T) {
 	// Double-click on Approve, two admins racing, or a browser
 	// retry on a flaky connection — the second decision must lose
@@ -209,7 +324,7 @@ func TestApproveGate_SecondCallReturnsNotPending(t *testing.T) {
 	if _, err := s.ApproveGate(context.Background(), store.ApprovalDecision{JobRunID: gateJobID}); err != nil {
 		t.Fatalf("first approve: %v", err)
 	}
-	_, err := s.ApproveGate(context.Background(), store.ApprovalDecision{JobRunID: gateJobID})
+	_, err := s.ApproveGate(context.Background(), store.ApprovalDecision{JobRunID: gateJobID}) //nolint:ineffassign
 	if !errors.Is(err, store.ErrApprovalNotPending) {
 		t.Fatalf("second approve err = %v, want ErrApprovalNotPending", err)
 	}
