@@ -1,0 +1,68 @@
+name: codecov
+category: quality
+description: >
+  Upload a coverage report to Codecov via the official
+  codecov-cli. Auth via a repo upload token (piped through
+  secrets:) — works from private forks where the old
+  auto-discover-token trick depended on GitHub Actions
+  metadata. Flags split uploads per stage in the Codecov UI
+  (unit / integration / e2e, …).
+
+inputs:
+  token:
+    required: true
+    description: >
+      Codecov repo upload token. Populate via secrets:.
+  file:
+    required: false
+    description: >
+      Explicit coverage file (cover.out, coverage.xml,
+      lcov.info, …). Auto-detected at the working-dir root
+      when omitted.
+  flags:
+    required: false
+    description: >
+      Comma-separated Codecov flags, e.g. "unit,integration" —
+      each becomes a --flag arg so the Codecov UI can split
+      coverage by stage.
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into first.
+  slug:
+    required: false
+    description: >
+      "owner/repo" override when the working-dir isn't a git
+      checkout (e.g. the coverage file came in as an uploaded
+      artifact).
+  url:
+    required: false
+    description: >
+      Codecov Enterprise base URL. Defaults to the cloud.
+
+examples:
+  - name: Go coverage from gotest
+    description: >
+      Upload cover.out produced by `go test -cover -coverprofile`.
+      Pipe the token through secrets so it never touches the log.
+    yaml: |
+      secrets:
+        - CODECOV_TOKEN
+      uses: gocdnext/codecov@v1
+      with:
+        file: cover.out
+        flags: unit
+        token: ${{ CODECOV_TOKEN }}
+
+  - name: split unit + integration uploads
+    description: >
+      Two invocations in a single job — same commit, different
+      flags. Codecov merges them per-commit in its UI.
+    yaml: |
+      secrets:
+        - CODECOV_TOKEN
+      uses: gocdnext/codecov@v1
+      with:
+        file: coverage/integration.lcov
+        flags: integration
+        token: ${{ CODECOV_TOKEN }}

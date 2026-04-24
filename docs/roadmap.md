@@ -213,6 +213,17 @@ Entradas da decisão:
   - 💡 **AWS Secrets Manager** (SDK v2, IAM role ou static creds).
   - 💡 **GCP Secret Manager** (Application Default Credentials).
   - 💡 **Azure Key Vault** (last, menor base de usuários interna).
+- 💡 **Package Material** — Nexus/Artifactory como material de 1ª
+  classe (hoje só existe via `gocdnext/nexus@v1` task-step,
+  upload/download dentro do job). Complementa o plugin: a
+  plataforma polla o repo, detecta versão nova, cria
+  modification, dispara pipeline — mesmo pattern que o GoCD's
+  Package Material extension faz. Exposes `CI_PACKAGE_*_VERSION`
+  + `CI_PACKAGE_*_LOCATION` aos jobs. Precisa: novo tipo de
+  material (além de git/upstream/cron/manual), poller
+  configurável via env (quanto checar), UI pra declarar
+  packages como sources igual scm_sources. Design doc when
+  someone actually asks; v1 hoje é o plugin.
 
 **Large (semana+)**
 - 💡 **HA scheduler** — advisory lock Postgres OU etcd election.
@@ -227,31 +238,31 @@ Entradas da decisão:
 
 ## Plugin catalog
 
-### Shipped (23)
+### Shipped (34)
 
 - **build**: `node`, `go`, `maven`, `gradle`, `python`, `rust`.
 - **container**: `docker`, `kaniko`, `buildx`, `docker-push`.
 - **deploy**: `kubectl`, `helm`, `terraform`, `ansible`, `aws-cli`,
   `gcloud`.
 - **security**: `trivy`, `gitleaks`, `cosign`.
-- **release**: `github-release`.
-- **notifications**: `slack`, `discord`, `email`.
+- **registry**: `nexus`, `artifactory`, `s3`, `helm-push`.
+- **release**: `github-release`, `tag`, `release-notes`.
+- **notifications**: `slack`, `discord`, `email`, `teams`, `matrix`.
+- **quality**: `codecov`, `coveralls`, `lighthouse-ci`.
 
-### Próxima onda (ordem de prioridade)
+Notas de design:
+- Plugins de linguagem (node/go/maven/gradle/python/rust) já
+  redirecionam o cache do tool pro workspace (commit b48e501) —
+  o `cache:` do pipeline Just Works sem env-var tricks.
+- `nexus` + `artifactory` são sobre **task-step** (upload/download
+  dentro do job), não material. Package Material como 1ª classe
+  está abaixo em Medium.
+- `artifact-keeper` não ganhou plugin dedicado — ele fala Maven2
+  nativo, `gocdnext/nexus@v1` cobre a maioria dos casos. Adicionar
+  depois se alguém bater no mismatch de endpoint.
 
-Cada plugin = Dockerfile + entrypoint.sh + plugin.yaml. Template bem
-estabelecido: tempo médio ~30min por plugin shell-thin (wrapper), ~2h
-quando há lógica real (ex: `release-notes` auto-gen).
+### Próxima onda (quando alguém pedir)
 
-**Prioridade média**
-- 💡 `gocdnext/teams`, `gocdnext/matrix` — notifications.
-- 💡 `gocdnext/nexus-upload`, `gocdnext/artifactory`,
-  `gocdnext/s3-upload`, `gocdnext/helm-push`.
-- 💡 `gocdnext/tag`, `gocdnext/release-notes`.
-- 💡 `gocdnext/codecov`, `gocdnext/coveralls`,
-  `gocdnext/lighthouse-ci`.
-
-**Prioridade baixa (chegam quando alguém pedir)**
 - 💡 `gocdnext/dotnet`, `gocdnext/semgrep`, `gocdnext/snyk`,
   `gocdnext/sonarqube-scanner`.
 

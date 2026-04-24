@@ -1,0 +1,78 @@
+name: lighthouse-ci
+category: quality
+description: >
+  Run Google's Lighthouse CI suite against one or more URLs —
+  collect metrics, assert against a performance budget, and
+  upload the report. Ships with Chromium bundled so preview
+  URLs don't need a separate browser install. The assert step
+  fails the job when the budget is breached; toggle it off for
+  advisory-only runs.
+
+inputs:
+  urls:
+    required: false
+    description: >
+      Newline- or comma-separated URLs to audit. Ignored when
+      `config:` is set; skipped when a lighthouserc.* file sits
+      at the working-dir root (LHCI auto-discovery).
+  config:
+    required: false
+    description: >
+      Explicit lighthouserc config path (workspace-relative).
+      Overrides `urls:`; use this when you need to customize
+      categories, budgets, or assertions beyond the default.
+  number-of-runs:
+    required: false
+    default: "3"
+    description: >
+      Samples per URL. Higher = more stable median, linearly
+      longer job.
+  upload-target:
+    required: false
+    default: temporary-public-storage
+    description: >
+      "temporary-public-storage" | "filesystem" | "lhci".
+      Temporary public storage is Google's 7-day bucket — zero
+      config, one link per run.
+  upload-server-base-url:
+    required: false
+    description: >
+      Required when upload-target=lhci. Base URL of your
+      self-hosted LHCI server.
+  upload-token:
+    required: false
+    description: >
+      Build token for a self-hosted LHCI server. Pipe via
+      secrets:.
+  assertions:
+    required: false
+    default: "on"
+    description: >
+      "on" runs `lhci assert` against the config's assertion
+      rules and fails the job on breach. "off" skips the assert
+      step entirely — useful for advisory-only runs.
+
+examples:
+  - name: audit a preview URL
+    description: >
+      Hit a preview URL three times, upload to Google's public
+      storage, and fail the build if any assertion breaches.
+    yaml: |
+      uses: gocdnext/lighthouse-ci@v1
+      with:
+        urls: https://preview-${CI_RUN_COUNTER}.myapp.dev
+
+  - name: self-hosted LHCI server
+    description: >
+      Upload to an internal LHCI server with a build token.
+      Gets trend charts + PR comments without leaking reports
+      to a public bucket.
+    yaml: |
+      secrets:
+        - LHCI_BUILD_TOKEN
+      uses: gocdnext/lighthouse-ci@v1
+      with:
+        config: .lighthouserc.json
+        upload-target: lhci
+        upload-server-base-url: https://lhci.corp
+        upload-token: ${{ LHCI_BUILD_TOKEN }}

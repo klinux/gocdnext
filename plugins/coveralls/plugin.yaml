@@ -1,0 +1,70 @@
+name: coveralls
+category: quality
+description: >
+  Upload a coverage report to Coveralls. Accepts LCOV, JSON,
+  simplecov, or Cobertura XML — the common interchange formats
+  tools export to. Supports Coveralls' parallel-build flow:
+  flag each slice with `parallel: "true"` and make the last
+  step call `finalise: "true"` to close the build.
+
+inputs:
+  token:
+    required: true
+    description: >
+      Coveralls repo token. Populate via secrets:.
+  file:
+    required: false
+    default: coverage/lcov.info
+    description: >
+      Workspace-relative coverage file. The default matches the
+      conventional Node/Jest output path.
+  format:
+    required: false
+    default: lcov
+    description: "lcov | json | simplecov | cobertura"
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under workspace to cd into first.
+  parallel:
+    required: false
+    default: "false"
+    description: >
+      Tag the upload as one parallel slice. Coveralls merges
+      slices on the commit after a finalise call.
+  finalise:
+    required: false
+    default: "false"
+    description: >
+      Fire the "build done" webhook instead of an upload. Call
+      once AFTER every parallel slice has uploaded.
+  base-url:
+    required: false
+    description: >
+      Coveralls Enterprise URL. Defaults to coveralls.io.
+
+examples:
+  - name: Jest LCOV upload
+    description: >
+      Standard node path — Jest writes coverage/lcov.info by
+      default and the plugin auto-picks it up.
+    yaml: |
+      secrets:
+        - COVERALLS_TOKEN
+      uses: gocdnext/coveralls@v1
+      with:
+        token: ${{ COVERALLS_TOKEN }}
+
+  - name: parallel unit + e2e then finalise
+    description: >
+      Three invocations across the pipeline — two parallel
+      slices, one finalise step that closes the build.
+    yaml: |
+      # slice 1
+      secrets:
+        - COVERALLS_TOKEN
+      uses: gocdnext/coveralls@v1
+      with:
+        file: coverage/unit.lcov
+        parallel: "true"
+        token: ${{ COVERALLS_TOKEN }}
