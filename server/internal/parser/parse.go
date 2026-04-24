@@ -252,9 +252,13 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 				name,
 			)
 		}
+		image, err := resolvePluginRef(jd.Uses)
+		if err != nil {
+			return domain.Job{}, fmt.Errorf("job %q: %w", name, err)
+		}
 		j.Tasks = append(j.Tasks, domain.Task{
 			Plugin: &domain.PluginStep{
-				Image:    jd.Uses,
+				Image:    image,
 				Settings: jd.With,
 			},
 		})
