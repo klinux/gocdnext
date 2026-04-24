@@ -75,44 +75,46 @@ export default async function CachesPage({
       {caches.length === 0 ? (
         <EmptyState />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Key</TableHead>
-              <TableHead>Size</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Last used</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {caches.map((c) => (
-              <TableRow key={c.id}>
-                <TableCell className="font-mono">{c.key}</TableCell>
-                <TableCell className="font-mono text-muted-foreground">
-                  {c.status === "ready" ? formatBytes(c.size_bytes) : "—"}
-                </TableCell>
-                <TableCell>
-                  <StatusBadge status={c.status} />
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={c.last_accessed_at} />
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={c.created_at} />
-                </TableCell>
-                <TableCell className="text-right">
-                  <PurgeCacheButton
-                    slug={slug}
-                    cacheID={c.id}
-                    cacheKey={c.key}
-                  />
-                </TableCell>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Key</TableHead>
+                <TableHead>Size</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Last used</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {caches.map((c) => (
+                <TableRow key={c.id}>
+                  <TableCell className="font-mono">{c.key}</TableCell>
+                  <TableCell className="font-mono text-muted-foreground">
+                    {c.status === "ready" ? formatBytes(c.size_bytes) : "—"}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={c.status} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={c.last_accessed_at} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={c.created_at} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <PurgeCacheButton
+                      slug={slug}
+                      cacheID={c.id}
+                      cacheKey={c.key}
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
     </section>
   );

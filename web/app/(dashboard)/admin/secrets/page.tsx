@@ -59,44 +59,46 @@ export default async function GlobalSecretsPage() {
       {secrets.length === 0 ? (
         <EmptyState />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead>Updated</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {secrets.map((s) => (
-              <TableRow key={s.name}>
-                <TableCell className="font-mono">{s.name}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={s.created_at} />
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={s.updated_at} />
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="inline-flex items-center gap-1">
-                    <SecretDialog
-                      scope="global"
-                      mode="rotate"
-                      name={s.name}
-                      trigger={
-                        <Button variant="ghost" size="sm">
-                          Rotate
-                        </Button>
-                      }
-                    />
-                    <DeleteSecretButton scope="global" name={s.name} />
-                  </div>
-                </TableCell>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead>Updated</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {secrets.map((s) => (
+                <TableRow key={s.name}>
+                  <TableCell className="font-mono">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={s.created_at} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={s.updated_at} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="inline-flex items-center gap-1">
+                      <SecretDialog
+                        scope="global"
+                        mode="rotate"
+                        name={s.name}
+                        trigger={
+                          <Button variant="ghost" size="sm">
+                            Rotate
+                          </Button>
+                        }
+                      />
+                      <DeleteSecretButton scope="global" name={s.name} />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
     </section>
   );

@@ -50,52 +50,54 @@ export default async function UsersPage() {
         </p>
       </header>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>User</TableHead>
-            <TableHead>Provider</TableHead>
-            <TableHead>Role</TableHead>
-            <TableHead>Last login</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data.users.map((u) => {
-            const self = u.id === currentID;
-            return (
-              <TableRow key={u.id}>
-                <TableCell>
-                  <div className="flex flex-col">
-                    <span className="font-medium">{u.name || u.email}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {u.email}
-                    </span>
-                  </div>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {u.provider}
-                </TableCell>
-                <TableCell>
-                  <RoleSelect
-                    userID={u.id}
-                    email={u.email}
-                    currentRole={u.role}
-                    self={self}
-                  />
-                  {self ? (
-                    <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-                      you
-                    </span>
-                  ) : null}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={u.last_login_at ?? null} fallback="never" />
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+      <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>User</TableHead>
+              <TableHead>Provider</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Last login</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.users.map((u) => {
+              const self = u.id === currentID;
+              return (
+                <TableRow key={u.id}>
+                  <TableCell>
+                    <div className="flex flex-col">
+                      <span className="font-medium">{u.name || u.email}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {u.email}
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {u.provider}
+                  </TableCell>
+                  <TableCell>
+                    <RoleSelect
+                      userID={u.id}
+                      email={u.email}
+                      currentRole={u.role}
+                      self={self}
+                    />
+                    {self ? (
+                      <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        you
+                      </span>
+                    ) : null}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={u.last_login_at ?? null} fallback="never" />
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
     </section>
   );
 }

@@ -76,44 +76,46 @@ export default async function SecretsPage({
       {secrets.length === 0 ? (
         <EmptyState slug={slug} />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead>Updated</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {secrets.map((s) => (
-              <TableRow key={s.name}>
-                <TableCell className="font-mono">{s.name}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={s.created_at} />
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  <RelativeTime at={s.updated_at} />
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="inline-flex items-center gap-1">
-                    <SecretDialog
-                      slug={slug}
-                      mode="rotate"
-                      name={s.name}
-                      trigger={
-                        <Button variant="ghost" size="sm">
-                          Rotate
-                        </Button>
-                      }
-                    />
-                    <DeleteSecretButton slug={slug} name={s.name} />
-                  </div>
-                </TableCell>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead>Updated</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {secrets.map((s) => (
+                <TableRow key={s.name}>
+                  <TableCell className="font-mono">{s.name}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={s.created_at} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <RelativeTime at={s.updated_at} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="inline-flex items-center gap-1">
+                      <SecretDialog
+                        slug={slug}
+                        mode="rotate"
+                        name={s.name}
+                        trigger={
+                          <Button variant="ghost" size="sm">
+                            Rotate
+                          </Button>
+                        }
+                      />
+                      <DeleteSecretButton slug={slug} name={s.name} />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
       {inherited.length > 0 ? (
@@ -134,34 +136,36 @@ export default async function SecretsPage({
               (admins only).
             </p>
           </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Updated</TableHead>
-                <TableHead className="text-right">Scope</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {inherited.map((s) => (
-                <TableRow key={`inh-${s.name}`}>
-                  <TableCell className="font-mono">{s.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    <RelativeTime at={s.created_at} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    <RelativeTime at={s.updated_at} />
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                      global
-                    </span>
-                  </TableCell>
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead>Updated</TableHead>
+                  <TableHead className="text-right">Scope</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {inherited.map((s) => (
+                  <TableRow key={`inh-${s.name}`}>
+                    <TableCell className="font-mono">{s.name}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <RelativeTime at={s.created_at} />
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <RelativeTime at={s.updated_at} />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        global
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </section>
       ) : null}
     </section>
