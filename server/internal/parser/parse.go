@@ -114,7 +114,17 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		declared[s] = true
 	}
 
-	for name, jd := range f.Jobs {
+	// Resolve `extends:` chains before materializing jobs so
+	// toJob only sees fully-flattened JobDefs. Hidden template
+	// jobs (names starting with `.`) are removed by the resolver
+	// so they never appear in the domain.Pipeline — they only
+	// exist to be parents of real jobs.
+	resolved, err := resolveExtends(f.Jobs)
+	if err != nil {
+		return nil, err
+	}
+
+	for name, jd := range resolved {
 		if !declared[jd.Stage] {
 			return nil, fmt.Errorf("job %q references undeclared stage %q", name, jd.Stage)
 		}

@@ -160,12 +160,22 @@ Entradas da decisão:
   herda do projeto; pipeline com `notifications:` (mesmo `[]`)
   sobrescreve. Nova aba "Notifications" em
   `/projects/{slug}/notifications` com editor de cards.
+- ✅ **Docs site** (commit e1b5a45). `/docs` route pública que
+  serve os markdowns de `docs/*.md` com sidebar + highlight.
+  `generateStaticParams` pré-renderiza cada arquivo no build.
+- ✅ **Pipeline templates — `extends:`**. Jobs com nome prefixado
+  por `.` viram templates (não materializam); outros jobs usam
+  `extends: .base-x` e herdam scalars/lists/maps com regras
+  GitLab-like (child wins on scalar, child replaces on list, map
+  keys overlay). Chain + cycle detection no resolver.
 
 ### Próximas ondas (tamanho estimado)
 
 **Small (≤ meio dia cada)**
-- 💡 **Pipeline templates / `!include`** — snippet-sharing entre pipelines.
-- 💡 **Docs site** — consolidar `docs/*.md` num site público + examples repo.
+- 💡 **Pipeline `include:`** — snippet-sharing entre arquivos.
+  `extends:` dentro do mesmo arquivo já shipped (commit TBD);
+  `include: [{local: "shared/x.yaml"}]` fica pra depois (precisa
+  path-resolution segura + multi-file merge). Padrão GitLab CI.
 - 💡 **Test reports** — parser JUnit/Cobertura + aba Tests + flakiness
   history (design em `docs/test-reports-design.md` quando for a vez).
 

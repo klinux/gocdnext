@@ -103,6 +103,41 @@ jobs:
 - **stages** give the *big picture ordering* (humans read this).
 - **needs** inside a stage let you *skip waiting* for sibling jobs (GitLab-style DAG).
 
+### Templates via `extends:`
+
+A job whose name starts with `.` is a **template** — it never runs on its own,
+but other jobs in the same file can inherit from it via `extends:`:
+
+```yaml
+jobs:
+  .base-go:                         # template, not materialized
+    stage: test
+    image: golang:1.23
+    script: [make test]
+    secrets: [CODECOV_TOKEN]
+
+  unit:
+    extends: .base-go               # inherits image + script + secrets
+
+  unit-race:
+    extends: .base-go
+    image: golang:1.24              # child scalar wins
+    script: [make test-race]        # child list replaces
+```
+
+Merge rules (GitLab-compatible):
+
+| Field type | Rule |
+|---|---|
+| Scalars (`image`, `stage`, `timeout`, `retry`, `docker`, `uses`) | Child wins when set |
+| Lists (`script`, `needs`, `secrets`, `tags`, `cache`, `rules`) | Child replaces parent when non-nil |
+| Maps (`settings`, `with`, `variables`) | Child keys overlay parent keys |
+| Structs (`artifacts`, `parallel`, `when`, `approval`) | Child wins whole |
+
+`extends:` supports chains (`a → b → c`) with cycle detection. Cross-file
+inheritance (`include:` pulling templates from another file) is not yet
+supported — it's on the roadmap.
+
 ## CI variables (injected by the agent)
 
 | Variable              | Example                          |
