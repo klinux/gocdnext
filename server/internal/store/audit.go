@@ -35,6 +35,10 @@ const (
 	AuditActionWebhookSecretRotate = "webhook_secret.rotate"
 	AuditActionProjectNotifsSet    = "project_notifications.set"
 	AuditActionProjectPollSet      = "project_poll.set"
+	AuditActionProjectCronCreate   = "project_cron.create"
+	AuditActionProjectCronUpdate   = "project_cron.update"
+	AuditActionProjectCronDelete   = "project_cron.delete"
+	AuditActionProjectRunAll       = "project.run_all"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata

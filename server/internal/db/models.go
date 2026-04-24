@@ -189,6 +189,19 @@ type Project struct {
 	Notifications []byte
 }
 
+type ProjectCron struct {
+	ID          pgtype.UUID
+	ProjectID   pgtype.UUID
+	Name        string
+	Expression  string
+	PipelineIds []pgtype.UUID
+	Enabled     bool
+	LastFiredAt pgtype.Timestamptz
+	CreatedBy   pgtype.UUID
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type Run struct {
 	ID          pgtype.UUID
 	PipelineID  pgtype.UUID

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   FolderSync,
   MoreHorizontal,
+  Play,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -35,6 +36,7 @@ import {
   rotateWebhookSecret,
   syncProjectFromRepo,
 } from "@/server/actions/projects";
+import { runAllPipelines } from "@/server/actions/project-crons";
 import type { ProjectSCMInfo, ProjectSummary } from "@/types/api";
 
 type Props = {
@@ -164,6 +166,42 @@ export function ProjectActionsMenu({
     });
   };
 
+  // Run all flow — queue a manual run on every pipeline in the
+  // project. Same endpoint the scheduled "fire all pipelines"
+  // project cron uses, just synchronous here so the toast can
+  // report the outcome immediately. No confirm dialog: each
+  // pipeline trigger is cheap and the per-pipeline "Run latest"
+  // action already exists for fine-grained control, so a wrongly
+  // clicked "Run all" is recoverable by cancelling the runs.
+  const [runningAll, runAllStart] = useTransition();
+  const hasPipelines = pipelineCount > 0;
+
+  const runAll = () => {
+    runAllStart(async () => {
+      const res = await runAllPipelines({ slug: project.slug });
+      if (!res.ok) {
+        toast.error(`Run all failed: ${res.error}`);
+        return;
+      }
+      const queued = res.results.filter((r) => r.run_id).length;
+      const failed = res.results.length - queued;
+      if (queued > 0) {
+        toast.success(
+          failed === 0
+            ? `Queued ${queued} ${queued === 1 ? "run" : "runs"}`
+            : `Queued ${queued} of ${res.results.length} (${failed} skipped)`,
+        );
+      } else if (failed > 0) {
+        toast.error(
+          `All ${failed} pipelines skipped — push a commit first or check the run-all endpoint response`,
+        );
+      } else {
+        toast.info("No pipelines in this project yet");
+      }
+      router.refresh();
+    });
+  };
+
   // Delete flow — type-to-confirm gate.
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [typed, setTyped] = useState("");
@@ -203,6 +241,15 @@ export function ProjectActionsMenu({
             }
           />
           <DropdownMenuContent align="end" className="min-w-52">
+            <DropdownMenuItem
+              onClick={runAll}
+              disabled={!hasPipelines || runningAll}
+              className="whitespace-nowrap"
+            >
+              <Play className="size-3.5" />
+              {runningAll ? "Queuing…" : "Run all pipelines"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={sync}
               disabled={!hasSCM || syncing}

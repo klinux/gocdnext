@@ -191,6 +191,13 @@ func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, err
 type TriggerManualRunInput struct {
 	PipelineID  uuid.UUID
 	TriggeredBy string
+	// Cause overrides the default "manual" tagging. Scheduled fires
+	// (project_crons ticker, cron materials) pass "schedule" here
+	// so the runs list distinguishes operator-initiated from
+	// auto-fired runs. CauseDetail is merged as-is onto the run's
+	// base metadata (material_id, delivery, etc.).
+	Cause       string
+	CauseDetail json.RawMessage
 }
 
 // TriggerManualRun starts a new run on a pipeline.
@@ -212,6 +219,11 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 	if triggeredBy == "" {
 		triggeredBy = "manual"
 	}
+	cause := in.Cause
+	if cause == "" {
+		cause = "manual"
+	}
+	delivery := cause + "-" + in.PipelineID.String()
 
 	mod, err := s.q.GetLatestModificationForPipeline(ctx, pgUUID(in.PipelineID))
 	switch {
@@ -227,9 +239,10 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 			Revision:       mod.Revision,
 			Branch:         branch,
 			Provider:       "api",
-			Delivery:       "manual-" + in.PipelineID.String(),
+			Delivery:       delivery,
 			TriggeredBy:    triggeredBy,
-			Cause:          "manual",
+			Cause:          cause,
+			CauseDetail:    in.CauseDetail,
 		})
 	case errors.Is(err, pgx.ErrNoRows):
 		// Fall through to the no-material trigger path below.
@@ -248,12 +261,22 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 		return RunCreated{}, ErrNoModificationForPipeline
 	}
 
-	causeDetail, _ := json.Marshal(map[string]any{
-		"delivery": "manual-" + in.PipelineID.String(),
-	})
+	// Merge caller CauseDetail onto the base metadata. Same
+	// precedence as CreateRunFromModification — caller's keys win
+	// on collision so cron can stamp schedule_id / schedule_name.
+	base := map[string]any{"delivery": delivery}
+	if len(in.CauseDetail) > 0 {
+		var extra map[string]any
+		if err := json.Unmarshal(in.CauseDetail, &extra); err == nil {
+			for k, v := range extra {
+				base[k] = v
+			}
+		}
+	}
+	causeDetail, _ := json.Marshal(base)
 	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
 		PipelineID:  in.PipelineID,
-		Cause:       "manual",
+		Cause:       cause,
 		CauseDetail: causeDetail,
 		Revisions:   json.RawMessage(`{}`),
 		TriggeredBy: triggeredBy,

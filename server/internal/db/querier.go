@@ -106,6 +106,7 @@ type Querier interface {
 	// the children (pipelines → materials → runs → artifacts, secrets,
 	// scm_sources, etc.), so this single statement is enough.
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
+	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
 	// Called before an agent retry re-ingests a rerun's results, so
 	// the UI doesn't show a mix of old and new outcomes. The FK's
@@ -196,6 +197,7 @@ type Querier interface {
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
+	GetProjectCron(ctx context.Context, id pgtype.UUID) (ProjectCron, error)
 	// Aggregated before the cascading delete so the caller can surface
 	// "deleted N pipelines, M runs, K secrets" without probing each
 	// table after the fact (by then the rows are gone). Kept as a
@@ -282,6 +284,7 @@ type Querier interface {
 	// the backend's object key are decoupled — makes it safe to retry without
 	// ending up with orphan objects keyed off a stale PK.
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
+	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
 	// One INSERT per case. The agent batches N cases into a single
@@ -355,6 +358,10 @@ type Querier interface {
 	// Bootstrap path: just the ones that should be registered on
 	// server start (or after a reload).
 	ListEnabledAuthProviders(ctx context.Context) ([]AuthProvider, error)
+	// Ticker path: every enabled schedule in the system + its
+	// last-fired bookkeeping. N is small (projects × a handful of
+	// schedules each), so full-scan-in-memory is fine.
+	ListEnabledProjectCrons(ctx context.Context) ([]ListEnabledProjectCronsRow, error)
 	// Bootstrap + reload path: rows the registry should actually
 	// instantiate on startup.
 	ListEnabledVCSIntegrations(ctx context.Context) ([]VcsIntegration, error)
@@ -396,6 +403,9 @@ type Querier interface {
 	// fine. LEFT JOIN on scm_sources: a detached project (no binding)
 	// simply has NULL columns and the Go layer skips polling it.
 	ListPollableGitMaterials(ctx context.Context) ([]ListPollableGitMaterialsRow, error)
+	// UI: list schedules bound to one project, newest first so
+	// recently-added shows at the top.
+	ListProjectCronsByProject(ctx context.Context, projectID pgtype.UUID) ([]ProjectCron, error)
 	// Projects whose total live artefact bytes (pending + ready, non-
 	// deleted, non-pinned) exceed the configured soft cap. Returned once
 	// per tick so the sweeper can ExpireOldestInProjectByExcess against
@@ -487,6 +497,10 @@ type Querier interface {
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.
 	MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error)
+	// Called by the ticker after a successful evaluation+fire cycle.
+	// Same-second fires are gated via the cron expression parser
+	// reading last_fired_at — the store update closes that loop.
+	MarkProjectCronFired(ctx context.Context, arg MarkProjectCronFiredParams) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
@@ -550,6 +564,10 @@ type Querier interface {
 	// own password from /settings/account — we never want to let the
 	// admin also flip their role through that surface.
 	UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUserPasswordParams) error
+	// Full-record update: UI saves the entire edited row so absent
+	// fields mean "cleared". Intentionally does NOT touch
+	// last_fired_at — that's bookkeeping the ticker owns.
+	UpdateProjectCron(ctx context.Context, arg UpdateProjectCronParams) error
 	// Project-level poll fallback applied to the synthesized implicit
 	// material. Zero nanoseconds disables polling (default). UI at
 	// /projects/{slug}/settings writes through this. updated_at only

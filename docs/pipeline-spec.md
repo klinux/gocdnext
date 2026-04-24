@@ -75,6 +75,20 @@ from `/projects/{slug}/settings` — that interval applies to the synthesized
 implicit project material (the repo bound via scm_source). Per-material
 `poll_interval:` in YAML wins over the project default when both are set.
 
+### Project-level schedules
+
+In addition to per-pipeline `cron:` materials, operators can create
+project-wide schedules from `/projects/{slug}/crons`. Each schedule fires
+either every pipeline in the project (the default) or a pinned subset. Runs
+created this way are tagged `cause=schedule` and attributed to
+`cron:<schedule_name>`. Use them when the same cron expression would
+otherwise have to be pasted into every pipeline's YAML.
+
+Manual counterpart: the project header's **Run all pipelines** action uses
+the same fire mechanism (just synchronous + tagged `cause=manual`), so a
+cron-fired nightly build and an operator-clicked "run everything now"
+produce observationally identical runs apart from the cause column.
+
 ## Jobs
 
 ```yaml

@@ -379,6 +379,11 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 		p.Put("/api/v1/projects/{slug}/notifications", projectsHandler.SetNotifications)
 		p.Put("/api/v1/projects/{slug}/poll-interval", projectsHandler.SetPollInterval)
+		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
+		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
+		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)
+		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
+		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
@@ -462,6 +467,13 @@ func main() {
 	go func() {
 		if err := cronTicker.Run(ctx); err != nil {
 			logger.Error("cron ticker exited", "err", err)
+		}
+	}()
+
+	projectCronTicker := cronpkg.NewProject(st, logger)
+	go func() {
+		if err := projectCronTicker.Run(ctx); err != nil {
+			logger.Error("project cron ticker exited", "err", err)
 		}
 	}()
 

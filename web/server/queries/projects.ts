@@ -165,6 +165,27 @@ export async function listProjectNotifications(
   );
 }
 
+export type ProjectCron = {
+  id: string;
+  project_id: string;
+  name: string;
+  expression: string;
+  pipeline_ids: string[];
+  enabled: boolean;
+  last_fired_at?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listProjectCrons(
+  slug: string,
+): Promise<{ crons: ProjectCron[] }> {
+  return readJSON<{ crons: ProjectCron[] }>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/crons`,
+  );
+}
+
 export async function listPlugins(): Promise<PluginsList> {
   return readJSON<PluginsList>("/api/v1/plugins");
 }
