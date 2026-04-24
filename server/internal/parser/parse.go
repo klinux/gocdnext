@@ -73,6 +73,14 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		p.Services = append(p.Services, svc)
 	}
 
+	for i, ns := range f.Notifications {
+		n, err := toNotification(i, ns)
+		if err != nil {
+			return nil, err
+		}
+		p.Notifications = append(p.Notifications, n)
+	}
+
 	for _, m := range f.Materials {
 		mat, err := toMaterial(m)
 		if err != nil {
@@ -321,6 +329,46 @@ func defaultEvents(ev []string) []string {
 // the pipeline would collide on the docker network alias; that
 // check lives in ApplyProject where all services are visible
 // together.
+// notificationTriggers is the closed set of `on:` values. Keep
+// in sync with domain.NotificationTrigger constants.
+var notificationTriggers = map[string]domain.NotificationTrigger{
+	"failure":  domain.NotifyOnFailure,
+	"success":  domain.NotifyOnSuccess,
+	"always":   domain.NotifyOnAlways,
+	"canceled": domain.NotifyOnCanceled,
+}
+
+func toNotification(idx int, n NotificationSpec) (domain.Notification, error) {
+	on := strings.TrimSpace(strings.ToLower(n.On))
+	trig, ok := notificationTriggers[on]
+	if !ok {
+		return domain.Notification{}, fmt.Errorf(
+			"notifications[%d]: unknown on %q (allowed: failure, success, always, canceled)",
+			idx, n.On,
+		)
+	}
+	if strings.TrimSpace(n.Uses) == "" {
+		return domain.Notification{}, fmt.Errorf("notifications[%d]: `uses:` is required", idx)
+	}
+	return domain.Notification{
+		On:      trig,
+		Uses:    strings.TrimSpace(n.Uses),
+		With:    cloneStrMap(n.With),
+		Secrets: append([]string(nil), n.Secrets...),
+	}, nil
+}
+
+func cloneStrMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 func toService(s ServiceSpec) (domain.Service, error) {
 	if strings.TrimSpace(s.Image) == "" {
 		return domain.Service{}, fmt.Errorf("service: image is required")

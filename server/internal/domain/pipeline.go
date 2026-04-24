@@ -103,6 +103,34 @@ type Pipeline struct {
 	// network before tasks run, tears them down when the job
 	// finishes (success, failure, or cancel). See runner.Execute.
 	Services []Service
+	// Notifications declare post-run side effects. Each entry fires
+	// when the run reaches terminal and its `On` predicate matches
+	// (failure | success | always | canceled). Plugins are resolved
+	// the same way jobs resolve `uses:` — a notifier plugin image
+	// (slack/discord/email/…) is invoked with `With` + `Secrets`.
+	Notifications []Notification
+}
+
+// NotificationTrigger enumerates the supported `on:` values. Keep
+// in sync with parser.notificationTriggers and the dispatcher.
+type NotificationTrigger string
+
+const (
+	NotifyOnFailure  NotificationTrigger = "failure"
+	NotifyOnSuccess  NotificationTrigger = "success"
+	NotifyOnAlways   NotificationTrigger = "always"
+	NotifyOnCanceled NotificationTrigger = "canceled"
+)
+
+// Notification is one post-run side effect. Shape mirrors the
+// plugin-style `uses:` + `with:` + `secrets:` contract so the
+// dispatcher can reuse the existing agent/runner path instead
+// of inventing a second invocation model.
+type Notification struct {
+	On      NotificationTrigger
+	Uses    string
+	With    map[string]string
+	Secrets []string
 }
 
 // Service describes a sidecar container that accompanies every

@@ -648,6 +648,92 @@ jobs:
 	}
 }
 
+func TestParse_Notifications(t *testing.T) {
+	y := `
+stages: [build]
+materials: [{manual: true}]
+jobs:
+  b:
+    stage: build
+    image: golang:1.23
+    script: [go build ./...]
+notifications:
+  - on: failure
+    uses: gocdnext/slack@v1
+    with:
+      webhook: https://hooks.slack.example/abc
+      channel: "#eng"
+    secrets: [SLACK_WEBHOOK]
+  - on: success
+    uses: gocdnext/email@v1
+    with:
+      host: smtp.example.com
+      from: ci@example.com
+      to: team@example.com
+      subject: "Success"
+      body: "Shipped"
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Notifications) != 2 {
+		t.Fatalf("notifications = %d", len(p.Notifications))
+	}
+	if p.Notifications[0].On != domain.NotifyOnFailure {
+		t.Errorf("first trigger = %q", p.Notifications[0].On)
+	}
+	if p.Notifications[0].Uses != "gocdnext/slack@v1" {
+		t.Errorf("first uses = %q", p.Notifications[0].Uses)
+	}
+	if p.Notifications[0].With["channel"] != "#eng" {
+		t.Errorf("first with[channel] missing: %+v", p.Notifications[0].With)
+	}
+	if got := p.Notifications[0].Secrets; len(got) != 1 || got[0] != "SLACK_WEBHOOK" {
+		t.Errorf("first secrets = %+v", got)
+	}
+	if p.Notifications[1].On != domain.NotifyOnSuccess {
+		t.Errorf("second trigger = %q", p.Notifications[1].On)
+	}
+}
+
+func TestParse_NotificationRejectsUnknownTrigger(t *testing.T) {
+	y := `
+stages: [build]
+materials: [{manual: true}]
+jobs:
+  b:
+    stage: build
+    image: x
+    script: ["true"]
+notifications:
+  - on: flaky
+    uses: gocdnext/slack@v1
+`
+	if _, err := Parse(strings.NewReader(y), "p", "n"); err == nil ||
+		!strings.Contains(err.Error(), "unknown on") {
+		t.Fatalf("want unknown-on error, got %v", err)
+	}
+}
+
+func TestParse_NotificationRequiresUses(t *testing.T) {
+	y := `
+stages: [build]
+materials: [{manual: true}]
+jobs:
+  b:
+    stage: build
+    image: x
+    script: ["true"]
+notifications:
+  - on: always
+`
+	if _, err := Parse(strings.NewReader(y), "p", "n"); err == nil ||
+		!strings.Contains(err.Error(), "uses:") {
+		t.Fatalf("want uses-required error, got %v", err)
+	}
+}
+
 func TestParse_Matrix(t *testing.T) {
 	y := `
 stages: [test]

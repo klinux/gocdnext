@@ -359,10 +359,10 @@ func (h *Handler) parseFiles(files []ApplyFile) ([]*domain.Pipeline, error) {
 	return out, nil
 }
 
-// validatePluginInputs walks a parsed pipeline's jobs, finds
-// plugin tasks, and asks the catalog to validate each one's
-// `with:` inputs. Nil catalog → no-op so tests + bare-server
-// deployments still work.
+// validatePluginInputs walks a parsed pipeline's jobs AND its
+// top-level notifications, finds plugin tasks, and asks the
+// catalog to validate each one's `with:` inputs. Nil catalog →
+// no-op so tests + bare-server deployments still work.
 func (h *Handler) validatePluginInputs(p *domain.Pipeline) error {
 	if h.pluginCatalog == nil {
 		return nil
@@ -375,6 +375,11 @@ func (h *Handler) validatePluginInputs(p *domain.Pipeline) error {
 			if err := h.pluginCatalog.Validate(t.Plugin.Image, t.Plugin.Settings); err != nil {
 				return fmt.Errorf("job %q: %w", j.Name, err)
 			}
+		}
+	}
+	for i, n := range p.Notifications {
+		if err := h.pluginCatalog.Validate(n.Uses, n.With); err != nil {
+			return fmt.Errorf("notifications[%d]: %w", i, err)
 		}
 	}
 	return nil

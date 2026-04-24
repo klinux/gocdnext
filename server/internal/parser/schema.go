@@ -36,6 +36,22 @@ type File struct {
 	// etc. Jobs reach them by `name` over a shared docker network.
 	// See domain.Service for runtime semantics.
 	Services []ServiceSpec `yaml:"services,omitempty"`
+	// Notifications are post-run side effects. Each entry picks a
+	// trigger (on: failure|success|always|canceled), a notifier
+	// plugin (uses: …), and its inputs. Dispatched when the run
+	// reaches terminal.
+	Notifications []NotificationSpec `yaml:"notifications,omitempty"`
+}
+
+// NotificationSpec is the YAML shape for one post-run notification.
+// It deliberately mirrors the plugin-job contract (`uses:` + `with:`
+// + `secrets:`) so the dispatcher reuses the existing plugin path
+// instead of inventing a second invocation model.
+type NotificationSpec struct {
+	On      string            `yaml:"on"`
+	Uses    string            `yaml:"uses"`
+	With    map[string]string `yaml:"with,omitempty"`
+	Secrets []string          `yaml:"secrets,omitempty"`
 }
 
 // ServiceSpec is the YAML shape for a pipeline-level sidecar
