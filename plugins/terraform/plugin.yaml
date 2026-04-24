@@ -1,0 +1,79 @@
+name: terraform
+category: deploy
+description: >
+  Run terraform subcommands — init, plan, apply, destroy, fmt,
+  validate, output. Backend credentials (AWS_*, GOOGLE_*, ARM_*,
+  etc) come through the job's `secrets:` list so nothing lands
+  in the log. Pair plan → approval-gate → apply to get manual
+  confirmation on non-trivial changes.
+
+inputs:
+  command:
+    required: true
+    description: >
+      terraform subcommand + args, word-split. Examples:
+      "init -input=false", "plan -out=tfplan",
+      "apply -input=false tfplan", "fmt -check -recursive".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace containing the terraform
+      config. Monorepos with a nested module set this.
+  version:
+    required: false
+    default: latest
+    description: >
+      Terraform version. "latest" uses the bundled 1.9.8; pin to
+      a specific version when the module demands determinism.
+  var-file:
+    required: false
+    description: >
+      Path (under the workspace) to a -var-file. Auto-applied
+      for plan/apply/destroy/refresh/import; silently ignored
+      for fmt/validate/output.
+
+examples:
+  - name: init + plan with AWS creds from secrets
+    description: >
+      Classic shape — credentials from secrets so the log never
+      sees them. Two-step: init first, then plan.
+    yaml: |
+      secrets:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+      uses: gocdnext/terraform@v1
+      with:
+        command: init -input=false
+        working-dir: infra/prod
+    env:
+      AWS_ACCESS_KEY_ID: ${{ AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ AWS_SECRET_ACCESS_KEY }}
+
+  - name: plan with var-file, artifact the tfplan
+    description: >
+      Run `plan -out=tfplan` and surface the file as an artifact
+      so the downstream approval-gate + apply job can consume it.
+    yaml: |
+      uses: gocdnext/terraform@v1
+      with:
+        command: plan -out=tfplan
+        working-dir: infra/prod
+        var-file: envs/prod.tfvars
+      artifacts:
+        - path: infra/prod/tfplan
+          name: tfplan
+
+  - name: apply the previously planned tfplan
+    description: >
+      Downstream of an approval-gate. Consumes the tfplan
+      artifact produced by `plan`. -input=false skips any
+      interactive prompts.
+    yaml: |
+      uses: gocdnext/terraform@v1
+      with:
+        command: apply -input=false tfplan
+        working-dir: infra/prod
+      needs_artifacts:
+        - name: tfplan
+          path: infra/prod/

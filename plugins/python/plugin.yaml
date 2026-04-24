@@ -1,0 +1,64 @@
+name: python
+category: build
+description: >
+  Python build + test runner. Installs dependencies with the
+  detected manager (poetry → uv → pip), then executes the
+  provided command. Auto-detection priority: poetry.lock →
+  uv.lock → requirements.txt → pyproject.toml. Use
+  `manager: none` to skip the install step entirely.
+
+inputs:
+  command:
+    required: true
+    description: >
+      Shell command to run after dependency install. Examples:
+      "pytest -q", "ruff check . && pytest", "mypy src tests".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into before running the
+      command. Monorepos with a sub-package set this.
+  manager:
+    required: false
+    default: auto
+    description: >
+      Which package manager to use. "auto" picks the best match
+      on disk. Options: auto | uv | pip | poetry | none.
+  requirements:
+    required: false
+    description: >
+      Override path to a requirements file (pip manager only).
+      Default is "requirements.txt" at the working-dir root.
+
+examples:
+  - name: pytest with poetry
+    description: >
+      Library project using poetry.lock. Auto-detected; no extra
+      config needed.
+    yaml: |
+      uses: gocdnext/python@v1
+      with:
+        command: pytest -q
+
+  - name: pytest with uv (pyproject only)
+    description: >
+      App with pyproject.toml but no uv.lock yet. `uv sync`
+      resolves on the fly.
+    yaml: |
+      uses: gocdnext/python@v1
+      with:
+        command: pytest -q --maxfail=1
+
+  - name: publish to a private index (secret token)
+    description: >
+      Twine upload piping the index credentials via secrets so
+      the token never touches the log.
+    yaml: |
+      secrets:
+        - PYPI_TOKEN
+      uses: gocdnext/python@v1
+      with:
+        command: |
+          python -m build && \
+          twine upload --username __token__ --password "${PYPI_TOKEN}" dist/*

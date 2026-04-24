@@ -1,0 +1,106 @@
+name: cosign
+category: security
+description: >
+  Sign, verify, and attest container images via cosign
+  (Sigstore). Keyless signing (OIDC) is preferred — no long-lived
+  key material to rotate — but a password-protected
+  cosign.key on disk is supported for environments that can't
+  reach Fulcio/Rekor yet. `image:` should be a digest-pinned
+  ref; signing a tag silently follows whichever image the tag
+  resolves to at sign time.
+
+inputs:
+  image:
+    required: true
+    description: >
+      Digest-pinned image ref, e.g.
+      "ghcr.io/org/app@sha256:abc…". Tag refs mutate; cosign
+      signs what the ref resolves to right now.
+  action:
+    required: false
+    default: sign
+    description: "sign | verify | attest"
+  key:
+    required: false
+    description: >
+      Path (under the workspace) to a cosign.key. Empty = keyless
+      signing/verification (Fulcio + OIDC).
+  key-password:
+    required: false
+    description: >
+      Passphrase for the private key. Populate via secrets: so
+      the plaintext stays out of the log.
+  cert-identity:
+    required: false
+    description: >
+      action=verify keyless: expected OIDC subject (e.g. the
+      runner identity URL).
+  cert-oidc-issuer:
+    required: false
+    description: >
+      action=verify keyless: expected OIDC issuer URL (e.g.
+      https://token.actions.githubusercontent.com).
+  registry:
+    required: false
+    description: >
+      Registry hostname for login. Defaults to the prefix of
+      `image` up to the first "/".
+  username:
+    required: false
+    description: Registry username for push access (signatures upload).
+  password:
+    required: false
+    description: >
+      Registry token/password. Populate via the job's
+      `secrets:` list so the plaintext stays out of the log.
+  predicate:
+    required: false
+    description: >
+      action=attest: path to the in-toto predicate JSON (SBOM,
+      SLSA provenance, etc).
+  predicate-type:
+    required: false
+    description: >
+      action=attest: predicate type. Common values: spdxjson,
+      cyclonedx, slsaprovenance, custom.
+
+examples:
+  - name: keyless sign (digest ref)
+    description: >
+      Preferred shape — no key material, signs the image the
+      digest pins. Registry creds piped via secrets.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      uses: gocdnext/cosign@v1
+      with:
+        image: ghcr.io/org/app@sha256:${IMAGE_SHA}
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+
+  - name: key-based sign with password
+    description: >
+      Old-school flow for environments without Sigstore access.
+      The key file is checked into the workspace (usually via
+      secrets-as-files) and the passphrase comes through
+      secrets.
+    yaml: |
+      secrets:
+        - COSIGN_PASSWORD
+      uses: gocdnext/cosign@v1
+      with:
+        image: ghcr.io/org/app@sha256:${IMAGE_SHA}
+        key: cosign.key
+        key-password: ${{ COSIGN_PASSWORD }}
+
+  - name: attest an SBOM
+    description: >
+      Attach an SPDX SBOM as an attestation on the image.
+    yaml: |
+      uses: gocdnext/cosign@v1
+      with:
+        image: ghcr.io/org/app@sha256:${IMAGE_SHA}
+        action: attest
+        predicate: sbom.spdx.json
+        predicate-type: spdxjson

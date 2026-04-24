@@ -1,0 +1,92 @@
+name: buildx
+category: container
+description: >
+  Multi-arch container build via `docker buildx`. Unlike
+  `gocdnext/docker` (single-arch), this plugin sets up QEMU
+  emulation and a dedicated buildx builder so one job produces a
+  manifest list covering amd64 + arm64 (or any platforms you
+  pick). Requires `docker: true` on the job. Pipe registry creds
+  via `secrets:` — plaintext never touches the log.
+
+inputs:
+  image:
+    required: true
+    description: >
+      Target image repo without a tag, e.g. "ghcr.io/org/app".
+  tags:
+    required: false
+    default: latest
+    description: >
+      Comma- or space-separated tag list. A single buildx pass
+      produces all tags as one manifest list per tag.
+  platforms:
+    required: false
+    default: "linux/amd64,linux/arm64"
+    description: >
+      Comma-separated target platforms. The default covers 95% of
+      modern deployments; add "linux/arm/v7" or "linux/ppc64le"
+      when targeting embedded / power.
+  dockerfile:
+    required: false
+    default: Dockerfile
+    description: Path to the Dockerfile, relative to the build context.
+  context:
+    required: false
+    default: "."
+    description: Build context directory, relative to the workspace.
+  build-args:
+    required: false
+    description: >
+      KEY=VALUE list (comma- or newline-separated) forwarded as
+      `--build-arg`.
+  push:
+    required: false
+    default: "true"
+    description: >
+      Set to "false" to skip the registry push. Multi-arch images
+      can't live in the legacy daemon store, so "false" builds
+      both arches into the builder cache without a local image.
+  registry:
+    required: false
+    description: >
+      Registry hostname for login. Defaults to the prefix of
+      `image` up to the first "/".
+  username:
+    required: false
+    description: Registry username. Empty = no login.
+  password:
+    required: false
+    description: >
+      Registry token/password. Populate via the job's
+      `secrets:` list so the plaintext stays out of the log.
+
+examples:
+  - name: amd64 + arm64 release
+    description: >
+      Typical release shape — one job, two architectures, pushed
+      as a single manifest list. Creds come from secrets so the
+      token never touches the log.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      docker: true
+      uses: gocdnext/buildx@v1
+      with:
+        image: ghcr.io/org/app
+        tags: "latest, v${CI_COMMIT_SHORT_SHA}"
+        platforms: linux/amd64,linux/arm64
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+
+  - name: PR preview (build-only, no push)
+    description: >
+      Validate the Dockerfile still builds on both arches on a
+      PR, without writing to the registry.
+    yaml: |
+      docker: true
+      uses: gocdnext/buildx@v1
+      with:
+        image: ghcr.io/org/app
+        tags: pr-${CI_PR_NUMBER}
+        push: "false"

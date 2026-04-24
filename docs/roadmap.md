@@ -186,8 +186,14 @@ Entradas da decisão:
 
 ## Plugin catalog
 
-### Shipped (6)
-`node`, `go`, `docker`, `kubectl`, `trivy`, `slack`.
+### Shipped (18)
+
+- **build**: `node`, `go`, `maven`, `gradle`, `python`, `rust`.
+- **container**: `docker`, `kaniko`, `buildx`.
+- **deploy**: `kubectl`, `helm`, `terraform`.
+- **security**: `trivy`, `gitleaks`, `cosign`.
+- **release**: `github-release`.
+- **notifications**: `slack`, `discord`.
 
 ### Próxima onda (ordem de prioridade)
 
@@ -195,26 +201,17 @@ Cada plugin = Dockerfile + entrypoint.sh + plugin.yaml. Template bem
 estabelecido: tempo médio ~30min por plugin shell-thin (wrapper), ~2h
 quando há lógica real (ex: `release-notes` auto-gen).
 
-**Prioridade alta (pedidos imediatos num pipeline típico)**
-1. 💡 `gocdnext/helm` — deploy (fecha o ciclo com `kubectl`).
-2. 💡 `gocdnext/maven` — Java build + Nexus `settings.xml`.
-3. 💡 `gocdnext/gradle` — Java build com wrapper cache.
-4. 💡 `gocdnext/kaniko` — rootless container build (ideal pro K8s engine
-   sem DinD).
-5. 💡 `gocdnext/gitleaks` — secret detection no repo.
-6. 💡 `gocdnext/buildx` — multi-arch container.
-7. 💡 `gocdnext/github-release` — publish release via GitHub API.
+**Prioridade alta — próximos**
+1. 💡 `gocdnext/ansible` — playbook runner para deploys sem k8s.
+2. 💡 `gocdnext/aws-cli`, `gocdnext/gcloud` — CLIs pros `env:` jobs.
+3. 💡 `gocdnext/docker-push` — só login + push (sem build). Útil em
+   fan-out: um job builda, N jobs taggam e pusham.
+4. 💡 `gocdnext/email` — notifier SMTP. O mais pedido depois de slack.
 
 **Prioridade média**
-- 💡 `gocdnext/discord`, `gocdnext/email`, `gocdnext/teams`,
-  `gocdnext/matrix` — notifications.
-- 💡 `gocdnext/python` (uv/pip/poetry + pytest).
-- 💡 `gocdnext/rust` (cargo + clippy + fmt).
+- 💡 `gocdnext/teams`, `gocdnext/matrix` — notifications.
 - 💡 `gocdnext/nexus-upload`, `gocdnext/artifactory`,
-  `gocdnext/docker-push`, `gocdnext/s3-upload`, `gocdnext/helm-push`.
-- 💡 `gocdnext/cosign` — image signing.
-- 💡 `gocdnext/terraform`, `gocdnext/ansible`, `gocdnext/aws-cli`,
-  `gocdnext/gcloud`.
+  `gocdnext/s3-upload`, `gocdnext/helm-push`.
 - 💡 `gocdnext/tag`, `gocdnext/release-notes`.
 - 💡 `gocdnext/codecov`, `gocdnext/coveralls`,
   `gocdnext/lighthouse-ci`.

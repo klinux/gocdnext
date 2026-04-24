@@ -1,0 +1,61 @@
+name: rust
+category: build
+description: >
+  Run cargo subcommands — build, test, clippy, fmt, publish.
+  Ships with the stable 1.83 toolchain + rustfmt + clippy.
+  Switch toolchains via `toolchain: nightly` or a pinned
+  `1.82.0` when a specific version is required. Pair the image
+  registry / crates.io token inputs with `secrets:` so they
+  don't end up in the log.
+
+inputs:
+  command:
+    required: true
+    description: >
+      Cargo subcommand + flags, word-split. Examples:
+      "test --workspace", "clippy --all-targets -- -D warnings",
+      "fmt --check", "build --release".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into before cargo runs.
+      Monorepos with a sub-crate set this.
+  toolchain:
+    required: false
+    default: stable
+    description: >
+      Rust toolchain to use. "stable" (default), "beta",
+      "nightly", or a pinned "1.83.0". Installed on demand.
+  rustflags:
+    required: false
+    description: >
+      Exported as RUSTFLAGS for the command. Useful for a global
+      "-D warnings" or "-C target-cpu=native" on release builds.
+
+examples:
+  - name: test workspace
+    description: Run tests across a cargo workspace.
+    yaml: |
+      uses: gocdnext/rust@v1
+      with:
+        command: test --workspace
+
+  - name: clippy as gate
+    description: >
+      Clippy failing the build on any warning. Classic CI shape.
+    yaml: |
+      uses: gocdnext/rust@v1
+      with:
+        command: clippy --all-targets -- -D warnings
+
+  - name: publish crate with secret token
+    description: >
+      `cargo publish` needs a crates.io token. Pipe it through
+      secrets so the plaintext never touches the log.
+    yaml: |
+      secrets:
+        - CARGO_REGISTRY_TOKEN
+      uses: gocdnext/rust@v1
+      with:
+        command: publish --token ${{ CARGO_REGISTRY_TOKEN }}
