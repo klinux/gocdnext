@@ -53,12 +53,19 @@ type SCMSourceApplied struct {
 	Provider      string
 	URL           string
 	DefaultBranch string
-	Created       bool
+	// AuthRef mirrors the value stored on the scm_source row —
+	// the opaque token gocdnext uses to authenticate against the
+	// provider's API. Plumbed through to the auto-register path
+	// for GitLab (PAT) and Bitbucket (App Password / OAuth
+	// token); GitHub ignores it because it authenticates via the
+	// installed App instead.
+	AuthRef string
+	Created bool
 	// GeneratedWebhookSecret is the plaintext of a freshly-minted
 	// per-repo secret — set ONLY on the apply that created or
 	// rotated the stored ciphertext. Callers surface this in the
 	// HTTP response exactly once so the operator copies it into
-	// the GitHub webhook config; subsequent reads never see it
+	// the provider webhook config; subsequent reads never see it
 	// again.
 	GeneratedWebhookSecret string
 }
@@ -242,6 +249,7 @@ func (s *Store) upsertSCMSource(ctx context.Context, q *db.Queries, projectID pg
 		Provider:               row.Provider,
 		URL:                    row.Url,
 		DefaultBranch:          row.DefaultBranch,
+		AuthRef:                stringValue(row.AuthRef),
 		Created:                row.Created,
 		GeneratedWebhookSecret: generated,
 	}, nil

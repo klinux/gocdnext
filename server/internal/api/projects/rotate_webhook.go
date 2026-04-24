@@ -73,6 +73,7 @@ func (h *Handler) RotateWebhookSecret(w http.ResponseWriter, r *http.Request) {
 		Provider:      scm.Provider,
 		URL:           scm.URL,
 		DefaultBranch: scm.DefaultBranch,
+		AuthRef:       scm.AuthRef,
 	}
 	resp := map[string]any{
 		"scm_source_id":            scm.ID.String(),

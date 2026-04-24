@@ -67,6 +67,25 @@ Webhook endpoints:
 - `POST /api/webhooks/gitlab` — shared-secret token via `X-Gitlab-Token`
 - `POST /api/webhooks/bitbucket` — HMAC-SHA256 via `X-Hub-Signature`
 
+### Auto-register webhooks
+
+Binding an scm_source installs the matching provider webhook on the repo
+automatically — the operator never pastes anything by hand. Each provider
+needs a different credential shape, stored in `scm_sources.auth_ref`:
+
+| Provider   | Credential                                       | Required scope                    |
+|------------|--------------------------------------------------|-----------------------------------|
+| GitHub     | Installed GitHub App (no PAT)                    | `contents:read`, `webhooks`       |
+| GitLab     | Personal Access Token                            | `api` (not `read_api`)            |
+| Bitbucket  | OAuth access token **or** `user:app_password`    | `webhooks`, `repositories:read`   |
+
+Registration is idempotent: on re-apply the handler looks for an existing
+hook whose URL starts with our public base and PATCHes / PUTs it instead
+of creating a duplicate. Missing scope surfaces as a 403 from the provider
+which bubbles into the apply response as
+`webhooks: [{ status: "failed", error: "..." }]` — the operator sees
+exactly which credential to rotate.
+
 ## Why these choices
 
 - **Postgres LISTEN/NOTIFY** over Kafka/NATS for MVP: 1 less dep, fine for

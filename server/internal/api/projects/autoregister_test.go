@@ -173,7 +173,7 @@ func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 		t.Fatalf("webhooks = %d", len(body.Webhooks))
 	}
 	w := body.Webhooks[0]
-	if w.Status != "registered" || w.HookID != 999 {
+	if w.Status != "registered" || w.HookID != "999" {
 		t.Errorf("webhook = %+v", w)
 	}
 	if w.SCMSourceURL != "https://github.com/org/repo" {
@@ -229,7 +229,7 @@ func TestAutoRegister_UpdatesWhenHookAlreadyExists(t *testing.T) {
 	if len(body.Webhooks) != 1 {
 		t.Fatalf("webhooks = %d", len(body.Webhooks))
 	}
-	if body.Webhooks[0].Status != "updated" || body.Webhooks[0].HookID != 555 {
+	if body.Webhooks[0].Status != "updated" || body.Webhooks[0].HookID != "555" {
 		t.Errorf("webhook = %+v", body.Webhooks[0])
 	}
 	if api.createdPayload.Load() != nil {
@@ -336,7 +336,7 @@ func TestAutoRegister_SkipsNonGitHubProvider(t *testing.T) {
 	if len(body.Webhooks) != 1 {
 		t.Fatalf("webhooks = %d", len(body.Webhooks))
 	}
-	if body.Webhooks[0].Status != "skipped_not_github" {
+	if body.Webhooks[0].Status != "skipped_unsupported_provider" {
 		t.Errorf("status = %q", body.Webhooks[0].Status)
 	}
 	if api.createdPayload.Load() != nil {
