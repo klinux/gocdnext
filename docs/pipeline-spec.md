@@ -103,6 +103,31 @@ jobs:
 - **stages** give the *big picture ordering* (humans read this).
 - **needs** inside a stage let you *skip waiting* for sibling jobs (GitLab-style DAG).
 
+### Test reports
+
+Jobs that run tests can declare glob patterns pointing at JUnit/xUnit XML
+reports the agent should parse and ship back for the Tests tab on the run
+detail page:
+
+```yaml
+jobs:
+  unit:
+    stage: test
+    image: golang:1.23
+    script:
+      - go install gotest.tools/gotestsum@latest
+      - gotestsum --junitfile=junit.xml ./...
+    test_reports:
+      - junit.xml
+      - "**/junit-*.xml"
+```
+
+Globs are workspace-relative. The agent parses every match after the task
+loop (success or failure — a red build still writes XML for the cases that
+ran) and sends one TestResultBatch per job. Per-field size caps (64 KiB)
+and a whole-batch cap (4 MiB) keep a pathological test from blowing the
+wire; server-side ingest re-clamps defensively.
+
 ### Templates via `extends:`
 
 A job whose name starts with `.` is a **template** — it never runs on its own,

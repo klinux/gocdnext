@@ -168,6 +168,12 @@ Entradas da decisão:
   `extends: .base-x` e herdam scalars/lists/maps com regras
   GitLab-like (child wins on scalar, child replaces on list, map
   keys overlay). Chain + cycle detection no resolver.
+- ✅ **Test reports — JUnit end-to-end**. Migration 00021 +
+  `test_results` table (fc0e4a8). Agent parser + proto +
+  server ingestion (2dc811f). UI Tests tab com totais por run,
+  cards por job, drill-down em failures. Job declara
+  `test_reports: [glob]` no YAML; agent faz parse depois das
+  tasks (sucesso OU falha) e shippa um batch via gRPC.
 
 ### Próximas ondas (tamanho estimado)
 
@@ -176,8 +182,10 @@ Entradas da decisão:
   `extends:` dentro do mesmo arquivo já shipped (commit TBD);
   `include: [{local: "shared/x.yaml"}]` fica pra depois (precisa
   path-resolution segura + multi-file merge). Padrão GitLab CI.
-- 💡 **Test reports** — parser JUnit/Cobertura + aba Tests + flakiness
-  history (design em `docs/test-reports-design.md` quando for a vez).
+- 💡 **Test flakiness history** — o ingest já guarda 1 row por
+  `(classname, name, created_at)`; próximo passo é um drawer
+  "últimas 14 execuções" na aba Tests usando o índice
+  `idx_test_results_case_at`.
 
 **Medium (1-2 dias cada)**
 - 💡 **Notifications — personal subscriptions.** Terceira camada

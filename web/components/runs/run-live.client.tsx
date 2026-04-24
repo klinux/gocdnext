@@ -18,6 +18,7 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts } from "@/components/runs/run-artifacts.client";
+import { RunTests } from "@/components/runs/run-tests.client";
 import { RunActions } from "@/components/runs/run-actions.client";
 import { PipelineCanvas } from "@/components/runs/pipeline-canvas.client";
 import { isTerminalStatus, statusTone, type StatusTone } from "@/lib/status";
@@ -330,6 +331,20 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           ))
         )}
       </div>
+
+      <Separator />
+
+      <section aria-label="Tests">
+        <h3 className="mb-3 text-lg font-semibold tracking-tight">
+          Tests
+        </h3>
+        <RunTests
+          runId={runId}
+          runStatus={data.status}
+          run={mergedData}
+          apiBaseURL={apiBaseURL}
+        />
+      </section>
 
       <Separator />
 

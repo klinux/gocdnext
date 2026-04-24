@@ -528,6 +528,36 @@ export type GitHubIntegration = {
   auto_register_on: boolean;
 };
 
+export type TestCaseStatus = "passed" | "failed" | "skipped" | "errored";
+
+export type TestCase = {
+  id: string;
+  job_run_id: string;
+  suite: string;
+  classname?: string;
+  name: string;
+  status: TestCaseStatus | string;
+  duration_ms: number;
+  failure_type?: string;
+  failure_message?: string;
+  failure_detail?: string;
+};
+
+export type TestSummary = {
+  job_run_id: string;
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  errored: number;
+  duration_ms: number;
+};
+
+export type TestResultsResponse = {
+  summaries: TestSummary[];
+  cases: TestCase[];
+};
+
 export type RunArtifact = {
   id: string;
   job_run_id: string;

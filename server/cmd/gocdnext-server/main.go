@@ -351,6 +351,7 @@ func main() {
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
 		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
+		p.Get("/api/v1/runs/{id}/tests", runsHandler.TestResults)
 		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
 		p.Get("/api/v1/plugins", pluginsHandler.List)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)

@@ -18,6 +18,7 @@ import type {
   RunDetail,
   RunsListResponse,
   SecretsList,
+  TestResultsResponse,
 } from "@/types/api";
 
 type ListResponse = { projects: ProjectSummary[] };
@@ -79,6 +80,12 @@ export async function getRunDetail(
 ): Promise<RunDetail> {
   return readJSON<RunDetail>(
     `/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}`,
+  );
+}
+
+export async function getRunTests(id: string): Promise<TestResultsResponse> {
+  return readJSON<TestResultsResponse>(
+    `/api/v1/runs/${encodeURIComponent(id)}/tests`,
   );
 }
 
