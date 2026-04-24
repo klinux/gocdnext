@@ -1,0 +1,82 @@
+name: matrix
+category: notifications
+description: >
+  Post a message to a Matrix room via the client-server API.
+  Works against any Matrix-compatible homeserver (Synapse,
+  Conduit, Dendrite, matrix.org) without a bridge. Uses a bot
+  account's access token for auth — pipe via `secrets:` so the
+  token never touches the log.
+
+inputs:
+  homeserver:
+    required: true
+    description: >
+      Homeserver base URL — e.g. "https://matrix.org" or
+      "https://chat.mycorp.com". No trailing slash required.
+  token:
+    required: true
+    description: >
+      Bearer access token of the bot user. Obtain once from the
+      homeserver (login flow or admin panel). Populate via
+      secrets:.
+  room-id:
+    required: true
+    description: >
+      Room id ("!abc:server") OR alias ("#eng:server"). Aliases
+      get resolved to ids before send.
+  body:
+    required: false
+    description: >
+      Plain-text body. Defaults to
+      "pipeline #N → status (sha)" using CI_* vars.
+  html:
+    required: false
+    description: >
+      Rich HTML body. When set, the message ships as HTML with
+      the plain body as fallback so clients that don't render
+      HTML still see something readable.
+  msgtype:
+    required: false
+    default: m.text
+    description: >
+      "m.text" (default) renders like a regular chat message;
+      "m.notice" renders muted — useful for bot chatter that
+      shouldn't compete visually with real conversation.
+
+examples:
+  - name: on-failure notification to the #eng room
+    description: >
+      Fires a notice to the engineering room when a prod deploy
+      fails. Room alias resolved once per run.
+    yaml: |
+      when: failure
+      secrets:
+        - MATRIX_TOKEN
+      uses: gocdnext/matrix@v1
+      with:
+        homeserver: https://chat.mycorp.com
+        token: ${{ MATRIX_TOKEN }}
+        room-id: "#eng:chat.mycorp.com"
+        msgtype: m.notice
+        body: |
+          [PROD] ${CI_PIPELINE_NAME} #${CI_RUN_COUNTER} failed
+          commit ${CI_COMMIT_SHA} on ${CI_COMMIT_BRANCH}
+
+  - name: HTML release announce
+    description: >
+      Rich HTML into a release-announce room. The plain-text
+      `body` is mandatory as a fallback.
+    yaml: |
+      when: success
+      secrets:
+        - MATRIX_TOKEN
+      uses: gocdnext/matrix@v1
+      with:
+        homeserver: https://matrix.org
+        token: ${{ MATRIX_TOKEN }}
+        room-id: "#releases:matrix.org"
+        body: "Released ${RELEASE_TAG}"
+        html: |
+          <h4>${RELEASE_TAG} shipped</h4>
+          <p>Commit <code>${CI_COMMIT_SHA}</code></p>
+          <p><a href="${CI_RUN_URL}">Run on gocdnext</a></p>

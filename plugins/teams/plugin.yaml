@@ -1,0 +1,68 @@
+name: teams
+category: notifications
+description: >
+  Post a message to a Microsoft Teams Incoming Webhook. Sibling
+  of the slack/discord plugins — same "one HTTP POST, no SDK"
+  idea with a MessageCard wire format. Pipe the webhook URL via
+  `secrets:`; the URL doubles as the auth token.
+
+inputs:
+  webhook:
+    required: true
+    description: >
+      Teams channel's Incoming Webhook URL. Populate via the
+      job's `secrets:` list so the URL never lands in logs.
+  title:
+    required: false
+    description: >
+      Card title. Defaults to
+      "pipeline #N → status" using CI_* vars so a team gets a
+      meaningful notification without extra config.
+  message:
+    required: false
+    description: >
+      Body text (Markdown allowed). Defaults to
+      "commit SHA on BRANCH".
+  theme-color:
+    required: false
+    description: >
+      6-digit hex accent bar color (no leading #). Auto-tints
+      by status when omitted: green on success, red on failure,
+      amber on canceled, gray otherwise.
+  payload-file:
+    required: false
+    description: >
+      Path (under workspace) to a pre-built JSON body. Skips
+      every other input and POSTs verbatim — escape hatch for
+      Adaptive Card content.
+
+examples:
+  - name: failure notification on prod
+    description: >
+      Fire a red card to the on-call channel when the prod
+      deploy fails. Webhook URL comes from secrets so it never
+      touches the log.
+    yaml: |
+      when: failure
+      secrets:
+        - TEAMS_WEBHOOK
+      uses: gocdnext/teams@v1
+      with:
+        webhook: ${{ TEAMS_WEBHOOK }}
+        title: "[PROD] ${CI_PIPELINE_NAME} #${CI_RUN_COUNTER} failed"
+        message: |
+          Commit: ${CI_COMMIT_SHA}
+          Branch: ${CI_COMMIT_BRANCH}
+          [Open run](${CI_RUN_URL})
+
+  - name: adaptive-card payload
+    description: >
+      Pre-built Adaptive Card JSON shipped as a workspace file.
+      Skips all default fields and POSTs verbatim.
+    yaml: |
+      secrets:
+        - TEAMS_WEBHOOK
+      uses: gocdnext/teams@v1
+      with:
+        webhook: ${{ TEAMS_WEBHOOK }}
+        payload-file: notifications/adaptive-card.json
