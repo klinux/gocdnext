@@ -1,0 +1,60 @@
+name: gcloud
+category: deploy
+description: >
+  Run Google Cloud SDK (gcloud) commands. Two auth shapes:
+  (1) service-account JSON key piped via `secrets:` — the
+  entrypoint writes a 0600 tempfile and activates it; or
+  (2) Workload Identity Federation, where the caller sets
+  GOOGLE_APPLICATION_CREDENTIALS to a credential config file and
+  leaves `credentials-json` empty.
+
+inputs:
+  command:
+    required: true
+    description: >
+      gcloud subcommand + args, word-split. Examples:
+      "run deploy svc --image gcr.io/p/app:1 --region us-east1",
+      "container clusters get-credentials my-cluster --region us-east1",
+      "storage cp file.tgz gs://bucket/".
+  project:
+    required: false
+    description: >
+      --project ID shortcut. Equivalent to passing --project to
+      every subcommand, but less noise.
+  credentials-json:
+    required: false
+    description: >
+      Raw JSON body of a service-account key. Populate via
+      secrets: so the plaintext never hits argv or logs. Leave
+      empty when using Workload Identity Federation.
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into before gcloud runs.
+
+examples:
+  - name: deploy to Cloud Run with a service-account key
+    description: >
+      Classic shape: JSON key via secrets, project set once,
+      `run deploy` sends the image.
+    yaml: |
+      secrets:
+        - GCP_SA_JSON
+      uses: gocdnext/gcloud@v1
+      with:
+        command: run deploy my-svc --image gcr.io/myproj/app:${CI_COMMIT_SHORT_SHA} --region us-east1 --platform managed
+        project: myproj
+        credentials-json: ${{ GCP_SA_JSON }}
+
+  - name: push container to Artifact Registry
+    description: >
+      Build + push via gcloud (lean alt to docker login when you
+      only need a one-off push).
+    yaml: |
+      secrets:
+        - GCP_SA_JSON
+      uses: gocdnext/gcloud@v1
+      with:
+        command: builds submit --tag us-east1-docker.pkg.dev/myproj/app/server:${CI_COMMIT_SHORT_SHA}
+        project: myproj
+        credentials-json: ${{ GCP_SA_JSON }}

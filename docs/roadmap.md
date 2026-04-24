@@ -186,27 +186,21 @@ Entradas da decisão:
 
 ## Plugin catalog
 
-### Shipped (18)
+### Shipped (23)
 
 - **build**: `node`, `go`, `maven`, `gradle`, `python`, `rust`.
-- **container**: `docker`, `kaniko`, `buildx`.
-- **deploy**: `kubectl`, `helm`, `terraform`.
+- **container**: `docker`, `kaniko`, `buildx`, `docker-push`.
+- **deploy**: `kubectl`, `helm`, `terraform`, `ansible`, `aws-cli`,
+  `gcloud`.
 - **security**: `trivy`, `gitleaks`, `cosign`.
 - **release**: `github-release`.
-- **notifications**: `slack`, `discord`.
+- **notifications**: `slack`, `discord`, `email`.
 
 ### Próxima onda (ordem de prioridade)
 
 Cada plugin = Dockerfile + entrypoint.sh + plugin.yaml. Template bem
 estabelecido: tempo médio ~30min por plugin shell-thin (wrapper), ~2h
 quando há lógica real (ex: `release-notes` auto-gen).
-
-**Prioridade alta — próximos**
-1. 💡 `gocdnext/ansible` — playbook runner para deploys sem k8s.
-2. 💡 `gocdnext/aws-cli`, `gocdnext/gcloud` — CLIs pros `env:` jobs.
-3. 💡 `gocdnext/docker-push` — só login + push (sem build). Útil em
-   fan-out: um job builda, N jobs taggam e pusham.
-4. 💡 `gocdnext/email` — notifier SMTP. O mais pedido depois de slack.
 
 **Prioridade média**
 - 💡 `gocdnext/teams`, `gocdnext/matrix` — notifications.

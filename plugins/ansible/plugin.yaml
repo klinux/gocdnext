@@ -1,0 +1,91 @@
+name: ansible
+category: deploy
+description: >
+  Run Ansible playbooks against managed hosts. Useful for deploys
+  to bare-metal, VMs, and anything outside Kubernetes where
+  kubectl/helm don't apply. SSH private key, become-password, and
+  vault-password all come through `secrets:` — written to 0600
+  tempfiles and passed as file paths so nothing leaks via
+  `ps auxww` or logs.
+
+inputs:
+  playbook:
+    required: true
+    description: >
+      Path (under the workspace) to the playbook, e.g.
+      "deploy.yml" or "ops/provision.yml".
+  inventory:
+    required: false
+    description: >
+      Path to the inventory file. Without this ansible uses its
+      own fallback (/etc/ansible/hosts → empty), which rarely
+      matches a CI container — almost every real usage sets this.
+  extra-vars:
+    required: false
+    description: >
+      -e VALUES. Either a raw "foo=bar baz=qux" string, or a
+      path prefixed with @ (e.g. "@envs/prod.yml") to load a
+      YAML/JSON vars file.
+  tags:
+    required: false
+    description: Comma-separated -t tag filter.
+  limit:
+    required: false
+    description: -l host/pattern filter.
+  ssh-user:
+    required: false
+    description: Remote SSH user (--user).
+  ssh-private-key:
+    required: false
+    description: >
+      PEM key body. Populate via secrets: — the entrypoint
+      writes it to a 0600 tempfile and passes --private-key
+      instead of putting it on argv.
+  become-password:
+    required: false
+    description: >
+      sudo password for --become. Populate via secrets:; the
+      entrypoint forwards it as ansible_become_password in the
+      env (not argv).
+  vault-password:
+    required: false
+    description: >
+      ansible-vault password for encrypted files. Populate via
+      secrets:; written to tempfile, passed via
+      --vault-password-file.
+  check:
+    required: false
+    default: "false"
+    description: Set to "true" to run in --check (dry-run) mode.
+
+examples:
+  - name: deploy to prod with SSH key + vault
+    description: >
+      Typical deploy: private key + vault password come from
+      secrets, inventory points at the prod hosts file, extra
+      vars sourced from a committed YAML.
+    yaml: |
+      secrets:
+        - ANSIBLE_SSH_KEY
+        - ANSIBLE_VAULT_PASSWORD
+      uses: gocdnext/ansible@v1
+      with:
+        playbook: deploy.yml
+        inventory: inventory/prod
+        extra-vars: "@envs/prod.yml"
+        ssh-user: deploy
+        ssh-private-key: ${{ ANSIBLE_SSH_KEY }}
+        vault-password: ${{ ANSIBLE_VAULT_PASSWORD }}
+
+  - name: dry-run against staging
+    description: Sanity-check a playbook in --check mode before applying.
+    yaml: |
+      secrets:
+        - ANSIBLE_SSH_KEY
+      uses: gocdnext/ansible@v1
+      with:
+        playbook: deploy.yml
+        inventory: inventory/staging
+        ssh-user: deploy
+        ssh-private-key: ${{ ANSIBLE_SSH_KEY }}
+        check: "true"

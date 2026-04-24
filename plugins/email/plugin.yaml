@@ -1,0 +1,106 @@
+name: email
+category: notifications
+description: >
+  Send an SMTP email — the most requested notifier after Slack.
+  Useful for on-call flows that page via a shared mailbox, audit
+  digests, and release-announce distribution lists. Uses Python
+  stdlib smtplib so there's no third-party notifier dep in the
+  image. HTML is supported via `format: html` (a plain fallback
+  is always included for Exchange / mobile clients).
+
+inputs:
+  host:
+    required: true
+    description: SMTP host, e.g. "smtp.sendgrid.net".
+  port:
+    required: false
+    default: "587"
+    description: >
+      SMTP port. 587 for STARTTLS (default), 465 for implicit
+      TLS, 25 for unauthenticated relay inside a corp net.
+  username:
+    required: false
+    description: >
+      Auth user. Empty = no login (open relay). Populate via
+      secrets: for anything reachable from the public internet.
+  password:
+    required: false
+    description: >
+      Auth password / API key. Populate via secrets: — the
+      runner masks it from the log.
+  tls:
+    required: false
+    default: starttls
+    description: "starttls (port 587) | tls (port 465) | none"
+  from:
+    required: true
+    description: >
+      From header. Plain "ci@mycorp.com" or display-form
+      "gocdnext CI <ci@mycorp.com>".
+  to:
+    required: true
+    description: Comma-separated recipients.
+  cc:
+    required: false
+    description: Comma-separated CC recipients.
+  subject:
+    required: true
+    description: Subject line.
+  body:
+    required: true
+    description: >
+      Message body. `${CI_*}` env vars get expanded by the
+      pipeline parser before this plugin runs, so embed
+      run/commit metadata directly.
+  format:
+    required: false
+    default: plain
+    description: "plain | html"
+
+examples:
+  - name: failure notification on prod
+    description: >
+      Typical "page the team on a red build" shape. `when:
+      failure` runs the job only when an upstream step fails;
+      SMTP creds come from secrets.
+    yaml: |
+      when: failure
+      secrets:
+        - SMTP_USER
+        - SMTP_PASSWORD
+      uses: gocdnext/email@v1
+      with:
+        host: smtp.sendgrid.net
+        port: "587"
+        tls: starttls
+        username: ${{ SMTP_USER }}
+        password: ${{ SMTP_PASSWORD }}
+        from: "gocdnext CI <ci@mycorp.com>"
+        to: "oncall@mycorp.com"
+        subject: "[PROD] ${CI_PIPELINE_NAME} #${CI_RUN_COUNTER} failed"
+        body: |
+          Pipeline ${CI_PIPELINE_NAME} failed at ${CI_FINISHED_AT}.
+          Commit: ${CI_COMMIT_SHA}
+          Run:    ${CI_RUN_URL}
+
+  - name: release-announce HTML
+    description: >
+      Richer HTML body to an announce list on release success.
+    yaml: |
+      when: success
+      secrets:
+        - SMTP_USER
+        - SMTP_PASSWORD
+      uses: gocdnext/email@v1
+      with:
+        host: smtp.sendgrid.net
+        username: ${{ SMTP_USER }}
+        password: ${{ SMTP_PASSWORD }}
+        from: "Releases <ci@mycorp.com>"
+        to: "eng-announce@mycorp.com"
+        subject: "Released ${RELEASE_TAG}"
+        format: html
+        body: |
+          <h2>${RELEASE_TAG} shipped</h2>
+          <p>Commit: <code>${CI_COMMIT_SHA}</code></p>
+          <p><a href="${CI_RUN_URL}">Run on gocdnext</a></p>

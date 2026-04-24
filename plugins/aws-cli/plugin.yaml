@@ -1,0 +1,62 @@
+name: aws-cli
+category: deploy
+description: >
+  Run AWS CLI v2 commands. Credentials come through the job's
+  `secrets:` list — AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+  (+ AWS_SESSION_TOKEN for STS). For OIDC federation the runner
+  only has to export AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE;
+  the CLI picks that up on its own.
+
+inputs:
+  command:
+    required: true
+    description: >
+      aws subcommand + args, word-split. Examples:
+      "s3 cp dist/ s3://bkt/ --recursive",
+      "ecr describe-repositories",
+      "ssm get-parameter --name /prod/db --with-decryption".
+  region:
+    required: false
+    description: >
+      Sets AWS_DEFAULT_REGION so you don't have to thread
+      --region through every invocation.
+  profile:
+    required: false
+    description: --profile NAME. Rarely needed in CI.
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into before aws runs.
+
+examples:
+  - name: sync a build to S3
+    description: >
+      Typical shape — creds via secrets, region set once, sync
+      the build output to a bucket.
+    yaml: |
+      secrets:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+      uses: gocdnext/aws-cli@v1
+      with:
+        command: s3 sync dist/ s3://mycorp-releases/app/${CI_COMMIT_SHORT_SHA}/
+        region: us-east-1
+      env:
+        AWS_ACCESS_KEY_ID: ${{ AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ AWS_SECRET_ACCESS_KEY }}
+
+  - name: read an SSM parameter
+    description: >
+      Pull a secret/value from SSM Parameter Store into a shell
+      var for a downstream step.
+    yaml: |
+      secrets:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+      uses: gocdnext/aws-cli@v1
+      with:
+        command: ssm get-parameter --name /prod/db/url --with-decryption --query Parameter.Value --output text
+        region: us-east-1
+      env:
+        AWS_ACCESS_KEY_ID: ${{ AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ AWS_SECRET_ACCESS_KEY }}

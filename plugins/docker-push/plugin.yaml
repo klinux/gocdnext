@@ -1,0 +1,85 @@
+name: docker-push
+category: container
+description: >
+  Login + retag + push a container image, without building it.
+  The complementary half of `gocdnext/docker` — build once,
+  then push to many registries / tags in parallel fan-out. Also
+  useful for promotion flows (pull from staging registry, tag
+  for prod, push to prod). Requires `docker: true` on the job.
+
+inputs:
+  source:
+    required: true
+    description: >
+      Image ref already present in the daemon OR available in a
+      remote registry (set `pull: true` if remote). Examples:
+      "app:latest", "ghcr.io/org/app@sha256:abc…".
+  target:
+    required: true
+    description: >
+      Target repo without a tag, e.g. "ghcr.io/org/app" or
+      "myregistry.corp/app".
+  tags:
+    required: false
+    default: latest
+    description: >
+      Comma- or space-separated tag list. Each tag triggers one
+      `docker tag + push` pair.
+  pull:
+    required: false
+    default: "false"
+    description: >
+      Set to "true" to `docker pull` the source first (useful
+      when source and target are in different registries).
+  registry:
+    required: false
+    description: >
+      Registry hostname for login. Defaults to the prefix of
+      `target` up to the first "/".
+  username:
+    required: false
+    description: Registry username. Empty = anonymous (no login).
+  password:
+    required: false
+    description: >
+      Registry token/password. Populate via the job's
+      `secrets:` list so the plaintext stays out of the log.
+
+examples:
+  - name: fan-out push to two registries
+    description: >
+      After a build step produces `app:build-${CI_RUN_ID}`, two
+      parallel jobs push the same image to GHCR + to an internal
+      registry. Each gets its own creds from secrets.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      docker: true
+      uses: gocdnext/docker-push@v1
+      with:
+        source: app:build-${CI_RUN_ID}
+        target: ghcr.io/org/app
+        tags: "latest, ${CI_COMMIT_SHORT_SHA}"
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+
+  - name: promote from staging registry to prod
+    description: >
+      Pull a digest-pinned image from a staging registry, tag
+      for prod, push. Two sets of creds — staging pull and prod
+      push — both via secrets.
+    yaml: |
+      secrets:
+        - STAGING_PULL_TOKEN
+        - PROD_PUSH_USERNAME
+        - PROD_PUSH_TOKEN
+      docker: true
+      uses: gocdnext/docker-push@v1
+      with:
+        source: staging.corp/app@sha256:${STAGING_DIGEST}
+        target: prod.corp/app
+        tags: "stable, ${RELEASE_TAG}"
+        pull: "true"
+        username: ${{ PROD_PUSH_USERNAME }}
+        password: ${{ PROD_PUSH_TOKEN }}
