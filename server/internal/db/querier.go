@@ -194,6 +194,11 @@ type Querier interface {
 	// final run.status when finalizing — notification success/failure
 	// must not flip a user run from success to failed or vice versa.
 	GetRunUserStageOutcome(ctx context.Context, runID pgtype.UUID) (GetRunUserStageOutcomeRow, error)
+	// pl.definition is returned so the read path can decode the
+	// notifications array and stamp on/uses onto synth job rows
+	// without a second round-trip. Adds one JSONB column to the
+	// response but avoids a per-run "did this pipeline have
+	// notifications?" lookup.
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	GetScmSourceByProject(ctx context.Context, projectID pgtype.UUID) (GetScmSourceByProjectRow, error)
 	// Webhook-handler path: pulls the sealed secret + the scm_source

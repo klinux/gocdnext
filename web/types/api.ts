@@ -199,6 +199,13 @@ export type JobDetail = {
   decided_by?: string;
   decided_at?: string;
   decision?: "approved" | "rejected" | string;
+
+  // Notification-job metadata. Populated only for jobs in the
+  // synthetic `_notifications` stage; the UI keys off these to
+  // render a friendly label (notify_uses) and a trigger pill
+  // (notify_on) instead of the raw `_notify_<idx>` slug.
+  notify_on?: "failure" | "success" | "always" | "canceled" | string;
+  notify_uses?: string;
 };
 
 export type StageDetail = {

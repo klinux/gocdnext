@@ -260,6 +260,14 @@ type JobDetail struct {
 	DecidedBy           string     `json:"decided_by,omitempty"`
 	DecidedAt           *time.Time `json:"decided_at,omitempty"`
 	Decision            string     `json:"decision,omitempty"`
+
+	// Notification metadata — populated only for synthetic jobs
+	// in the `_notifications` stage. The UI keys off NotifyOn
+	// to render the trigger pill and NotifyUses for the friendly
+	// job label (the raw `_notify_<idx>` name isn't meant to
+	// leak into the timeline).
+	NotifyOn   string `json:"notify_on,omitempty"`
+	NotifyUses string `json:"notify_uses,omitempty"`
 }
 
 type StageDetail struct {
@@ -813,6 +821,20 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 		Stages:      []StageDetail{},
 	}
 
+	// Decode the pipeline definition just once — only the
+	// notifications array matters here. Failure is non-fatal:
+	// worst case the UI sees raw `_notify_<idx>` names, which
+	// is the same degradation as before this polish.
+	var pipelineNotifications []domain.Notification
+	if len(run.PipelineDefinition) > 0 {
+		var def struct {
+			Notifications []domain.Notification `json:"Notifications"`
+		}
+		if err := json.Unmarshal(run.PipelineDefinition, &def); err == nil {
+			pipelineNotifications = def.Notifications
+		}
+	}
+
 	jobsByStage := map[uuid.UUID][]JobDetail{}
 	for _, j := range jobs {
 		jd := JobDetail{
@@ -865,6 +887,17 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 				return RunDetail{}, fmt.Errorf("store: logs: %w", err)
 			}
 			jd.Logs = logs
+		}
+		// Synthetic notification job: stamp the human-readable
+		// trigger + plugin ref so the UI can render a real label
+		// instead of the raw `_notify_<idx>` slug. Out-of-range
+		// indices (definition drift after apply) leave the fields
+		// empty and the UI falls back to the slug.
+		if idx, ok := domain.NotificationIndexFromName(jd.Name); ok &&
+			idx < len(pipelineNotifications) {
+			n := pipelineNotifications[idx]
+			jd.NotifyOn = string(n.On)
+			jd.NotifyUses = n.Uses
 		}
 		jobsByStage[jd.StageRunID] = append(jobsByStage[jd.StageRunID], jd)
 	}

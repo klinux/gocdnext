@@ -1,4 +1,5 @@
 import {
+  Bell,
   Check,
   ChevronsRight,
   Gavel,
@@ -16,6 +17,12 @@ import { LogViewer } from "@/components/runs/log-viewer";
 import { ApprovalButtons } from "@/components/runs/approval-buttons.client";
 import type { JobDetail } from "@/types/api";
 
+// Server-side mirror: `_notify_<idx>`. Kept as a prefix rather
+// than importing a constant so it survives minor renames on the
+// Go side as long as the prefix holds; UI degrades to the slug
+// if the shape changes.
+const SYNTH_NOTIFY_PREFIX = "_notify_";
+
 type Props = {
   job: JobDetail;
   // runID enables the ApprovalButtons revalidation path — the
@@ -27,11 +34,16 @@ type Props = {
 // (not a card) so the outer stage-section container owns the
 // border/radius. Circular tone-tinted glyph on the left mirrors the
 // projects page's job pills — same system, different context.
+// Synth notification jobs (`_notify_<idx>`) show the plugin ref as
+// their label + a trigger pill ("on failure" / "on success" / …)
+// so the user never sees the raw index-encoded slug.
 export function JobCard({ job, runID }: Props) {
   const tone: StatusTone = statusTone(job.status);
   const hasLogs = (job.logs?.length ?? 0) > 0;
   const awaiting = job.status === "awaiting_approval" && job.approval_gate;
   const decided = job.approval_gate && !!job.decision;
+  const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
+  const displayName = isNotify ? job.notify_uses || job.name : job.name;
 
   return (
     <div
@@ -54,9 +66,24 @@ export function JobCard({ job, runID }: Props) {
           aria-hidden
           title={job.status}
         >
-          <JobGlyph tone={tone} />
+          {isNotify ? (
+            <Bell className="size-2.5" aria-hidden strokeWidth={2.5} />
+          ) : (
+            <JobGlyph tone={tone} />
+          )}
         </span>
-        <span className="font-mono text-sm font-semibold">{job.name}</span>
+        <span className="font-mono text-sm font-semibold">{displayName}</span>
+        {isNotify && job.notify_on ? (
+          <span
+            className={cn(
+              "rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+              notifyTriggerClasses[job.notify_on] ??
+                "border-border bg-muted/50 text-muted-foreground",
+            )}
+          >
+            on {job.notify_on}
+          </span>
+        ) : null}
         {job.matrix_key ? (
           <span className="font-mono text-[11px] text-muted-foreground">
             [{job.matrix_key}]
@@ -197,6 +224,21 @@ function JobGlyph({ tone }: { tone: StatusTone }) {
       return <ChevronsRight className={cls} aria-hidden strokeWidth={2.5} />;
   }
 }
+
+// Trigger pill colours. Loosely tracks the tone each outcome
+// implies: red-ish for failure, emerald for success, amber for
+// canceled (same as "queued/warning" in the status palette),
+// muted for always since it's the unconditional case.
+const notifyTriggerClasses: Record<string, string> = {
+  failure:
+    "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400",
+  success:
+    "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  canceled:
+    "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  always:
+    "border-border bg-muted/50 text-muted-foreground",
+};
 
 const jobGlyphClasses: Record<StatusTone, string> = {
   success:

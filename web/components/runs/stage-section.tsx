@@ -1,4 +1,5 @@
 import {
+  Bell,
   Check,
   ChevronsRight,
   Loader2,
@@ -23,18 +24,34 @@ type Props = {
   runID: string;
 };
 
+// Reserved stage name for the server-synthesized notifications
+// stage. Kept in sync with domain.NotificationStageName on the Go
+// side — a drift on either end degrades gracefully (just no
+// special rendering), but align them here for clarity.
+const NOTIFICATION_STAGE = "_notifications";
+
 // StageSection is the outer chrome for a single stage on the run
 // detail page: header row with status glyph + name + duration +
 // started-at, a subtle divider, and the list of JobCards below.
 // Mirrors the visual language of the projects page's job pills
 // (circular tone-tinted badge) in the header so the eye treats
-// all "status" cues across the app as one system.
+// all "status" cues across the app as one system. The server's
+// synth `_notifications` stage gets a softer tone + bell icon so
+// it reads as "post-run plumbing" rather than another gate on
+// the critical path.
 export function StageSection({ stage, runID }: Props) {
   const tone: StatusTone = statusTone(stage.status);
+  const isNotification = stage.name === NOTIFICATION_STAGE;
+
   return (
     <section
       aria-labelledby={`stage-${stage.id}`}
-      className="rounded-lg border border-border bg-card"
+      className={cn(
+        "rounded-lg border bg-card",
+        isNotification
+          ? "border-dashed border-border/70 bg-muted/20"
+          : "border-border",
+      )}
     >
       <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
         <span
@@ -45,7 +62,11 @@ export function StageSection({ stage, runID }: Props) {
           )}
           aria-hidden
         >
-          <StageGlyph tone={tone} />
+          {isNotification ? (
+            <Bell className="size-2.5" aria-hidden strokeWidth={2.5} />
+          ) : (
+            <StageGlyph tone={tone} />
+          )}
         </span>
         <span className="text-[10px] text-muted-foreground/70">
           #{stage.ordinal + 1}
@@ -54,8 +75,13 @@ export function StageSection({ stage, runID }: Props) {
           id={`stage-${stage.id}`}
           className="font-mono text-sm font-semibold uppercase tracking-wider"
         >
-          {stage.name}
+          {isNotification ? "Post-run notifications" : stage.name}
         </h3>
+        {isNotification ? (
+          <span className="rounded-md border border-border bg-background/60 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+            synthetic
+          </span>
+        ) : null}
         <StatusBadge status={stage.status} className="text-[10px]" />
         <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
           <LiveDuration

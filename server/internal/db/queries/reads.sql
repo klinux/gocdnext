@@ -186,9 +186,15 @@ WHERE p.slug = $1
 ORDER BY r.pipeline_id, r.created_at DESC;
 
 -- name: GetRunWithPipeline :one
+-- pl.definition is returned so the read path can decode the
+-- notifications array and stamp on/uses onto synth job rows
+-- without a second round-trip. Adds one JSONB column to the
+-- response but avoids a per-run "did this pipeline have
+-- notifications?" lookup.
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
        r.counter, r.cause, r.cause_detail, r.status, r.revisions,
-       r.created_at, r.started_at, r.finished_at, r.triggered_by
+       r.created_at, r.started_at, r.finished_at, r.triggered_by,
+       pl.definition AS pipeline_definition
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id

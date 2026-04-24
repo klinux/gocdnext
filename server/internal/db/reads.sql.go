@@ -46,7 +46,8 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProject
 const getRunWithPipeline = `-- name: GetRunWithPipeline :one
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
        r.counter, r.cause, r.cause_detail, r.status, r.revisions,
-       r.created_at, r.started_at, r.finished_at, r.triggered_by
+       r.created_at, r.started_at, r.finished_at, r.triggered_by,
+       pl.definition AS pipeline_definition
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id
@@ -55,21 +56,27 @@ LIMIT 1
 `
 
 type GetRunWithPipelineRow struct {
-	ID           pgtype.UUID
-	PipelineID   pgtype.UUID
-	PipelineName string
-	ProjectSlug  string
-	Counter      int64
-	Cause        string
-	CauseDetail  []byte
-	Status       string
-	Revisions    []byte
-	CreatedAt    pgtype.Timestamptz
-	StartedAt    pgtype.Timestamptz
-	FinishedAt   pgtype.Timestamptz
-	TriggeredBy  *string
+	ID                 pgtype.UUID
+	PipelineID         pgtype.UUID
+	PipelineName       string
+	ProjectSlug        string
+	Counter            int64
+	Cause              string
+	CauseDetail        []byte
+	Status             string
+	Revisions          []byte
+	CreatedAt          pgtype.Timestamptz
+	StartedAt          pgtype.Timestamptz
+	FinishedAt         pgtype.Timestamptz
+	TriggeredBy        *string
+	PipelineDefinition []byte
 }
 
+// pl.definition is returned so the read path can decode the
+// notifications array and stamp on/uses onto synth job rows
+// without a second round-trip. Adds one JSONB column to the
+// response but avoids a per-run "did this pipeline have
+// notifications?" lookup.
 func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error) {
 	row := q.db.QueryRow(ctx, getRunWithPipeline, id)
 	var i GetRunWithPipelineRow
@@ -87,6 +94,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.TriggeredBy,
+		&i.PipelineDefinition,
 	)
 	return i, err
 }
