@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock,
   Gauge,
+  LayoutDashboard,
   Server,
   Timer,
 } from "lucide-react";
@@ -67,7 +68,10 @@ export default async function DashboardPage() {
   return (
     <section className="space-y-8">
       <header>
-        <h2 className="text-2xl font-semibold tracking-tight">Dashboard</h2>
+        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <LayoutDashboard className="h-6 w-6" aria-hidden />
+          Dashboard
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Activity across every project in this gocdnext instance.
         </p>

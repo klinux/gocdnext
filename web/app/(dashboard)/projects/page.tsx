@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Boxes } from "lucide-react";
 
 import { NewProjectDialog } from "@/components/projects/new-project-dialog.client";
 import { ProjectsExplorer } from "@/components/projects/projects-explorer.client";
@@ -29,8 +30,11 @@ export default async function ProjectsPage() {
     <section className="space-y-6">
       <header className="flex items-baseline justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Projects</h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <Boxes className="h-6 w-6" aria-hidden />
+            Projects
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
             Browse, filter and open any project registered on this control
             plane. Click a card to view its pipelines and recent runs.
           </p>

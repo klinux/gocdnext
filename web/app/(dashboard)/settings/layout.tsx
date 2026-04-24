@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Settings as SettingsIcon } from "lucide-react";
 
 import { SettingsTabs } from "@/components/settings/settings-tabs.client";
 
@@ -14,7 +15,10 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   return (
     <div className="space-y-6">
       <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <SettingsIcon className="h-6 w-6" aria-hidden />
+          Settings
+        </h1>
         <p className="text-sm text-muted-foreground">
           Control-plane health, webhook audit trail, retention policy and
           provider integrations.
