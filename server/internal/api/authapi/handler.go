@@ -202,7 +202,7 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role := store.RoleUser
+	role := store.RoleMaintainer
 	if h.isAdmin(claims.Email) {
 		role = store.RoleAdmin
 	}

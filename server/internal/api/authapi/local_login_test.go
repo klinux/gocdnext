@@ -84,7 +84,7 @@ func TestLocalLogin_WrongPassword(t *testing.T) {
 
 func TestLocalLogin_RateLimits(t *testing.T) {
 	s, srv := newLocalHandler(t)
-	_, _ = s.CreateOrUpdateLocalUser(context.Background(), "rl@example.com", "R", store.RoleUser, "correct1pw")
+	_, _ = s.CreateOrUpdateLocalUser(context.Background(), "rl@example.com", "R", store.RoleMaintainer, "correct1pw")
 	hit := func() int {
 		body, _ := json.Marshal(map[string]string{"email": "rl@example.com", "password": "wrong"})
 		req := httptest.NewRequest(http.MethodPost, "/auth/login/local", bytes.NewReader(body))

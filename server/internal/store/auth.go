@@ -23,11 +23,44 @@ var (
 )
 
 // Role constants so callers and migrations agree on the enum.
+// Hierarchy for RequireMinRole: admin ≥ maintainer ≥ viewer.
 const (
-	RoleAdmin  = "admin"
-	RoleUser   = "user"
-	RoleViewer = "viewer"
+	RoleAdmin      = "admin"
+	RoleMaintainer = "maintainer"
+	RoleViewer     = "viewer"
 )
+
+// roleRank maps each role to its hierarchical weight. admin
+// strictly outranks maintainer which strictly outranks viewer;
+// unknown strings rank to -1 so they fail any "at least" check.
+// Kept package-private — callers should prefer RoleSatisfies
+// over peeking at the integer.
+func roleRank(r string) int {
+	switch r {
+	case RoleAdmin:
+		return 2
+	case RoleMaintainer:
+		return 1
+	case RoleViewer:
+		return 0
+	default:
+		return -1
+	}
+}
+
+// RoleSatisfies returns true when `have` is at least as
+// privileged as `required`. admin satisfies everything;
+// maintainer satisfies maintainer + viewer; viewer satisfies
+// only viewer. Unknown roles never satisfy anything (safer
+// default than accidentally granting).
+func RoleSatisfies(have, required string) bool {
+	h := roleRank(have)
+	r := roleRank(required)
+	if h < 0 || r < 0 {
+		return false
+	}
+	return h >= r
+}
 
 // AuthStateTTL is how long an OAuth `state` parameter stays valid
 // between /auth/login redirect and /auth/callback. Users who dawdle
@@ -71,7 +104,7 @@ type UpsertUserInput struct {
 func (s *Store) UpsertUserByProvider(ctx context.Context, in UpsertUserInput) (User, error) {
 	role := in.InitialRole
 	if role == "" {
-		role = RoleUser
+		role = RoleMaintainer
 	}
 	row, err := s.q.UpsertUserByProvider(ctx, db.UpsertUserByProviderParams{
 		Email:      in.Email,
@@ -101,6 +134,40 @@ func (s *Store) UpsertUserByProvider(ctx context.Context, in UpsertUserInput) (U
 		return u, ErrUserDisabled
 	}
 	return u, nil
+}
+
+// ErrInvalidRole signals the role value doesn't belong to the
+// enum the CHECK constraint accepts. Callers (HTTP handlers)
+// map this to 400 so typos in admin UIs surface cleanly.
+var ErrInvalidRole = errors.New("store: invalid role")
+
+// UpdateUserRole flips the role on an existing user. Refuses
+// unknown role values before hitting Postgres so the caller
+// doesn't rely on interpreting the CHECK violation error.
+func (s *Store) UpdateUserRole(ctx context.Context, id uuid.UUID, role string) (User, error) {
+	if role != RoleAdmin && role != RoleMaintainer && role != RoleViewer {
+		return User{}, fmt.Errorf("%w: %q", ErrInvalidRole, role)
+	}
+	row, err := s.q.UpdateUserRole(ctx, db.UpdateUserRoleParams{
+		ID:   pgUUID(id),
+		Role: role,
+	})
+	if err != nil {
+		return User{}, fmt.Errorf("store: update user role: %w", err)
+	}
+	return User{
+		ID:          fromPgUUID(row.ID),
+		Email:       row.Email,
+		Name:        row.Name,
+		AvatarURL:   row.AvatarUrl,
+		Provider:    row.Provider,
+		ExternalID:  row.ExternalID,
+		Role:        row.Role,
+		DisabledAt:  pgTimePtr(row.DisabledAt),
+		LastLoginAt: pgTimePtr(row.LastLoginAt),
+		CreatedAt:   row.CreatedAt.Time,
+		UpdatedAt:   row.UpdatedAt.Time,
+	}, nil
 }
 
 // GetUser returns a user row by UUID. 404 maps to pgx.ErrNoRows;

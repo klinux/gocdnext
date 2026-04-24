@@ -461,6 +461,10 @@ type Querier interface {
 	// updated_at. Intended for POST /api/v1/projects/{slug}/scm-sources
 	// /{id}/rotate-webhook-secret.
 	UpdateScmSourceWebhookSecret(ctx context.Context, arg UpdateScmSourceWebhookSecretParams) error
+	// Flip a user's role. The CHECK constraint on the column enforces
+	// the enum; an admin calling this with a typo'd value gets a clean
+	// error from Postgres instead of a silent wrong-role write.
+	UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) (UpdateUserRoleRow, error)
 	// ON CONFLICT (name) DO UPDATE bumps kind + display + id/secret
 	// + issuer + api base + enabled. We never update created_at.
 	UpsertAuthProvider(ctx context.Context, arg UpsertAuthProviderParams) (AuthProvider, error)

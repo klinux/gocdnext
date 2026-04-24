@@ -103,9 +103,10 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// RequireRole chains RequireAuth + a role check. admin is strictly
-// greater than user > viewer; we compare against an explicit set
-// instead of a numeric rank so typos at call sites get caught.
+// RequireRole chains RequireAuth + an EXACT role allow-list.
+// Use this when "only admin can rotate encryption keys" — literally
+// that role, nothing else. For the common "at least maintainer"
+// shape use RequireMinRole which respects the hierarchy.
 func (m *Middleware) RequireRole(roles ...string) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(roles))
 	for _, r := range roles {
@@ -123,6 +124,32 @@ func (m *Middleware) RequireRole(roles ...string) func(http.Handler) http.Handle
 				return
 			}
 			if _, ok := allowed[strings.ToLower(u.Role)]; !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireMinRole chains RequireAuth + a hierarchical role check
+// using store.RoleSatisfies. admin ≥ maintainer ≥ viewer, so
+// `RequireMinRole(RoleMaintainer)` lets both admin and maintainer
+// through. Call sites gain clarity over `RequireRole(admin,
+// maintainer)` and don't risk drifting when a new tier lands.
+func (m *Middleware) RequireMinRole(min string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !m.enabled {
+				next.ServeHTTP(w, r)
+				return
+			}
+			u, ok := UserFromContext(r.Context())
+			if !ok {
+				http.Error(w, "not authenticated", http.StatusUnauthorized)
+				return
+			}
+			if !store.RoleSatisfies(u.Role, min) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}

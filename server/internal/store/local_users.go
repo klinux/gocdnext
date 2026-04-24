@@ -52,9 +52,9 @@ func (s *Store) CreateOrUpdateLocalUser(ctx context.Context, email, name, role, 
 		return User{}, err
 	}
 	if role == "" {
-		role = RoleUser
+		role = RoleMaintainer
 	}
-	if role != RoleAdmin && role != RoleUser && role != RoleViewer {
+	if role != RoleAdmin && role != RoleMaintainer && role != RoleViewer {
 		return User{}, fmt.Errorf("store: invalid role %q", role)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)

@@ -78,7 +78,7 @@ func TestMiddleware_ValidSession_SetsUser(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	m := authapi.NewMiddleware(s, quiet(), true)
-	u, token := seedUserSession(t, s, store.RoleUser)
+	u, token := seedUserSession(t, s, store.RoleMaintainer)
 
 	var seenEmail string
 	h := m.LoadSession(m.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,13 +138,60 @@ func TestMiddleware_InvalidCookie_ClearsAndPassesAsAnonymous(t *testing.T) {
 	}
 }
 
+func TestMiddleware_RequireMinRole_RespectsHierarchy(t *testing.T) {
+	// RequireMinRole(maintainer) must accept admin + maintainer,
+	// reject viewer. Pins the hierarchy at the HTTP layer so a
+	// call site that spells `RequireMinRole(maintainer)` doesn't
+	// accidentally lock admins out of their own endpoints.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	m := authapi.NewMiddleware(s, quiet(), true)
+
+	cases := []struct {
+		name string
+		role string
+		want int
+	}{
+		{"admin passes", store.RoleAdmin, http.StatusOK},
+		{"maintainer passes", store.RoleMaintainer, http.StatusOK},
+		{"viewer blocked", store.RoleViewer, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u, token := seedUserSession(t, s, c.role)
+			// seedUserSession reuses the same (provider,
+			// external_id) so the second+third subtest hits
+			// ON CONFLICT DO UPDATE which preserves role. Force
+			// the role via SQL to isolate each subtest's state.
+			if _, err := pool.Exec(t.Context(),
+				`UPDATE users SET role = $1 WHERE id = $2`, c.role, u.ID); err != nil {
+				t.Fatalf("force role: %v", err)
+			}
+			h := m.LoadSession(
+				m.RequireMinRole(store.RoleMaintainer)(
+					http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.WriteHeader(http.StatusOK)
+					}),
+				),
+			)
+			req := httptest.NewRequest(http.MethodGet, "/maintain", nil)
+			req.AddCookie(&http.Cookie{Name: "gocdnext_session", Value: token})
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != c.want {
+				t.Errorf("role=%s status=%d want=%d", c.role, rr.Code, c.want)
+			}
+		})
+	}
+}
+
 func TestMiddleware_RequireRole_Admin(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	m := authapi.NewMiddleware(s, quiet(), true)
 
 	// user role → 403
-	_, userToken := seedUserSession(t, s, store.RoleUser)
+	_, userToken := seedUserSession(t, s, store.RoleMaintainer)
 
 	h := m.LoadSession(m.RequireRole("admin")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -160,7 +207,7 @@ func TestMiddleware_RequireRole_Admin(t *testing.T) {
 	// Promote via SQL and retry — the middleware fetches role on
 	// every request via GetUserSession, so the very next call sees
 	// admin without a re-login.
-	if _, err := pool.Exec(t.Context(), `UPDATE users SET role = 'admin' WHERE role = 'user'`); err != nil {
+	if _, err := pool.Exec(t.Context(), `UPDATE users SET role = 'admin' WHERE role = 'maintainer'`); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 	rr = httptest.NewRecorder()

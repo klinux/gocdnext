@@ -26,6 +26,16 @@ SELECT id, email, name, avatar_url, provider, external_id, role,
 FROM users
 ORDER BY email ASC;
 
+-- name: UpdateUserRole :one
+-- Flip a user's role. The CHECK constraint on the column enforces
+-- the enum; an admin calling this with a typo'd value gets a clean
+-- error from Postgres instead of a silent wrong-role write.
+UPDATE users
+SET role = $2, updated_at = NOW()
+WHERE id = $1
+RETURNING id, email, name, avatar_url, provider, external_id, role,
+          disabled_at, last_login_at, created_at, updated_at;
+
 -- name: InsertAuthState :exec
 INSERT INTO auth_states (state_hash, provider, redirect_to, nonce, expires_at)
 VALUES ($1, $2, $3, $4, $5);

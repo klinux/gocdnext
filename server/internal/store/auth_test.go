@@ -25,8 +25,8 @@ func TestUpsertUserByProvider_InsertThenUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if first.Role != store.RoleUser {
-		t.Fatalf("default role = %q, want %q", first.Role, store.RoleUser)
+	if first.Role != store.RoleMaintainer {
+		t.Fatalf("default role = %q, want %q", first.Role, store.RoleMaintainer)
 	}
 	if first.LastLoginAt == nil {
 		t.Fatalf("last_login_at not set on insert")
@@ -223,5 +223,79 @@ func TestSession_DisabledUserRejected(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_sessions WHERE id = $1`, hash).Scan(&remaining)
 	if remaining != 0 {
 		t.Fatalf("disabled user's session not cleaned up")
+	}
+}
+
+func TestRoleSatisfies_Hierarchy(t *testing.T) {
+	// Pin the hierarchy: admin ≥ maintainer ≥ viewer. The
+	// middleware relies on this asymmetry (admin passes all
+	// checks, viewer only viewer checks); a regression here
+	// would silently lift or drop privilege levels across every
+	// endpoint, so it's worth a dedicated test.
+	cases := []struct {
+		have, required string
+		want           bool
+	}{
+		{store.RoleAdmin, store.RoleAdmin, true},
+		{store.RoleAdmin, store.RoleMaintainer, true},
+		{store.RoleAdmin, store.RoleViewer, true},
+		{store.RoleMaintainer, store.RoleAdmin, false},
+		{store.RoleMaintainer, store.RoleMaintainer, true},
+		{store.RoleMaintainer, store.RoleViewer, true},
+		{store.RoleViewer, store.RoleAdmin, false},
+		{store.RoleViewer, store.RoleMaintainer, false},
+		{store.RoleViewer, store.RoleViewer, true},
+		{"unknown", store.RoleViewer, false},
+		{store.RoleAdmin, "unknown", false},
+	}
+	for _, c := range cases {
+		if got := store.RoleSatisfies(c.have, c.required); got != c.want {
+			t.Errorf("RoleSatisfies(%q, %q) = %v, want %v",
+				c.have, c.required, got, c.want)
+		}
+	}
+}
+
+func TestUpdateUserRole_HappyPathAndValidation(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	u, err := s.UpsertUserByProvider(ctx, store.UpsertUserInput{
+		Email:      "ops@example.com",
+		Name:       "Ops",
+		Provider:   "github",
+		ExternalID: "ops-1",
+	})
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	promoted, err := s.UpdateUserRole(ctx, u.ID, store.RoleAdmin)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if promoted.Role != store.RoleAdmin {
+		t.Errorf("role = %q, want admin", promoted.Role)
+	}
+	if !promoted.UpdatedAt.After(u.UpdatedAt) {
+		t.Errorf("updated_at didn't advance: %v → %v", u.UpdatedAt, promoted.UpdatedAt)
+	}
+
+	// Demoting back to viewer must also work.
+	demoted, err := s.UpdateUserRole(ctx, u.ID, store.RoleViewer)
+	if err != nil {
+		t.Fatalf("demote: %v", err)
+	}
+	if demoted.Role != store.RoleViewer {
+		t.Errorf("role = %q, want viewer", demoted.Role)
+	}
+
+	// A typo'd role hits the store's validator BEFORE Postgres's
+	// CHECK so the error is a clean ErrInvalidRole rather than a
+	// SQL constraint violation leaking up.
+	_, err = s.UpdateUserRole(ctx, u.ID, "owner")
+	if !errors.Is(err, store.ErrInvalidRole) {
+		t.Errorf("err = %v, want ErrInvalidRole", err)
 	}
 }

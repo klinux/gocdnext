@@ -56,10 +56,10 @@ func TestLocalUser_UpdateRotatesPassword(t *testing.T) {
 	s := store.New(pool)
 	ctx := context.Background()
 
-	if _, err := s.CreateOrUpdateLocalUser(ctx, "op@example.com", "Op", store.RoleUser, "initial-pw"); err != nil {
+	if _, err := s.CreateOrUpdateLocalUser(ctx, "op@example.com", "Op", store.RoleMaintainer, "initial-pw"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := s.CreateOrUpdateLocalUser(ctx, "op@example.com", "Op Renamed", store.RoleUser, "rotated-pw"); err != nil {
+	if _, err := s.CreateOrUpdateLocalUser(ctx, "op@example.com", "Op Renamed", store.RoleMaintainer, "rotated-pw"); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 	if _, err := s.AuthenticateLocalUser(ctx, "op@example.com", "initial-pw"); !errors.Is(err, store.ErrLocalPasswordMismatch) {
@@ -79,7 +79,7 @@ func TestLocalUser_DisabledRejected(t *testing.T) {
 	s := store.New(pool)
 	ctx := context.Background()
 
-	u, _ := s.CreateOrUpdateLocalUser(ctx, "d@example.com", "D", store.RoleUser, "disabledpw")
+	u, _ := s.CreateOrUpdateLocalUser(ctx, "d@example.com", "D", store.RoleMaintainer, "disabledpw")
 	if _, err := pool.Exec(ctx, `UPDATE users SET disabled_at = NOW() WHERE id = $1`, u.ID); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestLocalUser_PasswordPolicy(t *testing.T) {
 	s := store.New(pool)
 	ctx := context.Background()
 
-	_, err := s.CreateOrUpdateLocalUser(ctx, "x@example.com", "x", store.RoleUser, "2short")
+	_, err := s.CreateOrUpdateLocalUser(ctx, "x@example.com", "x", store.RoleMaintainer, "2short")
 	if !errors.Is(err, store.ErrPasswordPolicy) {
 		t.Fatalf("short password err = %v", err)
 	}

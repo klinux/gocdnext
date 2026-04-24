@@ -335,6 +335,55 @@ func (q *Queries) UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUs
 	return err
 }
 
+const updateUserRole = `-- name: UpdateUserRole :one
+UPDATE users
+SET role = $2, updated_at = NOW()
+WHERE id = $1
+RETURNING id, email, name, avatar_url, provider, external_id, role,
+          disabled_at, last_login_at, created_at, updated_at
+`
+
+type UpdateUserRoleParams struct {
+	ID   pgtype.UUID
+	Role string
+}
+
+type UpdateUserRoleRow struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Flip a user's role. The CHECK constraint on the column enforces
+// the enum; an admin calling this with a typo'd value gets a clean
+// error from Postgres instead of a silent wrong-role write.
+func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) (UpdateUserRoleRow, error) {
+	row := q.db.QueryRow(ctx, updateUserRole, arg.ID, arg.Role)
+	var i UpdateUserRoleRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Role,
+		&i.DisabledAt,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertLocalUser = `-- name: UpsertLocalUser :one
 INSERT INTO users (email, name, avatar_url, provider, external_id, role, password_hash)
 VALUES ($1, $2, '', 'local', $1, $3, $4)
