@@ -1,0 +1,104 @@
+name: artifactory
+category: registry
+description: >
+  Upload to + download from a JFrog Artifactory repository.
+  Sibling of gocdnext/nexus — same `action: upload | download`
+  shape, Maven2 layout, `version: LATEST` support; the
+  difference is the search endpoint (AQL vs. Nexus's REST).
+  Auth accepts Bearer token (Access/Identity tokens) OR
+  basic user+password/API key — token wins when both are set.
+
+inputs:
+  action:
+    required: true
+    description: "upload | download"
+  url:
+    required: true
+    description: >
+      Artifactory base URL. Accepts both "https://mycorp.jfrog.io"
+      (cloud) and "https://myart.corp/artifactory" (self-hosted);
+      the script normalises the trailing "/artifactory" segment.
+  repository:
+    required: true
+    description: Repository key.
+  group-id:
+    required: true
+    description: Maven groupId (e.g. "com.acme.shared").
+  artifact-id:
+    required: true
+    description: Maven artifactId.
+  extension:
+    required: false
+    default: jar
+    description: Packaging extension.
+  classifier:
+    required: false
+    description: Maven classifier.
+  version:
+    required: false
+    description: >
+      action=download: exact version OR "LATEST" (AQL search
+      by created-desc).
+  dest:
+    required: false
+    default: "."
+    description: >
+      action=download: destination dir or full file path inside
+      the workspace.
+  file:
+    required: false
+    description: >
+      action=upload: workspace-relative path of the artefact.
+  upload-version:
+    required: false
+    description: Version label used on action=upload.
+  token:
+    required: false
+    description: >
+      Bearer token (Access/Identity). Populate via secrets: — wins
+      over username/password when both are set.
+  username:
+    required: false
+    description: Basic-auth user. Populate via secrets:.
+  password:
+    required: false
+    description: Basic-auth password / API key. Populate via secrets:.
+
+examples:
+  - name: pull latest shared lib via Identity Token
+    description: >
+      Fetches the newest com.acme.shared:common-lib from the
+      `libs-release` repo into lib/ using a JFrog Identity
+      Token piped from secrets — cleaner than basic auth in
+      2025 deployments.
+    yaml: |
+      secrets:
+        - ARTIFACTORY_TOKEN
+      uses: gocdnext/artifactory@v1
+      with:
+        action: download
+        url: https://mycorp.jfrog.io
+        repository: libs-release
+        group-id: com.acme.shared
+        artifact-id: common-lib
+        version: LATEST
+        dest: lib/
+        token: ${{ ARTIFACTORY_TOKEN }}
+
+  - name: publish jar post-build
+    description: >
+      Upload target/my-service.jar under the commit SHA as the
+      version label.
+    yaml: |
+      secrets:
+        - ARTIFACTORY_TOKEN
+      uses: gocdnext/artifactory@v1
+      with:
+        action: upload
+        url: https://mycorp.jfrog.io
+        repository: libs-snapshot
+        group-id: com.acme.backend
+        artifact-id: my-service
+        upload-version: ${CI_COMMIT_SHORT_SHA}
+        file: target/my-service.jar
+        token: ${{ ARTIFACTORY_TOKEN }}

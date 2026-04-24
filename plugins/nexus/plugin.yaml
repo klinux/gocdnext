@@ -1,0 +1,110 @@
+name: nexus
+category: registry
+description: >
+  Upload to + download from a Sonatype Nexus Maven2 repository.
+  One plugin, `action: upload | download`, so a family of jobs
+  can both publish its own artefacts AND pull a shared-library
+  version into the workspace. `version: LATEST` resolves via
+  Nexus's REST search endpoint — newest-first, no client-side
+  semver sort. Non-Maven repositories aren't covered; drop to
+  `script:` + curl for those.
+
+inputs:
+  action:
+    required: true
+    description: "upload | download"
+  url:
+    required: true
+    description: >
+      Nexus base URL, e.g. "https://nexus.corp". No trailing
+      slash required.
+  repository:
+    required: true
+    description: >
+      Repository name. Hosted for upload; hosted or group for
+      download.
+  group-id:
+    required: true
+    description: Maven groupId (e.g. "com.acme.shared").
+  artifact-id:
+    required: true
+    description: Maven artifactId (e.g. "common-lib").
+  extension:
+    required: false
+    default: jar
+    description: Packaging extension.
+  classifier:
+    required: false
+    description: >
+      Maven classifier (sources, javadoc, linux-x86_64, …).
+  version:
+    required: false
+    description: >
+      action=download: exact version OR the literal "LATEST" to
+      pull the newest matching asset via REST search.
+  dest:
+    required: false
+    default: "."
+    description: >
+      action=download: destination dir (file name derived from
+      URL) OR full file path inside the workspace.
+  file:
+    required: false
+    description: >
+      action=upload: workspace-relative path of the artefact to
+      publish.
+  upload-version:
+    required: false
+    description: >
+      action=upload: version label to publish under. Separate
+      from `version` so download-LATEST and upload-1.2.3 don't
+      share a knob.
+  username:
+    required: false
+    description: Basic-auth user. Populate via secrets:.
+  password:
+    required: false
+    description: Basic-auth password / deploy token. Populate via secrets:.
+
+examples:
+  - name: pull the latest shared lib before build
+    description: >
+      Fetches the newest com.acme.shared:common-lib jar from the
+      internal `releases` repo into lib/, then runs the build
+      with it on the classpath.
+    yaml: |
+      secrets:
+        - NEXUS_USERNAME
+        - NEXUS_PASSWORD
+      uses: gocdnext/nexus@v1
+      with:
+        action: download
+        url: https://nexus.corp
+        repository: releases
+        group-id: com.acme.shared
+        artifact-id: common-lib
+        version: LATEST
+        dest: lib/
+        username: ${{ NEXUS_USERNAME }}
+        password: ${{ NEXUS_PASSWORD }}
+
+  - name: publish after build
+    description: >
+      Upload the built jar to `releases` under the commit SHA as
+      version — pairs with a separate "promote to latest" step
+      once QA signs off.
+    yaml: |
+      secrets:
+        - NEXUS_USERNAME
+        - NEXUS_PASSWORD
+      uses: gocdnext/nexus@v1
+      with:
+        action: upload
+        url: https://nexus.corp
+        repository: releases
+        group-id: com.acme.backend
+        artifact-id: my-service
+        upload-version: ${CI_COMMIT_SHORT_SHA}
+        file: target/my-service.jar
+        username: ${{ NEXUS_USERNAME }}
+        password: ${{ NEXUS_PASSWORD }}

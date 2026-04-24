@@ -1,0 +1,91 @@
+name: s3
+category: registry
+description: >
+  Upload + download objects against an S3-compatible bucket
+  (AWS, MinIO, Cloudflare R2, DO Spaces, Backblaze B2, Wasabi,
+  …). `endpoint-url:` lets the same plugin talk to any
+  self-hosted backend. Auth travels via AWS_ACCESS_KEY_ID +
+  AWS_SECRET_ACCESS_KEY in the job env — IRSA / WIF both work
+  automatically when the SDK finds their markers.
+
+inputs:
+  action:
+    required: true
+    description: "upload | download"
+  bucket:
+    required: true
+    description: Bucket name (no "s3://" prefix).
+  key:
+    required: true
+    description: >
+      Object key inside the bucket. Destination path on upload,
+      source path on download.
+  region:
+    required: false
+    description: >
+      AWS region. Falls back to AWS_DEFAULT_REGION from env when
+      omitted.
+  endpoint-url:
+    required: false
+    description: >
+      Custom S3 endpoint for MinIO / R2 / DO Spaces / etc.
+      e.g. "https://myminio.corp:9000".
+  file:
+    required: false
+    description: >
+      action=upload only — workspace-relative source path.
+  dest:
+    required: false
+    description: >
+      action=download: workspace-relative destination (dir or
+      full path). Defaults to the key's basename in the current
+      directory.
+  acl:
+    required: false
+    description: >
+      Canned ACL applied on upload (private | public-read | …).
+      Leave unset to defer to the bucket policy.
+  content-type:
+    required: false
+    description: >
+      Content-Type metadata stamped on the uploaded object.
+      Defaults to the CLI's own extension-based inference.
+
+examples:
+  - name: upload a release build
+    description: >
+      Push a signed release tarball to the releases bucket,
+      scoped by the commit SHA so re-runs don't overwrite each
+      other.
+    yaml: |
+      secrets:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+      uses: gocdnext/s3@v1
+      with:
+        action: upload
+        bucket: mycorp-releases
+        key: myapp/${CI_COMMIT_SHORT_SHA}/myapp.tar.gz
+        file: dist/myapp.tar.gz
+        region: us-east-1
+      env:
+        AWS_ACCESS_KEY_ID: ${{ AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ AWS_SECRET_ACCESS_KEY }}
+
+  - name: pull a shared asset from MinIO
+    description: >
+      Same shape against a self-hosted MinIO using endpoint-url.
+    yaml: |
+      secrets:
+        - MINIO_KEY
+        - MINIO_SECRET
+      uses: gocdnext/s3@v1
+      with:
+        action: download
+        bucket: shared
+        key: assets/icons.tar.gz
+        endpoint-url: https://myminio.corp:9000
+        dest: assets/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ MINIO_KEY }}
+        AWS_SECRET_ACCESS_KEY: ${{ MINIO_SECRET }}

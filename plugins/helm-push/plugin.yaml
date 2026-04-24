@@ -1,0 +1,78 @@
+name: helm-push
+category: registry
+description: >
+  Package + push a Helm chart to an OCI registry (default), a
+  ChartMuseum instance, or a Nexus hosted-helm repo. `backend:`
+  picks the transport. The plugin runs `helm package` once and
+  hands the tgz to the right publish flow — same bytes, three
+  different HTTP endpoints.
+
+inputs:
+  chart-dir:
+    required: false
+    default: "."
+    description: >
+      Workspace-relative path to the chart directory (must
+      contain a Chart.yaml).
+  version:
+    required: false
+    description: >
+      --version override for `helm package`. Uses the Chart.yaml
+      value when omitted.
+  app-version:
+    required: false
+    description: --app-version override for `helm package`.
+  backend:
+    required: false
+    default: oci
+    description: "oci | chartmuseum | nexus"
+  oci-repo:
+    required: false
+    description: >
+      backend=oci: target repo including the oci:// scheme, e.g.
+      "oci://ghcr.io/acme/charts".
+  repo-url:
+    required: false
+    description: >
+      backend=chartmuseum | nexus: base URL of the chart repo.
+  username:
+    required: false
+    description: Registry user. Pipe via secrets:.
+  password:
+    required: false
+    description: Registry token / password. Pipe via secrets:.
+
+examples:
+  - name: push to GHCR via OCI
+    description: >
+      Package the chart in ./charts/app and push to GHCR.
+      Credentials come from the job's secrets so the token
+      never touches the log.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      uses: gocdnext/helm-push@v1
+      with:
+        chart-dir: charts/app
+        version: ${CI_COMMIT_SHORT_SHA}
+        oci-repo: oci://ghcr.io/acme/charts
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+
+  - name: publish to a Nexus helm repo
+    description: >
+      Same package step; the PUT lands at a Nexus hosted-helm
+      repository. ChartMuseum looks identical — swap backend.
+    yaml: |
+      secrets:
+        - NEXUS_USERNAME
+        - NEXUS_PASSWORD
+      uses: gocdnext/helm-push@v1
+      with:
+        chart-dir: charts/app
+        version: 1.4.${CI_RUN_COUNTER}
+        backend: nexus
+        repo-url: https://nexus.corp/repository/helm/
+        username: ${{ NEXUS_USERNAME }}
+        password: ${{ NEXUS_PASSWORD }}
