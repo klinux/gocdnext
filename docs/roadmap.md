@@ -140,22 +140,33 @@ Entradas da decisão:
 - ✅ **Cache step** — `cache:` no YAML + eviction (TTL + project + global
   quota) + purge UI.
 - ✅ **Plugin system** — `uses: ...@v1`, `plugin.yaml` schema, catálogo
-  in-memory, validação no apply, 6 plugins iniciais.
+  in-memory, validação no apply, 23 plugins shipped.
 - ✅ **Pipeline services** — `services:` top-level com sidecars docker.
 - ✅ **K8s engine + DinD sidecar** — `docker: true` em pipeline K8s.
+- ✅ **SSE logs** — stream em vez de polling (commit 169a53b). Broker
+  in-process + `/api/v1/runs/{id}/logs/stream`. Polling reduzido a 50
+  lines-per-job como safety-net.
+- ✅ **Notifications — parse + validate slice** (commit 78f2a18).
+  `notifications:` top-level parse, domain.Notification, plugin-inputs
+  validator walks it. Dispatcher fica pra follow-up.
 
 ### Próximas ondas (tamanho estimado)
 
 **Small (≤ meio dia cada)**
-- 💡 **SSE logs** — stream em vez de polling cursor-based.
 - 💡 **Pipeline templates / `!include`** — snippet-sharing entre pipelines.
 - 💡 **Docs site** — consolidar `docs/*.md` num site público + examples repo.
 - 💡 **Test reports** — parser JUnit/Cobertura + aba Tests + flakiness
   history (design em `docs/test-reports-design.md` quando for a vez).
 
 **Medium (1-2 dias cada)**
-- 💡 **Notifications first-class** — `notifications:` top-level YAML
-  (Slack/email/Discord) em vez de cada pipeline declarar um job.
+- 💡 **Notifications — dispatcher slice.** Parse + validate já em prod
+  (78f2a18). Dispatcher ainda aberto. Design em aberto entre duas rotas:
+  (A) `_notifications` stage sintética materializada no run-create com
+  `when:` avaliado no dispatch (precisa wire de `when:` no scheduler —
+  hoje lê do YAML mas não filtra); (B) dispatcher pós-terminal que
+  injeta jobs só quando `on:` bate com o outcome. (B) é mais simples
+  porque pula a reforma do scheduler; (A) casa melhor com a UI
+  (notificações aparecem no timeline). Pesar na hora.
 - 💡 **PR builds end-to-end** — Checks API status + preview env +
   merge-gate.
 - 💡 **Environments primitive** — `dev/staging/prod` como type + deploy
