@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-// Next.js middleware runs at the edge before any RSC render. Its
-// only job is to forward the request's path+query to the layout
-// via an x-pathname header so the layout can build a correct
-// ?next=<path> when it decides (post-DB lookup) that the session
-// is invalid.
+// Next.js proxy (renamed from "middleware" in Next 16) runs at
+// the edge before any RSC render. Its only job is to forward the
+// request's path+query to the layout via an x-pathname header so
+// the layout can build a correct ?next=<path> when it decides
+// (post-DB lookup) that the session is invalid.
 //
 // We deliberately do NOT redirect here based on cookie presence:
 // the control plane may have auth turned off (the dev default),
@@ -14,7 +14,7 @@ import type { NextRequest } from "next/server";
 // is the only place that knows the real auth state, so gate
 // decisions live there.
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   const headers = new Headers(req.headers);
   headers.set("x-pathname", pathname + search);
