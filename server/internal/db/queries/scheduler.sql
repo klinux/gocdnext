@@ -55,9 +55,15 @@ WHERE id = $1 AND status = 'queued';
 SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at;
 
 -- name: GetRunForDispatch :one
+-- project_notifications tags along so the dispatcher can resolve
+-- synth notification jobs that inherited their spec from the
+-- project (pipeline didn't declare `notifications:`). Single
+-- round-trip keeps the dispatch hot path tight.
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
-       p.definition, p.config_path
+       p.definition, p.config_path,
+       pr.notifications AS project_notifications
 FROM runs r
 JOIN pipelines p ON p.id = r.pipeline_id
+JOIN projects pr ON pr.id = p.project_id
 WHERE r.id = $1
 LIMIT 1;

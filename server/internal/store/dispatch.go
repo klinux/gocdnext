@@ -44,6 +44,11 @@ type RunForDispatch struct {
 	Revisions  json.RawMessage
 	Definition json.RawMessage
 	ConfigPath string
+	// ProjectNotifications is the owning project's notifications
+	// JSONB, pulled in the same round-trip as Definition so the
+	// synth-notification dispatch path can fall back to it when
+	// the pipeline didn't declare its own block.
+	ProjectNotifications json.RawMessage
 }
 
 // OtherRunningRunExistsForPipeline reports whether the pipeline
@@ -130,14 +135,15 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		return RunForDispatch{}, fmt.Errorf("store: get run: %w", err)
 	}
 	return RunForDispatch{
-		ID:         fromPgUUID(row.ID),
-		PipelineID: fromPgUUID(row.PipelineID),
-		ProjectID:  fromPgUUID(row.ProjectID),
-		Counter:    row.Counter,
-		Status:     row.Status,
-		Revisions:  row.Revisions,
-		Definition: row.Definition,
-		ConfigPath: row.ConfigPath,
+		ID:                   fromPgUUID(row.ID),
+		PipelineID:           fromPgUUID(row.PipelineID),
+		ProjectID:            fromPgUUID(row.ProjectID),
+		Counter:              row.Counter,
+		Status:               row.Status,
+		Revisions:            row.Revisions,
+		Definition:           row.Definition,
+		ConfigPath:           row.ConfigPath,
+		ProjectNotifications: row.ProjectNotifications,
 	}, nil
 }
 

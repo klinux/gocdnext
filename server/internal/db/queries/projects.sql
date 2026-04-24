@@ -39,3 +39,20 @@ WHERE p.slug = $1;
 -- the children (pipelines → materials → runs → artifacts, secrets,
 -- scm_sources, etc.), so this single statement is enough.
 DELETE FROM projects WHERE slug = $1;
+
+-- name: GetProjectNotifications :one
+-- Returns the project-level notifications JSONB array. The run-
+-- create path consults this when the pipeline's own `notifications:`
+-- block is absent (pipeline nil means "inherit"; pipeline empty
+-- list means "explicit opt-out" and we skip this entirely).
+SELECT notifications
+FROM projects
+WHERE id = $1;
+
+-- name: SetProjectNotifications :exec
+-- Replaces the project-level notifications list. Admin/maintainer
+-- UI writes here; the column has a NOT NULL default of '[]' so a
+-- fresh project never needs an initial INSERT against this field.
+UPDATE projects
+SET notifications = $2, updated_at = NOW()
+WHERE id = $1;

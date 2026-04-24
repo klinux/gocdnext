@@ -227,16 +227,30 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		}
 	}
 
-	// Synth stage for pipeline-level notifications. Appended after
-	// the user's stages so it runs after everything else finishes.
-	// Each notification becomes one job_run keyed by its index in
-	// pipeline.Notifications — the scheduler reads the index back
-	// via domain.NotificationIndexFromName to fetch the spec
-	// (uses/with/secrets) at dispatch time, and the on: trigger
-	// decides whether to actually run the job based on the user
-	// stages' aggregate outcome. Zero notifications → no synth
+	// Effective notification list combines pipeline + project:
+	//   pipeline silent (nil)         → inherit from project
+	//   pipeline explicit, non-empty  → use pipeline (project ignored)
+	//   pipeline explicit, empty ([]) → use pipeline (opt-out; project ignored)
+	// The store-side JSON round-trip preserves nil vs empty on the
+	// pipeline side (parser pre-allocates `[]` when the YAML key is
+	// present, leaves nil when absent) so this check is reliable.
+	effectiveNotifications := def.Notifications
+	if effectiveNotifications == nil && len(pipelineRow.ProjectNotifications) > 0 {
+		var projectNs []domain.Notification
+		if err := json.Unmarshal(pipelineRow.ProjectNotifications, &projectNs); err != nil {
+			return RunCreated{}, fmt.Errorf("store: decode project notifications: %w", err)
+		}
+		effectiveNotifications = projectNs
+	}
+	// Synth stage for notifications. Appended after the user's
+	// stages so it runs after everything else finishes. Each entry
+	// becomes one job_run keyed by its index — the scheduler reads
+	// the index back via domain.NotificationIndexFromName to fetch
+	// the spec (uses/with/secrets) at dispatch time, and the on:
+	// trigger decides whether to actually run the job based on
+	// user stages' aggregate outcome. Zero entries → no synth
 	// stage, keeping the hot path free of extra work.
-	if err := synthesizeNotificationStage(ctx, q, runRow.ID, len(def.Stages), def.Notifications, &result); err != nil {
+	if err := synthesizeNotificationStage(ctx, q, runRow.ID, len(def.Stages), effectiveNotifications, &result); err != nil {
 		return RunCreated{}, err
 	}
 

@@ -339,6 +339,54 @@ func marshalPipelineDefinition(p *domain.Pipeline) ([]byte, error) {
 	return json.Marshal(clone)
 }
 
+// GetProjectNotifications returns the project-level notifications
+// list. The caller can be either the API (to render the edit
+// page) or the run-create path (to overlay onto a pipeline that
+// didn't declare its own `notifications:` block). An empty list
+// is returned as a non-nil slice with len==0 so callers don't
+// have to special-case nil.
+func (s *Store) GetProjectNotifications(ctx context.Context, projectID uuid.UUID) ([]domain.Notification, error) {
+	raw, err := s.q.GetProjectNotifications(ctx, pgUUID(projectID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, fmt.Errorf("store: get project notifications: %w", err)
+	}
+	if len(raw) == 0 {
+		return []domain.Notification{}, nil
+	}
+	var out []domain.Notification
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("store: decode project notifications: %w", err)
+	}
+	if out == nil {
+		out = []domain.Notification{}
+	}
+	return out, nil
+}
+
+// SetProjectNotifications replaces the project-level list. The
+// API validates each entry (plugin inputs, known trigger) before
+// calling, so this is a dumb write. Passing a nil or empty slice
+// clears the list — equivalent to "no project-level entries".
+func (s *Store) SetProjectNotifications(ctx context.Context, projectID uuid.UUID, ns []domain.Notification) error {
+	if ns == nil {
+		ns = []domain.Notification{}
+	}
+	raw, err := json.Marshal(ns)
+	if err != nil {
+		return fmt.Errorf("store: encode project notifications: %w", err)
+	}
+	if err := s.q.SetProjectNotifications(ctx, db.SetProjectNotificationsParams{
+		ID:            pgUUID(projectID),
+		Notifications: raw,
+	}); err != nil {
+		return fmt.Errorf("store: set project notifications: %w", err)
+	}
+	return nil
+}
+
 func marshalMaterialConfig(m domain.Material) ([]byte, error) {
 	switch m.Type {
 	case domain.MaterialGit:

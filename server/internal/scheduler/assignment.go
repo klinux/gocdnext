@@ -38,14 +38,16 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 	jobDef, ok := findJob(def.Jobs, job.Name)
 	if !ok {
 		// Synth notification jobs aren't in def.Jobs — they're
-		// materialized at run-create time from def.Notifications.
-		// Rebuild a minimal domain.Job on the fly so the rest of
-		// this function doesn't have to branch.
+		// materialized at run-create time from the effective
+		// notifications list (pipeline's own or, when silent,
+		// the project's). Resolve via the same priority the run
+		// creator used so a dispatch always talks to the same
+		// spec the synth came from.
 		if idx, isNotif := domain.NotificationIndexFromName(job.Name); isNotif {
-			if idx >= len(def.Notifications) {
-				return nil, fmt.Errorf("scheduler: notification idx %d out of range (have %d)", idx, len(def.Notifications))
+			n, ok := effectiveNotificationAtIndex(def.Notifications, run.ProjectNotifications, idx)
+			if !ok {
+				return nil, fmt.Errorf("scheduler: notification idx %d out of range", idx)
 			}
-			n := def.Notifications[idx]
 			image, err := domain.ResolvePluginRef(n.Uses)
 			if err != nil {
 				return nil, fmt.Errorf("scheduler: notification %d: %w", idx, err)
@@ -235,6 +237,43 @@ func notificationAtIndex(definition []byte, idx int) (domain.Notification, bool)
 		return domain.Notification{}, false
 	}
 	return def.Notifications[idx], true
+}
+
+// effectiveNotificationAtIndex mirrors the run-create precedence:
+// the pipeline's own Notifications list wins whenever it was
+// declared (non-nil, even empty); the project's list only acts as
+// a fallback when the pipeline never mentioned `notifications:`.
+// Used by both the scheduler's trigger check and BuildAssignment
+// so the dispatch path talks to exactly the same spec the run
+// creator persisted.
+func effectiveNotificationAtIndex(pipelineNotifs []domain.Notification, projectNotifsRaw []byte, idx int) (domain.Notification, bool) {
+	source := pipelineNotifs
+	if source == nil && len(projectNotifsRaw) > 0 {
+		var projectNs []domain.Notification
+		if err := json.Unmarshal(projectNotifsRaw, &projectNs); err == nil {
+			source = projectNs
+		}
+	}
+	if idx < 0 || idx >= len(source) {
+		return domain.Notification{}, false
+	}
+	return source[idx], true
+}
+
+// resolveNotificationSpec is a thin wrapper over
+// effectiveNotificationAtIndex that works off RunForDispatch —
+// decodes the pipeline definition once, then defers to the
+// shared precedence helper. Exposed so the scheduler's dispatch
+// loop reads at the right abstraction ("resolve by run") without
+// copy-pasting the Definition decode.
+func resolveNotificationSpec(run store.RunForDispatch, idx int) (domain.Notification, bool) {
+	var def struct {
+		Notifications []domain.Notification `json:"Notifications"`
+	}
+	if err := json.Unmarshal(run.Definition, &def); err != nil {
+		return domain.Notification{}, false
+	}
+	return effectiveNotificationAtIndex(def.Notifications, run.ProjectNotifications, idx)
 }
 
 // concurrencyFromDefinition pulls the pipeline-level concurrency

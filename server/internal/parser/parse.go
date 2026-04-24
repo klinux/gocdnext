@@ -83,12 +83,22 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		p.Services = append(p.Services, svc)
 	}
 
-	for i, ns := range f.Notifications {
-		n, err := toNotification(i, ns)
-		if err != nil {
-			return nil, err
+	// Preserve the nil-vs-empty distinction from the YAML layer:
+	// no `notifications:` key at all → leave p.Notifications nil
+	// (the run-create path reads that as "inherit project-level");
+	// `notifications: []` → allocate an empty non-nil slice (the
+	// run-create path reads that as "explicit opt-out, skip project
+	// inheritance"). Go's `range nil` does nothing, so we'd lose
+	// the distinction without the pre-allocation.
+	if f.Notifications != nil {
+		p.Notifications = []domain.Notification{}
+		for i, ns := range f.Notifications {
+			n, err := toNotification(i, ns)
+			if err != nil {
+				return nil, err
+			}
+			p.Notifications = append(p.Notifications, n)
 		}
-		p.Notifications = append(p.Notifications, n)
 	}
 
 	for _, m := range f.Materials {

@@ -94,6 +94,42 @@ func (q *Queries) GetProjectDeletionCounts(ctx context.Context, slug string) (Ge
 	return i, err
 }
 
+const getProjectNotifications = `-- name: GetProjectNotifications :one
+SELECT notifications
+FROM projects
+WHERE id = $1
+`
+
+// Returns the project-level notifications JSONB array. The run-
+// create path consults this when the pipeline's own `notifications:`
+// block is absent (pipeline nil means "inherit"; pipeline empty
+// list means "explicit opt-out" and we skip this entirely).
+func (q *Queries) GetProjectNotifications(ctx context.Context, id pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getProjectNotifications, id)
+	var notifications []byte
+	err := row.Scan(&notifications)
+	return notifications, err
+}
+
+const setProjectNotifications = `-- name: SetProjectNotifications :exec
+UPDATE projects
+SET notifications = $2, updated_at = NOW()
+WHERE id = $1
+`
+
+type SetProjectNotificationsParams struct {
+	ID            pgtype.UUID
+	Notifications []byte
+}
+
+// Replaces the project-level notifications list. Admin/maintainer
+// UI writes here; the column has a NOT NULL default of '[]' so a
+// fresh project never needs an initial INSERT against this field.
+func (q *Queries) SetProjectNotifications(ctx context.Context, arg SetProjectNotificationsParams) error {
+	_, err := q.db.Exec(ctx, setProjectNotifications, arg.ID, arg.Notifications)
+	return err
+}
+
 const upsertProject = `-- name: UpsertProject :one
 INSERT INTO projects (slug, name, description, config_path)
 VALUES ($1, $2, $3, COALESCE(NULLIF($4::text, ''), '.gocdnext'))

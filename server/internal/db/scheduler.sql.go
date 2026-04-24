@@ -54,24 +54,31 @@ func (q *Queries) AssignJob(ctx context.Context, arg AssignJobParams) (AssignJob
 
 const getRunForDispatch = `-- name: GetRunForDispatch :one
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
-       p.definition, p.config_path
+       p.definition, p.config_path,
+       pr.notifications AS project_notifications
 FROM runs r
 JOIN pipelines p ON p.id = r.pipeline_id
+JOIN projects pr ON pr.id = p.project_id
 WHERE r.id = $1
 LIMIT 1
 `
 
 type GetRunForDispatchRow struct {
-	ID         pgtype.UUID
-	PipelineID pgtype.UUID
-	ProjectID  pgtype.UUID
-	Counter    int64
-	Status     string
-	Revisions  []byte
-	Definition []byte
-	ConfigPath string
+	ID                   pgtype.UUID
+	PipelineID           pgtype.UUID
+	ProjectID            pgtype.UUID
+	Counter              int64
+	Status               string
+	Revisions            []byte
+	Definition           []byte
+	ConfigPath           string
+	ProjectNotifications []byte
 }
 
+// project_notifications tags along so the dispatcher can resolve
+// synth notification jobs that inherited their spec from the
+// project (pipeline didn't declare `notifications:`). Single
+// round-trip keeps the dispatch hot path tight.
 func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error) {
 	row := q.db.QueryRow(ctx, getRunForDispatch, id)
 	var i GetRunForDispatchRow
@@ -84,6 +91,7 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 		&i.Revisions,
 		&i.Definition,
 		&i.ConfigPath,
+		&i.ProjectNotifications,
 	)
 	return i, err
 }

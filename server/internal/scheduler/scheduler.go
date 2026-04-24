@@ -251,9 +251,11 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// against the user-stage outcome. Non-matching entries
 		// get skipped in-place (not canceled — skipped means "not
 		// attempted by design") so the notifications stage can
-		// close once the last dispatch or skip lands.
+		// close once the last dispatch or skip lands. Spec can
+		// come from the pipeline YAML OR inherited from the
+		// project — resolveNotificationSpec checks both.
 		if idx, isNotif := domain.NotificationIndexFromName(job.Name); isNotif {
-			notif, ok := notificationAtIndex(run.Definition, idx)
+			notif, ok := resolveNotificationSpec(run, idx)
 			if !ok {
 				s.log.Warn("scheduler: notification spec missing", "run_id", runID, "idx", idx)
 				continue

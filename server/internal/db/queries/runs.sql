@@ -1,7 +1,15 @@
 -- name: GetPipelineDefinition :one
-SELECT id, project_id, name, definition, definition_version, config_path
-FROM pipelines
-WHERE id = $1
+-- Returns the pipeline's stored YAML snapshot AND the owning
+-- project's notifications list — at run-create time the synth
+-- stage needs both (pipeline's own notifications or, when
+-- absent, the project-level inherited set). One round-trip is
+-- cheaper than two for what's already the hottest path on
+-- webhook-heavy workloads.
+SELECT pl.id, pl.project_id, pl.name, pl.definition, pl.definition_version, pl.config_path,
+       p.notifications AS project_notifications
+FROM pipelines pl
+JOIN projects p ON p.id = pl.project_id
+WHERE pl.id = $1
 LIMIT 1;
 
 -- name: NextRunCounter :one

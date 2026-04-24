@@ -171,6 +171,12 @@ type Querier interface {
 	// from accidentally answering to a password form.
 	GetLocalUserForLogin(ctx context.Context, email string) (User, error)
 	GetModificationByKey(ctx context.Context, arg GetModificationByKeyParams) (Modification, error)
+	// Returns the pipeline's stored YAML snapshot AND the owning
+	// project's notifications list — at run-create time the synth
+	// stage needs both (pipeline's own notifications or, when
+	// absent, the project-level inherited set). One round-trip is
+	// cheaper than two for what's already the hottest path on
+	// webhook-heavy workloads.
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
@@ -179,9 +185,18 @@ type Querier interface {
 	// table after the fact (by then the rows are gone). Kept as a
 	// single round-trip so the delete flow stays two calls, not six.
 	GetProjectDeletionCounts(ctx context.Context, slug string) (GetProjectDeletionCountsRow, error)
+	// Returns the project-level notifications JSONB array. The run-
+	// create path consults this when the pipeline's own `notifications:`
+	// block is absent (pipeline nil means "inherit"; pipeline empty
+	// list means "explicit opt-out" and we skip this entirely).
+	GetProjectNotifications(ctx context.Context, id pgtype.UUID) ([]byte, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
 	// pipeline + revisions without pulling the whole detail query.
 	GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunForActionRow, error)
+	// project_notifications tags along so the dispatcher can resolve
+	// synth notification jobs that inherited their spec from the
+	// project (pipeline didn't declare `notifications:`). Single
+	// round-trip keeps the dispatch hot path tight.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
 	// For a downstream run, extracts upstream_run_id + upstream pipeline
@@ -464,6 +479,10 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
+	// Replaces the project-level notifications list. Admin/maintainer
+	// UI writes here; the column has a NOT NULL default of '[]' so a
+	// fresh project never needs an initial INSERT against this field.
+	SetProjectNotifications(ctx context.Context, arg SetProjectNotificationsParams) error
 	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
 	// Marks a still-queued job as 'skipped' with a terminal finish
 	// time so GetStageProgress stops counting it as unfinished. The

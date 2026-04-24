@@ -143,6 +143,21 @@ export async function listCaches(slug: string): Promise<CachesList> {
   );
 }
 
+export type ProjectNotification = {
+  on: "failure" | "success" | "always" | "canceled";
+  uses: string;
+  with?: Record<string, string>;
+  secrets?: string[];
+};
+
+export async function listProjectNotifications(
+  slug: string,
+): Promise<{ notifications: ProjectNotification[] }> {
+  return readJSON<{ notifications: ProjectNotification[] }>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/notifications`,
+  );
+}
+
 export async function listPlugins(): Promise<PluginsList> {
   return readJSON<PluginsList>("/api/v1/plugins");
 }

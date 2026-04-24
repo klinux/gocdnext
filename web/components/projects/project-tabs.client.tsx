@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { Route } from "next";
 import { usePathname } from "next/navigation";
 import {
+  Bell,
   GitBranch,
   HardDrive,
   History,
@@ -51,6 +52,12 @@ const tabs: Tab[] = [
     href: (slug) => `/projects/${slug}/caches` as Route,
     match: (path, slug) => path.startsWith(`/projects/${slug}/caches`),
     icon: HardDrive,
+  },
+  {
+    label: "Notifications",
+    href: (slug) => `/projects/${slug}/notifications` as Route,
+    match: (path, slug) => path.startsWith(`/projects/${slug}/notifications`),
+    icon: Bell,
   },
   {
     label: "Recent runs",
