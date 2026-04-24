@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Activity,
+  BookOpen,
   Boxes,
   ClipboardList,
   KeyRound,
@@ -93,6 +94,10 @@ export function CommandPalette() {
             <CommandItem onSelect={() => go("/plugins" as Route)}>
               <Package className="size-4" />
               Plugins
+            </CommandItem>
+            <CommandItem onSelect={() => go("/docs" as Route)}>
+              <BookOpen className="size-4" />
+              Docs
             </CommandItem>
             <CommandItem onSelect={() => go("/settings" as Route)}>
               <Settings className="size-4" />

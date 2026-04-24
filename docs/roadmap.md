@@ -155,6 +155,11 @@ Entradas da decisão:
   jobs que não batem. Run status vem das user stages só; falha de
   notification não vira a run. Fail-fast em user stage preserva o
   synth para `on: failure` ainda disparar.
+- ✅ **Notifications — project-level inheritance** (commit ffa3a8f).
+  Migration 00020 + `projects.notifications` JSONB. Pipeline silent
+  herda do projeto; pipeline com `notifications:` (mesmo `[]`)
+  sobrescreve. Nova aba "Notifications" em
+  `/projects/{slug}/notifications` com editor de cards.
 
 ### Próximas ondas (tamanho estimado)
 
@@ -165,6 +170,14 @@ Entradas da decisão:
   history (design em `docs/test-reports-design.md` quando for a vez).
 
 **Medium (1-2 dias cada)**
+- 💡 **Notifications — personal subscriptions.** Terceira camada
+  depois de pipeline + project. User clica "watch" num projeto/
+  pipeline e recebe DM (slack/email) na conclusão. Modelo UI, não
+  YAML. Precisa: tabela `user_subscriptions(user_id, target_type,
+  target_id, channel, filter_on)`, página `/account/subscriptions`,
+  dispatcher lê após run terminal + resolve usuário→canal (DM
+  slack via user mapping? email direto?). Incluir mute/unmute
+  per-subscription.
 - 💡 **PR builds end-to-end** — Checks API status + preview env +
   merge-gate.
 - 💡 **Environments primitive** — `dev/staging/prod` como type + deploy

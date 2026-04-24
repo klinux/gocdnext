@@ -2,6 +2,11 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* typography plugin powers the `prose` utilities used by the
+   /docs page's markdown renderer — only place they show up in
+   the app. */
+@plugin "@tailwindcss/typography";
+
 @custom-variant dark (&:is(.dark *));
 
 /*

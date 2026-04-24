@@ -6,6 +6,7 @@ import type { Route } from "next";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  BookOpen,
   Boxes,
   ClipboardList,
   KeyRound,
@@ -59,6 +60,11 @@ const primaryNav: NavItem[] = [
   // wire secrets. Living under /admin hid it from non-admin devs,
   // which made copy/pasting a `uses:` block guesswork.
   { label: "Plugins", href: "/plugins", icon: Package },
+  // Docs live outside the (dashboard) group (no auth required) but
+  // surface here for discoverability. The link is intentionally at
+  // the bottom of the workspace list so it reads as reference
+  // material rather than another operational page.
+  { label: "Docs", href: "/docs", icon: BookOpen },
 ];
 
 // Admin-scoped pages live at /admin/<thing> so the URL reads
