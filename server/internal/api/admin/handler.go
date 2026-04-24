@@ -30,6 +30,10 @@ const (
 // per-scm_source secrets in UI.10.a — no global token lives in
 // env anymore.
 type WiringState struct {
+	// PublicBase carries the actual URL, not just the "set" bit,
+	// so the UI can render copy-paste-ready webhook endpoints
+	// per provider. Empty = "not configured".
+	PublicBase       string
 	PublicBaseSet    bool
 	ChecksReporterOn bool
 }
@@ -194,23 +198,71 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// IntegrationGitHub handles GET /api/v1/admin/integrations/github.
-// Reports only booleans (the config values themselves can be secret).
-// GitHubAppConfigured + AutoRegisterOn are live — they read the
-// current vcs.Registry so a CRUD write via /integrations/vcs is
-// immediately reflected here without a server restart.
+// Integrations handles GET /api/v1/admin/integrations. Returns a
+// poly-provider summary: per-provider readiness + the shared
+// public base URL the UI needs to render copy-paste webhook
+// endpoints. Superset of the older /integrations/github shape.
+//
+// GitHub readiness = App installed + public base set + checks
+// reporter toggle. GitLab / Bitbucket readiness = public base
+// set (auto-register needs a reachable callback; per-project
+// PAT/App-Password comes from scm_source.auth_ref at bind time).
+func (h *Handler) Integrations(w http.ResponseWriter, r *http.Request) {
+	if !methodGET(w, r) {
+		return
+	}
+	appActive := h.vcs != nil && h.vcs.GitHubApp() != nil
+	publicBase := h.wiring.PublicBase
+	// Auto-register needs both the provider credential AND a
+	// reachable public base. GitHub's credential is the App
+	// (global); GitLab/Bitbucket credentials are per-scm_source
+	// so we can only say "ready at the wiring level" here.
+	githubAutoOK := appActive && h.wiring.PublicBaseSet
+	writeJSON(w, map[string]any{
+		"public_base":     publicBase,
+		"public_base_set": h.wiring.PublicBaseSet,
+		"github": map[string]any{
+			"app_configured":     appActive,
+			"checks_reporter_on": h.wiring.ChecksReporterOn,
+			"auto_register_on":   githubAutoOK,
+			"webhook_endpoint":   webhookURL(publicBase, "github"),
+		},
+		"gitlab": map[string]any{
+			"auto_register_on": h.wiring.PublicBaseSet,
+			"webhook_endpoint": webhookURL(publicBase, "gitlab"),
+			"required_scope":   "api",
+		},
+		"bitbucket": map[string]any{
+			"auto_register_on": h.wiring.PublicBaseSet,
+			"webhook_endpoint": webhookURL(publicBase, "bitbucket"),
+			"required_scope":   "webhooks",
+		},
+	})
+	return
+}
+
+// webhookURL returns the public endpoint a provider will POST
+// deliveries to. Empty public_base → empty URL so the UI
+// renders "not configured" instead of a broken link.
+func webhookURL(publicBase, provider string) string {
+	if publicBase == "" {
+		return ""
+	}
+	trimmed := publicBase
+	for len(trimmed) > 0 && trimmed[len(trimmed)-1] == '/' {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed + "/api/webhooks/" + provider
+}
+
+// IntegrationGitHub is the legacy shape kept so in-flight UI
+// callers don't 404 mid-refresh. New code reads /integrations.
+// Drops after the UI migrates and we ship a release.
 func (h *Handler) IntegrationGitHub(w http.ResponseWriter, r *http.Request) {
 	if !methodGET(w, r) {
 		return
 	}
 	appActive := h.vcs != nil && h.vcs.GitHubApp() != nil
-	// Auto-register needs both a live GitHub App AND a public
-	// base URL — the webhook points back at this server's
-	// /api/webhooks/github, and without public_base the hook
-	// would be unreachable. The handler only wires
-	// WithAutoRegister when PublicBase is set, so mirroring the
-	// same conjunction here keeps the UI aligned with runtime
-	// behaviour.
 	autoRegisterOn := appActive && h.wiring.PublicBaseSet
 	writeJSON(w, map[string]any{
 		"github_app_configured": appActive,

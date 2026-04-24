@@ -11,6 +11,7 @@ import type {
   AuditEventsList,
   AuthProvidersAdmin,
   GitHubIntegration,
+  IntegrationsSummary,
   RetentionSnapshot,
   SecretsList,
   UsersList,
@@ -51,6 +52,10 @@ export async function getAdminHealth(): Promise<AdminHealth> {
 
 export async function getGitHubIntegration(): Promise<GitHubIntegration> {
   return readJSON<GitHubIntegration>("/api/v1/admin/integrations/github");
+}
+
+export async function getIntegrationsSummary(): Promise<IntegrationsSummary> {
+  return readJSON<IntegrationsSummary>("/api/v1/admin/integrations");
 }
 
 export type WebhookDeliveriesQuery = {

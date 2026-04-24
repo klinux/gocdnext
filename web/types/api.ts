@@ -537,6 +537,27 @@ export type GitHubIntegration = {
   auto_register_on: boolean;
 };
 
+export type IntegrationsSummary = {
+  public_base: string;
+  public_base_set: boolean;
+  github: {
+    app_configured: boolean;
+    checks_reporter_on: boolean;
+    auto_register_on: boolean;
+    webhook_endpoint: string;
+  };
+  gitlab: {
+    auto_register_on: boolean;
+    webhook_endpoint: string;
+    required_scope: string;
+  };
+  bitbucket: {
+    auto_register_on: boolean;
+    webhook_endpoint: string;
+    required_scope: string;
+  };
+};
+
 export type TestCaseStatus = "passed" | "failed" | "skipped" | "errored";
 
 export type TestCase = {

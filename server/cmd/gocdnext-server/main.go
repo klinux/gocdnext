@@ -249,6 +249,7 @@ gitHubFetcher := &configsync.MultiFetcher{}
 	// an admin who just saved a VCS integration sees a stale
 	// "off" on the next page load.
 	adminHandler := adminapi.NewHandler(st, sweeper, vcsRegistry, adminapi.WiringState{
+		PublicBase:       cfg.PublicBase,
 		PublicBaseSet:    cfg.PublicBase != "",
 		ChecksReporterOn: checksReporter != nil,
 	}, logger)
@@ -411,6 +412,7 @@ gitHubFetcher := &configsync.MultiFetcher{}
 		p.Get("/api/v1/admin/webhooks", adminHandler.Webhooks)
 		p.Get("/api/v1/admin/webhooks/{id}", adminHandler.WebhookDetail)
 		p.Get("/api/v1/admin/health", adminHandler.Health)
+		p.Get("/api/v1/admin/integrations", adminHandler.Integrations)
 		p.Get("/api/v1/admin/integrations/github", adminHandler.IntegrationGitHub)
 		p.Get("/api/v1/admin/users", adminHandler.Users)
 		p.Put("/api/v1/admin/users/{id}/role", adminHandler.SetUserRole)
