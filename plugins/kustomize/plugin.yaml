@@ -1,0 +1,128 @@
+name: kustomize
+category: deploy
+description: >
+  Render a kustomization tree and (optionally) apply or diff it
+  against a cluster. Bundles the official `kustomize` binary +
+  `kubectl` so operators don't pipe between containers — pick an
+  action and the plugin does the rest. Kubeconfig discovery
+  mirrors the kubectl + helm plugins (path / inline / base64),
+  so all three deploy plugins share one convention.
+
+inputs:
+  path:
+    required: true
+    description: >
+      Workspace-relative path to the kustomization root (folder
+      with kustomization.yaml). Example: deploy/overlays/prod.
+  action:
+    required: false
+    default: apply
+    description: >
+      apply | build | diff. apply renders + kubectl apply; build
+      renders to stdout only; diff renders + kubectl diff (exit
+      1 on differences is not a failure — only ≥2 fails the job).
+  kubeconfig:
+    required: false
+    description: >
+      Kubeconfig source: path under /workspace, raw YAML, or
+      base64-encoded YAML. Auto-detected. Empty defers to the
+      agent's in-cluster service account.
+  namespace:
+    required: false
+    description: >
+      Default namespace passed as `--namespace`. Manifests with
+      an explicit `metadata.namespace` win.
+  prune:
+    required: false
+    default: "false"
+    description: >
+      "true" enables `kubectl apply --prune` so resources removed
+      from the kustomization are deleted from the cluster.
+      Requires prune_label.
+  prune_label:
+    required: false
+    description: >
+      Label selector used with prune (e.g.
+      `app.kubernetes.io/managed-by=gocdnext`). Required when
+      prune=true.
+  extra_args:
+    required: false
+    description: >
+      Forwarded verbatim to `kubectl apply` (e.g.
+      `--server-side --force-conflicts`).
+
+examples:
+  - name: deploy prod overlay
+    description: >
+      Typical CD shape — render the prod overlay and apply.
+      Kubeconfig comes from a project secret; namespace pinned
+      so manifests without ns inherit it.
+    yaml: |
+      uses: gocdnext/kustomize@v1
+      with:
+        path: deploy/overlays/prod
+        kubeconfig: ${{ KUBECONFIG_PROD }}
+        namespace: api
+      secrets: [KUBECONFIG_PROD]
+
+  - name: dry-run diff before apply
+    description: >
+      Two-step canary deploy: first render + diff so reviewers
+      see what's about to change, then a separate apply step
+      gated by an approval. Diff exits 0 even when there are
+      differences (kubectl exit 1 is not a job failure).
+    yaml: |
+      jobs:
+        diff-prod:
+          stage: review
+          uses: gocdnext/kustomize@v1
+          with:
+            path: deploy/overlays/prod
+            action: diff
+            kubeconfig: ${{ KUBECONFIG_PROD }}
+          secrets: [KUBECONFIG_PROD]
+
+        approve-prod:
+          stage: deploy
+          approval:
+            approvers: [release-managers]
+            description: "Promote ${CI_COMMIT_SHORT_SHA} to prod?"
+
+        apply-prod:
+          stage: deploy
+          needs: [approve-prod]
+          uses: gocdnext/kustomize@v1
+          with:
+            path: deploy/overlays/prod
+            kubeconfig: ${{ KUBECONFIG_PROD }}
+          secrets: [KUBECONFIG_PROD]
+
+  - name: prune dropped resources
+    description: >
+      Apply with prune so a manifest deleted from the kustomization
+      gets cleaned up from the cluster. The label selector is
+      what `apply --prune` uses to know which existing resources
+      to consider for deletion — set it on every kustomization
+      via a `commonLabels:` block so additions/removals stay in
+      sync.
+    yaml: |
+      uses: gocdnext/kustomize@v1
+      with:
+        path: deploy/overlays/staging
+        kubeconfig: ${{ KUBECONFIG_STAGING }}
+        prune: "true"
+        prune_label: "app.kubernetes.io/managed-by=gocdnext"
+      secrets: [KUBECONFIG_STAGING]
+
+  - name: render to artifacts (no apply)
+    description: >
+      Use the build action when the rendered YAML is the output
+      itself — for review pipelines that publish the manifests
+      as an artifact rather than applying them.
+    yaml: |
+      uses: gocdnext/kustomize@v1
+      with:
+        path: deploy/overlays/prod
+        action: build
+      artifacts:
+        paths: [rendered.yaml]

@@ -1,0 +1,132 @@
+name: argocd
+category: deploy
+description: >
+  Run any `argocd` subcommand against an Argo CD server. The
+  typical CI/CD split: gocdnext owns build + push, Argo CD owns
+  desired state + reconciliation. This plugin is the bridge —
+  trigger a sync on the new commit, wait for health, or rollback
+  when something regresses. Auth via API token (no kubeconfig
+  needed; Argo CD does its own cluster auth internally).
+
+inputs:
+  server:
+    required: true
+    description: >
+      Argo CD API server URL (e.g. https://argocd.corp).
+      Scheme stripped automatically — the CLI takes a host.
+  auth_token:
+    required: true
+    description: >
+      Argo CD API token. Generate via
+      `argocd account generate-token --account <ci-bot>`. Pipe
+      through secrets: so the plaintext never touches the YAML
+      or the run logs.
+  command:
+    required: true
+    description: >
+      argocd subcommand + args, word-split. Common shapes:
+        "app sync my-app"
+        "app wait my-app --health --timeout 600"
+        "app rollback my-app 3"
+        "app diff my-app"
+        "app set my-app -p image.tag=${CI_COMMIT_SHORT_SHA}"
+  insecure:
+    required: false
+    default: "false"
+    description: >
+      "true" → `--insecure`. Skips TLS verification — only for
+      dev clusters with self-signed certs.
+  grpc_web:
+    required: false
+    default: "false"
+    description: >
+      "true" → `--grpc-web`. Use when Argo CD sits behind a
+      reverse proxy that doesn't speak HTTP/2 to its backend
+      (common with cloud LBs + ingress controllers).
+
+examples:
+  - name: sync after push
+    description: >
+      The vanilla CI → CD handoff. Pipeline builds + pushes the
+      image; the deploy stage tells Argo CD to sync, which
+      picks up the new tag from the manifest repo.
+    yaml: |
+      jobs:
+        sync-prod:
+          stage: deploy
+          uses: gocdnext/argocd@v1
+          with:
+            server: https://argocd.corp
+            auth_token: ${{ ARGOCD_TOKEN }}
+            command: app sync api-prod
+            grpc_web: "true"
+          secrets: [ARGOCD_TOKEN]
+
+  - name: sync + wait for health
+    description: >
+      Two-step deploy that fails the job if the new revision
+      doesn't reach Healthy within 10 minutes — turns a noisy
+      Argo dashboard alert into a CI red mark on the commit.
+    yaml: |
+      jobs:
+        sync-prod:
+          stage: deploy
+          uses: gocdnext/argocd@v1
+          with:
+            server: https://argocd.corp
+            auth_token: ${{ ARGOCD_TOKEN }}
+            command: app sync api-prod
+          secrets: [ARGOCD_TOKEN]
+
+        wait-healthy:
+          stage: deploy
+          needs: [sync-prod]
+          uses: gocdnext/argocd@v1
+          with:
+            server: https://argocd.corp
+            auth_token: ${{ ARGOCD_TOKEN }}
+            command: app wait api-prod --health --timeout 600
+          secrets: [ARGOCD_TOKEN]
+
+  - name: parameterised image tag
+    description: >
+      Set the image tag on the Argo Application before sync so
+      the new commit gets deployed without modifying the
+      manifest repo. Kustomize image overrides + helm value
+      overrides both work the same way via `app set`.
+    yaml: |
+      jobs:
+        deploy:
+          stage: deploy
+          uses: gocdnext/argocd@v1
+          with:
+            server: https://argocd.corp
+            auth_token: ${{ ARGOCD_TOKEN }}
+            command: |
+              app set api-prod -p image.tag=${CI_COMMIT_SHORT_SHA} && \
+              argocd app sync api-prod && \
+              argocd app wait api-prod --health
+          secrets: [ARGOCD_TOKEN]
+
+  - name: rollback after failure
+    description: >
+      Reactive rollback flow paired with an approval gate. The
+      operator picks a known-good Argo history id and the plugin
+      replays it.
+    yaml: |
+      jobs:
+        approve-rollback:
+          stage: rollback
+          approval:
+            approvers: [oncall]
+            description: "Roll prod back to history #${HISTORY_ID}?"
+
+        rollback:
+          stage: rollback
+          needs: [approve-rollback]
+          uses: gocdnext/argocd@v1
+          with:
+            server: https://argocd.corp
+            auth_token: ${{ ARGOCD_TOKEN }}
+            command: app rollback api-prod ${HISTORY_ID}
+          secrets: [ARGOCD_TOKEN]
