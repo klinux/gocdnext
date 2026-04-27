@@ -9,7 +9,7 @@ import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
-import { PipelineStageRow } from "@/components/pipelines/pipeline-stage-row";
+import { PipelineStageStrip } from "@/components/pipelines/pipeline-stage-strip";
 import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-sheet.client";
 import {
   buildColumns,
@@ -157,7 +157,7 @@ export function PipelineCard({
         </header>
 
         <div className="flex flex-1 flex-col">
-          <PipelineStageRow columns={columns} runId={run?.id} />
+          <PipelineStageStrip columns={columns} />
         </div>
 
         {metrics ? <InlineMetricsFooter metrics={metrics} /> : null}
