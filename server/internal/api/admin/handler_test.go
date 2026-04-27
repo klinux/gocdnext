@@ -198,6 +198,10 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Get("/api/v1/admin/users", h.Users)
 	r.Put("/api/v1/admin/users/{id}/role", h.SetUserRole)
 	r.Get("/api/v1/admin/audit", h.Audit)
+	r.Get("/api/v1/admin/runner-profiles", h.RunnerProfiles)
+	r.Post("/api/v1/admin/runner-profiles", h.CreateRunnerProfile)
+	r.Put("/api/v1/admin/runner-profiles/{id}", h.UpdateRunnerProfile)
+	r.Delete("/api/v1/admin/runner-profiles/{id}", h.DeleteRunnerProfile)
 	return r
 }
 
