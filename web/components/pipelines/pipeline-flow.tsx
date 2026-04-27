@@ -1,9 +1,11 @@
 "use client";
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { PipelineCard } from "@/components/pipelines/pipeline-card";
+import { statusTone, type StatusTone } from "@/lib/status";
 import type { PipelineEdge, PipelineSummary, RunSummary } from "@/types/api";
 
 type Props = {
@@ -88,13 +90,75 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
     );
   }
 
+  const alerts = pipelines.filter(isAlerting);
+  // Within each DAG layer, push failing/degraded pipelines to the
+  // front so the eye lands on what needs attention first. The layer
+  // ordering itself stays untouched — it carries architectural
+  // meaning (who triggers whom) we shouldn't reshuffle.
+  const layersSorted = layers.map((layer) =>
+    [...layer].sort((a, b) => {
+      const pa = pipelinesByName.get(a);
+      const pb = pipelinesByName.get(b);
+      const wa = pa ? alertWeight(pa) : 0;
+      const wb = pb ? alertWeight(pb) : 0;
+      if (wa !== wb) return wb - wa;
+      return a.localeCompare(b);
+    }),
+  );
+
   const setCardRef = (name: string) => (el: HTMLElement | null) => {
     if (el) cardRefs.current.set(name, el);
     else cardRefs.current.delete(name);
   };
 
+  const focusCard = (name: string) => {
+    const el = cardRefs.current.get(name);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ring-2", "ring-amber-500/60");
+      window.setTimeout(
+        () => el.classList.remove("ring-2", "ring-amber-500/60"),
+        1500,
+      );
+    }
+  };
+
   return (
     <div ref={containerRef} className="relative space-y-4">
+      {alerts.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[12px]">
+          <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+          <span className="font-medium text-amber-700 dark:text-amber-400">
+            {alerts.length === 1
+              ? "1 pipeline needs attention:"
+              : `${alerts.length} pipelines need attention:`}
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {alerts.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => focusCard(p.name)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-card px-2 py-0.5 font-mono text-[11px] hover:bg-amber-500/10"
+                title={alertReason(p)}
+              >
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    p.latest_run?.status === "failed"
+                      ? "bg-red-500"
+                      : "bg-amber-500",
+                  )}
+                  aria-hidden
+                />
+                {p.name}
+                <span className="text-muted-foreground">{alertReason(p)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {paths.length > 0 ? (
         <svg
           aria-hidden
@@ -131,7 +195,7 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
         </svg>
       ) : null}
 
-      {layers.map((layer, layerIdx) => (
+      {layersSorted.map((layer, layerIdx) => (
         <div
           key={`layer-${layerIdx}`}
           // Extra top padding on downstream layers leaves room for
@@ -159,6 +223,45 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
       ))}
     </div>
   );
+}
+
+// isAlerting decides whether a pipeline shows up in the top alert
+// strip. Failing/canceled latest runs always count; pipelines with
+// healthy latest runs but a low historical pass rate do too — flaky
+// CI is "needs attention" even when today happens to be green.
+function isAlerting(p: PipelineSummary): boolean {
+  const tone: StatusTone = p.latest_run
+    ? statusTone(p.latest_run.status)
+    : "neutral";
+  if (tone === "failed" || tone === "canceled") return true;
+  if (p.metrics && p.metrics.runs_considered >= 3 && p.metrics.success_rate < 0.7) {
+    return true;
+  }
+  return false;
+}
+
+// alertWeight ranks pipelines for "failing-first" sort within a
+// layer. Higher = comes first.
+function alertWeight(p: PipelineSummary): number {
+  const tone: StatusTone = p.latest_run
+    ? statusTone(p.latest_run.status)
+    : "neutral";
+  if (tone === "failed") return 4;
+  if (tone === "canceled") return 3;
+  if (p.metrics && p.metrics.runs_considered >= 3 && p.metrics.success_rate < 0.7) {
+    return 2;
+  }
+  if (tone === "running" || tone === "queued") return 1;
+  return 0;
+}
+
+function alertReason(p: PipelineSummary): string {
+  const status = p.latest_run?.status;
+  if (status === "failed" || status === "canceled") return status;
+  if (p.metrics && p.metrics.runs_considered >= 3) {
+    return `${Math.round(p.metrics.success_rate * 100)}%`;
+  }
+  return "";
 }
 
 type EdgeGeometry = {
