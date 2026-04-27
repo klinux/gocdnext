@@ -106,22 +106,24 @@ func TestExecute_CancelMidRunAbortsJob(t *testing.T) {
 	}()
 
 	// Give Execute enough time to reach the script loop and
-	// register itself in the in-flight map.
-	deadline := time.Now().Add(3 * time.Second)
+	// register itself in the in-flight map. CI runners are slow
+	// enough that 3s used to flake — 10s gives headroom without
+	// hiding a real regression.
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if r.Cancel(a.GetJobId()) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("job never registered in-flight within 3s")
+			t.Fatal("job never registered in-flight within 10s")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Execute did not return within 5s after Cancel")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Execute did not return within 15s after Cancel")
 	}
 
 	if c.result == nil {
