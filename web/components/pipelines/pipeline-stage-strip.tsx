@@ -1,18 +1,24 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import type { Route } from "next";
 import {
   Check,
   ChevronsRight,
   Loader2,
   Minus,
+  RotateCcw,
   TriangleAlert,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
+import { rerunJob, rerunRun } from "@/server/actions/runs";
+import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
 import type {
   MergedJob,
   StageColumn,
@@ -20,6 +26,7 @@ import type {
 
 type Props = {
   columns: StageColumn[];
+  runId?: string;
 };
 
 // PipelineStageStrip lays out a pipeline run as: stage name on top
@@ -29,7 +36,7 @@ type Props = {
 // pipelines (drawn solid by the DAG overlay above). Borrows the
 // project-card pill so the same circle vocabulary applies on every
 // surface that shows pipeline jobs.
-export function PipelineStageStrip({ columns }: Props) {
+export function PipelineStageStrip({ columns, runId }: Props) {
   if (columns.length === 0) {
     return (
       <p className="px-3 py-2 text-xs text-muted-foreground">
@@ -43,7 +50,7 @@ export function PipelineStageStrip({ columns }: Props) {
         const isLast = i === columns.length - 1;
         return (
           <Fragment key={`${col.name}-${i}`}>
-            <StageGroup column={col} />
+            <StageGroup column={col} runId={runId} />
             {!isLast ? <DashedSeparator /> : null}
           </Fragment>
         );
@@ -52,7 +59,7 @@ export function PipelineStageStrip({ columns }: Props) {
   );
 }
 
-function StageGroup({ column }: { column: StageColumn }) {
+function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) {
   const rate =
     column.stat && column.stat.runs_considered > 0
       ? Math.round(column.stat.success_rate * 100)
@@ -78,16 +85,16 @@ function StageGroup({ column }: { column: StageColumn }) {
           </span>
         ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1.5">
         {column.jobs.length === 0 ? (
           <JobCircle status={undefined} label={`${column.name}: empty`} />
         ) : (
           column.jobs.map((job) => (
-            <JobCircle
+            <JobNode
               key={job.key}
-              status={job.run?.status}
-              label={`${column.name}:${job.name}`}
-              durationLabel={formatJobDuration(job)}
+              job={job}
+              stageName={column.name}
+              runId={runId}
             />
           ))
         )}
@@ -103,7 +110,7 @@ function StageGroup({ column }: { column: StageColumn }) {
 function DashedSeparator() {
   return (
     <div
-      className="flex h-[22px] shrink-0 items-center self-end px-1"
+      className="flex h-[26px] shrink-0 items-center self-end px-1"
       aria-hidden
     >
       <div className="flex items-center gap-[3px]">
@@ -112,6 +119,58 @@ function DashedSeparator() {
         <span className="size-[3px] rounded-full bg-muted-foreground/40" />
       </div>
     </div>
+  );
+}
+
+// JobNode is the interactive wrapper around a job circle: clicking
+// the badge opens the JobDetailSheet (logs + meta + actions); a
+// hover-revealed retry button reruns just this job (or the whole
+// run if the job never executed). Falls back to a plain label when
+// there's no runId yet (definition-only views).
+function JobNode({
+  job,
+  stageName,
+  runId,
+}: {
+  job: MergedJob;
+  stageName: string;
+  runId?: string;
+}) {
+  const status = job.run?.status;
+  const label = `${stageName}:${job.name}`;
+  const duration = formatJobDuration(job);
+
+  const circle = (
+    <JobCircle status={status} label={label} durationLabel={duration} />
+  );
+
+  if (!runId || !job.run) {
+    return (
+      <span className="relative inline-flex" title={`${label} · not run`}>
+        {circle}
+      </span>
+    );
+  }
+
+  return (
+    <span className="group relative inline-flex">
+      <JobDetailSheet
+        runId={runId}
+        jobId={job.run.id}
+        jobName={job.name}
+        trigger={
+          <button
+            type="button"
+            className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            title={`Open job details for ${job.name}`}
+            aria-label={`Open job details for ${job.name}`}
+          >
+            {circle}
+          </button>
+        }
+      />
+      <JobRetryButton runId={runId} jobName={job.name} jobRunId={job.run.id} />
+    </span>
   );
 }
 
@@ -133,7 +192,7 @@ function JobCircle({
       title={tooltip}
       aria-label={tooltip}
       className={cn(
-        "relative inline-flex size-[20px] shrink-0 items-center justify-center rounded-full border-[1.5px]",
+        "relative inline-flex size-[26px] shrink-0 items-center justify-center rounded-full border-[1.5px]",
         circleClasses[tone],
         status === "running" &&
           "after:absolute after:inset-[-3px] after:rounded-full after:border-[1.5px] after:border-sky-500 after:content-[''] after:animate-ping",
@@ -144,8 +203,77 @@ function JobCircle({
   );
 }
 
+// JobRetryButton sits on top of the circle, hidden until the
+// parent JobNode is hovered. Reruns just this job when we have
+// its run id; gracefully falls back to a full-pipeline rerun for
+// jobs that never executed.
+function JobRetryButton({
+  runId,
+  jobName,
+  jobRunId,
+}: {
+  runId: string;
+  jobName: string;
+  jobRunId?: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const retry = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startTransition(async () => {
+      if (jobRunId) {
+        const res = await rerunJob({ jobRunId });
+        if (!res.ok) {
+          if (res.status === 409) {
+            toast.error(`${jobName} is still active — cancel it first`);
+          } else {
+            toast.error(`Re-run ${jobName} failed: ${res.error}`);
+          }
+          return;
+        }
+        const attempt =
+          typeof res.data.attempt === "number" ? res.data.attempt : undefined;
+        toast.success(
+          attempt != null
+            ? `Re-running ${jobName} (attempt ${attempt})`
+            : `Re-running ${jobName}`,
+        );
+        router.refresh();
+        return;
+      }
+      const res = await rerunRun({ runId });
+      if (!res.ok) {
+        toast.error(`Re-run failed: ${res.error}`);
+        return;
+      }
+      const newID = String(res.data.run_id ?? "");
+      toast.success(`Re-ran pipeline`, {
+        action: newID
+          ? {
+              label: "Open",
+              onClick: () => router.push(`/runs/${newID}` as Route),
+            }
+          : undefined,
+      });
+    });
+  };
+  return (
+    <button
+      type="button"
+      onClick={retry}
+      disabled={pending}
+      aria-label={`Re-run ${jobName}`}
+      title="Re-run this job"
+      className="absolute -right-1 -top-1 inline-flex size-[14px] shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground opacity-0 shadow-sm transition-all hover:bg-accent hover:text-foreground disabled:opacity-50 group-hover:opacity-100 focus-visible:opacity-100"
+    >
+      <RotateCcw className={cn("size-2.5", pending && "animate-spin")} />
+    </button>
+  );
+}
+
 function CircleIcon({ tone }: { tone: StatusTone }) {
-  const cls = "size-[10px]";
+  const cls = "size-[12px]";
   switch (tone) {
     case "success":
       return <Check className={cls} aria-hidden strokeWidth={3} />;

@@ -180,35 +180,26 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
               />
             </marker>
           </defs>
-          {paths.map((p) => {
-            const dy = p.toY - p.fromY;
-            // Pull control points further down/up so the curve
-            // hugs the source/target on the outgoing direction
-            // (cleaner than the equal-thirds bezier — matches the
-            // smooth-edge look the user asked for).
-            const c1y = p.fromY + dy * 0.55;
-            const c2y = p.toY - dy * 0.55;
-            return (
-              <g key={p.key}>
-                {/* Source dot — anchors the line on the card edge
-                    so the eye starts at a defined point even with
-                    soft stroke colour. */}
-                <circle
-                  cx={p.fromX}
-                  cy={p.fromY}
-                  r={3}
-                  className="fill-muted-foreground/70"
-                />
-                <path
-                  d={`M ${p.fromX} ${p.fromY} C ${p.fromX} ${c1y}, ${p.toX} ${c2y}, ${p.toX} ${p.toY}`}
-                  className="fill-none stroke-muted-foreground/70"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  markerEnd="url(#dag-arrow-head)"
-                />
-              </g>
-            );
-          })}
+          {paths.map((p) => (
+            <g key={p.key}>
+              {/* Source anchor dot keeps the line legibly attached
+                  to the card edge even with soft stroke colour. */}
+              <circle
+                cx={p.fromX}
+                cy={p.fromY}
+                r={3}
+                className="fill-muted-foreground/70"
+              />
+              <path
+                d={orthogonalPath(p)}
+                className="fill-none stroke-muted-foreground/70"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                markerEnd="url(#dag-arrow-head)"
+              />
+            </g>
+          ))}
         </svg>
       ) : null}
 
@@ -288,6 +279,47 @@ type EdgeGeometry = {
   toX: number;
   toY: number;
 };
+
+// orthogonalPath routes the connector through the gutter between
+// layers using right-angle elbows with rounded corners — never
+// across the body of an intermediate card. Layout:
+//   1. drop straight from source toward gutter Y
+//   2. arc into a horizontal trunk
+//   3. travel laterally to the target column
+//   4. arc back to vertical
+//   5. drop into target top
+// Corner radius collapses gracefully when columns are close enough
+// that a 10px corner would overshoot the available run.
+function orthogonalPath(p: EdgeGeometry): string {
+  const dx = p.toX - p.fromX;
+  const dy = p.toY - p.fromY;
+  // Place the horizontal trunk at the midpoint between layers so
+  // both arcs read as symmetric. Clamp to a sensible distance from
+  // each card so the line clearly leaves one before entering the
+  // next.
+  const midY = p.fromY + dy / 2;
+  // Same column → straight vertical, no elbows.
+  if (Math.abs(dx) < 4) {
+    return `M ${p.fromX} ${p.fromY} L ${p.toX} ${p.toY}`;
+  }
+  const r = Math.min(10, Math.abs(dy) / 2 - 2, Math.abs(dx) / 2 - 2);
+  if (r <= 1) {
+    // Available run too tight for arcs — degrade to a sharp elbow.
+    return `M ${p.fromX} ${p.fromY} L ${p.fromX} ${midY} L ${p.toX} ${midY} L ${p.toX} ${p.toY}`;
+  }
+  const sweepLeft = dx > 0 ? 1 : 0; // SVG arc sweep flag direction
+  const sweepRight = dx > 0 ? 1 : 0;
+  const xAfterFirstArc = p.fromX + (dx > 0 ? r : -r);
+  const xBeforeSecondArc = p.toX - (dx > 0 ? r : -r);
+  return [
+    `M ${p.fromX} ${p.fromY}`,
+    `L ${p.fromX} ${midY - r}`,
+    `A ${r} ${r} 0 0 ${sweepLeft} ${xAfterFirstArc} ${midY}`,
+    `L ${xBeforeSecondArc} ${midY}`,
+    `A ${r} ${r} 0 0 ${1 - sweepRight} ${p.toX} ${midY + r}`,
+    `L ${p.toX} ${p.toY}`,
+  ].join(" ");
+}
 
 function buildLayers(
   pipelines: PipelineSummary[],

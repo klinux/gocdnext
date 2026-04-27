@@ -166,7 +166,7 @@ export function PipelineCard({
         </header>
 
         <div className="flex flex-1 flex-col">
-          <PipelineStageStrip columns={columns} />
+          <PipelineStageStrip columns={columns} runId={run?.id} />
         </div>
 
         {metrics ? <InlineMetricsFooter metrics={metrics} /> : null}
