@@ -66,7 +66,6 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
           fromY: f.bottom - cRect.top,
           toX: t.left + t.width / 2 - cRect.left,
           toY: t.top - cRect.top,
-          label: edgeLabel(e),
         });
       }
       setPaths(next);
@@ -169,52 +168,44 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
             <marker
               id="dag-arrow-head"
               viewBox="0 0 10 10"
-              refX="8"
+              refX="9"
               refY="5"
-              markerWidth="7"
-              markerHeight="7"
+              markerWidth="6"
+              markerHeight="6"
               orient="auto"
             >
               <path
                 d="M 0 0 L 10 5 L 0 10 z"
-                className="fill-foreground/60"
+                className="fill-muted-foreground/70"
               />
             </marker>
           </defs>
           {paths.map((p) => {
-            const midY = (p.fromY + p.toY) / 2;
-            const labelX = (p.fromX + p.toX) / 2;
-            const labelY = midY;
+            const dy = p.toY - p.fromY;
+            // Pull control points further down/up so the curve
+            // hugs the source/target on the outgoing direction
+            // (cleaner than the equal-thirds bezier — matches the
+            // smooth-edge look the user asked for).
+            const c1y = p.fromY + dy * 0.55;
+            const c2y = p.toY - dy * 0.55;
             return (
               <g key={p.key}>
+                {/* Source dot — anchors the line on the card edge
+                    so the eye starts at a defined point even with
+                    soft stroke colour. */}
+                <circle
+                  cx={p.fromX}
+                  cy={p.fromY}
+                  r={3}
+                  className="fill-muted-foreground/70"
+                />
                 <path
-                  d={`M ${p.fromX} ${p.fromY} C ${p.fromX} ${midY}, ${p.toX} ${midY}, ${p.toX} ${p.toY}`}
-                  className="fill-none stroke-foreground/60"
+                  d={`M ${p.fromX} ${p.fromY} C ${p.fromX} ${c1y}, ${p.toX} ${c2y}, ${p.toX} ${p.toY}`}
+                  className="fill-none stroke-muted-foreground/70"
                   strokeWidth={2}
+                  strokeLinecap="round"
                   markerEnd="url(#dag-arrow-head)"
                 />
-                {p.label ? (
-                  <g>
-                    <rect
-                      x={labelX - p.label.length * 3.2 - 6}
-                      y={labelY - 8}
-                      rx={4}
-                      ry={4}
-                      width={p.label.length * 6.4 + 12}
-                      height={16}
-                      className="fill-card stroke-border"
-                      strokeWidth={1}
-                    />
-                    <text
-                      x={labelX}
-                      y={labelY + 3}
-                      textAnchor="middle"
-                      className="fill-muted-foreground font-mono text-[10px]"
-                    >
-                      {p.label}
-                    </text>
-                  </g>
-                ) : null}
               </g>
             );
           })}
@@ -296,18 +287,7 @@ type EdgeGeometry = {
   fromY: number;
   toX: number;
   toY: number;
-  label: string | null;
 };
-
-// edgeLabel renders the trigger condition as a short text the SVG
-// label tag can fit. "after build.test passes" reads with the arrow
-// direction; bare names without a stage hint just say "after foo".
-function edgeLabel(e: PipelineEdge): string | null {
-  if (e.stage) {
-    return `after ${e.stage} ✓`;
-  }
-  return null;
-}
 
 function buildLayers(
   pipelines: PipelineSummary[],

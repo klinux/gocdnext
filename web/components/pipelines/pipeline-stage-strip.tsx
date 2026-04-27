@@ -1,45 +1,50 @@
 "use client";
 
 import { Fragment } from "react";
-import { Check, ChevronRight, Loader2, Minus, TriangleAlert, X } from "lucide-react";
+import {
+  Check,
+  ChevronsRight,
+  Loader2,
+  Minus,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
-import type { StageColumn } from "@/components/pipelines/pipeline-card-helpers";
+import type {
+  MergedJob,
+  StageColumn,
+} from "@/components/pipelines/pipeline-card-helpers";
 
 type Props = {
   columns: StageColumn[];
 };
 
-// PipelineStageStrip is the compact dashboard-view stage indicator:
-// one horizontal row of status-coloured chips, no nested job cards.
-// Multi-job stages show a (N) count; the success rate pill on the
-// right of each chip surfaces flakiness without the operator having
-// to expand anything. The full job breakdown lives on the run-detail
-// page — this view is "is the pipeline healthy?", not "which job
-// inside which stage failed?".
+// PipelineStageStrip lays out a pipeline run as: stage name on top
+// (small uppercase title) with a row of circular job badges below
+// it. Between adjacent stages a thin DASHED chevron — the link is
+// just visual flow, the real architectural connections live between
+// pipelines (drawn solid by the DAG overlay above). Borrows the
+// project-card pill so the same circle vocabulary applies on every
+// surface that shows pipeline jobs.
 export function PipelineStageStrip({ columns }: Props) {
   if (columns.length === 0) {
     return (
-      <p className="px-3 py-3 text-xs text-muted-foreground">
+      <p className="px-3 py-2 text-xs text-muted-foreground">
         No stages defined yet.
       </p>
     );
   }
   return (
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5 px-3 py-2.5">
+    <div className="flex flex-wrap items-start gap-x-1 gap-y-2 px-3 py-2">
       {columns.map((col, i) => {
         const isLast = i === columns.length - 1;
         return (
           <Fragment key={`${col.name}-${i}`}>
-            <StageChip column={col} />
-            {!isLast ? (
-              <ChevronRight
-                className="size-3 shrink-0 text-muted-foreground/50"
-                aria-hidden
-              />
-            ) : null}
+            <StageGroup column={col} />
+            {!isLast ? <DashedSeparator /> : null}
           </Fragment>
         );
       })}
@@ -47,96 +52,145 @@ export function PipelineStageStrip({ columns }: Props) {
   );
 }
 
-function StageChip({ column }: { column: StageColumn }) {
-  const tone: StatusTone = column.run ? statusTone(column.run.status) : "neutral";
-  const jobCount = column.jobs.length;
+function StageGroup({ column }: { column: StageColumn }) {
   const rate =
     column.stat && column.stat.runs_considered > 0
       ? Math.round(column.stat.success_rate * 100)
       : null;
-  const p50 =
-    column.stat && column.stat.duration_p50_seconds > 0
-      ? formatDurationSeconds(column.stat.duration_p50_seconds)
-      : null;
+  const showRate = rate != null && rate < 90;
+  return (
+    <div className="flex min-w-0 flex-col items-start gap-1">
+      <div className="flex items-baseline gap-1.5 px-0.5">
+        <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {column.name}
+        </span>
+        {showRate ? (
+          <span
+            className={cn(
+              "rounded px-1 font-mono text-[9px] tabular-nums",
+              rate >= 70
+                ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                : "bg-red-500/15 text-red-600 dark:text-red-400",
+            )}
+            title={`${rate}% over ${column.stat?.runs_considered} runs`}
+          >
+            {rate}%
+          </span>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        {column.jobs.length === 0 ? (
+          <JobCircle status={undefined} label={`${column.name}: empty`} />
+        ) : (
+          column.jobs.map((job) => (
+            <JobCircle
+              key={job.key}
+              status={job.run?.status}
+              label={`${column.name}:${job.name}`}
+              durationLabel={formatJobDuration(job)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
 
+// DashedSeparator is the implied-flow indicator between stage
+// groups inside a single pipeline. Subtle on purpose — the real
+// architectural edges (cross-pipeline upstream) get the solid
+// curved line treatment in the SVG overlay above.
+function DashedSeparator() {
+  return (
+    <div
+      className="flex h-[22px] shrink-0 items-center self-end px-1"
+      aria-hidden
+    >
+      <div className="flex items-center gap-[3px]">
+        <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+        <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+        <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+      </div>
+    </div>
+  );
+}
+
+function JobCircle({
+  status,
+  label,
+  durationLabel,
+}: {
+  status: string | undefined;
+  label: string;
+  durationLabel?: string | null;
+}) {
+  const tone: StatusTone = status ? statusTone(status) : "neutral";
+  const tooltip = [label, status ?? "not run", durationLabel]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <span
+      title={tooltip}
+      aria-label={tooltip}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px]",
-        chipToneClasses[tone],
+        "relative inline-flex size-[20px] shrink-0 items-center justify-center rounded-full border-[1.5px]",
+        circleClasses[tone],
+        status === "running" &&
+          "after:absolute after:inset-[-3px] after:rounded-full after:border-[1.5px] after:border-sky-500 after:content-[''] after:animate-ping",
       )}
-      title={[
-        `${column.name}${jobCount > 1 ? ` (${jobCount} jobs)` : ""}`,
-        column.run?.status,
-        p50 ? `p50 ${p50}` : null,
-        rate != null ? `${rate}% over ${column.stat?.runs_considered} runs` : null,
-      ]
-        .filter(Boolean)
-        .join(" · ")}
     >
-      <ToneIcon tone={tone} className="size-3" />
-      <span className="font-mono uppercase tracking-wide">{column.name}</span>
-      {jobCount > 1 ? (
-        <span className="font-mono tabular-nums opacity-70">{jobCount}</span>
-      ) : null}
-      {rate != null && rate < 90 ? (
-        <span
-          className={cn(
-            "rounded px-1 font-mono tabular-nums",
-            rate >= 70 ? "bg-amber-500/15 text-amber-700 dark:text-amber-400" : "bg-red-500/15 text-red-600 dark:text-red-400",
-          )}
-        >
-          {rate}%
-        </span>
-      ) : null}
+      <CircleIcon tone={tone} />
     </span>
   );
 }
 
-function ToneIcon({
-  tone,
-  className,
-}: {
-  tone: StatusTone;
-  className: string;
-}) {
+function CircleIcon({ tone }: { tone: StatusTone }) {
+  const cls = "size-[10px]";
   switch (tone) {
     case "success":
-      return <Check className={className} aria-hidden strokeWidth={3} />;
+      return <Check className={cls} aria-hidden strokeWidth={3} />;
     case "failed":
-      return <X className={className} aria-hidden strokeWidth={3} />;
+      return <X className={cls} aria-hidden strokeWidth={3} />;
     case "running":
-      return <Loader2 className={cn(className, "animate-spin")} aria-hidden />;
+      return <Loader2 className={cn(cls, "animate-spin")} aria-hidden />;
     case "queued":
     case "warning":
     case "awaiting":
-      return <TriangleAlert className={className} aria-hidden />;
+      return <TriangleAlert className={cls} aria-hidden />;
     case "canceled":
-      return <Minus className={className} aria-hidden strokeWidth={3} />;
+      return <Minus className={cls} aria-hidden strokeWidth={3} />;
+    case "skipped":
+    case "neutral":
     default:
-      return (
-        <span
-          className={cn(
-            "inline-block rounded-full bg-current opacity-50",
-            className,
-          )}
-          aria-hidden
-        />
-      );
+      return <ChevronsRight className={cls} aria-hidden strokeWidth={2.5} />;
   }
 }
 
-// chipToneClasses set border + tinted bg per status. Success keeps
-// the default border (no green wash) so a healthy pipeline reads
-// neutral and only abnormal states pull the eye.
-const chipToneClasses: Record<StatusTone, string> = {
-  success: "border-border bg-card text-foreground",
-  failed: "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-400",
-  running: "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-400",
-  queued: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  warning: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  awaiting: "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  canceled: "border-muted-foreground/30 bg-muted/40 text-muted-foreground",
-  skipped: "border-dashed border-muted-foreground/30 text-muted-foreground/70",
-  neutral: "border-dashed border-border text-muted-foreground",
+function formatJobDuration(job: MergedJob): string | null {
+  const r = job.run;
+  if (!r?.started_at) return null;
+  const start = Date.parse(r.started_at);
+  const end = r.finished_at ? Date.parse(r.finished_at) : NaN;
+  if (Number.isNaN(start)) return null;
+  if (Number.isNaN(end)) return null;
+  const sec = (end - start) / 1000;
+  return formatDurationSeconds(sec);
+}
+
+const circleClasses: Record<StatusTone, string> = {
+  success:
+    "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400",
+  failed: "bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400",
+  running: "bg-sky-500/10 border-sky-500/30 text-sky-600 dark:text-sky-400",
+  queued:
+    "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400",
+  warning:
+    "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "bg-amber-500/15 border-amber-500/50 text-amber-700 dark:text-amber-400",
+  canceled:
+    "bg-muted-foreground/10 border-muted-foreground/30 text-muted-foreground",
+  skipped:
+    "bg-muted-foreground/5 border-muted-foreground/20 text-muted-foreground/70",
+  neutral: "bg-muted/40 border-border text-muted-foreground",
 };

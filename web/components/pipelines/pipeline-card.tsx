@@ -55,6 +55,14 @@ export function PipelineCard({
   const run = pipeline.latest_run;
   const meta = pipeline.latest_run_meta;
   const columns = useMemo(() => buildColumns(pipeline), [pipeline]);
+  // Upstream edges this card receives — surface as small pills in
+  // the header so the operator sees "this pipeline runs after X
+  // passes" without having to read the SVG arrow above. Caps at
+  // two pills; rare 3+-fan-in cases hide the rest behind a count.
+  const upstreams = useMemo(
+    () => edges.filter((e) => e.to_pipeline === pipeline.name),
+    [edges, pipeline.name],
+  );
   const bottleneck = useMemo(() => pickBottleneck(columns), [columns]);
   const metrics = pipeline.metrics;
   const [overviewOpen, setOverviewOpen] = useState(false);
@@ -73,7 +81,7 @@ export function PipelineCard({
           borderToneClasses[tone],
         )}
       >
-        <header className="flex flex-col gap-1 border-b border-border px-3 py-2">
+        <header className="flex flex-col gap-0.5 border-b border-border px-2.5 py-1.5">
           {/* Top line: status dot + pipeline name + branch + Run latest.
               Everything that competes for "what is this" goes here;
               meta (version, run #, ago) demotes to a muted line below. */}
@@ -119,6 +127,7 @@ export function PipelineCard({
               breakdown for anyone who needs it. */}
           <div className="flex items-center gap-x-2 text-[11px] text-muted-foreground">
             <span className="font-mono text-[10px]">v{pipeline.definition_version}</span>
+            {upstreams.length > 0 ? <UpstreamPills upstreams={upstreams} /> : null}
             {run ? (
               <>
                 <Link
@@ -202,6 +211,38 @@ const dotToneClasses: Record<StatusTone, string> = {
   neutral: "bg-muted border border-muted-foreground/30",
 };
 
+// UpstreamPills surfaces the cross-pipeline triggers feeding this
+// card. The SVG arrow above shows direction; this pill names the
+// source so the operator doesn't have to trace the arrow back
+// across the layout to know "what triggers me". Caps at 2 visible.
+function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
+  const visible = upstreams.slice(0, 2);
+  const overflow = upstreams.length - visible.length;
+  return (
+    <span className="flex items-center gap-1">
+      {visible.map((e) => (
+        <span
+          key={`${e.from_pipeline}:${e.stage ?? ""}`}
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
+          title={
+            e.stage
+              ? `Triggered when ${e.from_pipeline}.${e.stage} passes`
+              : `Triggered by ${e.from_pipeline}`
+          }
+        >
+          ← {e.from_pipeline}
+          {e.stage ? <span className="text-muted-foreground/60">.{e.stage}</span> : null}
+        </span>
+      ))}
+      {overflow > 0 ? (
+        <span className="font-mono text-[10px] text-muted-foreground/70">
+          +{overflow}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 // BottleneckPill condenses the (formerly bottom-strip) callout into
 // a single header chip. Same data — slowest stage + the symptom —
 // surfaced where the operator's eye already lands when scanning.
@@ -235,7 +276,7 @@ function InlineMetricsFooter({ metrics }: { metrics: PipelineMetrics }) {
   }
   const rate = Math.round(metrics.success_rate * 100);
   return (
-    <div className="flex items-center gap-3 border-t border-border bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
+    <div className="flex items-center gap-2.5 border-t border-border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
       <span className="inline-flex items-center gap-1">
         <Clock className="size-3" aria-hidden />
         <span className="uppercase tracking-wide">Lead</span>
