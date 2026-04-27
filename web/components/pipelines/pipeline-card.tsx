@@ -143,11 +143,17 @@ export function PipelineCard({
 
         {/* flex-1 wrapper so the metrics footer sticks to the bottom
             when the grid row stretches this card to match a taller
-            neighbour (e.g. a pipeline with multi-row stages). */}
+            neighbour (e.g. a pipeline with multi-row stages). The
+            bottleneck callout uses mt-auto so it glues to the
+            bottom of the wrapper too — without it, the callout
+            sat right under the stage row and a tall card showed
+            an awkward gap between the callout and the footer. */}
         <div className="flex flex-1 flex-col">
           <PipelineStageRow columns={columns} runId={run?.id} />
           {bottleneck ? (
-            <PipelineBottleneckCallout bottleneck={bottleneck} />
+            <div className="mt-auto">
+              <PipelineBottleneckCallout bottleneck={bottleneck} />
+            </div>
           ) : null}
         </div>
 
