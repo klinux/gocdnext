@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { GitBranch } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Clock, GitBranch } from "lucide-react";
 
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -14,13 +14,14 @@ import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-
 import {
   buildColumns,
   pickBottleneck,
+  type Bottleneck,
 } from "@/components/pipelines/pipeline-card-helpers";
-import {
-  PipelineBottleneckCallout,
-  PipelineMetricsFooter,
-} from "@/components/pipelines/pipeline-metrics-footer";
+import { cn } from "@/lib/utils";
+import { statusTone, type StatusTone } from "@/lib/status";
+import { formatDurationSeconds } from "@/lib/format";
 import type {
   PipelineEdge,
+  PipelineMetrics,
   PipelineSummary,
   RunSummary,
 } from "@/types/api";
@@ -61,68 +62,41 @@ export function PipelineCard({
   const commitSubject = meta?.message ? firstLine(meta.message) : null;
   const shortSha = meta?.revision ? meta.revision.slice(0, 7) : null;
 
+  const tone: StatusTone = run ? statusTone(run.status) : "neutral";
   return (
     <>
       <article
         ref={nodeRef}
-        className="flex flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm"
+        className={cn(
+          "flex flex-col overflow-hidden rounded-lg border bg-card shadow-sm",
+          "border-l-4",
+          borderToneClasses[tone],
+        )}
       >
-        <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <button
-                type="button"
-                onClick={() => setOverviewOpen(true)}
-                title="Open pipeline overview"
-                className="truncate rounded-sm font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {pipeline.name}
-              </button>
-              <span className="text-[10px] text-muted-foreground">
-                v{pipeline.definition_version}
-              </span>
-              {run ? (
-                <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
-                  <Link
-                    href={`/runs/${run.id}` as Route}
-                    className="font-mono text-foreground hover:underline"
-                  >
-                    #{run.counter}
-                  </Link>
-                  <LiveDuration
-                    startedAt={run.started_at}
-                    finishedAt={run.finished_at}
-                    className="font-mono tabular-nums"
-                  />
-                  <span>
-                    · <RelativeTime at={run.started_at ?? run.created_at} />
-                  </span>
-                </span>
-              ) : (
-                <span className="text-[11px] italic text-muted-foreground">
-                  Never run
-                </span>
+        <header className="flex flex-col gap-1 border-b border-border px-3 py-2">
+          {/* Top line: status dot + pipeline name + branch + Run latest.
+              Everything that competes for "what is this" goes here;
+              meta (version, run #, ago) demotes to a muted line below. */}
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "inline-block size-2.5 shrink-0 rounded-full",
+                dotToneClasses[tone],
+                run?.status === "running" && "animate-pulse",
               )}
-            </div>
-            {commitSubject || shortSha ? (
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                {shortSha ? (
-                  <span className="font-mono text-[10px]">{shortSha}</span>
-                ) : null}
-                {commitSubject ? (
-                  <span
-                    className="truncate text-foreground/80"
-                    title={meta?.message}
-                  >
-                    {commitSubject}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {run ? (
-              <StatusBadge status={run.status} className="text-[10px]" />
+              aria-hidden
+              title={run?.status ?? "not run"}
+            />
+            <button
+              type="button"
+              onClick={() => setOverviewOpen(true)}
+              title="Open pipeline overview"
+              className="min-w-0 flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {pipeline.name}
+            </button>
+            {bottleneck ? (
+              <BottleneckPill bottleneck={bottleneck} />
             ) : null}
             {meta?.branch ? (
               <span
@@ -139,25 +113,54 @@ export function PipelineCard({
               projectSlug={projectSlug}
             />
           </div>
+
+          {/* Bottom line: muted run meta + commit subject. Single
+              row, ellipsised — the overview sheet has the full
+              breakdown for anyone who needs it. */}
+          <div className="flex items-center gap-x-2 text-[11px] text-muted-foreground">
+            <span className="font-mono text-[10px]">v{pipeline.definition_version}</span>
+            {run ? (
+              <>
+                <Link
+                  href={`/runs/${run.id}` as Route}
+                  className="font-mono text-foreground hover:underline"
+                >
+                  #{run.counter}
+                </Link>
+                <LiveDuration
+                  startedAt={run.started_at}
+                  finishedAt={run.finished_at}
+                  className="font-mono tabular-nums"
+                />
+                <span>
+                  <RelativeTime at={run.started_at ?? run.created_at} />
+                </span>
+              </>
+            ) : (
+              <span className="italic">Never run</span>
+            )}
+            {shortSha ? (
+              <span className="font-mono text-[10px]">{shortSha}</span>
+            ) : null}
+            {commitSubject ? (
+              <span
+                className="truncate text-foreground/80"
+                title={meta?.message}
+              >
+                {commitSubject}
+              </span>
+            ) : null}
+            {run ? (
+              <StatusBadge status={run.status} className="ml-auto text-[10px]" />
+            ) : null}
+          </div>
         </header>
 
-        {/* flex-1 wrapper so the metrics footer sticks to the bottom
-            when the grid row stretches this card to match a taller
-            neighbour (e.g. a pipeline with multi-row stages). The
-            bottleneck callout uses mt-auto so it glues to the
-            bottom of the wrapper too — without it, the callout
-            sat right under the stage row and a tall card showed
-            an awkward gap between the callout and the footer. */}
         <div className="flex flex-1 flex-col">
           <PipelineStageRow columns={columns} runId={run?.id} />
-          {bottleneck ? (
-            <div className="mt-auto">
-              <PipelineBottleneckCallout bottleneck={bottleneck} />
-            </div>
-          ) : null}
         </div>
 
-        {metrics ? <PipelineMetricsFooter metrics={metrics} /> : null}
+        {metrics ? <InlineMetricsFooter metrics={metrics} /> : null}
       </article>
 
       <PipelineOverviewSheet
@@ -168,6 +171,104 @@ export function PipelineCard({
         runs={runs}
       />
     </>
+  );
+}
+
+// borderToneClasses maps the latest run's status onto a left-edge
+// colour so failing pipelines pop in a dense grid without the user
+// reading every label. Healthy + neutral states keep the default
+// border so green doesn't shout the same as red.
+const borderToneClasses: Record<StatusTone, string> = {
+  success: "border-border",
+  failed: "border-l-red-500",
+  running: "border-l-sky-500",
+  queued: "border-l-amber-500",
+  warning: "border-l-amber-500",
+  awaiting: "border-l-amber-500",
+  canceled: "border-l-muted-foreground/40",
+  skipped: "border-border",
+  neutral: "border-border",
+};
+
+const dotToneClasses: Record<StatusTone, string> = {
+  success: "bg-emerald-500",
+  failed: "bg-red-500",
+  running: "bg-sky-500",
+  queued: "bg-amber-500",
+  warning: "bg-amber-500",
+  awaiting: "bg-amber-500",
+  canceled: "bg-muted-foreground/60",
+  skipped: "bg-muted border border-muted-foreground/30",
+  neutral: "bg-muted border border-muted-foreground/30",
+};
+
+// BottleneckPill condenses the (formerly bottom-strip) callout into
+// a single header chip. Same data — slowest stage + the symptom —
+// surfaced where the operator's eye already lands when scanning.
+function BottleneckPill({ bottleneck }: { bottleneck: Bottleneck }) {
+  const detail: string[] = [];
+  if (bottleneck.successRate != null) {
+    detail.push(`${Math.round(bottleneck.successRate * 100)}% C/A`);
+  } else if (bottleneck.overP50Sec != null) {
+    detail.push(`+${formatDurationSeconds(bottleneck.overP50Sec)} p50`);
+  }
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-400"
+      title={`${bottleneck.stageName} is the bottleneck`}
+    >
+      <AlertTriangle className="size-3" aria-hidden />
+      <span className="font-mono font-semibold">{bottleneck.stageName}</span>
+      {detail.length > 0 ? <span>· {detail.join(" · ")}</span> : null}
+    </span>
+  );
+}
+
+// InlineMetricsFooter is the redesigned bottom strip: one row, no
+// big-icon ceremony, footer-coloured background to read as
+// "context". Drops the per-cell labels in favour of a single legend
+// (LEAD / PROC / SR) since the operator already knows what those
+// abbreviations mean from every other CI tool.
+function InlineMetricsFooter({ metrics }: { metrics: PipelineMetrics }) {
+  if (metrics.runs_considered === 0) {
+    return null;
+  }
+  const rate = Math.round(metrics.success_rate * 100);
+  return (
+    <div className="flex items-center gap-3 border-t border-border bg-muted/30 px-3 py-1.5 text-[10px] text-muted-foreground">
+      <span className="inline-flex items-center gap-1">
+        <Clock className="size-3" aria-hidden />
+        <span className="uppercase tracking-wide">Lead</span>
+        <span className="font-mono text-foreground tabular-nums">
+          {formatDurationSeconds(metrics.lead_time_p50_seconds)}
+        </span>
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <Activity className="size-3" aria-hidden />
+        <span className="uppercase tracking-wide">Proc</span>
+        <span className="font-mono text-foreground tabular-nums">
+          {formatDurationSeconds(metrics.process_time_p50_seconds)}
+        </span>
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <CheckCircle2 className="size-3" aria-hidden />
+        <span
+          className={cn(
+            "font-mono tabular-nums",
+            rate >= 90
+              ? "text-emerald-500"
+              : rate >= 70
+                ? "text-amber-500"
+                : "text-red-500",
+          )}
+        >
+          {rate}%
+        </span>
+      </span>
+      <span className="ml-auto font-mono tabular-nums">
+        {metrics.runs_considered} runs · {metrics.window_days}d
+      </span>
+    </div>
   );
 }
 
