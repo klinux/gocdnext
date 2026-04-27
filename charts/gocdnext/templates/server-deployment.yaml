@@ -113,6 +113,10 @@ spec:
               value: /var/run/secrets/gcs/service-account.json
             {{- end }}
             {{- end }}
+            {{- if .Values.runnerProfiles }}
+            - name: GOCDNEXT_RUNNER_PROFILES_FILE
+              value: /etc/gocdnext/runner-profiles.yaml
+            {{- end }}
             {{- if .Values.githubApp.enabled }}
             - name: GOCDNEXT_GITHUB_APP_ID
               value: {{ .Values.githubApp.appID | quote }}
@@ -134,6 +138,11 @@ spec:
             {{- if and (eq .Values.artifacts.backend "gcs") .Values.artifacts.gcs.existingSecret }}
             - name: gcs-creds
               mountPath: /var/run/secrets/gcs
+              readOnly: true
+            {{- end }}
+            {{- if .Values.runnerProfiles }}
+            - name: runner-profiles
+              mountPath: /etc/gocdnext
               readOnly: true
             {{- end }}
           readinessProbe:
@@ -167,5 +176,10 @@ spec:
         - name: gcs-creds
           secret:
             secretName: {{ .Values.artifacts.gcs.existingSecret }}
+        {{- end }}
+        {{- if .Values.runnerProfiles }}
+        - name: runner-profiles
+          configMap:
+            name: {{ include "gocdnext.server.fullname" . }}-runner-profiles
         {{- end }}
 {{- end }}

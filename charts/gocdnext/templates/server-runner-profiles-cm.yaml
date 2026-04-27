@@ -1,0 +1,15 @@
+{{- if .Values.runnerProfiles }}
+# Renders the runnerProfiles list as a single YAML doc the server
+# reads on boot via GOCDNEXT_RUNNER_PROFILES_FILE. Empty list →
+# no ConfigMap, no env, no mount — boot path skips the seed entirely.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}-runner-profiles
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+data:
+  runner-profiles.yaml: |
+    {{- toYaml (dict "profiles" .Values.runnerProfiles) | nindent 4 }}
+{{- end }}

@@ -155,6 +155,31 @@ artifactsSignKey:
   existingSecret: ""
   value: ""
 
+# ----- Runner profiles --------------------------------------------------
+# Optional declarative seed for the runner_profiles table. When this
+# list is non-empty the chart renders a ConfigMap and points the
+# server at it via GOCDNEXT_RUNNER_PROFILES_FILE. The server upserts
+# each entry by `name` on boot — UI-created profiles not listed here
+# are LEFT ALONE, so admin and Helm-managed catalogues coexist.
+runnerProfiles: []
+# Example:
+# runnerProfiles:
+#   - name: default
+#     description: vanilla pool
+#     engine: kubernetes
+#     default_image: alpine:3.20
+#     default_cpu_request: 100m
+#     default_mem_request: 256Mi
+#     max_cpu: "4"
+#     max_mem: 8Gi
+#     tags: [linux]
+#   - name: gpu
+#     engine: kubernetes
+#     default_image: nvidia/cuda:12-runtime
+#     max_cpu: "8"
+#     max_mem: 32Gi
+#     tags: [gpu]
+
 # ----- GitHub App ------------------------------------------------------
 
 githubApp:

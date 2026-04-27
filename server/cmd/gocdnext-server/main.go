@@ -84,6 +84,21 @@ func main() {
 
 	st := store.New(pool)
 
+	// Seed runner profiles from a Helm-managed YAML when the operator
+	// pointed us at one. Failures abort startup — partial catalogue
+	// is worse than refusing to boot, since pipelines naming a
+	// missing profile would 422 every apply silently.
+	if cfg.RunnerProfilesFile != "" {
+		seedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		touched, err := st.SeedRunnerProfilesFromFile(seedCtx, cfg.RunnerProfilesFile)
+		cancel()
+		if err != nil {
+			logger.Error("seed runner profiles", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("seeded runner profiles", "file", cfg.RunnerProfilesFile, "touched", touched)
+	}
+
 	var cipher *crypto.Cipher
 	var resolver secrets.Resolver = secrets.NopResolver{}
 	switch cfg.SecretBackend {

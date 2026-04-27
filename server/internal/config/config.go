@@ -53,6 +53,13 @@ type Config struct {
 	// Cache global size cap. 0 disables.
 	CacheGlobalQuotaBytes int64
 
+	// RunnerProfilesFile is an optional path to a YAML the server
+	// reads on boot and upserts into the runner_profiles table. The
+	// Helm chart points this at a ConfigMap-mounted file so operators
+	// can pin a cluster's profile catalogue declaratively. Empty
+	// disables seeding — the table is purely admin-UI driven.
+	RunnerProfilesFile string
+
 	// PluginCatalogDir is the root the server scans on boot for
 	// `plugin.yaml` manifests — one per `<dir>/plugin.yaml`. Empty
 	// disables catalog loading, which means pipelines using
@@ -224,6 +231,7 @@ func Load() (*Config, error) {
 	c.GithubAppAPIBase = env("GOCDNEXT_GITHUB_APP_API_BASE", "")
 	c.PublicBase = env("GOCDNEXT_PUBLIC_BASE", "")
 	c.WebhookPublicURL = env("GOCDNEXT_WEBHOOK_PUBLIC_URL", "")
+	c.RunnerProfilesFile = env("GOCDNEXT_RUNNER_PROFILES_FILE", "")
 	c.SecretBackend = strings.ToLower(env("GOCDNEXT_SECRET_BACKEND", "db"))
 	c.SecretK8sNamespace = env("GOCDNEXT_SECRET_K8S_NAMESPACE", "")
 	c.SecretK8sTemplate = env("GOCDNEXT_SECRET_K8S_NAME_TEMPLATE", "")
