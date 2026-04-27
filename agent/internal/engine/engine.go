@@ -37,8 +37,28 @@ type ScriptSpec struct {
 	// service containers up on it BEFORE calling RunScript. Shell
 	// engine ignores this field (no container to attach).
 	Network string
-	OnLine  func(stream, text string)
+	// Resources is the per-script compute envelope. Strings carry
+	// the raw k8s quantity literal ("100m", "256Mi"); empty means
+	// "not set" and the engine falls through to its own default.
+	// Honoured by the Kubernetes engine (mapped into the Pod
+	// container's resources block); ignored by Shell/Docker.
+	Resources Resources
+	OnLine    func(stream, text string)
 }
+
+// Resources mirrors the proto ResourceRequirements but lives in the
+// engine package so the runner doesn't have to round-trip through
+// proto types when calling the engine. Empty fields mean "not set".
+type Resources struct {
+	CPURequest    string
+	CPULimit      string
+	MemoryRequest string
+	MemoryLimit   string
+}
+
+// IsZero reports whether no field is set — engines short-circuit
+// the resources mapping when true.
+func (r Resources) IsZero() bool { return r == Resources{} }
 
 // Engine is the narrow contract: "run this, tell me when each line
 // comes out, give me the exit code". Errors are reserved for

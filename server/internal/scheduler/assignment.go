@@ -172,7 +172,24 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 		Services:              services,
 		Caches:                caches,
 		TestReports:           append([]string(nil), jobDef.TestReports...),
+		Resources:             resourceRequirements(jobDef.Resources),
+		Profile:               jobDef.Profile,
 	}, nil
+}
+
+// resourceRequirements maps the resolved domain ResourceSpec to its
+// proto twin. Returns nil when nothing is set so the wire stays
+// minimal — engines treat absent + all-empty identically.
+func resourceRequirements(r domain.ResourceSpec) *gocdnextv1.ResourceRequirements {
+	if r.IsZero() {
+		return nil
+	}
+	return &gocdnextv1.ResourceRequirements{
+		CpuRequest:    r.Requests.CPU,
+		CpuLimit:      r.Limits.CPU,
+		MemoryRequest: r.Requests.Memory,
+		MemoryLimit:   r.Limits.Memory,
+	}
 }
 
 // JobSecretsFromDefinition returns the list of secret names a job declares,

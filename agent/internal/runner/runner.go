@@ -409,16 +409,34 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, network string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
-		WorkDir: workDir,
-		Image:   image,
-		Env:     env,
-		Script:  script,
-		Docker:  docker,
-		Network: network,
+		WorkDir:   workDir,
+		Image:     image,
+		Env:       env,
+		Script:    script,
+		Docker:    docker,
+		Network:   network,
+		Resources: assignmentResources(a),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
 	})
+}
+
+// assignmentResources lifts the proto ResourceRequirements into the
+// engine-level Resources struct. Returns the zero value when the
+// proto carries nothing — the engine treats nil and zero identically
+// (fall through to its own defaults).
+func assignmentResources(a *gocdnextv1.JobAssignment) engine.Resources {
+	r := a.GetResources()
+	if r == nil {
+		return engine.Resources{}
+	}
+	return engine.Resources{
+		CPURequest:    r.GetCpuRequest(),
+		CPULimit:      r.GetCpuLimit(),
+		MemoryRequest: r.GetMemoryRequest(),
+		MemoryLimit:   r.GetMemoryLimit(),
+	}
 }
 
 // runCommand executes a command and streams stdout/stderr as LogLines. Returns

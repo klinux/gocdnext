@@ -274,6 +274,30 @@ message JobAssignment {
   // no match is a silent no-op (the job may have legitimately
   // produced nothing, e.g. when tests were skipped entirely).
   repeated string test_reports = 17;
+  // Resources is the per-job compute envelope the engine should
+  // request from the runtime. Strings carry k8s quantity format
+  // ("100m", "256Mi"); empty fields fall through to engine defaults.
+  // Engines without a notion of resources (Shell) ignore the field
+  // entirely; the scheduler still validates against the runner
+  // profile cap at apply time, so by the time this lands on the
+  // wire it has been clamped.
+  ResourceRequirements resources = 18;
+  // Profile is the resolved runner profile name the scheduler
+  // matched the job to. Carried here only so the agent's logs +
+  // metrics can label the dispatch — the scheduler's tag-matching
+  // already enforced the constraint upstream.
+  string profile = 19;
+}
+
+// ResourceRequirements mirrors the subset of corev1.ResourceList the
+// engines honour: cpu + memory, requests + limits. Strings are the
+// raw quantity literal, kept verbatim to round-trip through the
+// admin UI without re-encoding.
+message ResourceRequirements {
+  string cpu_request    = 1;
+  string cpu_limit      = 2;
+  string memory_request = 3;
+  string memory_limit   = 4;
 }
 
 // CacheEntry on the wire mirrors parser.CacheSpec — the key the

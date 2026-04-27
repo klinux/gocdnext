@@ -236,6 +236,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		Command:    []string{"sh", "-c", spec.Script},
 		WorkingDir: workDir,
 		Env:        env,
+		Resources:  buildResourceRequirements(spec.Resources),
 		VolumeMounts: []corev1.VolumeMount{{
 			Name:      "workspace",
 			MountPath: k.cfg.WorkspaceMountPath,
@@ -422,3 +423,54 @@ func defaultPodName() string {
 // Silences staticcheck for unused import when IsAlreadyExists isn't
 // needed anymore in a refactor.
 var _ = kerrors.IsAlreadyExists
+
+// buildResourceRequirements maps the engine-level Resources struct
+// into a corev1.ResourceRequirements. Empty strings are skipped
+// (so a partially-set spec round-trips into a partial PodSpec —
+// kubelet defaults the rest). Bad quantities are dropped silently:
+// the apply-time resolver validated them upstream, so reaching this
+// branch means a caller bypassed the resolver — better to ship the
+// pod with the well-formed half than fail the job over an
+// invariant violation we can't surface as a useful error here.
+func buildResourceRequirements(r Resources) corev1.ResourceRequirements {
+	if r.IsZero() {
+		return corev1.ResourceRequirements{}
+	}
+	out := corev1.ResourceRequirements{}
+	if q, ok := parseQuantitySilent(r.CPURequest); ok {
+		if out.Requests == nil {
+			out.Requests = corev1.ResourceList{}
+		}
+		out.Requests[corev1.ResourceCPU] = q
+	}
+	if q, ok := parseQuantitySilent(r.MemoryRequest); ok {
+		if out.Requests == nil {
+			out.Requests = corev1.ResourceList{}
+		}
+		out.Requests[corev1.ResourceMemory] = q
+	}
+	if q, ok := parseQuantitySilent(r.CPULimit); ok {
+		if out.Limits == nil {
+			out.Limits = corev1.ResourceList{}
+		}
+		out.Limits[corev1.ResourceCPU] = q
+	}
+	if q, ok := parseQuantitySilent(r.MemoryLimit); ok {
+		if out.Limits == nil {
+			out.Limits = corev1.ResourceList{}
+		}
+		out.Limits[corev1.ResourceMemory] = q
+	}
+	return out
+}
+
+func parseQuantitySilent(s string) (resource.Quantity, bool) {
+	if s == "" {
+		return resource.Quantity{}, false
+	}
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return resource.Quantity{}, false
+	}
+	return q, true
+}

@@ -343,6 +343,69 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 	}
 }
 
+func TestBuildAssignment_PropagatesProfileAndResources(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"build"},
+		Jobs: []domain.Job{{
+			Name: "build", Stage: "build",
+			Profile: "gpu",
+			Resources: domain.ResourceSpec{
+				Requests: domain.ResourceQuantities{CPU: "500m", Memory: "512Mi"},
+				Limits:   domain.ResourceQuantities{CPU: "2", Memory: "2Gi"},
+			},
+			Tasks: []domain.Task{{Script: "make"}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
+
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.GetProfile() != "gpu" {
+		t.Fatalf("profile = %q, want gpu", got.GetProfile())
+	}
+	r := got.GetResources()
+	if r == nil {
+		t.Fatal("expected resources, got nil")
+	}
+	if r.GetCpuRequest() != "500m" || r.GetMemoryRequest() != "512Mi" {
+		t.Fatalf("requests = %+v", r)
+	}
+	if r.GetCpuLimit() != "2" || r.GetMemoryLimit() != "2Gi" {
+		t.Fatalf("limits = %+v", r)
+	}
+}
+
+func TestBuildAssignment_NoResourcesLeavesProtoNil(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"x"},
+		Jobs:   []domain.Job{{Name: "j", Stage: "x", Tasks: []domain.Task{{Script: "echo"}}}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
+
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.GetResources() != nil {
+		t.Fatalf("expected nil resources, got %+v", got.GetResources())
+	}
+	if got.GetProfile() != "" {
+		t.Fatalf("expected empty profile, got %q", got.GetProfile())
+	}
+}
+
 func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
 	def := domain.Pipeline{
 		Stages: []string{"x"},

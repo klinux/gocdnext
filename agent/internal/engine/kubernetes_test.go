@@ -111,6 +111,60 @@ func TestKubernetes_BuildPodSpec_Defaults(t *testing.T) {
 	}
 }
 
+func TestKubernetes_BuildPodSpec_AppliesResources(t *testing.T) {
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script: "make",
+		Resources: engine.Resources{
+			CPURequest:    "500m",
+			CPULimit:      "2",
+			MemoryRequest: "512Mi",
+			MemoryLimit:   "2Gi",
+		},
+	})
+	c := pod.Spec.Containers[0]
+	if got := c.Resources.Requests.Cpu().String(); got != "500m" {
+		t.Errorf("cpu request = %q, want 500m", got)
+	}
+	if got := c.Resources.Requests.Memory().String(); got != "512Mi" {
+		t.Errorf("memory request = %q, want 512Mi", got)
+	}
+	if got := c.Resources.Limits.Cpu().String(); got != "2" {
+		t.Errorf("cpu limit = %q, want 2", got)
+	}
+	if got := c.Resources.Limits.Memory().String(); got != "2Gi" {
+		t.Errorf("memory limit = %q, want 2Gi", got)
+	}
+}
+
+func TestKubernetes_BuildPodSpec_NoResourcesLeavesContainerEmpty(t *testing.T) {
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+	pod := k.BuildPodSpec(engine.ScriptSpec{Script: "make"})
+	c := pod.Spec.Containers[0]
+	if len(c.Resources.Requests) != 0 || len(c.Resources.Limits) != 0 {
+		t.Errorf("expected empty resources, got %+v", c.Resources)
+	}
+}
+
+func TestKubernetes_BuildPodSpec_PartialResourcesArePartial(t *testing.T) {
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script:    "make",
+		Resources: engine.Resources{MemoryLimit: "1Gi"},
+	})
+	c := pod.Spec.Containers[0]
+	if len(c.Resources.Requests) != 0 {
+		t.Errorf("requests should be empty, got %+v", c.Resources.Requests)
+	}
+	if got := c.Resources.Limits.Memory().String(); got != "1Gi" {
+		t.Errorf("memory limit = %q, want 1Gi", got)
+	}
+	// CPU limit must NOT be set when not provided — kubelet defaults it.
+	if _, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+		t.Errorf("cpu limit should not be set when empty")
+	}
+}
+
 func TestKubernetes_BuildPodSpec_PVCWhenConfigured(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{
 		WorkspacePVCName:   "gocdnext-ws",

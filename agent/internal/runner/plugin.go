@@ -44,11 +44,12 @@ func (r *Runner) runPlugin(
 	}
 
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
-		WorkDir: workDir,
-		Image:   plugin.GetImage(),
-		Env:     env,
-		Script:  "", // empty → engine runs image's ENTRYPOINT as-is
-		Network: network,
+		WorkDir:   workDir,
+		Image:     plugin.GetImage(),
+		Env:       env,
+		Script:    "", // empty → engine runs image's ENTRYPOINT as-is
+		Network:   network,
+		Resources: assignmentResources(a),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
