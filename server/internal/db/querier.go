@@ -115,6 +115,10 @@ type Querier interface {
 	// scm_sources, etc.), so this single statement is enough.
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
+	// Caller MUST check no pipeline definition references this profile
+	// before issuing the delete; the scheduler resolves profiles by
+	// name at dispatch and a missing name fails the run.
+	DeleteRunnerProfile(ctx context.Context, id pgtype.UUID) error
 	DeleteSCMCredential(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
 	// Called before an agent retry re-ingests a rerun's results, so
@@ -246,6 +250,11 @@ type Querier interface {
 	// response but avoids a per-run "did this pipeline have
 	// notifications?" lookup.
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
+	GetRunnerProfile(ctx context.Context, id pgtype.UUID) (RunnerProfile, error)
+	// Pipeline apply + scheduler dispatch both look up by name (the
+	// stable identifier in YAML), not by id, so renames are deliberate
+	// breaking changes — admins know what they're doing.
+	GetRunnerProfileByName(ctx context.Context, name string) (RunnerProfile, error)
 	// Resolver hot path. Nil rows silently fall through to
 	// scm_source.auth_ref at the caller.
 	GetSCMCredentialByProviderHost(ctx context.Context, arg GetSCMCredentialByProviderHostParams) (ScmCredential, error)
@@ -308,6 +317,7 @@ type Querier interface {
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
 	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
+	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
 	// One INSERT per case. The agent batches N cases into a single
 	// gRPC message; the server handler opens a tx and calls this N
@@ -470,6 +480,8 @@ type Querier interface {
 	// resolving `needs_artifacts` on a downstream job. An empty paths
 	// array returns all of that job's artefacts.
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
+	// Admin UI hot path. Sorted by name so the table reads alphabetical.
+	ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	// Cross-project timeline: most recent runs first. Carries the
 	// pipeline + project names so list views can link without per-row
@@ -615,6 +627,7 @@ type Querier interface {
 	// fields mean "cleared". Intentionally does NOT touch
 	// last_fired_at — that's bookkeeping the ticker owns.
 	UpdateProjectCron(ctx context.Context, arg UpdateProjectCronParams) error
+	UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfileParams) error
 	// Project-level poll fallback applied to the synthesized implicit
 	// material. Zero nanoseconds disables polling (default). UI at
 	// /projects/{slug}/settings writes through this. updated_at only

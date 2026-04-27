@@ -243,6 +243,24 @@ type Run struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type RunnerProfile struct {
+	ID                pgtype.UUID
+	Name              string
+	Description       string
+	Engine            string
+	DefaultImage      string
+	DefaultCpuRequest string
+	DefaultCpuLimit   string
+	DefaultMemRequest string
+	DefaultMemLimit   string
+	MaxCpu            string
+	MaxMem            string
+	Tags              []string
+	Config            []byte
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+}
+
 type ScmCredential struct {
 	ID               pgtype.UUID
 	Provider         string

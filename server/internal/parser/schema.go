@@ -142,6 +142,16 @@ type JobDef struct {
 	Retry          int                 `yaml:"retry,omitempty"`
 	Secrets        []string            `yaml:"secrets,omitempty"`
 	Tags           []string            `yaml:"tags,omitempty"`
+	// Agent picks a runner profile by name and may add extra tag
+	// constraints. Profile resolution happens at apply time; the
+	// resolved profile's tags merge (union) with the job's own
+	// tags before scheduler matching, so neither origin can grant
+	// itself a silent veto over the other.
+	Agent          *AgentDef           `yaml:"agent,omitempty"`
+	// Resources is the optional compute envelope. Empty fields fall
+	// back to the resolved profile's defaults; non-empty fields are
+	// validated against profile.max at apply time.
+	Resources      *ResourcesDef       `yaml:"resources,omitempty"`
 	// Docker = true asks the agent for docker API access inside the
 	// job (socket mount / DinD sidecar). Pair with `image:` to spawn
 	// sibling containers for testcontainers / docker compose.
@@ -222,4 +232,28 @@ type WhenDef struct {
 	Status []string `yaml:"status,omitempty"` // success|failure|always
 	Branch []string `yaml:"branch,omitempty"`
 	Event  []string `yaml:"event,omitempty"`
+}
+
+// AgentDef binds a job to a named runner_profiles row at apply
+// time. `tags` here are extra constraints the user wants ON TOP of
+// what the profile already requires — the resolved set is the union
+// of both. Empty profile = legacy behaviour (any agent matching the
+// job's own tags).
+type AgentDef struct {
+	Profile string   `yaml:"profile,omitempty"`
+	Tags    []string `yaml:"tags,omitempty"`
+}
+
+// ResourcesDef mirrors corev1.ResourceRequirements but kept as
+// strings so the YAML stays human-friendly ("100m", "256Mi"). The
+// apply-time validator parses them into k8s quantities and checks
+// against the resolved profile's max_cpu / max_mem.
+type ResourcesDef struct {
+	Requests *ResourceQty `yaml:"requests,omitempty"`
+	Limits   *ResourceQty `yaml:"limits,omitempty"`
+}
+
+type ResourceQty struct {
+	CPU    string `yaml:"cpu,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
 }

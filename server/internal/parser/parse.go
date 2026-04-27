@@ -234,6 +234,30 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		Tags:      jd.Tags,
 		Docker:    jd.Docker,
 	}
+	if jd.Agent != nil {
+		j.Profile = jd.Agent.Profile
+		// Profile-supplied tags merge later (apply-time resolver),
+		// not here — `j.Tags` is what the user typed at job scope.
+		// AgentDef.Tags supplements job.Tags for users who want to
+		// add a tag without leaving it implicit.
+		if len(jd.Agent.Tags) > 0 {
+			j.Tags = append(append([]string(nil), j.Tags...), jd.Agent.Tags...)
+		}
+	}
+	if jd.Resources != nil {
+		if jd.Resources.Requests != nil {
+			j.Resources.Requests = domain.ResourceQuantities{
+				CPU:    jd.Resources.Requests.CPU,
+				Memory: jd.Resources.Requests.Memory,
+			}
+		}
+		if jd.Resources.Limits != nil {
+			j.Resources.Limits = domain.ResourceQuantities{
+				CPU:    jd.Resources.Limits.CPU,
+				Memory: jd.Resources.Limits.Memory,
+			}
+		}
+	}
 	if jd.Artifacts != nil {
 		j.ArtifactPaths = append([]string(nil), jd.Artifacts.Paths...)
 		// De-dup against required — a path in both lists is kept

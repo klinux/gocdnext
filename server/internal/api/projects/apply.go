@@ -256,6 +256,16 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	injectImplicitProjectMaterial(pipelines, effectiveSCM)
 
+	// Resolve runner profiles BEFORE persisting so a YAML that
+	// names a non-existent profile or breaches the cap fails the
+	// apply outright — no half-applied state, no surprise at
+	// dispatch time. Resolution mutates pipelines in place
+	// (merged tags, default image, defaulted resources).
+	if err := h.store.ResolveProfiles(r.Context(), pipelines); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        req.Slug,
 		Name:        req.Name,

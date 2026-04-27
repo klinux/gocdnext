@@ -280,10 +280,43 @@ type CronMaterial struct {
 	Expression string `json:"expression"`
 }
 
+// ResourceSpec is the per-job compute envelope. Strings carry the
+// canonical Kubernetes format ("100m", "256Mi", "1.5", "2Gi"); empty
+// means "not set" and falls back to the resolved profile defaults.
+// Engines that don't honour resources (Shell) ignore the field; the
+// scheduler still validates it against the profile cap so a YAML
+// that breaches policy is caught at apply time regardless of where
+// it would have ultimately landed.
+type ResourceSpec struct {
+	Requests ResourceQuantities
+	Limits   ResourceQuantities
+}
+
+// ResourceQuantities mirrors corev1.ResourceList but with string
+// values to keep the domain layer free of k8s imports.
+type ResourceQuantities struct {
+	CPU    string
+	Memory string
+}
+
+// IsZero reports whether the spec carries no user-set values.
+// Used to decide if profile defaults should fill in.
+func (r ResourceSpec) IsZero() bool {
+	return r.Requests == (ResourceQuantities{}) && r.Limits == (ResourceQuantities{})
+}
+
 type Job struct {
 	Name      string
 	Stage     string
 	Image     string
+	// Profile names a runner_profiles row resolved at apply time.
+	// Empty = "any agent, any defaults" (legacy behaviour).
+	Profile   string
+	// Resources is the user-declared compute envelope. Profile
+	// defaults fill the empty fields; profile.max caps non-empty
+	// fields; values surviving validation flow into the runtime
+	// (k8s Pod resources).
+	Resources ResourceSpec
 	Needs     []string
 	Tasks     []Task
 	Settings  map[string]string

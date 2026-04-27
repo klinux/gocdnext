@@ -141,6 +141,28 @@ func jobToDef(j domain.Job) JobDef {
 		Tags:      j.Tags,
 		Docker:    j.Docker,
 	}
+	if j.Profile != "" {
+		// Round-trip emits the profile under `agent.profile`; the
+		// extra tags AgentDef carries on parse already merged into
+		// j.Tags, so emitting them again would double-count on the
+		// next parse. Keep them only at the top-level `tags:` field.
+		def.Agent = &AgentDef{Profile: j.Profile}
+	}
+	if !j.Resources.IsZero() {
+		def.Resources = &ResourcesDef{}
+		if j.Resources.Requests != (domain.ResourceQuantities{}) {
+			def.Resources.Requests = &ResourceQty{
+				CPU:    j.Resources.Requests.CPU,
+				Memory: j.Resources.Requests.Memory,
+			}
+		}
+		if j.Resources.Limits != (domain.ResourceQuantities{}) {
+			def.Resources.Limits = &ResourceQty{
+				CPU:    j.Resources.Limits.CPU,
+				Memory: j.Resources.Limits.Memory,
+			}
+		}
+	}
 	for _, t := range j.Tasks {
 		if t.Script != "" {
 			// Parser concatenates `script:` list entries into a

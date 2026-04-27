@@ -88,6 +88,58 @@ jobs:
 	assertPipelineEqual(t, first, second, out)
 }
 
+func TestEmit_RoundTripsAgentProfileAndResources(t *testing.T) {
+	const src = `
+name: demo
+stages: [build]
+materials: [{ manual: true }]
+jobs:
+  build:
+    stage: build
+    script: [make]
+    tags: [linux]
+    agent:
+      profile: gpu
+    resources:
+      requests: { cpu: "500m", memory: "512Mi" }
+      limits:   { cpu: "2", memory: "2Gi" }
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "demo")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	second, err := ParseNamed(strings.NewReader(string(out)), "p", "demo")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, out)
+	}
+
+	want := domain.Job{
+		Name: "build", Stage: "build",
+		Profile: "gpu",
+		Tags:    []string{"linux"},
+		Resources: domain.ResourceSpec{
+			Requests: domain.ResourceQuantities{CPU: "500m", Memory: "512Mi"},
+			Limits:   domain.ResourceQuantities{CPU: "2", Memory: "2Gi"},
+		},
+	}
+	for _, p := range []*domain.Pipeline{first, second} {
+		got := p.Jobs[0]
+		if got.Profile != want.Profile {
+			t.Fatalf("profile = %q, want %q", got.Profile, want.Profile)
+		}
+		if got.Resources != want.Resources {
+			t.Fatalf("resources = %+v, want %+v", got.Resources, want.Resources)
+		}
+		if len(got.Tags) != 1 || got.Tags[0] != "linux" {
+			t.Fatalf("tags = %+v, want [linux]", got.Tags)
+		}
+	}
+}
+
 func TestEmit_StageOrderStable(t *testing.T) {
 	// Jobs are unordered in domain (slice built from map iteration in
 	// the parser). The emitter has to bucket them by the pipeline's

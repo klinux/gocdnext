@@ -161,6 +161,64 @@ jobs:
 	}
 }
 
+func TestParse_AgentProfile(t *testing.T) {
+	// `agent.profile` binds the job to a runner profile by name.
+	// `agent.tags` are extra constraints that union with the
+	// top-level `tags:` so neither origin can silently veto the
+	// other at scheduling.
+	y := `
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    script: [make build]
+    tags: [linux]
+    agent:
+      profile: gpu
+      tags: [accelerator-v100]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	j := p.Jobs[0]
+	if j.Profile != "gpu" {
+		t.Fatalf("profile = %q, want gpu", j.Profile)
+	}
+	want := []string{"linux", "accelerator-v100"}
+	if len(j.Tags) != len(want) || j.Tags[0] != want[0] || j.Tags[1] != want[1] {
+		t.Fatalf("tags = %+v, want %v", j.Tags, want)
+	}
+}
+
+func TestParse_Resources(t *testing.T) {
+	y := `
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    script: [make]
+    resources:
+      requests: { cpu: "500m", memory: "512Mi" }
+      limits:   { cpu: "2",    memory: "2Gi" }
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r := p.Jobs[0].Resources
+	if r.Requests.CPU != "500m" || r.Requests.Memory != "512Mi" {
+		t.Fatalf("requests = %+v", r.Requests)
+	}
+	if r.Limits.CPU != "2" || r.Limits.Memory != "2Gi" {
+		t.Fatalf("limits = %+v", r.Limits)
+	}
+}
+
 func TestParse_DockerFlagParsed(t *testing.T) {
 	// `docker: true` on a job opts into a docker-capable runtime —
 	// the parser just lifts the bool into domain.Job.Docker; the
