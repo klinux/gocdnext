@@ -176,7 +176,7 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
             >
               <path
                 d="M 0 0 L 10 5 L 0 10 z"
-                className="fill-muted-foreground/70"
+                className="fill-muted-foreground"
               />
             </marker>
           </defs>
@@ -188,12 +188,12 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
                 cx={p.fromX}
                 cy={p.fromY}
                 r={3}
-                className="fill-muted-foreground/70"
+                className="fill-muted-foreground"
               />
               <path
                 d={orthogonalPath(p)}
-                className="fill-none stroke-muted-foreground/70"
-                strokeWidth={2}
+                className="fill-none stroke-muted-foreground"
+                strokeWidth={2.5}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 markerEnd="url(#dag-arrow-head)"
@@ -312,7 +312,7 @@ function orthogonalPath(p: EdgeGeometry): string {
     return `M ${p.fromX} ${p.fromY} L ${p.toX} ${p.toY}`;
   }
   const r = Math.min(
-    10,
+    18,
     (trunkY - p.fromY) / 2 - 1,
     (p.toY - trunkY) / 2 - 1,
     Math.abs(dx) / 2 - 2,
