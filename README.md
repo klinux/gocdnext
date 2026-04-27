@@ -127,6 +127,36 @@ jobs:
     script: [go test ./...]
 ```
 
+## Install with Helm
+
+Each `vX.Y.Z` tag publishes the chart to two registries — pick whichever
+your tooling prefers.
+
+**Classic Helm repo (gh-pages)**:
+
+```bash
+helm repo add gocdnext https://klinux.github.io/gocdnext
+helm repo update
+helm install gocd gocdnext/gocdnext --version 0.1.0 \
+  --set devDatabase.enabled=true \
+  --set agent.tokenSecret.value="$(openssl rand -hex 32)" \
+  --set webhookToken.value="$(openssl rand -hex 32)" \
+  --set secretKey.value="$(openssl rand -hex 32)" \
+  --set artifactsSignKey.value="$(openssl rand -hex 32)"
+```
+
+**OCI** (Helm 3.8+):
+
+```bash
+helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.1.0 \
+  --set devDatabase.enabled=true \
+  ...
+```
+
+The container images (`ghcr.io/klinux/gocdnext-{server,agent,web}`) are
+multi-arch (amd64 + arm64) and tagged `latest` on every push to `main`,
+plus `vX.Y.Z` / `X.Y` / `X` on tag releases.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the design. TL;DR:

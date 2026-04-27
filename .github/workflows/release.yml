@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write    # chart job pushes to the gh-pages branch
   packages: write
 
 env:
@@ -78,8 +78,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: images
     if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # chart-releaser-style merge needs history
 
       - uses: azure/setup-helm@v4
         with:
@@ -88,8 +93,72 @@ jobs:
       - name: Login to GHCR (helm)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Package and push chart
+      - id: pkg
+        name: Package chart
         run: |
           version="${GITHUB_REF#refs/tags/v}"
-          helm package charts/gocdnext --version "$version" --app-version "$version"
-          helm push "gocdnext-${version}.tgz" "oci://${REGISTRY}/${{ github.repository_owner }}/charts"
+          mkdir -p .cr-release-packages
+          helm package charts/gocdnext \
+            --version "$version" \
+            --app-version "$version" \
+            --destination .cr-release-packages
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package=.cr-release-packages/gocdnext-${version}.tgz" >> "$GITHUB_OUTPUT"
+
+      - name: Publish OCI artefact
+        run: |
+          helm push "${{ steps.pkg.outputs.package }}" "oci://${REGISTRY}/${OWNER}/charts"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish to gh-pages
+        run: |
+          set -euo pipefail
+          version="${{ steps.pkg.outputs.version }}"
+          pkg="${{ steps.pkg.outputs.package }}"
+          pages_url="https://${OWNER}.github.io/${REPO}"
+
+          # First-run safety: create the gh-pages branch as orphan
+          # when the repo doesn't have it yet. Subsequent runs check
+          # out the existing one and merge new packages into the
+          # existing index.yaml.
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages
+            git worktree add pages gh-pages
+          else
+            git worktree add --orphan -b gh-pages pages
+            (cd pages && git rm -rf . 2>/dev/null || true)
+          fi
+
+          cp "$pkg" pages/
+
+          # --merge keeps every prior version in the index instead
+          # of pruning to whatever's in the directory now. Without
+          # this `helm repo` clients only see the current release.
+          if [ -f pages/index.yaml ]; then
+            helm repo index pages --url "$pages_url" --merge pages/index.yaml
+          else
+            helm repo index pages --url "$pages_url"
+          fi
+
+          # Commit + push only if something changed (idempotent for
+          # re-runs of the same tag).
+          (
+            cd pages
+            git add .
+            if git diff --staged --quiet; then
+              echo "no chart changes — skipping push"
+              exit 0
+            fi
+            git commit -m "chart: gocdnext-${version}"
+            git push origin gh-pages
+          )
+
+      - name: Create GitHub Release with chart asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pkg.outputs.package }}
+          fail_on_unmatched_files: true
