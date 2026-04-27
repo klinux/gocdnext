@@ -125,6 +125,7 @@ func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader runne
 		Uploader:      uploader,
 		Cache:         cache,
 		Engine:        c.cfg.Engine,
+		AgentTags:     append([]string(nil), c.cfg.Tags...),
 	})
 }
 

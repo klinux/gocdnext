@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,6 +163,34 @@ func TestKubernetes_BuildPodSpec_PartialResourcesArePartial(t *testing.T) {
 	// CPU limit must NOT be set when not provided — kubelet defaults it.
 	if _, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
 		t.Errorf("cpu limit should not be set when empty")
+	}
+}
+
+func TestKubernetes_BuildPodSpec_LabelsCarryProfileAndTags(t *testing.T) {
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script:    "make",
+		Profile:   "gpu",
+		AgentTags: []string{"linux", "amd64", "with space"},
+	})
+	if got := pod.Labels["gocdnext.io/profile"]; got != "gpu" {
+		t.Errorf("profile label = %q, want gpu", got)
+	}
+	if _, ok := pod.Labels["gocdnext.io/tag-linux"]; !ok {
+		t.Errorf("expected gocdnext.io/tag-linux label, got %+v", pod.Labels)
+	}
+	if _, ok := pod.Labels["gocdnext.io/tag-amd64"]; !ok {
+		t.Errorf("expected gocdnext.io/tag-amd64 label, got %+v", pod.Labels)
+	}
+	// "with space" violates DNS-1123 → dropped silently.
+	for k := range pod.Labels {
+		if strings.Contains(k, "space") {
+			t.Errorf("malformed tag should have been dropped, found %q", k)
+		}
+	}
+	// Static labels still present.
+	if pod.Labels["app.kubernetes.io/managed-by"] != "gocdnext-agent" {
+		t.Errorf("static labels missing: %+v", pod.Labels)
 	}
 }
 

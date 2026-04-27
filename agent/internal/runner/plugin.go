@@ -50,6 +50,8 @@ func (r *Runner) runPlugin(
 		Script:    "", // empty → engine runs image's ENTRYPOINT as-is
 		Network:   network,
 		Resources: assignmentResources(a),
+		Profile:   a.GetProfile(),
+		AgentTags: append([]string(nil), r.cfg.AgentTags...),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},

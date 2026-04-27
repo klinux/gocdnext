@@ -49,6 +49,12 @@ type Config struct {
 	// deployments set engine.Kubernetes.
 	Engine engine.Engine
 
+	// AgentTags is the set of tags this agent advertises at register
+	// time. The runner forwards them to engine.ScriptSpec so the
+	// Kubernetes engine can paint each as a Pod label — a quick way
+	// to ask "which pool ran this job" without reading agent logs.
+	AgentTags []string
+
 	// KeepWorkspace keeps the job's working directory on disk after Execute
 	// finishes. Useful for debugging; default is to remove on success.
 	KeepWorkspace bool
@@ -416,6 +422,8 @@ func (r *Runner) runScript(ctx context.Context, workDir, script, image string, d
 		Docker:    docker,
 		Network:   network,
 		Resources: assignmentResources(a),
+		Profile:   a.GetProfile(),
+		AgentTags: append([]string(nil), r.cfg.AgentTags...),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},

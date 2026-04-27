@@ -275,11 +275,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      k.nowName(),
 			Namespace: k.cfg.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":       "gocdnext-job",
-				"app.kubernetes.io/component":  "task",
-				"app.kubernetes.io/managed-by": "gocdnext-agent",
-			},
+			Labels:    podLabels(spec),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:    corev1.RestartPolicyNever,
@@ -473,4 +469,57 @@ func parseQuantitySilent(s string) (resource.Quantity, bool) {
 		return resource.Quantity{}, false
 	}
 	return q, true
+}
+
+// podLabels stamps the static gocdnext labels plus the resolved
+// profile name + agent tags so operators can grep workloads by
+// pool ("kubectl get pods -l gocdnext.io/profile=gpu") without
+// trawling agent logs. Tag values that violate DNS-1123 land
+// silently dropped — k8s would reject the Pod creation otherwise,
+// and the diagnostic value (which-pool) is preserved by the
+// surviving labels.
+func podLabels(spec ScriptSpec) map[string]string {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "gocdnext-job",
+		"app.kubernetes.io/component":  "task",
+		"app.kubernetes.io/managed-by": "gocdnext-agent",
+	}
+	if v, ok := sanitizeLabelValue(spec.Profile); ok {
+		labels["gocdnext.io/profile"] = v
+	}
+	for _, t := range spec.AgentTags {
+		v, ok := sanitizeLabelValue(t)
+		if !ok {
+			continue
+		}
+		labels["gocdnext.io/tag-"+v] = "true"
+	}
+	return labels
+}
+
+// sanitizeLabelValue is a best-effort DNS-1123 check: k8s allows
+// label values matching `[a-z0-9A-Z]([-_.a-z0-9A-Z]*[a-z0-9A-Z])?`,
+// up to 63 chars. Anything else is dropped — admin-provided tag
+// names are typically already conformant; this guards against the
+// rare typo from making a Pod uncreatable.
+func sanitizeLabelValue(s string) (string, bool) {
+	if s == "" || len(s) > 63 {
+		return "", false
+	}
+	first := s[0]
+	last := s[len(s)-1]
+	if !isLabelEdge(first) || !isLabelEdge(last) {
+		return "", false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !isLabelEdge(c) && c != '-' && c != '_' && c != '.' {
+			return "", false
+		}
+	}
+	return s, true
+}
+
+func isLabelEdge(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }

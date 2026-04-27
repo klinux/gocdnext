@@ -43,6 +43,17 @@ type ScriptSpec struct {
 	// Honoured by the Kubernetes engine (mapped into the Pod
 	// container's resources block); ignored by Shell/Docker.
 	Resources Resources
+	// Profile is the name of the resolved runner profile that
+	// produced this script. The Kubernetes engine surfaces it as
+	// a Pod label so operators can grep `kubectl get pods -l
+	// gocdnext.io/profile=gpu` to see which workloads landed on
+	// which pool.
+	Profile string
+	// AgentTags carries the running agent's own tags so the
+	// Kubernetes engine can paint each as a label on the spawned
+	// Pod. Helps debug "which pool ran this job" without trawling
+	// agent logs.
+	AgentTags []string
 	OnLine    func(stream, text string)
 }
 
