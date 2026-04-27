@@ -8,6 +8,6 @@ keywords:
   - ci
   - cd
   - pipelines
-home: https://github.com/gocdnext/gocdnext
+home: https://github.com/klinux/gocdnext
 sources:
-  - https://github.com/gocdnext/gocdnext
+  - https://github.com/klinux/gocdnext

@@ -16,7 +16,16 @@ import (
 	"github.com/gocdnext/gocdnext/agent/internal/rpc"
 )
 
+// Version is stamped at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 func main() {
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-v" || a == "version" {
+			fmt.Println(Version)
+			return
+		}
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 

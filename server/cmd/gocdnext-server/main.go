@@ -49,7 +49,16 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 )
 
+// Version is stamped at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 func main() {
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-v" || a == "version" {
+			fmt.Println(Version)
+			return
+		}
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)

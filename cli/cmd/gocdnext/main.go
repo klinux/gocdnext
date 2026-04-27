@@ -21,10 +21,14 @@ import (
 	"github.com/gocdnext/gocdnext/cli/internal/secrets"
 )
 
+// Version is stamped at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 func main() {
 	root := &cobra.Command{
 		Use:           "gocdnext",
 		Short:         "gocdnext CLI",
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

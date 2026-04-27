@@ -2,7 +2,7 @@
 # Every env-driven knob of the server/agent binaries is surfaced here.
 
 global:
-  imageRegistry: ghcr.io/gocdnext
+  imageRegistry: ghcr.io/klinux
   imagePullSecrets: []
   logLevel: info
 

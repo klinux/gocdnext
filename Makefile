@@ -2,6 +2,8 @@
 
 BIN_DIR := bin
 GO := go
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.Version=$(VERSION)
 
 # Pull local dev config in so targets like migrate-up + admin-* see
 # GOCDNEXT_DATABASE_URL without the operator having to export it by
@@ -25,9 +27,9 @@ env-setup:
 ## build: build server, agent and cli
 build:
 	@mkdir -p $(BIN_DIR)
-	cd server && $(GO) build -o ../$(BIN_DIR)/gocdnext-server ./cmd/gocdnext-server
-	cd agent  && $(GO) build -o ../$(BIN_DIR)/gocdnext-agent  ./cmd/gocdnext-agent
-	cd cli    && $(GO) build -o ../$(BIN_DIR)/gocdnext        ./cmd/gocdnext
+	cd server && $(GO) build -ldflags '$(LDFLAGS)' -o ../$(BIN_DIR)/gocdnext-server ./cmd/gocdnext-server
+	cd agent  && $(GO) build -ldflags '$(LDFLAGS)' -o ../$(BIN_DIR)/gocdnext-agent  ./cmd/gocdnext-agent
+	cd cli    && $(GO) build -ldflags '$(LDFLAGS)' -o ../$(BIN_DIR)/gocdnext        ./cmd/gocdnext
 
 ## test: run all go tests with the race detector
 test:
