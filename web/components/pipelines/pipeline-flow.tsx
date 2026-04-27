@@ -207,9 +207,10 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
         <div
           key={`layer-${layerIdx}`}
           // Extra top padding on downstream layers leaves room for
-          // the connecting arc between rows so it doesn't hit the
-          // card border.
-          className={cn(layerIdx > 0 && "pt-6")}
+          // the orthogonal trunk to land in the gutter above without
+          // brushing the card border. ~28px gives the arrow head +
+          // trunk + arc roughly twice their own height.
+          className={cn(layerIdx > 0 && "pt-7")}
         >
           <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
             {layer.map((name) => {
@@ -280,43 +281,56 @@ type EdgeGeometry = {
   toY: number;
 };
 
-// orthogonalPath routes the connector through the gutter between
-// layers using right-angle elbows with rounded corners — never
-// across the body of an intermediate card. Layout:
-//   1. drop straight from source toward gutter Y
-//   2. arc into a horizontal trunk
-//   3. travel laterally to the target column
-//   4. arc back to vertical
-//   5. drop into target top
-// Corner radius collapses gracefully when columns are close enough
-// that a 10px corner would overshoot the available run.
+// orthogonalPath routes the connector with right-angle elbows
+// through the gutter ABOVE the target card. Anchoring the trunk
+// close to the destination (rather than at midY between source
+// and target) keeps the horizontal segment inside the target's
+// own gutter — that strip is empty by construction, even when
+// the grid wraps and a same-layer card lands between source row
+// and target row at the visual midpoint. The vertical drop from
+// source still runs at source-X; in our 3-col grid that column
+// is overwhelmingly empty between source row and trunk row.
+//
+// Path:
+//   1. drop straight from source down to trunkY
+//   2. arc into horizontal
+//   3. travel laterally to target column
+//   4. arc into vertical
+//   5. drop into target.top
 function orthogonalPath(p: EdgeGeometry): string {
   const dx = p.toX - p.fromX;
-  const dy = p.toY - p.fromY;
-  // Place the horizontal trunk at the midpoint between layers so
-  // both arcs read as symmetric. Clamp to a sensible distance from
-  // each card so the line clearly leaves one before entering the
-  // next.
-  const midY = p.fromY + dy / 2;
+  const trunkOffset = 14;
+  const trunkY = p.toY - trunkOffset;
   // Same column → straight vertical, no elbows.
   if (Math.abs(dx) < 4) {
     return `M ${p.fromX} ${p.fromY} L ${p.toX} ${p.toY}`;
   }
-  const r = Math.min(10, Math.abs(dy) / 2 - 2, Math.abs(dx) / 2 - 2);
+  // If trunk would land above source (target is above us — never
+  // happens in a topo DAG today, but defensive), fall back to a
+  // straight diagonal so the path still renders.
+  if (trunkY <= p.fromY) {
+    return `M ${p.fromX} ${p.fromY} L ${p.toX} ${p.toY}`;
+  }
+  const r = Math.min(
+    10,
+    (trunkY - p.fromY) / 2 - 1,
+    (p.toY - trunkY) / 2 - 1,
+    Math.abs(dx) / 2 - 2,
+  );
   if (r <= 1) {
     // Available run too tight for arcs — degrade to a sharp elbow.
-    return `M ${p.fromX} ${p.fromY} L ${p.fromX} ${midY} L ${p.toX} ${midY} L ${p.toX} ${p.toY}`;
+    return `M ${p.fromX} ${p.fromY} L ${p.fromX} ${trunkY} L ${p.toX} ${trunkY} L ${p.toX} ${p.toY}`;
   }
-  const sweepLeft = dx > 0 ? 1 : 0; // SVG arc sweep flag direction
-  const sweepRight = dx > 0 ? 1 : 0;
+  const sweepIn = dx > 0 ? 1 : 0; // arc direction into the trunk
+  const sweepOut = dx > 0 ? 0 : 1; // arc direction out of the trunk into target
   const xAfterFirstArc = p.fromX + (dx > 0 ? r : -r);
   const xBeforeSecondArc = p.toX - (dx > 0 ? r : -r);
   return [
     `M ${p.fromX} ${p.fromY}`,
-    `L ${p.fromX} ${midY - r}`,
-    `A ${r} ${r} 0 0 ${sweepLeft} ${xAfterFirstArc} ${midY}`,
-    `L ${xBeforeSecondArc} ${midY}`,
-    `A ${r} ${r} 0 0 ${1 - sweepRight} ${p.toX} ${midY + r}`,
+    `L ${p.fromX} ${trunkY - r}`,
+    `A ${r} ${r} 0 0 ${sweepIn} ${xAfterFirstArc} ${trunkY}`,
+    `L ${xBeforeSecondArc} ${trunkY}`,
+    `A ${r} ${r} 0 0 ${sweepOut} ${p.toX} ${trunkY + r}`,
     `L ${p.toX} ${p.toY}`,
   ].join(" ");
 }
