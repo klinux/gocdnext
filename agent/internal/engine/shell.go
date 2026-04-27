@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
 // DefaultDockerSocketPath is where every docker engine (moby +
@@ -57,6 +58,26 @@ func (*Shell) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 			spec.Image)
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", spec.Script)
+	// Run sh in its own process group so we can SIGKILL the whole
+	// tree on cancel. Without this, exec.CommandContext kills only
+	// the immediate sh process — when sh forks (bash on most distros)
+	// instead of exec-replacing (dash on Ubuntu), the actual workload
+	// (`sleep`, the user's command) is reparented to init and keeps
+	// running, holding the stdout/stderr FDs open. The runner's
+	// scanners then block on read forever and Cancel() never returns.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// Negative pid → kill every process in the group, not just
+		// the leader. Errors here are best-effort: the process may
+		// have already exited, in which case "no such process" is
+		// fine. Cancel must return nil/error per stdlib contract,
+		// but we don't fail the cancel if kill fails — the watcher
+		// loop only logs.
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir
 	}
