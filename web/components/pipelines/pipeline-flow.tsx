@@ -211,7 +211,7 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
           // card border.
           className={cn(layerIdx > 0 && "pt-6")}
         >
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
             {layer.map((name) => {
               const pipeline = pipelinesByName.get(name);
               if (!pipeline) return null;
