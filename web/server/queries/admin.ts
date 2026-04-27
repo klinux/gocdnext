@@ -131,6 +131,32 @@ export async function listAdminGroups(): Promise<{ groups: AdminGroup[] }> {
   return readJSON<{ groups: AdminGroup[] }>("/api/v1/admin/groups");
 }
 
+export type AdminRunnerProfile = {
+  id: string;
+  name: string;
+  description: string;
+  engine: string;
+  default_image: string;
+  default_cpu_request: string;
+  default_cpu_limit: string;
+  default_mem_request: string;
+  default_mem_limit: string;
+  max_cpu: string;
+  max_mem: string;
+  tags: string[];
+  config?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listAdminRunnerProfiles(): Promise<{
+  profiles: AdminRunnerProfile[];
+}> {
+  return readJSON<{ profiles: AdminRunnerProfile[] }>(
+    "/api/v1/admin/runner-profiles",
+  );
+}
+
 export async function listAdminGroupMembers(
   groupID: string,
 ): Promise<{ members: AdminGroupMember[] }> {

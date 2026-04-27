@@ -9,6 +9,7 @@ import {
   BookOpen,
   Boxes,
   ClipboardList,
+  Cpu,
   KeyRound,
   LayoutDashboard,
   Package,
@@ -78,6 +79,7 @@ const adminNav: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
   { label: "Users", href: "/admin/users", icon: Users },
   { label: "Groups", href: "/admin/groups", icon: UsersRound },
+  { label: "Profiles", href: "/admin/profiles", icon: Cpu },
   { label: "Audit", href: "/admin/audit", icon: ClipboardList },
   { label: "Secrets", href: "/admin/secrets", icon: KeyRound },
 ];
