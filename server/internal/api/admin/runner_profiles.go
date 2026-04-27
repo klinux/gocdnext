@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -165,14 +166,14 @@ func (h *Handler) DeleteRunnerProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	count, err := h.store.CountPipelinesUsingRunnerProfile(r.Context(), existing.Name)
+	usage, err := h.store.CountRunnerProfileUsage(r.Context(), existing.Name)
 	if err != nil {
 		h.log.Error("admin runner-profiles: count usage", "name", existing.Name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if count > 0 {
-		http.Error(w, "profile is referenced by one or more pipelines — remove the references before deleting", http.StatusConflict)
+	if usage.Pipelines > 0 || usage.ActiveRuns > 0 {
+		http.Error(w, formatProfileUsageError(usage), http.StatusConflict)
 		return
 	}
 	if err := h.store.DeleteRunnerProfile(r.Context(), id); err != nil {
@@ -184,6 +185,28 @@ func (h *Handler) DeleteRunnerProfile(w http.ResponseWriter, r *http.Request) {
 		store.AuditActionRunnerProfileDelete, "runner_profile", id.String(),
 		map[string]any{"name": existing.Name})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// formatProfileUsageError builds the 409 message the admin sees
+// when a delete is blocked. Always names both axes (pipelines +
+// active runs) so the operator knows whether the fix is "rewire
+// pipelines" (static), "wait for runs to drain" (dynamic), or both.
+func formatProfileUsageError(u store.RunnerProfileUsage) string {
+	switch {
+	case u.Pipelines > 0 && u.ActiveRuns > 0:
+		return fmt.Sprintf(
+			"profile is referenced by %d pipeline(s) with %d active run(s) — rewire the pipelines and wait for the runs to drain before deleting",
+			u.Pipelines, u.ActiveRuns)
+	case u.Pipelines > 0:
+		return fmt.Sprintf(
+			"profile is referenced by %d pipeline(s) — remove the references before deleting",
+			u.Pipelines)
+	case u.ActiveRuns > 0:
+		return fmt.Sprintf(
+			"profile is still bound to %d active run(s) (queued or running) — wait for them to finish or cancel them before deleting",
+			u.ActiveRuns)
+	}
+	return "profile is in use"
 }
 
 // --- helpers ---

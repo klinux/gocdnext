@@ -164,24 +164,45 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, id uuid.UUID, in Runner
 	return nil
 }
 
-// CountPipelinesUsingRunnerProfile returns the number of pipeline
-// definitions whose JSONB has a job with `Profile == name`. Cheap
-// gate the delete handler runs before issuing the destructive op
-// — exposes the dependency without a deep scan in the handler.
-func (s *Store) CountPipelinesUsingRunnerProfile(ctx context.Context, name string) (int, error) {
-	var n int
+// RunnerProfileUsage counts the live dependents of a profile that
+// the delete-guard cares about: pipelines whose definition still
+// names the profile, and queued/running runs against any such
+// pipeline. Either > 0 means a delete is unsafe.
+type RunnerProfileUsage struct {
+	Pipelines  int
+	ActiveRuns int
+}
+
+// CountRunnerProfileUsage returns the live dependent counts in one
+// round-trip. Callers (today: the admin delete handler) use it to
+// surface a unified error explaining what blocks the delete — N
+// pipelines still reference the profile, M runs are still in flight.
+//
+// Pipelines is queried directly via jsonb_path_exists. ActiveRuns
+// joins runs to those pipelines and filters status IN ('queued',
+// 'running'), capturing both rewire-then-delete races and
+// in-flight dispatches.
+func (s *Store) CountRunnerProfileUsage(ctx context.Context, name string) (RunnerProfileUsage, error) {
+	var u RunnerProfileUsage
 	err := s.pool.QueryRow(ctx, `
-        SELECT COUNT(*) FROM pipelines
-        WHERE jsonb_path_exists(
-            definition,
-            '$.Jobs[*] ? (@.Profile == $name)',
-            jsonb_build_object('name', $1::text)
+        WITH refs AS (
+            SELECT id FROM pipelines
+            WHERE jsonb_path_exists(
+                definition,
+                '$.Jobs[*] ? (@.Profile == $name)',
+                jsonb_build_object('name', $1::text)
+            )
         )
-    `, name).Scan(&n)
+        SELECT
+            (SELECT COUNT(*) FROM refs)::INT AS pipelines,
+            (SELECT COUNT(*) FROM runs r
+                WHERE r.status IN ('queued', 'running')
+                  AND r.pipeline_id IN (SELECT id FROM refs))::INT AS active_runs
+    `, name).Scan(&u.Pipelines, &u.ActiveRuns)
 	if err != nil {
-		return 0, fmt.Errorf("store: count pipelines using profile %q: %w", name, err)
+		return RunnerProfileUsage{}, fmt.Errorf("store: count profile usage %q: %w", name, err)
 	}
-	return n, nil
+	return u, nil
 }
 
 // DeleteRunnerProfile removes the row. Caller must have already

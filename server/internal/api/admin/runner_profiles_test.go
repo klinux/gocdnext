@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
@@ -15,17 +18,17 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-func newRunnerProfileHandler(t *testing.T) (*store.Store, http.Handler) {
+func newRunnerProfileHandler(t *testing.T) (*store.Store, *pgxpool.Pool, http.Handler) {
 	t.Helper()
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	sweeper := retention.New(s, nil, quietLogger())
 	h := adminapi.NewHandler(s, sweeper, nil, adminapi.WiringState{}, quietLogger())
-	return s, mount(h)
+	return s, pool, mount(h)
 }
 
 func TestRunnerProfiles_CreateListUpdateDelete(t *testing.T) {
-	_, srv := newRunnerProfileHandler(t)
+	_, _, srv := newRunnerProfileHandler(t)
 
 	// Create
 	body := bytes.NewBufferString(`{
@@ -84,7 +87,7 @@ func TestRunnerProfiles_CreateListUpdateDelete(t *testing.T) {
 }
 
 func TestRunnerProfiles_RejectsBadEngine(t *testing.T) {
-	_, srv := newRunnerProfileHandler(t)
+	_, _, srv := newRunnerProfileHandler(t)
 	body := bytes.NewBufferString(`{"name":"foo","engine":"docker"}`)
 	rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", body)
 	if rr.Code != http.StatusBadRequest {
@@ -93,7 +96,7 @@ func TestRunnerProfiles_RejectsBadEngine(t *testing.T) {
 }
 
 func TestRunnerProfiles_DuplicateNameConflict(t *testing.T) {
-	_, srv := newRunnerProfileHandler(t)
+	_, _, srv := newRunnerProfileHandler(t)
 	body := func() *bytes.Buffer {
 		return bytes.NewBufferString(`{"name":"twice","engine":"kubernetes"}`)
 	}
@@ -106,8 +109,57 @@ func TestRunnerProfiles_DuplicateNameConflict(t *testing.T) {
 	}
 }
 
+func TestRunnerProfiles_DeleteBlockedByActiveRun(t *testing.T) {
+	// Pipeline rewired to drop the profile reference, BUT a queued
+	// run still exists against it. The legacy guard (pipelines-only)
+	// would let the delete through and orphan the in-flight run;
+	// the extended guard catches it.
+	s, pool, srv := newRunnerProfileHandler(t)
+	ctx := context.Background()
+
+	created, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
+		Name: "still-running", Engine: "kubernetes",
+	})
+	if err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	apply, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "demo",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "p1",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{Type: domain.MaterialManual, Fingerprint: "manual-1"}},
+			Jobs: []domain.Job{{
+				Name: "build", Stage: "build", Profile: "still-running",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := apply.Pipelines[0].PipelineID
+
+	// Insert a queued run row directly so we can drive the guard
+	// without a full webhook flow.
+	if _, err := pool.Exec(ctx, `
+        INSERT INTO runs (id, pipeline_id, counter, status, cause, revisions, started_at)
+        VALUES (gen_random_uuid(), $1, 1, 'queued', 'manual', '{}'::jsonb, NOW())
+    `, pipelineID); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	rr := request(srv, http.MethodDelete, "/api/v1/admin/runner-profiles/"+created.ID.String(), nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("delete status = %d, want 409, body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "active run") &&
+		!strings.Contains(rr.Body.String(), "1 pipeline") {
+		t.Fatalf("error message did not mention active runs or pipelines: %q", rr.Body.String())
+	}
+}
+
 func TestRunnerProfiles_DeleteBlockedWhenInUse(t *testing.T) {
-	s, srv := newRunnerProfileHandler(t)
+	s, _, srv := newRunnerProfileHandler(t)
 	ctx := context.Background()
 
 	created, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
