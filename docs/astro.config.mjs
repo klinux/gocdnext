@@ -43,21 +43,40 @@ export default defineConfig({
           items: [
             { label: "Helm install", link: "/install/helm/" },
             { label: "Local dev", link: "/install/local-dev/" },
+            { label: "Authentication", link: "/install/auth/" },
+            { label: "Upgrade runbook", link: "/install/upgrade/" },
           ],
         },
         {
           label: "Author pipelines",
           items: [
             { label: "Quickstart", link: "/pipelines/quickstart/" },
+            { label: "YAML reference", link: "/pipelines/yaml-reference/" },
             {
               label: "Recipes",
               items: [
                 {
-                  label: "Go monorepo (test + build)",
+                  label: "Go monorepo",
                   link: "/pipelines/recipes/go-monorepo/",
                 },
                 {
-                  label: "Deploy to a VPS via SSH",
+                  label: "Maven (Java/Kotlin)",
+                  link: "/pipelines/recipes/maven/",
+                },
+                {
+                  label: "Gradle (Android, JVM)",
+                  link: "/pipelines/recipes/gradle/",
+                },
+                {
+                  label: "Node frontend",
+                  link: "/pipelines/recipes/node/",
+                },
+                {
+                  label: "Python (pip / Poetry / uv)",
+                  link: "/pipelines/recipes/python/",
+                },
+                {
+                  label: "Deploy via SSH",
                   link: "/pipelines/recipes/ssh-deploy/",
                 },
               ],
