@@ -13,6 +13,11 @@ import {
 
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
 import { PipelineStageStrip } from "@/components/pipelines/pipeline-stage-strip";
 import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-sheet.client";
@@ -202,31 +207,50 @@ const borderToneClasses: Record<StatusTone, string> = {
 // to a "+N" overflow label.
 function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
   const visible = upstreams.slice(0, 2);
-  const overflow = upstreams.length - visible.length;
+  const overflow = upstreams.slice(2);
   return (
     <span className="flex items-center gap-1">
       {visible.map((e) => (
-        <span
-          key={`${e.from_pipeline}:${e.stage ?? ""}`}
-          className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0 font-mono text-[10px] text-sky-700 dark:text-sky-400"
-          title={
-            e.stage
+        <Tooltip key={`${e.from_pipeline}:${e.stage ?? ""}`}>
+          <TooltipTrigger
+            render={
+              <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0 font-mono text-[10px] text-sky-700 dark:text-sky-400" />
+            }
+          >
+            ← {e.from_pipeline}
+            {e.stage ? (
+              <span className="text-sky-700/70 dark:text-sky-400/70">
+                .{e.stage}
+              </span>
+            ) : null}
+          </TooltipTrigger>
+          <TooltipContent>
+            {e.stage
               ? `Triggered when ${e.from_pipeline}.${e.stage} passes`
-              : `Triggered by ${e.from_pipeline}`
-          }
-        >
-          ← {e.from_pipeline}
-          {e.stage ? (
-            <span className="text-sky-700/70 dark:text-sky-400/70">
-              .{e.stage}
-            </span>
-          ) : null}
-        </span>
+              : `Triggered by ${e.from_pipeline}`}
+          </TooltipContent>
+        </Tooltip>
       ))}
-      {overflow > 0 ? (
-        <span className="font-mono text-[10px] text-sky-700/70 dark:text-sky-400/70">
-          +{overflow}
-        </span>
+      {overflow.length > 0 ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span className="cursor-help font-mono text-[10px] text-sky-700/70 dark:text-sky-400/70" />
+            }
+          >
+            +{overflow.length}
+          </TooltipTrigger>
+          <TooltipContent>
+            <ul className="space-y-0.5">
+              {overflow.map((e) => (
+                <li key={`${e.from_pipeline}:${e.stage ?? ""}`}>
+                  {e.from_pipeline}
+                  {e.stage ? `.${e.stage}` : ""}
+                </li>
+              ))}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
       ) : null}
     </span>
   );
