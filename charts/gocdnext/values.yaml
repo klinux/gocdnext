@@ -133,6 +133,30 @@ artifacts:
     ensureBucket: false
     existingSecret: ""
 
+# ----- logs ------------------------------------------------------------
+# log_lines is RANGE-partitioned by month (migration 00027); the
+# sweeper rotates partitions ahead and drops them past `retention`.
+# Cold archive (slice 3) ships terminal-job logs to the artefact
+# backend and drops the rows — toggle via `archive.policy`.
+logs:
+  # Retention window for the partitioned heap. Go duration string;
+  # empty disables drops (partitions still get created ahead of
+  # time so writes always land somewhere).
+  retention: ""
+  # Months of partitions kept stocked ahead of "now". Daily ticks
+  # refresh; 3 is enough cushion for a multi-day server outage.
+  monthsAhead: 3
+  archive:
+    # auto | on | off
+    #   auto - on iff an artefact backend is wired (default)
+    #   on   - force on; boot fails without a backend
+    #   off  - cluster-wide kill switch (per-project flags ignored)
+    policy: auto
+    # In-memory cache for decoded archives. Bytes; 0 disables.
+    # 256 MiB by default — comfortable for a single-node deployment,
+    # dwarfed by typical /runs/[id] reload savings.
+    cacheBytes: "268435456"
+
 # ----- webhook / secret / signing keys --------------------------------
 
 webhookToken:

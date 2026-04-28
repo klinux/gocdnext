@@ -113,6 +113,16 @@ spec:
               value: /var/run/secrets/gcs/service-account.json
             {{- end }}
             {{- end }}
+            {{- if .Values.logs.retention }}
+            - name: GOCDNEXT_LOG_RETENTION
+              value: {{ .Values.logs.retention | quote }}
+            {{- end }}
+            - name: GOCDNEXT_LOG_MONTHS_AHEAD
+              value: {{ .Values.logs.monthsAhead | quote }}
+            - name: GOCDNEXT_LOG_ARCHIVE
+              value: {{ .Values.logs.archive.policy | quote }}
+            - name: GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES
+              value: {{ .Values.logs.archive.cacheBytes | quote }}
             {{- if .Values.runnerProfiles }}
             - name: GOCDNEXT_RUNNER_PROFILES_FILE
               value: /etc/gocdnext/runner-profiles.yaml
