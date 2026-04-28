@@ -77,6 +77,14 @@ spec:
               value: {{ .Values.artifacts.projectQuotaBytes | quote }}
             - name: GOCDNEXT_ARTIFACTS_GLOBAL_QUOTA_BYTES
               value: {{ .Values.artifacts.globalQuotaBytes | quote }}
+            - name: GOCDNEXT_ARTIFACTS_MAX_BODY_MB
+              value: {{ .Values.artifacts.maxBodyMB | quote }}
+            - name: GOCDNEXT_CACHE_TTL_DAYS
+              value: {{ .Values.caches.ttlDays | quote }}
+            - name: GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES
+              value: {{ .Values.caches.projectQuotaBytes | quote }}
+            - name: GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES
+              value: {{ .Values.caches.globalQuotaBytes | quote }}
             {{- if eq .Values.artifacts.backend "s3" }}
             - name: GOCDNEXT_ARTIFACTS_S3_BUCKET
               value: {{ .Values.artifacts.s3.bucket | quote }}
@@ -123,6 +131,14 @@ spec:
               value: {{ .Values.logs.archive.policy | quote }}
             - name: GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES
               value: {{ .Values.logs.archive.cacheBytes | quote }}
+            {{- if .Values.webhookPublicURL }}
+            - name: GOCDNEXT_WEBHOOK_PUBLIC_URL
+              value: {{ .Values.webhookPublicURL | quote }}
+            {{- end }}
+            {{- if .Values.pluginCatalogDir }}
+            - name: GOCDNEXT_PLUGIN_CATALOG_DIR
+              value: {{ .Values.pluginCatalogDir | quote }}
+            {{- end }}
             {{- if .Values.runnerProfiles }}
             - name: GOCDNEXT_RUNNER_PROFILES_FILE
               value: /etc/gocdnext/runner-profiles.yaml

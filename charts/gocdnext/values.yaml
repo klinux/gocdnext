@@ -115,6 +115,11 @@ artifacts:
   keepLastPerPipeline: 30
   projectQuotaBytes: "107374182400"  # 100 GiB
   globalQuotaBytes: "0"              # disabled
+  # Per-request body cap on artefact uploads. Anything bigger
+  # than this is rejected by the receiver before touching disk —
+  # protects against a wedged agent streaming TBs into the
+  # backend. MB-units to match the env var.
+  maxBodyMB: 2048
 
   filesystem:
     storageClass: ""
@@ -132,6 +137,21 @@ artifacts:
     projectID: ""
     ensureBucket: false
     existingSecret: ""
+
+# ----- caches ----------------------------------------------------------
+# Per-job content-addressable caches uploaded by the cache plugin.
+# Eviction is layered: TTL by last_accessed_at, then per-project
+# quota, then global quota. 0 disables a layer.
+caches:
+  # Days of inactivity before a `ready` cache row is evicted. 0 =
+  # disabled (TTL pass off; quotas alone govern eviction).
+  ttlDays: 30
+  # Per-project soft cap, bytes. 0 disables — TTL-only eviction.
+  projectQuotaBytes: "0"
+  # Global hard cap, bytes. 0 disables. Applied LRU across every
+  # project AFTER the per-project pass so heavy tenants pay from
+  # their own caches before the pressure spreads.
+  globalQuotaBytes: "0"
 
 # ----- logs ------------------------------------------------------------
 # log_lines is RANGE-partitioned by month (migration 00027); the
@@ -185,6 +205,20 @@ artifactsSignKey:
 # server at it via GOCDNEXT_RUNNER_PROFILES_FILE. The server upserts
 # each entry by `name` on boot — UI-created profiles not listed here
 # are LEFT ALONE, so admin and Helm-managed catalogues coexist.
+# Externally-reachable webhook callback URL handed to GitHub
+# when registering a repo webhook. Empty = use server.publicBase
+# (right thing for most deployments). Set this when the public
+# base differs from the webhook base (e.g. a public smee.io tunnel
+# in dev while the dashboard sits on a private hostname).
+webhookPublicURL: ""
+
+# Plugin catalog directory the server scans on boot for
+# `<dir>/plugin.yaml` manifests. Empty disables manifest-based
+# `with:` validation — pipelines using `uses:` still work, just
+# aren't checked against the catalog. Bind a ConfigMap or volume
+# here if you ship operator-curated manifests.
+pluginCatalogDir: ""
+
 runnerProfiles: []
 # Example:
 # runnerProfiles:
