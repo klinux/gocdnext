@@ -5,7 +5,9 @@
 package store
 
 import (
+	"context"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,11 +29,32 @@ type Store struct {
 	pool       *pgxpool.Pool
 	q          *db.Queries
 	authCipher *crypto.Cipher // optional; set via SetAuthCipher
+	// logArchiveSrc is set when log archiving is wired (the artifact
+	// backend serves the underlying bytes). nil = no fallback; the
+	// read path stays on log_lines exclusively.
+	logArchiveSrc LogArchiveSource
+}
+
+// LogArchiveSource is the narrow byte-reader interface the read
+// fallback needs. Implemented by artifacts.Store (and any test
+// fake). Lifted to an interface so this package doesn't depend on
+// internal/artifacts.
+type LogArchiveSource interface {
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
 // New wraps an already-configured pgx pool.
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, q: db.New(pool)}
+}
+
+// WithLogArchiveSource enables the archived-logs read fallback.
+// When set, reads against a job whose logs_archive_uri is
+// populated stream bytes through this source instead of querying
+// log_lines (which by then have been deleted).
+func (s *Store) WithLogArchiveSource(src LogArchiveSource) *Store {
+	s.logArchiveSrc = src
+	return s
 }
 
 // FingerprintFor produces the canonical fingerprint for a git material. Thin

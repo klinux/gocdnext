@@ -15,6 +15,8 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/checks"
+	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -48,6 +50,14 @@ type AgentService struct {
 	// "feature off" — handleLogLine still persists, just skips the
 	// publish. Set via WithLogBroker.
 	logBroker *logstream.Broker
+
+	// logArchiver: optional cold-archive worker. When set + the
+	// effective per-job policy resolves to true, handleJobResult
+	// enqueues the just-completed job for archiving. nil means
+	// "feature off" — log_lines stays in the partitioned heap.
+	// Set via WithLogArchiver.
+	logArchiver       *logarchive.Archiver
+	logArchivePolicy  domain.LogArchivePolicy
 
 	// jobRunIDCache memoises jobID → runID lookups so the log hot
 	// path avoids a DB round-trip per line. Job IDs are stable for
@@ -111,6 +121,17 @@ func (a *AgentService) WithChecksReporter(r *checks.Reporter) *AgentService {
 // back to polling).
 func (a *AgentService) WithLogBroker(b *logstream.Broker) *AgentService {
 	a.logBroker = b
+	return a
+}
+
+// WithLogArchiver wires the cold-archive worker + the global policy
+// the handler uses to resolve "should this job ship its logs?". The
+// policy is folded with each job's project flag at terminal time,
+// so the per-job decision tracks live admin changes without a
+// service restart.
+func (a *AgentService) WithLogArchiver(arch *logarchive.Archiver, policy domain.LogArchivePolicy) *AgentService {
+	a.logArchiver = arch
+	a.logArchivePolicy = policy
 	return a
 }
 

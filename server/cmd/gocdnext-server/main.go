@@ -38,6 +38,8 @@ import (
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/polling"
@@ -255,6 +257,22 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		WithLogBroker(logBroker)
 	if artifactStore != nil {
 		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour)
+	}
+
+	// Cold-archive wiring. Resolution table (see docs/log-archive.md
+	// when it lands): off => never; on => fail boot if no backend;
+	// auto => on iff backend is wired. Per-project flags layer on
+	// top inside maybeEnqueueArchive at terminal time.
+	policy := domain.LogArchivePolicy(cfg.LogArchive)
+	if policy == domain.LogArchiveOn && artifactStore == nil {
+		logger.Error("GOCDNEXT_LOG_ARCHIVE=on requires an artefact backend")
+		os.Exit(1)
+	}
+	var logArchiver *logarchive.Archiver
+	if artifactStore != nil && policy != domain.LogArchiveOff {
+		logArchiver = logarchive.New(st, artifactStore, logger)
+		agentService = agentService.WithLogArchiver(logArchiver, policy)
+		st = st.WithLogArchiveSource(artifactStore)
 	}
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
 	if artifactStore != nil {
@@ -541,6 +559,14 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 			logger.Error("artifact sweeper exited", "err", err)
 		}
 	}()
+
+	if logArchiver != nil {
+		go func() {
+			if err := logArchiver.Run(ctx); err != nil {
+				logger.Error("log archiver exited", "err", err)
+			}
+		}()
+	}
 
 	<-ctx.Done()
 	logger.Info("shutdown signal received")

@@ -187,6 +187,9 @@ type Querier interface {
 	// Used by the reaper to disambiguate "at max attempts" from "already
 	// handled" when ReclaimJobForRetry returned no rows.
 	GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAttemptRow, error)
+	// Returns the archive URI + timestamp for one job_run. NULL URI =
+	// not archived; reads should fall through to log_lines.
+	GetJobLogArchive(ctx context.Context, id pgtype.UUID) (GetJobLogArchiveRow, error)
 	// Resolves pipeline_id + project_id + agent_id for a (job_run_id,
 	// run_id) pair. Used by the RequestArtifactUpload handler to authorise
 	// + derive the FKs. Returns ErrNoRows if job_run_id doesn't belong to
@@ -212,6 +215,13 @@ type Querier interface {
 	// cheaper than two for what's already the hottest path on
 	// webhook-heavy workloads.
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	// Surfaces the per-project log_archive_enabled override (NULL =
+	// inherit global). Used by the archiver when resolving effective
+	// policy for a job.
+	GetProjectArchiveFlag(ctx context.Context, id pgtype.UUID) (*bool, error)
+	// Joins runs -> pipelines -> projects so the archive hook can
+	// resolve a job_run's project flag in one query.
+	GetProjectArchiveFlagForRun(ctx context.Context, id pgtype.UUID) (*bool, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
 	GetProjectCron(ctx context.Context, id pgtype.UUID) (ProjectCron, error)
@@ -559,6 +569,10 @@ type Querier interface {
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.
 	MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error)
+	// Stamps the archive URI on the job_run and timestamps the moment.
+	// The DELETE of log_lines for this job is a separate step in the
+	// archiver so a failed update doesn't leak rows.
+	MarkJobLogsArchived(ctx context.Context, arg MarkJobLogsArchivedParams) error
 	// Called by the ticker after a successful evaluation+fire cycle.
 	// Same-second fires are gated via the cron expression parser
 	// reading last_fired_at — the store update closes that loop.

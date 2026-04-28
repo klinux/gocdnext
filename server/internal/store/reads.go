@@ -869,7 +869,24 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 		if logsPerJob > 0 {
 			var logs []LogLineSummary
 			jobUUID := fromPgUUID(j.ID)
-			if cursor, has := since[jobUUID]; has {
+			cursor, hasCursor := since[jobUUID]
+
+			// Cold-archive fallback: if the job's logs were shipped
+			// to the artifact store the rows in log_lines are gone.
+			// Read the archive instead. A nil source (no archive
+			// backend wired) returns (nil, nil) and we drop back to
+			// the DB path — same as a job that never archived.
+			arch, archErr := s.GetJobLogArchive(ctx, jobUUID)
+			if archErr != nil {
+				return RunDetail{}, fmt.Errorf("store: archive lookup: %w", archErr)
+			}
+			if arch.HasArchive && s.logArchiveSrc != nil {
+				if hasCursor {
+					logs, err = s.archivedAfterSeq(ctx, arch.URI, cursor, int64(logsPerJob))
+				} else {
+					logs, err = s.archivedTail(ctx, arch.URI, logsPerJob)
+				}
+			} else if hasCursor {
 				// Delta fetch: lines strictly after the cursor,
 				// oldest-first, capped at logsPerJob.
 				logs, err = s.logLinesAfterSeq(ctx, jobUUID, cursor, int64(logsPerJob))

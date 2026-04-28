@@ -64,6 +64,13 @@ type Config struct {
 	// the sweeper keeps stocked. Default 3 — daily ticks refresh.
 	LogMonthsAhead int
 
+	// LogArchive flips cold-archive on/off. "auto" enables it iff
+	// an artifact backend is wired (most useful default), "on"
+	// forces it (boot fails when no backend), "off" disables
+	// cluster-wide regardless of per-project flags. Empty defaults
+	// to "auto".
+	LogArchive string
+
 	// RunnerProfilesFile is an optional path to a YAML the server
 	// reads on boot and upserts into the runner_profiles table. The
 	// Helm chart points this at a ConfigMap-mounted file so operators
@@ -244,6 +251,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_LOG_MONTHS_AHEAD: %w", err)
 	}
 	c.LogMonthsAhead = logMonthsAhead
+
+	c.LogArchive = strings.ToLower(strings.TrimSpace(env("GOCDNEXT_LOG_ARCHIVE", "auto")))
+	switch c.LogArchive {
+	case "", "auto", "on", "off":
+		// Recognised; "" normalises to "auto" later in the resolver.
+		if c.LogArchive == "" {
+			c.LogArchive = "auto"
+		}
+	default:
+		return nil, fmt.Errorf("GOCDNEXT_LOG_ARCHIVE: unknown value %q (want auto, on, off)", c.LogArchive)
+	}
 
 	c.PluginCatalogDir = env("GOCDNEXT_PLUGIN_CATALOG_DIR", "")
 

@@ -1,3 +1,34 @@
+-- name: GetJobLogArchive :one
+-- Returns the archive URI + timestamp for one job_run. NULL URI =
+-- not archived; reads should fall through to log_lines.
+SELECT logs_archive_uri, logs_archived_at
+FROM job_runs WHERE id = $1;
+
+-- name: MarkJobLogsArchived :exec
+-- Stamps the archive URI on the job_run and timestamps the moment.
+-- The DELETE of log_lines for this job is a separate step in the
+-- archiver so a failed update doesn't leak rows.
+UPDATE job_runs
+SET logs_archive_uri = $2, logs_archived_at = NOW()
+WHERE id = $1;
+
+-- name: GetProjectArchiveFlag :one
+-- Surfaces the per-project log_archive_enabled override (NULL =
+-- inherit global). Used by the archiver when resolving effective
+-- policy for a job.
+SELECT log_archive_enabled
+FROM projects WHERE id = $1;
+
+-- name: GetProjectArchiveFlagForRun :one
+-- Joins runs -> pipelines -> projects so the archive hook can
+-- resolve a job_run's project flag in one query.
+SELECT p.log_archive_enabled
+FROM job_runs j
+JOIN runs r ON r.id = j.run_id
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p ON p.id = pl.project_id
+WHERE j.id = $1;
+
 -- name: InsertLogLine :exec
 -- Agents send log lines with a per-(job_run_id) monotonic seq plus the
 -- timestamp the line was emitted on the runner. The PK is the triple

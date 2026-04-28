@@ -292,6 +292,13 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 		"stage_done", comp.StageCompleted, "stage_status", comp.StageStatus,
 		"run_done", comp.RunCompleted, "run_status", comp.RunStatus)
 
+	// Cold-archive enqueue. The archiver runs async — the worker
+	// pool will read the job's log_lines, gzip + upload, then drop
+	// the rows. Per-project override is resolved live so an admin
+	// toggle takes effect on the next terminating job without a
+	// service restart.
+	a.maybeEnqueueArchive(ctx, log, comp.JobRunID)
+
 	if comp.RunCompleted {
 		a.checksReporter.ReportRunCompleted(ctx, comp.RunID, comp.RunStatus)
 	}
@@ -321,6 +328,26 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 		if fanErr != nil {
 			log.Warn("fanout: partial failure", "err", fanErr, "stage_run_id", comp.StageRunID)
 		}
+	}
+}
+
+// maybeEnqueueArchive folds the global policy with the per-project
+// flag and submits the job to the archiver when the result is true.
+// Always nil-safe — when WithLogArchiver wasn't called the function
+// short-circuits before any DB lookup.
+func (a *AgentService) maybeEnqueueArchive(ctx context.Context, log logger, jobRunID uuid.UUID) {
+	if a.logArchiver == nil {
+		return
+	}
+	flag, err := a.store.GetProjectLogArchiveFlagForJob(ctx, jobRunID)
+	if err != nil {
+		log.Warn("logarchive: project flag lookup failed; falling back to global",
+			"job_run_id", jobRunID, "err", err)
+		// Continue with flag=nil so the resolver uses the global
+		// policy alone — better to archive than to silently skip.
+	}
+	if domain.EffectiveLogArchive(a.logArchivePolicy, flag, true) {
+		a.logArchiver.Submit(jobRunID)
 	}
 }
 

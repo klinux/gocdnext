@@ -143,6 +143,8 @@ type JobRun struct {
 	Decision            *string
 	ApproverGroups      []string
 	ApprovalRequired    int32
+	LogsArchiveUri      *string
+	LogsArchivedAt      pgtype.Timestamptz
 }
 
 type JobRunApproval struct {
@@ -205,14 +207,15 @@ type Pipeline struct {
 }
 
 type Project struct {
-	ID            pgtype.UUID
-	Slug          string
-	Name          string
-	Description   *string
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
-	ConfigPath    string
-	Notifications []byte
+	ID                pgtype.UUID
+	Slug              string
+	Name              string
+	Description       *string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	ConfigPath        string
+	Notifications     []byte
+	LogArchiveEnabled *bool
 }
 
 type ProjectCron struct {

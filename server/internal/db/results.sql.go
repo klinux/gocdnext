@@ -127,6 +127,58 @@ func (q *Queries) CompleteStageRun(ctx context.Context, arg CompleteStageRunPara
 	return err
 }
 
+const getJobLogArchive = `-- name: GetJobLogArchive :one
+SELECT logs_archive_uri, logs_archived_at
+FROM job_runs WHERE id = $1
+`
+
+type GetJobLogArchiveRow struct {
+	LogsArchiveUri *string
+	LogsArchivedAt pgtype.Timestamptz
+}
+
+// Returns the archive URI + timestamp for one job_run. NULL URI =
+// not archived; reads should fall through to log_lines.
+func (q *Queries) GetJobLogArchive(ctx context.Context, id pgtype.UUID) (GetJobLogArchiveRow, error) {
+	row := q.db.QueryRow(ctx, getJobLogArchive, id)
+	var i GetJobLogArchiveRow
+	err := row.Scan(&i.LogsArchiveUri, &i.LogsArchivedAt)
+	return i, err
+}
+
+const getProjectArchiveFlag = `-- name: GetProjectArchiveFlag :one
+SELECT log_archive_enabled
+FROM projects WHERE id = $1
+`
+
+// Surfaces the per-project log_archive_enabled override (NULL =
+// inherit global). Used by the archiver when resolving effective
+// policy for a job.
+func (q *Queries) GetProjectArchiveFlag(ctx context.Context, id pgtype.UUID) (*bool, error) {
+	row := q.db.QueryRow(ctx, getProjectArchiveFlag, id)
+	var log_archive_enabled *bool
+	err := row.Scan(&log_archive_enabled)
+	return log_archive_enabled, err
+}
+
+const getProjectArchiveFlagForRun = `-- name: GetProjectArchiveFlagForRun :one
+SELECT p.log_archive_enabled
+FROM job_runs j
+JOIN runs r ON r.id = j.run_id
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p ON p.id = pl.project_id
+WHERE j.id = $1
+`
+
+// Joins runs -> pipelines -> projects so the archive hook can
+// resolve a job_run's project flag in one query.
+func (q *Queries) GetProjectArchiveFlagForRun(ctx context.Context, id pgtype.UUID) (*bool, error) {
+	row := q.db.QueryRow(ctx, getProjectArchiveFlagForRun, id)
+	var log_archive_enabled *bool
+	err := row.Scan(&log_archive_enabled)
+	return log_archive_enabled, err
+}
+
 const getRunProgress = `-- name: GetRunProgress :one
 SELECT
     COUNT(*) FILTER (WHERE status IN ('queued', 'running'))::BIGINT AS unfinished,
@@ -224,6 +276,25 @@ func (q *Queries) InsertLogLine(ctx context.Context, arg InsertLogLineParams) er
 		arg.At,
 		arg.Text,
 	)
+	return err
+}
+
+const markJobLogsArchived = `-- name: MarkJobLogsArchived :exec
+UPDATE job_runs
+SET logs_archive_uri = $2, logs_archived_at = NOW()
+WHERE id = $1
+`
+
+type MarkJobLogsArchivedParams struct {
+	ID             pgtype.UUID
+	LogsArchiveUri *string
+}
+
+// Stamps the archive URI on the job_run and timestamps the moment.
+// The DELETE of log_lines for this job is a separate step in the
+// archiver so a failed update doesn't leak rows.
+func (q *Queries) MarkJobLogsArchived(ctx context.Context, arg MarkJobLogsArchivedParams) error {
+	_, err := q.db.Exec(ctx, markJobLogsArchived, arg.ID, arg.LogsArchiveUri)
 	return err
 }
 
