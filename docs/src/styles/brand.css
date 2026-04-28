@@ -1,0 +1,37 @@
+/*
+ * Re-point Starlight's accent palette at gocdnext's brand-teal scale
+ * so links/focus/active states match the portal (web/app/globals.css
+ * --brand-50..950 at oklch hue 195). Without this the docs default
+ * to Starlight's blue, which clashes with the teal logo + the screens
+ * the README and docs landing show off.
+ *
+ * Starlight's three accent slots, by intent:
+ *   --sl-color-accent-low  : subtle tinted background (badges, tag bg)
+ *   --sl-color-accent      : the main accent (links, focus ring, dot)
+ *   --sl-color-accent-high : high-contrast accent (active link text)
+ *
+ * In light mode the gradient runs darker→brand→lighter; in dark mode
+ * it inverts so contrast works either way.
+ */
+
+:root[data-theme="dark"] {
+  --sl-color-accent-low: oklch(0.30 0.06 195); /* --brand-900 */
+  --sl-color-accent: oklch(0.58 0.14 195);     /* --brand-600 */
+  --sl-color-accent-high: oklch(0.88 0.07 195); /* --brand-200 */
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: oklch(0.93 0.04 195); /* --brand-100 */
+  --sl-color-accent: oklch(0.58 0.14 195);     /* --brand-600 */
+  --sl-color-accent-high: oklch(0.30 0.06 195); /* --brand-900 */
+}
+
+/*
+ * Starlight's homepage hero "primary" action button takes the accent
+ * tokens above for its background — no separate override needed. But
+ * the splash hero's tagline gets a subtle accent too; bump it to the
+ * brand teal so the eye lands on the right call to action.
+ */
+.hero .tagline a {
+  color: var(--sl-color-accent-high);
+}

@@ -13,6 +13,10 @@ export default defineConfig({
       title: "gocdnext",
       description:
         "Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest.",
+      // Re-point Starlight's accent palette at the brand teal scale
+      // used by the portal — see src/styles/brand.css for the
+      // OKLCH stops that mirror web/app/globals.css --brand-*.
+      customCss: ["./src/styles/brand.css"],
       // The SVG bakes the wordmark in (`gocd` in currentColor +
       // `next` in brand teal — mirroring web/components/brand/logo.tsx)
       // so replacesTitle keeps the docs header visually identical
