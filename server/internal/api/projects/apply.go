@@ -34,6 +34,13 @@ type Handler struct {
 	fetcher       configsync.Fetcher
 	artifactStore artifacts.Store
 	pluginCatalog *plugins.Catalog
+
+	// Cold-archive surface: surfaced to the project-settings UI so
+	// it can render a resolved-state hint without an admin RPC.
+	// hasArtifactBackend doubles as the operational gate — even an
+	// "on" project flag can't archive when the backend is absent.
+	logArchivePolicy   string
+	hasArtifactBackend bool
 }
 
 // WithPluginCatalog plugs the catalog used to validate `with:`
@@ -51,6 +58,16 @@ func (h *Handler) WithPluginCatalog(c *plugins.Catalog) *Handler {
 // but leave the blob orphaned, which is worse than just refusing.
 func (h *Handler) WithArtifactStore(st artifacts.Store) *Handler {
 	h.artifactStore = st
+	h.hasArtifactBackend = st != nil
+	return h
+}
+
+// WithLogArchivePolicy stamps the global archive policy ("auto",
+// "on", "off") so the per-project log-archive endpoint can echo
+// it back. The settings UI uses both this value and
+// hasArtifactBackend to compute the resolved-state hint.
+func (h *Handler) WithLogArchivePolicy(policy string) *Handler {
+	h.logArchivePolicy = policy
 	return h
 }
 

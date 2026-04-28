@@ -35,6 +35,7 @@ const (
 	AuditActionWebhookSecretRotate = "webhook_secret.rotate"
 	AuditActionProjectNotifsSet    = "project_notifications.set"
 	AuditActionProjectPollSet      = "project_poll.set"
+	AuditActionProjectLogArchiveSet = "project_log_archive.set"
 	AuditActionProjectCronCreate   = "project_cron.create"
 	AuditActionProjectCronUpdate   = "project_cron.update"
 	AuditActionProjectCronDelete   = "project_cron.delete"

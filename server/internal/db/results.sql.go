@@ -161,6 +161,20 @@ func (q *Queries) GetProjectArchiveFlag(ctx context.Context, id pgtype.UUID) (*b
 	return log_archive_enabled, err
 }
 
+const getProjectArchiveFlagBySlug = `-- name: GetProjectArchiveFlagBySlug :one
+SELECT log_archive_enabled
+FROM projects WHERE slug = $1
+`
+
+// Surfaces the per-project log_archive_enabled override by slug —
+// what the project-settings UI reads when populating the toggle.
+func (q *Queries) GetProjectArchiveFlagBySlug(ctx context.Context, slug string) (*bool, error) {
+	row := q.db.QueryRow(ctx, getProjectArchiveFlagBySlug, slug)
+	var log_archive_enabled *bool
+	err := row.Scan(&log_archive_enabled)
+	return log_archive_enabled, err
+}
+
 const getProjectArchiveFlagForRun = `-- name: GetProjectArchiveFlagForRun :one
 SELECT p.log_archive_enabled
 FROM job_runs j
@@ -279,6 +293,93 @@ func (q *Queries) InsertLogLine(ctx context.Context, arg InsertLogLineParams) er
 	return err
 }
 
+const listJobsNeedingArchive = `-- name: ListJobsNeedingArchive :many
+SELECT j.id, j.run_id, p.log_archive_enabled
+FROM job_runs j
+JOIN runs r ON r.id = j.run_id
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p ON p.id = pl.project_id
+WHERE j.logs_archive_uri IS NULL
+  AND j.finished_at IS NOT NULL
+  AND j.finished_at < NOW() - $1::INTERVAL
+  AND j.status NOT IN ('queued', 'running')
+LIMIT $2::int
+`
+
+type ListJobsNeedingArchiveParams struct {
+	Grace pgtype.Interval
+	Lim   int32
+}
+
+type ListJobsNeedingArchiveRow struct {
+	ID                pgtype.UUID
+	RunID             pgtype.UUID
+	LogArchiveEnabled *bool
+}
+
+// Reconciliation #1: terminal job_runs that should have been archived
+// but weren't. The submit-on-terminal hook is best-effort; the queue
+// can drop on saturation, the server can crash mid-flight, the
+// artefact backend can be unreachable. The sweeper picks up the
+// stragglers. Joined to the project's archive flag so the sweeper
+// skips jobs whose project opted out — global=on policy may still
+// have per-project off overrides.
+//
+// "Terminal" here = finished_at IS NOT NULL AND status not in ('queued','running').
+// A grace window guards against racing the in-flight submit so the
+// sweeper doesn't spam the queue with jobs already being archived.
+func (q *Queries) ListJobsNeedingArchive(ctx context.Context, arg ListJobsNeedingArchiveParams) ([]ListJobsNeedingArchiveRow, error) {
+	rows, err := q.db.Query(ctx, listJobsNeedingArchive, arg.Grace, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobsNeedingArchiveRow{}
+	for rows.Next() {
+		var i ListJobsNeedingArchiveRow
+		if err := rows.Scan(&i.ID, &i.RunID, &i.LogArchiveEnabled); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrphanedArchivedJobs = `-- name: ListOrphanedArchivedJobs :many
+SELECT DISTINCT j.id
+FROM job_runs j
+WHERE j.logs_archive_uri IS NOT NULL
+  AND EXISTS (SELECT 1 FROM log_lines l WHERE l.job_run_id = j.id)
+LIMIT $1::int
+`
+
+// Reconciliation #2: jobs whose URI is stamped but log_lines rows
+// still exist. Happens when the archiver's DELETE step fails after
+// the URI update lands. The read path already serves from the
+// archive, so the rows are pure cost — sweep them on a slow tick.
+func (q *Queries) ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listOrphanedArchivedJobs, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markJobLogsArchived = `-- name: MarkJobLogsArchived :exec
 UPDATE job_runs
 SET logs_archive_uri = $2, logs_archived_at = NOW()
@@ -328,4 +429,23 @@ func (q *Queries) SkipJobRun(ctx context.Context, id pgtype.UUID) (SkipJobRunRow
 		&i.Name,
 	)
 	return i, err
+}
+
+const updateProjectArchiveFlagBySlug = `-- name: UpdateProjectArchiveFlagBySlug :exec
+UPDATE projects
+SET log_archive_enabled = $2
+WHERE slug = $1
+`
+
+type UpdateProjectArchiveFlagBySlugParams struct {
+	Slug              string
+	LogArchiveEnabled *bool
+}
+
+// Sets the per-project log_archive_enabled override. NULL value
+// means "inherit global" — explicitly clearing the row by writing
+// a NULL works through the same path.
+func (q *Queries) UpdateProjectArchiveFlagBySlug(ctx context.Context, arg UpdateProjectArchiveFlagBySlugParams) error {
+	_, err := q.db.Exec(ctx, updateProjectArchiveFlagBySlug, arg.Slug, arg.LogArchiveEnabled)
+	return err
 }

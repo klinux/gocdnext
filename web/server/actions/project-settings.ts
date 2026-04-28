@@ -63,3 +63,52 @@ export async function setProjectPollInterval(
     };
   }
 }
+
+// log_archive_enabled override on the projects table. Three valid
+// states: true (always archive), false (never archive), null (use
+// the global default the operator set via GOCDNEXT_LOG_ARCHIVE).
+const setLogArchiveSchema = z.object({
+  slug: z.string().min(1),
+  enabled: z.union([z.boolean(), z.null()]),
+});
+
+export async function setProjectLogArchive(
+  input: z.infer<typeof setLogArchiveSchema>,
+): Promise<ActionResult> {
+  const parsed = setLogArchiveSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/log-archive`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "PUT",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      body: JSON.stringify({ enabled: parsed.data.enabled }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "save failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}

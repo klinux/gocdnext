@@ -19,6 +19,20 @@ WHERE id = $1;
 SELECT log_archive_enabled
 FROM projects WHERE id = $1;
 
+-- name: GetProjectArchiveFlagBySlug :one
+-- Surfaces the per-project log_archive_enabled override by slug —
+-- what the project-settings UI reads when populating the toggle.
+SELECT log_archive_enabled
+FROM projects WHERE slug = $1;
+
+-- name: UpdateProjectArchiveFlagBySlug :exec
+-- Sets the per-project log_archive_enabled override. NULL value
+-- means "inherit global" — explicitly clearing the row by writing
+-- a NULL works through the same path.
+UPDATE projects
+SET log_archive_enabled = $2
+WHERE slug = $1;
+
 -- name: GetProjectArchiveFlagForRun :one
 -- Joins runs -> pipelines -> projects so the archive hook can
 -- resolve a job_run's project flag in one query.
@@ -28,6 +42,40 @@ JOIN runs r ON r.id = j.run_id
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id
 WHERE j.id = $1;
+
+-- name: ListJobsNeedingArchive :many
+-- Reconciliation #1: terminal job_runs that should have been archived
+-- but weren't. The submit-on-terminal hook is best-effort; the queue
+-- can drop on saturation, the server can crash mid-flight, the
+-- artefact backend can be unreachable. The sweeper picks up the
+-- stragglers. Joined to the project's archive flag so the sweeper
+-- skips jobs whose project opted out — global=on policy may still
+-- have per-project off overrides.
+--
+-- "Terminal" here = finished_at IS NOT NULL AND status not in ('queued','running').
+-- A grace window guards against racing the in-flight submit so the
+-- sweeper doesn't spam the queue with jobs already being archived.
+SELECT j.id, j.run_id, p.log_archive_enabled
+FROM job_runs j
+JOIN runs r ON r.id = j.run_id
+JOIN pipelines pl ON pl.id = r.pipeline_id
+JOIN projects p ON p.id = pl.project_id
+WHERE j.logs_archive_uri IS NULL
+  AND j.finished_at IS NOT NULL
+  AND j.finished_at < NOW() - @grace::INTERVAL
+  AND j.status NOT IN ('queued', 'running')
+LIMIT @lim::int;
+
+-- name: ListOrphanedArchivedJobs :many
+-- Reconciliation #2: jobs whose URI is stamped but log_lines rows
+-- still exist. Happens when the archiver's DELETE step fails after
+-- the URI update lands. The read path already serves from the
+-- archive, so the rows are pure cost — sweep them on a slow tick.
+SELECT DISTINCT j.id
+FROM job_runs j
+WHERE j.logs_archive_uri IS NOT NULL
+  AND EXISTS (SELECT 1 FROM log_lines l WHERE l.job_run_id = j.id)
+LIMIT @lim::int;
 
 -- name: InsertLogLine :exec
 -- Agents send log lines with a per-(job_run_id) monotonic seq plus the

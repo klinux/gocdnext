@@ -74,6 +74,24 @@ export async function getProjectDetail(
   );
 }
 
+// Per-project log archive override (null = inherit global). Surfaced
+// to the settings page so the radio group can render the current
+// state on first paint without a client round-trip. The server also
+// echoes the global policy + backend availability so the UI hint
+// can render the resolved state without an extra admin RPC.
+export type LogArchiveSettings = {
+  enabled: boolean | null;
+  global_policy?: string;
+  has_artifact_backend: boolean;
+};
+export async function getProjectLogArchive(
+  slug: string,
+): Promise<LogArchiveSettings> {
+  return readJSON<LogArchiveSettings>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/log-archive`,
+  );
+}
+
 export async function getRunDetail(
   id: string,
   logsPerJob = 200,

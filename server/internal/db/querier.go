@@ -219,6 +219,9 @@ type Querier interface {
 	// inherit global). Used by the archiver when resolving effective
 	// policy for a job.
 	GetProjectArchiveFlag(ctx context.Context, id pgtype.UUID) (*bool, error)
+	// Surfaces the per-project log_archive_enabled override by slug —
+	// what the project-settings UI reads when populating the toggle.
+	GetProjectArchiveFlagBySlug(ctx context.Context, slug string) (*bool, error)
 	// Joins runs -> pipelines -> projects so the archive hook can
 	// resolve a job_run's project flag in one query.
 	GetProjectArchiveFlagForRun(ctx context.Context, id pgtype.UUID) (*bool, error)
@@ -442,11 +445,28 @@ type Querier interface {
 	// without per-row lookups. LIMIT is caller-supplied to avoid
 	// pagination complexity for now (UI caps at 100).
 	ListJobsForAgent(ctx context.Context, arg ListJobsForAgentParams) ([]ListJobsForAgentRow, error)
+	// Reconciliation #1: terminal job_runs that should have been archived
+	// but weren't. The submit-on-terminal hook is best-effort; the queue
+	// can drop on saturation, the server can crash mid-flight, the
+	// artefact backend can be unreachable. The sweeper picks up the
+	// stragglers. Joined to the project's archive flag so the sweeper
+	// skips jobs whose project opted out — global=on policy may still
+	// have per-project off overrides.
+	//
+	// "Terminal" here = finished_at IS NOT NULL AND status not in ('queued','running').
+	// A grace window guards against racing the in-flight submit so the
+	// sweeper doesn't spam the queue with jobs already being archived.
+	ListJobsNeedingArchive(ctx context.Context, arg ListJobsNeedingArchiveParams) ([]ListJobsNeedingArchiveRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	// All materials across pipelines of a project. VSM uses the
 	// `upstream` ones to build edges between pipeline nodes; git ones
 	// are informational (shown as entry points on the graph).
 	ListMaterialsByProjectSlug(ctx context.Context, slug string) ([]ListMaterialsByProjectSlugRow, error)
+	// Reconciliation #2: jobs whose URI is stamped but log_lines rows
+	// still exist. Happens when the archiver's DELETE step fails after
+	// the URI update lands. The read path already serves from the
+	// archive, so the rows are pure cost — sweep them on a slow tick.
+	ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pgtype.UUID, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
 	// Returns definition alongside metadata so the card can pull
 	// stage names from the YAML when the pipeline has never run
@@ -642,6 +662,10 @@ type Querier interface {
 	// own password from /settings/account — we never want to let the
 	// admin also flip their role through that surface.
 	UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUserPasswordParams) error
+	// Sets the per-project log_archive_enabled override. NULL value
+	// means "inherit global" — explicitly clearing the row by writing
+	// a NULL works through the same path.
+	UpdateProjectArchiveFlagBySlug(ctx context.Context, arg UpdateProjectArchiveFlagBySlugParams) error
 	// Full-record update: UI saves the entire edited row so absent
 	// fields mean "cleared". Intentionally does NOT touch
 	// last_fired_at — that's bookkeeping the ticker owns.

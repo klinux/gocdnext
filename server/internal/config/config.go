@@ -70,6 +70,11 @@ type Config struct {
 	// cluster-wide regardless of per-project flags. Empty defaults
 	// to "auto".
 	LogArchive string
+	// LogArchiveCacheBytes caps the in-memory cache that memoises
+	// decoded archives. 0 disables (every read re-fetches +
+	// re-parses). Default 256 MiB — comfortable for a single-node
+	// dev box, dwarfed by typical run-detail page reload savings.
+	LogArchiveCacheBytes int64
 
 	// RunnerProfilesFile is an optional path to a YAML the server
 	// reads on boot and upserts into the runner_profiles table. The
@@ -262,6 +267,12 @@ func Load() (*Config, error) {
 	default:
 		return nil, fmt.Errorf("GOCDNEXT_LOG_ARCHIVE: unknown value %q (want auto, on, off)", c.LogArchive)
 	}
+
+	logArchiveCacheBytes, err := strconv.ParseInt(env("GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES", "268435456"), 10, 64) // 256 MiB
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES: %w", err)
+	}
+	c.LogArchiveCacheBytes = logArchiveCacheBytes
 
 	c.PluginCatalogDir = env("GOCDNEXT_PLUGIN_CATALOG_DIR", "")
 

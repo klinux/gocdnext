@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -131,16 +132,97 @@ func (s *Store) GetProjectLogArchiveFlagForJob(ctx context.Context, jobRunID uui
 	return row, nil
 }
 
+// JobNeedingArchive describes a terminal job that the submit-on-
+// completion hook didn't get to. ProjectFlag mirrors the column
+// shape (nil = inherit global).
+type JobNeedingArchive struct {
+	JobRunID    uuid.UUID
+	ProjectFlag *bool
+}
+
+// ListJobsNeedingArchive returns terminal jobs whose finished_at is
+// past the `grace` window and have no logs_archive_uri set yet.
+// Bounded by `limit` so a sweep tick can't block on a huge backlog.
+func (s *Store) ListJobsNeedingArchive(ctx context.Context, grace time.Duration, limit int32) ([]JobNeedingArchive, error) {
+	rows, err := s.q.ListJobsNeedingArchive(ctx, db.ListJobsNeedingArchiveParams{
+		Grace: pgtype.Interval{Microseconds: grace.Microseconds(), Valid: true},
+		Lim:   limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list jobs needing archive: %w", err)
+	}
+	out := make([]JobNeedingArchive, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, JobNeedingArchive{
+			JobRunID:    fromPgUUID(r.ID),
+			ProjectFlag: r.LogArchiveEnabled,
+		})
+	}
+	return out, nil
+}
+
+// ListOrphanedArchivedJobs returns jobs whose URI is stamped but
+// log_lines rows still exist. The archiver's DELETE step is the
+// failure point that surfaces these — we fix them up by re-running
+// DELETE in the sweeper.
+func (s *Store) ListOrphanedArchivedJobs(ctx context.Context, limit int32) ([]uuid.UUID, error) {
+	rows, err := s.q.ListOrphanedArchivedJobs(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list orphaned archived jobs: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromPgUUID(r))
+	}
+	return out, nil
+}
+
+// GetProjectLogArchiveFlagBySlug surfaces the per-project override
+// (NULL = inherit global) for the settings UI. Returns nil-value
+// when the project doesn't exist OR has no override stored — the
+// handler treats both as "inherit".
+func (s *Store) GetProjectLogArchiveFlagBySlug(ctx context.Context, slug string) (*bool, error) {
+	row, err := s.q.GetProjectArchiveFlagBySlug(ctx, slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get project archive flag by slug: %w", err)
+	}
+	return row, nil
+}
+
+// SetProjectLogArchiveFlagBySlug writes the per-project override.
+// Pass nil to clear (which makes the project inherit the global
+// policy). Returns an explicit "not found" sentinel so the handler
+// can return 404 rather than an opaque 500.
+func (s *Store) SetProjectLogArchiveFlagBySlug(ctx context.Context, slug string, flag *bool) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE projects SET log_archive_enabled = $2 WHERE slug = $1`,
+		slug, flag)
+	if err != nil {
+		return fmt.Errorf("store: set project archive flag: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrProjectNotFound
+	}
+	return nil
+}
+
 // readArchive fetches the archive blob through the configured
 // LogArchiveSource and parses it back into Lines. Returns nil
 // without error when no source is wired — callers fall back to the
-// DB read path. The full archive is decoded into memory; for the
-// 99% case this is fine (a few hundred KB compressed, maybe a few
-// MB uncompressed). A future iteration can stream + filter on the
-// fly if jobs with hundreds of MB of logs become common.
+// DB read path. The decoded archive is cached when WithLogArchiveCache
+// was set, so a UI session that reloads /runs/[id] several times
+// pays the gunzip+parse cost once.
 func (s *Store) readArchive(ctx context.Context, key string) ([]logarchive.Line, error) {
 	if s.logArchiveSrc == nil {
 		return nil, nil
+	}
+	if s.logArchiveCache != nil {
+		if hit, ok := s.logArchiveCache.Get(key); ok {
+			return hit, nil
+		}
 	}
 	rc, err := s.logArchiveSrc.Get(ctx, key)
 	if err != nil {
@@ -150,6 +232,9 @@ func (s *Store) readArchive(ctx context.Context, key string) ([]logarchive.Line,
 	lines, err := logarchive.ReadArchive(rc)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse archive %s: %w", key, err)
+	}
+	if s.logArchiveCache != nil {
+		s.logArchiveCache.Put(key, lines)
 	}
 	return lines, nil
 }

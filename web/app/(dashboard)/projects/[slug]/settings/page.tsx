@@ -2,9 +2,11 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
 import { ProjectPollSettings } from "@/components/projects/project-poll-settings.client";
+import { ProjectLogArchiveSettings } from "@/components/projects/project-log-archive-settings.client";
 import {
   GocdnextAPIError,
   getProjectDetail,
+  getProjectLogArchive,
 } from "@/server/queries/projects";
 
 type Params = { slug: string };
@@ -35,6 +37,16 @@ export default async function ProjectSettingsPage({
     throw err;
   }
 
+  // Archive settings come from a separate endpoint so the page works
+  // for projects with neither artifact backend nor archive policy
+  // configured (the response degrades gracefully).
+  let archive: Awaited<ReturnType<typeof getProjectLogArchive>> | null = null;
+  try {
+    archive = await getProjectLogArchive(slug);
+  } catch {
+    archive = null;
+  }
+
   return (
     <section className="space-y-6">
       <div className="space-y-1">
@@ -50,6 +62,15 @@ export default async function ProjectSettingsPage({
         initialIntervalNs={detail.scm_source?.poll_interval_ns ?? 0}
         hasScmSource={Boolean(detail.scm_source)}
       />
+
+      {archive ? (
+        <ProjectLogArchiveSettings
+          slug={slug}
+          initialEnabled={archive.enabled}
+          globalPolicy={archive.global_policy ?? "auto"}
+          hasArtifactBackend={archive.has_artifact_backend}
+        />
+      ) : null}
     </section>
   );
 }

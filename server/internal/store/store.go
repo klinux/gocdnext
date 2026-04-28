@@ -17,6 +17,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 )
 
 // Sentinel errors callers can match with errors.Is.
@@ -32,7 +33,8 @@ type Store struct {
 	// logArchiveSrc is set when log archiving is wired (the artifact
 	// backend serves the underlying bytes). nil = no fallback; the
 	// read path stays on log_lines exclusively.
-	logArchiveSrc LogArchiveSource
+	logArchiveSrc   LogArchiveSource
+	logArchiveCache *logarchive.LineCache // optional; nil = always fetch
 }
 
 // LogArchiveSource is the narrow byte-reader interface the read
@@ -54,6 +56,16 @@ func New(pool *pgxpool.Pool) *Store {
 // log_lines (which by then have been deleted).
 func (s *Store) WithLogArchiveSource(src LogArchiveSource) *Store {
 	s.logArchiveSrc = src
+	return s
+}
+
+// WithLogArchiveCache attaches an LRU cache that memoises decoded
+// archives. Without it every read of an archived job re-fetches +
+// re-parses the gzip — a typical run-detail reload makes that
+// hurt visibly on archives spanning thousands of lines. Nil-safe:
+// callers that don't care can skip this setter.
+func (s *Store) WithLogArchiveCache(c *logarchive.LineCache) *Store {
+	s.logArchiveCache = c
 	return s
 }
 

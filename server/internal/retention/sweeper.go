@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -64,6 +66,14 @@ const (
 	// month never finds an unmaterialised range. Daily ticks top
 	// it back up.
 	DefaultLogMonthsAhead = 3
+	// DefaultArchiveGrace: sweeper waits this long after a job's
+	// finished_at before re-enqueueing for archive. Long enough
+	// that a slow in-flight Submit completes; short enough that a
+	// dropped one is recovered within the same hour.
+	DefaultArchiveGrace = 5 * time.Minute
+	// DefaultArchiveBatch: bounds the per-tick re-submit count so
+	// a backlog can't flood the archiver's queue in one go.
+	DefaultArchiveBatch = 100
 )
 
 // Sweeper is the long-running task. Call Run inside a goroutine; it
@@ -90,10 +100,32 @@ type Sweeper struct {
 	logRetention   time.Duration
 	logMonthsAhead int
 
+	// Cold-archive reconciliation. When wired (WithLogArchive*),
+	// every tick re-submits terminal jobs that the agent-side hook
+	// missed and re-runs DELETE for jobs whose URI is stamped but
+	// log_lines rows linger. Nil archiver = pass disabled.
+	archiver        archiveSubmitter
+	archiveResolver archivePolicyResolver
+	archiveGrace    time.Duration
+	archiveBatch    int32
+
 	mu          sync.Mutex
 	lastStats   SweepStats
 	lastSweepAt time.Time
 }
+
+// archiveSubmitter is the slice of *logarchive.Archiver the sweeper
+// touches — defined here as an interface so the retention package
+// doesn't take a hard dep on internal/logarchive's whole surface.
+type archiveSubmitter interface {
+	Submit(jobRunID uuid.UUID)
+}
+
+// archivePolicyResolver decides whether a specific job should be
+// archived based on the live global+per-project policy. Pulled into
+// an interface for the same reason as archiveSubmitter — and so
+// tests can inject a deterministic resolver.
+type archivePolicyResolver func(projectFlag *bool) bool
 
 // New wires a Sweeper. nil Store is a programming error (panic via
 // use). nil storage is a soft disable — Run() logs + exits early so
@@ -117,6 +149,8 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		cacheGlobalQuotaBytes:  DefaultCacheGlobalQuotaBytes,
 		logRetention:           DefaultLogRetention,
 		logMonthsAhead:         DefaultLogMonthsAhead,
+		archiveGrace:           DefaultArchiveGrace,
+		archiveBatch:           DefaultArchiveBatch,
 	}
 }
 
@@ -202,6 +236,35 @@ func (s *Sweeper) WithLogMonthsAhead(n int) *Sweeper {
 	return s
 }
 
+// WithLogArchive enables the cold-archive reconciliation pass. The
+// sweeper re-submits terminal jobs that the agent-side hook missed
+// and runs DELETE for jobs whose URI is stamped but log_lines rows
+// linger. Pass nil submitter or nil resolver to disable.
+func (s *Sweeper) WithLogArchive(submitter archiveSubmitter, resolver archivePolicyResolver) *Sweeper {
+	s.archiver = submitter
+	s.archiveResolver = resolver
+	return s
+}
+
+// WithArchiveGrace overrides the grace window after a job's
+// finished_at before the sweeper re-enqueues it for archive.
+// Default 5 minutes.
+func (s *Sweeper) WithArchiveGrace(d time.Duration) *Sweeper {
+	if d > 0 {
+		s.archiveGrace = d
+	}
+	return s
+}
+
+// WithArchiveBatch caps how many jobs the sweeper re-submits or
+// orphan-deletes per tick. Default 100.
+func (s *Sweeper) WithArchiveBatch(n int32) *Sweeper {
+	if n > 0 {
+		s.archiveBatch = n
+	}
+	return s
+}
+
 // WithTick overrides the tick interval. Mainly for tests.
 func (s *Sweeper) WithTick(d time.Duration) *Sweeper {
 	if d > 0 {
@@ -278,6 +341,13 @@ type SweepStats struct {
 	LogPartitionsCreated int
 	LogPartitionsDropped int
 
+	// Cold-archive reconciliation. ReSubmitted = terminal jobs
+	// pushed back into the archiver queue. OrphansDeleted = jobs
+	// whose URI was stamped but log_lines rows were still around;
+	// the rows have been dropped on this tick.
+	ArchivesReSubmitted int
+	ArchiveOrphansDeleted int
+
 	// Cache sweep (piggybacks on the same tick — no separate
 	// sweeper goroutine). Expired caches are ready rows whose
 	// last_accessed_at fell past the cache TTL. Quota-evicted
@@ -309,6 +379,13 @@ func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 		s.logMonthsAhead, s.logRetention, s.log)
 	stats.LogPartitionsCreated = logStats.Created
 	stats.LogPartitionsDropped = logStats.Dropped
+
+	// Cold-archive reconciliation. Independent of artefact-store
+	// gating below — the archiver may be wired even when keep-last
+	// quotas etc. aren't.
+	if s.archiver != nil && s.archiveResolver != nil {
+		s.reconcileArchives(ctx, &stats)
+	}
 
 	// Artefact retention from here down depends on the storage
 	// backend; skip when not configured. Stats from the log-only

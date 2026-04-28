@@ -201,6 +201,7 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	if artifactStore != nil {
 		projectsHandler = projectsHandler.WithArtifactStore(artifactStore)
 	}
+	projectsHandler = projectsHandler.WithLogArchivePolicy(cfg.LogArchive)
 	// Plugin catalog: load `plugin.yaml` manifests from disk so
 	// the apply path can validate `with:` maps before pipelines
 	// ever dispatch. Missing dir is a soft no-op (bare server
@@ -272,7 +273,9 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	if artifactStore != nil && policy != domain.LogArchiveOff {
 		logArchiver = logarchive.New(st, artifactStore, logger)
 		agentService = agentService.WithLogArchiver(logArchiver, policy)
-		st = st.WithLogArchiveSource(artifactStore)
+		st = st.
+			WithLogArchiveSource(artifactStore).
+			WithLogArchiveCache(logarchive.NewLineCache(cfg.LogArchiveCacheBytes))
 	}
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
 	if artifactStore != nil {
@@ -288,6 +291,11 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		WithCacheGlobalQuotaBytes(cfg.CacheGlobalQuotaBytes).
 		WithLogRetention(cfg.LogRetention).
 		WithLogMonthsAhead(cfg.LogMonthsAhead)
+	if logArchiver != nil {
+		sweeper = sweeper.WithLogArchive(logArchiver, func(projectFlag *bool) bool {
+			return domain.EffectiveLogArchive(policy, projectFlag, true)
+		})
+	}
 
 	// WiringState carries the env-derived wiring only. The
 	// dynamic bits (GitHub App active, auto-register effective)
@@ -434,6 +442,8 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 		p.Put("/api/v1/projects/{slug}/notifications", projectsHandler.SetNotifications)
 		p.Put("/api/v1/projects/{slug}/poll-interval", projectsHandler.SetPollInterval)
+		p.Get("/api/v1/projects/{slug}/log-archive", projectsHandler.GetLogArchiveSettings)
+		p.Put("/api/v1/projects/{slug}/log-archive", projectsHandler.SetLogArchiveSettings)
 		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
 		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
 		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)
