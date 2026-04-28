@@ -40,8 +40,20 @@ FROM alpine:3.20
 RUN apk add --no-cache bash curl ca-certificates git
 
 ARG CODECOV_VERSION=v10.3.0
+# TARGETARCH is supplied automatically by buildx in multi-arch
+# builds (amd64 | arm64). Codecov's CDN serves separate binaries
+# under `linux/` (amd64) and `linux-arm64/` paths; without
+# picking the right one the arm64 image inherited an x86 binary
+# that failed to exec at build time — which is how this
+# Dockerfile flunked the first multi-arch run.
+ARG TARGETARCH=amd64
 RUN set -eux; \
-    curl -fSsL "https://cli.codecov.io/${CODECOV_VERSION}/linux/codecov" \
+    case "$TARGETARCH" in \
+      amd64) CC_PATH="linux" ;; \
+      arm64) CC_PATH="linux-arm64" ;; \
+      *)     echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fSsL "https://cli.codecov.io/${CODECOV_VERSION}/${CC_PATH}/codecov" \
          -o /usr/local/bin/codecov; \
     chmod +x /usr/local/bin/codecov; \
     /usr/local/bin/codecov --version

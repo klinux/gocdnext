@@ -36,11 +36,25 @@
 #                       config from lighthouserc. Default "on"
 #                       because the whole point of a CI step is
 #                       to fail builds on budget misses.
-FROM patrickhulce/lhci-client:0.14.x
+# patrickhulce/lhci-client (the upstream "Chromium + LHCI" image)
+# stopped publishing the 0.14.x tag, so we build the runtime
+# ourselves on top of node + Debian Bookworm's chromium package.
+# Both packages ship for amd64 AND arm64, which is what makes
+# the multi-arch matrix land. LHCI is pinned by package version
+# so a CLI bump becomes a deliberate update commit.
+FROM node:20-bookworm-slim
 
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates \
+ENV PUPPETEER_SKIP_DOWNLOAD=1 \
+    CHROME_PATH=/usr/bin/chromium
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash ca-certificates chromium chromium-sandbox \
+        fonts-liberation libnss3 \
     && rm -rf /var/lib/apt/lists/*
+
+ARG LHCI_VERSION=0.14.0
+RUN npm install -g "@lhci/cli@${LHCI_VERSION}" \
+    && lhci --version
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-lighthouse-ci
 RUN chmod +x /usr/local/bin/gocdnext-lighthouse-ci
