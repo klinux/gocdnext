@@ -30,6 +30,76 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"users": users})
 }
 
+type createUserRequest struct {
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Password string `json:"password"`
+}
+
+// CreateUser handles POST /api/v1/admin/users — admin-only
+// creation of a local-auth account. Mirrors the CLI
+// `gocdnext admin create-user` so admins can onboard teammates
+// without shell access. Returns 409 on duplicate email so a
+// misclick doesn't silently overwrite an existing account.
+//
+// Responses:
+//
+//	201 → created user row
+//	400 → validation error (missing field, weak password, bad role)
+//	409 → email already exists
+func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req createUserRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Email == "" {
+		http.Error(w, "email is required", http.StatusBadRequest)
+		return
+	}
+	if req.Password == "" {
+		http.Error(w, "password is required", http.StatusBadRequest)
+		return
+	}
+
+	created, err := h.store.CreateLocalUser(r.Context(), req.Email, req.Name, req.Role, req.Password)
+	if errors.Is(err, store.ErrLocalUserExists) {
+		http.Error(w, "user already exists", http.StatusConflict)
+		return
+	}
+	if errors.Is(err, store.ErrPasswordPolicy) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		// Validation paths inside the store (empty email, bad role)
+		// arrive here as plain errors; surface the message so the
+		// admin UI can show "invalid role" instead of a generic 500.
+		// True infra failures still reach this branch — caller logs
+		// distinguish via the log line below.
+		h.log.Warn("admin: create user", "err", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionUserCreate, "user", created.ID.String(),
+		map[string]any{
+			"email": created.Email,
+			"role":  created.Role,
+		})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(created)
+}
+
 type setUserRoleRequest struct {
 	Role string `json:"role"`
 }

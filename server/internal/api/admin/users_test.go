@@ -69,6 +69,98 @@ func TestAdmin_Users_ListsAllWithRole(t *testing.T) {
 	}
 }
 
+func TestAdmin_CreateUser_Inserts(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	actor := seedUser(t, s, "admin@example.com", "admin", store.RoleAdmin)
+
+	h := adminapi.NewHandler(s, nil, nil, adminapi.WiringState{}, quietLogger())
+	srv := mount(h)
+
+	body, _ := json.Marshal(map[string]string{
+		"email":    "newbie@example.com",
+		"name":     "Newbie",
+		"role":     store.RoleViewer,
+		"password": "long-enough-password-1!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(authapi.WithUser(req.Context(), actor))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.Email != "newbie@example.com" || created.Role != store.RoleViewer {
+		t.Errorf("created mismatch: %+v", created)
+	}
+	if _, err := uuid.Parse(created.ID); err != nil {
+		t.Errorf("id not uuid: %v", err)
+	}
+}
+
+func TestAdmin_CreateUser_DuplicateEmailReturns409(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	actor := seedUser(t, s, "admin@example.com", "admin", store.RoleAdmin)
+	if _, err := s.CreateLocalUser(context.Background(), "newbie@example.com", "Newbie", store.RoleViewer, "long-enough-password-1!"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	h := adminapi.NewHandler(s, nil, nil, adminapi.WiringState{}, quietLogger())
+	srv := mount(h)
+
+	body, _ := json.Marshal(map[string]string{
+		"email":    "newbie@example.com",
+		"name":     "Other Newbie",
+		"role":     store.RoleMaintainer,
+		"password": "another-long-password-2!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(authapi.WithUser(req.Context(), actor))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdmin_CreateUser_WeakPasswordReturns400(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	actor := seedUser(t, s, "admin@example.com", "admin", store.RoleAdmin)
+
+	h := adminapi.NewHandler(s, nil, nil, adminapi.WiringState{}, quietLogger())
+	srv := mount(h)
+
+	body, _ := json.Marshal(map[string]string{
+		"email":    "newbie@example.com",
+		"name":     "Newbie",
+		"role":     store.RoleViewer,
+		"password": "x",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(authapi.WithUser(req.Context(), actor))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestAdmin_SetUserRole_PromotesAndEmitsAudit(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

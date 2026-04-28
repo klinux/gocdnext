@@ -32,6 +32,7 @@ const (
 	AuditActionApprovalApprove     = "approval.approve"
 	AuditActionApprovalReject      = "approval.reject"
 	AuditActionUserRoleChange      = "user.role_change"
+	AuditActionUserCreate          = "user.create"
 	AuditActionWebhookSecretRotate = "webhook_secret.rotate"
 	AuditActionProjectNotifsSet    = "project_notifications.set"
 	AuditActionProjectPollSet      = "project_poll.set"

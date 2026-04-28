@@ -66,6 +66,8 @@ tags:
     description: Inbound webhooks from GitHub/GitLab/Bitbucket.
   - name: observability
     description: Prometheus metrics endpoint.
+  - name: admin
+    description: Admin-only endpoints (user / role / system management).
 
 security:
   - bearerAuth: []
@@ -733,6 +735,91 @@ paths:
                   plugins:
                     type: array
                     items: { $ref: "#/components/schemas/Plugin" }
+
+  # -------------------- admin (user mgmt) --------------------
+  /api/v1/admin/users:
+    post:
+      tags: [admin]
+      summary: Provision a local-auth user (admin only).
+      description: |
+        Strict create — fails with 409 if the email already belongs
+        to a local account. Mirrors the CLI
+        `gocdnext admin create-user`. OIDC users are auto-provisioned
+        on first login; this endpoint exists for password-backed
+        accounts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string, default: "" }
+                role:
+                  type: string
+                  enum: [admin, maintainer, viewer]
+                  default: maintainer
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: email already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/users/{id}/role:
+    put:
+      tags: [admin]
+      summary: Change a user's role (admin only).
+      description: |
+        Self-demotion is refused (the server returns 403) so the last
+        admin can't lock the cluster out by accident. Promote another
+        user to `admin` first if you need to step down.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [admin, maintainer, viewer]
+      responses:
+        "200":
+          description: updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: cannot demote yourself
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # -------------------- webhooks --------------------
   /api/webhooks/github:

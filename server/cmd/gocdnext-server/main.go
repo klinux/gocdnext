@@ -509,6 +509,7 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		p.Get("/api/v1/admin/integrations", adminHandler.Integrations)
 		p.Get("/api/v1/admin/integrations/github", adminHandler.IntegrationGitHub)
 		p.Get("/api/v1/admin/users", adminHandler.Users)
+		p.Post("/api/v1/admin/users", adminHandler.CreateUser)
 		p.Put("/api/v1/admin/users/{id}/role", adminHandler.SetUserRole)
 		p.Get("/api/v1/admin/audit", adminHandler.Audit)
 		p.Get("/api/v1/admin/scm-credentials", adminHandler.SCMCredentials)

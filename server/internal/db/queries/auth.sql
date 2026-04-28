@@ -113,6 +113,16 @@ ON CONFLICT (provider, external_id) DO UPDATE SET
 RETURNING id, email, name, avatar_url, provider, external_id, role,
           disabled_at, last_login_at, created_at, updated_at;
 
+-- name: InsertLocalUser :one
+-- Strict create — fails with a unique-violation when the email
+-- already belongs to a local account. Used by the admin
+-- "New user" flow where silently re-writing someone else's
+-- password would be a foot-gun. Callers map 23505 → 409.
+INSERT INTO users (email, name, avatar_url, provider, external_id, role, password_hash)
+VALUES ($1, $2, '', 'local', $1, $3, $4)
+RETURNING id, email, name, avatar_url, provider, external_id, role,
+          disabled_at, last_login_at, created_at, updated_at;
+
 -- name: UpdateLocalUserPassword :exec
 -- Dedicated password-only write. Used when an admin changes their
 -- own password from /settings/account — we never want to let the

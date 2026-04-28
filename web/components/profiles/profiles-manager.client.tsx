@@ -282,7 +282,7 @@ export function ProfilesManager({ initial }: Props) {
           </SheetHeader>
 
           {form ? (
-            <div className="grid gap-4 px-1 py-4">
+            <div className="grid gap-4 px-6 pb-6">
               <Field label="Name" required>
                 <Input
                   value={form.name}

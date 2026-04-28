@@ -227,6 +227,62 @@ func (q *Queries) InsertAuthState(ctx context.Context, arg InsertAuthStateParams
 	return err
 }
 
+const insertLocalUser = `-- name: InsertLocalUser :one
+INSERT INTO users (email, name, avatar_url, provider, external_id, role, password_hash)
+VALUES ($1, $2, '', 'local', $1, $3, $4)
+RETURNING id, email, name, avatar_url, provider, external_id, role,
+          disabled_at, last_login_at, created_at, updated_at
+`
+
+type InsertLocalUserParams struct {
+	Email        string
+	Name         string
+	Role         string
+	PasswordHash []byte
+}
+
+type InsertLocalUserRow struct {
+	ID          pgtype.UUID
+	Email       string
+	Name        string
+	AvatarUrl   string
+	Provider    string
+	ExternalID  string
+	Role        string
+	DisabledAt  pgtype.Timestamptz
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Strict create — fails with a unique-violation when the email
+// already belongs to a local account. Used by the admin
+// "New user" flow where silently re-writing someone else's
+// password would be a foot-gun. Callers map 23505 → 409.
+func (q *Queries) InsertLocalUser(ctx context.Context, arg InsertLocalUserParams) (InsertLocalUserRow, error) {
+	row := q.db.QueryRow(ctx, insertLocalUser,
+		arg.Email,
+		arg.Name,
+		arg.Role,
+		arg.PasswordHash,
+	)
+	var i InsertLocalUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.Provider,
+		&i.ExternalID,
+		&i.Role,
+		&i.DisabledAt,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertUserSession = `-- name: InsertUserSession :exec
 INSERT INTO user_sessions (id, user_id, expires_at, user_agent)
 VALUES ($1, $2, $3, $4)

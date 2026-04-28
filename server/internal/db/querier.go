@@ -336,6 +336,11 @@ type Querier interface {
 	// (id, created) so the caller sees whether the vote actually
 	// landed or was a re-post from the same user.
 	InsertJobRunApproval(ctx context.Context, arg InsertJobRunApprovalParams) (InsertJobRunApprovalRow, error)
+	// Strict create — fails with a unique-violation when the email
+	// already belongs to a local account. Used by the admin
+	// "New user" flow where silently re-writing someone else's
+	// password would be a foot-gun. Callers map 23505 → 409.
+	InsertLocalUser(ctx context.Context, arg InsertLocalUserParams) (InsertLocalUserRow, error)
 	// Agents send log lines with a per-(job_run_id) monotonic seq plus the
 	// timestamp the line was emitted on the runner. The PK is the triple
 	// (job_run_id, seq, at) — partitioning the table by `at` ruled out a

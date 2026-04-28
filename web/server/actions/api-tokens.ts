@@ -82,7 +82,7 @@ export async function createUserAPIToken(
       expires_at: parsed.data.expires_at || null,
     },
   );
-  if (res.ok) revalidatePath("/settings/api-tokens");
+  if (res.ok) revalidatePath("/account");
   return res;
 }
 
@@ -93,7 +93,7 @@ export async function revokeUserAPIToken(
     "DELETE",
     `/api/v1/account/api-tokens/${encodeURIComponent(id)}`,
   );
-  if (res.ok) revalidatePath("/settings/api-tokens");
+  if (res.ok) revalidatePath("/account");
   return res;
 }
 

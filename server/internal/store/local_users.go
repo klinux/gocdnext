@@ -8,10 +8,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
+
+// pgUniqueViolation is the SQLSTATE Postgres returns when an
+// INSERT conflicts with a unique index. Used to translate
+// duplicate-email inserts into a sentinel error the HTTP layer
+// can surface as 409.
+const pgUniqueViolation = "23505"
 
 // ProviderLocal is the value stored in users.provider for
 // password-authenticated accounts. Kept as a const so handler
@@ -37,7 +44,61 @@ var (
 	ErrLocalUserNotFound   = errors.New("store: local user not found")
 	ErrLocalPasswordMismatch = errors.New("store: local password mismatch")
 	ErrPasswordPolicy      = errors.New("store: password does not meet policy")
+	ErrLocalUserExists     = errors.New("store: local user already exists")
 )
+
+// CreateLocalUser is the strict-insert variant of
+// CreateOrUpdateLocalUser. Returns ErrLocalUserExists when the
+// email is already taken — used by the admin "New user" surface
+// where silently rotating someone else's password would be a
+// foot-gun. The CLI keeps using the upsert path on purpose:
+// re-running `gocdnext admin create-user` is the documented way
+// to recover a forgotten admin password.
+func (s *Store) CreateLocalUser(ctx context.Context, email, name, role, password string) (User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return User{}, errors.New("store: email required")
+	}
+	if err := ValidatePassword(password); err != nil {
+		return User{}, err
+	}
+	if role == "" {
+		role = RoleMaintainer
+	}
+	if role != RoleAdmin && role != RoleMaintainer && role != RoleViewer {
+		return User{}, fmt.Errorf("store: invalid role %q", role)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
+	if err != nil {
+		return User{}, fmt.Errorf("store: hash password: %w", err)
+	}
+	row, err := s.q.InsertLocalUser(ctx, db.InsertLocalUserParams{
+		Email:        email,
+		Name:         name,
+		Role:         role,
+		PasswordHash: hash,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
+			return User{}, ErrLocalUserExists
+		}
+		return User{}, fmt.Errorf("store: insert local user: %w", err)
+	}
+	return User{
+		ID:          fromPgUUID(row.ID),
+		Email:       row.Email,
+		Name:        row.Name,
+		AvatarURL:   row.AvatarUrl,
+		Provider:    row.Provider,
+		ExternalID:  row.ExternalID,
+		Role:        row.Role,
+		DisabledAt:  pgTimePtr(row.DisabledAt),
+		LastLoginAt: pgTimePtr(row.LastLoginAt),
+		CreatedAt:   row.CreatedAt.Time,
+		UpdatedAt:   row.UpdatedAt.Time,
+	}, nil
+}
 
 // CreateOrUpdateLocalUser upserts a password-backed user by email.
 // Called from the CLI (`gocdnext admin create-user`) and from the
