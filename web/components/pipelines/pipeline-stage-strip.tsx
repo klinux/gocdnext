@@ -104,15 +104,14 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
 }
 
 // DashedSeparator is the implied-flow indicator between stage
-// groups. flex-1 + min-w-7 = grows to fill the leftover row width,
-// so multi-job stages no longer leave dead space between groups
-// while narrow viewports still get a sensible minimum. The line
-// stays subtle on purpose: real architectural dependencies (cross-
-// pipeline upstream) live in the chain stack, not the dash.
+// groups. Fixed-width so stages stay tight together — the previous
+// flex-1 expansion looked stretched on wider cards. Real
+// architectural dependencies (cross-pipeline upstream) live in
+// the chain stack on the left, not in this dash.
 function DashedSeparator() {
   return (
     <div
-      className="flex h-[26px] min-w-7 flex-1 items-center self-end"
+      className="flex h-[26px] w-7 shrink-0 items-center self-end"
       aria-hidden
     >
       <span className="block h-0 w-full border-t-[1.5px] border-dashed border-muted-foreground/50" />

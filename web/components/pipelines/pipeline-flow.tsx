@@ -49,10 +49,12 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
 
   const alerts = pipelines.filter(isAlerting);
 
-  // Sort cells: alert weight first (failing → degraded → healthy),
-  // then alphabetical. For chain cells we use the worst weight
-  // anywhere in the chain so a partly-failing chain bubbles up.
+  // Sort cells: chains anchor to the left of the grid (operator
+  // mental model: "the pipeline with downstream effects sits where
+  // I look first"), then within each kind alert weight pushes
+  // failing pipelines toward the front, then alphabetical.
   const sortedCells = [...cells].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "chain" ? -1 : 1;
     const wa = cellWeight(a);
     const wb = cellWeight(b);
     if (wa !== wb) return wb - wa;
@@ -142,11 +144,12 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
   );
 }
 
-// ChainCell stacks linear-chain pipelines vertically with a thin
-// dashed connector on the left margin between cards. Reads as the
-// timeline pattern in the user's reference: card → dashed segment
-// → card → dashed segment → card. No SVG arrows, no overflowing
-// connectors — the geometry is just CSS.
+// ChainCell stacks linear-chain pipelines vertically with one
+// continuous dashed line on the left edge of the cell — runs the
+// full height of the chain, so visually it reads as a single
+// timeline that ties every chained pipeline together. Cards keep
+// their normal vertical rhythm (gap-3 between, no extra padding
+// vs other grid cells).
 function ChainCell({
   pipelines,
   projectSlug,
@@ -161,15 +164,9 @@ function ChainCell({
   setCardRef: (name: string) => (el: HTMLElement | null) => void;
 }) {
   return (
-    <div className="flex flex-col">
-      {pipelines.map((p, i) => (
+    <div className="flex flex-col gap-3 border-l-[2px] border-dashed border-muted-foreground/45 pl-3">
+      {pipelines.map((p) => (
         <Fragment key={p.id}>
-          {i > 0 ? (
-            <div
-              aria-hidden
-              className="ml-6 h-5 w-0 border-l-[2px] border-dashed border-muted-foreground/45"
-            />
-          ) : null}
           <PipelineCard
             nodeRef={setCardRef(p.name)}
             projectSlug={projectSlug}
