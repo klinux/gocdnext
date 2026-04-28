@@ -47,31 +47,34 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
     );
   }
 
-  // Sort cells: chains first (anchor the left rail), then singles
-  // by alert weight (failing → degraded → healthy), then alpha.
-  const sortedCells = [...cells].sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "chain" ? -1 : 1;
-    const wa = cellWeight(a);
-    const wb = cellWeight(b);
-    if (wa !== wb) return wb - wa;
-    return cellName(a).localeCompare(cellName(b));
-  });
-
   // Flatten cells into the DOM order the grid renders. Each chain
   // member becomes its own grid item with gridColumn=1; singles
-  // back-fill via grid-auto-flow: dense.
-  const orderedPipelines: { pipeline: PipelineSummary; chainId: number | null }[] = [];
-  let chainId = 0;
-  for (const cell of sortedCells) {
-    if (cell.kind === "chain") {
-      for (const p of cell.pipelines) {
-        orderedPipelines.push({ pipeline: p, chainId });
+  // back-fill via grid-auto-flow: dense. Memoised so the array
+  // identity is stable across renders — the chain-marker effect
+  // depends on it transitively, and a fresh array every render
+  // re-fires the effect → setMarkers → infinite loop.
+  const orderedPipelines = useMemo(() => {
+    const sorted = [...cells].sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "chain" ? -1 : 1;
+      const wa = cellWeight(a);
+      const wb = cellWeight(b);
+      if (wa !== wb) return wb - wa;
+      return cellName(a).localeCompare(cellName(b));
+    });
+    const out: { pipeline: PipelineSummary; chainId: number | null }[] = [];
+    let id = 0;
+    for (const cell of sorted) {
+      if (cell.kind === "chain") {
+        for (const p of cell.pipelines) {
+          out.push({ pipeline: p, chainId: id });
+        }
+        id++;
+      } else {
+        out.push({ pipeline: cell.pipeline, chainId: null });
       }
-      chainId++;
-    } else {
-      orderedPipelines.push({ pipeline: cell.pipeline, chainId: null });
     }
-  }
+    return out;
+  }, [cells]);
 
   const alerts = pipelines.filter(isAlerting);
 
@@ -135,11 +138,18 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
           });
         }
       }
-      setMarkers(next);
+      // Bail when geometry hasn't changed — without this, setMarkers
+      // produces a fresh array every tick (different identity but
+      // equal contents), each render re-fires the ResizeObserver
+      // attached to elements whose positions changed by sub-pixel
+      // amounts → loop.
+      setMarkers((prev) => (markersEqual(prev, next) ? prev : next));
     };
     compute();
+    // Observe cards only. The overlay's own layout depends on the
+    // marker state we'd be writing here, so observing it would feed
+    // its own output back in.
     const ro = new ResizeObserver(compute);
-    if (overlayRef.current) ro.observe(overlayRef.current);
     for (const el of cardRefs.current.values()) ro.observe(el);
     window.addEventListener("resize", compute);
     return () => {
@@ -235,6 +245,25 @@ type ChainOverlayMarker = {
   lineHeight: number;
   dotYs: number[];
 };
+
+// markersEqual checks geometric equality with a 0.5px tolerance so
+// sub-pixel layout jitter (browser zoom, font hinting reflow)
+// doesn't trip the no-op setState guard.
+function markersEqual(a: ChainOverlayMarker[], b: ChainOverlayMarker[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.id !== y.id) return false;
+    if (Math.abs(x.lineTop - y.lineTop) > 0.5) return false;
+    if (Math.abs(x.lineHeight - y.lineHeight) > 0.5) return false;
+    if (x.dotYs.length !== y.dotYs.length) return false;
+    for (let j = 0; j < x.dotYs.length; j++) {
+      if (Math.abs(x.dotYs[j]! - y.dotYs[j]!) > 0.5) return false;
+    }
+  }
+  return true;
+}
 
 // isAlerting decides whether a pipeline shows up in the top alert
 // strip. Failing/canceled latest runs always count; pipelines with
