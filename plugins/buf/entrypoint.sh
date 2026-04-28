@@ -28,6 +28,10 @@ fi
 # --against .git#branch=main` to actually read the worktree.
 git config --global --add safe.directory '*' 2>/dev/null || true
 
+# Banner so the log shows what's about to run — `buf lint` on
+# clean protos is silent, which reads like a hung job.
+echo "==> buf ${PLUGIN_COMMAND}"
+
 # Word-split intentionally: `breaking --against ref` is three
 # args. Whitespace inside a single arg → drop to plain `script:`.
 # shellcheck disable=SC2086

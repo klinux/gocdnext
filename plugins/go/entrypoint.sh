@@ -38,6 +38,12 @@ export GOMODCACHE="${GOMODCACHE:-/workspace/.go-mod}"
 export GOCACHE="${GOCACHE:-/workspace/.go-cache}"
 mkdir -p "${GOMODCACHE}" "${GOCACHE}"
 
+# Banner so the log shows what's about to run — `go vet` / `go
+# test` against a clean workspace can be silent for many seconds,
+# and a silent log reads like the job is hung. Trivy follows the
+# same convention.
+echo "==> go ${PLUGIN_COMMAND}"
+
 # Word-split intentionally: `build ./...` is two args. If an
 # operator needs whitespace inside a single arg, drop back to
 # plain `script:`; this plugin optimises the 90% case.

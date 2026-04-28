@@ -30,6 +30,12 @@ mkdir -p "${GOLANGCI_LINT_CACHE}"
 TIMEOUT="${PLUGIN_TIMEOUT:-5m}"
 ARGS="${PLUGIN_ARGS:-./...}"
 
+# Banner so the log shows what's about to run — golangci-lint
+# is silent when no issues are found AND stdout is a pipe, which
+# makes a passing run indistinguishable from a hung one. Same
+# pattern as the trivy plugin.
+echo "==> golangci-lint run --timeout ${TIMEOUT} ${ARGS}"
+
 # Word-split intentionally — a value like "--timeout 5m ./..."
 # becomes three args. Operators with whitespace inside one arg
 # should drop back to plain `script:`.

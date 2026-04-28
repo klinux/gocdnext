@@ -53,6 +53,11 @@ fi
 mkdir -p "${PNPM_STORE_DIR}"
 pnpm config set store-dir "${PNPM_STORE_DIR}" >/dev/null
 
+# Banner so the log shows what's about to run — `pnpm exec tsc`
+# against a clean tree is silent, and a silent log reads like the
+# job is hung.
+echo "==> pnpm ${PLUGIN_COMMAND}"
+
 # Word-split intentionally — `install --frozen-lockfile` passes two
 # args to pnpm. Operators with whitespace inside a single arg should
 # lean on plain `script:` instead of this plugin.
