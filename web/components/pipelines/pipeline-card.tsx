@@ -142,7 +142,7 @@ export function PipelineCard({
               row, ellipsised — the overview sheet has the full
               breakdown for anyone who needs it. */}
           <div className="flex items-center gap-x-2 text-[11px] text-muted-foreground">
-            <span className="font-mono text-[10px]">v{pipeline.definition_version}</span>
+            <span className="font-mono">v{pipeline.definition_version}</span>
             {run ? (
               <>
                 <Link
@@ -163,9 +163,7 @@ export function PipelineCard({
             ) : (
               <span className="italic">Never run</span>
             )}
-            {shortSha ? (
-              <span className="font-mono text-[10px]">{shortSha}</span>
-            ) : null}
+            {shortSha ? <span className="font-mono">{shortSha}</span> : null}
             {commitSubject ? (
               meta?.message && meta.message !== commitSubject ? (
                 <Tooltip>
