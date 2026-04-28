@@ -73,6 +73,11 @@ func New() *Catalog {
 // A manifest whose `name` field disagrees with its directory is
 // a config bug and returns an error — otherwise operators would
 // chase ghost "why doesn't my schema apply?" tickets.
+//
+// When the same plugin name appears in multiple roots (because
+// LoadAll was called or Load was called multiple times) the
+// later read wins — by design, so an operator can override a
+// baked manifest from a sidecar ConfigMap.
 func (c *Catalog) Load(root string) error {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -114,6 +119,41 @@ func (c *Catalog) Load(root string) error {
 		c.specs[spec.Name] = spec
 	}
 	return nil
+}
+
+// LoadAll calls Load for each path in `roots` in order. Roots
+// past the first can override earlier ones — this is what lets
+// the chart bake the official catalogue under one path and let
+// operators drop their own manifests into a ConfigMap mounted at
+// a second path. A failure in any root short-circuits with the
+// underlying error so a typo'd manifest doesn't silently degrade
+// to "no validation" mode.
+func (c *Catalog) LoadAll(roots []string) error {
+	for _, r := range roots {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if err := c.Load(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SplitCatalogDirs parses the GOCDNEXT_PLUGIN_CATALOG_DIR env
+// value — a colon-separated list of paths, $PATH-style — into
+// the slice LoadAll consumes. Empty entries are dropped so a
+// trailing colon doesn't blow up Load with `stat ""`.
+func SplitCatalogDirs(envValue string) []string {
+	parts := strings.Split(envValue, ":")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Lookup resolves a `uses:` reference to its Spec, or (_, false)

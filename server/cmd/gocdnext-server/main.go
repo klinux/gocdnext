@@ -210,12 +210,18 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	// loud at startup rather than mid-apply.
 	pluginCatalog := plugins.New()
 	if cfg.PluginCatalogDir != "" {
-		if err := pluginCatalog.Load(cfg.PluginCatalogDir); err != nil {
-			logger.Error("plugin catalog: load failed", "dir", cfg.PluginCatalogDir, "err", err)
+		// Path-list ($PATH-style, colon-separated) so a chart can
+		// bake the official catalogue at one root and mount an
+		// operator-supplied ConfigMap at another. Later roots
+		// override earlier ones for same-named plugins.
+		roots := plugins.SplitCatalogDirs(cfg.PluginCatalogDir)
+		if err := pluginCatalog.LoadAll(roots); err != nil {
+			logger.Error("plugin catalog: load failed", "dirs", cfg.PluginCatalogDir, "err", err)
 			os.Exit(1)
 		}
 		logger.Info("plugin catalog loaded",
-			"dir", cfg.PluginCatalogDir, "plugins", len(pluginCatalog.Names()))
+			"dirs", cfg.PluginCatalogDir, "roots", len(roots),
+			"plugins", len(pluginCatalog.Names()))
 	}
 	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
 	// Auto-register installs a repo webhook at apply time when

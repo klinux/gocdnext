@@ -138,6 +138,9 @@ spec:
             {{- if .Values.pluginCatalogDir }}
             - name: GOCDNEXT_PLUGIN_CATALOG_DIR
               value: {{ .Values.pluginCatalogDir | quote }}
+            {{- else if .Values.extraPlugins }}
+            - name: GOCDNEXT_PLUGIN_CATALOG_DIR
+              value: "/etc/gocdnext/plugins:/etc/gocdnext/extra-plugins"
             {{- end }}
             - name: GOCDNEXT_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
@@ -241,6 +244,11 @@ spec:
               mountPath: /etc/gocdnext
               readOnly: true
             {{- end }}
+            {{- if .Values.extraPlugins }}
+            - name: extra-plugins
+              mountPath: /etc/gocdnext/extra-plugins
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -277,5 +285,18 @@ spec:
         - name: runner-profiles
           configMap:
             name: {{ include "gocdnext.server.fullname" . }}-runner-profiles
+        {{- end }}
+        {{- if .Values.extraPlugins }}
+        # Each extraPlugin lands at /etc/gocdnext/extra-plugins/<name>/plugin.yaml
+        # via the per-key `path:` projection — matches the layout the
+        # catalog loader expects (<root>/<name>/plugin.yaml).
+        - name: extra-plugins
+          configMap:
+            name: {{ include "gocdnext.server.fullname" . }}-extra-plugins
+            items:
+              {{- range $name, $_ := .Values.extraPlugins }}
+              - key: {{ $name | quote }}
+                path: {{ printf "%s/plugin.yaml" $name | quote }}
+              {{- end }}
         {{- end }}
 {{- end }}

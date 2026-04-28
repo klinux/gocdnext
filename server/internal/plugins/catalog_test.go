@@ -276,6 +276,113 @@ func TestShortNameForLookup(t *testing.T) {
 	}
 }
 
+// TestCatalog_LoadAll_OverrideOrder pins the precedence rule:
+// when the same plugin name appears in multiple roots, the LAST
+// root wins. The chart relies on this so an operator's
+// ConfigMap-mounted manifest overrides the baked-in one for
+// matching names.
+func TestCatalog_LoadAll_OverrideOrder(t *testing.T) {
+	baked := t.TempDir()
+	extra := t.TempDir()
+
+	writePlugin(t, baked, "helm", `
+name: helm
+category: deploy
+description: baked
+inputs: {}
+`)
+	writePlugin(t, extra, "helm", `
+name: helm
+category: deploy
+description: operator override
+inputs: {}
+`)
+
+	c := New()
+	if err := c.LoadAll([]string{baked, extra}); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got, ok := c.Lookup("gocdnext/helm")
+	if !ok {
+		t.Fatal("helm missing")
+	}
+	if got.Description != "operator override" {
+		t.Errorf("description = %q, want last-wins override", got.Description)
+	}
+
+	// And the reverse — flipping order flips the winner.
+	c = New()
+	if err := c.LoadAll([]string{extra, baked}); err != nil {
+		t.Fatalf("LoadAll reversed: %v", err)
+	}
+	got, _ = c.Lookup("gocdnext/helm")
+	if got.Description != "baked" {
+		t.Errorf("description = %q, want baked-wins on reversed order", got.Description)
+	}
+}
+
+// TestCatalog_LoadAll_MergesDistinct verifies that same-named
+// plugins follow override rules but distinct names from different
+// roots merge cleanly (the catalog is the union).
+func TestCatalog_LoadAll_MergesDistinct(t *testing.T) {
+	a := t.TempDir()
+	b := t.TempDir()
+	writePlugin(t, a, "helm", "name: helm\ndescription: x\ninputs: {}\n")
+	writePlugin(t, b, "kubectl", "name: kubectl\ndescription: y\ninputs: {}\n")
+
+	c := New()
+	if err := c.LoadAll([]string{a, b}); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if _, ok := c.Lookup("gocdnext/helm"); !ok {
+		t.Errorf("helm missing from merged catalog")
+	}
+	if _, ok := c.Lookup("gocdnext/kubectl"); !ok {
+		t.Errorf("kubectl missing from merged catalog")
+	}
+}
+
+func TestCatalog_LoadAll_SkipsEmpty(t *testing.T) {
+	a := t.TempDir()
+	writePlugin(t, a, "helm", "name: helm\ndescription: x\ninputs: {}\n")
+
+	c := New()
+	// Empty + whitespace-only entries should not abort the walk.
+	if err := c.LoadAll([]string{"", "   ", a}); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if _, ok := c.Lookup("gocdnext/helm"); !ok {
+		t.Errorf("helm missing despite valid root present")
+	}
+}
+
+func TestSplitCatalogDirs(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{":", nil},
+		{"a", []string{"a"}},
+		{"a:b", []string{"a", "b"}},
+		{"  a  :  b  ", []string{"a", "b"}},
+		{"/etc/x:/etc/y:/etc/z", []string{"/etc/x", "/etc/y", "/etc/z"}},
+		{":/etc/x:", []string{"/etc/x"}},
+	}
+	for _, tc := range tests {
+		got := SplitCatalogDirs(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("Split(%q) = %v, want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("Split(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
 func writePlugin(t *testing.T, root, name, yaml string) {
 	t.Helper()
 	dir := filepath.Join(root, name)

@@ -1,0 +1,23 @@
+{{/*
+ConfigMap that carries operator-supplied plugin manifests merged
+into the catalogue alongside the baked-in official ones. Keys are
+plugin names; values are the verbatim plugin.yaml content. The
+deployment mounts these via `items:` so each lands at
+/etc/gocdnext/extra-plugins/<name>/plugin.yaml — the layout the
+catalog loader walks.
+
+Rendered only when extraPlugins is non-empty so deployments that
+ride on the baked catalogue alone don't carry an empty CM.
+*/}}
+{{- if .Values.extraPlugins -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}-extra-plugins
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+data:
+{{- range $name, $content := .Values.extraPlugins }}
+  {{ $name }}: |-
+{{ $content | indent 4 }}
+{{- end }}
+{{- end -}}

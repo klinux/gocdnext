@@ -260,12 +260,44 @@ auth:
 # in dev while the dashboard sits on a private hostname).
 webhookPublicURL: ""
 
-# Plugin catalog directory the server scans on boot for
-# `<dir>/plugin.yaml` manifests. Empty disables manifest-based
-# `with:` validation — pipelines using `uses:` still work, just
-# aren't checked against the catalog. Bind a ConfigMap or volume
-# here if you ship operator-curated manifests.
+# Plugin catalog directory(ies) the server scans on boot for
+# `<dir>/<name>/plugin.yaml` manifests. The server image bakes the
+# official catalogue at `/etc/gocdnext/plugins` and sets the env
+# var by default, so most deployments leave this empty.
+#
+# Set this to a colon-separated path list ($PATH-style) only when
+# you want to fully override the default — e.g. swap the baked
+# catalogue out for a custom one:
+#   pluginCatalogDir: /mnt/my-catalog
+# To EXTEND the baked catalogue with operator-supplied manifests,
+# use the `extraPlugins:` block below — the chart wires that into a
+# ConfigMap mounted at `/etc/gocdnext/extra-plugins` and the env
+# becomes `/etc/gocdnext/plugins:/etc/gocdnext/extra-plugins`
+# automatically. Later roots override earlier ones, so you can also
+# use extraPlugins to override one specific official manifest
+# without forking the chart.
 pluginCatalogDir: ""
+
+# Operator-supplied plugin manifests merged into the catalogue at
+# runtime via a ConfigMap mounted alongside the baked one. Each
+# key is the plugin name (matches the manifest's `name:` field —
+# the loader rejects mismatches). Each value is the verbatim
+# `plugin.yaml` content. Empty map = ConfigMap is not rendered.
+#
+# Example:
+#   extraPlugins:
+#     myorg-deploy: |
+#       name: myorg-deploy
+#       category: deploy
+#       description: Roll out a service via our internal CD API.
+#       inputs:
+#         service:
+#           required: true
+#           description: service slug
+#         env:
+#           required: true
+#           description: target environment (staging|prod)
+extraPlugins: {}
 
 runnerProfiles: []
 # Example:
