@@ -13,6 +13,17 @@ jobs:
   golangci:
     stage: lint
     uses: ghcr.io/klinux/gocdnext-plugin-golangci-lint@v1
+    # Cold cache turns this job into a 5-10 minute slog (downloads
+    # every module + recompiles every package before any analyzer
+    # runs). Pinning the three caches the plugin redirects into the
+    # workspace turns a warm run into seconds. Key by branch so
+    # main + feature branches don't fight over the same tar.
+    cache:
+      - key: golangci-${CI_COMMIT_BRANCH}
+        paths:
+          - .go-mod
+          - .go-cache
+          - .golangci-cache
     with:
       args: ./server/... ./agent/... ./cli/...
 

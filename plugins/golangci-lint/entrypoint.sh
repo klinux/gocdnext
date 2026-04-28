@@ -21,11 +21,22 @@ fi
 # plugins that touch git on the host-cloned workspace.
 git config --global --add safe.directory '*' 2>/dev/null || true
 
-# Cache golangci-lint's analysis cache inside the workspace so the
-# platform's `cache:` block can tar it across runs. Default is
-# $HOME/.cache/golangci-lint which sits outside the workspace.
+# Redirect every cache golangci-lint touches into the workspace so
+# the platform's `cache:` block can tar them across runs:
+#   GOLANGCI_LINT_CACHE — analysis cache (the linter's own).
+#   GOMODCACHE          — fetched module archives. golangci-lint
+#                         calls `go list` internally; without this
+#                         the deps re-download every run.
+#   GOCACHE             — compiled package artifacts. Lint passes
+#                         need AST + type info, which require the
+#                         compiler to do its work first; warm
+#                         GOCACHE is the single biggest speed-up.
+# Defaults sit under $HOME (/root/...) which is outside the
+# workspace mount, so the cache block can't see them.
 export GOLANGCI_LINT_CACHE="${GOLANGCI_LINT_CACHE:-/workspace/.golangci-cache}"
-mkdir -p "${GOLANGCI_LINT_CACHE}"
+export GOMODCACHE="${GOMODCACHE:-/workspace/.go-mod}"
+export GOCACHE="${GOCACHE:-/workspace/.go-cache}"
+mkdir -p "${GOLANGCI_LINT_CACHE}" "${GOMODCACHE}" "${GOCACHE}"
 
 TIMEOUT="${PLUGIN_TIMEOUT:-5m}"
 ARGS="${PLUGIN_ARGS:-./...}"
