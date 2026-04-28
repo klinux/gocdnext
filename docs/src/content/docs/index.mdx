@@ -20,6 +20,8 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
 
 gocdnext is a CI/CD orchestrator that takes the parts of GoCD, Drone, Woodpecker and GitHub Actions that worked, drops the parts that didn't, and puts them in one binary. Pipelines live in `.gocdnext/` next to your code. Webhooks turn pushes into runs. Plugins are containers with a tiny manifest. Logs are partitioned and archivable. The control plane and the runner agent each ship as a single Go binary.
 
+![Dashboard](/gocdnext/docs/screenshots/01-dashboard.png)
+
 <CardGrid>
   <Card title="Single Helm install" icon="rocket">
     Server, agent, web UI, postgres-dev, runner profiles — all wired
@@ -42,6 +44,20 @@ gocdnext is a CI/CD orchestrator that takes the parts of GoCD, Drone, Woodpecker
     even at hundreds of jobs/hour.
   </Card>
 </CardGrid>
+
+## A look around
+
+![Run detail with live logs](/gocdnext/docs/screenshots/02-run-detail.png)
+*Run detail — Jobs / Tests / Artifacts tabs with the log stream live via SSE.*
+
+![Project pipelines](/gocdnext/docs/screenshots/03-project-pipelines.png)
+*Project page — pipelines as cards, status-tinted left border, bottleneck pill, mini stage strip.*
+
+![Value Stream Map](/gocdnext/docs/screenshots/04-vsm.png)
+*VSM — the graph of pipelines + materials, exactly the GoCD primitive.*
+
+![Plugin catalog](/gocdnext/docs/screenshots/05-plugins-catalog.png)
+*Plugin catalog — auto-generated from each plugin's `plugin.yaml` manifest.*
 
 ## Where to next
 

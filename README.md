@@ -7,8 +7,12 @@
 
 Status: **alpha / internal use**. Not open to public yet.
 
+📚 **Docs**: <https://klinux.github.io/gocdnext/docs/>
+
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/klinux/gocdnext)
 [![Open in Gitpod](https://img.shields.io/badge/Gitpod-ready--to--code-908a85?logo=gitpod)](https://gitpod.io/#https://github.com/klinux/gocdnext)
+
+![Dashboard](docs/public/screenshots/01-dashboard.png)
 
 ## Why another CI tool?
 
@@ -24,6 +28,39 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
 - **Webhook-first**, polling only as fallback.
 - **Auto-register webhook on GitHub / GitLab / Bitbucket** when you create a
   git material.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="docs/public/screenshots/02-run-detail.png">
+        <img src="docs/public/screenshots/02-run-detail.png" alt="Run detail with live logs" />
+      </a>
+      <p align="center"><sub>Run detail — Jobs / Tests / Artifacts tabs with live log stream</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/public/screenshots/03-project-pipelines.png">
+        <img src="docs/public/screenshots/03-project-pipelines.png" alt="Project pipelines" />
+      </a>
+      <p align="center"><sub>Project pipelines with bottleneck pill + stage strip</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/public/screenshots/04-vsm.png">
+        <img src="docs/public/screenshots/04-vsm.png" alt="Value Stream Map" />
+      </a>
+      <p align="center"><sub>Value Stream Map — pipelines + materials graph</sub></p>
+    </td>
+    <td width="50%">
+      <a href="docs/public/screenshots/05-plugins-catalog.png">
+        <img src="docs/public/screenshots/05-plugins-catalog.png" alt="Plugin catalog" />
+      </a>
+      <p align="center"><sub>Plugin catalog — auto-generated from <code>plugin.yaml</code></sub></p>
+    </td>
+  </tr>
+</table>
 
 ## Repo layout
 
