@@ -73,7 +73,7 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
 
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(parseTab(v))}>
-      <TabsList variant="line">
+      <TabsList>
         <TabsTrigger value="jobs">Jobs</TabsTrigger>
         <TabsTrigger value="tests">
           Tests
