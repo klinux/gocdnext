@@ -11,9 +11,12 @@ The same OpenAPI document is served by the control-plane itself at
 `GET /api/v1/openapi.yaml` — point any code generator at that URL
 to get a typed client in your language of choice.
 
-<div id="api-reference" data-spec-url="/openapi/gocdnext.yaml" data-configuration='{"theme":"default","layout":"modern","hideClientButton":false}'></div>
-
-<script type="module" src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+{/* Scalar's standalone bundle reads the spec URL from a sibling
+    <script id="api-reference" data-url=…>. Using a <div> with
+    data-spec-url silently fails — Scalar falls back to the demo
+    config "api-1" and renders "Document could not be loaded". */}
+<script id="api-reference" data-url="/openapi/gocdnext.yaml" data-configuration='{"theme":"default","layout":"modern"}'></script>
+<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
 
 ## Generating a client
 

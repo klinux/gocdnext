@@ -37,16 +37,9 @@
 }
 
 /*
- * Logo — both the hexagon stroke and the `gocd` wordmark in the
- * inline SVG use currentColor so they can adapt to dark/light. But
- * Starlight doesn't set a `color` on the .site-title svg, so the
- * fill collapses to the browser default (black) and both elements
- * disappear against a dark header. Bind to the standard text token
- * so the mark reads at the same emphasis as body text — covers
- * both the hex outline and the `gocd` portion of the wordmark in
- * one rule. The `next` portion stays brand teal because it's
- * fill="#0ea5b5" inline, not currentColor.
+ * Logo light/dark variants live as separate SVG files and ship via
+ * Starlight's `logo: { light, dark }` config — the previous
+ * single-SVG + `currentColor` approach didn't work because
+ * Starlight renders the logo as <img>, and CSS `color` doesn't
+ * cross the image boundary into the rendered SVG.
  */
-.site-title svg {
-  color: var(--sl-color-text);
-}

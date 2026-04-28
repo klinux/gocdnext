@@ -21,7 +21,11 @@ export default defineConfig({
       // `next` in brand teal — mirroring web/components/brand/logo.tsx)
       // so replacesTitle keeps the docs header visually identical
       // to the portal's sidebar brand.
-      logo: { src: "./src/assets/logo.svg", replacesTitle: true },
+      logo: {
+        light: "./src/assets/logo-light.svg",
+        dark: "./src/assets/logo-dark.svg",
+        replacesTitle: true,
+      },
       social: {
         github: "https://github.com/klinux/gocdnext",
       },
