@@ -58,7 +58,7 @@ export function PipelineStageStrip({ columns, runId }: Props) {
     );
   }
   return (
-    <div className="flex flex-wrap items-start gap-x-1 gap-y-2 px-3 py-2">
+    <div className="flex flex-wrap items-stretch gap-x-1 gap-y-2 px-3 py-2">
       {columns.map((col, i) => {
         const isLast = i === columns.length - 1;
         return (
@@ -79,42 +79,37 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
       : null;
   const showRate = rate != null && rate < 90;
   return (
-    <div className="flex shrink-0 flex-col items-start gap-1">
-      {/* Title row is `relative` so the rate badge can absolute-anchor
-          past the title's right edge. The badge then doesn't widen
-          the stage group, which means the circle below stays
-          left-aligned with the title and the dashed separator
-          connects tight against the circle — without that, a stage
-          carrying a "60%" badge made the group wider than the
-          circle and left a stretch of empty space between circle
-          and dash. */}
-      <div className="relative px-0.5">
-        <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-          {column.name}
-        </span>
-        {showRate ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span
-                  className={cn(
-                    "absolute left-full top-1/2 ml-1 -translate-y-1/2 cursor-help rounded px-1 font-mono text-[9px] tabular-nums",
-                    rate >= 70
-                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                      : "bg-red-500/15 text-red-600 dark:text-red-400",
-                  )}
-                />
-              }
-            >
-              {rate}%
-            </TooltipTrigger>
-            <TooltipContent>
-              {rate}% over {column.stat?.runs_considered} runs
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5">
+    // Each stage is a self-contained box: subtle bordered container
+    // with title + circles. The dashed separator connects box edges
+    // (not title edges), so flakiness badges floating in the corner
+    // never push the box wider than its circle row would naturally
+    // need — every adjacent dash starts and ends at consistent points.
+    <div className="relative flex shrink-0 flex-col items-center gap-1 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1.5">
+      {showRate ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                className={cn(
+                  "absolute -right-1.5 -top-1.5 cursor-help rounded px-1 font-mono text-[9px] tabular-nums shadow-sm",
+                  rate >= 70
+                    ? "bg-amber-500/90 text-white dark:bg-amber-500/80"
+                    : "bg-red-500/90 text-white dark:bg-red-500/80",
+                )}
+              />
+            }
+          >
+            {rate}%
+          </TooltipTrigger>
+          <TooltipContent>
+            {rate}% over {column.stat?.runs_considered} runs
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+      <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {column.name}
+      </span>
+      <div className="flex flex-wrap items-center justify-center gap-1.5">
         {column.jobs.length === 0 ? (
           <JobCircle status={undefined} />
         ) : (
@@ -139,7 +134,7 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
 function DashedSeparator() {
   return (
     <div
-      className="flex h-[26px] w-7 shrink-0 items-center self-end"
+      className="flex w-7 shrink-0 items-center self-stretch"
       aria-hidden
     >
       <span className="block h-0 w-full border-t-[1.5px] border-dashed border-muted-foreground/50" />
