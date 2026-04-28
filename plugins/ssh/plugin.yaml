@@ -1,0 +1,131 @@
+# Plugin manifest — consumed by the gocdnext server at startup to
+# validate `with:` inputs before a run dispatches.
+name: ssh
+category: deploy
+description: >
+  Primitive deploy-over-SSH: rsync files to a remote host, run a
+  script on a remote host, or both. Aimed at the universe the k8s
+  `deployments:` primitive doesn't cover — VPS, bare-metal, edge
+  boxes, legacy apps, one-off ops on a DB host.
+
+inputs:
+  host:
+    required: true
+    description: Remote hostname or IP.
+  user:
+    required: true
+    description: SSH user.
+  port:
+    required: false
+    default: "22"
+    description: SSH port.
+  key:
+    required: false
+    description: >
+      Private key PEM content (multi-line). Pass via `secrets:`
+      so it stays masked in logs. One of `key` or `password` is
+      required.
+  password:
+    required: false
+    description: >
+      Password auth fallback for legacy hosts that don't take
+      keys. Strongly discouraged vs. `key`. Mutually exclusive
+      with `key`.
+  known_hosts:
+    required: false
+    description: >
+      Output of `ssh-keyscan -p <port> <host>`. One or more lines.
+      Required when host_key_check is on (the default). Pass via
+      `secrets:` so a key rotation is audit-trailed.
+  host_key:
+    required: false
+    description: >
+      Single host-key line (same shape as a known_hosts entry).
+      Use when you have one fingerprint to pin and don't want a
+      full known_hosts blob.
+  host_key_check:
+    required: false
+    default: "yes"
+    description: >
+      "yes" (default) enforces StrictHostKeyChecking and refuses to
+      connect without known_hosts/host_key. "no" disables — logs a
+      warn so the trade-off shows up in the run output. Never pick
+      "no" on a real deploy.
+  upload:
+    required: false
+    description: >
+      Path(s) on the agent's workspace to rsync to the remote.
+      File or directory. Multiple paths via newline OR comma
+      separator. Empty = nothing copied.
+  target:
+    required: false
+    description: >
+      Destination dir on the remote. Required when `upload` is
+      set. rsync's --mkpath creates the dir if missing.
+  rsync_opts:
+    required: false
+    default: "-az --delete"
+    description: >
+      Extra flags passed to rsync. The default mirrors a typical
+      "rsync the build output" deploy. Override with bigger flags
+      if you need them ("-azv --delete --exclude .git").
+  script:
+    required: false
+    description: >
+      Multi-line script to run on the remote (single ssh
+      invocation, runs under `set -euo pipefail`). Empty =
+      upload-only mode.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the agent's workspace to cd into before
+      resolving `upload` paths. Has no effect on the remote — for
+      that, prefix the script with `cd /target`.
+
+examples:
+  - name: deploy a Go binary to a VPS
+    description: >
+      Build artefact + restart systemd service. Key + known_hosts
+      come from project secrets; the run output stays mask-clean.
+    yaml: |
+      uses: gocdnext/ssh@v1
+      with:
+        host: api.example.com
+        user: deploy
+        key: ${{ secrets.SSH_DEPLOY_KEY }}
+        known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+        upload: dist/api-server
+        target: /opt/api/
+        script: |
+          sudo systemctl restart api
+          sudo systemctl status api --no-pager
+
+  - name: run a one-off remote command
+    description: >
+      No upload — just connect and run. Useful for migrations on a
+      dedicated DB host or restart-after-config-push.
+    yaml: |
+      uses: gocdnext/ssh@v1
+      with:
+        host: db.example.com
+        user: ops
+        key: ${{ secrets.SSH_OPS_KEY }}
+        known_hosts: ${{ secrets.DB_KNOWN_HOSTS }}
+        script: |
+          /opt/migrate/run.sh --env=prod
+
+  - name: copy artefact tree, no remote command
+    description: >
+      Sync `dist/` to the host, replacing what's there. Service
+      reload happens via inotify on the remote, so no script is
+      needed.
+    yaml: |
+      uses: gocdnext/ssh@v1
+      with:
+        host: assets.example.com
+        user: assets
+        key: ${{ secrets.ASSETS_DEPLOY_KEY }}
+        known_hosts: ${{ secrets.ASSETS_KNOWN_HOSTS }}
+        upload: dist/
+        target: /var/www/assets/
