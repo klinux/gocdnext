@@ -1,0 +1,117 @@
+name: Plugins
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - ".github/workflows/plugins.yml"
+    tags: ["v*.*.*"]
+  pull_request:
+    paths:
+      - "plugins/**"
+      - ".github/workflows/plugins.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  changed:
+    # Compute which plugin directories changed in this push so the
+    # build matrix only fans out over those — buying the 37-plugin
+    # repo back its sub-2-minute CI for a typical PR. On a tag push
+    # we rebuild every plugin so the release version stamps a full
+    # set of images regardless of which dir last touched main.
+    runs-on: ubuntu-latest
+    outputs:
+      plugins: ${{ steps.set.outputs.plugins }}
+      any: ${{ steps.set.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: set
+        run: |
+          set -euo pipefail
+          all=$(find plugins -mindepth 2 -maxdepth 2 -name Dockerfile \
+                | awk -F/ '{print $2}' | sort -u)
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]] || [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
+            picks=$all
+          else
+            base="${{ github.event.before }}"
+            if [[ -z "$base" ]] || [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
+              # First commit on a branch / orphan ref — diff against
+              # the merge-base with origin/main so we still trim.
+              base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-list --max-parents=0 HEAD)
+            fi
+            changed=$(git diff --name-only "$base" HEAD -- plugins/ \
+                      | awk -F/ '{print $2}' | sort -u)
+            # Workflow file changed → rebuild everything (operators
+            # often tweak the matrix and expect a full rebuild).
+            if git diff --name-only "$base" HEAD -- .github/workflows/plugins.yml | grep -q .; then
+              picks=$all
+            else
+              picks=$changed
+            fi
+          fi
+
+          arr=$(printf '%s\n' $picks | jq -R . | jq -sc .)
+          echo "plugins=$arr" >> "$GITHUB_OUTPUT"
+          if [[ "$arr" == "[]" ]]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Building: $arr"
+
+  images:
+    needs: changed
+    if: needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJson(needs.changed.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-${{ matrix.plugin }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=v1,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: plugins/${{ matrix.plugin }}
+          file: plugins/${{ matrix.plugin }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=plugin-${{ matrix.plugin }}
+          cache-to: type=gha,mode=max,scope=plugin-${{ matrix.plugin }}

@@ -1,6 +1,6 @@
-# gocdnext CLI — test + build. The CLI talks to a Postgres
-# directly for `admin create-user`, so the test step uses
-# testcontainers just like the server side.
+# gocdnext CLI — test + build. cli/internal/admin tests use
+# testcontainers (Postgres) so docker: true is needed in the
+# unit stage just like the server pipeline.
 name: ci-cli
 
 when:
@@ -8,31 +8,29 @@ when:
 
 stages: [lint, test, build]
 
-variables:
-  GO_VERSION: "1.25"
-
 jobs:
   vet:
     stage: lint
-    image: golang:1.25
-    script:
-      - cd cli && go vet ./...
+    uses: gocdnext/go@v1
+    with:
+      working-dir: cli
+      command: vet ./...
 
   unit:
     stage: test
-    image: golang:1.25
+    uses: gocdnext/go@v1
     needs: [vet]
-    # cli/internal/admin tests use testcontainers for the Postgres
-    # fixture just like the server suite — docker socket required.
     docker: true
-    script:
-      - cd cli && go test -race ./...
+    with:
+      working-dir: cli
+      command: test -race ./...
 
   compile:
     stage: build
-    image: golang:1.25
+    uses: gocdnext/go@v1
     needs: [unit]
-    script:
-      - cd cli && go build -o ../bin/gocdnext ./cmd/gocdnext
+    with:
+      working-dir: cli
+      command: build -o ../bin/gocdnext ./cmd/gocdnext
     artifacts:
       paths: [bin/gocdnext]
