@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Download, Package } from "lucide-react";
+import { Download } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -57,87 +57,89 @@ export function RunArtifacts({ runId, runStatus, apiBaseURL }: Props) {
   });
 
   if (isLoading) {
-    return <EmptyNote>Loading artifacts…</EmptyNote>;
+    return <EmptyState>Loading artifacts…</EmptyState>;
   }
   if (isError) {
-    return <EmptyNote>Couldn't load artifacts.</EmptyNote>;
+    return <EmptyState>Couldn&apos;t load artifacts.</EmptyState>;
   }
   const rows = data ?? [];
   if (rows.length === 0) {
-    return <EmptyNote>No artifacts uploaded for this run.</EmptyNote>;
+    return <EmptyState>No artifacts uploaded for this run.</EmptyState>;
   }
 
-  const byJob = groupByJob(rows);
+  // Single table grouped by job via a column rather than per-job
+  // sub-tables. Matches the runs-table / users-table / agents-list
+  // pattern: one card-wrapped Table per surface, alphabetical
+  // grouping inside.
+  const ordered = [...rows].sort((a, b) => {
+    const j = a.job_name.localeCompare(b.job_name);
+    return j !== 0 ? j : a.path.localeCompare(b.path);
+  });
 
   return (
-    <div className="space-y-6">
-      {byJob.map(([jobName, items]) => (
-        <div key={jobName}>
-          <h4 className="mb-2 flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Package className="h-3.5 w-3.5" aria-hidden />
-            <span className="font-mono">{jobName}</span>
-            <span className="text-xs">
-              · {items.length} artifact{items.length === 1 ? "" : "s"}
-            </span>
-          </h4>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Path</TableHead>
-                <TableHead className="w-28">Size</TableHead>
-                <TableHead className="w-24">Status</TableHead>
-                <TableHead className="w-40">Created</TableHead>
-                <TableHead className="w-44">SHA-256</TableHead>
-                <TableHead className="w-28 text-right">Download</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {items.map((a) => (
-                <TableRow key={a.id} className="font-mono text-xs">
-                  <TableCell className="truncate">{a.path}</TableCell>
-                  <TableCell>{formatBytes(a.size_bytes)}</TableCell>
-                  <TableCell>
-                    <ArtifactStatusPill status={a.status} />
-                  </TableCell>
-                  <TableCell>
-                    <RelativeTime at={a.created_at} />
-                  </TableCell>
-                  <TableCell
-                    className="truncate text-muted-foreground"
-                    title={a.content_sha256}
+    <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-40">Job</TableHead>
+            <TableHead>Path</TableHead>
+            <TableHead className="w-24">Size</TableHead>
+            <TableHead className="w-24">Status</TableHead>
+            <TableHead className="w-32">Created</TableHead>
+            <TableHead className="w-32">SHA-256</TableHead>
+            <TableHead className="w-24 text-right">Download</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {ordered.map((a) => (
+            <TableRow key={a.id} className="font-mono text-xs">
+              <TableCell className="truncate text-muted-foreground">
+                {a.job_name}
+              </TableCell>
+              <TableCell className="truncate">{a.path}</TableCell>
+              <TableCell className="tabular-nums">
+                {formatBytes(a.size_bytes)}
+              </TableCell>
+              <TableCell>
+                <ArtifactStatusPill status={a.status} />
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                <RelativeTime at={a.created_at} />
+              </TableCell>
+              <TableCell
+                className="truncate text-muted-foreground"
+                title={a.content_sha256}
+              >
+                {a.content_sha256 ? a.content_sha256.slice(0, 12) : "—"}
+              </TableCell>
+              <TableCell className="text-right">
+                {a.download_url ? (
+                  <a
+                    href={a.download_url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
                   >
-                    {a.content_sha256 ? a.content_sha256.slice(0, 12) : "—"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {a.download_url ? (
-                      <a
-                        href={a.download_url}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="inline-flex items-center gap-1 text-primary hover:underline"
-                      >
-                        <Download className="h-3.5 w-3.5" aria-hidden />
-                        download
-                      </a>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ))}
+                    <Download className="h-3.5 w-3.5" aria-hidden />
+                    download
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }
 
-function EmptyNote({ children }: { children: React.ReactNode }) {
+function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+    <div className="rounded-lg border border-dashed border-border py-12 text-center text-sm text-muted-foreground">
       {children}
-    </p>
+    </div>
   );
 }
 
@@ -150,16 +152,3 @@ function ArtifactStatusPill({ status }: { status: RunArtifact["status"] }) {
     </StatusPill>
   );
 }
-
-function groupByJob(
-  rows: RunArtifact[],
-): Array<[string, RunArtifact[]]> {
-  const map = new Map<string, RunArtifact[]>();
-  for (const a of rows) {
-    const list = map.get(a.job_name) ?? [];
-    list.push(a);
-    map.set(a.job_name, list);
-  }
-  return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-}
-
