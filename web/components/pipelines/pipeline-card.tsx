@@ -3,11 +3,22 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { Activity, AlertTriangle, CheckCircle2, Clock, GitBranch } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronsRight,
+  Clock,
+  GitBranch,
+  Loader2,
+  Minus,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { StatusBadge } from "@/components/shared/status-badge";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
 import { PipelineStageStrip } from "@/components/pipelines/pipeline-stage-strip";
 import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-sheet.client";
@@ -82,27 +93,23 @@ export function PipelineCard({
         )}
       >
         <header className="flex flex-col gap-0.5 border-b border-border px-2.5 py-1.5">
-          {/* Top line: status dot + pipeline name + branch + Run latest.
-              Everything that competes for "what is this" goes here;
-              meta (version, run #, ago) demotes to a muted line below. */}
+          {/* Top line: pipeline name + status badge + branch + Run latest.
+              The status circle on the right of the name carries the
+              full success/failed/running/canceled vocabulary at a glance,
+              replacing the textual StatusBadge that used to live in the
+              meta line below. */}
           <div className="flex items-center gap-2">
-            <span
-              className={cn(
-                "inline-block size-2.5 shrink-0 rounded-full",
-                dotToneClasses[tone],
-                run?.status === "running" && "animate-pulse",
-              )}
-              aria-hidden
-              title={run?.status ?? "not run"}
-            />
-            <button
-              type="button"
-              onClick={() => setOverviewOpen(true)}
-              title="Open pipeline overview"
-              className="min-w-0 flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {pipeline.name}
-            </button>
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setOverviewOpen(true)}
+                title="Open pipeline overview"
+                className="min-w-0 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {pipeline.name}
+              </button>
+              <StatusCircle status={run?.status} />
+            </div>
             {bottleneck ? (
               <BottleneckPill bottleneck={bottleneck} />
             ) : null}
@@ -127,7 +134,6 @@ export function PipelineCard({
               breakdown for anyone who needs it. */}
           <div className="flex items-center gap-x-2 text-[11px] text-muted-foreground">
             <span className="font-mono text-[10px]">v{pipeline.definition_version}</span>
-            {upstreams.length > 0 ? <UpstreamPills upstreams={upstreams} /> : null}
             {run ? (
               <>
                 <Link
@@ -159,9 +165,6 @@ export function PipelineCard({
                 {commitSubject}
               </span>
             ) : null}
-            {run ? (
-              <StatusBadge status={run.status} className="ml-auto text-[10px]" />
-            ) : null}
           </div>
         </header>
 
@@ -169,7 +172,9 @@ export function PipelineCard({
           <PipelineStageStrip columns={columns} runId={run?.id} />
         </div>
 
-        {metrics ? <InlineMetricsFooter metrics={metrics} /> : null}
+        {metrics || upstreams.length > 0 ? (
+          <InlineMetricsFooter metrics={metrics} upstreams={upstreams} />
+        ) : null}
       </article>
 
       <PipelineOverviewSheet
@@ -182,6 +187,67 @@ export function PipelineCard({
     </>
   );
 }
+
+// StatusCircle is the run-status indicator that sits to the right
+// of the pipeline name. Same icon vocabulary as the JobCircle on
+// the stage strip — keeps the card consistent with itself, and
+// drops the textual badge ("Success" / "Cancelled") that used to
+// live in the meta line below: a coloured circle with the right
+// glyph reads at the same speed without a word.
+function StatusCircle({ status }: { status: string | undefined }) {
+  const tone: StatusTone = status ? statusTone(status) : "neutral";
+  const icon = (() => {
+    const cls = "size-[12px]";
+    switch (tone) {
+      case "success":
+        return <Check className={cls} aria-hidden strokeWidth={3} />;
+      case "failed":
+        return <X className={cls} aria-hidden strokeWidth={3} />;
+      case "running":
+        return <Loader2 className={cn(cls, "animate-spin")} aria-hidden />;
+      case "queued":
+      case "warning":
+      case "awaiting":
+        return <TriangleAlert className={cls} aria-hidden />;
+      case "canceled":
+        return <Minus className={cls} aria-hidden strokeWidth={3} />;
+      default:
+        return <ChevronsRight className={cls} aria-hidden strokeWidth={2.5} />;
+    }
+  })();
+  return (
+    <span
+      className={cn(
+        "relative inline-flex size-[22px] shrink-0 items-center justify-center rounded-full border-[1.5px]",
+        statusCircleClasses[tone],
+        status === "running" &&
+          "after:absolute after:inset-[-3px] after:rounded-full after:border-[1.5px] after:border-sky-500 after:content-[''] after:animate-ping",
+      )}
+      title={status ?? "not run"}
+      aria-label={status ?? "not run"}
+    >
+      {icon}
+    </span>
+  );
+}
+
+const statusCircleClasses: Record<StatusTone, string> = {
+  success:
+    "bg-emerald-500/10 border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  failed: "bg-red-500/10 border-red-500/40 text-red-600 dark:text-red-400",
+  running: "bg-sky-500/10 border-sky-500/40 text-sky-600 dark:text-sky-400",
+  queued:
+    "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
+  warning:
+    "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
+  awaiting:
+    "bg-amber-500/15 border-amber-500/60 text-amber-700 dark:text-amber-400",
+  canceled:
+    "bg-muted-foreground/10 border-muted-foreground/30 text-muted-foreground",
+  skipped:
+    "bg-muted-foreground/5 border-muted-foreground/20 text-muted-foreground/70",
+  neutral: "bg-muted/40 border-border text-muted-foreground",
+};
 
 // borderToneClasses maps the latest run's status onto a left-edge
 // colour so failing pipelines pop in a dense grid without the user
@@ -197,18 +263,6 @@ const borderToneClasses: Record<StatusTone, string> = {
   canceled: "border-l-muted-foreground/40",
   skipped: "border-border",
   neutral: "border-border",
-};
-
-const dotToneClasses: Record<StatusTone, string> = {
-  success: "bg-emerald-500",
-  failed: "bg-red-500",
-  running: "bg-sky-500",
-  queued: "bg-amber-500",
-  warning: "bg-amber-500",
-  awaiting: "bg-amber-500",
-  canceled: "bg-muted-foreground/60",
-  skipped: "bg-muted border border-muted-foreground/30",
-  neutral: "bg-muted border border-muted-foreground/30",
 };
 
 // UpstreamPills surfaces the cross-pipeline triggers feeding this
@@ -270,45 +324,69 @@ function BottleneckPill({ bottleneck }: { bottleneck: Bottleneck }) {
 // "context". Drops the per-cell labels in favour of a single legend
 // (LEAD / PROC / SR) since the operator already knows what those
 // abbreviations mean from every other CI tool.
-function InlineMetricsFooter({ metrics }: { metrics: PipelineMetrics }) {
-  if (metrics.runs_considered === 0) {
+//
+// Upstream pills sit here (rather than the header) because they're
+// "context about this pipeline" the operator only consults when
+// they care about the chain — same job the metrics row does. The
+// chain rail in the left margin already carries the at-a-glance
+// signal "this has dependencies", so the header doesn't need a
+// pill repeating the same fact.
+function InlineMetricsFooter({
+  metrics,
+  upstreams,
+}: {
+  metrics: PipelineMetrics | undefined;
+  upstreams: PipelineEdge[];
+}) {
+  const hasMetrics = metrics != null && metrics.runs_considered > 0;
+  const hasUpstreams = upstreams.length > 0;
+  if (!hasMetrics && !hasUpstreams) {
     return null;
   }
-  const rate = Math.round(metrics.success_rate * 100);
+  const rate = hasMetrics ? Math.round(metrics!.success_rate * 100) : 0;
   return (
     <div className="flex items-center gap-2.5 border-t border-border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
-      <span className="inline-flex items-center gap-1">
-        <Clock className="size-3" aria-hidden />
-        <span className="uppercase tracking-wide">Lead</span>
-        <span className="font-mono text-foreground tabular-nums">
-          {formatDurationSeconds(metrics.lead_time_p50_seconds)}
-        </span>
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <Activity className="size-3" aria-hidden />
-        <span className="uppercase tracking-wide">Proc</span>
-        <span className="font-mono text-foreground tabular-nums">
-          {formatDurationSeconds(metrics.process_time_p50_seconds)}
-        </span>
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <CheckCircle2 className="size-3" aria-hidden />
-        <span
-          className={cn(
-            "font-mono tabular-nums",
-            rate >= 90
-              ? "text-emerald-500"
-              : rate >= 70
-                ? "text-amber-500"
-                : "text-red-500",
-          )}
-        >
-          {rate}%
-        </span>
-      </span>
-      <span className="ml-auto font-mono tabular-nums">
-        {metrics.runs_considered} runs · {metrics.window_days}d
-      </span>
+      {hasMetrics ? (
+        <>
+          <span className="inline-flex items-center gap-1">
+            <Clock className="size-3" aria-hidden />
+            <span className="uppercase tracking-wide">Lead</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {formatDurationSeconds(metrics!.lead_time_p50_seconds)}
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <Activity className="size-3" aria-hidden />
+            <span className="uppercase tracking-wide">Proc</span>
+            <span className="font-mono text-foreground tabular-nums">
+              {formatDurationSeconds(metrics!.process_time_p50_seconds)}
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <CheckCircle2 className="size-3" aria-hidden />
+            <span
+              className={cn(
+                "font-mono tabular-nums",
+                rate >= 90
+                  ? "text-emerald-500"
+                  : rate >= 70
+                    ? "text-amber-500"
+                    : "text-red-500",
+              )}
+            >
+              {rate}%
+            </span>
+          </span>
+        </>
+      ) : null}
+      <div className="ml-auto flex items-center gap-2">
+        {hasUpstreams ? <UpstreamPills upstreams={upstreams} /> : null}
+        {hasMetrics ? (
+          <span className="font-mono tabular-nums">
+            {metrics!.runs_considered} runs · {metrics!.window_days}d
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }
