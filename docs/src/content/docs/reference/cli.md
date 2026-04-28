@@ -27,7 +27,7 @@ server).
 | Flag | Default | Notes |
 |---|---|---|
 | `--server` | `$GOCDNEXT_SERVER` or `http://localhost:8153` | Server URL |
-| `--token` | `$GOCDNEXT_TOKEN` | Bearer token (issued via `Settings → API tokens`) |
+| `--token` | `$GOCDNEXT_TOKEN` | Bearer token. See [API tokens & service accounts](/gocdnext/docs/install/api-tokens/) for issuance + revoke flow. |
 | `--output` | `text` | `text \| json` |
 
 ## `gocdnext apply`

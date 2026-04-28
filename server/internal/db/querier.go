@@ -121,6 +121,9 @@ type Querier interface {
 	DeleteRunnerProfile(ctx context.Context, id pgtype.UUID) error
 	DeleteSCMCredential(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
+	// ON DELETE CASCADE on api_tokens cleans up the token rows
+	// automatically.
+	DeleteServiceAccount(ctx context.Context, id pgtype.UUID) error
 	// Called before an agent retry re-ingests a rerun's results, so
 	// the UI doesn't show a mix of old and new outcomes. The FK's
 	// ON DELETE CASCADE handles the job_run → test_results side;
@@ -167,6 +170,15 @@ type Querier interface {
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
 	// read path.
 	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
+	// Hot path: the bearer middleware probes this on every request.
+	// Returns NOT FOUND when revoked or expired so the middleware
+	// doesn't have to special-case those.
+	GetAPITokenByHash(ctx context.Context, hash string) (GetAPITokenByHashRow, error)
+	// Same, scoped to a service account (admin path).
+	GetAPITokenForSAOwner(ctx context.Context, arg GetAPITokenForSAOwnerParams) (GetAPITokenForSAOwnerRow, error)
+	// Used by handlers that need to verify "this token belongs to this
+	// user before letting them revoke it" — not just any token.
+	GetAPITokenForUserOwner(ctx context.Context, arg GetAPITokenForUserOwnerParams) (GetAPITokenForUserOwnerRow, error)
 	// Single-row lookup for the JobResult confirmation path. Returns
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
@@ -281,6 +293,7 @@ type Querier interface {
 	// Used by the scheduler when a job declares `secrets: [FOO, BAR]`. Returns
 	// the encrypted blobs; the caller decrypts and injects as env vars.
 	GetSecretValuesByProject(ctx context.Context, arg GetSecretValuesByProjectParams) ([]GetSecretValuesByProjectRow, error)
+	GetServiceAccountByID(ctx context.Context, id pgtype.UUID) (ServiceAccount, error)
 	// Counts jobs still working vs already-failed within a stage — the numbers
 	// the caller uses to decide whether to promote the stage. `awaiting_approval`
 	// is unfinished too: the gate hasn't decided yet, so the stage can't close.
@@ -305,6 +318,11 @@ type Querier interface {
 	// Total live artefact bytes. Returns 0 when the artifacts table is
 	// empty. Used for the global hard cap.
 	GlobalArtifactUsage(ctx context.Context) (int64, error)
+	// Stores a freshly-minted token. Caller passes the SHA-256 hex
+	// digest in `hash`; the plaintext is shown to the user once at
+	// creation time and never persisted. Either user_id OR
+	// service_account_id is set (XOR enforced by the table check).
+	InsertAPIToken(ctx context.Context, arg InsertAPITokenParams) (InsertAPITokenRow, error)
 	InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error)
 	// Write-only hot path — every RBAC'd mutation fires one of these.
 	// at is stamped by the DB so clock skew on multi-replica setups
@@ -336,6 +354,7 @@ type Querier interface {
 	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
+	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
 	// One INSERT per case. The agent batches N cases into a single
 	// gRPC message; the server handler opens a tx and calls this N
@@ -368,6 +387,9 @@ type Querier interface {
 	// no runs yet are absent from the result; the handler merges with
 	// ListPipelinesByProjectSlug to produce node entries.
 	LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error)
+	ListAPITokensByServiceAccount(ctx context.Context, serviceAccountID pgtype.UUID) ([]ListAPITokensByServiceAccountRow, error)
+	// Tokens this user owns, newest first. Used by /settings/api-tokens.
+	ListAPITokensByUser(ctx context.Context, userID pgtype.UUID) ([]ListAPITokensByUserRow, error)
 	// Dashboard + /agents list: every agent with its declared metadata
 	// + a count of currently-running job_runs it's been assigned.
 	// LEFT JOIN + FILTER gives 0 for idle agents without needing a
@@ -531,6 +553,9 @@ type Querier interface {
 	// Lists names + timestamps only — values never leave the DB without going
 	// through GetSecretValuesByProject below.
 	ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error)
+	// Newest first. Disabled SAs included; the UI dims them so admins
+	// see the full picture without filtering.
+	ListServiceAccounts(ctx context.Context) ([]ServiceAccount, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
 	ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunOrderedRow, error)
 	// Batch-loads stage_runs for every run whose id is in the input
@@ -633,11 +658,19 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
+	// Idempotent: revoke-on-already-revoked is a no-op. Caller filters
+	// by user_id or service_account_id to gate ownership.
+	RevokeAPIToken(ctx context.Context, id pgtype.UUID) error
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
 	// fresh project never needs an initial INSERT against this field.
 	SetProjectNotifications(ctx context.Context, arg SetProjectNotificationsParams) error
+	// Disabling stops new tokens from authenticating (the bearer
+	// middleware loads the SA after token lookup and bounces 401 when
+	// disabled_at is set). Existing tokens stay in the table — wipe
+	// explicitly with DELETE if you want them gone.
+	SetServiceAccountDisabled(ctx context.Context, arg SetServiceAccountDisabledParams) error
 	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
 	// Marks a still-queued job as 'skipped' with a terminal finish
 	// time so GetStageProgress stops counting it as unfinished. The
@@ -649,6 +682,10 @@ type Querier interface {
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
+	// Best-effort `last_used_at` bump. Called from the middleware
+	// when a Bearer token authenticates successfully — a stale value
+	// doesn't break anything, just makes the audit trail less useful.
+	TouchAPITokenLastUsed(ctx context.Context, id pgtype.UUID) error
 	// Cheap idempotent update; called at most once per request via a
 	// debounce in the middleware so we don't rewrite the row on every
 	// 2s dashboard poll.
@@ -683,6 +720,7 @@ type Querier interface {
 	// updated_at. Intended for POST /api/v1/projects/{slug}/scm-sources
 	// /{id}/rotate-webhook-secret.
 	UpdateScmSourceWebhookSecret(ctx context.Context, arg UpdateScmSourceWebhookSecretParams) error
+	UpdateServiceAccount(ctx context.Context, arg UpdateServiceAccountParams) error
 	// Flip a user's role. The CHECK constraint on the column enforces
 	// the enum; an admin calling this with a typo'd value gets a clean
 	// error from Postgres instead of a silent wrong-role write.

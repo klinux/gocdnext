@@ -22,6 +22,19 @@ type Agent struct {
 	RegisteredAt pgtype.Timestamptz
 }
 
+type ApiToken struct {
+	ID               pgtype.UUID
+	UserID           pgtype.UUID
+	ServiceAccountID pgtype.UUID
+	Name             string
+	Hash             string
+	Prefix           string
+	ExpiresAt        pgtype.Timestamptz
+	LastUsedAt       pgtype.Timestamptz
+	RevokedAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
 type Artifact struct {
 	ID            pgtype.UUID
 	RunID         pgtype.UUID
@@ -297,6 +310,17 @@ type Secret struct {
 	ValueEnc  []byte
 	CreatedAt pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
+}
+
+type ServiceAccount struct {
+	ID          pgtype.UUID
+	Name        string
+	Description string
+	Role        string
+	CreatedBy   pgtype.UUID
+	DisabledAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type StageRun struct {

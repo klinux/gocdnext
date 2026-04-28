@@ -250,6 +250,7 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	}
 	dashboardHandler := dashboardapi.NewHandler(st, logger)
 	accountHandler := account.New(st, logger)
+	accountTokensHandler := account.NewTokensHandler(st, st, logger)
 	pipelinesHandler := pipelinesapi.NewHandler(st, logger)
 	pluginsHandler := pluginsapi.NewHandler(logger, pluginCatalog)
 
@@ -431,6 +432,9 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		p.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)
 		p.Get("/api/v1/account/preferences", accountHandler.GetPreferences)
 		p.Put("/api/v1/account/preferences", accountHandler.PutPreferences)
+		p.Get("/api/v1/account/api-tokens", accountTokensHandler.ListTokens)
+		p.Post("/api/v1/account/api-tokens", accountTokensHandler.CreateToken)
+		p.Delete("/api/v1/account/api-tokens/{id}", accountTokensHandler.RevokeToken)
 	})
 
 	// Write API: maintainer ≥. These mutate project state, fire
@@ -483,6 +487,14 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		p.Get("/api/v1/admin/scm-credentials", adminHandler.SCMCredentials)
 		p.Post("/api/v1/admin/scm-credentials", adminHandler.UpsertSCMCredential)
 		p.Delete("/api/v1/admin/scm-credentials/{id}", adminHandler.DeleteSCMCredential)
+		p.Get("/api/v1/admin/service-accounts", adminHandler.ListServiceAccounts)
+		p.Post("/api/v1/admin/service-accounts", adminHandler.CreateServiceAccount)
+		p.Put("/api/v1/admin/service-accounts/{id}", adminHandler.UpdateServiceAccount)
+		p.Delete("/api/v1/admin/service-accounts/{id}", adminHandler.DeleteServiceAccount)
+		p.Post("/api/v1/admin/service-accounts/{id}/disable", adminHandler.DisableServiceAccount)
+		p.Get("/api/v1/admin/service-accounts/{id}/tokens", adminHandler.ListSATokens)
+		p.Post("/api/v1/admin/service-accounts/{id}/tokens", adminHandler.CreateSAToken)
+		p.Delete("/api/v1/admin/service-accounts/{id}/tokens/{tokenID}", adminHandler.RevokeSAToken)
 		p.Get("/api/v1/admin/groups", adminHandler.Groups)
 		p.Post("/api/v1/admin/groups", adminHandler.CreateGroup)
 		p.Put("/api/v1/admin/groups/{id}", adminHandler.UpdateGroup)

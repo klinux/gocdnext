@@ -45,6 +45,7 @@ export default defineConfig({
             { label: "Local dev", link: "/install/local-dev/" },
             { label: "Authentication", link: "/install/auth/" },
             { label: "Webhook setup", link: "/install/webhooks/" },
+            { label: "API tokens & service accounts", link: "/install/api-tokens/" },
             { label: "Observability", link: "/install/observability/" },
             { label: "Backup & restore", link: "/install/backup/" },
             { label: "Upgrade runbook", link: "/install/upgrade/" },

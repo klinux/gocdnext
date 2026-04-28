@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   BookOpen,
+  Bot,
   Boxes,
   ClipboardList,
   Cpu,
@@ -82,6 +83,7 @@ const adminNav: NavItem[] = [
   { label: "Profiles", href: "/admin/profiles", icon: Cpu },
   { label: "Audit", href: "/admin/audit", icon: ClipboardList },
   { label: "Secrets", href: "/admin/secrets", icon: KeyRound },
+  { label: "Service accounts", href: "/admin/service-accounts", icon: Bot },
 ];
 
 export function AppSidebar({ user, loginBase }: Props) {

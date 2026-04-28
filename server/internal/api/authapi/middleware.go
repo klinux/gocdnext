@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gocdnext/gocdnext/server/internal/auth/apitoken"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -51,12 +52,33 @@ func (m *Middleware) Enabled() bool { return m.enabled }
 // LoadSession is a chi-compatible middleware. Call it once on the
 // top-level router; it stuffs the user into context so downstream
 // handlers + the RequireAuth middleware can read it.
+//
+// Two paths in priority order:
+//
+//  1. `Authorization: Bearer gnk_...` — API token (user or
+//     service account). The token's hash hits api_tokens; the
+//     subject becomes the request's identity. Service accounts
+//     surface as a synthetic User with Provider="service_account"
+//     so downstream RBAC works without code changes — audit
+//     lines read "<name>@service-account" cleanly.
+//  2. Session cookie — the browser path. Same as before.
+//
+// Bearer takes precedence: when a token is present + valid we
+// don't read the cookie. Bearer present but invalid (revoked,
+// expired, malformed) falls through to cookie / anonymous;
+// RequireAuth on protected routes 401s as usual.
 func (m *Middleware) LoadSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !m.enabled {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		if u, ok := m.authenticateBearer(r); ok {
+			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), u)))
+			return
+		}
+
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil || cookie.Value == "" {
 			next.ServeHTTP(w, r)
@@ -85,6 +107,84 @@ func (m *Middleware) LoadSession(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), userCtxKey, view.User)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// authenticateBearer parses an Authorization: Bearer header and,
+// if it points at a live api_tokens row, returns the subject as
+// a store.User. Misses (no header, malformed, unknown hash,
+// revoked, expired, disabled SA) all return ok=false silently —
+// the caller falls through to cookie / anonymous. DB hiccups
+// log a warn and treat as miss; we don't want a transient flap
+// to lock out every machine.
+func (m *Middleware) authenticateBearer(r *http.Request) (store.User, bool) {
+	header := r.Header.Get("Authorization")
+	if header == "" {
+		return store.User{}, false
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return store.User{}, false
+	}
+	bearer := strings.TrimSpace(header[len(prefix):])
+	kind, body, err := apitoken.Parse(bearer)
+	if err != nil {
+		// Not our token shape; might be an OAuth bearer bound for
+		// a different middleware. Silent miss.
+		return store.User{}, false
+	}
+	hash := apitoken.Hash(body)
+	row, err := m.store.LookupAPITokenByHash(r.Context(), hash)
+	if errors.Is(err, store.ErrAPITokenNotFound) {
+		return store.User{}, false
+	}
+	if err != nil {
+		m.log.Warn("auth middleware: api token lookup", "err", err)
+		return store.User{}, false
+	}
+
+	switch row.Subject {
+	case store.TokenSubjectUser:
+		if kind != apitoken.KindUser {
+			// Token prefix says user but the row points at a SA,
+			// or vice versa. Treat as miss.
+			return store.User{}, false
+		}
+		u, err := m.store.GetUser(r.Context(), row.SubjectID)
+		if err != nil {
+			m.log.Warn("auth middleware: user lookup for token", "err", err)
+			return store.User{}, false
+		}
+		if u.DisabledAt != nil {
+			return store.User{}, false
+		}
+		_ = m.store.TouchAPITokenLastUsed(r.Context(), row.ID)
+		return u, true
+
+	case store.TokenSubjectServiceAccount:
+		if kind != apitoken.KindSA {
+			return store.User{}, false
+		}
+		sa, err := m.store.GetServiceAccount(r.Context(), row.SubjectID)
+		if err != nil {
+			m.log.Warn("auth middleware: sa lookup for token", "err", err)
+			return store.User{}, false
+		}
+		if sa.DisabledAt != nil {
+			return store.User{}, false
+		}
+		_ = m.store.TouchAPITokenLastUsed(r.Context(), row.ID)
+		// Synthesize a User from the SA. Downstream RBAC reads
+		// Role; audit reads Email/Provider so SAs are
+		// distinguishable from real users in the audit log.
+		return store.User{
+			ID:       sa.ID,
+			Email:    sa.Name + "@service-account",
+			Name:     sa.Name,
+			Provider: "service_account",
+			Role:     sa.Role,
+		}, true
+	}
+	return store.User{}, false
 }
 
 // RequireAuth is applied only on routes that must see a signed-in
