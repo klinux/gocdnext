@@ -53,46 +53,11 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
       const container = containerRef.current;
       if (!container) return;
       const cRect = container.getBoundingClientRect();
-
-      // Cluster cards into visual rows by their top Y. The grid
-      // wraps within a layer (e.g. 4 pipelines on a 3-col grid land
-      // 3 + 1), so "layer index" alone doesn't tell us whether two
-      // cards sit in adjacent rows. We only draw SVG edges between
-      // cards in adjacent visual rows — anything farther reads as a
-      // tangled lasso and the upstream pill in the target's header
-      // already names the dependency without the line.
-      const ROW_TOLERANCE = 30;
-      type CardGeom = { name: string; rect: DOMRect; row: number };
-      const geoms: CardGeom[] = [];
-      for (const [name, el] of cardRefs.current) {
-        geoms.push({ name, rect: el.getBoundingClientRect(), row: 0 });
-      }
-      geoms.sort((a, b) => a.rect.top - b.rect.top);
-      let row = 0;
-      let lastTop = -Infinity;
-      for (const g of geoms) {
-        if (g.rect.top - lastTop > ROW_TOLERANCE) row++;
-        g.row = row;
-        lastTop = g.rect.top;
-      }
-      const rowOf = new Map(geoms.map((g) => [g.name, g.row] as const));
-
       const next: EdgeGeometry[] = [];
       for (const e of renderableEdges) {
         const from = cardRefs.current.get(e.from_pipeline);
         const to = cardRefs.current.get(e.to_pipeline);
         if (!from || !to) continue;
-        const fromRow = rowOf.get(e.from_pipeline);
-        const toRow = rowOf.get(e.to_pipeline);
-        if (
-          fromRow == null ||
-          toRow == null ||
-          Math.abs(toRow - fromRow) !== 1
-        ) {
-          // Non-adjacent visual rows — let the upstream pill in the
-          // target's header carry the relationship instead.
-          continue;
-        }
         const f = from.getBoundingClientRect();
         const t = to.getBoundingClientRect();
         next.push({
