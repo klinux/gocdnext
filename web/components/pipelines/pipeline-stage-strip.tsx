@@ -1,11 +1,12 @@
 "use client";
 
-import { Fragment, useTransition } from "react";
+import { Fragment, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Route } from "next";
 import {
   Check,
   ChevronsRight,
+  FileText,
   Loader2,
   Minus,
   RotateCcw,
@@ -17,8 +18,20 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
-import { rerunJob, rerunRun } from "@/server/actions/runs";
+import { cancelRun, rerunJob, rerunRun } from "@/server/actions/runs";
 import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type {
   MergedJob,
   StageColumn,
@@ -72,22 +85,30 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
           {column.name}
         </span>
         {showRate ? (
-          <span
-            className={cn(
-              "rounded px-1 font-mono text-[9px] tabular-nums",
-              rate >= 70
-                ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                : "bg-red-500/15 text-red-600 dark:text-red-400",
-            )}
-            title={`${rate}% over ${column.stat?.runs_considered} runs`}
-          >
-            {rate}%
-          </span>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className={cn(
+                    "cursor-help rounded px-1 font-mono text-[9px] tabular-nums",
+                    rate >= 70
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                      : "bg-red-500/15 text-red-600 dark:text-red-400",
+                  )}
+                />
+              }
+            >
+              {rate}%
+            </TooltipTrigger>
+            <TooltipContent>
+              {rate}% over {column.stat?.runs_considered} runs
+            </TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         {column.jobs.length === 0 ? (
-          <JobCircle status={undefined} label={`${column.name}: empty`} />
+          <JobCircle status={undefined} />
         ) : (
           column.jobs.map((job) => (
             <JobNode
@@ -119,11 +140,18 @@ function DashedSeparator() {
   );
 }
 
-// JobNode is the interactive wrapper around a job circle: clicking
-// the badge opens the JobDetailSheet (logs + meta + actions); a
-// hover-revealed retry button reruns just this job (or the whole
-// run if the job never executed). Falls back to a plain label when
-// there's no runId yet (definition-only views).
+// JobNode wraps the JobCircle in a dropdown menu: clicking the
+// badge surfaces Status (opens the sheet), Restart (reruns just
+// this job, falls back to a full-pipeline rerun when the job
+// never executed), and Cancel (cancels the parent run when the
+// job is queued/running — there's no per-job cancel endpoint
+// today, so the menu item is honest about the scope via the
+// confirmation toast).
+//
+// Hover tooltip on the circle still names the job + status +
+// duration so the user has a way to peek without committing to a
+// click. Falls back to a plain label when there's no runId yet
+// (definition-only views).
 function JobNode({
   job,
   stageName,
@@ -136,58 +164,123 @@ function JobNode({
   const status = job.run?.status;
   const label = `${stageName}:${job.name}`;
   const duration = formatJobDuration(job);
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [sheetOpen, setSheetOpen] = useState(false);
 
-  const circle = (
-    <JobCircle status={status} label={label} durationLabel={duration} />
-  );
+  const tooltip = [label, status ?? "not run", duration]
+    .filter(Boolean)
+    .join(" · ");
 
   if (!runId || !job.run) {
     return (
-      <span className="relative inline-flex" title={`${label} · not run`}>
-        {circle}
-      </span>
+      <Tooltip>
+        <TooltipTrigger render={<span className="relative inline-flex" />}>
+          <JobCircle status={status} />
+        </TooltipTrigger>
+        <TooltipContent>{tooltip}</TooltipContent>
+      </Tooltip>
     );
   }
 
+  const jobRunId = job.run.id;
+  const isActive = status === "running" || status === "queued";
+
+  const onRestart = () => {
+    startTransition(async () => {
+      const res = await rerunJob({ jobRunId });
+      if (!res.ok) {
+        if (res.status === 409) {
+          toast.error(`${job.name} is still active — cancel it first`);
+        } else {
+          toast.error(`Re-run ${job.name} failed: ${res.error}`);
+        }
+        return;
+      }
+      const attempt =
+        typeof res.data.attempt === "number" ? res.data.attempt : undefined;
+      toast.success(
+        attempt != null
+          ? `Re-running ${job.name} (attempt ${attempt})`
+          : `Re-running ${job.name}`,
+      );
+      router.refresh();
+    });
+  };
+
+  const onCancel = () => {
+    startTransition(async () => {
+      const res = await cancelRun({ runId });
+      if (!res.ok) {
+        toast.error(`Cancel failed: ${res.error}`);
+        return;
+      }
+      toast.success(`Cancelled run`, {
+        description: `Cancelling ${job.name} cancels the rest of run too.`,
+      });
+      router.refresh();
+    });
+  };
+
   return (
-    <span className="group relative inline-flex">
+    <>
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <DropdownMenuTrigger
+                disabled={pending}
+                className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                aria-label={`Actions for ${job.name}`}
+              />
+            }
+          >
+            <JobCircle status={status} />
+          </TooltipTrigger>
+          <TooltipContent>{tooltip}</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start" className="w-auto min-w-[180px]">
+          <DropdownMenuItem onClick={() => setSheetOpen(true)}>
+            <FileText className="size-4" />
+            <span>View status</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onRestart} disabled={pending}>
+            <RotateCcw
+              className={cn("size-4", pending && "animate-spin")}
+            />
+            <span>Restart job</span>
+          </DropdownMenuItem>
+          {isActive ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={onCancel}
+                disabled={pending}
+                variant="destructive"
+              >
+                <X className="size-4" />
+                <span>Cancel run</span>
+              </DropdownMenuItem>
+            </>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <JobDetailSheet
         runId={runId}
-        jobId={job.run.id}
+        jobId={jobRunId}
         jobName={job.name}
-        trigger={
-          <button
-            type="button"
-            className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            title={`Open job details for ${job.name}`}
-            aria-label={`Open job details for ${job.name}`}
-          >
-            {circle}
-          </button>
-        }
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
       />
-      <JobRetryButton runId={runId} jobName={job.name} jobRunId={job.run.id} />
-    </span>
+    </>
   );
 }
 
-function JobCircle({
-  status,
-  label,
-  durationLabel,
-}: {
-  status: string | undefined;
-  label: string;
-  durationLabel?: string | null;
-}) {
+function JobCircle({ status }: { status: string | undefined }) {
   const tone: StatusTone = status ? statusTone(status) : "neutral";
-  const tooltip = [label, status ?? "not run", durationLabel]
-    .filter(Boolean)
-    .join(" · ");
   return (
     <span
-      title={tooltip}
-      aria-label={tooltip}
+      aria-hidden
       className={cn(
         "relative inline-flex size-[26px] shrink-0 items-center justify-center rounded-full border-[1.5px]",
         circleClasses[tone],
@@ -197,75 +290,6 @@ function JobCircle({
     >
       <CircleIcon tone={tone} />
     </span>
-  );
-}
-
-// JobRetryButton sits on top of the circle, hidden until the
-// parent JobNode is hovered. Reruns just this job when we have
-// its run id; gracefully falls back to a full-pipeline rerun for
-// jobs that never executed.
-function JobRetryButton({
-  runId,
-  jobName,
-  jobRunId,
-}: {
-  runId: string;
-  jobName: string;
-  jobRunId?: string;
-}) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const retry = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    startTransition(async () => {
-      if (jobRunId) {
-        const res = await rerunJob({ jobRunId });
-        if (!res.ok) {
-          if (res.status === 409) {
-            toast.error(`${jobName} is still active — cancel it first`);
-          } else {
-            toast.error(`Re-run ${jobName} failed: ${res.error}`);
-          }
-          return;
-        }
-        const attempt =
-          typeof res.data.attempt === "number" ? res.data.attempt : undefined;
-        toast.success(
-          attempt != null
-            ? `Re-running ${jobName} (attempt ${attempt})`
-            : `Re-running ${jobName}`,
-        );
-        router.refresh();
-        return;
-      }
-      const res = await rerunRun({ runId });
-      if (!res.ok) {
-        toast.error(`Re-run failed: ${res.error}`);
-        return;
-      }
-      const newID = String(res.data.run_id ?? "");
-      toast.success(`Re-ran pipeline`, {
-        action: newID
-          ? {
-              label: "Open",
-              onClick: () => router.push(`/runs/${newID}` as Route),
-            }
-          : undefined,
-      });
-    });
-  };
-  return (
-    <button
-      type="button"
-      onClick={retry}
-      disabled={pending}
-      aria-label={`Re-run ${jobName}`}
-      title="Re-run this job"
-      className="absolute -right-1 -top-1 inline-flex size-[14px] shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground opacity-0 shadow-sm transition-all hover:bg-accent hover:text-foreground disabled:opacity-50 group-hover:opacity-100 focus-visible:opacity-100"
-    >
-      <RotateCcw className={cn("size-2.5", pending && "animate-spin")} />
-    </button>
   );
 }
 

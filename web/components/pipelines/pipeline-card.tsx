@@ -97,25 +97,35 @@ export function PipelineCard({
               the job circles in the stage strip below — the explicit
               text/icon badge that used to live here was redundant. */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setOverviewOpen(true)}
-              title="Open pipeline overview"
-              className="min-w-0 flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {pipeline.name}
-            </button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    onClick={() => setOverviewOpen(true)}
+                    className="min-w-0 flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                }
+              >
+                {pipeline.name}
+              </TooltipTrigger>
+              <TooltipContent>Open pipeline overview</TooltipContent>
+            </Tooltip>
             {bottleneck ? (
               <BottleneckPill bottleneck={bottleneck} />
             ) : null}
             {meta?.branch ? (
-              <span
-                className="inline-flex max-w-[160px] items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
-                title={`Ref: ${meta.branch}`}
-              >
-                <GitBranch className="size-3" aria-hidden />
-                <span className="truncate">{meta.branch}</span>
-              </span>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="inline-flex max-w-[160px] items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground" />
+                  }
+                >
+                  <GitBranch className="size-3" aria-hidden />
+                  <span className="truncate">{meta.branch}</span>
+                </TooltipTrigger>
+                <TooltipContent>Ref: {meta.branch}</TooltipContent>
+              </Tooltip>
             ) : null}
             <TriggerPipelineButton
               pipelineId={pipeline.id}
@@ -153,12 +163,24 @@ export function PipelineCard({
               <span className="font-mono text-[10px]">{shortSha}</span>
             ) : null}
             {commitSubject ? (
-              <span
-                className="truncate text-foreground/80"
-                title={meta?.message}
-              >
-                {commitSubject}
-              </span>
+              meta?.message && meta.message !== commitSubject ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span className="truncate text-foreground/80" />
+                    }
+                  >
+                    {commitSubject}
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-md whitespace-pre-wrap">
+                    {meta.message}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <span className="truncate text-foreground/80">
+                  {commitSubject}
+                </span>
+              )
             ) : null}
           </div>
         </header>
@@ -267,14 +289,18 @@ function BottleneckPill({ bottleneck }: { bottleneck: Bottleneck }) {
     detail.push(`+${formatDurationSeconds(bottleneck.overP50Sec)} p50`);
   }
   return (
-    <span
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-400"
-      title={`${bottleneck.stageName} is the bottleneck`}
-    >
-      <AlertTriangle className="size-3" aria-hidden />
-      <span className="font-mono font-semibold">{bottleneck.stageName}</span>
-      {detail.length > 0 ? <span>· {detail.join(" · ")}</span> : null}
-    </span>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className="inline-flex shrink-0 cursor-help items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-400" />
+        }
+      >
+        <AlertTriangle className="size-3" aria-hidden />
+        <span className="font-mono font-semibold">{bottleneck.stageName}</span>
+        {detail.length > 0 ? <span>· {detail.join(" · ")}</span> : null}
+      </TooltipTrigger>
+      <TooltipContent>{bottleneck.stageName} is the bottleneck</TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -6,6 +6,11 @@ import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PipelineCard } from "@/components/pipelines/pipeline-card";
 import { statusTone, type StatusTone } from "@/lib/status";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { PipelineEdge, PipelineSummary, RunSummary } from "@/types/api";
 
 type Props = {
@@ -74,25 +79,32 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
           </span>
           <div className="flex flex-wrap items-center gap-1.5">
             {alerts.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => focusCard(p.name)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-card px-2 py-0.5 font-mono text-[11px] hover:bg-amber-500/10"
-                title={alertReason(p)}
-              >
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    p.latest_run?.status === "failed"
-                      ? "bg-red-500"
-                      : "bg-amber-500",
-                  )}
-                  aria-hidden
-                />
-                {p.name}
-                <span className="text-muted-foreground">{alertReason(p)}</span>
-              </button>
+              <Tooltip key={p.id}>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      onClick={() => focusCard(p.name)}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-card px-2 py-0.5 font-mono text-[11px] hover:bg-amber-500/10"
+                    />
+                  }
+                >
+                  <span
+                    className={cn(
+                      "size-1.5 rounded-full",
+                      p.latest_run?.status === "failed"
+                        ? "bg-red-500"
+                        : "bg-amber-500",
+                    )}
+                    aria-hidden
+                  />
+                  {p.name}
+                  <span className="text-muted-foreground">
+                    {alertReason(p)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Scroll to {p.name}</TooltipContent>
+              </Tooltip>
             ))}
           </div>
         </div>

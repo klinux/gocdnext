@@ -26,15 +26,30 @@ type Props = {
   runId: string;
   jobId: string;
   jobName: string;
-  trigger: React.ReactElement;
+  // trigger renders an element that opens the sheet on click (the
+  // legacy ergonomic — wrap any clickable). When the consumer
+  // controls open externally (e.g. opens via a dropdown-menu item)
+  // pass `open` + `onOpenChange` instead and omit trigger.
+  trigger?: React.ReactElement;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 // Drawer for a single job: timing, image, exit code, recent logs.
 // Fetch fires lazily on open so closed triggers don't tax the API.
 // The full run page is the canonical detail view; this drawer is the
 // glanceable preview that keeps the user on the pipelines tab.
-export function JobDetailSheet({ runId, jobId, jobName, trigger }: Props) {
-  const [open, setOpen] = useState(false);
+export function JobDetailSheet({
+  runId,
+  jobId,
+  jobName,
+  trigger,
+  open: controlledOpen,
+  onOpenChange,
+}: Props) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const [result, setResult] = useState<JobDetailResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -48,7 +63,7 @@ export function JobDetailSheet({ runId, jobId, jobName, trigger }: Props) {
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger render={trigger} />
+      {trigger ? <SheetTrigger render={trigger} /> : null}
       <SheetContent
         side="right"
         className="data-[side=right]:w-[560px] data-[side=right]:sm:max-w-[560px]"
