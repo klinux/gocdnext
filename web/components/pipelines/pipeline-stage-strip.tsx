@@ -80,7 +80,15 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
   const showRate = rate != null && rate < 90;
   return (
     <div className="flex shrink-0 flex-col items-start gap-1">
-      <div className="flex items-baseline gap-1.5 px-0.5">
+      {/* Title row is `relative` so the rate badge can absolute-anchor
+          past the title's right edge. The badge then doesn't widen
+          the stage group, which means the circle below stays
+          left-aligned with the title and the dashed separator
+          connects tight against the circle — without that, a stage
+          carrying a "60%" badge made the group wider than the
+          circle and left a stretch of empty space between circle
+          and dash. */}
+      <div className="relative px-0.5">
         <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
           {column.name}
         </span>
@@ -90,7 +98,7 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
               render={
                 <span
                   className={cn(
-                    "cursor-help rounded px-1 font-mono text-[9px] tabular-nums",
+                    "absolute left-full top-1/2 ml-1 -translate-y-1/2 cursor-help rounded px-1 font-mono text-[9px] tabular-nums",
                     rate >= 70
                       ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
                       : "bg-red-500/15 text-red-600 dark:text-red-400",
