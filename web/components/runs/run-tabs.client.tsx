@@ -39,12 +39,18 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
 
   // Sync URL when tab changes — replace, not push, so back-button
   // returns to the page that linked HERE, not to the previous tab.
+  // Compare against the *intended* URL value (null for the default
+  // tab, since we omit the param), not against `tab` directly —
+  // otherwise the default case ("jobs", URL has no ?tab=) loops:
+  // current=null, tab="jobs", they never match, replace runs every
+  // render → params changes → effect runs again → render storm.
   useEffect(() => {
-    const current = params?.get("tab");
-    if (current === tab) return;
+    const wanted: string | null = tab === "jobs" ? null : tab;
+    const current = params?.get("tab") ?? null;
+    if (current === wanted) return;
     const next = new URLSearchParams(params?.toString() ?? "");
-    if (tab === "jobs") next.delete("tab");
-    else next.set("tab", tab);
+    if (wanted === null) next.delete("tab");
+    else next.set("tab", wanted);
     const qs = next.toString();
     router.replace(qs ? `?${qs}` : "?", { scroll: false });
   }, [tab, params, router]);
