@@ -66,7 +66,7 @@ export function JobDetailSheet({
       {trigger ? <SheetTrigger render={trigger} /> : null}
       <SheetContent
         side="right"
-        className="data-[side=right]:w-[560px] data-[side=right]:sm:max-w-[560px]"
+        className="data-[side=right]:w-1/2 data-[side=right]:sm:max-w-[50vw]"
       >
         <SheetHeader>
           <SheetTitle className="font-mono text-base">{jobName}</SheetTitle>
