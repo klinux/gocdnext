@@ -1,0 +1,299 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-qsh4ys4j"> <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Webhook setup per provider | gocdnext</title><link rel="canonical" href="https://klinux.github.io/gocdnext/docs/install/webhooks/"/><link rel="sitemap" href="/gocdnext/docs/sitemap-index.xml"/><link rel="shortcut icon" href="/gocdnext/docs/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v5.18.1"/><meta name="generator" content="Starlight v0.30.6"/><meta property="og:title" content="Webhook setup per provider"/><meta property="og:type" content="article"/><meta property="og:url" content="https://klinux.github.io/gocdnext/docs/install/webhooks/"/><meta property="og:locale" content="en"/><meta property="og:description" content="Step-by-step for wiring GitHub, GitLab, and Bitbucket webhooks so pushes turn into runs."/><meta property="og:site_name" content="gocdnext"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="Step-by-step for wiring GitHub, GitLab, and Bitbucket webhooks so pushes turn into runs."/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg> <svg aria-hidden="true" class="dark astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg> <svg aria-hidden="true" class="auto astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg> </template><link rel="stylesheet" href="/gocdnext/docs/_astro/index.DQda1IeO.css">
+<style>:root{--sl-badge-default-border: var(--sl-color-accent);--sl-badge-default-bg: var(--sl-color-accent-low);--sl-badge-default-text: #fff;--sl-badge-note-border: var(--sl-color-blue);--sl-badge-note-bg: var(--sl-color-blue-low);--sl-badge-note-text: #fff;--sl-badge-danger-border: var(--sl-color-red);--sl-badge-danger-bg: var(--sl-color-red-low);--sl-badge-danger-text: #fff;--sl-badge-success-border: var(--sl-color-green);--sl-badge-success-bg: var(--sl-color-green-low);--sl-badge-success-text: #fff;--sl-badge-caution-border: var(--sl-color-orange);--sl-badge-caution-bg: var(--sl-color-orange-low);--sl-badge-caution-text: #fff;--sl-badge-tip-border: var(--sl-color-purple);--sl-badge-tip-bg: var(--sl-color-purple-low);--sl-badge-tip-text: #fff}[data-theme=light]:root{--sl-badge-default-bg: var(--sl-color-accent-high);--sl-badge-note-bg: var(--sl-color-blue-high);--sl-badge-danger-bg: var(--sl-color-red-high);--sl-badge-success-bg: var(--sl-color-green-high);--sl-badge-caution-bg: var(--sl-color-orange-high);--sl-badge-tip-bg: var(--sl-color-purple-high)}.sl-badge:where(.astro-vpbisdjb){display:inline-block;border:1px solid var(--sl-color-border-badge);border-radius:.25rem;font-family:var(--sl-font-system-mono);line-height:normal;color:var(--sl-color-text-badge);background-color:var(--sl-color-bg-badge);overflow-wrap:anywhere}.sidebar-content .sl-badge:where(.astro-vpbisdjb){line-height:1;font-size:var(--sl-text-xs);padding:.125rem .375rem}.sidebar-content a[aria-current=page]>.sl-badge:where(.astro-vpbisdjb){--sl-color-bg-badge: transparent;--sl-color-border-badge: currentColor;color:inherit}.default:where(.astro-vpbisdjb){--sl-color-bg-badge: var(--sl-badge-default-bg);--sl-color-border-badge: var(--sl-badge-default-border);--sl-color-text-badge: var(--sl-badge-default-text)}.note:where(.astro-vpbisdjb){--sl-color-bg-badge: var(--sl-badge-note-bg);--sl-color-border-badge: var(--sl-badge-note-border);--sl-color-text-badge: var(--sl-badge-note-text)}.danger:where(.astro-vpbisdjb){--sl-color-bg-badge: var(--sl-badge-danger-bg);--sl-color-border-badge: var(--sl-badge-danger-border);--sl-color-text-badge: var(--sl-badge-danger-text)}.success:where(.astro-vpbisdjb){--sl-color-bg-badge: var(--sl-badge-success-bg);--sl-color-border-badge: var(--sl-badge-success-border);--sl-color-text-badge: var(--sl-badge-success-text)}.tip:where(.astro-vpbisdjb){--sl-color-bg-badge: var(--sl-badge-tip-bg);--sl-color-border-badge: var(--sl-badge-tip-border);--sl-color-text-badge: var(--sl-badge-tip-text)}.caution:where(.astro-vpbisdjb){--sl-color-bg-badge: var(--sl-badge-caution-bg);--sl-color-border-badge: var(--sl-badge-caution-border);--sl-color-text-badge: var(--sl-badge-caution-text)}.small:where(.astro-vpbisdjb){font-size:var(--sl-text-xs);padding:.125rem .25rem}.medium:where(.astro-vpbisdjb){font-size:var(--sl-text-sm);padding:.175rem .35rem}.large:where(.astro-vpbisdjb){font-size:var(--sl-text-base);padding:.225rem .45rem}.sl-markdown-content :is(h1,h2,h3,h4,h5,h6) .sl-badge:where(.astro-vpbisdjb){vertical-align:middle}
+.card:where(.astro-jm6s2shv){--sl-card-border: var(--sl-color-purple);--sl-card-bg: var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);padding:clamp(1rem,calc(.125rem + 3vw),2.5rem);flex-direction:column;gap:clamp(.5rem,calc(.125rem + 1vw),1rem)}.card:where(.astro-jm6s2shv):nth-child(4n+1){--sl-card-border: var(--sl-color-orange);--sl-card-bg: var(--sl-color-orange-low)}.card:where(.astro-jm6s2shv):nth-child(4n+3){--sl-card-border: var(--sl-color-green);--sl-card-bg: var(--sl-color-green-low)}.card:where(.astro-jm6s2shv):nth-child(4n+4){--sl-card-border: var(--sl-color-red);--sl-card-bg: var(--sl-color-red-low)}.card:where(.astro-jm6s2shv):nth-child(4n+5){--sl-card-border: var(--sl-color-blue);--sl-card-bg: var(--sl-color-blue-low)}.title:where(.astro-jm6s2shv){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);gap:1rem;align-items:center}.card:where(.astro-jm6s2shv) .icon:where(.astro-jm6s2shv){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);padding:.2em;border-radius:.25rem}.card:where(.astro-jm6s2shv) .body:where(.astro-jm6s2shv){margin:0;font-size:clamp(var(--sl-text-sm),calc(.5rem + 1vw),var(--sl-text-body))}
+.card-grid:where(.astro-yhtstcew){display:grid;grid-template-columns:100%;gap:1rem}.card-grid:where(.astro-yhtstcew)>*{margin-top:0!important}@media(min-width:50rem){.card-grid:where(.astro-yhtstcew){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-yhtstcew){--stagger-height: 5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-yhtstcew)>*:nth-child(2n){transform:translateY(var(--stagger-height))}}
+svg:where(.astro-k4qrxeof){color:var(--sl-icon-color);font-size:var(--sl-icon-size, 1em);width:1em;height:1em}
+.sl-steps{--bullet-size: calc(var(--sl-line-height) * 1rem);--bullet-margin: .375rem;list-style:none;counter-reset:steps-counter var(--sl-steps-start, 0);padding-inline-start:0}.sl-steps>li{counter-increment:steps-counter;position:relative;padding-inline-start:calc(var(--bullet-size) + 1rem);padding-bottom:1px;min-height:calc(var(--bullet-size) + var(--bullet-margin))}.sl-steps>li+li{margin-top:0}.sl-steps>li:before{content:counter(steps-counter);position:absolute;top:0;inset-inline-start:0;width:var(--bullet-size);height:var(--bullet-size);line-height:var(--bullet-size);font-size:var(--sl-text-xs);font-weight:600;text-align:center;color:var(--sl-color-white);background-color:var(--sl-color-gray-6);border-radius:99rem;box-shadow:inset 0 0 0 1px var(--sl-color-gray-5)}.sl-steps>li:after{--guide-width: 1px;content:"";position:absolute;top:calc(var(--bullet-size) + var(--bullet-margin));bottom:var(--bullet-margin);inset-inline-start:calc((var(--bullet-size) - var(--guide-width)) / 2);width:var(--guide-width);background-color:var(--sl-color-hairline-light)}.sl-steps>li>:first-child{--lh: calc(1em * var(--sl-line-height));--shift-y: calc(.5 * (var(--bullet-size) - var(--lh)));transform:translateY(var(--shift-y));margin-bottom:var(--shift-y)}.sl-steps>li>:first-child:where(h1,h2,h3,h4,h5,h6){--lh: calc(1em * var(--sl-line-height-headings))}@supports (--prop: 1lh){.sl-steps>li>:first-child{--lh: 1lh}}
+.sl-link-button:where(.astro-6lj4zy7z){align-items:center;border:1px solid transparent;border-radius:999rem;display:inline-flex;font-size:var(--sl-text-sm);gap:.5em;line-height:1.1875;outline-offset:.25rem;padding:.4375rem 1.125rem;text-decoration:none}.sl-link-button:where(.astro-6lj4zy7z).primary{background:var(--sl-color-text-accent);border-color:var(--sl-color-text-accent);color:var(--sl-color-black)}.sl-link-button:where(.astro-6lj4zy7z).primary:hover{color:var(--sl-color-black)}.sl-link-button:where(.astro-6lj4zy7z).secondary{border-color:inherit;color:var(--sl-color-white)}.sl-link-button:where(.astro-6lj4zy7z).minimal{color:var(--sl-color-white);padding-inline:0}.sl-link-button:where(.astro-6lj4zy7z) svg{flex-shrink:0}@media(min-width:50rem){.sl-link-button:where(.astro-6lj4zy7z){font-size:var(--sl-text-base);padding:.9375rem 1.25rem}}.sl-markdown-content .sl-link-button:where(.astro-6lj4zy7z){margin-inline-end:1rem}.sl-markdown-content .sl-link-button:where(.astro-6lj4zy7z):not(:where(p *)){margin-block:1rem}
+</style><script type="module" src="/gocdnext/docs/_astro/page.B1D-nYk3.js"></script></head> <body class="astro-qsh4ys4j"> <a href="#_top" class="astro-kgkd434e">Skip to content</a>  <div class="page sl-flex astro-dn32fbfl"> <header class="header astro-dn32fbfl"><div class="header sl-flex astro-nnf5f5or"> <div class="title-wrapper sl-flex astro-nnf5f5or"> <a href="/gocdnext/docs/" class="site-title sl-flex astro-nuxvqhyo">  <img class="astro-nuxvqhyo" alt src="/gocdnext/docs/_astro/logo.Dt8l4M97.svg" width="220" height="64">  <span class="sr-only astro-nuxvqhyo" translate="no"> gocdnext </span> </a>  </div> <div class="sl-flex astro-nnf5f5or"> <site-search class="astro-nnf5f5or astro-mzapyljt" data-translations="{&#34;placeholder&#34;:&#34;Search&#34;}"> <button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-mzapyljt"> <svg aria-hidden="true" class="astro-mzapyljt astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg>  <span class="sl-hidden md:sl-block astro-mzapyljt" aria-hidden="true">Search</span> <kbd class="sl-hidden md:sl-flex astro-mzapyljt" style="display: none;"> <kbd class="astro-mzapyljt">Ctrl</kbd><kbd class="astro-mzapyljt">K</kbd> </kbd> </button> <dialog style="padding:0" aria-label="Search" class="astro-mzapyljt"> <div class="dialog-frame sl-flex astro-mzapyljt">  <button data-close-modal class="sl-flex md:sl-hidden astro-mzapyljt"> Cancel </button> <div class="search-container astro-mzapyljt"> <div id="starlight__search" class="astro-mzapyljt"></div> </div> </div> </dialog> </site-search>  <script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script> <script type="module" src="/gocdnext/docs/_astro/Search.astro_astro_type_script_index_0_lang.CEyYUe0k.js"></script>   </div> <div class="sl-hidden md:sl-flex right-group astro-nnf5f5or"> <div class="sl-flex social-icons astro-nnf5f5or"> <a href="https://github.com/klinux/gocdnext" rel="me" class="sl-flex astro-3x33wexi"><span class="sr-only astro-3x33wexi">GitHub</span><svg aria-hidden="true" class="astro-3x33wexi astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg> </a> </div> <starlight-theme-select>  <label style="--sl-select-width: 6.25em" class="astro-gc2dsudg"> <span class="sr-only astro-gc2dsudg">Select theme</span> <svg aria-hidden="true" class="icon label-icon astro-gc2dsudg astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg>  <select value="auto" autocomplete="off" class="astro-gc2dsudg"> <option value="dark" class="astro-gc2dsudg">Dark</option><option value="light" class="astro-gc2dsudg">Light</option><option value="auto" selected class="astro-gc2dsudg">Auto</option> </select> <svg aria-hidden="true" class="icon caret astro-gc2dsudg astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </label>  </starlight-theme-select>  <script>
+	StarlightThemeProvider.updatePickers();
+</script> <script type="module">const r="starlight-theme",o=e=>e==="auto"||e==="dark"||e==="light"?e:"auto",c=()=>o(typeof localStorage<"u"&&localStorage.getItem(r));function n(e){typeof localStorage<"u"&&localStorage.setItem(r,e==="light"||e==="dark"?e:"")}const l=()=>matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";function t(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e==="auto"?l():e,n(e)}matchMedia("(prefers-color-scheme: light)").addEventListener("change",()=>{c()==="auto"&&t("auto")});class s extends HTMLElement{constructor(){super(),t(c()),this.querySelector("select")?.addEventListener("change",a=>{a.currentTarget instanceof HTMLSelectElement&&t(o(a.currentTarget.value))})}}customElements.define("starlight-theme-select",s);</script> <script type="module">class s extends HTMLElement{constructor(){super();const e=this.querySelector("select");e&&(e.addEventListener("change",t=>{t.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=t.currentTarget.value)}),window.addEventListener("pageshow",t=>{if(!t.persisted)return;const n=e.querySelector("option[selected]")?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}}customElements.define("starlight-lang-select",s);</script> </div> </div> </header> <nav class="sidebar astro-dn32fbfl" aria-label="Main"> <starlight-menu-button class="astro-4jhpkje6"> <button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-4jhpkje6"> <svg aria-hidden="true" class="astro-4jhpkje6 astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg>  </button> </starlight-menu-button> <script type="module">class s extends HTMLElement{constructor(){super(),this.btn=this.querySelector("button"),this.btn.addEventListener("click",()=>this.toggleExpanded());const t=this.closest("nav");t&&t.addEventListener("keyup",e=>this.closeOnEscape(e))}setExpanded(t){this.setAttribute("aria-expanded",String(t)),document.body.toggleAttribute("data-mobile-menu-expanded",t)}toggleExpanded(){this.setExpanded(this.getAttribute("aria-expanded")!=="true")}closeOnEscape(t){t.code==="Escape"&&(this.setExpanded(!1),this.btn.focus())}}customElements.define("starlight-menu-button",s);</script>   <div id="starlight__sidebar" class="sidebar-pane astro-dn32fbfl"> <div class="sidebar-content sl-flex astro-dn32fbfl"> <sl-sidebar-state-persist data-hash="097jx37" class="astro-3va3w25s"> <script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script>  <ul class="top-level astro-v576si2v"> <li class="astro-v576si2v"> <details open class="astro-v576si2v"> <sl-sidebar-restore data-index="0"></sl-sidebar-restore> <summary class="astro-v576si2v"> <div class="group-label astro-v576si2v"> <span class="large astro-v576si2v">Start here</span>  </div> <svg aria-hidden="true" class="caret astro-v576si2v astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </summary> <ul class="astro-v576si2v"> <li class="astro-v576si2v"> <a href="/gocdnext/docs/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">What is gocdnext?</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/quickstart/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Quickstart</span>  </a> </li> </ul>  </details> </li><li class="astro-v576si2v"> <details open class="astro-v576si2v"> <sl-sidebar-restore data-index="1"></sl-sidebar-restore> <summary class="astro-v576si2v"> <div class="group-label astro-v576si2v"> <span class="large astro-v576si2v">Install &amp; operate</span>  </div> <svg aria-hidden="true" class="caret astro-v576si2v astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </summary> <ul class="astro-v576si2v"> <li class="astro-v576si2v"> <a href="/gocdnext/docs/install/helm/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Helm install</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/install/local-dev/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Local dev</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/install/auth/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Authentication</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/install/upgrade/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Upgrade runbook</span>  </a> </li> </ul>  </details> </li><li class="astro-v576si2v"> <details open class="astro-v576si2v"> <sl-sidebar-restore data-index="2"></sl-sidebar-restore> <summary class="astro-v576si2v"> <div class="group-label astro-v576si2v"> <span class="large astro-v576si2v">Author pipelines</span>  </div> <svg aria-hidden="true" class="caret astro-v576si2v astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </summary> <ul class="astro-v576si2v"> <li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/quickstart/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Quickstart</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/yaml-reference/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">YAML reference</span>  </a> </li><li class="astro-v576si2v"> <details open class="astro-v576si2v"> <sl-sidebar-restore data-index="3"></sl-sidebar-restore> <summary class="astro-v576si2v"> <div class="group-label astro-v576si2v"> <span class="large astro-v576si2v">Recipes</span>  </div> <svg aria-hidden="true" class="caret astro-v576si2v astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </summary> <ul class="astro-v576si2v"> <li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/recipes/go-monorepo/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Go monorepo</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/recipes/maven/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Maven (Java/Kotlin)</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/recipes/gradle/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Gradle (Android, JVM)</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/recipes/node/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Node frontend</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/recipes/python/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Python (pip / Poetry / uv)</span>  </a> </li><li class="astro-v576si2v"> <a href="/gocdnext/docs/pipelines/recipes/ssh-deploy/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Deploy via SSH</span>  </a> </li> </ul>  </details> </li> </ul>  </details> </li><li class="astro-v576si2v"> <details open class="astro-v576si2v"> <sl-sidebar-restore data-index="4"></sl-sidebar-restore> <summary class="astro-v576si2v"> <div class="group-label astro-v576si2v"> <span class="large astro-v576si2v">Reference</span>  </div> <svg aria-hidden="true" class="caret astro-v576si2v astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </summary> <ul class="astro-v576si2v"> <li class="astro-v576si2v"> <a href="/gocdnext/docs/reference/plugins/" aria-current="false" class="astro-v576si2v"> <span class="astro-v576si2v">Plugin catalog</span>  </a> </li> </ul>  </details> </li> </ul>   <script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script> </sl-sidebar-state-persist>  <div class="md:sl-hidden"> <div class="mobile-preferences sl-flex astro-6hhsegvq"> <div class="sl-flex social-icons astro-6hhsegvq"> <a href="https://github.com/klinux/gocdnext" rel="me" class="sl-flex astro-3x33wexi"><span class="sr-only astro-3x33wexi">GitHub</span><svg aria-hidden="true" class="astro-3x33wexi astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg> </a> </div> <starlight-theme-select>  <label style="--sl-select-width: 6.25em" class="astro-gc2dsudg"> <span class="sr-only astro-gc2dsudg">Select theme</span> <svg aria-hidden="true" class="icon label-icon astro-gc2dsudg astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg>  <select value="auto" autocomplete="off" class="astro-gc2dsudg"> <option value="dark" class="astro-gc2dsudg">Dark</option><option value="light" class="astro-gc2dsudg">Light</option><option value="auto" selected class="astro-gc2dsudg">Auto</option> </select> <svg aria-hidden="true" class="icon caret astro-gc2dsudg astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg>  </label>  </starlight-theme-select>  <script>
+	StarlightThemeProvider.updatePickers();
+</script>   </div>  </div> </div> </div> </nav> <div class="main-frame astro-dn32fbfl">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-323hl3il"> <aside class="right-sidebar-container astro-323hl3il"> <div class="right-sidebar astro-323hl3il"> <script type="module" src="/gocdnext/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.C181hMzK.js"></script><script type="module" src="/gocdnext/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.CKWWgpjV.js"></script><div class="lg:sl-hidden astro-223d2lwi"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-se5xj3ep"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-se5xj3ep"><details id="starlight__mobile-toc" class="astro-se5xj3ep"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-se5xj3ep"><div class="toggle sl-flex astro-se5xj3ep">On this page<svg aria-hidden="true" class="caret astro-se5xj3ep astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg> </div><span class="display-current astro-se5xj3ep"></span></summary><div class="dropdown astro-se5xj3ep"><ul class="isMobile astro-taosccrq" style="--depth: 0;"> <li class="astro-taosccrq" style="--depth: 0;"> <a href="#_top" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#what-gocdnext-expects" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">What gocdnext expects</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#github" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">GitHub</span> </a> <ul class="isMobile astro-taosccrq" style="--depth: 1;"> <li class="astro-taosccrq" style="--depth: 1;"> <a href="#auto-register-recommended" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Auto-register (recommended)</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#manual-setup" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Manual setup</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#github-enterprise" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">GitHub Enterprise</span> </a>  </li> </ul>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#gitlab" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">GitLab</span> </a> <ul class="isMobile astro-taosccrq" style="--depth: 1;"> <li class="astro-taosccrq" style="--depth: 1;"> <a href="#auto-register-recommended-1" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Auto-register (recommended)</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#manual-setup-1" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Manual setup</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#gitlab-system-level-webhook-instance-wide" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">GitLab system-level webhook (instance-wide)</span> </a>  </li> </ul>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#bitbucket" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Bitbucket</span> </a> <ul class="isMobile astro-taosccrq" style="--depth: 1;"> <li class="astro-taosccrq" style="--depth: 1;"> <a href="#auto-register" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Auto-register</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#manual-setup-2" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Manual setup</span> </a>  </li> </ul>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#generic-webhook-self-hosted-git-custom-integrations" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Generic webhook (self-hosted Git, custom integrations)</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#verifying-delivery" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Verifying delivery</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#when-paths-filters-skip-a-run" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">When paths: filters skip a run</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#auto-register-caveats" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Auto-register caveats</span> </a>  </li> </ul> </div></details></nav></mobile-starlight-toc></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-223d2lwi"><div class="sl-container astro-223d2lwi"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-taosccrq" style="--depth: 0;"> <li class="astro-taosccrq" style="--depth: 0;"> <a href="#_top" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#what-gocdnext-expects" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">What gocdnext expects</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#github" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">GitHub</span> </a> <ul class="astro-taosccrq" style="--depth: 1;"> <li class="astro-taosccrq" style="--depth: 1;"> <a href="#auto-register-recommended" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Auto-register (recommended)</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#manual-setup" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Manual setup</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#github-enterprise" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">GitHub Enterprise</span> </a>  </li> </ul>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#gitlab" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">GitLab</span> </a> <ul class="astro-taosccrq" style="--depth: 1;"> <li class="astro-taosccrq" style="--depth: 1;"> <a href="#auto-register-recommended-1" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Auto-register (recommended)</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#manual-setup-1" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Manual setup</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#gitlab-system-level-webhook-instance-wide" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">GitLab system-level webhook (instance-wide)</span> </a>  </li> </ul>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#bitbucket" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Bitbucket</span> </a> <ul class="astro-taosccrq" style="--depth: 1;"> <li class="astro-taosccrq" style="--depth: 1;"> <a href="#auto-register" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Auto-register</span> </a>  </li><li class="astro-taosccrq" style="--depth: 1;"> <a href="#manual-setup-2" class="astro-taosccrq" style="--depth: 1;"> <span class="astro-taosccrq" style="--depth: 1;">Manual setup</span> </a>  </li> </ul>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#generic-webhook-self-hosted-git-custom-integrations" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Generic webhook (self-hosted Git, custom integrations)</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#verifying-delivery" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Verifying delivery</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#when-paths-filters-skip-a-run" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">When paths: filters skip a run</span> </a>  </li><li class="astro-taosccrq" style="--depth: 0;"> <a href="#auto-register-caveats" class="astro-taosccrq" style="--depth: 0;"> <span class="astro-taosccrq" style="--depth: 0;">Auto-register caveats</span> </a>  </li> </ul> </nav></starlight-toc></div></div> </div> </aside> <div class="main-pane astro-323hl3il">  <main data-pagefind-body class="astro-qsh4ys4j" lang="en" dir="ltr">    <div class="content-panel astro-jzjhivib"> <div class="sl-container astro-jzjhivib"> <h1 id="_top" class="astro-ynx6ikkf">Webhook setup per provider</h1>  </div> </div>  <div class="content-panel astro-jzjhivib"> <div class="sl-container astro-jzjhivib"> <div class="sl-markdown-content"> <p>gocdnext is webhook-first: a push to a connected repo creates a
+run, no polling needed. This page walks the setup for each of the
+three supported providers. The platform’s <em>Settings → SCM
+integrations</em> + the per-project <em>Connect repo</em> flows automate
+most of this — manual setup is here as a fallback when
+auto-register doesn’t apply (self-hosted, restricted org policies,
+existing webhooks you want to reuse).</p>
+<h2 id="what-gocdnext-expects">What gocdnext expects</h2>
+<p>Whatever provider, the webhook delivers events to:</p>
+<div class="expressive-code"><link rel="stylesheet" href="/gocdnext/docs/_astro/ec.j8ofn.css"><script type="module" src="/gocdnext/docs/_astro/ec.8zarh.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">POST &#x3C;PUBLIC_BASE>/api/v1/webhook/&#x3C;provider></span></div></div></code></pre><div class="copy"><button title="Copy to clipboard" data-copied="Copied!" data-code="POST <PUBLIC_BASE>/api/v1/webhook/<provider>"><div></div></button></div></figure></div>
+<p>Where <code dir="auto">&#x3C;provider></code> is <code dir="auto">github</code>, <code dir="auto">gitlab</code>, or <code dir="auto">bitbucket</code>. The
+endpoint is unauthenticated by URL but verified by HMAC against
+a per-source secret — same shape every webhook integration uses.</p>
+<p><code dir="auto">&#x3C;PUBLIC_BASE></code> is <code dir="auto">GOCDNEXT_PUBLIC_BASE</code> (or the override in
+<code dir="auto">GOCDNEXT_WEBHOOK_PUBLIC_URL</code> when behind a public tunnel +
+private dashboard). The chart’s <code dir="auto">webhookPublicURL</code> value sets
+the latter.</p>
+<h2 id="github">GitHub</h2>
+<h3 id="auto-register-recommended">Auto-register (recommended)</h3>
+<p>If you’ve connected gocdnext as a <strong>GitHub App</strong> with <code dir="auto">Repository: Webhooks</code> permission, the apply flow auto-registers the webhook on
+new repos:</p>
+<ol>
+<li><em>Settings → SCM integrations → Add → GitHub App</em>.</li>
+<li>Install the app on your org / specific repos.</li>
+<li>Apply a project pointing at one of those repos — gocdnext sees
+the install, registers the webhook, you’re done.</li>
+</ol>
+<p>For OAuth-only flows (no App), the auto-register works if the
+authenticated user has admin on the repo. The platform creates
+the webhook via the REST API.</p>
+<h3 id="manual-setup">Manual setup</h3>
+<p>Per-repo: <em>Settings → Webhooks → Add webhook</em>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>Payload URL</td><td><code dir="auto">https://ci.example.com/api/v1/webhook/github</code></td></tr><tr><td>Content type</td><td><code dir="auto">application/json</code></td></tr><tr><td>Secret</td><td>(any random string — copy to gocdnext below)</td></tr><tr><td>SSL verification</td><td>Enable</td></tr><tr><td>Events</td><td>Push events, Pull requests, Tags created</td></tr><tr><td>Active</td><td>✓</td></tr></tbody></table>
+<p>After the webhook is created, register the secret with gocdnext:</p>
+<ol>
+<li><em>Project → Settings → SCM source</em>.</li>
+<li>Paste the secret you used in the GitHub form into
+<em>Webhook secret</em>.</li>
+<li>Save.</li>
+</ol>
+<h3 id="github-enterprise">GitHub Enterprise</h3>
+<p>Same flow, just the <code dir="auto">Payload URL</code> points at your gocdnext
+instance and the SCM source <code dir="auto">apiBase:</code> is set to your GHE API
+URL (<code dir="auto">https://github.example.com/api/v3</code>). Auth via GHE works
+identically — see <a href="/gocdnext/docs/install/auth/">Auth deep-dive</a>.</p>
+<h2 id="gitlab">GitLab</h2>
+<h3 id="auto-register-recommended-1">Auto-register (recommended)</h3>
+<p><em>Settings → SCM integrations → Add → GitLab</em>.</p>
+<p>You need a GitLab access token with <code dir="auto">api</code> scope (Personal Access
+Token or Project Access Token). Paste it; gocdnext stores it
+encrypted, uses it to register webhooks on apply.</p>
+<p>For self-hosted GitLab: set <code dir="auto">apiBase:</code> to your instance URL
+(<code dir="auto">https://gitlab.example.com/api/v4</code>). The same token format
+works.</p>
+<h3 id="manual-setup-1">Manual setup</h3>
+<p>Per-project: <em>Settings → Webhooks</em>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>URL</td><td><code dir="auto">https://ci.example.com/api/v1/webhook/gitlab</code></td></tr><tr><td>Secret token</td><td>(any random string)</td></tr><tr><td>Events</td><td>Push events, Tag push events, Merge request events</td></tr><tr><td>SSL verification</td><td>Enable</td></tr></tbody></table>
+<p>Register the secret with gocdnext: <em>Project → Settings → SCM
+source → Webhook secret</em>.</p>
+<h3 id="gitlab-system-level-webhook-instance-wide">GitLab system-level webhook (instance-wide)</h3>
+<p>Self-hosted instances can register a single webhook for the entire
+instance — gocdnext receives every push to every project. Useful
+when you don’t want to manage per-project webhooks but downside
+is the platform’s gocdnext server now sees push traffic from
+projects it doesn’t manage (silently dropped, but adds noise).</p>
+<p>The trade-off rarely pays off; per-project webhooks are the
+sensible default.</p>
+<h2 id="bitbucket">Bitbucket</h2>
+<h3 id="auto-register">Auto-register</h3>
+<p>Same shape as GitLab: store a Bitbucket app password (with
+<code dir="auto">webhook:write</code>) in <em>SCM integrations</em>; gocdnext registers
+webhooks on apply.</p>
+<h3 id="manual-setup-2">Manual setup</h3>
+<p>Per-repo: <em>Repository settings → Webhooks → Add webhook</em>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>Title</td><td>gocdnext</td></tr><tr><td>URL</td><td><code dir="auto">https://ci.example.com/api/v1/webhook/bitbucket</code></td></tr><tr><td>Active</td><td>✓</td></tr><tr><td>Triggers</td><td>Repository push, Pull request created/updated, Tag created</td></tr></tbody></table>
+<p>Bitbucket Cloud doesn’t have a per-webhook secret in the UI; the
+platform falls back to verifying the request’s source IP against
+Bitbucket’s documented IP ranges. For tighter security, use
+Bitbucket Data Center which supports webhook secrets.</p>
+<p>For Bitbucket Cloud, the <code dir="auto">Webhook secret</code> field in gocdnext is
+still useful — set it to a random string and pass it in the URL
+query (<code dir="auto">?secret=...</code>) on the webhook URL when you create it.
+The platform validates it.</p>
+<h2 id="generic-webhook-self-hosted-git-custom-integrations">Generic webhook (self-hosted Git, custom integrations)</h2>
+<p>For Gitea, Forgejo, custom git hosting, or anything else that can
+do an HTTP POST on push:</p>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">POST &#x3C;PUBLIC_BASE>/api/v1/webhook/generic?token=&#x3C;token></span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Content-Type: application/json</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">{</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">"repo": "https://git.example.com/myorg/myapp",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">"branch": "main",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">"sha": "abc123def...",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">"event": "push"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">}</span></div></div></code></pre><div class="copy"><button title="Copy to clipboard" data-copied="Copied!" data-code="POST <PUBLIC_BASE>/api/v1/webhook/generic?token=<token>Content-Type: application/json{  &#x22;repo&#x22;: &#x22;https://git.example.com/myorg/myapp&#x22;,  &#x22;branch&#x22;: &#x22;main&#x22;,  &#x22;sha&#x22;: &#x22;abc123def...&#x22;,  &#x22;event&#x22;: &#x22;push&#x22;}"><div></div></button></div></figure></div>
+<p><code dir="auto">token</code> is <code dir="auto">GOCDNEXT_WEBHOOK_TOKEN</code> (Helm: <code dir="auto">webhookToken.value</code>).
+The body shape is gocdnext’s normalised event format — your
+custom hook’s outgoing payload should be transformed to this
+shape (a small middleware function, ~20 lines in any language).</p>
+<h2 id="verifying-delivery">Verifying delivery</h2>
+<p>After the webhook is wired:</p>
+<ol>
+<li>Push a trivial commit to the connected repo.</li>
+<li>The provider’s webhook delivery log should show 200 OK.</li>
+<li><em>Project → Recent runs</em> in the dashboard shows a new run within
+~1 second of the push.</li>
+</ol>
+<p>If the run doesn’t appear:</p>
+<ul>
+<li>Check the gocdnext server log: <code dir="auto">kubectl -n gocdnext logs deployment/gocdnext-server --tail=100 | grep webhook</code>. HMAC
+failures, missing-source errors, or YAML parse errors all
+surface here.</li>
+<li>Verify the webhook secret matches between the provider and
+gocdnext. Mismatched secrets show up as <code dir="auto">webhook: HMAC validation failed</code>.</li>
+<li>Verify the <code dir="auto">&#x3C;PUBLIC_BASE></code> is reachable from the provider’s
+delivery IPs. Behind a corporate firewall? Open the relevant
+IP ranges or use a tunnel (smee.io, ngrok) for dev.</li>
+</ul>
+<h2 id="when-paths-filters-skip-a-run">When <code dir="auto">paths:</code> filters skip a run</h2>
+<p>A push that matches <code dir="auto">when.paths:</code> filter results in <strong>no run
+created</strong>. The dashboard shows nothing, the webhook delivery
+log shows 200 OK (server received + processed correctly, just
+filtered out). To debug:</p>
+<ul>
+<li>Set <code dir="auto">GOCDNEXT_LOG_LEVEL=debug</code> temporarily — the server logs
+every filter decision.</li>
+<li>Check the actual changed-files list in the webhook payload
+against your <code dir="auto">paths:</code> glob. The provider’s <em>Recent
+deliveries</em> shows the request body.</li>
+</ul>
+<h2 id="auto-register-caveats">Auto-register caveats</h2>
+<ul>
+<li><strong>GitHub App permissions can drift</strong>. If an admin removes the
+app’s webhook permission later, future apply calls will silently
+fail to register. Watch the project apply log for
+<code dir="auto">auto_register_webhook: failed</code>.</li>
+<li><strong>Org-level rate limits</strong>. GitHub limits webhook creations per
+hour. Mass-applying 100 projects at once can hit it; spread
+applies or pre-create webhooks manually.</li>
+<li><strong>Self-hosted GitLab + IP allowlists</strong>. The webhook from
+GitLab’s runner IP needs to reach gocdnext’s <code dir="auto">&#x3C;PUBLIC_BASE></code>.
+In closed networks, configure both ends to be on the same
+internal subnet or whitelist explicitly.</li>
+</ul> </div> <footer class="sl-flex astro-drgkoryz"> <div class="meta sl-flex astro-drgkoryz"> <a href="https://github.com/klinux/gocdnext/edit/main/docs/src/content/docs/install/webhooks.md" class="sl-flex astro-oczlj5kc"><svg aria-hidden="true" class="astro-oczlj5kc astro-k4qrxeof" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.2em;"><path d="M22 7.24a1 1 0 0 0-.29-.71l-4.24-4.24a1 1 0 0 0-1.1-.22 1 1 0 0 0-.32.22l-2.83 2.83L2.29 16.05a1 1 0 0 0-.29.71V21a1 1 0 0 0 1 1h4.24a1 1 0 0 0 .76-.29l10.87-10.93L21.71 8c.1-.1.17-.2.22-.33a1 1 0 0 0 0-.24v-.14l.07-.05ZM6.83 20H4v-2.83l9.93-9.93 2.83 2.83L6.83 20ZM18.17 8.66l-2.83-2.83 1.42-1.41 2.82 2.82-1.41 1.42Z"/></svg> Edit page</a>  </div> <div class="pagination-links astro-2dxhybeh" dir="ltr">   </div>   </footer>  </div> </div>   </main> </div> </div>  </div> </div>  </body></html>
