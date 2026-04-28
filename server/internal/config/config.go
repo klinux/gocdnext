@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -52,6 +53,16 @@ type Config struct {
 	CacheProjectQuotaBytes int64
 	// Cache global size cap. 0 disables.
 	CacheGlobalQuotaBytes int64
+
+	// Log retention window. log_lines is RANGE-partitioned by month
+	// since migration 00027; the sweeper drops monthly partitions
+	// older than this. 0 disables the drop pass — partitions stay
+	// until manually cleaned. The ensure pass (creating future
+	// partitions) always runs.
+	LogRetention time.Duration
+	// LogMonthsAhead controls how many future months of partitions
+	// the sweeper keeps stocked. Default 3 — daily ticks refresh.
+	LogMonthsAhead int
 
 	// RunnerProfilesFile is an optional path to a YAML the server
 	// reads on boot and upserts into the runner_profiles table. The
@@ -216,6 +227,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES: %w", err)
 	}
 	c.CacheGlobalQuotaBytes = cacheGlobalQuota
+
+	// Log retention. Accepts Go's time.ParseDuration syntax — "720h"
+	// for 30 days, "168h" for 7 days, etc. Empty / "0" disables the
+	// drop pass entirely (partitions still get created ahead of
+	// time; they just don't age out).
+	if raw := env("GOCDNEXT_LOG_RETENTION", ""); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("GOCDNEXT_LOG_RETENTION: %w", err)
+		}
+		c.LogRetention = d
+	}
+	logMonthsAhead, err := strconv.Atoi(env("GOCDNEXT_LOG_MONTHS_AHEAD", "3"))
+	if err != nil {
+		return nil, fmt.Errorf("GOCDNEXT_LOG_MONTHS_AHEAD: %w", err)
+	}
+	c.LogMonthsAhead = logMonthsAhead
 
 	c.PluginCatalogDir = env("GOCDNEXT_PLUGIN_CATALOG_DIR", "")
 

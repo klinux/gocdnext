@@ -1,9 +1,14 @@
 -- name: InsertLogLine :exec
--- Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
--- constraint makes retries safe.
+-- Agents send log lines with a per-(job_run_id) monotonic seq plus the
+-- timestamp the line was emitted on the runner. The PK is the triple
+-- (job_run_id, seq, at) — partitioning the table by `at` ruled out a
+-- pure (job_run_id, seq) UNIQUE — so retries dedupe on the same triple.
+-- The agent caches the original `at` on every buffered line, which
+-- makes the triple a tighter dedup key than the old pair anyway: a
+-- reissued line keeps its first-emission timestamp.
 INSERT INTO log_lines (job_run_id, seq, stream, at, text)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (job_run_id, seq) DO NOTHING;
+ON CONFLICT (job_run_id, seq, at) DO NOTHING;
 
 -- name: CompleteJobRun :one
 -- Flips a queued or running job to its terminal state. Idempotent: matches

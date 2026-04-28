@@ -198,7 +198,7 @@ func (q *Queries) GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) 
 const insertLogLine = `-- name: InsertLogLine :exec
 INSERT INTO log_lines (job_run_id, seq, stream, at, text)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (job_run_id, seq) DO NOTHING
+ON CONFLICT (job_run_id, seq, at) DO NOTHING
 `
 
 type InsertLogLineParams struct {
@@ -209,8 +209,13 @@ type InsertLogLineParams struct {
 	Text     string
 }
 
-// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
-// constraint makes retries safe.
+// Agents send log lines with a per-(job_run_id) monotonic seq plus the
+// timestamp the line was emitted on the runner. The PK is the triple
+// (job_run_id, seq, at) — partitioning the table by `at` ruled out a
+// pure (job_run_id, seq) UNIQUE — so retries dedupe on the same triple.
+// The agent caches the original `at` on every buffered line, which
+// makes the triple a tighter dedup key than the old pair anyway: a
+// reissued line keeps its first-emission timestamp.
 func (q *Queries) InsertLogLine(ctx context.Context, arg InsertLogLineParams) error {
 	_, err := q.db.Exec(ctx, insertLogLine,
 		arg.JobRunID,

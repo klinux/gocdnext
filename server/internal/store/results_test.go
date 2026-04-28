@@ -82,6 +82,37 @@ func TestInsertLogLine_IsIdempotent(t *testing.T) {
 	}
 }
 
+// TestInsertLogLine_DedupeKeyIsTriple pins the migration-00027
+// behaviour: the dedupe key is (job_run_id, seq, at), not just
+// (job_run_id, seq). Same job + same seq + DIFFERENT timestamps are
+// treated as distinct lines. This is intentional — the agent caches
+// the original `at` per buffered line, so a retransmit reuses the
+// same `at` and dedupes; only a real "two writers, same seq" race
+// (which we don't have) could collide here.
+func TestInsertLogLine_DedupeKeyIsTriple(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	_, _, _, jobID, _ := seedRunningJob(t, pool)
+	t1 := time.Now().UTC()
+	t2 := t1.Add(time.Microsecond)
+
+	for _, in := range []store.LogLine{
+		{JobRunID: jobID, Seq: 7, Stream: "stdout", Text: "first", At: t1},
+		{JobRunID: jobID, Seq: 7, Stream: "stdout", Text: "second", At: t2},
+	} {
+		if err := s.InsertLogLine(ctx, in); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	var count int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id = $1 AND seq = 7`, jobID).Scan(&count)
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 (different `at` -> distinct rows)", count)
+	}
+}
+
 func TestCompleteJob_StageAndRunPromoteOnSuccess(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

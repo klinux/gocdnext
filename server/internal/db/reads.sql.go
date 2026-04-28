@@ -1073,7 +1073,7 @@ func (q *Queries) ProjectMetricsAggregated(ctx context.Context, sinceWindow pgty
 const tailLogLinesByJob = `-- name: TailLogLinesByJob :many
 SELECT seq, stream, at, text
 FROM (
-    SELECT id, seq, stream, at, text
+    SELECT seq, stream, at, text
     FROM log_lines
     WHERE job_run_id = $1
     ORDER BY seq DESC

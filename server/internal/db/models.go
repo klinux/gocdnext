@@ -155,7 +155,6 @@ type JobRunApproval struct {
 }
 
 type LogLine struct {
-	ID       int64
 	JobRunID pgtype.UUID
 	Seq      int64
 	Stream   string

@@ -54,6 +54,16 @@ const (
 	// shared disk tend to care, and a one-size-fits-all number
 	// would be fiction.
 	DefaultCacheGlobalQuotaBytes = 0
+	// DefaultLogRetention: 0 = no automatic drop, partitions
+	// accumulate until an operator dials this in. Conservative on
+	// purpose — log retention is a policy decision (compliance,
+	// debugging windows) the platform shouldn't pick blindly.
+	DefaultLogRetention = 0 * time.Hour
+	// DefaultLogMonthsAhead: keep 3 months of partitions stocked so
+	// an agent streaming logs at midnight on the last day of a
+	// month never finds an unmaterialised range. Daily ticks top
+	// it back up.
+	DefaultLogMonthsAhead = 3
 )
 
 // Sweeper is the long-running task. Call Run inside a goroutine; it
@@ -73,6 +83,12 @@ type Sweeper struct {
 	cacheTTL               time.Duration
 	cacheProjectQuotaBytes int64
 	cacheGlobalQuotaBytes  int64
+
+	// log_lines partition lifecycle. logRetention 0 disables the
+	// drop pass (ensure pass always runs — without it, the next
+	// agent INSERT in a fresh month has no partition to land in).
+	logRetention   time.Duration
+	logMonthsAhead int
 
 	mu          sync.Mutex
 	lastStats   SweepStats
@@ -99,6 +115,8 @@ func New(s *store.Store, storage artifacts.Store, log *slog.Logger) *Sweeper {
 		cacheTTL:               DefaultCacheTTL,
 		cacheProjectQuotaBytes: DefaultCacheProjectQuotaBytes,
 		cacheGlobalQuotaBytes:  DefaultCacheGlobalQuotaBytes,
+		logRetention:           DefaultLogRetention,
+		logMonthsAhead:         DefaultLogMonthsAhead,
 	}
 }
 
@@ -162,6 +180,28 @@ func (s *Sweeper) WithGlobalQuotaBytes(b int64) *Sweeper {
 	return s
 }
 
+// WithLogRetention sets the maximum age for log_lines partitions.
+// 0 disables automatic drops — partitions still get created ahead
+// of time, but old ones survive until manual cleanup. Anything
+// positive activates the drop pass; partitions whose upper bound
+// falls before now-d are dropped on the next tick.
+func (s *Sweeper) WithLogRetention(d time.Duration) *Sweeper {
+	if d >= 0 {
+		s.logRetention = d
+	}
+	return s
+}
+
+// WithLogMonthsAhead sets how many future months of partitions the
+// ensure pass keeps stocked. Default 3 — daily ticks refresh, so 3
+// is enough cushion to survive a multi-day outage.
+func (s *Sweeper) WithLogMonthsAhead(n int) *Sweeper {
+	if n >= 0 {
+		s.logMonthsAhead = n
+	}
+	return s
+}
+
 // WithTick overrides the tick interval. Mainly for tests.
 func (s *Sweeper) WithTick(d time.Duration) *Sweeper {
 	if d > 0 {
@@ -189,15 +229,17 @@ func (s *Sweeper) WithGraceMinutes(n int) *Sweeper {
 }
 
 // Run blocks until ctx is cancelled. Runs one sweep immediately, then
-// on each tick.
+// on each tick. Storage is optional — the artifact eviction pass
+// short-circuits when it's nil, but log-partition lifecycle still
+// runs (no point letting partitions go unmaterialised just because
+// no artefact backend is wired).
 func (s *Sweeper) Run(ctx context.Context) error {
 	if s.storage == nil {
-		s.log.Info("retention: no artifact backend configured; sweeper disabled")
-		<-ctx.Done()
-		return nil
+		s.log.Info("retention: no artifact backend configured; only log-partition lifecycle will run")
 	}
 	s.log.Info("retention: sweeper started",
-		"tick", s.tick, "batch", s.batchSize, "grace_minutes", s.graceMinutes)
+		"tick", s.tick, "batch", s.batchSize, "grace_minutes", s.graceMinutes,
+		"log_retention", s.logRetention, "log_months_ahead", s.logMonthsAhead)
 
 	// First sweep on start so ops can boot with a pending backlog and
 	// see progress immediately.
@@ -232,6 +274,10 @@ type SweepStats struct {
 	DBFailures      int
 	BytesFreed      int64
 
+	// Log partition lifecycle (also same tick).
+	LogPartitionsCreated int
+	LogPartitionsDropped int
+
 	// Cache sweep (piggybacks on the same tick — no separate
 	// sweeper goroutine). Expired caches are ready rows whose
 	// last_accessed_at fell past the cache TTL. Quota-evicted
@@ -255,6 +301,26 @@ type SweepStats struct {
 // later.
 func (s *Sweeper) SweepOnce(ctx context.Context) SweepStats {
 	var stats SweepStats
+
+	// Log-partition lifecycle: runs first, even when no artefact
+	// store is wired. Cheap (1 EXISTS + at most a few CREATE/DROP
+	// per tick) and prevents agent INSERT failures at month flip.
+	logStats := SweepLogPartitions(ctx, s.store, time.Now(),
+		s.logMonthsAhead, s.logRetention, s.log)
+	stats.LogPartitionsCreated = logStats.Created
+	stats.LogPartitionsDropped = logStats.Dropped
+
+	// Artefact retention from here down depends on the storage
+	// backend; skip when not configured. Stats from the log-only
+	// pass are still latched into lastStats so /admin/retention
+	// reflects what happened.
+	if s.storage == nil {
+		s.mu.Lock()
+		s.lastStats = stats
+		s.lastSweepAt = time.Now()
+		s.mu.Unlock()
+		return stats
+	}
 
 	if s.keepLast > 0 {
 		n, err := s.store.ExpireArtifactsBeyondKeepLast(ctx, s.keepLast)

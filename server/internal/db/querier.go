@@ -305,8 +305,13 @@ type Querier interface {
 	// (id, created) so the caller sees whether the vote actually
 	// landed or was a re-post from the same user.
 	InsertJobRunApproval(ctx context.Context, arg InsertJobRunApprovalParams) (InsertJobRunApprovalRow, error)
-	// Agents send log lines with a per-(job_run_id) monotonic seq; the UNIQUE
-	// constraint makes retries safe.
+	// Agents send log lines with a per-(job_run_id) monotonic seq plus the
+	// timestamp the line was emitted on the runner. The PK is the triple
+	// (job_run_id, seq, at) — partitioning the table by `at` ruled out a
+	// pure (job_run_id, seq) UNIQUE — so retries dedupe on the same triple.
+	// The agent caches the original `at` on every buffered line, which
+	// makes the triple a tighter dedup key than the old pair anyway: a
+	// reissued line keeps its first-emission timestamp.
 	InsertLogLine(ctx context.Context, arg InsertLogLineParams) error
 	InsertMaterial(ctx context.Context, arg InsertMaterialParams) (Material, error)
 	InsertModification(ctx context.Context, arg InsertModificationParams) (Modification, error)

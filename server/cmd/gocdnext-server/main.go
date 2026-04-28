@@ -267,7 +267,9 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		WithGlobalQuotaBytes(cfg.ArtifactsGlobalQuotaBytes).
 		WithCacheTTL(time.Duration(cfg.CacheTTLDays) * 24 * time.Hour).
 		WithCacheProjectQuotaBytes(cfg.CacheProjectQuotaBytes).
-		WithCacheGlobalQuotaBytes(cfg.CacheGlobalQuotaBytes)
+		WithCacheGlobalQuotaBytes(cfg.CacheGlobalQuotaBytes).
+		WithLogRetention(cfg.LogRetention).
+		WithLogMonthsAhead(cfg.LogMonthsAhead)
 
 	// WiringState carries the env-derived wiring only. The
 	// dynamic bits (GitHub App active, auto-register effective)

@@ -414,7 +414,7 @@ ORDER BY pipeline_id, stage_name;
 -- returned window, so the UI can append-only render.
 SELECT seq, stream, at, text
 FROM (
-    SELECT id, seq, stream, at, text
+    SELECT seq, stream, at, text
     FROM log_lines
     WHERE job_run_id = $1
     ORDER BY seq DESC
