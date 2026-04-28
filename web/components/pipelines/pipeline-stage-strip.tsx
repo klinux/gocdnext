@@ -84,14 +84,14 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
     // (not title edges), so flakiness badges floating in the corner
     // never push the box wider than its circle row would naturally
     // need — every adjacent dash starts and ends at consistent points.
-    <div className="relative flex shrink-0 flex-col items-center gap-1 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1.5">
+    <div className="relative flex shrink-0 flex-col items-start gap-1 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1.5">
       {showRate ? (
         <Tooltip>
           <TooltipTrigger
             render={
               <span
                 className={cn(
-                  "absolute -right-1.5 -top-1.5 cursor-help rounded px-1 font-mono text-[9px] tabular-nums shadow-sm",
+                  "absolute -right-3 -top-1.5 cursor-help rounded px-1 font-mono text-[9px] tabular-nums shadow-sm",
                   rate >= 70
                     ? "bg-amber-500/90 text-white dark:bg-amber-500/80"
                     : "bg-red-500/90 text-white dark:bg-red-500/80",
@@ -109,7 +109,7 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
       <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
         {column.name}
       </span>
-      <div className="flex flex-wrap items-center justify-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         {column.jobs.length === 0 ? (
           <JobCircle status={undefined} />
         ) : (
