@@ -13,7 +13,11 @@ export default defineConfig({
       title: "gocdnext",
       description:
         "Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest.",
-      logo: { src: "./src/assets/logo.svg", replacesTitle: false },
+      // The SVG bakes the wordmark in (`gocd` in currentColor +
+      // `next` in brand teal — mirroring web/components/brand/logo.tsx)
+      // so replacesTitle keeps the docs header visually identical
+      // to the portal's sidebar brand.
+      logo: { src: "./src/assets/logo.svg", replacesTitle: true },
       social: {
         github: "https://github.com/klinux/gocdnext",
       },
