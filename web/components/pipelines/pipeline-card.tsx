@@ -134,6 +134,7 @@ export function PipelineCard({
               pipelineId={pipeline.id}
               pipelineName={pipeline.name}
               projectSlug={projectSlug}
+              currentStatus={run?.status}
             />
           </div>
 

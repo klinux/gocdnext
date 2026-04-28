@@ -294,17 +294,16 @@
     }
 }
 
-@layer utilities {
-  /* Pulses the left border colour between sky-500 and sky-300 so a
-     running pipeline reads as "live" without animating the whole
-     card (which would distract from content). Applied to articles
-     that already carry `border-l-sky-500`; the keyframes override
-     border-left-color for the duration. */
-  @keyframes pipeline-running-pulse {
-    0%, 100% { border-left-color: rgb(14 165 233); }   /* sky-500 */
-    50%      { border-left-color: rgb(125 211 252); }  /* sky-300 */
-  }
-  .animate-running-border {
-    animation: pipeline-running-pulse 1.6s ease-in-out infinite;
-  }
+/* Pulses the left border colour between sky-500 and sky-300 so a
+   running pipeline reads as "live" without animating the whole
+   card (which would distract from content). Applied to articles
+   that already carry `border-l-sky-500`; the keyframes override
+   border-left-color for the duration. */
+@keyframes pipeline-running-pulse {
+  0%, 100% { border-left-color: rgb(14 165 233); }   /* sky-500 */
+  50%      { border-left-color: rgb(125 211 252); }  /* sky-300 */
+}
+
+@utility animate-running-border {
+  animation: pipeline-running-pulse 1.6s ease-in-out infinite;
 }

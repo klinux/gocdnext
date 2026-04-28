@@ -7,20 +7,37 @@ import { Play } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { triggerPipelineRun } from "@/server/actions/runs";
 
 type Props = {
   pipelineId: string;
   pipelineName: string;
   projectSlug: string;
+  // currentStatus reflects the latest run's status when known.
+  // "running" or "queued" disables the trigger to avoid stacking
+  // duplicate runs while the previous one is still in flight —
+  // the server would 409 on dispatch anyway, but blocking up front
+  // gives the operator clearer feedback than a toast error.
+  currentStatus?: string;
 };
 
 // TriggerPipelineButton kicks a manual run on a pipeline using its
 // latest modification. Shown on the project detail page so operators
 // can re-run the "tip" without having to push an empty commit.
-export function TriggerPipelineButton({ pipelineId, pipelineName, projectSlug }: Props) {
+export function TriggerPipelineButton({
+  pipelineId,
+  pipelineName,
+  projectSlug,
+  currentStatus,
+}: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const isActive = currentStatus === "running" || currentStatus === "queued";
 
   const onClick = () => {
     startTransition(async () => {
@@ -43,10 +60,30 @@ export function TriggerPipelineButton({ pipelineId, pipelineName, projectSlug }:
     });
   };
 
-  return (
-    <Button size="sm" variant="outline" onClick={onClick} disabled={pending}>
+  const button = (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={onClick}
+      disabled={pending || isActive}
+    >
       <Play className="size-3.5" aria-hidden />
       Run latest
     </Button>
+  );
+
+  if (!isActive) return button;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<span className="inline-flex" />}>
+        {button}
+      </TooltipTrigger>
+      <TooltipContent>
+        {currentStatus === "running"
+          ? "A run is already in flight — wait or cancel it first"
+          : "A run is already queued"}
+      </TooltipContent>
+    </Tooltip>
   );
 }
