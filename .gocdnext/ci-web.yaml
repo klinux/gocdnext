@@ -17,7 +17,7 @@ stages: [install, lint, test, build]
 jobs:
   deps:
     stage: install
-    uses: gocdnext/node
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v1
     with:
       working-dir: web
       command: install --frozen-lockfile
@@ -35,7 +35,7 @@ jobs:
 
   typecheck:
     stage: lint
-    uses: gocdnext/node
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v1
     needs: [deps]
     # needs_artifacts because `needs:` only orders jobs — the
     # downstream job starts in a fresh container and gets
@@ -49,7 +49,7 @@ jobs:
 
   unit:
     stage: test
-    uses: gocdnext/node
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v1
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -60,7 +60,7 @@ jobs:
 
   bundle:
     stage: build
-    uses: gocdnext/node
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v1
     needs: [typecheck, unit]
     needs_artifacts:
       - from_job: deps

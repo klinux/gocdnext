@@ -11,14 +11,14 @@ stages: [lint, test, build]
 jobs:
   vet:
     stage: lint
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     with:
       working-dir: cli
       command: vet ./...
 
   unit:
     stage: test
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     needs: [vet]
     docker: true
     with:
@@ -27,7 +27,7 @@ jobs:
 
   compile:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     needs: [unit]
     with:
       working-dir: cli

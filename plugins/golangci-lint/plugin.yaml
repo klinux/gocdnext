@@ -1,0 +1,40 @@
+# Plugin manifest — consumed by the gocdnext server at startup to
+# validate `with:` inputs before a run dispatches.
+name: golangci-lint
+category: lint
+description: >
+  Run golangci-lint against a Go module. Bundles the upstream
+  v1.63 image; operators provide args + working-dir.
+
+inputs:
+  args:
+    required: false
+    default: "./..."
+    description: >
+      Args appended after `run`. Example: "--timeout 5m ./...".
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into before running.
+  timeout:
+    required: false
+    default: "5m"
+    description: Value for --timeout. Default 5m.
+
+examples:
+  - name: lint a single module
+    description: Lint the server module with the default 5m timeout.
+    yaml: |
+      uses: gocdnext/golangci-lint@v1
+      with:
+        working-dir: server
+
+  - name: lint multiple modules in one job
+    description: >
+      golangci-lint accepts multiple package patterns. The platform
+      runs them serially in the same container — cheaper than three
+      separate jobs when the lint is fast.
+    yaml: |
+      uses: gocdnext/golangci-lint@v1
+      with:
+        args: ./server/... ./agent/... ./cli/...

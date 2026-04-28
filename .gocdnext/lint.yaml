@@ -12,14 +12,13 @@ stages: [lint]
 jobs:
   golangci:
     stage: lint
-    image: golangci/golangci-lint:v1.63
-    # --timeout bumps the default 1m which is tight for workspaces
-    # with generated sqlc + pgx types.
-    script:
-      - golangci-lint run --timeout 5m ./server/... ./agent/... ./cli/...
+    uses: ghcr.io/klinux/gocdnext-plugin-golangci-lint@v1
+    with:
+      args: ./server/... ./agent/... ./cli/...
 
   buf:
     stage: lint
-    image: bufbuild/buf:1.47
-    script:
-      - cd proto && buf lint
+    uses: ghcr.io/klinux/gocdnext-plugin-buf@v1
+    with:
+      working-dir: proto
+      command: lint

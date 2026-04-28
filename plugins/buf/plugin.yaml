@@ -1,0 +1,37 @@
+# Plugin manifest — consumed by the gocdnext server at startup to
+# validate `with:` inputs before a run dispatches.
+name: buf
+category: lint
+description: >
+  Run buf CLI commands — lint, breaking, generate, format.
+  Wraps bufbuild/buf:1.47 with git + ca-certificates so
+  `breaking --against` references work out of the box.
+
+inputs:
+  command:
+    required: true
+    description: >
+      buf subcommand + args, word-split. Examples: "lint",
+      "breaking --against .git#branch=main", "generate".
+  working-dir:
+    required: false
+    default: "."
+    description: Directory under the workspace to cd into before running buf.
+
+examples:
+  - name: lint protos
+    description: Lint contracts under proto/.
+    yaml: |
+      uses: gocdnext/buf@v1
+      with:
+        working-dir: proto
+        command: lint
+
+  - name: breaking-change check vs main
+    description: >
+      Fail the build if proto changes break consumers on main.
+      Runs from the repo root so `.git` is reachable.
+    yaml: |
+      uses: gocdnext/buf@v1
+      with:
+        command: breaking --against .git#branch=main
