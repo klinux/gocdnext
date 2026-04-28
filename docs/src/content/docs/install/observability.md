@@ -1,12 +1,13 @@
 ---
-title: Observability (OpenTelemetry + Prometheus)
-description: Wire traces, metrics, and structured logs from the gocdnext control plane into your monitoring stack.
+title: Observability (Prometheus + structured logs)
+description: Wire metrics and structured logs from the gocdnext control plane into your monitoring stack.
 ---
 
-gocdnext emits OpenTelemetry traces and Prometheus metrics out of
-the box. The control plane and the agent both speak both surfaces;
-wiring them into your stack is one env var (OTel) and one scrape
-config (Prometheus).
+gocdnext emits Prometheus metrics out of the box and writes
+structured JSON logs via `slog`. Wiring them into your stack is
+one scrape config (or one Helm flag if you run kube-prometheus-stack).
+OpenTelemetry trace export is on the [roadmap](#opentelemetry-traces-roadmap)
+but not yet wired into the binary.
 
 ## Prometheus
 
@@ -18,24 +19,38 @@ chart's service exposes this on the `http` port.
 ```
 # HELP gocdnext_jobs_scheduled_total Total jobs the scheduler dispatched.
 # TYPE gocdnext_jobs_scheduled_total counter
-gocdnext_jobs_scheduled_total{pipeline="ci-server",project="gocdnext"} 142
+gocdnext_jobs_scheduled_total{pipeline="<uuid>",project="<uuid>"} 142
 
-# HELP gocdnext_jobs_running Jobs currently in flight.
+# HELP gocdnext_jobs_running Jobs currently in flight on this replica.
 # TYPE gocdnext_jobs_running gauge
 gocdnext_jobs_running 3
 
-# HELP gocdnext_job_duration_seconds Wall-clock job duration.
+# HELP gocdnext_job_duration_seconds Wall-clock job duration by status.
 # TYPE gocdnext_job_duration_seconds histogram
-gocdnext_job_duration_seconds_bucket{pipeline="ci-server",project="gocdnext",status="success",le="10"} 41
-...
+gocdnext_job_duration_seconds_bucket{status="success",le="10"} 41
+…
 
-# HELP gocdnext_queue_depth Jobs queued per stage.
+# HELP gocdnext_queue_depth Jobs/runs in non-terminal status.
 # TYPE gocdnext_queue_depth gauge
-gocdnext_queue_depth{stage="lint"} 0
+gocdnext_queue_depth{stage_status="queued"} 0
+gocdnext_queue_depth{stage_status="pending"} 2
 
-# HELP gocdnext_grpc_server_handled_total gRPC handlers, by method + code.
-# TYPE gocdnext_grpc_server_handled_total counter
-gocdnext_grpc_server_handled_total{grpc_method="Connect",code="OK"} 234
+# HELP gocdnext_agents_online Agents with an active session on this replica.
+# TYPE gocdnext_agents_online gauge
+gocdnext_agents_online 4
+
+# HELP gocdnext_log_archive_jobs_total Cold-archive job outcomes by result.
+# TYPE gocdnext_log_archive_jobs_total counter
+gocdnext_log_archive_jobs_total{result="success"} 18
+gocdnext_log_archive_jobs_total{result="skipped"} 3
+
+# HELP gocdnext_retention_dropped_log_partitions_total log_lines partitions dropped by retention sweeper.
+# TYPE gocdnext_retention_dropped_log_partitions_total counter
+gocdnext_retention_dropped_log_partitions_total 6
+
+# HELP gocdnext_webhook_deliveries_total Inbound webhook deliveries by provider and outcome.
+# TYPE gocdnext_webhook_deliveries_total counter
+gocdnext_webhook_deliveries_total{provider="github",outcome="accepted"} 412
 ```
 
 Plus the standard Go runtime metrics (`go_*`, `process_*`).
@@ -58,100 +73,64 @@ Plus the standard Go runtime metrics (`go_*`, `process_*`).
       regex: http
 ```
 
-Or with the Helm-friendly Prometheus operator's `ServiceMonitor`:
+Or, if you run kube-prometheus-stack, flip the chart's
+`server.serviceMonitor.enabled` flag and Helm will render the
+`ServiceMonitor` for you:
 
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: gocdnext
-  namespace: gocdnext
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: gocdnext
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
+```yaml title="custom-values.yaml"
+server:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    # Match the release: label your Prometheus instance selects on.
+    labels:
+      release: kube-prometheus-stack
 ```
 
 ### Useful alerts
 
 ```yaml
 - alert: GocdnextHighQueueDepth
-  expr: gocdnext_queue_depth > 10
+  expr: sum(gocdnext_queue_depth{stage_status="queued"}) > 10
   for: 5m
   annotations:
-    summary: "{{ $labels.stage }} stage queue stuck above 10 jobs for 5+ minutes"
+    summary: "Run queue stuck above 10 for 5+ minutes"
 
 - alert: GocdnextJobFailureSpike
   expr: |
-    rate(gocdnext_jobs_finished_total{status="failed"}[10m])
-      / rate(gocdnext_jobs_finished_total[10m]) > 0.3
+    sum(rate(gocdnext_job_duration_seconds_count{status="failed"}[10m]))
+      / sum(rate(gocdnext_job_duration_seconds_count[10m])) > 0.3
   for: 15m
   annotations:
     summary: "30%+ of jobs failed in the last 15 minutes"
 
-- alert: GocdnextAgentDisconnected
-  expr: gocdnext_agents_online == 0
+- alert: GocdnextNoAgents
+  expr: sum(gocdnext_agents_online) == 0
   for: 2m
   annotations:
-    summary: "No agents are online — runs are queueing"
+    summary: "No agents online — runs are queueing"
+
+- alert: GocdnextLogArchiveFailing
+  expr: |
+    increase(gocdnext_log_archive_jobs_total{result="failed"}[1h]) > 5
+  for: 15m
+  annotations:
+    summary: "Cold archive failed 5+ times in the last hour"
 ```
 
-## OpenTelemetry traces
+## OpenTelemetry traces (roadmap)
 
-### Enable
+OTel trace export is **not yet wired** in `0.2.0`. The platform
+already stamps `trace_id` / `span_id` slots in its slog handler so
+that switching on tracing later doesn't require touching the call
+sites — but the OTLP exporter is not initialised. Track progress
+on [#otel-traces](https://github.com/klinux/gocdnext/issues?q=otel)
+or wait for the release notes to mention it.
 
-Set the OTLP endpoint via env (Helm wires this through the
-chart's `server.env:` extension):
-
-```yaml
-server:
-  env:
-    - name: OTEL_EXPORTER_OTLP_ENDPOINT
-      value: http://tempo.observability.svc:4317
-    - name: OTEL_SERVICE_NAME
-      value: gocdnext-server
-    - name: OTEL_RESOURCE_ATTRIBUTES
-      value: deployment.environment=prod,service.version=0.2.0
-```
-
-The control plane connects on boot and starts shipping spans.
-Same env vars work on the agent (set under the chart's `agent:`
-block).
-
-### What's traced
-
-Spans named `pipeline.parse`, `run.create`, `job.dispatch`,
-`agent.stream.recv`, `webhook.receive`, plus every HTTP handler
-and every gRPC method. The trace tree mirrors the actual flow:
-a webhook span has child spans for parse, scheduler dispatch,
-and the per-job agent dispatch — letting you see exactly where
-time is spent in a slow run.
-
-### Sampling
-
-Default is `parentbased_traceidratio` at 1.0 (every trace
-sampled). For high-volume deployments, override:
-
-```yaml
-- name: OTEL_TRACES_SAMPLER
-  value: parentbased_traceidratio
-- name: OTEL_TRACES_SAMPLER_ARG
-  value: "0.1"     # 10% of new traces
-```
-
-### Backend
-
-Anything that speaks OTLP (gRPC on `:4317` or HTTP on `:4318`):
-
-- **Jaeger** — first-party
-- **Tempo** — Grafana stack
-- **Honeycomb** / **Datadog** / **NewRelic** — managed
-- **OpenTelemetry Collector** — for fan-out / filtering /
-  transformation before forwarding to multiple backends
+If you need request-flow visibility today, the structured logs
+below carry `run_id`, `job_id`, `agent_id`, `pipeline` — those
+correlate the same flows traces would, just without the waterfall
+view.
 
 ## Logs
 
@@ -191,32 +170,32 @@ picture of any run.
 ## Dashboards
 
 A starter Grafana dashboard ships in
-[`docs/grafana/gocdnext.json`](https://github.com/klinux/gocdnext/blob/main/docs/grafana/gocdnext.json)
-(when it lands; the placeholder is on the roadmap). It covers:
+[`docs/grafana/gocdnext.json`](https://github.com/klinux/gocdnext/blob/main/docs/grafana/gocdnext.json).
+It covers:
 
-- Jobs in flight (gauge)
-- Job rate (success / failed / cancelled, stacked)
-- Queue depth per stage
-- p50 / p95 / p99 job duration per pipeline
-- Agent count (online / total)
-- Webhook delivery rate per provider
+- Jobs in flight + agents online + queue stat tiles
+- Dispatch rate by pipeline
+- Completion rate by outcome (stacked)
+- p50 / p95 / p99 job duration
+- Webhook deliveries (provider × outcome)
+- Log archive outcomes
+- Daily partition drops + server RSS
 
-Import via *Dashboards → New → Import* and paste the JSON.
+Import via *Dashboards → New → Import* and paste the JSON; pick
+your Prometheus datasource on the variables panel and you're done.
 
 ## Common pitfalls
 
-- **OTLP without TLS in production**: the default `http://` is
-  plaintext gRPC. Use `https://` or the explicit `OTEL_EXPORTER_OTLP_PROTOCOL`
-  control. For in-cluster Tempo / Jaeger, plaintext on a
-  ClusterIP service is usually fine.
 - **Cardinality blowup**: don't add `commit_sha` as a label on
   metrics. Every commit becomes a unique time series, Prometheus
-  storage explodes. The platform's metrics already keep cardinality
-  bounded — be careful when adding custom labels via OTel
-  attributes.
-- **Trace context not propagating to plugin containers**: the
-  agent doesn't inject OTel context into the jobs it runs. If
-  you want plugin spans, the plugin needs to start its own trace
-  with parent set from `traceparent` env (which the agent does
-  inject). Most plugins don't bother; the trace tree stops at
-  job dispatch.
+  storage explodes. The platform's built-in series keep cardinality
+  bounded (no commit_sha, no per-pipeline labels on histograms) —
+  be careful when adding your own.
+- **Per-replica gauges**: `gocdnext_jobs_running` and
+  `gocdnext_agents_online` are process-local. Use `sum()` across
+  replicas for the cluster total, not `max()`.
+- **`/readyz` vs `/healthz`**: wire `/readyz` to the readiness
+  probe (it pings the DB, returns 503 when Postgres is down) and
+  `/healthz` to the liveness probe (always 200, just proves the
+  process is alive). Wiring them backwards traps a starting replica
+  in a CrashLoopBackoff.

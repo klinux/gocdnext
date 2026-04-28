@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -74,6 +75,7 @@ func SweepLogPartitions(
 					continue
 				}
 				stats.Dropped++
+				metrics.RetentionDroppedLogPartitions.Inc()
 				log.Info("retention: log partition dropped",
 					"name", p.Name, "end", p.End)
 			}

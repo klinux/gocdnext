@@ -1,0 +1,32 @@
+---
+title: API explorer
+description: Interactive Scalar UI for the gocdnext OpenAPI 3.1 spec. Try requests, browse schemas, copy curl.
+template: splash
+---
+
+The full API surface, browseable. Authentication, request bodies,
+schemas, response codes — every endpoint with a "Try it" panel.
+
+The same OpenAPI document is served by the control-plane itself at
+`GET /api/v1/openapi.yaml` — point any code generator at that URL
+to get a typed client in your language of choice.
+
+<div id="api-reference" data-spec-url="/openapi/gocdnext.yaml" data-configuration='{"theme":"default","layout":"modern","hideClientButton":false}'></div>
+
+<script type="module" src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+
+## Generating a client
+
+Any OpenAPI 3.1 generator works. Examples:
+
+```bash title="TypeScript / fetch"
+npx @hey-api/openapi-ts -i https://gocdnext.example.com/api/v1/openapi.yaml -o ./src/client
+```
+
+```bash title="Go"
+oapi-codegen -package gocdnext https://gocdnext.example.com/api/v1/openapi.yaml > client.go
+```
+
+```bash title="Python"
+openapi-python-client generate --url https://gocdnext.example.com/api/v1/openapi.yaml
+```

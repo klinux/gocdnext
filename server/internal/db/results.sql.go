@@ -55,7 +55,7 @@ const completeJobRun = `-- name: CompleteJobRun :one
 UPDATE job_runs
 SET status = $2, exit_code = $3, error = $4, finished_at = NOW()
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id, run_id, stage_run_id, agent_id, name
+RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at
 `
 
 type CompleteJobRunParams struct {
@@ -71,6 +71,8 @@ type CompleteJobRunRow struct {
 	StageRunID pgtype.UUID
 	AgentID    pgtype.UUID
 	Name       string
+	StartedAt  pgtype.Timestamptz
+	FinishedAt pgtype.Timestamptz
 }
 
 // Flips a queued or running job to its terminal state. Idempotent: matches
@@ -91,6 +93,8 @@ func (q *Queries) CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) 
 		&i.StageRunID,
 		&i.AgentID,
 		&i.Name,
+		&i.StartedAt,
+		&i.FinishedAt,
 	)
 	return i, err
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -168,8 +169,22 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			s.drainQueued(ctx)
 		case <-ticker.C:
 			s.drainQueued(ctx)
+			s.refreshQueueDepth(ctx)
 		}
 	}
+}
+
+// refreshQueueDepth updates the gocdnext_queue_depth gauge from a
+// single aggregate read. Best-effort: a pgx blip on this read just
+// keeps the previous gauge value, the next tick will recover.
+func (s *Scheduler) refreshQueueDepth(ctx context.Context) {
+	snap, err := s.store.GetQueueDepth(ctx)
+	if err != nil {
+		s.log.Warn("scheduler: queue depth", "err", err)
+		return
+	}
+	metrics.QueueDepth.WithLabelValues("queued").Set(float64(snap.QueuedRuns))
+	metrics.QueueDepth.WithLabelValues("pending").Set(float64(snap.PendingJobs))
 }
 
 func (s *Scheduler) drainQueued(ctx context.Context) {
@@ -314,6 +329,13 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			// Lost optimistic race with another scheduler tick / replica.
 			continue
 		}
+
+		// Labels carry the pipeline + project IDs (UUIDs) — names
+		// would require an extra lookup per dispatch and most
+		// dashboards either filter to one pipeline at a time OR
+		// sum() over them, where the ID label disappears.
+		metrics.JobsScheduled.WithLabelValues(run.PipelineID.String(), run.ProjectID.String()).Inc()
+		metrics.JobsRunning.Inc()
 
 		msg := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{Assign: assign}}
 		if err := s.sessions.Dispatch(agentID, msg); err != nil {

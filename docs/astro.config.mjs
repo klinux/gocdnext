@@ -93,6 +93,7 @@ export default defineConfig({
             { label: "Environment variables", link: "/reference/env-vars/" },
             { label: "CLI", link: "/reference/cli/" },
             { label: "HTTP API", link: "/reference/api/" },
+            { label: "API explorer", link: "/reference/api-explorer/", badge: { text: "OpenAPI", variant: "tip" } },
           ],
         },
       ],

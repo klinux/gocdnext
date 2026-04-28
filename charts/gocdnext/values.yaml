@@ -35,6 +35,19 @@ server:
       memory: 256Mi
     limits:
       memory: 1Gi
+  # Prometheus Operator integration. Enable when the cluster runs
+  # kube-prometheus-stack (or any operator that watches ServiceMonitor
+  # CRDs). The control-plane exposes /metrics on the existing HTTP
+  # port — no extra port to open.
+  serviceMonitor:
+    enabled: false
+    # Extra labels added to the ServiceMonitor — tune if your
+    # Prometheus instance uses a non-default `release:` selector.
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    relabelings: []
+    metricRelabelings: []
 
 # ----- agent -----------------------------------------------------------
 

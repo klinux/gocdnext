@@ -26,6 +26,7 @@ import (
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	dashboardapi "github.com/gocdnext/gocdnext/server/internal/api/dashboard"
+	"github.com/gocdnext/gocdnext/server/internal/api/openapi"
 	pipelinesapi "github.com/gocdnext/gocdnext/server/internal/api/pipelines"
 	pluginsapi "github.com/gocdnext/gocdnext/server/internal/api/plugins"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
@@ -41,6 +42,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/polling"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
@@ -384,6 +386,31 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// /readyz adds a database round-trip on top of the liveness
+	// check — the kubelet's readinessProbe gates traffic on this
+	// so a server that started but can't reach Postgres doesn't
+	// receive load. 5s deadline guards against a wedged DB
+	// blocking the kubelet's check thread.
+	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
+		ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			http.Error(w, "db unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+
+	// Prometheus exposition. Public-by-design (the metrics expose
+	// no secrets); operators front it behind a NetworkPolicy when
+	// they want it private to the monitoring namespace.
+	r.Handle("/metrics", metrics.Handler())
+
+	// OpenAPI 3.1 spec — public so SDKs / explorers can introspect
+	// without a session. The doc describes interfaces, not secrets.
+	r.Handle("/api/v1/openapi.yaml", openapi.Handler())
 
 	r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintln(w, "gocdnext-server dev")

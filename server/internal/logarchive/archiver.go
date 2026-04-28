@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 )
 
 // Defaults sized for a single-node deployment. Workers=4 keeps a
@@ -162,6 +163,7 @@ func (a *Archiver) archiveOne(parent context.Context, jobRunID uuid.UUID) {
 		// in DB) so the read path doesn't keep falling through to
 		// log_lines for a job that genuinely has nothing.
 		a.log.Debug("logarchive: empty job, skipping upload", "job_run_id", jobRunID)
+		metrics.LogArchiveJobs.WithLabelValues("skipped").Inc()
 		return
 	}
 
@@ -198,6 +200,7 @@ func (a *Archiver) archiveOne(parent context.Context, jobRunID uuid.UUID) {
 	a.archived++
 	a.bytes += written
 	a.mu.Unlock()
+	metrics.LogArchiveJobs.WithLabelValues("success").Inc()
 	a.log.Info("logarchive: archived",
 		"job_run_id", jobRunID, "lines", len(lines), "bytes", written)
 }
@@ -212,6 +215,7 @@ func (a *Archiver) fail(stage string, jobRunID uuid.UUID, err error) {
 	a.mu.Lock()
 	a.failed++
 	a.mu.Unlock()
+	metrics.LogArchiveJobs.WithLabelValues("failed").Inc()
 }
 
 // Stats snapshots the running counters. Operators read this via

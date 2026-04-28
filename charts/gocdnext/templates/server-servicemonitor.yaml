@@ -1,0 +1,32 @@
+{{- if and .Values.server.enabled .Values.server.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gocdnext.server.fullname" . }}
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+    {{- with .Values.server.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: {{- include "gocdnext.server.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.server.serviceMonitor.interval | default "30s" }}
+      scrapeTimeout: {{ .Values.server.serviceMonitor.scrapeTimeout | default "10s" }}
+      scheme: http
+      {{- with .Values.server.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

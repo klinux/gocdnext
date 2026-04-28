@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 )
 
 // Sentinel errors for dispatch attempts.
@@ -94,7 +95,9 @@ func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity 
 	s.byID[sess.ID] = sess
 	s.latestByAg[agentID] = sess.ID
 	onReady := s.onReady
+	gauge := float64(len(s.latestByAg))
 	s.mu.Unlock()
+	metrics.AgentsOnline.Set(gauge)
 
 	// Fire the ready hook outside the lock so a slow subscriber
 	// (scheduler draining the DB) can't stall agent registration.
@@ -129,9 +132,9 @@ func (s *SessionStore) Lookup(sessionID string) (*Session, bool) {
 // missing/unknown ids — calling it on the same session twice is also safe.
 func (s *SessionStore) Revoke(sessionID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sess, ok := s.byID[sessionID]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	if sess.revoked.CompareAndSwap(false, true) {
@@ -141,6 +144,9 @@ func (s *SessionStore) Revoke(sessionID string) {
 	if s.latestByAg[sess.AgentID] == sessionID {
 		delete(s.latestByAg, sess.AgentID)
 	}
+	gauge := float64(len(s.latestByAg))
+	s.mu.Unlock()
+	metrics.AgentsOnline.Set(gauge)
 }
 
 // Dispatch enqueues msg onto the agent's current session. Returns ErrNoSession

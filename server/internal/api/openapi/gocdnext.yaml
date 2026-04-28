@@ -1,0 +1,1087 @@
+openapi: 3.1.0
+info:
+  title: gocdnext API
+  version: "0.2.0"
+  summary: Public REST surface of the gocdnext control plane.
+  description: |
+    The gocdnext server exposes the operational surface as a REST API.
+    The same handlers back the web UI Server Actions and any third-party
+    integration — your CI scripts, dashboards, or bots can call the API
+    directly with a session cookie or an account API token.
+
+    ## Authentication
+
+    Two ways to authenticate:
+
+    - **Session cookie** — set by `POST /auth/login/local` or the OIDC
+      callback. The browser keeps the cookie and the server enforces
+      it on every protected route.
+    - **Bearer token** — `Authorization: Bearer gcn_…` header. Tokens
+      are minted via `POST /api/v1/account/api-tokens` (user-scoped) or
+      `POST /api/v1/admin/service-accounts/{id}/tokens` (service
+      accounts, admin only). The token's role determines what the
+      caller can do.
+
+    ## Roles
+
+    Three roles, hierarchically:
+
+    - `viewer` — read-only across projects/runs/dashboards.
+    - `maintainer` — viewer + trigger/cancel/rerun/approve/reject runs,
+      apply project YAML, manage own API tokens.
+    - `admin` — full surface, including `/api/v1/admin/*`.
+
+    Endpoints below indicate the minimum role they require.
+  contact:
+    name: gocdnext
+    url: https://gocdnext.io
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8153
+    description: Local dev (default HTTP listener)
+  - url: https://gocdnext.example.com
+    description: Production (replace with your install)
+
+tags:
+  - name: health
+    description: Liveness/readiness/version probes — unauthenticated.
+  - name: auth
+    description: Login, logout, identity providers, current user.
+  - name: account
+    description: Per-user preferences and API tokens.
+  - name: projects
+    description: Project + pipeline definitions, secrets, caches.
+  - name: runs
+    description: Runs, jobs, logs, artifacts, lifecycle actions.
+  - name: pipelines
+    description: Pipeline metadata, manual triggers.
+  - name: dashboard
+    description: Aggregate metrics, recent runs, agents.
+  - name: plugins
+    description: Plugin catalog (read-only).
+  - name: webhooks
+    description: Inbound webhooks from GitHub/GitLab/Bitbucket.
+  - name: observability
+    description: Prometheus metrics endpoint.
+
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+
+paths:
+  # -------------------- health --------------------
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe.
+      description: Always 200. Used by Kubernetes livenessProbe.
+      security: []
+      responses:
+        "200":
+          description: alive
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe.
+      description: |
+        Returns 200 once the server can talk to its Postgres pool.
+        Returns 503 with the underlying error otherwise. Wire to the
+        Kubernetes readinessProbe so traffic doesn't hit a starting
+        replica.
+      security: []
+      responses:
+        "200":
+          description: ready
+          content:
+            text/plain: { schema: { type: string, example: ready } }
+        "503":
+          description: dependency unavailable
+          content:
+            text/plain: { schema: { type: string, example: "db unavailable: …" } }
+
+  /version:
+    get:
+      tags: [health]
+      summary: Build metadata.
+      security: []
+      responses:
+        "200":
+          description: build info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, commit, build_date]
+                properties:
+                  version: { type: string, example: "0.2.0" }
+                  commit: { type: string, example: "bc9fbc8" }
+                  build_date: { type: string, format: date-time }
+
+  /metrics:
+    get:
+      tags: [observability]
+      summary: Prometheus metrics.
+      description: |
+        OpenMetrics/Prometheus exposition. Scrape with the chart's
+        `serviceMonitor.enabled=true` or any standard Prometheus
+        scrape config. See `/install/observability` in the docs for
+        the full series catalog.
+      security: []
+      responses:
+        "200":
+          description: metrics
+          content:
+            text/plain:
+              schema: { type: string }
+
+  # -------------------- auth --------------------
+  /auth/providers:
+    get:
+      tags: [auth]
+      summary: List enabled identity providers.
+      security: []
+      responses:
+        "200":
+          description: providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, display]
+                      properties:
+                        name: { type: string, example: "google" }
+                        display: { type: string, example: "Google" }
+
+  /auth/login/local:
+    post:
+      tags: [auth]
+      summary: Username + password login.
+      description: |
+        Sets a session cookie on success. Local accounts must be
+        enabled in the platform's configuration.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: logged in (cookie set)
+          headers:
+            Set-Cookie:
+              schema: { type: string, example: "gcn_session=…; HttpOnly; Path=/" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/login/{provider}:
+    get:
+      tags: [auth]
+      summary: Begin OIDC/OAuth flow.
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { type: string }
+      responses:
+        "302":
+          description: redirect to provider's authorize URL
+
+  /auth/callback/{provider}:
+    get:
+      tags: [auth]
+      summary: OIDC/OAuth callback.
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { type: string }
+      responses:
+        "302":
+          description: cookie set, redirect to UI
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Clear the session cookie.
+      responses:
+        "204":
+          description: logged out
+
+  /api/v1/me:
+    get:
+      tags: [auth]
+      summary: Current authenticated user.
+      responses:
+        "200":
+          description: identity
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/password:
+    post:
+      tags: [auth]
+      summary: Change own password.
+      description: Local-account users only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password, minLength: 12 }
+      responses:
+        "204": { description: updated }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # -------------------- account --------------------
+  /api/v1/account/preferences:
+    get:
+      tags: [account]
+      summary: Get preferences for current user.
+      responses:
+        "200":
+          description: preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences: { type: object, additionalProperties: true }
+                  updated_at: { type: string, format: date-time, nullable: true }
+    put:
+      tags: [account]
+      summary: Replace preferences for current user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preferences]
+              properties:
+                preferences: { type: object, additionalProperties: true }
+      responses:
+        "204": { description: stored }
+
+  /api/v1/account/api-tokens:
+    get:
+      tags: [account]
+      summary: List own API tokens.
+      responses:
+        "200":
+          description: tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/APIToken" }
+    post:
+      tags: [account]
+      summary: Mint a new API token.
+      description: |
+        The plaintext token is returned **once** in the `secret` field.
+        The server only stores its hash. If the user loses it, revoke
+        and mint again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: "ci-runner" }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: token minted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/APIToken"
+                  - type: object
+                    required: [secret]
+                    properties:
+                      secret: { type: string, example: "gcn_…" }
+
+  /api/v1/account/api-tokens/{id}:
+    delete:
+      tags: [account]
+      summary: Revoke an own token.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: revoked }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # -------------------- projects --------------------
+  /api/v1/projects:
+    get:
+      tags: [projects]
+      summary: List projects.
+      responses:
+        "200":
+          description: projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items: { $ref: "#/components/schemas/Project" }
+
+  /api/v1/projects/{slug}:
+    get:
+      tags: [projects]
+      summary: Project detail (incl. pipelines).
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [projects]
+      summary: Delete project (maintainer+).
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "204": { description: deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/projects/{slug}/vsm:
+    get:
+      tags: [projects]
+      summary: Value-stream map for the project.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: vsm
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes: { type: array, items: { type: object } }
+                  edges: { type: array, items: { type: object } }
+
+  /api/v1/projects/apply:
+    post:
+      tags: [projects]
+      summary: Apply project + pipeline YAML (idempotent).
+      description: |
+        Takes a `.gocdnext/` bundle (or equivalent JSON) and creates or
+        updates the corresponding project, pipelines, secrets refs.
+        Idempotent — re-applying the same payload is a no-op.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [yaml]
+              properties:
+                yaml: { type: string, example: "kind: Project\n…" }
+      responses:
+        "200":
+          description: applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project_slug: { type: string }
+                  pipelines_applied: { type: integer }
+
+  /api/v1/projects/{slug}/sync:
+    post:
+      tags: [projects]
+      summary: Force re-sync of the project material.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "202": { description: scheduled }
+
+  /api/v1/projects/{slug}/run-all:
+    post:
+      tags: [projects]
+      summary: Trigger a run on every pipeline in the project.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "202":
+          description: queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_ids: { type: array, items: { type: string, format: uuid } }
+
+  # -------------------- runs --------------------
+  /api/v1/runs:
+    get:
+      tags: [runs]
+      summary: Recent runs across all projects.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [queued, running, success, failed, canceled]
+        - in: query
+          name: project
+          schema: { type: string }
+        - in: query
+          name: pipeline
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs, total, limit, offset]
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunSummary" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+  /api/v1/runs/{id}:
+    get:
+      tags: [runs]
+      summary: Run detail (stages + jobs).
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/runs/{id}/logs/stream:
+    get:
+      tags: [runs]
+      summary: Stream logs (SSE).
+      description: |
+        Server-Sent Events. Each event is one log line as JSON:
+        `{"job_run_id":"…","seq":42,"stream":"stdout","at":"2026-04-28T…","text":"…"}`.
+        Stream stays open while the run is non-terminal; closes
+        cleanly once the run finishes and the tail flushes.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /api/v1/runs/{id}/artifacts:
+    get:
+      tags: [runs]
+      summary: List artifacts produced by a run.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - in: query
+          name: download
+          schema: { type: boolean, default: false }
+          description: |
+            When true, the response includes pre-signed download URLs
+            (short-lived). Off by default to keep cold reads cheap.
+      responses:
+        "200":
+          description: artifacts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifacts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Artifact" }
+
+  /api/v1/runs/{id}/cancel:
+    post:
+      tags: [runs]
+      summary: Cancel a running run (maintainer+).
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "202": { description: cancellation requested }
+
+  /api/v1/runs/{id}/rerun:
+    post:
+      tags: [runs]
+      summary: Rerun an entire run (maintainer+).
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "201":
+          description: new run created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: string, format: uuid }
+
+  /api/v1/job_runs/{id}/rerun:
+    post:
+      tags: [runs]
+      summary: Rerun a single job (maintainer+).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "201":
+          description: job re-queued
+
+  /api/v1/job_runs/{id}/approve:
+    post:
+      tags: [runs]
+      summary: Approve a manual gate (maintainer+).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: approved }
+
+  /api/v1/job_runs/{id}/reject:
+    post:
+      tags: [runs]
+      summary: Reject a manual gate (maintainer+).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: rejected }
+
+  /api/v1/pipelines/{id}/trigger:
+    post:
+      tags: [pipelines]
+      summary: Manually trigger a pipeline (maintainer+).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                git_ref:
+                  type: string
+                  description: Branch/tag/commit. Defaults to the project's HEAD.
+                parameters:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: Run parameters (merged into the pipeline's `parameters:` block).
+      responses:
+        "201":
+          description: run queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: string, format: uuid }
+
+  /api/v1/pipelines/{id}/yaml:
+    get:
+      tags: [pipelines]
+      summary: Get the pipeline's source YAML (maintainer+).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: yaml
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  yaml: { type: string }
+                  reconstructed: { type: boolean, description: "True when the YAML was rebuilt from DB state (source not cached)." }
+
+  # -------------------- dashboard --------------------
+  /api/v1/dashboard/metrics:
+    get:
+      tags: [dashboard]
+      summary: Aggregate dashboard tile metrics.
+      responses:
+        "200":
+          description: metrics
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DashboardMetrics" }
+
+  /api/v1/agents:
+    get:
+      tags: [dashboard]
+      summary: List registered agents.
+      responses:
+        "200":
+          description: agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: "#/components/schemas/Agent" }
+
+  /api/v1/agents/{id}:
+    get:
+      tags: [dashboard]
+      summary: Agent detail + recent jobs.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: agent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: { $ref: "#/components/schemas/Agent" }
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentJobSummary" }
+
+  # -------------------- plugins --------------------
+  /api/v1/plugins:
+    get:
+      tags: [plugins]
+      summary: Available plugin catalog.
+      responses:
+        "200":
+          description: catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugins:
+                    type: array
+                    items: { $ref: "#/components/schemas/Plugin" }
+
+  # -------------------- webhooks --------------------
+  /api/webhooks/github:
+    post:
+      tags: [webhooks]
+      summary: GitHub webhook receiver.
+      security: []
+      description: |
+        Verifies the `X-Hub-Signature-256` HMAC against the project's
+        webhook secret before acting. Supports `push`, `pull_request`,
+        `release` events.
+      parameters:
+        - in: header
+          name: X-Hub-Signature-256
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-GitHub-Event
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "204": { description: accepted }
+        "401":
+          description: signature mismatch
+        "404":
+          description: no matching project
+
+  /api/webhooks/gitlab:
+    post:
+      tags: [webhooks]
+      summary: GitLab webhook receiver.
+      security: []
+      parameters:
+        - in: header
+          name: X-Gitlab-Token
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-Gitlab-Event
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "204": { description: accepted }
+        "401": { description: token mismatch }
+        "404": { description: no matching project }
+
+  /api/webhooks/bitbucket:
+    post:
+      tags: [webhooks]
+      summary: Bitbucket webhook receiver.
+      security: []
+      parameters:
+        - in: header
+          name: X-Hub-Signature
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-Event-Key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "204": { description: accepted }
+        "401": { description: signature mismatch }
+        "404": { description: no matching project }
+
+components:
+  parameters:
+    ProjectSlug:
+      in: path
+      name: slug
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9-]+$" }
+      description: Project slug (kebab-case).
+    RunID:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: validation error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: caller's role doesn't permit the action
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: gcn_<base62>
+      description: |
+        Account or service-account API token. Mint via
+        `POST /api/v1/account/api-tokens` (or admin equivalent for
+        service accounts).
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: gcn_session
+      description: Session cookie set by `/auth/login/local` or OIDC callback.
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, example: "validation: pipeline name required" }
+        code:
+          type: string
+          description: Stable machine-readable code (when present).
+          example: "pipeline.invalid"
+
+    User:
+      type: object
+      required: [id, email, role]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role:
+          type: string
+          enum: [admin, maintainer, viewer]
+        provider: { type: string, example: "local" }
+
+    APIToken:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+
+    Project:
+      type: object
+      required: [id, slug, name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        log_archive_enabled: { type: boolean, nullable: true, description: "null = inherit global" }
+
+    ProjectDetail:
+      allOf:
+        - $ref: "#/components/schemas/Project"
+        - type: object
+          properties:
+            pipelines:
+              type: array
+              items: { $ref: "#/components/schemas/Pipeline" }
+
+    Pipeline:
+      type: object
+      required: [id, name, project_id]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        project_id: { type: string, format: uuid }
+        last_run_status:
+          type: string
+          enum: [queued, running, success, failed, canceled]
+          nullable: true
+        last_run_at: { type: string, format: date-time, nullable: true }
+
+    RunSummary:
+      type: object
+      required: [id, status, pipeline_name, project_slug, project_name]
+      properties:
+        id: { type: string, format: uuid }
+        counter: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [queued, running, success, failed, canceled]
+        pipeline_id: { type: string, format: uuid }
+        pipeline_name: { type: string }
+        project_id: { type: string, format: uuid }
+        project_slug: { type: string }
+        project_name: { type: string }
+        git_ref: { type: string, nullable: true }
+        commit_sha: { type: string, nullable: true }
+        triggered_by: { type: string, nullable: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    RunDetail:
+      allOf:
+        - $ref: "#/components/schemas/RunSummary"
+        - type: object
+          properties:
+            stages:
+              type: array
+              items: { $ref: "#/components/schemas/StageRun" }
+
+    StageRun:
+      type: object
+      required: [id, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status:
+          type: string
+          enum: [queued, running, success, failed, canceled, awaiting_approval, skipped]
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/JobRun" }
+
+    JobRun:
+      type: object
+      required: [id, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status:
+          type: string
+          enum: [queued, running, success, failed, canceled, awaiting_approval, skipped]
+        agent_id: { type: string, format: uuid, nullable: true }
+        attempt: { type: integer, default: 1 }
+        exit_code: { type: integer, nullable: true }
+        error: { type: string, nullable: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    Artifact:
+      type: object
+      required: [id, job_run_id, job_name, path, status, size_bytes, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        job_run_id: { type: string, format: uuid }
+        job_name: { type: string }
+        path: { type: string }
+        status:
+          type: string
+          enum: [pending, ready, failed]
+        size_bytes: { type: integer, format: int64 }
+        content_sha256: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        download_url:
+          type: string
+          format: uri
+          description: Pre-signed URL — only present when `?download=true`.
+        download_url_expires_at: { type: string, format: date-time, nullable: true }
+
+    DashboardMetrics:
+      type: object
+      required: [runs_today, successes_7d, failures_7d, canceled_7d, success_rate_7d, p50_seconds_7d, queued_runs, pending_jobs]
+      properties:
+        runs_today: { type: integer, format: int64 }
+        successes_7d: { type: integer, format: int64 }
+        failures_7d: { type: integer, format: int64 }
+        canceled_7d: { type: integer, format: int64 }
+        success_rate_7d: { type: number, format: double, description: "0..1 over (success + failure)" }
+        p50_seconds_7d: { type: number, format: double }
+        queued_runs: { type: integer, format: int64 }
+        pending_jobs: { type: integer, format: int64 }
+
+    Agent:
+      type: object
+      required: [id, name, status, health_state, capacity, registered_at, running_jobs]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: string }
+        os: { type: string }
+        arch: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        capacity: { type: integer }
+        status: { type: string }
+        health_state:
+          type: string
+          enum: [online, stale, offline]
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        registered_at: { type: string, format: date-time }
+        running_jobs: { type: integer, format: int64 }
+
+    AgentJobSummary:
+      type: object
+      properties:
+        job_run_id: { type: string, format: uuid }
+        job_name: { type: string }
+        job_status: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        exit_code: { type: integer, nullable: true }
+        run_id: { type: string, format: uuid }
+        run_counter: { type: integer, format: int64 }
+        pipeline_name: { type: string }
+        project_slug: { type: string }
+
+    Plugin:
+      type: object
+      required: [name, inputs]
+      properties:
+        name: { type: string, example: "go" }
+        description: { type: string }
+        category: { type: string, example: "build" }
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [name, required]
+            properties:
+              name: { type: string }
+              required: { type: boolean }
+              default: { type: string }
+              description: { type: string }
+        examples:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              description: { type: string }
+              yaml: { type: string }

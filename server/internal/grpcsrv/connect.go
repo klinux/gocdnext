@@ -17,6 +17,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -285,6 +286,21 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 	}
 
 	a.sessions.Release(agentID)
+
+	// Metrics: pair the scheduler's dispatch-time JobsRunning.Inc
+	// with a Dec here so a healthy run round-trips the gauge to
+	// zero. Duration histogram observes when both timestamps are
+	// present (both should be by this point — `started_at` is
+	// set on dispatch, `finished_at` by CompleteJobRun).
+	metrics.JobsRunning.Dec()
+	if comp.StartedAt != nil && comp.FinishedAt != nil {
+		duration := comp.FinishedAt.Sub(*comp.StartedAt).Seconds()
+		if duration >= 0 {
+			metrics.JobDurationSeconds.
+				WithLabelValues(metrics.JobStatusLabel(status)).
+				Observe(duration)
+		}
+	}
 
 	log.Info("agent job result",
 		"run_id", comp.RunID, "job_id", comp.JobRunID, "job_name", comp.JobName,

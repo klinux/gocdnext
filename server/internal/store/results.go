@@ -147,6 +147,12 @@ type JobCompletion struct {
 	AgentID    uuid.UUID
 	JobName    string
 
+	// StartedAt + FinishedAt let callers compute wall-clock
+	// duration without a follow-up SELECT — the metrics package
+	// observes here.
+	StartedAt  *time.Time
+	FinishedAt *time.Time
+
 	StageCompleted bool
 	StageStatus    string
 
@@ -191,6 +197,8 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 		StageRunID: fromPgUUID(row.StageRunID),
 		AgentID:    fromPgUUID(row.AgentID),
 		JobName:    row.Name,
+		StartedAt:  pgTimePtr(row.StartedAt),
+		FinishedAt: pgTimePtr(row.FinishedAt),
 	}
 
 	if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {

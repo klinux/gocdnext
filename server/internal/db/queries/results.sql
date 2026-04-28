@@ -97,7 +97,7 @@ ON CONFLICT (job_run_id, seq, at) DO NOTHING;
 UPDATE job_runs
 SET status = $2, exit_code = $3, error = $4, finished_at = NOW()
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id, run_id, stage_run_id, agent_id, name;
+RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at;
 
 -- name: GetStageProgress :one
 -- Counts jobs still working vs already-failed within a stage — the numbers

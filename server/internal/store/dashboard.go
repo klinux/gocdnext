@@ -67,6 +67,24 @@ func (s *Store) GetDashboardMetrics(ctx context.Context) (DashboardMetrics, erro
 	}, nil
 }
 
+// QueueDepthSnapshot is the small subset of DashboardMetrics the
+// scheduler refreshes every tick to feed the Prometheus gauge.
+type QueueDepthSnapshot struct {
+	QueuedRuns  int64
+	PendingJobs int64
+}
+
+// GetQueueDepth fetches just the backlog counts. Cheap enough to
+// run every scheduler tick — one indexed aggregate against
+// runs+job_runs.
+func (s *Store) GetQueueDepth(ctx context.Context) (QueueDepthSnapshot, error) {
+	row, err := s.q.DashboardQueueDepth(ctx)
+	if err != nil {
+		return QueueDepthSnapshot{}, fmt.Errorf("store: queue depth: %w", err)
+	}
+	return QueueDepthSnapshot{QueuedRuns: row.QueuedRuns, PendingJobs: row.PendingJobs}, nil
+}
+
 // GlobalRunSummary is the row shape returned by ListRunsGlobal; it
 // extends RunSummary with a project reference so the UI can link
 // straight to the owning project (avoids a second query per row).
