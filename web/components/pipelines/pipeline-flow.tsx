@@ -1,6 +1,12 @@
 "use client";
 
-import { Fragment, useMemo, useRef } from "react";
+import {
+  Fragment,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AlertTriangle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -15,28 +21,22 @@ type Props = {
   runs: RunSummary[];
 };
 
-// PipelineFlow lays the project's pipelines out as cells in a grid.
-// A cell is either a single pipeline card OR a vertical chain when
-// a run of pipelines forms a strict 1-to-1 dependency (downstream
-// has exactly one upstream and that upstream has exactly one
-// downstream). Chained pipelines stack with a thin dashed line on
-// the left margin connecting them — the timeline-style read of
-// "this triggers the next" without the SVG-arrow lasso the layered
-// DAG used to draw across the page.
-//
-// Fan-in / fan-out / cross-cell dependencies stay legible via the
-// upstream pill in each downstream card's header. Drawing arrows
-// across grid cells looked tangled enough that the user asked for
-// them gone — the chain stack covers the common case (linear
-// upstream chains), pills cover the rest.
+// PipelineFlow renders all pipelines in a single dense grid with
+// chain pipelines forced to column 1 (left edge). A separate
+// left-margin column hosts a vertical dashed line + circular dots
+// that mark each chain card's anchor — visually the chain reads
+// like a timeline, the cards in cols 2..N flow naturally beside
+// it. Independent pipelines (no upstream) inhabit the right cols
+// and feel siblings to the chain rows.
 export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
   const cells = useMemo(
     () => buildCells(pipelines, edges),
     [pipelines, edges],
   );
 
-  const containerRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef(new Map<string, HTMLElement>());
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const [markers, setMarkers] = useState<ChainOverlayMarker[]>([]);
 
   if (pipelines.length === 0) {
     return (
@@ -47,12 +47,8 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
     );
   }
 
-  const alerts = pipelines.filter(isAlerting);
-
-  // Sort cells: chains anchor to the left of the grid (operator
-  // mental model: "the pipeline with downstream effects sits where
-  // I look first"), then within each kind alert weight pushes
-  // failing pipelines toward the front, then alphabetical.
+  // Sort cells: chains first (anchor the left rail), then singles
+  // by alert weight (failing → degraded → healthy), then alpha.
   const sortedCells = [...cells].sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === "chain" ? -1 : 1;
     const wa = cellWeight(a);
@@ -60,6 +56,24 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
     if (wa !== wb) return wb - wa;
     return cellName(a).localeCompare(cellName(b));
   });
+
+  // Flatten cells into the DOM order the grid renders. Each chain
+  // member becomes its own grid item with gridColumn=1; singles
+  // back-fill via grid-auto-flow: dense.
+  const orderedPipelines: { pipeline: PipelineSummary; chainId: number | null }[] = [];
+  let chainId = 0;
+  for (const cell of sortedCells) {
+    if (cell.kind === "chain") {
+      for (const p of cell.pipelines) {
+        orderedPipelines.push({ pipeline: p, chainId });
+      }
+      chainId++;
+    } else {
+      orderedPipelines.push({ pipeline: cell.pipeline, chainId: null });
+    }
+  }
+
+  const alerts = pipelines.filter(isAlerting);
 
   const setCardRef = (name: string) => (el: HTMLElement | null) => {
     if (el) cardRefs.current.set(name, el);
@@ -78,8 +92,64 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
     }
   };
 
+  // Measure chain-card positions to draw the dashed line + dots in
+  // the left-margin overlay column. Re-runs on resize and on cell
+  // changes so wrap-driven row shifts (lg ↔ xl breakpoints) update
+  // markers without manual intervention.
+  const chainGroups = useMemo(() => {
+    const map = new Map<number, string[]>();
+    for (const { pipeline, chainId: cid } of orderedPipelines) {
+      if (cid == null) continue;
+      const arr = map.get(cid) ?? [];
+      arr.push(pipeline.name);
+      map.set(cid, arr);
+    }
+    return [...map.entries()].map(([id, names]) => ({ id, names }));
+  }, [orderedPipelines]);
+
+  useLayoutEffect(() => {
+    const compute = () => {
+      const overlay = overlayRef.current;
+      if (!overlay) return;
+      const overlayRect = overlay.getBoundingClientRect();
+      const next: ChainOverlayMarker[] = [];
+      for (const group of chainGroups) {
+        const dots: number[] = [];
+        let topY = Infinity;
+        let bottomY = -Infinity;
+        for (const name of group.names) {
+          const el = cardRefs.current.get(name);
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          const dotY = r.top + r.height / 2 - overlayRect.top;
+          dots.push(dotY);
+          topY = Math.min(topY, dotY);
+          bottomY = Math.max(bottomY, dotY);
+        }
+        if (dots.length >= 1 && Number.isFinite(topY)) {
+          next.push({
+            id: group.id,
+            lineTop: topY,
+            lineHeight: bottomY - topY,
+            dotYs: dots,
+          });
+        }
+      }
+      setMarkers(next);
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    if (overlayRef.current) ro.observe(overlayRef.current);
+    for (const el of cardRefs.current.values()) ro.observe(el);
+    window.addEventListener("resize", compute);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", compute);
+    };
+  }, [chainGroups]);
+
   return (
-    <div ref={containerRef} className="relative space-y-4">
+    <div className="space-y-4">
       {alerts.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[12px]">
           <AlertTriangle className="size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
@@ -114,71 +184,57 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
         </div>
       ) : null}
 
-      <div className="grid items-start gap-3 lg:grid-cols-2 xl:grid-cols-3">
-        {sortedCells.map((cell) => {
-          if (cell.kind === "single") {
-            return (
+      <div className="flex items-stretch gap-2">
+        {/* Left-margin overlay column. Holds the chain rail (dashed
+            line + dots) without occupying grid space — width fixed
+            at 16px so cards keep their natural proportions. */}
+        <div ref={overlayRef} className="relative w-4 shrink-0" aria-hidden>
+          {markers.map((m) => (
+            <Fragment key={m.id}>
+              <span
+                className="absolute left-1.5 w-0 border-l-[2px] border-dashed border-muted-foreground/55"
+                style={{ top: m.lineTop, height: m.lineHeight }}
+              />
+              {m.dotYs.map((y, i) => (
+                <span
+                  key={i}
+                  className="absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground"
+                  style={{ left: 8, top: y }}
+                />
+              ))}
+            </Fragment>
+          ))}
+        </div>
+        <div
+          className="grid flex-1 items-start gap-3 lg:grid-cols-2 xl:grid-cols-3"
+          style={{ gridAutoFlow: "row dense" }}
+        >
+          {orderedPipelines.map(({ pipeline, chainId }) => (
+            <div
+              key={pipeline.id}
+              ref={(el) => setCardRef(pipeline.name)(el)}
+              style={chainId != null ? { gridColumn: 1 } : undefined}
+            >
               <PipelineCard
-                key={cell.pipeline.id}
-                nodeRef={setCardRef(cell.pipeline.name)}
                 projectSlug={projectSlug}
-                pipeline={cell.pipeline}
+                pipeline={pipeline}
                 edges={edges}
                 runs={runs}
               />
-            );
-          }
-          return (
-            <ChainCell
-              key={cell.pipelines[0]!.id}
-              pipelines={cell.pipelines}
-              projectSlug={projectSlug}
-              edges={edges}
-              runs={runs}
-              setCardRef={setCardRef}
-            />
-          );
-        })}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
-// ChainCell stacks linear-chain pipelines vertically with one
-// continuous dashed line on the left edge of the cell — runs the
-// full height of the chain, so visually it reads as a single
-// timeline that ties every chained pipeline together. Cards keep
-// their normal vertical rhythm (gap-3 between, no extra padding
-// vs other grid cells).
-function ChainCell({
-  pipelines,
-  projectSlug,
-  edges,
-  runs,
-  setCardRef,
-}: {
-  pipelines: PipelineSummary[];
-  projectSlug: string;
-  edges: PipelineEdge[];
-  runs: RunSummary[];
-  setCardRef: (name: string) => (el: HTMLElement | null) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-3 border-l-[2px] border-dashed border-muted-foreground/45 pl-3">
-      {pipelines.map((p) => (
-        <Fragment key={p.id}>
-          <PipelineCard
-            nodeRef={setCardRef(p.name)}
-            projectSlug={projectSlug}
-            pipeline={p}
-            edges={edges}
-            runs={runs}
-          />
-        </Fragment>
-      ))}
-    </div>
-  );
-}
+type ChainOverlayMarker = {
+  id: number;
+  lineTop: number;
+  lineHeight: number;
+  dotYs: number[];
+};
 
 // isAlerting decides whether a pipeline shows up in the top alert
 // strip. Failing/canceled latest runs always count; pipelines with
@@ -238,10 +294,10 @@ function cellWeight(c: Cell): number {
 //     or whose dependencies don't form a strict chain), or
 //   - "chain" — a sequence A → B → C where every link is 1-to-1
 //     (B has exactly one upstream A, A has exactly one downstream
-//     B, and so on). Chains render as a vertical stack with a thin
-//     dashed connector between cards.
+//     B, and so on). Chain members render as separate grid cells
+//     forced to col 1, with a left-rail overlay tying them.
 //
-// Strict 1-to-1 is the only case where vertical stacking reads
+// Strict 1-to-1 is the only case where the chain rail reads
 // unambiguously. Fan-in (multiple upstream → one downstream) and
 // fan-out (one upstream → multiple downstream) break the linear
 // stack metaphor; those land as singles, with the upstream pill in
@@ -274,8 +330,6 @@ function buildCells(
   for (const name of sortedNames) {
     if (consumed.has(name)) continue;
 
-    // Walk upstream to find the head of any chain this pipeline
-    // belongs to. Stop on fan-in, fan-out, or already-consumed.
     let head = name;
     while (true) {
       const ups = upstream.get(head)!;
@@ -286,7 +340,6 @@ function buildCells(
       head = u;
     }
 
-    // Walk downstream from head, collecting linear-chain links.
     const chain: string[] = [head];
     let cur = head;
     while (true) {
