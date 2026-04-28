@@ -139,6 +139,76 @@ spec:
             - name: GOCDNEXT_PLUGIN_CATALOG_DIR
               value: {{ .Values.pluginCatalogDir | quote }}
             {{- end }}
+            - name: GOCDNEXT_AUTH_ENABLED
+              value: {{ .Values.auth.enabled | quote }}
+            {{- if .Values.auth.adminEmails }}
+            - name: GOCDNEXT_AUTH_ADMIN_EMAILS
+              value: {{ join "," .Values.auth.adminEmails | quote }}
+            {{- end }}
+            {{- if .Values.auth.allowedDomains }}
+            - name: GOCDNEXT_AUTH_ALLOWED_DOMAINS
+              value: {{ join "," .Values.auth.allowedDomains | quote }}
+            {{- end }}
+            {{- if .Values.auth.github.clientID }}
+            - name: GOCDNEXT_AUTH_GITHUB_CLIENT_ID
+              value: {{ .Values.auth.github.clientID | quote }}
+            - name: GOCDNEXT_AUTH_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.auth.github.clientSecret.existingSecret }}
+                  key: {{ ternary "AUTH_GITHUB_CLIENT_SECRET" "auth-github-client-secret" (ne .Values.auth.github.clientSecret.existingSecret "") }}
+                  optional: true
+            {{- if .Values.auth.github.apiBase }}
+            - name: GOCDNEXT_AUTH_GITHUB_API_BASE
+              value: {{ .Values.auth.github.apiBase | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.google.clientID }}
+            - name: GOCDNEXT_AUTH_GOOGLE_CLIENT_ID
+              value: {{ .Values.auth.google.clientID | quote }}
+            - name: GOCDNEXT_AUTH_GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.auth.google.clientSecret.existingSecret }}
+                  key: {{ ternary "AUTH_GOOGLE_CLIENT_SECRET" "auth-google-client-secret" (ne .Values.auth.google.clientSecret.existingSecret "") }}
+                  optional: true
+            {{- if .Values.auth.google.issuer }}
+            - name: GOCDNEXT_AUTH_GOOGLE_ISSUER
+              value: {{ .Values.auth.google.issuer | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.keycloak.clientID }}
+            - name: GOCDNEXT_AUTH_KEYCLOAK_CLIENT_ID
+              value: {{ .Values.auth.keycloak.clientID | quote }}
+            - name: GOCDNEXT_AUTH_KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.auth.keycloak.clientSecret.existingSecret }}
+                  key: {{ ternary "AUTH_KEYCLOAK_CLIENT_SECRET" "auth-keycloak-client-secret" (ne .Values.auth.keycloak.clientSecret.existingSecret "") }}
+                  optional: true
+            {{- if .Values.auth.keycloak.issuer }}
+            - name: GOCDNEXT_AUTH_KEYCLOAK_ISSUER
+              value: {{ .Values.auth.keycloak.issuer | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.oidc.clientID }}
+            - name: GOCDNEXT_AUTH_OIDC_CLIENT_ID
+              value: {{ .Values.auth.oidc.clientID | quote }}
+            - name: GOCDNEXT_AUTH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-tokens" (include "gocdnext.server.fullname" .)) .Values.auth.oidc.clientSecret.existingSecret }}
+                  key: {{ ternary "AUTH_OIDC_CLIENT_SECRET" "auth-oidc-client-secret" (ne .Values.auth.oidc.clientSecret.existingSecret "") }}
+                  optional: true
+            {{- if .Values.auth.oidc.issuer }}
+            - name: GOCDNEXT_AUTH_OIDC_ISSUER
+              value: {{ .Values.auth.oidc.issuer | quote }}
+            {{- end }}
+            {{- if .Values.auth.oidc.name }}
+            - name: GOCDNEXT_AUTH_OIDC_NAME
+              value: {{ .Values.auth.oidc.name | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.runnerProfiles }}
             - name: GOCDNEXT_RUNNER_PROFILES_FILE
               value: /etc/gocdnext/runner-profiles.yaml

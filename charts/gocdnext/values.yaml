@@ -199,6 +199,54 @@ artifactsSignKey:
   existingSecret: ""
   value: ""
 
+# ----- auth ------------------------------------------------------------
+# Off by default — flipping `enabled` true gates /auth + protected
+# routes; before that everything stays open (matches binary default).
+# Each provider's client_id is non-sensitive and goes inline; the
+# client_secret folds into the chart-managed `<release>-tokens`
+# Secret when no `existingSecret` is supplied.
+auth:
+  enabled: false
+  # Promotes these emails to admin on first login. Empty list = no
+  # automatic promotion (everyone lands as viewer).
+  adminEmails: []
+  # Restrict logins to these email domains (e.g. ["company.com"]).
+  # Empty = any domain accepted.
+  allowedDomains: []
+
+  github:
+    clientID: ""
+    clientSecret:
+      existingSecret: ""    # K8s Secret with key AUTH_GITHUB_CLIENT_SECRET
+      value: ""             # inline; folded into <release>-tokens when set
+    # Override for GitHub Enterprise installations. Empty = github.com.
+    apiBase: ""
+
+  google:
+    clientID: ""
+    clientSecret:
+      existingSecret: ""    # key AUTH_GOOGLE_CLIENT_SECRET
+      value: ""
+    # Issuer URL. Empty inherits the binary default (accounts.google.com).
+    issuer: ""
+
+  keycloak:
+    clientID: ""
+    clientSecret:
+      existingSecret: ""    # key AUTH_KEYCLOAK_CLIENT_SECRET
+      value: ""
+    # Realm issuer URL — e.g. https://kc.example.com/realms/internal.
+    issuer: ""
+
+  oidc:
+    clientID: ""
+    clientSecret:
+      existingSecret: ""    # key AUTH_OIDC_CLIENT_SECRET
+      value: ""
+    issuer: ""
+    # Display name shown on the login button. Empty = "OIDC".
+    name: ""
+
 # ----- Runner profiles --------------------------------------------------
 # Optional declarative seed for the runner_profiles table. When this
 # list is non-empty the chart renders a ConfigMap and points the
