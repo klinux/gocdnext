@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -15,71 +15,28 @@ type Props = {
   runs: RunSummary[];
 };
 
-// PipelineFlow lays the project's pipelines out as a DAG: every
-// upstream-material relationship pushes the downstream pipeline one
-// layer deeper. Layers stack top-to-bottom so each layer reads as a
-// horizontal row of sibling pipelines, with SVG arrows between rows
-// signalling trigger direction. The card visuals live in
-// PipelineCard — this component only owns the layout + overlay.
+// PipelineFlow lays the project's pipelines out as cells in a grid.
+// A cell is either a single pipeline card OR a vertical chain when
+// a run of pipelines forms a strict 1-to-1 dependency (downstream
+// has exactly one upstream and that upstream has exactly one
+// downstream). Chained pipelines stack with a thin dashed line on
+// the left margin connecting them — the timeline-style read of
+// "this triggers the next" without the SVG-arrow lasso the layered
+// DAG used to draw across the page.
+//
+// Fan-in / fan-out / cross-cell dependencies stay legible via the
+// upstream pill in each downstream card's header. Drawing arrows
+// across grid cells looked tangled enough that the user asked for
+// them gone — the chain stack covers the common case (linear
+// upstream chains), pills cover the rest.
 export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
-  const pipelinesByName = useMemo(
-    () => new Map(pipelines.map((p) => [p.name, p])),
-    [pipelines],
-  );
-  const layers = useMemo(
-    () => buildLayers(pipelines, edges),
+  const cells = useMemo(
+    () => buildCells(pipelines, edges),
     [pipelines, edges],
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef(new Map<string, HTMLElement>());
-  const [paths, setPaths] = useState<EdgeGeometry[]>([]);
-
-  // Effectful edges between cards are only drawn for real upstream
-  // relationships — layers alone don't imply a connection.
-  const renderableEdges = useMemo(() => {
-    const names = new Set(pipelines.map((p) => p.name));
-    return edges.filter(
-      (e) => names.has(e.from_pipeline) && names.has(e.to_pipeline),
-    );
-  }, [pipelines, edges]);
-
-  useLayoutEffect(() => {
-    if (renderableEdges.length === 0) {
-      setPaths([]);
-      return;
-    }
-    const compute = () => {
-      const container = containerRef.current;
-      if (!container) return;
-      const cRect = container.getBoundingClientRect();
-      const next: EdgeGeometry[] = [];
-      for (const e of renderableEdges) {
-        const from = cardRefs.current.get(e.from_pipeline);
-        const to = cardRefs.current.get(e.to_pipeline);
-        if (!from || !to) continue;
-        const f = from.getBoundingClientRect();
-        const t = to.getBoundingClientRect();
-        next.push({
-          key: `${e.from_pipeline}->${e.to_pipeline}`,
-          fromX: f.left + f.width / 2 - cRect.left,
-          fromY: f.bottom - cRect.top,
-          toX: t.left + t.width / 2 - cRect.left,
-          toY: t.top - cRect.top,
-        });
-      }
-      setPaths(next);
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    if (containerRef.current) ro.observe(containerRef.current);
-    for (const el of cardRefs.current.values()) ro.observe(el);
-    window.addEventListener("resize", compute);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", compute);
-    };
-  }, [renderableEdges, layers]);
 
   if (pipelines.length === 0) {
     return (
@@ -91,20 +48,16 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
   }
 
   const alerts = pipelines.filter(isAlerting);
-  // Within each DAG layer, push failing/degraded pipelines to the
-  // front so the eye lands on what needs attention first. The layer
-  // ordering itself stays untouched — it carries architectural
-  // meaning (who triggers whom) we shouldn't reshuffle.
-  const layersSorted = layers.map((layer) =>
-    [...layer].sort((a, b) => {
-      const pa = pipelinesByName.get(a);
-      const pb = pipelinesByName.get(b);
-      const wa = pa ? alertWeight(pa) : 0;
-      const wb = pb ? alertWeight(pb) : 0;
-      if (wa !== wb) return wb - wa;
-      return a.localeCompare(b);
-    }),
-  );
+
+  // Sort cells: alert weight first (failing → degraded → healthy),
+  // then alphabetical. For chain cells we use the worst weight
+  // anywhere in the chain so a partly-failing chain bubbles up.
+  const sortedCells = [...cells].sort((a, b) => {
+    const wa = cellWeight(a);
+    const wb = cellWeight(b);
+    if (wa !== wb) return wb - wa;
+    return cellName(a).localeCompare(cellName(b));
+  });
 
   const setCardRef = (name: string) => (el: HTMLElement | null) => {
     if (el) cardRefs.current.set(name, el);
@@ -159,76 +112,72 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
         </div>
       ) : null}
 
-      {paths.length > 0 ? (
-        <svg
-          aria-hidden
-          className="pointer-events-none absolute inset-0 h-full w-full"
-        >
-          <defs>
-            <marker
-              id="dag-arrow-head"
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto"
-            >
-              <path
-                d="M 0 0 L 10 5 L 0 10 z"
-                className="fill-muted-foreground"
+      <div className="grid items-start gap-3 lg:grid-cols-2 xl:grid-cols-3">
+        {sortedCells.map((cell) => {
+          if (cell.kind === "single") {
+            return (
+              <PipelineCard
+                key={cell.pipeline.id}
+                nodeRef={setCardRef(cell.pipeline.name)}
+                projectSlug={projectSlug}
+                pipeline={cell.pipeline}
+                edges={edges}
+                runs={runs}
               />
-            </marker>
-          </defs>
-          {paths.map((p) => (
-            <g key={p.key}>
-              {/* Source anchor dot keeps the line legibly attached
-                  to the card edge even with soft stroke colour. */}
-              <circle
-                cx={p.fromX}
-                cy={p.fromY}
-                r={3}
-                className="fill-muted-foreground"
-              />
-              <path
-                d={orthogonalPath(p)}
-                className="fill-none stroke-muted-foreground"
-                strokeWidth={2.5}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                markerEnd="url(#dag-arrow-head)"
-              />
-            </g>
-          ))}
-        </svg>
-      ) : null}
+            );
+          }
+          return (
+            <ChainCell
+              key={cell.pipelines[0]!.id}
+              pipelines={cell.pipelines}
+              projectSlug={projectSlug}
+              edges={edges}
+              runs={runs}
+              setCardRef={setCardRef}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
-      {layersSorted.map((layer, layerIdx) => (
-        <div
-          key={`layer-${layerIdx}`}
-          // Extra top padding on downstream layers leaves room for
-          // the orthogonal trunk to land in the gutter above without
-          // brushing the card border. ~28px gives the arrow head +
-          // trunk + arc roughly twice their own height.
-          className={cn(layerIdx > 0 && "pt-7")}
-        >
-          <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-            {layer.map((name) => {
-              const pipeline = pipelinesByName.get(name);
-              if (!pipeline) return null;
-              return (
-                <PipelineCard
-                  key={pipeline.id}
-                  nodeRef={setCardRef(name)}
-                  projectSlug={projectSlug}
-                  pipeline={pipeline}
-                  edges={edges}
-                  runs={runs}
-                />
-              );
-            })}
-          </div>
-        </div>
+// ChainCell stacks linear-chain pipelines vertically with a thin
+// dashed connector on the left margin between cards. Reads as the
+// timeline pattern in the user's reference: card → dashed segment
+// → card → dashed segment → card. No SVG arrows, no overflowing
+// connectors — the geometry is just CSS.
+function ChainCell({
+  pipelines,
+  projectSlug,
+  edges,
+  runs,
+  setCardRef,
+}: {
+  pipelines: PipelineSummary[];
+  projectSlug: string;
+  edges: PipelineEdge[];
+  runs: RunSummary[];
+  setCardRef: (name: string) => (el: HTMLElement | null) => void;
+}) {
+  return (
+    <div className="flex flex-col">
+      {pipelines.map((p, i) => (
+        <Fragment key={p.id}>
+          {i > 0 ? (
+            <div
+              aria-hidden
+              className="ml-6 h-5 w-0 border-l-[2px] border-dashed border-muted-foreground/45"
+            />
+          ) : null}
+          <PipelineCard
+            nodeRef={setCardRef(p.name)}
+            projectSlug={projectSlug}
+            pipeline={p}
+            edges={edges}
+            runs={runs}
+          />
+        </Fragment>
       ))}
     </div>
   );
@@ -249,8 +198,8 @@ function isAlerting(p: PipelineSummary): boolean {
   return false;
 }
 
-// alertWeight ranks pipelines for "failing-first" sort within a
-// layer. Higher = comes first.
+// alertWeight ranks a pipeline for "failing-first" sort. Higher =
+// comes first.
 function alertWeight(p: PipelineSummary): number {
   const tone: StatusTone = p.latest_run
     ? statusTone(p.latest_run.status)
@@ -273,111 +222,96 @@ function alertReason(p: PipelineSummary): string {
   return "";
 }
 
-type EdgeGeometry = {
-  key: string;
-  fromX: number;
-  fromY: number;
-  toX: number;
-  toY: number;
-};
+type Cell =
+  | { kind: "single"; pipeline: PipelineSummary }
+  | { kind: "chain"; pipelines: PipelineSummary[] };
 
-// orthogonalPath routes the connector with right-angle elbows
-// through the gutter ABOVE the target card. Anchoring the trunk
-// close to the destination (rather than at midY between source
-// and target) keeps the horizontal segment inside the target's
-// own gutter — that strip is empty by construction, even when
-// the grid wraps and a same-layer card lands between source row
-// and target row at the visual midpoint. The vertical drop from
-// source still runs at source-X; in our 3-col grid that column
-// is overwhelmingly empty between source row and trunk row.
-//
-// Path:
-//   1. drop straight from source down to trunkY
-//   2. arc into horizontal
-//   3. travel laterally to target column
-//   4. arc into vertical
-//   5. drop into target.top
-function orthogonalPath(p: EdgeGeometry): string {
-  const dx = p.toX - p.fromX;
-  const trunkOffset = 14;
-  const trunkY = p.toY - trunkOffset;
-  // Same column → straight vertical, no elbows.
-  if (Math.abs(dx) < 4) {
-    return `M ${p.fromX} ${p.fromY} L ${p.toX} ${p.toY}`;
-  }
-  // If trunk would land above source (target is above us — never
-  // happens in a topo DAG today, but defensive), fall back to a
-  // straight diagonal so the path still renders.
-  if (trunkY <= p.fromY) {
-    return `M ${p.fromX} ${p.fromY} L ${p.toX} ${p.toY}`;
-  }
-  const r = Math.min(
-    18,
-    (trunkY - p.fromY) / 2 - 1,
-    (p.toY - trunkY) / 2 - 1,
-    Math.abs(dx) / 2 - 2,
-  );
-  if (r <= 1) {
-    // Available run too tight for arcs — degrade to a sharp elbow.
-    return `M ${p.fromX} ${p.fromY} L ${p.fromX} ${trunkY} L ${p.toX} ${trunkY} L ${p.toX} ${p.toY}`;
-  }
-  const sweepIn = dx > 0 ? 1 : 0; // arc direction into the trunk
-  const sweepOut = dx > 0 ? 0 : 1; // arc direction out of the trunk into target
-  const xAfterFirstArc = p.fromX + (dx > 0 ? r : -r);
-  const xBeforeSecondArc = p.toX - (dx > 0 ? r : -r);
-  return [
-    `M ${p.fromX} ${p.fromY}`,
-    `L ${p.fromX} ${trunkY - r}`,
-    `A ${r} ${r} 0 0 ${sweepIn} ${xAfterFirstArc} ${trunkY}`,
-    `L ${xBeforeSecondArc} ${trunkY}`,
-    `A ${r} ${r} 0 0 ${sweepOut} ${p.toX} ${trunkY + r}`,
-    `L ${p.toX} ${p.toY}`,
-  ].join(" ");
+function cellName(c: Cell): string {
+  return c.kind === "single" ? c.pipeline.name : c.pipelines[0]!.name;
 }
 
-function buildLayers(
+function cellWeight(c: Cell): number {
+  if (c.kind === "single") return alertWeight(c.pipeline);
+  return Math.max(...c.pipelines.map(alertWeight));
+}
+
+// buildCells partitions the project's pipelines into rendering
+// cells. A cell is:
+//   - "single" — a standalone pipeline (no edges, fan-in, fan-out,
+//     or whose dependencies don't form a strict chain), or
+//   - "chain" — a sequence A → B → C where every link is 1-to-1
+//     (B has exactly one upstream A, A has exactly one downstream
+//     B, and so on). Chains render as a vertical stack with a thin
+//     dashed connector between cards.
+//
+// Strict 1-to-1 is the only case where vertical stacking reads
+// unambiguously. Fan-in (multiple upstream → one downstream) and
+// fan-out (one upstream → multiple downstream) break the linear
+// stack metaphor; those land as singles, with the upstream pill in
+// each downstream's header naming the trigger source instead.
+function buildCells(
   pipelines: PipelineSummary[],
   edges: PipelineEdge[],
-): string[][] {
+): Cell[] {
   const names = new Set(pipelines.map((p) => p.name));
-  const inDegree = new Map<string, number>();
-  const forward = new Map<string, string[]>();
+  const upstream = new Map<string, string[]>();
+  const downstream = new Map<string, string[]>();
   for (const p of pipelines) {
-    inDegree.set(p.name, 0);
-    forward.set(p.name, []);
+    upstream.set(p.name, []);
+    downstream.set(p.name, []);
   }
   for (const e of edges) {
     if (!names.has(e.from_pipeline) || !names.has(e.to_pipeline)) continue;
-    inDegree.set(e.to_pipeline, (inDegree.get(e.to_pipeline) ?? 0) + 1);
-    forward.get(e.from_pipeline)!.push(e.to_pipeline);
+    upstream.get(e.to_pipeline)!.push(e.from_pipeline);
+    downstream.get(e.from_pipeline)!.push(e.to_pipeline);
   }
 
-  const layer = new Map<string, number>();
-  const queue: string[] = [];
-  for (const name of inDegree.keys()) {
-    if ((inDegree.get(name) ?? 0) === 0) {
-      layer.set(name, 0);
-      queue.push(name);
+  const pipelineByName = new Map(pipelines.map((p) => [p.name, p]));
+  const consumed = new Set<string>();
+  const cells: Cell[] = [];
+
+  const sortedNames = [...pipelines]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((p) => p.name);
+
+  for (const name of sortedNames) {
+    if (consumed.has(name)) continue;
+
+    // Walk upstream to find the head of any chain this pipeline
+    // belongs to. Stop on fan-in, fan-out, or already-consumed.
+    let head = name;
+    while (true) {
+      const ups = upstream.get(head)!;
+      if (ups.length !== 1) break;
+      const u = ups[0]!;
+      if (downstream.get(u)!.length !== 1) break;
+      if (consumed.has(u)) break;
+      head = u;
     }
-  }
-  while (queue.length > 0) {
-    const u = queue.shift()!;
-    for (const v of forward.get(u) ?? []) {
-      const next = Math.max(layer.get(v) ?? 0, (layer.get(u) ?? 0) + 1);
-      layer.set(v, next);
-      inDegree.set(v, (inDegree.get(v) ?? 0) - 1);
-      if ((inDegree.get(v) ?? 0) === 0) queue.push(v);
+
+    // Walk downstream from head, collecting linear-chain links.
+    const chain: string[] = [head];
+    let cur = head;
+    while (true) {
+      const downs = downstream.get(cur)!;
+      if (downs.length !== 1) break;
+      const n = downs[0]!;
+      if (upstream.get(n)!.length !== 1) break;
+      if (consumed.has(n)) break;
+      chain.push(n);
+      cur = n;
     }
-  }
-  for (const p of pipelines) {
-    if (!layer.has(p.name)) layer.set(p.name, 0);
+    for (const c of chain) consumed.add(c);
+
+    if (chain.length === 1) {
+      cells.push({ kind: "single", pipeline: pipelineByName.get(chain[0]!)! });
+    } else {
+      cells.push({
+        kind: "chain",
+        pipelines: chain.map((n) => pipelineByName.get(n)!),
+      });
+    }
   }
 
-  const maxLayer = Math.max(0, ...Array.from(layer.values()));
-  const out: string[][] = Array.from({ length: maxLayer + 1 }, () => []);
-  const sorted = [...pipelines].sort((a, b) => a.name.localeCompare(b.name));
-  for (const p of sorted) {
-    out[layer.get(p.name) ?? 0]!.push(p.name);
-  }
-  return out;
+  return cells;
 }

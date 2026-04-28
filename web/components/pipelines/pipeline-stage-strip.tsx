@@ -66,7 +66,7 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
       : null;
   const showRate = rate != null && rate < 90;
   return (
-    <div className="flex min-w-0 flex-col items-start gap-1">
+    <div className="flex shrink-0 flex-col items-start gap-1">
       <div className="flex items-baseline gap-1.5 px-0.5">
         <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
           {column.name}
@@ -104,28 +104,18 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
 }
 
 // DashedSeparator is the implied-flow indicator between stage
-// groups inside a single pipeline. Dashed line + chevron tip
-// reads as "stage N flows into stage N+1" without competing with
-// the solid SVG curves the overlay draws between pipelines for
-// real upstream triggers.
+// groups. flex-1 + min-w-7 = grows to fill the leftover row width,
+// so multi-job stages no longer leave dead space between groups
+// while narrow viewports still get a sensible minimum. The line
+// stays subtle on purpose: real architectural dependencies (cross-
+// pipeline upstream) live in the chain stack, not the dash.
 function DashedSeparator() {
   return (
     <div
-      className="flex h-[26px] w-9 shrink-0 items-center self-end"
+      className="flex h-[26px] min-w-7 flex-1 items-center self-end"
       aria-hidden
     >
-      <span className="block h-0 flex-1 border-t-[1.5px] border-dashed border-muted-foreground/55" />
-      <svg
-        viewBox="0 0 10 10"
-        className="ml-0.5 size-2.5 text-muted-foreground/70"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M 2 2 L 7 5 L 2 8" />
-      </svg>
+      <span className="block h-0 w-full border-t-[1.5px] border-dashed border-muted-foreground/50" />
     </div>
   );
 }
