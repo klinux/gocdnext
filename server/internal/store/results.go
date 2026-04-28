@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,7 +63,7 @@ func (s *Store) RunIDForJobRun(ctx context.Context, jobRunID uuid.UUID) (uuid.UU
 }
 
 // InsertLogLine persists one log line. The ON CONFLICT clause makes retries
-// harmless — if the agent re-sends the same (job_run_id, seq) after a
+// harmless — if the agent re-sends the same (job_run_id, seq, at) after a
 // disconnect, we keep the first copy.
 func (s *Store) InsertLogLine(ctx context.Context, in LogLine) error {
 	at := in.At
@@ -78,6 +79,51 @@ func (s *Store) InsertLogLine(ctx context.Context, in LogLine) error {
 	})
 	if err != nil {
 		return fmt.Errorf("store: insert log line: %w", err)
+	}
+	return nil
+}
+
+// BulkInsertLogLines persists a batch of lines in a single round-trip
+// using a multi-VALUES INSERT — orders of magnitude less WAL and lock
+// pressure than firing N separate InsertLogLine calls. ON CONFLICT
+// preserves the dedup semantics InsertLogLine has on its own.
+//
+// Empty input is a no-op (agents flush on a timer; an idle window
+// produces empty batches). At ~5 columns per row, Postgres' 65k
+// parameter ceiling lets a single call carry up to ~13k lines —
+// comfortably above any reasonable batch size.
+func (s *Store) BulkInsertLogLines(ctx context.Context, lines []LogLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	const cols = 5
+	args := make([]any, 0, len(lines)*cols)
+	var sb strings.Builder
+	sb.Grow(64 + len(lines)*40)
+	sb.WriteString("INSERT INTO log_lines (job_run_id, seq, stream, at, text) VALUES ")
+	now := time.Now().UTC()
+	for i, l := range lines {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		base := i*cols + 1
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d)",
+			base, base+1, base+2, base+3, base+4)
+		at := l.At
+		if at.IsZero() {
+			at = now
+		}
+		args = append(args,
+			pgUUID(l.JobRunID),
+			l.Seq,
+			l.Stream,
+			pgtype.Timestamptz{Time: at, Valid: true},
+			l.Text,
+		)
+	}
+	sb.WriteString(" ON CONFLICT (job_run_id, seq, at) DO NOTHING")
+	if _, err := s.pool.Exec(ctx, sb.String(), args...); err != nil {
+		return fmt.Errorf("store: bulk insert log lines: %w", err)
 	}
 	return nil
 }

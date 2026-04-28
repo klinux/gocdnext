@@ -41,6 +41,13 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	log := a.log.With("agent_uuid", agentID, "session", sessionID)
 	log.Info("agent stream opened")
 
+	// One batcher per stream. Push from handleLogLine, drain on
+	// stream close. Lifecycle is tied to Connect's defer ladder so
+	// a final flush always runs even on irregular exits.
+	batcher := newLogBatcher(a.store, log)
+	batcher.Start(stream.Context())
+	defer batcher.Stop()
+
 	// Send pump: drain scheduler-produced messages onto the gRPC stream. gRPC
 	// stream.Send is safe to call concurrently with stream.Recv (different
 	// directions), but NOT with itself — only this goroutine writes. The pump
@@ -99,7 +106,7 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				log.Debug("pong dispatch skipped", "err", err)
 			}
 		case *gocdnextv1.AgentMessage_Log:
-			a.handleLogLine(stream.Context(), log, kind.Log)
+			a.handleLogLine(stream.Context(), log, batcher, kind.Log)
 		case *gocdnextv1.AgentMessage_Progress:
 			log.Debug("agent progress", "kind", kindName(msg))
 		case *gocdnextv1.AgentMessage_Result:
@@ -112,12 +119,18 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	}
 }
 
-// handleLogLine persists a streamed log line. Errors are logged and swallowed:
-// agents should not retry on DB hiccups because seq numbers are monotonic per
-// job, and the ON CONFLICT (job_run_id, seq) dedupe makes a later ack-less
-// retry safe anyway. On success we fan the event out to the in-process log
-// broker (if configured) so the SSE handler can push it live without polling.
-func (a *AgentService) handleLogLine(ctx context.Context, log logger, l *gocdnextv1.LogLine) {
+// handleLogLine routes a streamed log line into the batcher (for DB
+// persistence) and publishes it synchronously to the SSE broker so
+// live tailers see it without waiting for the next flush. The
+// batcher dedupes via ON CONFLICT (job_run_id, seq, at), so an agent
+// retransmit is harmless.
+//
+// Trade-off: the SSE event lands up to flushEvery (~200ms) before
+// the row is durable. A page reload in that window may briefly
+// fetch a tail without the freshly-emitted line, but the live SSE
+// stream catches up immediately after — the user-visible latency
+// floor stays at network RTT, not DB commit.
+func (a *AgentService) handleLogLine(ctx context.Context, log logger, batcher *logBatcher, l *gocdnextv1.LogLine) {
 	jobID, err := uuid.Parse(l.GetJobId())
 	if err != nil {
 		log.Warn("agent log: bad job_id", "job_id", l.GetJobId())
@@ -127,16 +140,13 @@ func (a *AgentService) handleLogLine(ctx context.Context, log logger, l *gocdnex
 	if l.GetAt() != nil {
 		at = l.GetAt().AsTime()
 	}
-	if err := a.store.InsertLogLine(ctx, store.LogLine{
+	batcher.Push(store.LogLine{
 		JobRunID: jobID,
 		Seq:      l.GetSeq(),
 		Stream:   l.GetStream(),
 		At:       at,
 		Text:     l.GetText(),
-	}); err != nil {
-		log.Warn("agent log: persist failed", "err", err, "job_id", jobID, "seq", l.GetSeq())
-		return
-	}
+	})
 	a.publishLogLine(ctx, log, jobID, logstream.Event{
 		JobRunID: jobID,
 		Seq:      l.GetSeq(),

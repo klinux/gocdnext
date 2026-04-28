@@ -82,6 +82,59 @@ func TestInsertLogLine_IsIdempotent(t *testing.T) {
 	}
 }
 
+// TestBulkInsertLogLines_PersistsAndDedupes drives the multi-VALUES
+// path used by the per-stream batcher. One round-trip must persist
+// every line AND dedupe via ON CONFLICT (job_run_id, seq, at) when
+// the same triple shows up twice in the same batch.
+func TestBulkInsertLogLines_PersistsAndDedupes(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	_, _, _, jobID, _ := seedRunningJob(t, pool)
+	t1 := time.Now().UTC()
+	t2 := t1.Add(time.Microsecond)
+
+	// 3 distinct triples + 1 duplicate (job, seq=1, at=t1).
+	lines := []store.LogLine{
+		{JobRunID: jobID, Seq: 1, Stream: "stdout", At: t1, Text: "a"},
+		{JobRunID: jobID, Seq: 2, Stream: "stdout", At: t1, Text: "b"},
+		{JobRunID: jobID, Seq: 3, Stream: "stdout", At: t2, Text: "c"},
+		{JobRunID: jobID, Seq: 1, Stream: "stdout", At: t1, Text: "a-dup"},
+	}
+	if err := s.BulkInsertLogLines(ctx, lines); err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+
+	var count int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM log_lines WHERE job_run_id = $1`, jobID,
+	).Scan(&count)
+	if count != 3 {
+		t.Fatalf("count = %d, want 3 (dup ignored)", count)
+	}
+
+	// First-write-wins: text on (seq=1, at=t1) must be "a", not "a-dup".
+	var got string
+	_ = pool.QueryRow(ctx,
+		`SELECT text FROM log_lines WHERE job_run_id = $1 AND seq = 1`, jobID,
+	).Scan(&got)
+	if got != "a" {
+		t.Errorf("dedupe kept %q, want \"a\"", got)
+	}
+}
+
+// TestBulkInsertLogLines_EmptyIsNoop guards the early-return path —
+// an idle batcher tick produces empty input and must not round-trip
+// to the DB at all.
+func TestBulkInsertLogLines_EmptyIsNoop(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	if err := s.BulkInsertLogLines(context.Background(), nil); err != nil {
+		t.Fatalf("empty bulk insert returned err: %v", err)
+	}
+}
+
 // TestInsertLogLine_DedupeKeyIsTriple pins the migration-00027
 // behaviour: the dedupe key is (job_run_id, seq, at), not just
 // (job_run_id, seq). Same job + same seq + DIFFERENT timestamps are
