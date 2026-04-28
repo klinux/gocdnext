@@ -223,23 +223,27 @@ function countByStatus(pipelines: PipelineSummary[]) {
   return { running, failing, passing, never };
 }
 
-// countActive treats a pipeline as active when either its latest
-// run is still non-terminal OR any recent run on this project is.
-// The second check catches the "new run just got kicked off" case
-// before the latest_run swap materialises in the backend's
-// DISTINCT ON snapshot.
+// countActive returns the number of distinct active runs across the
+// project. Two sources can each surface the same run: a pipeline's
+// `latest_run` snapshot AND the recent `runs` list. Union them by
+// run id so a run mid-flight isn't double-counted. The recent runs
+// list also catches the "new run just got kicked off" case before
+// the latest_run swap materialises in the backend's DISTINCT ON
+// snapshot — without dedupe, that overlap is what was inflating the
+// count.
 function countActive(
   pipelines: PipelineSummary[],
   runs: RunSummary[],
 ): number {
-  let n = 0;
+  const active = new Set<string>();
   for (const p of pipelines) {
-    if (isActiveStatus(p.latest_run?.status)) n++;
+    const r = p.latest_run;
+    if (r && isActiveStatus(r.status)) active.add(r.id);
   }
   for (const r of runs) {
-    if (isActiveStatus(r.status)) n++;
+    if (isActiveStatus(r.status)) active.add(r.id);
   }
-  return n;
+  return active.size;
 }
 
 function isActiveStatus(s: string | undefined | null): boolean {
