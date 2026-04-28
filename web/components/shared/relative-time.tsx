@@ -2,6 +2,11 @@
 
 import { useEffect, useState } from "react";
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { formatRelative } from "@/lib/format";
 
 type Props = {
@@ -34,18 +39,25 @@ export function RelativeTime({ at, fallback = "never", className }: Props) {
     return () => clearInterval(id);
   }, [at]);
 
+  const absolute = new Date(at).toLocaleString();
   return (
-    <time
-      dateTime={at}
-      title={new Date(at).toLocaleString()}
-      className={className}
-      // Belt-and-suspenders: even though the mounted flag means the
-      // first client paint matches the server output, the
-      // 15s-interval refresh can still show a diff vs. a stale SSR
-      // HTML in cached views. Suppress only for the text content.
-      suppressHydrationWarning
-    >
-      {mounted ? label : server}
-    </time>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <time
+            dateTime={at}
+            className={className}
+            // Belt-and-suspenders: even though the mounted flag means
+            // the first client paint matches the server output, the
+            // 15s-interval refresh can still show a diff vs. a stale
+            // SSR HTML in cached views. Suppress only for the text.
+            suppressHydrationWarning
+          />
+        }
+      >
+        {mounted ? label : server}
+      </TooltipTrigger>
+      <TooltipContent>{absolute}</TooltipContent>
+    </Tooltip>
   );
 }

@@ -1,6 +1,6 @@
-# gocdnext agent — test + build. Shares the Go toolchain image
-# with the server pipeline; kept separate so an agent-only PR
-# doesn't have to wait on the server test matrix.
+# gocdnext agent — test + build. Shares the gocdnext/go plugin
+# with the server + cli pipelines; kept separate so an agent-only
+# PR doesn't have to wait on the server matrix.
 name: ci-agent
 
 when:
@@ -8,28 +8,28 @@ when:
 
 stages: [lint, test, build]
 
-variables:
-  GO_VERSION: "1.25"
-
 jobs:
   vet:
     stage: lint
-    image: golang:1.25
-    script:
-      - cd agent && go vet ./...
+    uses: gocdnext/go@v1
+    with:
+      working-dir: agent
+      command: vet ./...
 
   unit:
     stage: test
-    image: golang:1.25
+    uses: gocdnext/go@v1
     needs: [vet]
-    script:
-      - cd agent && go test -race ./...
+    with:
+      working-dir: agent
+      command: test -race ./...
 
   compile:
     stage: build
-    image: golang:1.25
+    uses: gocdnext/go@v1
     needs: [unit]
-    script:
-      - cd agent && go build -o ../bin/gocdnext-agent ./cmd/gocdnext-agent
+    with:
+      working-dir: agent
+      command: build -o ../bin/gocdnext-agent ./cmd/gocdnext-agent
     artifacts:
       paths: [bin/gocdnext-agent]

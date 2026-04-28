@@ -1,46 +1,38 @@
-# gocdnext server — test + build.
-# Runs on every push and PR that touches main. Uses testcontainers
-# (which pulls postgres:16-alpine on the fly), so the agent must
-# have Docker access — the default agent runtime already does.
+# gocdnext server — test + build. Uses the gocdnext/go plugin so
+# the toolchain (golang:1.25 + git + make) lives in one image
+# instead of re-pinning it across every job. testcontainers-go
+# (dbtest package) needs Docker access; `docker: true` mounts the
+# host's docker.sock.
 name: ci-server
 
-# Project repo is implicit — the pipeline inherits the scm_source
-# bound at project level. Only `when:` is needed to opt into PR
-# coverage on top of the default push trigger.
 when:
   event: [push, pull_request]
 
 stages: [lint, test, build]
 
-variables:
-  GO_VERSION: "1.25"
-
 jobs:
   vet:
     stage: lint
-    image: golang:1.25
-    script:
-      - cd server && go vet ./...
+    uses: gocdnext/go@v1
+    with:
+      working-dir: server
+      command: vet ./...
 
   unit:
     stage: test
-    image: golang:1.25
+    uses: gocdnext/go@v1
     needs: [vet]
-    # testcontainers-go (dbtest package) needs a reachable Docker
-    # API to spin up the Postgres container. docker: true mounts
-    # the host's docker.sock into this job's container so the
-    # test suite can talk to the daemon as a sibling.
     docker: true
-    # Race detector catches the same bugs the contributor guide
-    # tells contributors to catch locally.
-    script:
-      - cd server && go test -race ./...
+    with:
+      working-dir: server
+      command: test -race ./...
 
   compile:
     stage: build
-    image: golang:1.25
+    uses: gocdnext/go@v1
     needs: [unit]
-    script:
-      - cd server && go build -o ../bin/gocdnext-server ./cmd/gocdnext-server
+    with:
+      working-dir: server
+      command: build -o ../bin/gocdnext-server ./cmd/gocdnext-server
     artifacts:
       paths: [bin/gocdnext-server]
