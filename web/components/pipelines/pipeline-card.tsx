@@ -141,7 +141,7 @@ export function PipelineCard({
           {/* Bottom line: muted run meta + commit subject. Single
               row, ellipsised — the overview sheet has the full
               breakdown for anyone who needs it. */}
-          <div className="flex items-center gap-x-2 text-[11px] text-muted-foreground">
+          <div className="flex items-baseline gap-x-2 text-[11px] leading-tight text-muted-foreground">
             <span className="font-mono">v{pipeline.definition_version}</span>
             {run ? (
               <>
