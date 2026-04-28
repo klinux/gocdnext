@@ -39,9 +39,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG CODECOV_VERSION=10.3.0
+# codecov-cli installs BOTH `codecov` and `codecovcli` console
+# scripts, so the entrypoint that calls `codecov` keeps working
+# without a manual symlink.
 RUN pip install --no-cache-dir "codecov-cli==${CODECOV_VERSION}" \
-    && codecovcli --version \
-    && ln -s "$(command -v codecovcli)" /usr/local/bin/codecov
+    && codecov --version
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-codecov
 RUN chmod +x /usr/local/bin/gocdnext-codecov
