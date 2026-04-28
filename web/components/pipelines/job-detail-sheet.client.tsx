@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { ExternalLink, Loader2 } from "lucide-react";
+import { ChevronsDown, ChevronsUp, ExternalLink, Loader2 } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
@@ -13,6 +14,11 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { LogViewer } from "@/components/runs/log-viewer";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -66,14 +72,14 @@ export function JobDetailSheet({
       {trigger ? <SheetTrigger render={trigger} /> : null}
       <SheetContent
         side="right"
-        className="data-[side=right]:w-1/2 data-[side=right]:sm:max-w-[50vw]"
+        className="flex flex-col data-[side=right]:w-1/2 data-[side=right]:sm:max-w-[50vw]"
       >
-        <SheetHeader>
+        <SheetHeader className="shrink-0">
           <SheetTitle className="font-mono text-base">{jobName}</SheetTitle>
           <SheetDescription>Job summary and recent log tail.</SheetDescription>
         </SheetHeader>
 
-        <div className="mt-4 space-y-5 px-4 pb-6">
+        <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pb-6">
           {loading && !result ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -98,10 +104,19 @@ export function JobDetailSheet({
 
 function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true }> }) {
   const { job, run, stageName } = result;
+  const logRef = useRef<HTMLDivElement>(null);
+  const jumpTo = (where: "top" | "bottom") => {
+    const el = logRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: where === "top" ? 0 : el.scrollHeight,
+      behavior: "smooth",
+    });
+  };
 
   return (
     <>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+      <dl className="grid shrink-0 grid-cols-2 gap-x-4 gap-y-3 text-sm">
         <Field label="Status">
           <StatusBadge status={job.status} />
         </Field>
@@ -162,7 +177,7 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
       </dl>
 
       {job.error ? (
-        <section>
+        <section className="shrink-0">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Error
           </h4>
@@ -172,20 +187,60 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
         </section>
       ) : null}
 
-      <section>
-        <div className="mb-2 flex items-center justify-between">
+      <section className="flex min-h-0 flex-1 flex-col">
+        <div className="mb-2 flex items-center justify-between gap-2">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Recent logs
           </h4>
-          <Link
-            href={`/runs/${run.id}#job-${job.id}` as Route}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            Full run <ExternalLink className="size-3" aria-hidden />
-          </Link>
+          <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    onClick={() => jumpTo("top")}
+                    aria-label="Jump to top of log"
+                  />
+                }
+              >
+                <ChevronsUp className="size-3.5" aria-hidden />
+              </TooltipTrigger>
+              <TooltipContent>Jump to top</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    onClick={() => jumpTo("bottom")}
+                    aria-label="Jump to bottom of log"
+                  />
+                }
+              >
+                <ChevronsDown className="size-3.5" aria-hidden />
+              </TooltipTrigger>
+              <TooltipContent>Jump to bottom</TooltipContent>
+            </Tooltip>
+            <Link
+              href={`/runs/${run.id}#job-${job.id}` as Route}
+              className="ml-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Full run <ExternalLink className="size-3" aria-hidden />
+            </Link>
+          </div>
         </div>
-        <div className="rounded-md border border-border">
-          <LogViewer logs={job.logs ?? []} />
+        <div
+          ref={logRef}
+          className="min-h-0 flex-1 overflow-auto rounded-md border border-border"
+        >
+          <LogViewer
+            logs={job.logs ?? []}
+            className="h-full max-h-none overflow-visible"
+          />
         </div>
       </section>
     </>
