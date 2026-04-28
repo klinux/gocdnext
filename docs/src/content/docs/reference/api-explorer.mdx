@@ -1,32 +1,26 @@
 ---
 title: API explorer
-description: Interactive Scalar UI for the gocdnext OpenAPI 3.1 spec. Try requests, browse schemas, copy curl.
-template: splash
+description: Interactive Scalar UI for the gocdnext OpenAPI 3.1 spec — try requests, browse schemas, copy curl.
 ---
 
-The full API surface, browseable. Authentication, request bodies,
-schemas, response codes — every endpoint with a "Try it" panel.
+The full API surface is browseable through an embedded Scalar UI:
+authentication, request bodies, response codes, and a "Try it"
+panel for every endpoint.
 
-The same OpenAPI document is served by the control-plane itself at
-`GET /api/v1/openapi.yaml` — point any code generator at that URL
-to get a typed client in your language of choice.
+It opens in a dedicated, full-viewport page (the docs layout's
+sidebar + max-width container fights with Scalar's own overlays,
+so we host the explorer separately).
 
-{/* Scalar's standalone bundle reads the spec URL from a sibling
-    <script id="api-reference" data-url=…>. Using a <div> with
-    data-spec-url silently fails — Scalar falls back to the demo
-    config "api-1" and renders "Document could not be loaded".
+<a class="sl-button" href="/api-explorer/" target="_self" rel="noopener">
+  Launch API explorer →
+</a>
 
-    Path is relative to the page URL (this page lives at
-    /reference/api-explorer/) so the Astro `base` prefix gets
-    applied automatically by the browser's URL resolver — an
-    absolute "/openapi/…" would 404 on GitHub Pages, where the
-    site mounts under /gocdnext/docs/. */}
-<script id="api-reference" data-url="../../openapi/gocdnext.yaml" data-configuration='{"theme":"default","layout":"modern"}'></script>
-<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+## OpenAPI document
 
-## Generating a client
-
-Any OpenAPI 3.1 generator works. Examples:
+The same spec the explorer renders is served by the control plane
+at `GET /api/v1/openapi.yaml` and mirrored from the docs site at
+[`/openapi/gocdnext.yaml`](/openapi/gocdnext.yaml). Point any
+OpenAPI 3.1 generator at either URL to mint a typed client.
 
 ```bash title="TypeScript / fetch"
 npx @hey-api/openapi-ts -i https://gocdnext.example.com/api/v1/openapi.yaml -o ./src/client

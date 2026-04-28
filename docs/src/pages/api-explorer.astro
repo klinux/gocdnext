@@ -1,0 +1,118 @@
+---
+// Standalone Scalar host. Lives outside Starlight on purpose:
+//   - Scalar's UI expects to own the viewport; the docs layout
+//     wraps content in a max-width container with padding and
+//     positioning that breaks Scalar's overlays + sticky pieces.
+//   - Scalar's theme machinery doesn't read Starlight's
+//     data-theme attribute, so a tab inside the docs would never
+//     react to the theme toggle.
+//   - Keeping the docs page (reference/api-explorer.mdx) as the
+//     launching pad with a "Launch full explorer" CTA gives the
+//     reader explanatory text + the actual tool, each in the
+//     surface where it works best.
+const baseUrl = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+const specUrl = `${baseUrl}/openapi/gocdnext.yaml`;
+const docsHome = `${baseUrl}/`;
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>API explorer — gocdnext</title>
+    <meta name="description" content="Interactive Scalar UI for the gocdnext OpenAPI 3.1 spec." />
+    <link rel="icon" href={`${baseUrl}/favicon.svg`} />
+    <style is:global>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0b0f17;
+        color: #e2e8f0;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: #0b0f17;
+        position: sticky;
+        top: 0;
+        z-index: 50;
+      }
+      .topbar a {
+        color: #94a3b8;
+        text-decoration: none;
+        font-size: 0.85rem;
+      }
+      .topbar a:hover {
+        color: #e2e8f0;
+      }
+      .topbar .spacer {
+        flex: 1;
+      }
+      .topbar code {
+        background: rgba(255, 255, 255, 0.06);
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+      }
+      /* Theme toggle just flips the html attribute. Scalar's
+         "default" theme already reacts to prefers-color-scheme;
+         we expose an explicit toggle so the reader doesn't have
+         to flip system theme to switch. The two scoped CSS vars
+         below are picked up by Scalar's "default" theme via
+         CSS custom properties. */
+      :root[data-theme="light"] body {
+        background: #ffffff;
+        color: #0f172a;
+      }
+      :root[data-theme="light"] .topbar {
+        background: #ffffff;
+        border-bottom-color: rgba(0, 0, 0, 0.08);
+      }
+      :root[data-theme="light"] .topbar a {
+        color: #475569;
+      }
+      :root[data-theme="light"] .topbar a:hover {
+        color: #0f172a;
+      }
+      :root[data-theme="light"] .topbar code {
+        background: rgba(0, 0, 0, 0.05);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <a href={docsHome}>← Back to docs</a>
+      <span class="spacer"></span>
+      <span style="font-size:0.8rem;opacity:0.7">spec:</span>
+      <code>{specUrl}</code>
+      <button id="theme-toggle" type="button" aria-label="Toggle theme"
+        style="background:none;border:1px solid rgba(255,255,255,0.15);color:inherit;border-radius:6px;padding:0.25rem 0.55rem;font-size:0.8rem;cursor:pointer">
+        ☀ / ☾
+      </button>
+    </div>
+
+    <script
+      id="api-reference"
+      data-url={specUrl}
+      data-configuration={JSON.stringify({ theme: "default", layout: "modern" })}
+    ></script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    <script>
+      const root = document.documentElement;
+      const stored = localStorage.getItem("gocdnext-explorer-theme");
+      if (stored === "light" || stored === "dark") root.dataset.theme = stored;
+      document.getElementById("theme-toggle")?.addEventListener("click", () => {
+        const next = root.dataset.theme === "light" ? "dark" : "light";
+        root.dataset.theme = next;
+        localStorage.setItem("gocdnext-explorer-theme", next);
+      });
+    </script>
+  </body>
+</html>
