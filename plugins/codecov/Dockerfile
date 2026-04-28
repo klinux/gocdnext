@@ -26,37 +26,22 @@
 #                                   artifact).
 #   PLUGIN_URL          (optional)  Codecov Enterprise URL. The
 #                                   cloud default is codecov.io.
-# Debian (not Alpine) because the codecov CLI binary is glibc-
-# linked — it exits 127 on Alpine even when downloaded for the
-# right TARGETARCH. bookworm-slim is small enough that the size
-# tradeoff is fine for a CI uploader image (~80 MB vs ~30 MB).
-FROM debian:bookworm-slim
+# Codecov CLI v10 is a Python package (the old static binary at
+# cli.codecov.io/<v>/linux/codecov is a PyInstaller bundle whose
+# loader chokes on slim images of either libc family — alpine
+# musl OR debian-slim glibc). Installing via pip from python:slim
+# bypasses that path entirely and gives us a `codecov` entrypoint
+# that runs natively for both amd64 and arm64.
+FROM python:3.12-slim-bookworm
 
-# Codecov's official uploader ships as a Linux binary. Fetch it
-# once during the image build so each run doesn't pay a download
-# tax (the CLI is ~25MB; at 1000 runs/day that's real bandwidth).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash curl ca-certificates git \
+        bash ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-ARG CODECOV_VERSION=v10.3.0
-# TARGETARCH is supplied automatically by buildx in multi-arch
-# builds (amd64 | arm64). Codecov's CDN serves separate binaries
-# under `linux/` (amd64) and `linux-arm64/` paths; without
-# picking the right one the arm64 image inherited an x86 binary
-# that failed to exec at build time — which is how this
-# Dockerfile flunked the first multi-arch run.
-ARG TARGETARCH=amd64
-RUN set -eux; \
-    case "$TARGETARCH" in \
-      amd64) CC_PATH="linux" ;; \
-      arm64) CC_PATH="linux-arm64" ;; \
-      *)     echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    curl -fSsL "https://cli.codecov.io/${CODECOV_VERSION}/${CC_PATH}/codecov" \
-         -o /usr/local/bin/codecov; \
-    chmod +x /usr/local/bin/codecov; \
-    /usr/local/bin/codecov --version
+ARG CODECOV_VERSION=10.3.0
+RUN pip install --no-cache-dir "codecov-cli==${CODECOV_VERSION}" \
+    && codecovcli --version \
+    && ln -s "$(command -v codecovcli)" /usr/local/bin/codecov
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-codecov
 RUN chmod +x /usr/local/bin/gocdnext-codecov
