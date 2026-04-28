@@ -25,7 +25,10 @@ type Props = {
   apiBaseURL: string;
 };
 
-async function fetchArtifacts(
+// Exported so the tab strip on RunLive can prefetch with the same
+// queryKey ["run-artifacts", runId] and react-query's cache dedupes
+// the network call — no double fetch when the tab body mounts.
+export async function fetchArtifacts(
   apiBaseURL: string,
   id: string,
 ): Promise<RunArtifact[]> {
