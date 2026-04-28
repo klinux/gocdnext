@@ -26,18 +26,18 @@
 #                                   artifact).
 #   PLUGIN_URL          (optional)  Codecov Enterprise URL. The
 #                                   cloud default is codecov.io.
-FROM alpine:3.20
+# Debian (not Alpine) because the codecov CLI binary is glibc-
+# linked — it exits 127 on Alpine even when downloaded for the
+# right TARGETARCH. bookworm-slim is small enough that the size
+# tradeoff is fine for a CI uploader image (~80 MB vs ~30 MB).
+FROM debian:bookworm-slim
 
-# Codecov's official uploader ships as a static Linux binary.
-# Fetch it once during the image build so each run doesn't pay
-# a download tax (the CLI is ~25MB; at 1000 runs/day that's
-# real bandwidth).
-#
-# checksum verification follows Codecov's docs — the uploader
-# is GPG-signed and publishes a SHA256SUM file. We verify the
-# sha only (GPG key rotation would require shipping the public
-# key too; sha is a reasonable floor for tamper detection).
-RUN apk add --no-cache bash curl ca-certificates git
+# Codecov's official uploader ships as a Linux binary. Fetch it
+# once during the image build so each run doesn't pay a download
+# tax (the CLI is ~25MB; at 1000 runs/day that's real bandwidth).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG CODECOV_VERSION=v10.3.0
 # TARGETARCH is supplied automatically by buildx in multi-arch
