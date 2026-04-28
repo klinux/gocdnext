@@ -196,9 +196,10 @@ const borderToneClasses: Record<StatusTone, string> = {
 };
 
 // UpstreamPills surfaces the cross-pipeline triggers feeding this
-// card. The SVG arrow above shows direction; this pill names the
-// source so the operator doesn't have to trace the arrow back
-// across the layout to know "what triggers me". Caps at 2 visible.
+// card. Light-blue tint signals "this is a link / dependency", the
+// same colour the operator's eye already associates with hyperlinks
+// across the rest of the app. Caps at 2 visible; the rest collapse
+// to a "+N" overflow label.
 function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
   const visible = upstreams.slice(0, 2);
   const overflow = upstreams.length - visible.length;
@@ -207,7 +208,7 @@ function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
       {visible.map((e) => (
         <span
           key={`${e.from_pipeline}:${e.stage ?? ""}`}
-          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
+          className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0 font-mono text-[10px] text-sky-700 dark:text-sky-400"
           title={
             e.stage
               ? `Triggered when ${e.from_pipeline}.${e.stage} passes`
@@ -215,11 +216,15 @@ function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
           }
         >
           ← {e.from_pipeline}
-          {e.stage ? <span className="text-muted-foreground/60">.{e.stage}</span> : null}
+          {e.stage ? (
+            <span className="text-sky-700/70 dark:text-sky-400/70">
+              .{e.stage}
+            </span>
+          ) : null}
         </span>
       ))}
       {overflow > 0 ? (
-        <span className="font-mono text-[10px] text-muted-foreground/70">
+        <span className="font-mono text-[10px] text-sky-700/70 dark:text-sky-400/70">
           +{overflow}
         </span>
       ) : null}
