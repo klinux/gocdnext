@@ -38,12 +38,14 @@ export function PipelineFlow({ projectSlug, pipelines, edges, runs }: Props) {
     );
   }
 
-  const sortedPipelines = [...pipelines].sort((a, b) => {
-    const wa = alertWeight(a);
-    const wb = alertWeight(b);
-    if (wa !== wb) return wb - wa;
-    return a.name.localeCompare(b.name);
-  });
+  // Stable alphabetical order. Sorting by alert weight made cards
+  // jump around the grid every time a run kicked off (running →
+  // success), which felt like a page reload — disorienting right
+  // after the user clicked Run. Failing pipelines still surface in
+  // the alert strip above so they're not lost.
+  const sortedPipelines = [...pipelines].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
 
   const alerts = pipelines.filter(isAlerting);
 
@@ -143,25 +145,6 @@ function isAlerting(p: PipelineSummary): boolean {
     return true;
   }
   return false;
-}
-
-// alertWeight ranks a pipeline for "failing-first" sort. Higher =
-// comes first.
-function alertWeight(p: PipelineSummary): number {
-  const tone: StatusTone = p.latest_run
-    ? statusTone(p.latest_run.status)
-    : "neutral";
-  if (tone === "failed") return 4;
-  if (tone === "canceled") return 3;
-  if (
-    p.metrics &&
-    p.metrics.runs_considered >= 3 &&
-    p.metrics.success_rate < 0.7
-  ) {
-    return 2;
-  }
-  if (tone === "running" || tone === "queued") return 1;
-  return 0;
 }
 
 function alertReason(p: PipelineSummary): string {

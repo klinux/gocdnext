@@ -89,6 +89,7 @@ export function PipelineCard({
           "flex flex-col overflow-hidden rounded-lg border bg-card shadow-sm",
           "border-l-4",
           borderToneClasses[tone],
+          tone === "running" && "animate-running-border",
         )}
       >
         <header className="flex flex-col gap-0.5 border-b border-border px-2.5 py-1.5">
@@ -109,7 +110,9 @@ export function PipelineCard({
               >
                 {pipeline.name}
               </TooltipTrigger>
-              <TooltipContent>Open pipeline overview</TooltipContent>
+              <TooltipContent align="start">
+                Open pipeline overview
+              </TooltipContent>
             </Tooltip>
             {bottleneck ? (
               <BottleneckPill bottleneck={bottleneck} />
