@@ -44,7 +44,11 @@ export default defineConfig({
             { label: "Helm install", link: "/install/helm/" },
             { label: "Local dev", link: "/install/local-dev/" },
             { label: "Authentication", link: "/install/auth/" },
+            { label: "Webhook setup", link: "/install/webhooks/" },
+            { label: "Observability", link: "/install/observability/" },
+            { label: "Backup & restore", link: "/install/backup/" },
             { label: "Upgrade runbook", link: "/install/upgrade/" },
+            { label: "Migration guides", link: "/install/migration-guides/" },
           ],
         },
         {
@@ -55,37 +59,40 @@ export default defineConfig({
             {
               label: "Recipes",
               items: [
-                {
-                  label: "Go monorepo",
-                  link: "/pipelines/recipes/go-monorepo/",
-                },
-                {
-                  label: "Maven (Java/Kotlin)",
-                  link: "/pipelines/recipes/maven/",
-                },
-                {
-                  label: "Gradle (Android, JVM)",
-                  link: "/pipelines/recipes/gradle/",
-                },
-                {
-                  label: "Node frontend",
-                  link: "/pipelines/recipes/node/",
-                },
-                {
-                  label: "Python (pip / Poetry / uv)",
-                  link: "/pipelines/recipes/python/",
-                },
-                {
-                  label: "Deploy via SSH",
-                  link: "/pipelines/recipes/ssh-deploy/",
-                },
+                { label: "Go monorepo", link: "/pipelines/recipes/go-monorepo/" },
+                { label: "Maven (Java/Kotlin)", link: "/pipelines/recipes/maven/" },
+                { label: "Gradle (Android, JVM)", link: "/pipelines/recipes/gradle/" },
+                { label: "Node frontend", link: "/pipelines/recipes/node/" },
+                { label: "Python (pip / Poetry / uv)", link: "/pipelines/recipes/python/" },
+                { label: "Docker build & push", link: "/pipelines/recipes/docker-build/" },
+                { label: "Helm chart release", link: "/pipelines/recipes/helm-release/" },
+                { label: "Security scanning", link: "/pipelines/recipes/security-scan/" },
+                { label: "Notifications fan-out", link: "/pipelines/recipes/notifications/" },
+                { label: "Release flow", link: "/pipelines/recipes/release-flow/" },
+                { label: "Deploy via SSH", link: "/pipelines/recipes/ssh-deploy/" },
               ],
             },
           ],
         },
         {
+          label: "Concepts",
+          items: [
+            { label: "Materials", link: "/concepts/materials/" },
+            { label: "Secrets", link: "/concepts/secrets/" },
+            { label: "Cache strategies", link: "/concepts/cache/" },
+            { label: "Approval gates", link: "/concepts/approvals/" },
+            { label: "Value Stream Map (VSM)", link: "/concepts/vsm/" },
+            { label: "Architecture deep-dive", link: "/concepts/architecture/" },
+          ],
+        },
+        {
           label: "Reference",
-          items: [{ label: "Plugin catalog", link: "/reference/plugins/" }],
+          items: [
+            { label: "Plugin catalog", link: "/reference/plugins/" },
+            { label: "Environment variables", link: "/reference/env-vars/" },
+            { label: "CLI", link: "/reference/cli/" },
+            { label: "HTTP API", link: "/reference/api/" },
+          ],
         },
       ],
     }),
