@@ -66,8 +66,9 @@ export function TriggerPipelineButton({
       variant="outline"
       onClick={onClick}
       disabled={pending || isActive}
+      className="h-6 gap-1 rounded-full px-2 text-[11px]"
     >
-      <Play className="size-3.5" aria-hidden />
+      <Play className="size-3" aria-hidden />
       Run latest
     </Button>
   );
