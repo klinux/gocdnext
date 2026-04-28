@@ -67,7 +67,7 @@ export function PipelineCard({
   const metrics = pipeline.metrics;
   const [overviewOpen, setOverviewOpen] = useState(false);
 
-  const commitSubject = meta?.message ? firstLine(meta.message) : null;
+  const commitSubject = meta?.message ? truncate(firstLine(meta.message), 30) : null;
   const shortSha = meta?.revision ? meta.revision.slice(0, 7) : null;
 
   const tone: StatusTone = run ? statusTone(run.status) : "neutral";
@@ -311,6 +311,17 @@ function InlineMetricsFooter({ metrics }: { metrics: PipelineMetrics }) {
       </span>
     </div>
   );
+}
+
+// truncate clips a string at maxLen with a real ellipsis. CSS
+// `truncate` already handles overflow visually, but it kicks in at
+// container width and depends on flex layout — we want a hard cap
+// at the source so the commit subject doesn't push other header
+// elements (status pill, branch, Run latest) off-screen even
+// before the truncate class can take over.
+function truncate(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen).trimEnd() + "…";
 }
 
 // firstLine returns the commit message's subject line only —

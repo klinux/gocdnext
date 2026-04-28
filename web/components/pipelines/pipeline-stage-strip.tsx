@@ -104,19 +104,28 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
 }
 
 // DashedSeparator is the implied-flow indicator between stage
-// groups inside a single pipeline. A horizontal dashed line carries
-// presence through wider gaps (multi-job stages) where three small
-// dots used to disappear visually. Real architectural edges
-// (cross-pipeline upstream) still get the solid curved line in
-// the SVG overlay above — keeps the dashed/solid distinction
-// reading as "representation vs trigger".
+// groups inside a single pipeline. Dashed line + chevron tip
+// reads as "stage N flows into stage N+1" without competing with
+// the solid SVG curves the overlay draws between pipelines for
+// real upstream triggers.
 function DashedSeparator() {
   return (
     <div
-      className="flex h-[26px] w-7 shrink-0 items-center justify-center self-end"
+      className="flex h-[26px] w-9 shrink-0 items-center self-end"
       aria-hidden
     >
-      <span className="block h-0 w-full border-t-[1.5px] border-dashed border-muted-foreground/45" />
+      <span className="block h-0 flex-1 border-t-[1.5px] border-dashed border-muted-foreground/55" />
+      <svg
+        viewBox="0 0 10 10"
+        className="ml-0.5 size-2.5 text-muted-foreground/70"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M 2 2 L 7 5 L 2 8" />
+      </svg>
     </div>
   );
 }
