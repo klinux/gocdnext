@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 64" fill="none" role="img" aria-label="gocdnext">
+  <defs>
+    <!-- Same teal gradients as web/components/brand/logo.tsx so the
+         hex mark stays brand-consistent across portal + docs site. -->
+    <linearGradient id="dl-pbTop"
+      x1="23.796248" y1="62.783008" x2="85.930894" y2="124.91765"
+      gradientTransform="matrix(1.2400315,0.08753382,-0.03824616,0.54180708,17.388739,9.4616189)"
+      gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8FE4EA"/>
+      <stop offset="55%" stop-color="#0ea5b5"/>
+      <stop offset="100%" stop-color="#086370"/>
+    </linearGradient>
+    <linearGradient id="dl-pbTeal"
+      x1="27.074875" y1="121.03715" x2="85.930894" y2="179.27196"
+      gradientTransform="matrix(1.21055,-0.09023533,0.03942653,0.52892569,10.577888,22.499414)"
+      gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4FD1DB"/>
+      <stop offset="100%" stop-color="#086370"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Hexagon mark — paths copied from web/app/icon.svg, scaled to
+       fit the left 56x56 area of the combined logo. The stroke uses
+       currentColor so it inherits the docs theme's text colour. -->
+  <g transform="translate(4 4) scale(0.35)">
+    <path
+      d="M 64.41 21 Q 80 12 95.59 21 L 123.30 37 Q 138.89 46 138.89 64 L 138.89 96 Q 138.89 114 123.30 123 L 95.59 139 Q 80 148 64.41 139 L 36.70 123 Q 21.11 114 21.11 96 L 21.11 64 Q 21.11 46 36.70 37 Z"
+      stroke="currentColor" stroke-width="5"
+      fill="currentColor" fill-opacity="0.05"/>
+    <path
+      d="M 46.184096,111.57288 C 58.397265,117.09952 75.308755,113.69325 96.918564,101.35407 C 111.29861,92.772312 118.82326,85.774394 119.49252,80.360321 C 107.43841,76.967495 92.461909,77.547436 74.563036,82.100143 C 56.743694,87.71976 60.633741,97.151369 46.184096,111.57288 Z"
+      fill="url(#dl-pbTeal)"/>
+    <path
+      d="M 44.235256,49.249387 C 56.719957,43.540652 74.051942,46.960793 96.231212,59.50981 C 110.99169,68.24012 118.72549,75.37608 119.43264,80.91769 C 107.10224,84.44064 91.763168,83.907024 73.415437,79.316842 C 62.408657,75.596959 45.418126,63.611284 44.235256,49.249387 Z"
+      fill="url(#dl-pbTop)"/>
+  </g>
+
+  <!-- Wordmark: "gocd" inherits currentColor (light/dark adapt),
+       "next" is brand teal — same bi-colour treatment as
+       web/components/brand/logo.tsx. font-family lives inline so
+       the SVG renders consistently on every browser/server. -->
+  <text x="68" y="44"
+    font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif"
+    font-size="32" font-weight="700" letter-spacing="-1">
+    <tspan fill="currentColor">gocd</tspan><tspan fill="#0ea5b5">next</tspan>
+  </text>
+</svg>
