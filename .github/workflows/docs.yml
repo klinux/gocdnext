@@ -1,0 +1,91 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "plugins/**/plugin.yaml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Serialise with the chart-publish step in release.yml — both push to
+# the same gh-pages branch (chart at the root, docs under /docs/).
+# `cancel-in-progress: false` so a queued job waits for the in-flight
+# one instead of being dropped (we want every docs change to land).
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: docs
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (regenerates plugin catalog from manifests)
+        working-directory: docs
+        run: pnpm build
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish to gh-pages/docs
+        run: |
+          set -euo pipefail
+          dist="$PWD/docs/dist"
+
+          # gh-pages is shared with the helm chart publish (release.yml).
+          # We only ever touch the docs/ subtree so the chart artefacts
+          # at the branch root stay intact.
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages
+            git worktree add pages gh-pages
+          else
+            git worktree add --orphan -b gh-pages pages
+            (cd pages && git rm -rf . 2>/dev/null || true)
+          fi
+
+          rm -rf pages/docs
+          mkdir -p pages/docs
+          cp -r "$dist"/. pages/docs/
+
+          # GitHub Pages won't serve files starting with `_` unless we
+          # tell it to (Astro's default `_astro/` asset dir hits this).
+          # `.nojekyll` at the root is the canonical opt-out.
+          touch pages/.nojekyll
+
+          (
+            cd pages
+            git add docs .nojekyll
+            if git diff --cached --quiet; then
+              echo "no docs changes; skipping push"
+              exit 0
+            fi
+            git commit -m "docs: publish ${GITHUB_SHA:0:7}"
+            git push origin gh-pages
+          )

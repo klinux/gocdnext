@@ -1,0 +1,55 @@
+---
+title: gocdnext
+description: A modern CI/CD orchestrator that pairs CI ergonomics with first-class deployment primitives.
+template: splash
+hero:
+  tagline: Webhook-first CI with the deployment + observability seam built-in.
+  actions:
+    - text: Install with Helm
+      link: /gocdnext/docs/install/helm/
+      icon: right-arrow
+      variant: primary
+    - text: First pipeline
+      link: /gocdnext/docs/pipelines/quickstart/
+      icon: external
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+## What is gocdnext?
+
+gocdnext is a CI/CD orchestrator that takes the parts of GoCD, Drone, Woodpecker and GitHub Actions that worked, drops the parts that didn't, and puts them in one binary. Pipelines live in `.gocdnext/` next to your code. Webhooks turn pushes into runs. Plugins are containers with a tiny manifest. Logs are partitioned and archivable. The control plane and the runner agent each ship as a single Go binary.
+
+<CardGrid>
+  <Card title="Single Helm install" icon="rocket">
+    Server, agent, web UI, postgres-dev, runner profiles — all wired
+    via one chart. Auth, retention, log archive, plugin catalog all
+    surface as values.yaml knobs.
+  </Card>
+  <Card title="Pipelines as code" icon="document">
+    `.gocdnext/<name>.yaml` per pipeline. Webhook-on-push creates a
+    run, fanout from `materials.upstream` chains pipelines, manual
+    triggers are one click.
+  </Card>
+  <Card title="Plugins are containers" icon="puzzle">
+    `uses: gocdnext/go@v1` is a thin shim image. The official catalog
+    ships 39+ plugins; your own land in `extraPlugins:` of values.yaml
+    — no PR required.
+  </Card>
+  <Card title="Anti-Woodpecker logs" icon="bars">
+    `log_lines` is RANGE-partitioned by month, batched bulk-inserted,
+    and (opt-in) cold-archived to S3/GCS so the database stays lean
+    even at hundreds of jobs/hour.
+  </Card>
+</CardGrid>
+
+## Where to next
+
+- **Operate**: jump to [Helm install](/gocdnext/docs/install/helm/) for the
+  cluster runbook, or [Local dev](/gocdnext/docs/install/local-dev/) for
+  `make dev`.
+- **Author pipelines**: the [Quickstart](/gocdnext/docs/pipelines/quickstart/)
+  walks the smallest pipeline that does something useful end-to-end.
+- **Reference**: [the plugin catalog](/gocdnext/docs/reference/plugins/) is
+  built from the same `plugin.yaml` manifests the server validates
+  `with:` against, so what you read here matches what runs.
