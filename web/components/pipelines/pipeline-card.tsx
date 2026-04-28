@@ -6,15 +6,9 @@ import type { Route } from "next";
 import {
   Activity,
   AlertTriangle,
-  Check,
   CheckCircle2,
-  ChevronsRight,
   Clock,
   GitBranch,
-  Loader2,
-  Minus,
-  TriangleAlert,
-  X,
 } from "lucide-react";
 
 import { LiveDuration } from "@/components/shared/live-duration";
@@ -93,23 +87,19 @@ export function PipelineCard({
         )}
       >
         <header className="flex flex-col gap-0.5 border-b border-border px-2.5 py-1.5">
-          {/* Top line: pipeline name + status badge + branch + Run latest.
-              The status circle on the right of the name carries the
-              full success/failed/running/canceled vocabulary at a glance,
-              replacing the textual StatusBadge that used to live in the
-              meta line below. */}
+          {/* Top line: pipeline name + branch + Run latest. Status
+              is conveyed by the coloured left border of the card and
+              the job circles in the stage strip below — the explicit
+              text/icon badge that used to live here was redundant. */}
           <div className="flex items-center gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setOverviewOpen(true)}
-                title="Open pipeline overview"
-                className="min-w-0 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {pipeline.name}
-              </button>
-              <StatusCircle status={run?.status} />
-            </div>
+            <button
+              type="button"
+              onClick={() => setOverviewOpen(true)}
+              title="Open pipeline overview"
+              className="min-w-0 flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {pipeline.name}
+            </button>
             {bottleneck ? (
               <BottleneckPill bottleneck={bottleneck} />
             ) : null}
@@ -188,80 +178,20 @@ export function PipelineCard({
   );
 }
 
-// StatusCircle is the run-status indicator that sits to the right
-// of the pipeline name. Same icon vocabulary as the JobCircle on
-// the stage strip — keeps the card consistent with itself, and
-// drops the textual badge ("Success" / "Cancelled") that used to
-// live in the meta line below: a coloured circle with the right
-// glyph reads at the same speed without a word.
-function StatusCircle({ status }: { status: string | undefined }) {
-  const tone: StatusTone = status ? statusTone(status) : "neutral";
-  const icon = (() => {
-    const cls = "size-[12px]";
-    switch (tone) {
-      case "success":
-        return <Check className={cls} aria-hidden strokeWidth={3} />;
-      case "failed":
-        return <X className={cls} aria-hidden strokeWidth={3} />;
-      case "running":
-        return <Loader2 className={cn(cls, "animate-spin")} aria-hidden />;
-      case "queued":
-      case "warning":
-      case "awaiting":
-        return <TriangleAlert className={cls} aria-hidden />;
-      case "canceled":
-        return <Minus className={cls} aria-hidden strokeWidth={3} />;
-      default:
-        return <ChevronsRight className={cls} aria-hidden strokeWidth={2.5} />;
-    }
-  })();
-  return (
-    <span
-      className={cn(
-        "relative inline-flex size-[22px] shrink-0 items-center justify-center rounded-full border-[1.5px]",
-        statusCircleClasses[tone],
-        status === "running" &&
-          "after:absolute after:inset-[-3px] after:rounded-full after:border-[1.5px] after:border-sky-500 after:content-[''] after:animate-ping",
-      )}
-      title={status ?? "not run"}
-      aria-label={status ?? "not run"}
-    >
-      {icon}
-    </span>
-  );
-}
-
-const statusCircleClasses: Record<StatusTone, string> = {
-  success:
-    "bg-emerald-500/10 border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
-  failed: "bg-red-500/10 border-red-500/40 text-red-600 dark:text-red-400",
-  running: "bg-sky-500/10 border-sky-500/40 text-sky-600 dark:text-sky-400",
-  queued:
-    "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
-  warning:
-    "bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400",
-  awaiting:
-    "bg-amber-500/15 border-amber-500/60 text-amber-700 dark:text-amber-400",
-  canceled:
-    "bg-muted-foreground/10 border-muted-foreground/30 text-muted-foreground",
-  skipped:
-    "bg-muted-foreground/5 border-muted-foreground/20 text-muted-foreground/70",
-  neutral: "bg-muted/40 border-border text-muted-foreground",
-};
-
-// borderToneClasses maps the latest run's status onto a left-edge
-// colour so failing pipelines pop in a dense grid without the user
-// reading every label. Healthy + neutral states keep the default
-// border so green doesn't shout the same as red.
+// borderToneClasses maps the latest run's status onto the left
+// edge colour. Failures + running stay full-saturated so they grab
+// attention; success uses a softer emerald so it reads "ok" at a
+// glance without the page becoming a wall of green; never-run /
+// skipped fall back to the default border so they sit quietly.
 const borderToneClasses: Record<StatusTone, string> = {
-  success: "border-border",
+  success: "border-l-emerald-500/70",
   failed: "border-l-red-500",
   running: "border-l-sky-500",
   queued: "border-l-amber-500",
   warning: "border-l-amber-500",
   awaiting: "border-l-amber-500",
-  canceled: "border-l-muted-foreground/40",
-  skipped: "border-border",
+  canceled: "border-l-muted-foreground/60",
+  skipped: "border-l-muted-foreground/40",
   neutral: "border-border",
 };
 
