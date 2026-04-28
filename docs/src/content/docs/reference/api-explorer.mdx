@@ -11,7 +11,13 @@ It opens in a dedicated, full-viewport page (the docs layout's
 sidebar + max-width container fights with Scalar's own overlays,
 so we host the explorer separately).
 
-<a class="sl-button" href="/api-explorer/" target="_self" rel="noopener">
+{/* Relative URLs respect the Astro `base` ("/gocdnext/docs") so
+    the link works on GitHub Pages. An absolute "/api-explorer/"
+    would 404 at the domain root. This page lives at
+    /reference/api-explorer/ so going up twice + into
+    /api-explorer/ lands on /gocdnext/docs/api-explorer/. Same
+    relative trick applies to the spec link below. */}
+<a class="sl-button" href="../../api-explorer/" target="_self" rel="noopener">
   Launch API explorer →
 </a>
 
@@ -19,7 +25,7 @@ so we host the explorer separately).
 
 The same spec the explorer renders is served by the control plane
 at `GET /api/v1/openapi.yaml` and mirrored from the docs site at
-[`/openapi/gocdnext.yaml`](/openapi/gocdnext.yaml). Point any
+[`openapi/gocdnext.yaml`](../../openapi/gocdnext.yaml). Point any
 OpenAPI 3.1 generator at either URL to mint a typed client.
 
 ```bash title="TypeScript / fetch"
