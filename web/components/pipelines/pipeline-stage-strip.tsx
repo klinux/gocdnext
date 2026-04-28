@@ -91,7 +91,7 @@ function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) 
             render={
               <span
                 className={cn(
-                  "absolute -right-3 -top-1.5 cursor-help rounded px-1 font-mono text-[9px] tabular-nums shadow-sm",
+                  "absolute -right-[14px] -top-1.5 cursor-help rounded px-1 font-mono text-[9px] tabular-nums shadow-sm",
                   rate >= 70
                     ? "bg-amber-500/90 text-white dark:bg-amber-500/80"
                     : "bg-red-500/90 text-white dark:bg-red-500/80",
