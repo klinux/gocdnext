@@ -821,6 +821,108 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  # -------------------- admin (runner profiles) --------------------
+  /api/v1/admin/runner-profiles:
+    get:
+      tags: [admin]
+      summary: List runner profiles (admin only).
+      description: |
+        Returns every profile with its plain `env` and the names of
+        configured secrets — values stay encrypted at rest and are
+        never echoed through this endpoint. Pipelines reference
+        profiles by `name` in YAML (`agent.profile: fast-builds`).
+      responses:
+        "200":
+          description: profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunnerProfile" }
+    post:
+      tags: [admin]
+      summary: Create a runner profile (admin only).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunnerProfileWrite" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunnerProfile" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: name already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: cipher not configured (cannot accept secrets)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/runner-profiles/{id}:
+    put:
+      tags: [admin]
+      summary: Update a runner profile (admin only).
+      description: |
+        Full replace. `env` and `secrets` use full-replace semantics —
+        keys missing from the new payload are deleted. The web UI
+        guards this on the secrets axis by surfacing a confirmation
+        when a save would silently drop a stored secret value.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunnerProfileWrite" }
+      responses:
+        "204":
+          description: updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: name already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [admin]
+      summary: Delete a runner profile (admin only).
+      description: |
+        Refuses to delete a profile that any pipeline definition
+        still references; the resolver would 422 every apply
+        afterwards. Rewire the pipelines first.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: profile is still in use
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # -------------------- webhooks --------------------
   /api/webhooks/github:
     post:
@@ -1172,3 +1274,93 @@ components:
               name: { type: string }
               description: { type: string }
               yaml: { type: string }
+
+    RunnerProfile:
+      type: object
+      required: [id, name, engine, env, secret_keys, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: "fast-builds" }
+        description: { type: string }
+        engine:
+          type: string
+          enum: [kubernetes]
+        default_image: { type: string, example: "alpine:3.20" }
+        default_cpu_request: { type: string, example: "100m" }
+        default_cpu_limit: { type: string, example: "1" }
+        default_mem_request: { type: string, example: "256Mi" }
+        default_mem_limit: { type: string, example: "1Gi" }
+        max_cpu: { type: string, example: "4" }
+        max_mem: { type: string, example: "8Gi" }
+        tags:
+          type: array
+          items: { type: string }
+          example: ["linux", "amd64"]
+        config:
+          type: object
+          additionalProperties: true
+          description: Engine-specific overflow (nodeSelector, tolerations, etc.)
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Plain (non-secret) env vars injected into every plugin
+            container running on this profile. Common use: bucket
+            names, regions, GOCDNEXT_LAYER_CACHE_* defaults.
+          example:
+            GOCDNEXT_LAYER_CACHE_BUCKET: gocdnext-cache
+            GOCDNEXT_LAYER_CACHE_REGION: us-east-1
+        secret_keys:
+          type: array
+          items: { type: string }
+          description: |
+            Names of encrypted secrets configured on this profile.
+            Values stay encrypted at rest and are never returned
+            through this endpoint. The runner unseals them at
+            dispatch and injects them as env into the plugin
+            container; the runner also redacts the values from
+            log lines.
+          example: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RunnerProfileWrite:
+      type: object
+      required: [name, engine]
+      properties:
+        name:
+          type: string
+          pattern: "^[A-Za-z0-9._-]+$"
+        description: { type: string }
+        engine:
+          type: string
+          enum: [kubernetes]
+        default_image: { type: string }
+        default_cpu_request: { type: string }
+        default_cpu_limit: { type: string }
+        default_mem_request: { type: string }
+        default_mem_limit: { type: string }
+        max_cpu: { type: string }
+        max_mem: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        config:
+          type: object
+          additionalProperties: true
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Plain env vars. Keys must match `[A-Z_][A-Z0-9_]*` —
+            UPPER_SNAKE_CASE convention shells, Docker and K8s
+            all converge on. Full-replace on update.
+        secrets:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Plaintext values to encrypt and persist. The server
+            seals each value with the AEAD cipher before writing
+            and only ever returns secret_keys (not values) on
+            read. Full-replace on update — keys missing from the
+            payload are deleted from the row.
