@@ -19,6 +19,11 @@ import type { AdminUser } from "@/types/api";
 type Props = {
   users: AdminUser[];
   currentID: string;
+  // Optional toolbar slot — typically the "New user" button so it
+  // sits next to the search + filter controls instead of on the
+  // page header. Matches the toolbar-on-the-right convention used
+  // by groups, profiles, and service-accounts admin pages.
+  action?: React.ReactNode;
 };
 
 // UsersTable is the admin list with a client-side filter across
@@ -29,7 +34,7 @@ type Props = {
 //
 // Role filter is a secondary dropdown — common investigation
 // flow is "who are my admins?" / "who hasn't logged in recently?".
-export function UsersTable({ users, currentID }: Props) {
+export function UsersTable({ users, currentID, action }: Props) {
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
 
@@ -74,6 +79,7 @@ export function UsersTable({ users, currentID }: Props) {
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
           {filtered.length} of {users.length}
         </span>
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
 
       {filtered.length === 0 ? (

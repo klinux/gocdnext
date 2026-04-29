@@ -25,25 +25,26 @@ export default async function UsersPage() {
 
   return (
     <section className="space-y-6">
-      <header className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
-          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <Users className="h-6 w-6" aria-hidden />
-            Users
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Every user known to this control plane. Roles follow a
-            hierarchy: admin ≥ maintainer ≥ viewer. Viewers can read the
-            dashboard; maintainers trigger runs and edit secrets; admins
-            also manage users, integrations, and retention policy.
-            Self-demotion is refused — promote another user to admin
-            first if you need to step down.
-          </p>
-        </div>
-        <NewUserDialog />
+      <header className="space-y-1">
+        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <Users className="h-6 w-6" aria-hidden />
+          Users
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Every user known to this control plane. Roles follow a
+          hierarchy: admin ≥ maintainer ≥ viewer. Viewers can read the
+          dashboard; maintainers trigger runs and edit secrets; admins
+          also manage users, integrations, and retention policy.
+          Self-demotion is refused — promote another user to admin
+          first if you need to step down.
+        </p>
       </header>
 
-      <UsersTable users={data.users} currentID={currentID} />
+      <UsersTable
+        users={data.users}
+        currentID={currentID}
+        action={<NewUserDialog />}
+      />
     </section>
   );
 }
