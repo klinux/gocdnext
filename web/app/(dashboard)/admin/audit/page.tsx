@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AuditDateRange } from "@/components/admin/audit-date-range.client";
+import { EntityChip, type EntityKind } from "@/components/shared/entity-chip";
 import { Pagination } from "@/components/shared/pagination";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { listAuditEvents } from "@/server/queries/admin";
@@ -119,16 +120,11 @@ export default async function AuditPage({
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        {e.target_type}
-                      </span>
-                      {e.target_id ? (
-                        <span className="truncate font-mono text-xs">
-                          {e.target_id}
-                        </span>
-                      ) : null}
-                    </div>
+                    <AuditTargetCell
+                      type={e.target_type}
+                      id={e.target_id}
+                      metadata={e.metadata}
+                    />
                   </TableCell>
                   <TableCell>
                     <MetadataCell metadata={e.metadata} />
@@ -259,4 +255,110 @@ function MetadataCell({ metadata }: { metadata: Record<string, unknown> }) {
       ) : null}
     </div>
   );
+}
+
+// AuditTargetCell renders the (target_type, target_id) pair as a
+// typed EntityChip when the type is one we know how to label, and
+// falls back to a plain badge+id pair for unknown types. Some
+// audit actions stamp human-friendly metadata (project_slug,
+// pipeline_name) that we prefer over raw UUIDs — the cell pulls
+// those out when present so an admin scanning the log sees
+// "deploy" instead of "5f1b…c8".
+function AuditTargetCell({
+  type,
+  id,
+  metadata,
+}: {
+  type?: string;
+  id?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  if (!type) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  const kind = mapTargetKind(type);
+  const label = readableLabel(type, id, metadata);
+  if (kind) {
+    return <EntityChip kind={kind} label={label} title={id ?? label} />;
+  }
+  // Unknown target type — render as a neutral pair so the audit
+  // log still reads, but signal that we haven't typed it yet.
+  return (
+    <div className="flex flex-col gap-0.5">
+      <Badge variant="outline" className="w-fit text-[10px] uppercase tracking-wide">
+        {type}
+      </Badge>
+      {id ? (
+        <span className="truncate font-mono text-xs">{id}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function mapTargetKind(type: string): EntityKind | null {
+  switch (type) {
+    case "project":
+      return "project";
+    case "run":
+    case "job_run":
+      return "run";
+    case "user":
+      return "user";
+    case "group":
+      return "group";
+    case "service_account":
+      return "service_account";
+    case "api_token":
+      return "secret";
+    case "secret":
+    case "global_secret":
+      return "secret";
+    case "runner_profile":
+      return "profile";
+    case "scm_credential":
+    case "auth_provider":
+    case "vcs_integration":
+      return "service_account";
+    case "webhook_secret":
+      return "secret";
+    case "pipeline":
+      return "pipeline";
+    case "approval":
+      return "run";
+    default:
+      return null;
+  }
+}
+
+function readableLabel(
+  type: string,
+  id?: string,
+  metadata?: Record<string, unknown>,
+): string {
+  if (!metadata) return id ?? type;
+  // Prefer descriptive metadata fields the emitter populated. The
+  // ordering is "most specific first": a project_slug beats a
+  // generic name field; a counter beats an id when both are present.
+  const candidates: string[] = [];
+  if (typeof metadata["pipeline_name"] === "string") {
+    candidates.push(metadata["pipeline_name"] as string);
+  }
+  if (typeof metadata["project_slug"] === "string") {
+    candidates.push(metadata["project_slug"] as string);
+  }
+  if (typeof metadata["name"] === "string") {
+    candidates.push(metadata["name"] as string);
+  }
+  if (typeof metadata["email"] === "string") {
+    candidates.push(metadata["email"] as string);
+  }
+  if (candidates.length > 0) return candidates[0]!;
+  // Counters are numeric — show "#N" so it's clear it's a sequence.
+  if (typeof metadata["counter"] === "number") {
+    return `#${metadata["counter"]}`;
+  }
+  // Fall through to id slice — first 8 chars of a UUID is enough
+  // to scan and click-to-copy, doesn't overflow narrow columns.
+  if (id && id.length > 12) return id.slice(0, 8);
+  return id ?? type;
 }

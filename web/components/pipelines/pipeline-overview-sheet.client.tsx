@@ -5,12 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import type { Route } from "next";
 import {
-  ArrowRight,
   Download,
   FileCode,
   GitBranch,
   Loader2,
-  TrendingUp,
 } from "lucide-react";
 
 import {
@@ -22,6 +20,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YAMLView } from "@/components/pipelines/yaml-view";
+import { EntityChip } from "@/components/shared/entity-chip";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
@@ -646,16 +645,18 @@ function EdgeRow({
   direction: "in" | "out";
 }) {
   return (
-    <li className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5">
-      {direction === "in" ? (
-        <TrendingUp className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-      ) : (
-        <ArrowRight className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-      )}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs">
-        {pipelineName}
-      </span>
-      <span className="shrink-0 text-[10px] text-muted-foreground">{hint}</span>
+    <li>
+      <EntityChip
+        kind="pipeline"
+        label={pipelineName}
+        hint={hint || undefined}
+        direction={direction}
+        title={
+          direction === "in"
+            ? `Triggered by ${pipelineName}${hint ? " " + hint : ""}`
+            : `Triggers ${pipelineName}${hint ? " " + hint : ""}`
+        }
+      />
     </li>
   );
 }

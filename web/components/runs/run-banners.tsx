@@ -1,6 +1,7 @@
-import Link from "next/link";
 import type { Route } from "next";
 import { GitPullRequest } from "lucide-react";
+
+import { EntityChip } from "@/components/shared/entity-chip";
 
 // Two small banners surfaced at the top of the run-detail page when
 // the run was kicked off by something interesting — a PR or an
@@ -74,29 +75,32 @@ export function UpstreamBanner({
     upstream_stage,
     upstream_run_counter,
   } = upstream;
+  // Two chips share the banner: the pipeline that triggered this
+  // run (no link target — pipelines are sub-views of their project,
+  // not standalone) and the upstream run itself (clickable, takes
+  // the operator to the parent run's logs). Stage name rides as a
+  // hint inside the pipeline chip when present.
   return (
-    <aside className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
-      Triggered by upstream{" "}
-      <span className="font-mono">{upstream_pipeline}</span>
-      {typeof upstream_run_counter === "number" ? (
-        <span className="font-mono"> #{upstream_run_counter}</span>
-      ) : null}
-      {upstream_stage ? (
-        <>
-          {" "}after stage <span className="font-mono">{upstream_stage}</span>{" "}
-          passed
-        </>
+    <aside className="flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+      <span className="text-muted-foreground">Triggered by</span>
+      {upstream_pipeline ? (
+        <EntityChip
+          kind="pipeline"
+          label={upstream_pipeline}
+          hint={upstream_stage ? `.${upstream_stage}` : undefined}
+          direction="in"
+        />
       ) : null}
       {upstream_run_id ? (
-        <>
-          {" · "}
-          <Link
-            href={`/runs/${upstream_run_id}` as Route}
-            className="text-primary hover:underline"
-          >
-            view upstream run
-          </Link>
-        </>
+        <EntityChip
+          kind="run"
+          label={
+            typeof upstream_run_counter === "number"
+              ? `#${upstream_run_counter}`
+              : "upstream run"
+          }
+          href={`/runs/${upstream_run_id}` as Route}
+        />
       ) : null}
     </aside>
   );

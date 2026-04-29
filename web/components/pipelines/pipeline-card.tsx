@@ -11,6 +11,7 @@ import {
   GitBranch,
 } from "lucide-react";
 
+import { EntityChip } from "@/components/shared/entity-chip";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
 import {
@@ -71,6 +72,14 @@ export function PipelineCard({
   // two pills; rare 3+-fan-in cases hide the rest behind a count.
   const upstreams = useMemo(
     () => edges.filter((e) => e.to_pipeline === pipeline.name),
+    [edges, pipeline.name],
+  );
+  // Downstream edges this card feeds — pipelines that name THIS one
+  // as their upstream material. Same scan trick as upstreams: lets
+  // the operator answer "what does this pipeline trigger?" inline,
+  // without having to open the overview sheet's Triggers tab.
+  const downstreams = useMemo(
+    () => edges.filter((e) => e.from_pipeline === pipeline.name),
     [edges, pipeline.name],
   );
   const bottleneck = useMemo(() => pickBottleneck(columns), [columns]);
@@ -191,8 +200,12 @@ export function PipelineCard({
           <PipelineStageStrip columns={columns} runId={run?.id} />
         </div>
 
-        {metrics || upstreams.length > 0 ? (
-          <InlineMetricsFooter metrics={metrics} upstreams={upstreams} />
+        {metrics || upstreams.length > 0 || downstreams.length > 0 ? (
+          <InlineMetricsFooter
+            metrics={metrics}
+            upstreams={upstreams}
+            downstreams={downstreams}
+          />
         ) : null}
       </article>
 
@@ -224,36 +237,51 @@ const borderToneClasses: Record<StatusTone, string> = {
   neutral: "border-border",
 };
 
-// UpstreamPills surfaces the cross-pipeline triggers feeding this
-// card. Light-blue tint signals "this is a link / dependency", the
-// same colour the operator's eye already associates with hyperlinks
-// across the rest of the app. Caps at 2 visible; the rest collapse
-// to a "+N" overflow label.
-function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
-  const visible = upstreams.slice(0, 2);
-  const overflow = upstreams.slice(2);
+// pipelineStageHint formats the upstream's stage name for the
+// relationship chip's tooltip — kept as a single helper so the
+// in/out tooltip strings stay parallel.
+function pipelineStageHint(stage: string): string {
+  return stage;
+}
+
+// RelationshipPills surfaces the cross-pipeline relationships
+// flowing in or out of this card. Same chip language used on the
+// run page (UpstreamBanner) and audit log (target column) so the
+// operator's eye recognises the pattern across surfaces. Caps at
+// 2 visible; rare wider fan-in/out hides the rest behind a "+N"
+// overflow with the full list in a tooltip.
+function RelationshipPills({
+  edges,
+  direction,
+}: {
+  edges: PipelineEdge[];
+  direction: "in" | "out";
+}) {
+  const visible = edges.slice(0, 2);
+  const overflow = edges.slice(2);
+  // direction=in → upstream feeds; the chip names the FROM pipeline
+  // direction=out → downstream feeds; the chip names the TO pipeline
+  const labelFor = (e: PipelineEdge) =>
+    direction === "in" ? e.from_pipeline : e.to_pipeline;
+  const titleFor = (e: PipelineEdge) =>
+    direction === "in"
+      ? e.stage
+        ? `Triggered when ${e.from_pipeline}.${e.stage} passes`
+        : `Triggered by ${e.from_pipeline}`
+      : e.stage
+        ? `Triggers ${e.to_pipeline} after ${pipelineStageHint(e.stage)} passes`
+        : `Triggers ${e.to_pipeline}`;
   return (
-    <span className="flex items-center gap-1">
+    <span className="flex flex-wrap items-center gap-1">
       {visible.map((e) => (
-        <Tooltip key={`${e.from_pipeline}:${e.stage ?? ""}`}>
-          <TooltipTrigger
-            render={
-              <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0 font-mono text-[10px] text-sky-700 dark:text-sky-400" />
-            }
-          >
-            ← {e.from_pipeline}
-            {e.stage ? (
-              <span className="text-sky-700/70 dark:text-sky-400/70">
-                .{e.stage}
-              </span>
-            ) : null}
-          </TooltipTrigger>
-          <TooltipContent>
-            {e.stage
-              ? `Triggered when ${e.from_pipeline}.${e.stage} passes`
-              : `Triggered by ${e.from_pipeline}`}
-          </TooltipContent>
-        </Tooltip>
+        <EntityChip
+          key={`${direction}-${labelFor(e)}:${e.stage ?? ""}`}
+          kind="pipeline"
+          label={labelFor(e)}
+          hint={e.stage ? `.${e.stage}` : undefined}
+          direction={direction}
+          title={titleFor(e)}
+        />
       ))}
       {overflow.length > 0 ? (
         <Tooltip>
@@ -267,8 +295,8 @@ function UpstreamPills({ upstreams }: { upstreams: PipelineEdge[] }) {
           <TooltipContent>
             <ul className="space-y-0.5">
               {overflow.map((e) => (
-                <li key={`${e.from_pipeline}:${e.stage ?? ""}`}>
-                  {e.from_pipeline}
+                <li key={`${direction}-${labelFor(e)}:${e.stage ?? ""}`}>
+                  {labelFor(e)}
                   {e.stage ? `.${e.stage}` : ""}
                 </li>
               ))}
@@ -312,22 +340,27 @@ function BottleneckPill({ bottleneck }: { bottleneck: Bottleneck }) {
 // (LEAD / PROC / SR) since the operator already knows what those
 // abbreviations mean from every other CI tool.
 //
-// Upstream pills sit here (rather than the header) because they're
-// "context about this pipeline" the operator only consults when
-// they care about the chain — same job the metrics row does. The
-// chain rail in the left margin already carries the at-a-glance
-// signal "this has dependencies", so the header doesn't need a
-// pill repeating the same fact.
+// Relationship pills sit here (rather than the header) because
+// they're "context about this pipeline" the operator only consults
+// when they care about the chain — same job the metrics row does.
+// Both directions render: incoming triggers (upstreams) show on
+// the left of the metrics; outgoing (downstreams) show on the
+// right. The chain rail in the left margin already carries the
+// at-a-glance signal "this has dependencies", so the header
+// doesn't need a pill repeating the same fact.
 function InlineMetricsFooter({
   metrics,
   upstreams,
+  downstreams,
 }: {
   metrics: PipelineMetrics | undefined;
   upstreams: PipelineEdge[];
+  downstreams: PipelineEdge[];
 }) {
   const hasMetrics = metrics != null && metrics.runs_considered > 0;
   const hasUpstreams = upstreams.length > 0;
-  if (!hasMetrics && !hasUpstreams) {
+  const hasDownstreams = downstreams.length > 0;
+  if (!hasMetrics && !hasUpstreams && !hasDownstreams) {
     return null;
   }
   const rate = hasMetrics ? Math.round(metrics!.success_rate * 100) : 0;
@@ -367,7 +400,12 @@ function InlineMetricsFooter({
         </>
       ) : null}
       <div className="ml-auto flex items-center gap-2">
-        {hasUpstreams ? <UpstreamPills upstreams={upstreams} /> : null}
+        {hasUpstreams ? (
+          <RelationshipPills edges={upstreams} direction="in" />
+        ) : null}
+        {hasDownstreams ? (
+          <RelationshipPills edges={downstreams} direction="out" />
+        ) : null}
         {hasMetrics ? (
           <span className="font-mono tabular-nums">
             {metrics!.runs_considered} runs · {metrics!.window_days}d
