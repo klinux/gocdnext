@@ -77,13 +77,15 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 		existing, err := s.GetRunnerProfileByName(ctx, p.Name)
 		switch {
 		case errors.Is(err, ErrRunnerProfileNotFound):
-			if _, err := s.InsertRunnerProfile(ctx, input); err != nil {
+			// Seed profiles never carry secrets — nil cipher is
+			// safe; encodeProfileSecrets fast-paths empty input.
+			if _, err := s.InsertRunnerProfile(ctx, nil, input); err != nil {
 				return touched, fmt.Errorf("seed runner profiles: insert %q: %w", p.Name, err)
 			}
 		case err != nil:
 			return touched, fmt.Errorf("seed runner profiles: lookup %q: %w", p.Name, err)
 		default:
-			if err := s.UpdateRunnerProfile(ctx, existing.ID, input); err != nil {
+			if err := s.UpdateRunnerProfile(ctx, nil, existing.ID, input); err != nil {
 				return touched, fmt.Errorf("seed runner profiles: update %q: %w", p.Name, err)
 			}
 		}

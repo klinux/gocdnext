@@ -16,6 +16,15 @@ const quantitySchema = z
 
 const tagSchema = z.string().regex(/^[A-Za-z0-9._-]+$/, "tag: letters, digits, dash, underscore, dot only");
 
+// env / secret keys mirror the conventional UPPER_SNAKE shape that
+// shells, Docker and Kubernetes all converge on. Mirrors the
+// validEnvKey check on the server so a typo round-trips cleanly.
+const envKeySchema = z
+  .string()
+  .regex(/^[A-Z_][A-Z0-9_]*$/, "key must be UPPER_SNAKE_CASE (letters, digits, underscores)");
+
+const envMapSchema = z.record(envKeySchema, z.string()).optional().default({});
+
 const writeSchema = z.object({
   name: z
     .string()
@@ -31,6 +40,15 @@ const writeSchema = z.object({
   max_cpu: quantitySchema.optional().default(""),
   max_mem: quantitySchema.optional().default(""),
   tags: z.array(tagSchema).optional().default([]),
+  // Plain env vars the runner injects into every plugin container
+  // running on this profile. Use for non-secret config like bucket
+  // names and regions.
+  env: envMapSchema,
+  // Encrypted at rest. The server seals each value with the AEAD
+  // cipher (GOCDNEXT_SECRET_KEY) before persisting; reads return
+  // only the keys, never the values. Empty/missing on update means
+  // "remove every secret on this profile" — full-replace semantics.
+  secrets: envMapSchema,
 });
 
 const updateSchema = writeSchema.extend({ id: z.string().min(1) });

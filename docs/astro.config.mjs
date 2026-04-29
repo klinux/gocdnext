@@ -70,6 +70,7 @@ export default defineConfig({
                 { label: "Node frontend", link: "/pipelines/recipes/node/" },
                 { label: "Python (pip / Poetry / uv)", link: "/pipelines/recipes/python/" },
                 { label: "Docker build & push", link: "/pipelines/recipes/docker-build/" },
+                { label: "Container layer cache", link: "/pipelines/recipes/layer-cache/" },
                 { label: "Helm chart release", link: "/pipelines/recipes/helm-release/" },
                 { label: "Security scanning", link: "/pipelines/recipes/security-scan/" },
                 { label: "Notifications fan-out", link: "/pipelines/recipes/notifications/" },

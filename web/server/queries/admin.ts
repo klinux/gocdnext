@@ -145,6 +145,14 @@ export type AdminRunnerProfile = {
   max_mem: string;
   tags: string[];
   config?: Record<string, unknown>;
+  // Plain env vars the runner injects into plugin containers
+  // running on this profile.
+  env: Record<string, string>;
+  // Names of encrypted secrets configured on this profile. Values
+  // never leave the server through this endpoint — the UI shows a
+  // masked indicator next to each key so the admin knows a value
+  // exists without seeing it.
+  secret_keys: string[];
   created_at: string;
   updated_at: string;
 };

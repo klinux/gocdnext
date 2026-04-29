@@ -3,12 +3,27 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+func newProfileCipher(t *testing.T) *crypto.Cipher {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	c, err := crypto.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	return c
+}
 
 func newProfileStore(t *testing.T) (*store.Store, context.Context) {
 	t.Helper()
@@ -19,7 +34,7 @@ func newProfileStore(t *testing.T) (*store.Store, context.Context) {
 func TestRunnerProfiles_CRUD(t *testing.T) {
 	s, ctx := newProfileStore(t)
 
-	created, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
+	created, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
 		Name:              "default",
 		Description:       "vanilla pool",
 		Engine:            "kubernetes",
@@ -45,7 +60,7 @@ func TestRunnerProfiles_CRUD(t *testing.T) {
 		t.Fatalf("got = %+v", got)
 	}
 
-	if err := s.UpdateRunnerProfile(ctx, created.ID, store.RunnerProfileInput{
+	if err := s.UpdateRunnerProfile(ctx, nil, created.ID, store.RunnerProfileInput{
 		Name:         "default",
 		Description:  "now with budget",
 		Engine:       "kubernetes",
@@ -73,7 +88,7 @@ func TestRunnerProfiles_CRUD(t *testing.T) {
 func TestResolveProfiles_FillsDefaultsAndMergesTags(t *testing.T) {
 	s, ctx := newProfileStore(t)
 
-	if _, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
 		Name:              "default",
 		Engine:            "kubernetes",
 		DefaultImage:      "alpine:3.20",
@@ -136,7 +151,7 @@ func TestResolveProfiles_RejectsUnknownProfile(t *testing.T) {
 func TestResolveProfiles_EnforcesCap(t *testing.T) {
 	s, ctx := newProfileStore(t)
 
-	if _, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
 		Name:   "small",
 		Engine: "kubernetes",
 		MaxCPU: "1",
@@ -214,4 +229,88 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestRunnerProfile_EnvAndSecrets_RoundTrip(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	created, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:   "fast-builds",
+		Engine: "kubernetes",
+		Env: map[string]string{
+			"GOCDNEXT_LAYER_CACHE_BUCKET": "ci-cache",
+			"GOCDNEXT_LAYER_CACHE_REGION": "us-east-1",
+		},
+		Secrets: map[string]string{
+			"AWS_ACCESS_KEY_ID":     "AKIA-TEST",
+			"AWS_SECRET_ACCESS_KEY": "super-secret-value",
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Read path: env round-trips plainly, secret VALUES never come
+	// back — only the key list, sorted.
+	got, err := s.GetRunnerProfile(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Env["GOCDNEXT_LAYER_CACHE_BUCKET"] != "ci-cache" {
+		t.Errorf("env not round-tripped: %+v", got.Env)
+	}
+	wantKeys := []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+	if !sort.StringsAreSorted(got.SecretKeys) {
+		t.Errorf("secret keys not sorted: %+v", got.SecretKeys)
+	}
+	if len(got.SecretKeys) != len(wantKeys) {
+		t.Fatalf("secret keys = %+v, want %+v", got.SecretKeys, wantKeys)
+	}
+	for i, k := range wantKeys {
+		if got.SecretKeys[i] != k {
+			t.Errorf("secret key[%d] = %q, want %q", i, got.SecretKeys[i], k)
+		}
+	}
+
+	// Resolver path (used by scheduler at dispatch): merged env
+	// includes decrypted secret values + secret VALUES echoed for
+	// LogMasks redaction.
+	env, masks, err := s.ResolveProfileEnvByName(ctx, cipher, "fast-builds")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if env["AWS_ACCESS_KEY_ID"] != "AKIA-TEST" {
+		t.Errorf("decrypted secret missing from env: %+v", env)
+	}
+	if env["GOCDNEXT_LAYER_CACHE_BUCKET"] != "ci-cache" {
+		t.Errorf("plain env missing: %+v", env)
+	}
+	sort.Strings(masks)
+	wantMasks := []string{"AKIA-TEST", "super-secret-value"}
+	if len(masks) != len(wantMasks) || masks[0] != wantMasks[0] || masks[1] != wantMasks[1] {
+		t.Errorf("masks = %+v, want %+v", masks, wantMasks)
+	}
+}
+
+func TestRunnerProfile_SecretsWithoutCipher_FailsClosed(t *testing.T) {
+	s, ctx := newProfileStore(t)
+
+	// Insert with secrets and no cipher → encrypt helper refuses.
+	_, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:    "broken",
+		Engine:  "kubernetes",
+		Secrets: map[string]string{"X": "y"},
+	})
+	if err == nil {
+		t.Fatalf("expected cipher-required error")
+	}
+
+	// Empty secrets map is fine without a cipher (fast path).
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:   "ok",
+		Engine: "kubernetes",
+	}); err != nil {
+		t.Fatalf("empty-secrets path: %v", err)
+	}
 }

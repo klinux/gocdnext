@@ -274,6 +274,8 @@ type RunnerProfile struct {
 	Config            []byte
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+	Env               []byte
+	Secrets           []byte
 }
 
 type ScmCredential struct {

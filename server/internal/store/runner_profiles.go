@@ -2,15 +2,18 @@ package store
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
@@ -22,6 +25,13 @@ var ErrRunnerProfileNotFound = errors.New("store: runner profile not found")
 // RunnerProfile is the store-facing shape. Strings carry k8s
 // quantity format ("100m", "256Mi"); empty means "not set" so the
 // caller falls back to either user input or zero policy.
+//
+// Env carries plain key/value pairs the agent injects into every
+// plugin container that runs on this profile (bucket name, region,
+// non-secret config). SecretKeys is the list of secret keys
+// configured — values stay in the encrypted column and are NEVER
+// returned via this struct. Use ResolveProfileEnvByName to get the
+// decrypted secret values during dispatch.
 type RunnerProfile struct {
 	ID                uuid.UUID
 	Name              string
@@ -36,6 +46,8 @@ type RunnerProfile struct {
 	MaxMem            string
 	Tags              []string
 	Config            map[string]any
+	Env               map[string]string
+	SecretKeys        []string // names only, sorted; values never decrypted on this path
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -43,6 +55,10 @@ type RunnerProfile struct {
 // RunnerProfileInput is the write shape for Insert + Update. ID is
 // allocated by the DB on insert, ignored on update (passed via
 // Update's first arg).
+//
+// Secrets carries plaintext values on the way IN — Insert/Update
+// encrypt each value with the cipher before persisting. Reads never
+// return Secrets in this shape; only SecretKeys on the read path.
 type RunnerProfileInput struct {
 	Name              string
 	Description       string
@@ -56,6 +72,8 @@ type RunnerProfileInput struct {
 	MaxMem            string
 	Tags              []string
 	Config            map[string]any
+	Env               map[string]string
+	Secrets           map[string]string
 }
 
 // ListRunnerProfiles returns every profile, sorted by name.
@@ -66,7 +84,7 @@ func (s *Store) ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
 	}
 	out := make([]RunnerProfile, 0, len(rows))
 	for _, r := range rows {
-		p, err := runnerProfileFromRow(db.RunnerProfile(r))
+		p, err := runnerProfileFromRow(r)
 		if err != nil {
 			return nil, err
 		}
@@ -103,9 +121,19 @@ func (s *Store) GetRunnerProfileByName(ctx context.Context, name string) (Runner
 }
 
 // InsertRunnerProfile creates a new row. Returns the persisted
-// shape (id + timestamps populated by the DB).
-func (s *Store) InsertRunnerProfile(ctx context.Context, in RunnerProfileInput) (RunnerProfile, error) {
+// shape (id + timestamps populated by the DB). When in.Secrets is
+// non-empty, cipher must be non-nil — each value is sealed before
+// hitting the column. Plaintext values never reach the DB.
+func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, in RunnerProfileInput) (RunnerProfile, error) {
 	cfg, err := encodeProfileConfig(in.Config)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
+	envBytes, err := encodeProfileEnv(in.Env)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
+	secretsBytes, err := encodeProfileSecrets(cipher, in.Secrets)
 	if err != nil {
 		return RunnerProfile{}, err
 	}
@@ -122,6 +150,8 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, in RunnerProfileInput) 
 		MaxMem:            in.MaxMem,
 		Tags:              normalizeTags(in.Tags),
 		Config:            cfg,
+		Env:               envBytes,
+		Secrets:           secretsBytes,
 	})
 	if err != nil {
 		return RunnerProfile{}, fmt.Errorf("store: insert runner profile %q: %w", in.Name, err)
@@ -131,9 +161,18 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, in RunnerProfileInput) 
 
 // UpdateRunnerProfile rewrites an existing row in place. ID must
 // match an existing row; returns ErrRunnerProfileNotFound when the
-// row is gone (treated as zero rows affected).
-func (s *Store) UpdateRunnerProfile(ctx context.Context, id uuid.UUID, in RunnerProfileInput) error {
+// row is gone (treated as zero rows affected). Secrets get sealed
+// with the cipher before the write — same contract as Insert.
+func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, id uuid.UUID, in RunnerProfileInput) error {
 	cfg, err := encodeProfileConfig(in.Config)
+	if err != nil {
+		return err
+	}
+	envBytes, err := encodeProfileEnv(in.Env)
+	if err != nil {
+		return err
+	}
+	secretsBytes, err := encodeProfileSecrets(cipher, in.Secrets)
 	if err != nil {
 		return err
 	}
@@ -145,6 +184,7 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, id uuid.UUID, in Runner
             default_mem_request = $8, default_mem_limit = $9,
             max_cpu = $10, max_mem = $11,
             tags = $12, config = $13,
+            env = $14, secrets = $15,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -154,6 +194,7 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, id uuid.UUID, in Runner
 		in.DefaultMemRequest, in.DefaultMemLimit,
 		in.MaxCPU, in.MaxMem,
 		normalizeTags(in.Tags), cfg,
+		envBytes, secretsBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update runner profile %s: %w", id, err)
@@ -162,6 +203,51 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, id uuid.UUID, in Runner
 		return ErrRunnerProfileNotFound
 	}
 	return nil
+}
+
+// ResolveProfileEnvByName is the dispatch path: scheduler asks for a
+// profile by name and wants the merged env (plaintext + decrypted
+// secrets) ready to drop into a JobAssignment, plus the list of
+// secret VALUES so the caller can append them to LogMasks.
+//
+// Cipher must be non-nil when the profile has any secrets; on a
+// decrypt failure (wrong key, tampered ciphertext) we surface the
+// error so the dispatch fails closed instead of silently shipping
+// garbage env vars to the agent.
+//
+// Returns ErrRunnerProfileNotFound for unknown names — the
+// scheduler turns that into "skip this dispatch, leave the run
+// queued so an admin sees the misconfiguration".
+func (s *Store) ResolveProfileEnvByName(ctx context.Context, cipher *crypto.Cipher, name string) (env map[string]string, secretValues []string, err error) {
+	row, err := s.q.GetRunnerProfileByName(ctx, name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrRunnerProfileNotFound
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: resolve profile %q: %w", name, err)
+	}
+
+	plain, err := decodeProfileEnv(row.Env)
+	if err != nil {
+		return nil, nil, err
+	}
+	secrets, err := decodeProfileSecrets(cipher, row.Secrets)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: decrypt profile secrets %q: %w", name, err)
+	}
+
+	merged := make(map[string]string, len(plain)+len(secrets))
+	for k, v := range plain {
+		merged[k] = v
+	}
+	values := make([]string, 0, len(secrets))
+	for k, v := range secrets {
+		merged[k] = v
+		if v != "" {
+			values = append(values, v)
+		}
+	}
+	return merged, values, nil
 }
 
 // RunnerProfileUsage counts the live dependents of a profile that
@@ -223,6 +309,14 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 	if err != nil {
 		return RunnerProfile{}, err
 	}
+	env, err := decodeProfileEnv(r.Env)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
+	keys, err := decodeProfileSecretKeys(r.Secrets)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
 	return RunnerProfile{
 		ID:                fromPgUUID(r.ID),
 		Name:              r.Name,
@@ -237,6 +331,8 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 		MaxMem:            r.MaxMem,
 		Tags:              append([]string(nil), r.Tags...),
 		Config:            cfg,
+		Env:               env,
+		SecretKeys:        keys,
 		CreatedAt:         r.CreatedAt.Time,
 		UpdatedAt:         r.UpdatedAt.Time,
 	}, nil
@@ -262,6 +358,108 @@ func decodeProfileConfig(raw []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("store: unmarshal runner profile config: %w", err)
 	}
 	return out, nil
+}
+
+// encodeProfileEnv marshals the plain env map. nil/empty becomes
+// "{}" so the JSONB column stays a valid object.
+func encodeProfileEnv(env map[string]string) ([]byte, error) {
+	if len(env) == 0 {
+		return []byte("{}"), nil
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal profile env: %w", err)
+	}
+	return b, nil
+}
+
+func decodeProfileEnv(raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return map[string]string{}, nil
+	}
+	out := map[string]string{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("store: unmarshal profile env: %w", err)
+	}
+	return out, nil
+}
+
+// encodeProfileSecrets seals each value with the cipher and stores
+// the result hex-encoded inside a JSONB object so reads can pull
+// individual keys without unmarshaling the whole bag. Empty/nil
+// input → "{}", no cipher needed (same fast path as project secrets).
+func encodeProfileSecrets(cipher *crypto.Cipher, in map[string]string) ([]byte, error) {
+	if len(in) == 0 {
+		return []byte("{}"), nil
+	}
+	if cipher == nil {
+		return nil, errors.New("store: profile secrets: cipher not configured")
+	}
+	enc := make(map[string]string, len(in))
+	for k, v := range in {
+		ct, err := cipher.Encrypt([]byte(v))
+		if err != nil {
+			return nil, fmt.Errorf("store: encrypt profile secret %q: %w", k, err)
+		}
+		enc[k] = hex.EncodeToString(ct)
+	}
+	b, err := json.Marshal(enc)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal profile secrets: %w", err)
+	}
+	return b, nil
+}
+
+// decodeProfileSecrets reverses encodeProfileSecrets, decrypting
+// every value. Used on the dispatch path where the scheduler needs
+// the actual secret strings to inject into the assignment env.
+func decodeProfileSecrets(cipher *crypto.Cipher, raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return map[string]string{}, nil
+	}
+	enc := map[string]string{}
+	if err := json.Unmarshal(raw, &enc); err != nil {
+		return nil, fmt.Errorf("store: unmarshal profile secrets: %w", err)
+	}
+	if len(enc) == 0 {
+		return map[string]string{}, nil
+	}
+	if cipher == nil {
+		return nil, errors.New("store: profile secrets: cipher not configured")
+	}
+	out := make(map[string]string, len(enc))
+	for k, v := range enc {
+		ct, err := hex.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("store: hex-decode profile secret %q: %w", k, err)
+		}
+		plain, err := cipher.Decrypt(ct)
+		if err != nil {
+			return nil, fmt.Errorf("store: decrypt profile secret %q: %w", k, err)
+		}
+		out[k] = string(plain)
+	}
+	return out, nil
+}
+
+// decodeProfileSecretKeys returns just the configured secret names,
+// sorted, without touching the cipher. Used on the read/list path
+// for the admin UI — the values stay encrypted at rest and never
+// leave the server's process memory through this surface.
+func decodeProfileSecretKeys(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return []string{}, nil
+	}
+	enc := map[string]string{}
+	if err := json.Unmarshal(raw, &enc); err != nil {
+		return nil, fmt.Errorf("store: unmarshal profile secret keys: %w", err)
+	}
+	keys := make([]string, 0, len(enc))
+	for k := range enc {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 // toPgUUID is the inverse of fromPgUUID for the rare path that

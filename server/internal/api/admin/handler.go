@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
@@ -45,6 +46,12 @@ type Handler struct {
 	vcs     *vcs.Registry
 	wiring  WiringState
 	log     *slog.Logger
+	// cipher is wired post-construction via SetCipher so the
+	// existing test harness (which builds Handler with NewHandler
+	// and never touches secrets) keeps compiling. Endpoints that
+	// need to seal/open secrets (runner profile secrets today)
+	// 503 when nil, mirroring how GlobalSecretsHandler behaves.
+	cipher *crypto.Cipher
 }
 
 // NewHandler wires the admin handler. sweeper may be nil —
@@ -56,6 +63,14 @@ func NewHandler(s *store.Store, sweeper *retention.Sweeper, vcsRegistry *vcs.Reg
 		log = slog.Default()
 	}
 	return &Handler{store: s, sweeper: sweeper, vcs: vcsRegistry, wiring: wiring, log: log}
+}
+
+// SetCipher attaches the AEAD used to encrypt runner profile
+// secrets. Call once during boot after NewHandler. Nil-safe — a
+// later call to a secret-bearing endpoint surfaces 503 when the
+// cipher hasn't been configured (GOCDNEXT_SECRET_KEY unset).
+func (h *Handler) SetCipher(c *crypto.Cipher) {
+	h.cipher = c
 }
 
 // Retention handles GET /api/v1/admin/retention. Returns the sweeper

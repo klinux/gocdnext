@@ -12,6 +12,7 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
@@ -31,6 +32,11 @@ type Scheduler struct {
 	dsn      string
 	tick     time.Duration
 	resolver secrets.Resolver
+
+	// cipher unseals runner profile secrets at dispatch time. Nil-ok:
+	// dispatching a job whose profile carries secrets without a cipher
+	// fails the dispatch (rather than silently losing the values).
+	cipher *crypto.Cipher
 
 	// Artifact download resolution. Nil artifactStore means "no artefact
 	// downloads" — jobs that declare needs_artifacts will fail dispatch
@@ -70,6 +76,16 @@ func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 // contract.
 func (s *Scheduler) WithSecretResolver(r secrets.Resolver) *Scheduler {
 	s.resolver = r
+	return s
+}
+
+// WithCipher plugs in the AEAD used to unseal runner profile secrets.
+// Same cipher the rest of the platform uses (project secrets, global
+// secrets, auth providers). Nil-ok at construction; resolveProfileEnv
+// fails the dispatch when the job's profile actually carries secrets
+// and the cipher is missing.
+func (s *Scheduler) WithCipher(c *crypto.Cipher) *Scheduler {
+	s.cipher = c
 	return s
 }
 
@@ -314,7 +330,13 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, err := BuildAssignment(run, job, materials, secretValues, downloads)
+		profileEnv, profileMasks, profErr := s.resolveProfileEnv(ctx, run, job.Name)
+		if profErr != nil {
+			s.failJobWithError(ctx, job, fmt.Sprintf("runner profile: %v", profErr))
+			continue
+		}
+
+		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profileEnv, profileMasks)
 		if err != nil {
 			s.log.Warn("scheduler: build assignment", "job_id", job.ID, "err", err)
 			continue
@@ -366,6 +388,30 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 // "try later" from real errors.
 func IsNoIdleAgent(err error) bool {
 	return errors.Is(err, grpcsrv.ErrNoSession)
+}
+
+// resolveProfileEnv pulls the runner profile referenced by the job
+// (if any) and returns the merged env (plain + decrypted secrets)
+// alongside the list of secret VALUES the runner must redact from
+// log lines. A job without a profile returns (nil, nil, nil) — the
+// fast path stays free.
+//
+// Profile lookup is by name from the job definition; missing profile
+// fails the dispatch with a clear error so the operator notices a
+// rename/typo instead of silently shipping without the env.
+func (s *Scheduler) resolveProfileEnv(ctx context.Context, run store.RunForDispatch, jobName string) (map[string]string, []string, error) {
+	jobDef, err := jobDefFromDefinition(run.Definition, jobName)
+	if err != nil {
+		return nil, nil, err
+	}
+	if jobDef.Profile == "" {
+		return nil, nil, nil
+	}
+	env, masks, err := s.store.ResolveProfileEnvByName(ctx, s.cipher, jobDef.Profile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("profile %q: %w", jobDef.Profile, err)
+	}
+	return env, masks, nil
 }
 
 // resolveJobSecrets reads the declared secret names off the pipeline

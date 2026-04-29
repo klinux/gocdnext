@@ -322,7 +322,7 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 		"GH_TOKEN":          "ghp_abc123",
 		"REGISTRY_PASSWORD": "reg-pw-xyz",
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -340,6 +340,62 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 	}
 	if !masks["ghp_abc123"] || !masks["reg-pw-xyz"] {
 		t.Fatalf("log_masks missing values: %+v", got.LogMasks)
+	}
+}
+
+func TestBuildAssignment_MergesProfileEnvAndMasks(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"build"},
+		Jobs: []domain.Job{{
+			Name: "build", Stage: "build",
+			// Job-level Variables collide with profile env on
+			// GOCDNEXT_LAYER_CACHE_NAME — job override wins, the
+			// other profile vars come through as defaults.
+			Variables: map[string]string{
+				"GOCDNEXT_LAYER_CACHE_NAME": "override",
+				"FROM_JOB":                  "yes",
+			},
+			Tasks: []domain.Task{{Script: "echo hi"}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
+
+	profileEnv := map[string]string{
+		"GOCDNEXT_LAYER_CACHE_BUCKET": "ci-cache",
+		"GOCDNEXT_LAYER_CACHE_NAME":   "default",
+		"AWS_ACCESS_KEY_ID":           "AKIA",
+	}
+	profileMasks := []string{"AKIA"}
+
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profileEnv, profileMasks)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.Env["GOCDNEXT_LAYER_CACHE_BUCKET"] != "ci-cache" {
+		t.Errorf("profile env not merged: %q", got.Env["GOCDNEXT_LAYER_CACHE_BUCKET"])
+	}
+	if got.Env["AWS_ACCESS_KEY_ID"] != "AKIA" {
+		t.Errorf("profile secret not merged: %q", got.Env["AWS_ACCESS_KEY_ID"])
+	}
+	// Job vars must win on collision (more specific beats default).
+	if got.Env["GOCDNEXT_LAYER_CACHE_NAME"] != "override" {
+		t.Errorf("job var did not override profile env: %q", got.Env["GOCDNEXT_LAYER_CACHE_NAME"])
+	}
+	if got.Env["FROM_JOB"] != "yes" {
+		t.Errorf("plain job var lost: %q", got.Env["FROM_JOB"])
+	}
+	// Profile secret VALUES go into LogMasks for log redaction.
+	masks := map[string]bool{}
+	for _, m := range got.LogMasks {
+		masks[m] = true
+	}
+	if !masks["AKIA"] {
+		t.Errorf("profile mask missing from LogMasks: %+v", got.LogMasks)
 	}
 }
 
@@ -363,7 +419,7 @@ func TestBuildAssignment_PropagatesProfileAndResources(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -394,7 +450,7 @@ func TestBuildAssignment_NoResourcesLeavesProtoNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -418,7 +474,7 @@ func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil); err == nil {
+	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, nil, nil); err == nil {
 		t.Fatalf("expected error when declared secret is unresolved")
 	}
 }
@@ -470,7 +526,7 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -512,7 +568,7 @@ func TestBuildAssignment_PropagatesPipelineServices(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "integration", Image: "golang:1.25"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -544,7 +600,7 @@ func TestBuildAssignment_NoServicesWhenPipelineHasNone(t *testing.T) {
 		Revisions: json.RawMessage(`{}`),
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "compile"}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}

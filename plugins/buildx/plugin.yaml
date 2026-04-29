@@ -59,6 +59,44 @@ inputs:
     description: >
       Registry token/password. Populate via the job's
       `secrets:` list so the plaintext stays out of the log.
+  cache:
+    required: false
+    description: >
+      Shorthand for layer caching. Pick one:
+        - "registry" → reuses the destination registry as cache
+          target (`<image>:buildcache` tag, mode=max). Auth flows
+          through the same registry creds you already pass.
+        - "inline"   → embeds the cache metadata into the pushed
+          manifest (no separate tag). Cheap but only works when
+          `push: true`; ignores layers not in the final image.
+        - "bucket"   → reads GOCDNEXT_LAYER_CACHE_* env vars (set
+          by the runner profile's `env:` block) and builds a
+          `type=s3` cache spec automatically. Combined with the
+          profile's encrypted `secrets:` (AWS_ACCESS_KEY_ID,
+          AWS_SECRET_ACCESS_KEY) it lets every job on the
+          profile hit the same S3/GCS layer cache without any
+          per-job credential plumbing.
+        - "" (empty) → no automatic cache wiring; use cache-to /
+          cache-from below if you want explicit control.
+      Mutually exclusive with cache-to/cache-from — those win
+      when both are set.
+  cache-to:
+    required: false
+    description: >
+      Full BuildKit `--cache-to` spec, passed verbatim. Use this
+      for S3/GCS/Azure backends. Examples:
+        type=s3,region=us-east-1,bucket=my-cache,name=org/app,mode=max
+        type=gha,mode=max
+        type=registry,ref=ghcr.io/org/app:cache,mode=max
+      Pipe AWS/GCS credentials via `secrets:` so BuildKit can
+      reach the bucket — the plugin doesn't proxy the upload.
+  cache-from:
+    required: false
+    description: >
+      Full BuildKit `--cache-from` spec, passed verbatim. Usually
+      the import-side mirror of `cache-to`. Examples:
+        type=s3,region=us-east-1,bucket=my-cache,name=org/app
+        type=registry,ref=ghcr.io/org/app:cache
 
 examples:
   - name: amd64 + arm64 release
@@ -90,3 +128,60 @@ examples:
         image: ghcr.io/org/app
         tags: pr-${CI_PR_NUMBER}
         push: "false"
+
+  - name: Layer cache via runner profile (zero per-job config)
+    description: >
+      Admin configures the runner profile once (env + encrypted
+      secrets in /admin/profiles); every build that lands on
+      that profile inherits the bucket coords + creds. The job
+      just opts in with `cache: bucket`.
+    yaml: |
+      agent:
+        profile: fast-builds
+      docker: true
+      uses: gocdnext/buildx@v1
+      with:
+        image: ghcr.io/org/app
+        tags: latest
+        cache: bucket
+
+  - name: registry-as-cache shorthand
+    description: >
+      Zero-config option for projects that already push to a
+      registry: BuildKit writes a `<image>:buildcache` tag and
+      reads from it on the next run. No bucket or extra creds
+      beyond what the push already requires.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      docker: true
+      uses: gocdnext/buildx@v1
+      with:
+        image: ghcr.io/org/app
+        tags: latest
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+        cache: registry
+
+  - name: explicit S3 cache spec
+    description: >
+      Escape hatch when you don't want runner-profile env
+      injection (e.g. project-specific bucket override). Pipe
+      AWS creds via `secrets:` and write the full BuildKit
+      cache-to / cache-from spec.
+    yaml: |
+      secrets:
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+      docker: true
+      uses: gocdnext/buildx@v1
+      with:
+        image: ghcr.io/org/app
+        tags: latest
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
+        cache-to:   type=s3,region=us-east-1,bucket=my-cache,name=org/app,mode=max
+        cache-from: type=s3,region=us-east-1,bucket=my-cache,name=org/app

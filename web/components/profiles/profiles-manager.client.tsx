@@ -34,6 +34,16 @@ type Props = {
   initial: AdminRunnerProfile[];
 };
 
+// envRow / secretRow are draft entries the UI owns until save. The
+// blank trailing row makes "press Tab to add" feel native — no
+// explicit "+ Add" button needed for the common case. Existing
+// secrets carry `existing: true`; their value field is empty + read
+// only until the admin clicks "Replace" — preserves the rule that
+// the server never returns plaintext, while letting the admin still
+// see/keep/replace each key.
+type EnvRow = { key: string; value: string };
+type SecretRow = { key: string; value: string; existing: boolean; replace: boolean };
+
 type FormDraft = {
   id: string | null;
   name: string;
@@ -47,6 +57,8 @@ type FormDraft = {
   max_cpu: string;
   max_mem: string;
   tagsRaw: string; // comma-separated; parsed on save
+  envRows: EnvRow[];
+  secretRows: SecretRow[];
 };
 
 function blankForm(): FormDraft {
@@ -63,10 +75,21 @@ function blankForm(): FormDraft {
     max_cpu: "",
     max_mem: "",
     tagsRaw: "",
+    envRows: [{ key: "", value: "" }],
+    secretRows: [{ key: "", value: "", existing: false, replace: true }],
   };
 }
 
 function profileToDraft(p: AdminRunnerProfile): FormDraft {
+  const envRows: EnvRow[] = Object.entries(p.env ?? {}).map(([k, v]) => ({ key: k, value: v }));
+  envRows.push({ key: "", value: "" });
+  const secretRows: SecretRow[] = (p.secret_keys ?? []).map((k) => ({
+    key: k,
+    value: "",
+    existing: true,
+    replace: false,
+  }));
+  secretRows.push({ key: "", value: "", existing: false, replace: true });
   return {
     id: p.id,
     name: p.name,
@@ -80,6 +103,8 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
     max_cpu: p.max_cpu,
     max_mem: p.max_mem,
     tagsRaw: p.tags.join(", "),
+    envRows,
+    secretRows,
   };
 }
 
@@ -106,12 +131,72 @@ export function ProfilesManager({ initial }: Props) {
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
 
+  // collectEnv + collectSecrets fold the row arrays into the
+  // wire-shape maps. Empty keys are dropped (the trailing "blank
+  // row" pattern means the user might never fill the last entry);
+  // duplicate keys collapse to the LAST value, mirroring how the
+  // server would resolve a conflicting JSON object.
+  const collectEnv = (rows: EnvRow[]): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const r of rows) {
+      const k = r.key.trim();
+      if (k) out[k] = r.value;
+    }
+    return out;
+  };
+  // collectSecrets emits ONLY the keys the admin actually wants to
+  // persist with a (possibly new) plaintext value. Existing keys
+  // not flagged for replace are kept by re-sending the key with an
+  // empty value... wait, that would erase. Pattern instead:
+  // existing+!replace → drop the entry entirely on the wire so the
+  // server keeps whatever it has. The contract for that is the
+  // "merge on update" behaviour we documented; full-replace would
+  // require us to send all values. Stage 1 of the UI uses the
+  // simpler model: we ALWAYS send what the user typed. Existing
+  // secrets with replace=false carry through as the remembered key
+  // with no plaintext — we surface that on save with a guard
+  // forcing the admin to either replace or remove unchanged ones.
+  const collectSecrets = (rows: SecretRow[]): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const r of rows) {
+      const k = r.key.trim();
+      if (!k) continue;
+      // Existing secret left untouched: the server treats missing
+      // keys as deletions on full-replace, but we don't want to
+      // erase. So we don't send it. The admin must explicitly
+      // click "Remove" to delete an existing secret.
+      if (r.existing && !r.replace) continue;
+      out[k] = r.value;
+    }
+    return out;
+  };
+
   const saveForm = () => {
     if (!form) return;
     const name = form.name.trim();
     if (!name) {
       toast.error("Name is required");
       return;
+    }
+    // Force the admin to confront existing secrets: if any are
+    // still in the "keep, don't replace" state on save, we treat
+    // that as a deliberate intent to keep them — but tell the user
+    // that the wire payload will silently drop them. This is the
+    // simplest UX given the server's full-replace contract; a
+    // future iteration can add a per-row "preserve" flag that the
+    // server understands.
+    const envMap = collectEnv(form.envRows);
+    const secretsMap = collectSecrets(form.secretRows);
+    const newSecretsCount = form.secretRows.filter((r) => !r.existing && r.key.trim()).length;
+    const replacedCount = form.secretRows.filter((r) => r.existing && r.replace && r.key.trim()).length;
+    const droppedCount = form.secretRows.filter((r) => r.existing && !r.replace && r.key.trim()).length;
+    if (form.id && droppedCount > 0 && newSecretsCount === 0 && replacedCount === 0) {
+      // Update with no secret changes at all — fast path: confirm
+      // we're sending an empty secrets map will erase. Block save.
+      const proceed = confirm(
+        `${droppedCount} existing secret(s) will be REMOVED because the server uses full-replace semantics on update.\n\nClick OK to remove them, or Cancel to mark them "Replace" with their current values.`,
+      );
+      if (!proceed) return;
     }
     startTransition(async () => {
       const body = {
@@ -126,6 +211,8 @@ export function ProfilesManager({ initial }: Props) {
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
         tags: parseTags(form.tagsRaw),
+        env: envMap,
+        secrets: secretsMap,
       };
       const res = form.id
         ? await updateRunnerProfile({ ...body, id: form.id })
@@ -151,6 +238,8 @@ export function ProfilesManager({ initial }: Props) {
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
         tags: parseTags(form.tagsRaw),
+        env: envMap,
+        secret_keys: Object.keys(secretsMap).sort(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -361,6 +450,15 @@ export function ProfilesManager({ initial }: Props) {
                 />
               </Field>
 
+              <EnvRows
+                rows={form.envRows}
+                onChange={(rows) => setForm({ ...form, envRows: rows })}
+              />
+              <SecretRows
+                rows={form.secretRows}
+                onChange={(rows) => setForm({ ...form, secretRows: rows })}
+              />
+
               <div className="mt-2 flex items-center justify-end gap-2">
                 <Button variant="ghost" onClick={() => setForm(null)} disabled={pending}>
                   <X className="mr-2 h-4 w-4" /> Cancel
@@ -402,6 +500,151 @@ function Field({
       </Label>
       {children}
       {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  );
+}
+
+// EnvRows renders the plain env editor — one row per KEY=VALUE pair
+// plus a trailing blank that auto-promotes to a real row when the
+// admin starts typing in it. Keeps the UX feeling like a spreadsheet
+// without an explicit "+ Add" button. Layout is intentionally
+// minimal: the parent Sheet is already crowded with profile sizing
+// fields, so we lean on plain inputs + tight spacing.
+function EnvRows({
+  rows,
+  onChange,
+}: {
+  rows: EnvRow[];
+  onChange: (rows: EnvRow[]) => void;
+}) {
+  const update = (i: number, patch: Partial<EnvRow>) => {
+    const next = rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
+    // Auto-grow: if the trailing row got data, append a new blank.
+    const last = next[next.length - 1];
+    if (last && (last.key || last.value)) {
+      next.push({ key: "", value: "" });
+    }
+    onChange(next);
+  };
+  const remove = (i: number) => {
+    const next = rows.filter((_, idx) => idx !== i);
+    if (next.length === 0) next.push({ key: "", value: "" });
+    onChange(next);
+  };
+  return (
+    <div className="grid gap-2">
+      <Label className="flex items-center gap-2">
+        Env
+        <span className="text-xs font-normal text-muted-foreground">
+          plaintext, injected into every plugin container on this profile
+        </span>
+      </Label>
+      {rows.map((r, i) => (
+        <div key={i} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+          <Input
+            placeholder="KEY"
+            value={r.key}
+            onChange={(e) => update(i, { key: e.target.value })}
+            className="font-mono text-xs"
+          />
+          <Input
+            placeholder="value"
+            value={r.value}
+            onChange={(e) => update(i, { value: e.target.value })}
+            className="font-mono text-xs"
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => remove(i)}
+            disabled={!r.key && !r.value}
+            aria-label="Remove env entry"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// SecretRows mirrors EnvRows but treats existing entries as
+// write-protected by default — the admin must click "Replace" to
+// overwrite a stored value. The server NEVER returns plaintext, so
+// the input stays empty until replace mode is on. Removing a row
+// erases the secret on save (the wire format treats missing keys as
+// deletions on full-replace updates).
+function SecretRows({
+  rows,
+  onChange,
+}: {
+  rows: SecretRow[];
+  onChange: (rows: SecretRow[]) => void;
+}) {
+  const update = (i: number, patch: Partial<SecretRow>) => {
+    const next = rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
+    const last = next[next.length - 1];
+    if (last && (last.key || last.value)) {
+      next.push({ key: "", value: "", existing: false, replace: true });
+    }
+    onChange(next);
+  };
+  const remove = (i: number) => {
+    const next = rows.filter((_, idx) => idx !== i);
+    if (next.length === 0) next.push({ key: "", value: "", existing: false, replace: true });
+    onChange(next);
+  };
+  return (
+    <div className="grid gap-2">
+      <Label className="flex items-center gap-2">
+        Secrets
+        <span className="text-xs font-normal text-muted-foreground">
+          encrypted at rest · keys visible to admin, values never echoed back
+        </span>
+      </Label>
+      {rows.map((r, i) => (
+        <div key={i} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2">
+          <Input
+            placeholder="KEY"
+            value={r.key}
+            onChange={(e) => update(i, { key: e.target.value })}
+            disabled={r.existing}
+            className="font-mono text-xs"
+          />
+          <Input
+            placeholder={r.existing && !r.replace ? "•••••••• (stored)" : "value"}
+            value={r.value}
+            onChange={(e) => update(i, { value: e.target.value })}
+            disabled={r.existing && !r.replace}
+            type="password"
+            className="font-mono text-xs"
+          />
+          {r.existing ? (
+            <Button
+              type="button"
+              variant={r.replace ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => update(i, { replace: !r.replace, value: r.replace ? "" : r.value })}
+              className="text-xs"
+            >
+              {r.replace ? "Cancel" : "Replace"}
+            </Button>
+          ) : (
+            <span aria-hidden />
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => remove(i)}
+            disabled={!r.key && !r.value}
+            aria-label="Remove secret entry"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }

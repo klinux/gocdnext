@@ -29,7 +29,21 @@ type revisionSnapshot struct {
 // with *** in every log line. `downloads` is the list of upstream-job
 // artefacts this job declares via `needs_artifacts:`; nil/empty when
 // the job has no deps.
-func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materials []store.Material, secrets map[string]string, downloads []*gocdnextv1.ArtifactDownload) (*gocdnextv1.JobAssignment, error) {
+//
+// `profileEnv` is the merged env (plain + decrypted secrets) from the
+// job's runner profile; it lays in FIRST so explicit pipeline / job /
+// project-secret values can override profile defaults. `profileMasks`
+// is the matching list of profile secret VALUES — same redaction
+// contract as job secrets.
+func BuildAssignment(
+	run store.RunForDispatch,
+	job store.DispatchableJob,
+	materials []store.Material,
+	secrets map[string]string,
+	downloads []*gocdnextv1.ArtifactDownload,
+	profileEnv map[string]string,
+	profileMasks []string,
+) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
 		return nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
@@ -89,6 +103,13 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 	}
 
 	env := map[string]string{}
+	// Profile env first — operator-level defaults that pipeline/job
+	// vars can override below. Profile secrets are pre-decrypted by
+	// the caller; they share the same map with profile plain env so
+	// override precedence is uniform (later writes win).
+	for k, v := range profileEnv {
+		env[k] = v
+	}
 	for k, v := range def.Variables {
 		env[k] = v
 	}
@@ -104,7 +125,17 @@ func BuildAssignment(run store.RunForDispatch, job store.DispatchableJob, materi
 	// Secrets: layer on top of the pipeline-declared env. A secret with the
 	// same name as a plain variable wins — we trust the user to not shadow
 	// a secret name with a plain variable by accident.
-	masks := make([]string, 0, len(secrets))
+	masks := make([]string, 0, len(secrets)+len(profileMasks))
+	// Profile secret VALUES land in masks so the runner redacts them
+	// from logs. Done before the job-secrets loop so the order is
+	// "profile masks then job masks" — order doesn't matter for
+	// correctness (the runner does substring replace) but it makes
+	// test fixtures stable.
+	for _, v := range profileMasks {
+		if v != "" {
+			masks = append(masks, v)
+		}
+	}
 	for _, name := range jobDef.Secrets {
 		v, ok := secrets[name]
 		if !ok {

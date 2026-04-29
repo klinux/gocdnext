@@ -78,12 +78,65 @@ if [ "${PUSH}" = "true" ]; then
     push_args+=("--push")
 fi
 
+# Layer cache wiring. Two surfaces:
+#   1. Explicit cache-to / cache-from passed verbatim — wins when set.
+#   2. `cache: registry|inline|bucket` shorthand. The "bucket"
+#      variant reads GOCDNEXT_LAYER_CACHE_* env vars injected by
+#      the runner profile, so the YAML stays clean and credentials
+#      never appear next to the job spec.
+# AWS_*/GOOGLE_* creds for S3/GCS backends come in via the runner
+# profile's `secrets:` (the agent injects them into this container's
+# env), so BuildKit picks them up from the daemon's process env.
+cache_args=()
+cache_to="${PLUGIN_CACHE_TO:-}"
+cache_from="${PLUGIN_CACHE_FROM:-}"
+if [ -z "${cache_to}" ] && [ -z "${cache_from}" ]; then
+    case "${PLUGIN_CACHE:-}" in
+        registry)
+            cache_to="type=registry,ref=${PLUGIN_IMAGE}:buildcache,mode=max"
+            cache_from="type=registry,ref=${PLUGIN_IMAGE}:buildcache"
+            ;;
+        inline)
+            cache_to="type=inline"
+            ;;
+        bucket)
+            if [ -z "${GOCDNEXT_LAYER_CACHE_BUCKET:-}" ]; then
+                echo "gocdnext/buildx: cache: bucket requires GOCDNEXT_LAYER_CACHE_BUCKET (set it on the runner profile env)" >&2
+                exit 2
+            fi
+            backend="${GOCDNEXT_LAYER_CACHE_BACKEND:-s3}"
+            region="${GOCDNEXT_LAYER_CACHE_REGION:-${AWS_REGION:-us-east-1}}"
+            # Cache key namespaces by image repo so multiple
+            # images can share one bucket without colliding.
+            name="${GOCDNEXT_LAYER_CACHE_NAME:-${PLUGIN_IMAGE}}"
+            spec="type=${backend},region=${region},bucket=${GOCDNEXT_LAYER_CACHE_BUCKET},name=${name}"
+            if [ -n "${GOCDNEXT_LAYER_CACHE_ENDPOINT:-}" ]; then
+                spec="${spec},endpoint_url=${GOCDNEXT_LAYER_CACHE_ENDPOINT}"
+            fi
+            cache_to="${spec},mode=max"
+            cache_from="${spec}"
+            ;;
+        none|"")
+            ;;
+        *)
+            echo "gocdnext/buildx: unknown cache shorthand '${PLUGIN_CACHE}' — use 'registry', 'inline', 'bucket', 'none', or set cache-to/cache-from explicitly" >&2
+            exit 2
+            ;;
+    esac
+fi
+[ -n "${cache_to}"   ] && cache_args+=("--cache-to"   "${cache_to}")
+[ -n "${cache_from}" ] && cache_args+=("--cache-from" "${cache_from}")
+if [ ${#cache_args[@]} -gt 0 ]; then
+    echo "==> layer cache: ${cache_args[*]}"
+fi
+
 echo "==> docker buildx build --platform ${PLATFORMS} (${#TAGS[@]} tag(s))"
 docker buildx build \
     --platform "${PLATFORMS}" \
     --file "${DOCKERFILE}" \
     "${tag_args[@]}" \
     "${build_arg_args[@]}" \
+    "${cache_args[@]}" \
     "${push_args[@]}" \
     "${CONTEXT}"
 

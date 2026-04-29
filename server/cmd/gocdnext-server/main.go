@@ -286,7 +286,7 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 			WithLogArchiveSource(artifactStore).
 			WithLogArchiveCache(logarchive.NewLineCache(cfg.LogArchiveCacheBytes))
 	}
-	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver)
+	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver).WithCipher(cipher)
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
@@ -317,6 +317,12 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		PublicBaseSet:    cfg.PublicBase != "",
 		ChecksReporterOn: checksReporter != nil,
 	}, logger)
+	// Runner profile secrets reuse the same AES cipher as project
+	// secrets / global secrets / auth providers. SetCipher is a no-op
+	// when cipher is nil — the create/update endpoints then 503 if a
+	// caller tries to set secrets, which is the correct fail-closed
+	// behaviour for a deployment without GOCDNEXT_SECRET_KEY.
+	adminHandler.SetCipher(cipher)
 	// authProvidersHandler + vcsIntegrationsHandler are wired
 	// later (after the cipher + auth registry are ready). Declared
 	// here so the router block can reference them.

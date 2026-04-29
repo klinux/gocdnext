@@ -30,7 +30,8 @@ SELECT id, name, description, engine,
        default_mem_request, default_mem_limit,
        max_cpu, max_mem,
        tags, config,
-       created_at, updated_at
+       created_at, updated_at,
+       env, secrets
 FROM runner_profiles
 WHERE id = $1
 LIMIT 1
@@ -55,6 +56,8 @@ func (q *Queries) GetRunnerProfile(ctx context.Context, id pgtype.UUID) (RunnerP
 		&i.Config,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Env,
+		&i.Secrets,
 	)
 	return i, err
 }
@@ -66,7 +69,8 @@ SELECT id, name, description, engine,
        default_mem_request, default_mem_limit,
        max_cpu, max_mem,
        tags, config,
-       created_at, updated_at
+       created_at, updated_at,
+       env, secrets
 FROM runner_profiles
 WHERE name = $1
 LIMIT 1
@@ -94,6 +98,8 @@ func (q *Queries) GetRunnerProfileByName(ctx context.Context, name string) (Runn
 		&i.Config,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Env,
+		&i.Secrets,
 	)
 	return i, err
 }
@@ -105,14 +111,16 @@ INSERT INTO runner_profiles (
     default_cpu_request, default_cpu_limit,
     default_mem_request, default_mem_limit,
     max_cpu, max_mem,
-    tags, config
+    tags, config,
+    env, secrets
 ) VALUES (
     $1, $2, $3,
     $4,
     $5, $6,
     $7, $8,
     $9, $10,
-    $11, $12
+    $11, $12,
+    $13, $14
 )
 RETURNING id, name, description, engine,
           default_image,
@@ -120,7 +128,8 @@ RETURNING id, name, description, engine,
           default_mem_request, default_mem_limit,
           max_cpu, max_mem,
           tags, config,
-          created_at, updated_at
+          created_at, updated_at,
+          env, secrets
 `
 
 type InsertRunnerProfileParams struct {
@@ -136,6 +145,8 @@ type InsertRunnerProfileParams struct {
 	MaxMem            string
 	Tags              []string
 	Config            []byte
+	Env               []byte
+	Secrets           []byte
 }
 
 func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error) {
@@ -152,6 +163,8 @@ func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfi
 		arg.MaxMem,
 		arg.Tags,
 		arg.Config,
+		arg.Env,
+		arg.Secrets,
 	)
 	var i RunnerProfile
 	err := row.Scan(
@@ -170,6 +183,8 @@ func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfi
 		&i.Config,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Env,
+		&i.Secrets,
 	)
 	return i, err
 }
@@ -181,7 +196,8 @@ SELECT id, name, description, engine,
        default_mem_request, default_mem_limit,
        max_cpu, max_mem,
        tags, config,
-       created_at, updated_at
+       created_at, updated_at,
+       env, secrets
 FROM runner_profiles
 ORDER BY name
 `
@@ -212,6 +228,8 @@ func (q *Queries) ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, erro
 			&i.Config,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Env,
+			&i.Secrets,
 		); err != nil {
 			return nil, err
 		}
@@ -234,6 +252,8 @@ SET name = $2,
     max_cpu = $10, max_mem = $11,
     tags = $12,
     config = $13,
+    env = $14,
+    secrets = $15,
     updated_at = NOW()
 WHERE id = $1
 `
@@ -252,6 +272,8 @@ type UpdateRunnerProfileParams struct {
 	MaxMem            string
 	Tags              []string
 	Config            []byte
+	Env               []byte
+	Secrets           []byte
 }
 
 func (q *Queries) UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfileParams) error {
@@ -269,6 +291,8 @@ func (q *Queries) UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfi
 		arg.MaxMem,
 		arg.Tags,
 		arg.Config,
+		arg.Env,
+		arg.Secrets,
 	)
 	return err
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
@@ -24,6 +25,17 @@ func newRunnerProfileHandler(t *testing.T) (*store.Store, *pgxpool.Pool, http.Ha
 	s := store.New(pool)
 	sweeper := retention.New(s, nil, quietLogger())
 	h := adminapi.NewHandler(s, sweeper, nil, adminapi.WiringState{}, quietLogger())
+	// Wire a deterministic cipher so secret-bearing tests can
+	// round-trip without flakiness from random key material.
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	c, err := crypto.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	h.SetCipher(c)
 	return s, pool, mount(h)
 }
 
@@ -117,7 +129,7 @@ func TestRunnerProfiles_DeleteBlockedByActiveRun(t *testing.T) {
 	s, pool, srv := newRunnerProfileHandler(t)
 	ctx := context.Background()
 
-	created, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
+	created, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
 		Name: "still-running", Engine: "kubernetes",
 	})
 	if err != nil {
@@ -162,7 +174,7 @@ func TestRunnerProfiles_DeleteBlockedWhenInUse(t *testing.T) {
 	s, _, srv := newRunnerProfileHandler(t)
 	ctx := context.Background()
 
-	created, err := s.InsertRunnerProfile(ctx, store.RunnerProfileInput{
+	created, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
 		Name: "in-use", Engine: "kubernetes",
 	})
 	if err != nil {
@@ -186,6 +198,76 @@ func TestRunnerProfiles_DeleteBlockedWhenInUse(t *testing.T) {
 	rr := request(srv, http.MethodDelete, "/api/v1/admin/runner-profiles/"+created.ID.String(), nil)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("delete status = %d, want 409, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRunnerProfiles_EnvAndSecrets_RoundTripMasksValues(t *testing.T) {
+	_, _, srv := newRunnerProfileHandler(t)
+
+	// Create with both env and secrets — the response must echo
+	// env plainly and surface secret_keys (sorted) without values.
+	body := bytes.NewBufferString(`{
+        "name": "fast-builds",
+        "engine": "kubernetes",
+        "tags": ["linux"],
+        "env": {
+            "GOCDNEXT_LAYER_CACHE_BUCKET": "ci-cache",
+            "GOCDNEXT_LAYER_CACHE_REGION": "us-east-1"
+        },
+        "secrets": {
+            "AWS_ACCESS_KEY_ID":     "AKIA-FAKE",
+            "AWS_SECRET_ACCESS_KEY": "supersecret"
+        }
+    }`)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr = request(srv, http.MethodGet, "/api/v1/admin/runner-profiles", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rr.Code)
+	}
+	// Plaintext values must not appear in any GET response.
+	if strings.Contains(rr.Body.String(), "supersecret") || strings.Contains(rr.Body.String(), "AKIA-FAKE") {
+		t.Fatalf("secret values leaked in list response: %s", rr.Body.String())
+	}
+	var listed struct {
+		Profiles []struct {
+			Name       string            `json:"name"`
+			Env        map[string]string `json:"env"`
+			SecretKeys []string          `json:"secret_keys"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Profiles) != 1 {
+		t.Fatalf("expected 1 profile, got %d", len(listed.Profiles))
+	}
+	got := listed.Profiles[0]
+	if got.Env["GOCDNEXT_LAYER_CACHE_BUCKET"] != "ci-cache" {
+		t.Errorf("env not echoed: %+v", got.Env)
+	}
+	wantKeys := []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+	if len(got.SecretKeys) != len(wantKeys) || got.SecretKeys[0] != wantKeys[0] || got.SecretKeys[1] != wantKeys[1] {
+		t.Errorf("secret_keys = %+v, want %+v (sorted)", got.SecretKeys, wantKeys)
+	}
+}
+
+func TestRunnerProfiles_RejectsInvalidEnvKey(t *testing.T) {
+	_, _, srv := newRunnerProfileHandler(t)
+	body := bytes.NewBufferString(`{
+        "name": "bad",
+        "engine": "kubernetes",
+        "env": {"lower-case": "nope"}
+    }`)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "UPPER_SNAKE") {
+		t.Errorf("error should hint at UPPER_SNAKE_CASE convention: %s", rr.Body.String())
 	}
 }
 
