@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -18,7 +19,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for goose
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
 	"google.golang.org/grpc"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
@@ -51,7 +54,49 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
+	"github.com/gocdnext/gocdnext/server/migrations"
 )
+
+// runMigrations opens a fresh database/sql handle (goose's own
+// contract — the goose v3 API doesn't accept a pgxpool) and runs
+// every pending migration in `server/migrations/*.sql`. The
+// migrations FS is embedded into the binary so deployments don't
+// need to ship a separate file tree alongside the image.
+//
+// Idempotent on every boot: goose tracks applied versions in
+// `goose_db_version` and short-circuits when nothing new is
+// pending. Fail-closed — the server refuses to start when
+// migrations don't apply, which is what we want.
+func runMigrations(dsn string, log *slog.Logger) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	defer db.Close()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("dialect: %w", err)
+	}
+	// Lock so that, with multiple replicas booting in parallel,
+	// only one runs the migration; the others wait + observe the
+	// version table populated.
+	goose.SetLogger(gooseSlog{log: log})
+	if err := goose.UpContext(context.Background(), db, "."); err != nil {
+		return fmt.Errorf("up: %w", err)
+	}
+	return nil
+}
+
+// gooseSlog adapts goose's printf-style logger contract to the
+// structured logger we use everywhere else, so migration progress
+// rides the same JSON stream as the rest of boot output.
+type gooseSlog struct{ log *slog.Logger }
+
+func (g gooseSlog) Printf(format string, v ...any)    { g.log.Info(fmt.Sprintf(format, v...)) }
+func (g gooseSlog) Println(v ...any)                  { g.log.Info(fmt.Sprint(v...)) }
+func (g gooseSlog) Fatalf(format string, v ...any)    { g.log.Error(fmt.Sprintf(format, v...)) }
+func (g gooseSlog) Fatal(v ...any)                    { g.log.Error(fmt.Sprint(v...)) }
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 var Version = "dev"
@@ -83,6 +128,19 @@ func main() {
 
 	if err := pool.Ping(dbCtx); err != nil {
 		logger.Error("postgres ping", "err", err)
+		os.Exit(1)
+	}
+
+	// Run goose migrations on every boot. Idempotent — goose
+	// tracks applied versions in `goose_db_version`, so reapplying
+	// is a no-op when the schema is current. Failure aborts
+	// startup so a missing migration never lets the server come
+	// up against a stale schema. With multiple replicas, goose
+	// uses `pg_advisory_xact_lock` so only one performs the
+	// migration; the rest wait their turn and observe the table
+	// already populated.
+	if err := runMigrations(cfg.DatabaseURL, logger); err != nil {
+		logger.Error("migrate", "err", err)
 		os.Exit(1)
 	}
 

@@ -102,14 +102,22 @@ web:
     tlsSecretName: ""
 
 # ----- database --------------------------------------------------------
-# Prod: point at a managed DB via `url` or a Secret. Dev: enable
-# devDatabase for a single-replica StatefulSet (not for prod).
+# PRODUCTION: point at an externally-managed Postgres (RDS / CloudSQL /
+# AlloyDB / on-prem patroni / a CloudNative-PG cluster you operate
+# elsewhere) via `database.url` OR a pre-existing Secret. The
+# embedded devDatabase below is NOT a production-grade DB — single
+# replica, no backups, no monitoring, no replication.
 
 database:
   url: ""
   existingSecret: ""
   secretKey: DATABASE_URL
 
+# devDatabase is a single-replica Postgres StatefulSet for `helm
+# install --dry-run` validation, local cluster smokes, and demos.
+# Don't run it in production; the data lives in a single PVC with no
+# WAL archiving, no PITR, no replicas. The chart README points to the
+# managed-Postgres path for real installs.
 devDatabase:
   enabled: false
   image: postgres:16-alpine

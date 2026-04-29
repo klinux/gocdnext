@@ -146,7 +146,7 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
     default_mem_limit: p.default_mem_limit,
     max_cpu: p.max_cpu,
     max_mem: p.max_mem,
-    tagsRaw: p.tags.join(", "),
+    tagsRaw: (p.tags ?? []).join(", "),
     envRows,
     secretRows,
   };
@@ -372,10 +372,10 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                 </TableCell>
                 <TableCell>
                   <div className="flex flex-wrap gap-1">
-                    {p.tags.length === 0 ? (
+                    {(p.tags ?? []).length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : (
-                      p.tags.map((t) => (
+                      (p.tags ?? []).map((t) => (
                         <Badge key={t} variant="secondary">
                           {t}
                         </Badge>

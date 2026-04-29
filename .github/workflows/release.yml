@@ -27,7 +27,10 @@ jobs:
             context: .
             dockerfile: agent/Dockerfile
           - name: web
-            context: web
+            # Root context so the in-app /docs page can ship the
+            # repo's root-level markdowns. The Dockerfile pulls
+            # web/ explicitly + docs/*.md.
+            context: .
             dockerfile: web/Dockerfile
     steps:
       - uses: actions/checkout@v4

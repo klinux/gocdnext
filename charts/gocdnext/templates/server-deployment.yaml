@@ -240,8 +240,14 @@ spec:
               readOnly: true
             {{- end }}
             {{- if .Values.runnerProfiles }}
+            # subPath mounts the single file so the rest of
+            # /etc/gocdnext (notably the baked plugin catalogue at
+            # /etc/gocdnext/plugins) stays visible. Mounting the
+            # whole ConfigMap at /etc/gocdnext shadows it and the
+            # plugin list returns empty.
             - name: runner-profiles
-              mountPath: /etc/gocdnext
+              mountPath: /etc/gocdnext/runner-profiles.yaml
+              subPath: runner-profiles.yaml
               readOnly: true
             {{- end }}
             {{- if .Values.extraPlugins }}

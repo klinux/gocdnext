@@ -47,6 +47,13 @@ spec:
               value: {{ .Values.devDatabase.credentials.password | quote }}
             - name: POSTGRES_DB
               value: {{ .Values.devDatabase.credentials.database | quote }}
+            # Many storage classes (RKE2 local-path, longhorn, EBS,
+            # CSI snapshots) leave a `lost+found` on the mount point
+            # which initdb refuses to ignore. Putting PGDATA in a
+            # subdirectory sidesteps that without surrendering the
+            # rest of the persistence guarantees.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           ports:
             - containerPort: 5432
           volumeMounts:

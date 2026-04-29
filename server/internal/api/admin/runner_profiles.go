@@ -361,6 +361,13 @@ func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerPro
 	if refs == nil {
 		refs = map[string]string{}
 	}
+	tags := p.Tags
+	if tags == nil {
+		// JSON-serialised empty array, not null. The UI maps over
+		// tags expecting a list, so a null here crashes the
+		// profiles page rendering.
+		tags = []string{}
+	}
 	return runnerProfileDTO{
 		ID:                p.ID.String(),
 		Name:              p.Name,
@@ -373,7 +380,7 @@ func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerPro
 		DefaultMemLimit:   p.DefaultMemLimit,
 		MaxCPU:            p.MaxCPU,
 		MaxMem:            p.MaxMem,
-		Tags:              p.Tags,
+		Tags:              tags,
 		Config:            p.Config,
 		Env:               env,
 		SecretKeys:        keys,
