@@ -714,9 +714,18 @@ function SecretRows({
                 className="font-mono text-xs"
               />
             )}
+            {/*
+              Picker stays clickable even on existing literal rows —
+              the click enters replace mode + inserts the template,
+              same UX as if the admin clicked Replace and typed it.
+              Only disabled when no globals are configured at all
+              (the popover would just show "Create one first" anyway,
+              but the visual cue is clearer when the button is
+              greyed out from the start).
+            */}
             <GlobalSecretPickerButton
               names={globalSecretNames}
-              disabled={!editable && !showAsRef}
+              disabled={globalSecretNames.length === 0}
               onPick={(name) => pickGlobal(i, name)}
             />
             {r.existing ? (
@@ -780,13 +789,25 @@ function GlobalSecretPickerButton({
             size="icon"
             disabled={disabled}
             aria-label="Reference global secret"
-            title="Reference global secret"
+            title={
+              disabled
+                ? "No global secrets configured — create one in /admin/secrets first"
+                : "Reference a global secret"
+            }
           >
             <Link2 className="h-4 w-4" />
           </Button>
         }
       />
-      <PopoverContent align="end" className="w-72 p-0">
+      <PopoverContent
+        align="end"
+        // Sheet content is z-50; bumping the popover above keeps
+        // it visible when the picker is opened from inside the
+        // profile editor sheet (the portal lands on document.body
+        // but stacking gets noisy when a Sheet has its own
+        // backdrop in the same z-50 tier).
+        className="z-[60] w-72 p-0"
+      >
         <div className="flex flex-col">
           <div className="border-b border-border p-2">
             <Input
