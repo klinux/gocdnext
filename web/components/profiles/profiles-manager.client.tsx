@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -359,7 +360,18 @@ export function ProfilesManager({ initial }: Props) {
       </Table>
 
       <Sheet open={form !== null} onOpenChange={(open) => !open && setForm(null)}>
-        <SheetContent className="sm:max-w-lg overflow-y-auto">
+        <SheetContent
+          side="right"
+          className={cn(
+            "overflow-y-auto",
+            // Wider sheet so the env/secret editors get room to breathe.
+            // 30vw on large screens, capped so it doesn't dominate
+            // ultra-wide displays; min-width keeps narrow viewports
+            // from collapsing the row layout (key + value + actions).
+            "data-[side=right]:w-[min(30vw,720px)] data-[side=right]:sm:max-w-[min(30vw,720px)]",
+            "data-[side=right]:min-w-[28rem]",
+          )}
+        >
           <SheetHeader>
             <SheetTitle>{form?.id ? "Edit profile" : "New profile"}</SheetTitle>
             <SheetDescription>
