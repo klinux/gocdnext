@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 import { ProfilesManager } from "@/components/profiles/profiles-manager.client";
-import { listAdminRunnerProfiles } from "@/server/queries/admin";
+import {
+  listAdminRunnerProfiles,
+  listGlobalSecrets,
+} from "@/server/queries/admin";
 
 export const metadata: Metadata = {
   title: "Runner profiles — gocdnext",
@@ -13,7 +16,15 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function RunnerProfilesPage() {
-  const { profiles } = await listAdminRunnerProfiles();
+  // listGlobalSecrets fails open: a 503 (cipher unset) or any other
+  // hiccup just means the secrets picker has nothing to offer; the
+  // editor still works for literal values. The error path is rare
+  // enough that swallowing it preserves the UX over reporting it.
+  const [{ profiles }, globalSecrets] = await Promise.all([
+    listAdminRunnerProfiles(),
+    listGlobalSecrets().catch(() => []),
+  ]);
+  const globalSecretNames = globalSecrets.map((s) => s.name).sort();
 
   return (
     <section className="space-y-6">
@@ -30,7 +41,10 @@ export default async function RunnerProfilesPage() {
         </p>
       </div>
 
-      <ProfilesManager initial={profiles} />
+      <ProfilesManager
+        initial={profiles}
+        globalSecretNames={globalSecretNames}
+      />
     </section>
   );
 }

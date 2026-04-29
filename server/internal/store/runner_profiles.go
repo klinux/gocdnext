@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
@@ -215,6 +216,12 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 // error so the dispatch fails closed instead of silently shipping
 // garbage env vars to the agent.
 //
+// Secret values can carry `{{secret:NAME}}` templates — those
+// resolve against the global secrets table at dispatch time so
+// admins set "AWS_ACCESS_KEY_ID" once globally and reference it
+// from any profile. Unresolvable templates (missing global) fail
+// the dispatch closed rather than ship an empty env var.
+//
 // Returns ErrRunnerProfileNotFound for unknown names — the
 // scheduler turns that into "skip this dispatch, leave the run
 // queued so an admin sees the misconfiguration".
@@ -236,6 +243,10 @@ func (s *Store) ResolveProfileEnvByName(ctx context.Context, cipher *crypto.Ciph
 		return nil, nil, fmt.Errorf("store: decrypt profile secrets %q: %w", name, err)
 	}
 
+	if err := s.expandProfileSecretTemplates(ctx, cipher, name, secrets); err != nil {
+		return nil, nil, err
+	}
+
 	merged := make(map[string]string, len(plain)+len(secrets))
 	for k, v := range plain {
 		merged[k] = v
@@ -248,6 +259,116 @@ func (s *Store) ResolveProfileEnvByName(ctx context.Context, cipher *crypto.Ciph
 		}
 	}
 	return merged, values, nil
+}
+
+// profileSecretTemplate matches `{{secret:NAME}}` substrings inside
+// a decrypted profile secret value. NAME follows the same key
+// shape we enforce on writes (UPPER_SNAKE), so the regex limits the
+// match to that alphabet — a stray `{{secret:foo bar}}` falls
+// through as a literal and never silently swallows operator typos.
+var profileSecretTemplate = regexp.MustCompile(`\{\{\s*secret:([A-Z_][A-Z0-9_]*)\s*\}\}`)
+
+// expandProfileSecretTemplates walks the decrypted secrets map and
+// replaces every `{{secret:NAME}}` reference with the matching
+// global secret value. Templates can compose with literal text
+// inside the same value (`prefix-{{secret:DB_PASSWORD}}-suffix`
+// works) and the same template can repeat — the global is fetched
+// once per name.
+//
+// Missing globals fail closed: dispatch refuses, the operator sees
+// the misconfiguration in the run's error rather than silently
+// shipping an empty env var into a build that depends on it.
+func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto.Cipher, profileName string, secrets map[string]string) error {
+	if len(secrets) == 0 {
+		return nil
+	}
+	// Collect every distinct global referenced across all values.
+	// Done in a single pass so we hit the DB at most once per
+	// dispatch (and once for the whole batch of names).
+	refs := map[string]struct{}{}
+	for _, v := range secrets {
+		for _, m := range profileSecretTemplate.FindAllStringSubmatch(v, -1) {
+			refs[m[1]] = struct{}{}
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	if cipher == nil {
+		return errors.New("store: profile secrets: cipher not configured (template references need decryption)")
+	}
+	names := make([]string, 0, len(refs))
+	for n := range refs {
+		names = append(names, n)
+	}
+	rows, err := s.q.GetGlobalSecretValues(ctx, names)
+	if err != nil {
+		return fmt.Errorf("store: fetch globals for profile %q: %w", profileName, err)
+	}
+	resolved := make(map[string]string, len(rows))
+	for _, r := range rows {
+		plain, err := cipher.Decrypt(r.ValueEnc)
+		if err != nil {
+			return fmt.Errorf("store: decrypt global secret %q: %w", r.Name, err)
+		}
+		resolved[r.Name] = string(plain)
+	}
+	// Validate all references resolved before mutating anything —
+	// fail closed and atomic, no half-expanded values shipped.
+	for n := range refs {
+		if _, ok := resolved[n]; !ok {
+			return fmt.Errorf("store: profile %q references unknown global secret %q", profileName, n)
+		}
+	}
+	for k, v := range secrets {
+		secrets[k] = profileSecretTemplate.ReplaceAllStringFunc(v, func(match string) string {
+			sub := profileSecretTemplate.FindStringSubmatch(match)
+			return resolved[sub[1]]
+		})
+	}
+	return nil
+}
+
+// ProfileSecretRefs scans the decrypted profile secret values and
+// returns a map of {key → referenced global name} for every value
+// that consists of a SINGLE `{{secret:NAME}}` template. Values that
+// mix templates with literal text (or carry no template at all) are
+// omitted — the admin UI only displays the chip "→ globals.NAME"
+// when the row IS a clean reference. Mixed/literal values stay
+// rendered as `••• (stored)`.
+//
+// Used by the admin handler at GET time so the editor can render
+// references differently from literal entries without exposing the
+// underlying value.
+func (s *Store) ProfileSecretRefs(ctx context.Context, cipher *crypto.Cipher, profileID uuid.UUID) (map[string]string, error) {
+	row, err := s.q.GetRunnerProfile(ctx, toPgUUID(profileID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrRunnerProfileNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get profile for refs %s: %w", profileID, err)
+	}
+	secrets, err := decodeProfileSecrets(cipher, row.Secrets)
+	if err != nil {
+		return nil, fmt.Errorf("store: decrypt profile secrets for refs %s: %w", profileID, err)
+	}
+	out := map[string]string{}
+	for k, v := range secrets {
+		matches := profileSecretTemplate.FindAllStringSubmatchIndex(v, -1)
+		if len(matches) != 1 {
+			continue
+		}
+		// Single match must span the whole value — otherwise the
+		// operator mixed literal text with a template, which we
+		// honour at dispatch but don't show as a clean ref.
+		m := matches[0]
+		if m[0] != 0 || m[1] != len(v) {
+			continue
+		}
+		nameStart, nameEnd := m[2], m[3]
+		out[k] = v[nameStart:nameEnd]
+	}
+	return out, nil
 }
 
 // RunnerProfileUsage counts the live dependents of a profile that

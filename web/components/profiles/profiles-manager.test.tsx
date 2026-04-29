@@ -34,7 +34,7 @@ const sample: AdminRunnerProfile[] = [
     default_mem_limit: "1Gi",
     max_cpu: "4",
     max_mem: "8Gi",
-    tags: ["linux", "amd64"], env: {}, secret_keys: [],
+    tags: ["linux", "amd64"], env: {}, secret_keys: [], secret_refs: {},
     created_at: "2026-04-27T12:00:00Z",
     updated_at: "2026-04-27T12:00:00Z",
   },
@@ -50,7 +50,7 @@ const sample: AdminRunnerProfile[] = [
     default_mem_limit: "",
     max_cpu: "8",
     max_mem: "32Gi",
-    tags: ["gpu"], env: {}, secret_keys: [],
+    tags: ["gpu"], env: {}, secret_keys: [], secret_refs: {},
     created_at: "2026-04-27T12:00:00Z",
     updated_at: "2026-04-27T12:00:00Z",
   },
@@ -58,7 +58,7 @@ const sample: AdminRunnerProfile[] = [
 
 describe("ProfilesManager", () => {
   it("renders one row per profile, with engine + tags + cap visible", () => {
-    render(<ProfilesManager initial={sample} />);
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
     expect(screen.getByText("default")).toBeTruthy();
     expect(screen.getByText("vanilla pool")).toBeTruthy();
     // "gpu" appears twice (profile name + tag chip on the gpu row);
@@ -73,12 +73,12 @@ describe("ProfilesManager", () => {
   });
 
   it("shows the empty hint when no profiles exist", () => {
-    render(<ProfilesManager initial={[]} />);
+    render(<ProfilesManager initial={[]} globalSecretNames={[]} />);
     expect(screen.getByText(/No runner profiles yet/i)).toBeTruthy();
   });
 
   it("filters by name, description, or tag", () => {
-    render(<ProfilesManager initial={sample} />);
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
     const filter = screen.getByPlaceholderText(/Filter profiles/i);
 
     fireEvent.change(filter, { target: { value: "gpu" } });
@@ -100,7 +100,7 @@ describe("ProfilesManager", () => {
   });
 
   it("opens an empty form for new profile", () => {
-    render(<ProfilesManager initial={sample} />);
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
 
     fireEvent.click(screen.getByRole("button", { name: /new profile/i }));
     // Sheet title is the only heading-level "New profile" element;
@@ -113,7 +113,7 @@ describe("ProfilesManager", () => {
 
   it("delete button asks for confirmation before dispatching", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<ProfilesManager initial={sample} />);
+    render(<ProfilesManager initial={sample} globalSecretNames={[]} />);
 
     fireEvent.click(screen.getByRole("button", { name: /delete default/i }));
     expect(confirmSpy).toHaveBeenCalledWith(

@@ -314,3 +314,107 @@ func TestRunnerProfile_SecretsWithoutCipher_FailsClosed(t *testing.T) {
 		t.Fatalf("empty-secrets path: %v", err)
 	}
 }
+
+func TestRunnerProfile_SecretTemplate_ResolvesAgainstGlobals(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	// Seed a global secret the profile will reference.
+	if _, err := s.SetGlobalSecret(ctx, cipher, "AWS_ACCESS_KEY_ID", []byte("AKIA-FROM-GLOBAL")); err != nil {
+		t.Fatalf("seed global: %v", err)
+	}
+	if _, err := s.SetGlobalSecret(ctx, cipher, "AWS_SECRET_ACCESS_KEY", []byte("super-secret-global")); err != nil {
+		t.Fatalf("seed global 2: %v", err)
+	}
+
+	// Profile mixes one literal with two template references.
+	if _, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:   "fast-builds-with-refs",
+		Engine: "kubernetes",
+		Secrets: map[string]string{
+			"AWS_ACCESS_KEY_ID":     "{{secret:AWS_ACCESS_KEY_ID}}",
+			"AWS_SECRET_ACCESS_KEY": "{{secret:AWS_SECRET_ACCESS_KEY}}",
+			"LITERAL_VALUE":         "kept-as-typed",
+		},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	env, masks, err := s.ResolveProfileEnvByName(ctx, cipher, "fast-builds-with-refs")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if env["AWS_ACCESS_KEY_ID"] != "AKIA-FROM-GLOBAL" {
+		t.Errorf("template not expanded: %q", env["AWS_ACCESS_KEY_ID"])
+	}
+	if env["AWS_SECRET_ACCESS_KEY"] != "super-secret-global" {
+		t.Errorf("second template not expanded: %q", env["AWS_SECRET_ACCESS_KEY"])
+	}
+	if env["LITERAL_VALUE"] != "kept-as-typed" {
+		t.Errorf("literal mutated: %q", env["LITERAL_VALUE"])
+	}
+	// Resolved global values must land in LogMasks so the runner
+	// redacts them — same contract as literal profile secrets.
+	resolvedMasked := map[string]bool{}
+	for _, v := range masks {
+		resolvedMasked[v] = true
+	}
+	if !resolvedMasked["AKIA-FROM-GLOBAL"] || !resolvedMasked["super-secret-global"] {
+		t.Errorf("resolved global values missing from masks: %+v", masks)
+	}
+}
+
+func TestRunnerProfile_SecretTemplate_MissingGlobalFailsClosed(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	if _, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:   "broken-ref",
+		Engine: "kubernetes",
+		Secrets: map[string]string{
+			"X": "{{secret:DOES_NOT_EXIST}}",
+		},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, _, err := s.ResolveProfileEnvByName(ctx, cipher, "broken-ref")
+	if err == nil {
+		t.Fatal("expected error for unresolvable template, got nil")
+	}
+	if !contains(err.Error(), "DOES_NOT_EXIST") {
+		t.Errorf("error %q does not name the missing global", err)
+	}
+}
+
+func TestRunnerProfile_SecretRefs_ExposesCleanReferences(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	created, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:   "mixed",
+		Engine: "kubernetes",
+		Secrets: map[string]string{
+			"PURE_REF":     "{{secret:DB_PASSWORD}}",
+			"MIXED_REF":    "prefix-{{secret:DB_PASSWORD}}-suffix",
+			"LITERAL_ONLY": "plain-value",
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	refs, err := s.ProfileSecretRefs(ctx, cipher, created.ID)
+	if err != nil {
+		t.Fatalf("refs: %v", err)
+	}
+	if refs["PURE_REF"] != "DB_PASSWORD" {
+		t.Errorf("clean ref not surfaced: got %q", refs["PURE_REF"])
+	}
+	if _, mixed := refs["MIXED_REF"]; mixed {
+		t.Errorf("mixed value should not surface as clean ref: %+v", refs)
+	}
+	if _, literal := refs["LITERAL_ONLY"]; literal {
+		t.Errorf("literal value should not surface as ref: %+v", refs)
+	}
+}

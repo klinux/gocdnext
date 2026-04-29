@@ -45,6 +45,25 @@ secrets (`GOCDNEXT_SECRET_KEY`). The UI never echoes the values back
 once saved — the row shows `••••••• (stored)` and you click
 **Replace** to overwrite.
 
+### Reference a global secret instead of pasting the value
+
+Each secret row has a 🔗 button that opens a picker listing every
+configured global secret (admin-managed in *Settings → Secrets*).
+Click one and the value field becomes `{{secret:NAME}}` — at
+dispatch time the server resolves the template against the global
+table, so rotating `AWS_ACCESS_KEY_ID` once globally propagates to
+every profile that references it. Rows stored as a clean reference
+render in the editor as a chip `→ globals.NAME` instead of the
+masked placeholder.
+
+Mixed values work too (`prefix-{{secret:DB_PASSWORD}}-suffix` is
+honoured at dispatch) — only the chip rendering is skipped because
+the row carries literal text alongside the template.
+
+Failure mode is fail-closed: if the referenced global is deleted,
+dispatch refuses with a clear error rather than ship an empty env
+var into the build.
+
 The IAM key the profile carries should be scoped to the cache bucket
 + prefix only:
 

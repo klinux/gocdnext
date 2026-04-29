@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { KeyRound, Link2, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -9,6 +9,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Sheet,
   SheetContent,
@@ -24,6 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { EntityChip } from "@/components/shared/entity-chip";
 import {
   createRunnerProfile,
   deleteRunnerProfile,
@@ -33,6 +39,11 @@ import type { AdminRunnerProfile } from "@/server/queries/admin";
 
 type Props = {
   initial: AdminRunnerProfile[];
+  // Names of every global secret currently configured. Fed by the
+  // RSC so the secret-value picker shows what's available without a
+  // client-side fetch. Empty list = no globals set yet (picker
+  // surfaces a "create one in /admin/secrets first" hint).
+  globalSecretNames: string[];
 };
 
 // envRow / secretRow are draft entries the UI owns until save. The
@@ -43,7 +54,19 @@ type Props = {
 // the server never returns plaintext, while letting the admin still
 // see/keep/replace each key.
 type EnvRow = { key: string; value: string };
-type SecretRow = { key: string; value: string; existing: boolean; replace: boolean };
+// SecretRow.refTarget is set when the stored value is a single
+// `{{secret:NAME}}` template — the UI then renders the chip
+// "→ globals.NAME" in place of the masked placeholder. When the
+// admin clicks Replace and types a new value (literal or
+// `{{secret:OTHER}}`), refTarget gets cleared so the new payload
+// is what we send.
+type SecretRow = {
+  key: string;
+  value: string;
+  existing: boolean;
+  replace: boolean;
+  refTarget?: string;
+};
 
 type FormDraft = {
   id: string | null;
@@ -81,14 +104,31 @@ function blankForm(): FormDraft {
   };
 }
 
+// optimisticSecretRefs mirrors the server-side ProfileSecretRefs:
+// surfaces "→ globals.NAME" only when a secret value is a clean
+// `{{secret:NAME}}` template (no surrounding text). Used for the
+// optimistic in-memory update right after save so the editor's
+// chip rendering matches what a re-fetch would produce.
+const SECRET_REF_RE = /^\{\{\s*secret:([A-Z_][A-Z0-9_]*)\s*\}\}$/;
+function optimisticSecretRefs(secrets: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(secrets)) {
+    const m = v.match(SECRET_REF_RE);
+    if (m) out[k] = m[1]!;
+  }
+  return out;
+}
+
 function profileToDraft(p: AdminRunnerProfile): FormDraft {
   const envRows: EnvRow[] = Object.entries(p.env ?? {}).map(([k, v]) => ({ key: k, value: v }));
   envRows.push({ key: "", value: "" });
+  const refs = p.secret_refs ?? {};
   const secretRows: SecretRow[] = (p.secret_keys ?? []).map((k) => ({
     key: k,
     value: "",
     existing: true,
     replace: false,
+    refTarget: refs[k],
   }));
   secretRows.push({ key: "", value: "", existing: false, replace: true });
   return {
@@ -109,7 +149,7 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
   };
 }
 
-export function ProfilesManager({ initial }: Props) {
+export function ProfilesManager({ initial, globalSecretNames }: Props) {
   const [profiles, setProfiles] = useState<AdminRunnerProfile[]>(initial);
   const [filter, setFilter] = useState("");
   const [form, setForm] = useState<FormDraft | null>(null);
@@ -241,6 +281,7 @@ export function ProfilesManager({ initial }: Props) {
         tags: parseTags(form.tagsRaw),
         env: envMap,
         secret_keys: Object.keys(secretsMap).sort(),
+        secret_refs: optimisticSecretRefs(secretsMap),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -469,6 +510,7 @@ export function ProfilesManager({ initial }: Props) {
               <SecretRows
                 rows={form.secretRows}
                 onChange={(rows) => setForm({ ...form, secretRows: rows })}
+                globalSecretNames={globalSecretNames}
               />
 
               <div className="mt-2 flex items-center justify-end gap-2">
@@ -584,15 +626,27 @@ function EnvRows({
 // SecretRows mirrors EnvRows but treats existing entries as
 // write-protected by default — the admin must click "Replace" to
 // overwrite a stored value. The server NEVER returns plaintext, so
-// the input stays empty until replace mode is on. Removing a row
-// erases the secret on save (the wire format treats missing keys as
-// deletions on full-replace updates).
+// the input stays empty until replace mode is on.
+//
+// Each row also has a "🔗" picker button that pops a list of
+// globally-configured secrets and inserts `{{secret:NAME}}` into
+// the value field. The dispatcher resolves that template against
+// the global at run time, so admins can rotate the underlying
+// value once globally and every profile referencing it picks up
+// the new value automatically.
+//
+// Existing rows whose stored value IS a single template carry
+// `refTarget` — the UI then renders a `→ globals.NAME` chip
+// instead of the masked placeholder, so the difference between
+// "literal" and "reference" is visible without exposing the value.
 function SecretRows({
   rows,
   onChange,
+  globalSecretNames,
 }: {
   rows: SecretRow[];
   onChange: (rows: SecretRow[]) => void;
+  globalSecretNames: string[];
 }) {
   const update = (i: number, patch: Partial<SecretRow>) => {
     const next = rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
@@ -607,56 +661,184 @@ function SecretRows({
     if (next.length === 0) next.push({ key: "", value: "", existing: false, replace: true });
     onChange(next);
   };
+  // pickGlobal writes `{{secret:NAME}}` into the row's value field
+  // and switches the row into replace mode if it was an existing
+  // entry — same UX as typing a new value would be.
+  const pickGlobal = (i: number, name: string) => {
+    update(i, {
+      value: `{{secret:${name}}}`,
+      replace: true,
+      refTarget: undefined, // user-selected new ref clears the
+                            // "stored" indicator until save persists
+    });
+  };
   return (
     <div className="grid gap-2">
       <Label className="flex items-center gap-2">
         Secrets
         <span className="text-xs font-normal text-muted-foreground">
-          encrypted at rest · keys visible to admin, values never echoed back
+          encrypted at rest · pick a global with the link button to
+          inherit + auto-rotate
         </span>
       </Label>
-      {rows.map((r, i) => (
-        <div key={i} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2">
-          <Input
-            placeholder="KEY"
-            value={r.key}
-            onChange={(e) => update(i, { key: e.target.value })}
-            disabled={r.existing}
-            className="font-mono text-xs"
-          />
-          <Input
-            placeholder={r.existing && !r.replace ? "•••••••• (stored)" : "value"}
-            value={r.value}
-            onChange={(e) => update(i, { value: e.target.value })}
-            disabled={r.existing && !r.replace}
-            type="password"
-            className="font-mono text-xs"
-          />
-          {r.existing ? (
+      {rows.map((r, i) => {
+        const showAsRef = r.existing && !r.replace && r.refTarget;
+        const editable = !r.existing || r.replace;
+        return (
+          <div key={i} className="grid grid-cols-[1fr_1fr_auto_auto_auto] gap-2">
+            <Input
+              placeholder="KEY"
+              value={r.key}
+              onChange={(e) => update(i, { key: e.target.value })}
+              disabled={r.existing}
+              className="font-mono text-xs"
+            />
+            {showAsRef ? (
+              <div className="flex items-center px-2 py-1">
+                <EntityChip
+                  kind="secret"
+                  label={`globals.${r.refTarget}`}
+                  title={`References global secret "${r.refTarget}" — rotate it once, every profile picks up the new value`}
+                />
+              </div>
+            ) : (
+              <Input
+                placeholder={r.existing && !r.replace ? "•••••••• (stored)" : "value or {{secret:NAME}}"}
+                value={r.value}
+                onChange={(e) => update(i, { value: e.target.value })}
+                disabled={!editable}
+                // type=password hides typed values; templates leak
+                // their *shape* anyway (`{{secret:NAME}}`) but the
+                // hide remains worth it for actual literals.
+                type="password"
+                className="font-mono text-xs"
+              />
+            )}
+            <GlobalSecretPickerButton
+              names={globalSecretNames}
+              disabled={!editable && !showAsRef}
+              onPick={(name) => pickGlobal(i, name)}
+            />
+            {r.existing ? (
+              <Button
+                type="button"
+                variant={r.replace ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => update(i, { replace: !r.replace, value: r.replace ? "" : r.value })}
+                className="text-xs"
+              >
+                {r.replace ? "Cancel" : "Replace"}
+              </Button>
+            ) : (
+              <span aria-hidden />
+            )}
             <Button
               type="button"
-              variant={r.replace ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => update(i, { replace: !r.replace, value: r.replace ? "" : r.value })}
-              className="text-xs"
+              variant="ghost"
+              size="icon"
+              onClick={() => remove(i)}
+              disabled={!r.key && !r.value && !r.refTarget}
+              aria-label="Remove secret entry"
             >
-              {r.replace ? "Cancel" : "Replace"}
+              <X className="h-4 w-4" />
             </Button>
-          ) : (
-            <span aria-hidden />
-          )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// GlobalSecretPickerButton is the "🔗" button that opens a
+// Popover-style dropdown listing every configured global secret.
+// Click on a name → callback fires with that name, the row's value
+// becomes `{{secret:NAME}}`. Empty list shows a hint pointing at
+// /admin/secrets so the admin knows where to mint one.
+function GlobalSecretPickerButton({
+  names,
+  onPick,
+  disabled,
+}: {
+  names: string[];
+  onPick: (name: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return names;
+    return names.filter((n) => n.toLowerCase().includes(q));
+  }, [names, query]);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            onClick={() => remove(i)}
-            disabled={!r.key && !r.value}
-            aria-label="Remove secret entry"
+            disabled={disabled}
+            aria-label="Reference global secret"
+            title="Reference global secret"
           >
-            <X className="h-4 w-4" />
+            <Link2 className="h-4 w-4" />
           </Button>
+        }
+      />
+      <PopoverContent align="end" className="w-72 p-0">
+        <div className="flex flex-col">
+          <div className="border-b border-border p-2">
+            <Input
+              autoFocus
+              placeholder={
+                names.length === 0
+                  ? "No globals configured yet"
+                  : "Search globals…"
+              }
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-8 text-xs"
+              disabled={names.length === 0}
+            />
+          </div>
+          <ul className="max-h-64 overflow-y-auto py-1">
+            {names.length === 0 ? (
+              <li className="px-3 py-4 text-center text-xs text-muted-foreground">
+                No global secrets yet.{" "}
+                <a
+                  href="/admin/secrets"
+                  className="text-primary hover:underline"
+                >
+                  Create one
+                </a>{" "}
+                first.
+              </li>
+            ) : filtered.length === 0 ? (
+              <li className="px-3 py-2 text-center text-xs text-muted-foreground">
+                Nothing matches.
+              </li>
+            ) : (
+              filtered.map((n) => (
+                <li key={n}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick(n);
+                      setOpen(false);
+                      setQuery("");
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs hover:bg-accent"
+                  >
+                    <KeyRound className="size-3 text-muted-foreground" aria-hidden />
+                    {n}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
         </div>
-      ))}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

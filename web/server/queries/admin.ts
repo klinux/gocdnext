@@ -153,6 +153,11 @@ export type AdminRunnerProfile = {
   // masked indicator next to each key so the admin knows a value
   // exists without seeing it.
   secret_keys: string[];
+  // Map of {key → global secret NAME} for secrets whose stored
+  // value is a single `{{secret:NAME}}` template. Lets the editor
+  // render the chip "→ globals.NAME" instead of the masked
+  // placeholder for clean references.
+  secret_refs: Record<string, string>;
   created_at: string;
   updated_at: string;
 };

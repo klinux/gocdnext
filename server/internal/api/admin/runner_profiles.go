@@ -41,8 +41,15 @@ type runnerProfileDTO struct {
 	Config            map[string]any    `json:"config,omitempty"`
 	Env               map[string]string `json:"env"`
 	SecretKeys        []string          `json:"secret_keys"`
-	CreatedAt         string            `json:"created_at"`
-	UpdatedAt         string            `json:"updated_at"`
+	// SecretRefs maps a secret KEY → the global secret NAME it
+	// references via `{{secret:NAME}}`. Only populated for rows
+	// where the value is a single template; mixed values
+	// (template + literal text) and pure literals don't appear
+	// here. UI uses this to render "→ globals.NAME" in place of
+	// the masked-value placeholder.
+	SecretRefs map[string]string `json:"secret_refs"`
+	CreatedAt  string            `json:"created_at"`
+	UpdatedAt  string            `json:"updated_at"`
 }
 
 type runnerProfilesResponse struct {
@@ -94,7 +101,16 @@ func (h *Handler) RunnerProfiles(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]runnerProfileDTO, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, toRunnerProfileDTO(p))
+		// Pull the {{secret:NAME}} reference map per profile so the
+		// editor can render "→ globals.NAME" chips. Errors here are
+		// non-fatal: if decryption fails we just omit the refs map
+		// — the literal-vs-ref distinction degrades to "all look
+		// like literals", but the page still renders.
+		refs, err := h.store.ProfileSecretRefs(r.Context(), h.cipher, p.ID)
+		if err != nil {
+			h.log.Warn("admin runner-profiles: read refs", "profile", p.Name, "err", err)
+		}
+		out = append(out, toRunnerProfileDTO(p, refs))
 	}
 	writeJSON(w, runnerProfilesResponse{Profiles: out})
 }
@@ -135,9 +151,17 @@ func (h *Handler) CreateRunnerProfile(w http.ResponseWriter, r *http.Request) {
 			"env_keys":    sortedMapKeys(req.Env),
 			"secret_keys": sortedMapKeys(req.Secrets),
 		})
+	// Re-read refs so the create response can populate them when
+	// the new profile carries `{{secret:NAME}}` template values.
+	// Read failure here is non-fatal — the row is already
+	// persisted, refs just degrade to empty in the response.
+	refs, refsErr := h.store.ProfileSecretRefs(r.Context(), h.cipher, p.ID)
+	if refsErr != nil {
+		h.log.Warn("admin runner-profiles: read refs after create", "profile", p.Name, "err", refsErr)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(toRunnerProfileDTO(p))
+	_ = json.NewEncoder(w).Encode(toRunnerProfileDTO(p, refs))
 }
 
 // UpdateRunnerProfile handles PUT /api/v1/admin/runner-profiles/{id}.
@@ -322,7 +346,7 @@ func runnerProfileInputFromReq(req runnerProfileWriteRequest) store.RunnerProfil
 	}
 }
 
-func toRunnerProfileDTO(p store.RunnerProfile) runnerProfileDTO {
+func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerProfileDTO {
 	env := p.Env
 	if env == nil {
 		// Always emit a JSON object — the UI iterates `Object.entries`
@@ -333,6 +357,9 @@ func toRunnerProfileDTO(p store.RunnerProfile) runnerProfileDTO {
 	keys := p.SecretKeys
 	if keys == nil {
 		keys = []string{}
+	}
+	if refs == nil {
+		refs = map[string]string{}
 	}
 	return runnerProfileDTO{
 		ID:                p.ID.String(),
@@ -350,6 +377,7 @@ func toRunnerProfileDTO(p store.RunnerProfile) runnerProfileDTO {
 		Config:            p.Config,
 		Env:               env,
 		SecretKeys:        keys,
+		SecretRefs:        refs,
 		CreatedAt:         p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:         p.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
