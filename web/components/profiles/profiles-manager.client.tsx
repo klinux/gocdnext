@@ -10,10 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   Sheet,
   SheetContent,
@@ -761,11 +764,16 @@ function SecretRows({
   );
 }
 
-// GlobalSecretPickerButton is the "🔗" button that opens a
-// Popover-style dropdown listing every configured global secret.
-// Click on a name → callback fires with that name, the row's value
-// becomes `{{secret:NAME}}`. Empty list shows a hint pointing at
+// GlobalSecretPickerButton is the "🔗" button that opens a Dialog
+// listing every configured global secret. Click on a name →
+// callback fires with that name, the row's value becomes
+// `{{secret:NAME}}`. Empty list shows a hint pointing at
 // /admin/secrets so the admin knows where to mint one.
+//
+// Built on Dialog (not Popover) because the picker lives inside a
+// Sheet (which is also a Dialog under the hood); base-ui's
+// Popover positioner has trouble computing layout when the
+// trigger is in a modal stacking context. Dialogs nest cleanly.
 function GlobalSecretPickerButton({
   names,
   onPick,
@@ -783,8 +791,14 @@ function GlobalSecretPickerButton({
     return names.filter((n) => n.toLowerCase().includes(q));
   }, [names, query]);
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
+    >
+      <DialogTrigger
         render={
           <Button
             type="button"
@@ -802,31 +816,30 @@ function GlobalSecretPickerButton({
           </Button>
         }
       />
-      <PopoverContent
-        align="end"
-        // Sheet content is z-50; bumping the popover above keeps
-        // it visible when the picker is opened from inside the
-        // profile editor sheet (the portal lands on document.body
-        // but stacking gets noisy when a Sheet has its own
-        // backdrop in the same z-50 tier).
-        className="z-[60] w-72 p-0"
-      >
-        <div className="flex flex-col">
-          <div className="border-b border-border p-2">
-            <Input
-              autoFocus
-              placeholder={
-                names.length === 0
-                  ? "No globals configured yet"
-                  : "Search globals…"
-              }
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="h-8 text-xs"
-              disabled={names.length === 0}
-            />
-          </div>
-          <ul className="max-h-64 overflow-y-auto py-1">
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <KeyRound className="size-4" aria-hidden /> Reference a global secret
+          </DialogTitle>
+          <DialogDescription>
+            Pick a global secret. Its value gets resolved at dispatch
+            time — rotate it once globally and every profile that
+            references it picks up the new value.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Input
+            autoFocus
+            placeholder={
+              names.length === 0
+                ? "No globals configured yet"
+                : "Search globals…"
+            }
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            disabled={names.length === 0}
+          />
+          <ul className="max-h-64 overflow-y-auto rounded-md border border-border">
             {names.length === 0 ? (
               <li className="px-3 py-4 text-center text-xs text-muted-foreground">
                 No global secrets yet.{" "}
@@ -839,7 +852,7 @@ function GlobalSecretPickerButton({
                 first.
               </li>
             ) : filtered.length === 0 ? (
-              <li className="px-3 py-2 text-center text-xs text-muted-foreground">
+              <li className="px-3 py-3 text-center text-xs text-muted-foreground">
                 Nothing matches.
               </li>
             ) : (
@@ -852,9 +865,12 @@ function GlobalSecretPickerButton({
                       setOpen(false);
                       setQuery("");
                     }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs hover:bg-accent"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-xs hover:bg-accent"
                   >
-                    <KeyRound className="size-3 text-muted-foreground" aria-hidden />
+                    <KeyRound
+                      className="size-3 text-muted-foreground"
+                      aria-hidden
+                    />
                     {n}
                   </button>
                 </li>
@@ -862,7 +878,7 @@ function GlobalSecretPickerButton({
             )}
           </ul>
         </div>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   );
 }
