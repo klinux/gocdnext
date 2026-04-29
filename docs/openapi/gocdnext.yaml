@@ -1321,6 +1321,23 @@ components:
             container; the runner also redacts the values from
             log lines.
           example: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+        secret_refs:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Map of {profile-secret KEY → global secret NAME} for
+            secrets whose stored value is a single
+            `{{secret:NAME}}` template. Admin UIs use this to
+            render "→ globals.NAME" chips in place of the masked
+            placeholder so the operator can tell at a glance
+            which rows inherit (and auto-rotate with) a global.
+            Mixed values (template + literal text) and pure
+            literals don't appear here — the dispatcher still
+            resolves their templates, but the read surface treats
+            them as opaque.
+          example:
+            AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID
+            DB_PASSWORD: PROD_DB_PASSWORD
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -1364,3 +1381,12 @@ components:
             and only ever returns secret_keys (not values) on
             read. Full-replace on update — keys missing from the
             payload are deleted from the row.
+
+            Values may contain `{{secret:NAME}}` templates that
+            reference globals. At dispatch time the runner
+            resolves the template against the global secrets
+            table, so admins can rotate a value once globally
+            and every profile that references it picks up the
+            new value automatically. Templates can compose with
+            literal text (`prefix-{{secret:DB_PASSWORD}}-suffix`).
+            Unresolvable references fail the dispatch closed.
