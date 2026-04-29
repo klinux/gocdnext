@@ -29,6 +29,14 @@ type runnerProfileEntry struct {
 	MaxMem            string         `yaml:"max_mem"`
 	Tags              []string       `yaml:"tags"`
 	Config            map[string]any `yaml:"config"`
+	// Env carries plaintext, non-secret runtime config (bucket
+	// names, regions, GOCDNEXT_LAYER_CACHE_* defaults). Plain
+	// values.yaml is the right place — they're not credentials.
+	// Secrets are deliberately NOT seeded from this YAML: a values
+	// file commonly lives in git, plaintext credentials there are
+	// a foot-gun. Use the admin UI (or sealed-secrets) to manage
+	// `secrets:` post-install.
+	Env map[string]string `yaml:"env"`
 }
 
 // SeedRunnerProfilesFromFile reads a YAML file and upserts each
@@ -73,6 +81,9 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 			MaxMem:            p.MaxMem,
 			Tags:              p.Tags,
 			Config:            p.Config,
+			Env:               p.Env,
+			// Secrets intentionally NOT seeded from YAML — see the
+			// type comment for the rationale.
 		}
 		existing, err := s.GetRunnerProfileByName(ctx, p.Name)
 		switch {
@@ -85,7 +96,11 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 		case err != nil:
 			return touched, fmt.Errorf("seed runner profiles: lookup %q: %w", p.Name, err)
 		default:
-			if err := s.UpdateRunnerProfile(ctx, nil, existing.ID, input); err != nil {
+			// UpdateRunnerProfileFromSeed leaves the `secrets`
+			// column alone — declarative seed handles env +
+			// resources + tags; admin UI handles secrets. No
+			// double-management surprise on reboot.
+			if err := s.UpdateRunnerProfileFromSeed(ctx, existing.ID, input); err != nil {
 				return touched, fmt.Errorf("seed runner profiles: update %q: %w", p.Name, err)
 			}
 		}

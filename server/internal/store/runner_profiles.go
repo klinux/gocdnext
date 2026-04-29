@@ -206,6 +206,54 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 	return nil
 }
 
+// UpdateRunnerProfileFromSeed is the seed-friendly variant: same
+// shape as UpdateRunnerProfile but DOES NOT touch the `secrets`
+// column. Lets operators declaratively manage every other field
+// from values.yaml (resources, tags, env) while still letting an
+// admin add credentials via the UI without losing them on the next
+// reboot.
+//
+// The seed loader uses this; the admin handler still uses the
+// full-replace UpdateRunnerProfile so a UI edit can clear secrets
+// when the operator wants.
+func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, in RunnerProfileInput) error {
+	cfg, err := encodeProfileConfig(in.Config)
+	if err != nil {
+		return err
+	}
+	envBytes, err := encodeProfileEnv(in.Env)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `
+        UPDATE runner_profiles
+        SET name = $2, description = $3, engine = $4,
+            default_image = $5,
+            default_cpu_request = $6, default_cpu_limit = $7,
+            default_mem_request = $8, default_mem_limit = $9,
+            max_cpu = $10, max_mem = $11,
+            tags = $12, config = $13,
+            env = $14,
+            updated_at = NOW()
+        WHERE id = $1
+    `, toPgUUID(id),
+		in.Name, in.Description, in.Engine,
+		in.DefaultImage,
+		in.DefaultCPURequest, in.DefaultCPULimit,
+		in.DefaultMemRequest, in.DefaultMemLimit,
+		in.MaxCPU, in.MaxMem,
+		normalizeTags(in.Tags), cfg,
+		envBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("store: seed-update runner profile %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRunnerProfileNotFound
+	}
+	return nil
+}
+
 // ResolveProfileEnvByName is the dispatch path: scheduler asks for a
 // profile by name and wants the merged env (plaintext + decrypted
 // secrets) ready to drop into a JobAssignment, plus the list of

@@ -312,24 +312,48 @@ pluginCatalogDir: ""
 #           description: target environment (staging|prod)
 extraPlugins: {}
 
-runnerProfiles: []
-# Example:
-# runnerProfiles:
-#   - name: default
-#     description: vanilla pool
-#     engine: kubernetes
-#     default_image: alpine:3.20
-#     default_cpu_request: 100m
-#     default_mem_request: 256Mi
-#     max_cpu: "4"
-#     max_mem: 8Gi
-#     tags: [linux]
-#   - name: gpu
-#     engine: kubernetes
-#     default_image: nvidia/cuda:12-runtime
-#     max_cpu: "8"
-#     max_mem: 32Gi
-#     tags: [gpu]
+# Default seeded catalogue. The "default" profile ships out of the
+# box so operators don't have to know about runner profiles before
+# their first pipeline runs — pipelines reference it explicitly via
+# `agent.profile: default` and pick up the bundled CPU/memory bounds
+# without any extra config. Override this list to tighten/widen the
+# bounds, add tags, or seed extra profiles (e.g. "gpu", "fast-builds")
+# with their own env + secrets.
+#
+# The bundled "default" deliberately ships:
+#   - no `default_image` (jobs / plugins decide what to run)
+#   - no `tags`           (matches any agent — no scheduling stalls)
+#   - no `env` / `secrets` (operator-specific; add per-cluster needs)
+runnerProfiles:
+  - name: default
+    description: "Sensible runtime bounds for any pipeline. Reference via `agent.profile: default`."
+    engine: kubernetes
+    default_cpu_request: 100m
+    default_cpu_limit: "1"
+    default_mem_request: 256Mi
+    default_mem_limit: 1Gi
+    max_cpu: "4"
+    max_mem: 8Gi
+    tags: []
+# Example of additional seeded profiles. Append to the list above
+# (don't replace — that drops the bundled `default`).
+# - name: fast-builds
+#   description: S3 layer cache for buildx jobs.
+#   engine: kubernetes
+#   default_cpu_request: 500m
+#   default_mem_request: 1Gi
+#   max_cpu: "8"
+#   max_mem: 16Gi
+#   tags: [linux, docker]
+#   env:
+#     GOCDNEXT_LAYER_CACHE_BUCKET: gocdnext-cache
+#     GOCDNEXT_LAYER_CACHE_REGION: us-east-1
+#   # secrets are seeded in plain text here — fine for ops/ci
+#   # secrets in private values.yaml or sealed-secrets, NOT for
+#   # anything that should rotate often (use the admin UI for those).
+#   secrets:
+#     AWS_ACCESS_KEY_ID:     # set via --set or sealed-secret
+#     AWS_SECRET_ACCESS_KEY:
 
 # ----- GitHub App ------------------------------------------------------
 
