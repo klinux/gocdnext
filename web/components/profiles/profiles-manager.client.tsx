@@ -332,12 +332,15 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         </Button>
       </div>
 
+      {/* Table wrapper mirrors users-table / groups: bordered card
+          with rounded corners and bg-card, so all admin lists read
+          as one visual family. */}
+      <div className="overflow-hidden rounded-lg border border-border bg-card">
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
             <TableHead>Engine</TableHead>
-            <TableHead>Default image</TableHead>
             <TableHead>Cap (cpu / mem)</TableHead>
             <TableHead>Tags</TableHead>
             <TableHead className="w-[120px]" />
@@ -346,7 +349,7 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         <TableBody>
           {filtered.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-8">
+              <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">
                 {profiles.length === 0
                   ? "No runner profiles yet — create one above."
                   : "No profiles match the filter."}
@@ -364,7 +367,6 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                 <TableCell>
                   <Badge variant="outline">{p.engine}</Badge>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{p.default_image || "—"}</TableCell>
                 <TableCell className="font-mono text-xs">
                   {p.max_cpu || "—"} / {p.max_mem || "—"}
                 </TableCell>
@@ -405,6 +407,7 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
           )}
         </TableBody>
       </Table>
+      </div>
 
       <Sheet open={form !== null} onOpenChange={(open) => !open && setForm(null)}>
         <SheetContent
@@ -447,13 +450,11 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                   placeholder="What this profile is for"
                 />
               </Field>
-              <Field label="Default image">
-                <Input
-                  value={form.default_image}
-                  onChange={(e) => setForm({ ...form, default_image: e.target.value })}
-                  placeholder="alpine:3.20"
-                />
-              </Field>
+              {/* Image is intentionally NOT a profile field — it's
+                  a job/plugin-level concern. Profiles parameterise
+                  the runtime (resources, tags, env, secrets); what
+                  to run lands in `image:` on the job or in the
+                  plugin's own Dockerfile. */}
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Default CPU req">
                   <Input
