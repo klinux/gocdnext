@@ -44,6 +44,21 @@ Next steps:
    devDatabase.enabled=false.
 {{- end }}
 
+{{- if eq .Values.artifacts.backend "filesystem" }}
+
+⚠ Storage layout — artifact backend is `filesystem` ({{ .Values.artifacts.filesystem.accessMode }}{{ if .Values.artifacts.filesystem.existingClaim }}, existing claim {{ .Values.artifacts.filesystem.existingClaim }}{{ end }}).
+{{- if gt (int .Values.server.replicas) 1 }}
+   server.replicas={{ .Values.server.replicas }} requires every replica to read what
+   any other replica wrote. {{ if eq .Values.artifacts.filesystem.accessMode "ReadWriteMany" }}RWM is OK — make sure the underlying storage
+   class actually supports concurrent multi-node mounts (NFS, CephFS,
+   Longhorn-RWX).{{ end }}
+{{- else }}
+   Single-replica: filesystem on RWO is fine. For HA later, switch to
+   artifacts.backend=s3 (object storage, recommended) OR filesystem
+   with accessMode=ReadWriteMany backed by NFS / CephFS / Longhorn-RWX.
+{{- end }}
+{{- end }}
+
 {{- if not .Values.server.publicBase }}
 
 ⚠ server.publicBase is empty. GitHub webhook auto-register and the

@@ -158,6 +158,25 @@ artifacts:
     storageClass: ""
     size: 50Gi
     root: /var/lib/gocdnext/artifacts
+    # accessMode controls how the PVC the chart provisions is
+    # mounted. Default ReadWriteOnce works for single-replica
+    # deployments. For HA (server.replicas > 1) you MUST use
+    # ReadWriteMany — every replica needs to read what any other
+    # replica wrote. Backed by NFS, CephFS, Longhorn-RWX, or any
+    # CSI driver that supports RWX. The chart fails at template
+    # time with a clear error if replicas > 1 and accessMode
+    # stays ReadWriteOnce.
+    #
+    # For object-storage HA (recommended), set
+    # `artifacts.backend: s3` and skip this entire PVC path —
+    # multiple replicas just talk to the same bucket.
+    accessMode: ReadWriteOnce
+    # existingClaim points the deployment at a PVC the operator
+    # already provisioned (e.g. an NFS PV bound to a static name)
+    # instead of having the chart create one. Useful when the
+    # storage layer is managed outside of Helm. Empty = chart
+    # creates the PVC.
+    existingClaim: ""
   s3:
     bucket: ""
     region: us-east-1

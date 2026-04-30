@@ -1,11 +1,30 @@
-{{- if and .Values.server.enabled (eq .Values.artifacts.backend "filesystem") }}
+{{- /*
+HA-correctness guard: filesystem backend + multiple server
+replicas + ReadWriteOnce = artifacts silently invisible across
+pods (each replica sees only what it itself wrote). Catch the
+misconfiguration at template time so the operator sees a clear
+error on the first `helm install` instead of debugging "missing
+artifact" reports later. Bypass: switch to ReadWriteMany (NFS,
+CephFS, Longhorn-RWX) or switch backend to s3/gcs/MinIO.
+*/}}
+{{- if and (eq .Values.artifacts.backend "filesystem") (gt (int .Values.server.replicas) 1) (ne .Values.artifacts.filesystem.accessMode "ReadWriteMany") }}
+{{- fail (printf "artifacts.backend=filesystem with server.replicas=%d requires artifacts.filesystem.accessMode=ReadWriteMany. Either set accessMode to RWM (NFS/CephFS-backed PVC), drop server.replicas to 1, or use artifacts.backend=s3 (recommended for HA)." (int .Values.server.replicas)) }}
+{{- end }}
+
+{{- /*
+Skip the PVC entirely when the operator points at an
+externally-provisioned claim — common pattern when the NFS PV is
+managed by a separate Terraform / GitOps stack and we just want
+the chart to mount it.
+*/}}
+{{- if and .Values.server.enabled (eq .Values.artifacts.backend "filesystem") (not .Values.artifacts.filesystem.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "gocdnext.server.fullname" . }}-artifacts
   labels: {{- include "gocdnext.labels" . | nindent 4 }}
 spec:
-  accessModes: ["ReadWriteOnce"]
+  accessModes: [{{ .Values.artifacts.filesystem.accessMode | quote }}]
   {{- with .Values.artifacts.filesystem.storageClass }}
   storageClassName: {{ . | quote }}
   {{- end }}
