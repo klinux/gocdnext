@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -206,6 +207,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Runtime override: when the admin saved storage config via the
+	// /settings UI, the row in platform_settings wins over env. Env
+	// stays the fallback so a corrupted/missing row never bricks
+	// the boot — operators can always git-revert their values.yaml
+	// + restart to recover.
+	if err := applyArtifactStorageOverride(context.Background(), st, cipher, cfg, logger); err != nil {
+		logger.Warn("artifacts: DB override failed, falling back to env", "err", err)
+	}
+
 	artifactStore, artifactHandler, err := buildArtifactBackend(cfg, logger)
 	if err != nil {
 		logger.Error("artifacts: init", "err", err)
@@ -382,6 +392,24 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	// caller tries to set secrets, which is the correct fail-closed
 	// behaviour for a deployment without GOCDNEXT_SECRET_KEY.
 	adminHandler.SetCipher(cipher)
+	// Snapshot env-derived storage config so /admin/storage can
+	// surface "this is what env says" when no DB override exists —
+	// pre-populates the form on first open without exposing
+	// secret values.
+	adminHandler.SetArtifactsEnv(adminapi.ArtifactsEnvSnapshot{
+		Backend:               cfg.ArtifactsBackend,
+		S3Bucket:              cfg.ArtifactsS3Bucket,
+		S3Region:              cfg.ArtifactsS3Region,
+		S3Endpoint:            cfg.ArtifactsS3Endpoint,
+		S3UsePathStyle:        cfg.ArtifactsS3UsePathStyle,
+		S3EnsureBucket:        cfg.ArtifactsS3EnsureBucket,
+		S3AccessKeyConfigured: cfg.ArtifactsS3AccessKey != "",
+		S3SecretKeyConfigured: cfg.ArtifactsS3SecretKey != "",
+		GCSBucket:             cfg.ArtifactsGCSBucket,
+		GCSProjectID:          cfg.ArtifactsGCSProjectID,
+		GCSEnsureBucket:       cfg.ArtifactsGCSEnsureBucket,
+		GCSCredsPresent:       cfg.ArtifactsGCSCredentialsFile != "" || cfg.ArtifactsGCSCredentialsJSON != "",
+	})
 	// authProvidersHandler + vcsIntegrationsHandler are wired
 	// later (after the cipher + auth registry are ready). Declared
 	// here so the router block can reference them.
@@ -577,6 +605,9 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 		p.Post("/api/v1/admin/users", adminHandler.CreateUser)
 		p.Put("/api/v1/admin/users/{id}/role", adminHandler.SetUserRole)
 		p.Get("/api/v1/admin/audit", adminHandler.Audit)
+		p.Get("/api/v1/admin/storage", adminHandler.Storage)
+		p.Put("/api/v1/admin/storage", adminHandler.SetStorage)
+		p.Delete("/api/v1/admin/storage", adminHandler.DeleteStorage)
 		p.Get("/api/v1/admin/scm-credentials", adminHandler.SCMCredentials)
 		p.Post("/api/v1/admin/scm-credentials", adminHandler.UpsertSCMCredential)
 		p.Delete("/api/v1/admin/scm-credentials/{id}", adminHandler.DeleteSCMCredential)
@@ -696,6 +727,104 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	grpcServer.GracefulStop()
+}
+
+// PlatformSettingArtifactStorage is the canonical key for the
+// runtime-mutable artifact backend config. UI writes to this row;
+// boot reads it; env stays the fallback when the row is missing.
+const platformSettingArtifactStorage = "artifacts.storage"
+
+// applyArtifactStorageOverride reads platform_settings for the
+// artifact backend and overlays it on the env-derived cfg in
+// place. Missing row, missing cipher, or unmarshal errors all
+// degrade gracefully: log + return without mutating cfg, so the
+// caller boots from env.
+//
+// Shape of the value JSONB:
+//
+//	{ "backend": "s3", "bucket": "...", "region": "...",
+//	  "endpoint": "...", "use_path_style": false,
+//	  "ensure_bucket": false }
+//
+// or for gcs:
+//
+//	{ "backend": "gcs", "bucket": "...", "project_id": "...",
+//	  "ensure_bucket": false }
+//
+// Credentials (when present) are AEAD-sealed and decrypted to:
+//   - s3:  { "access_key": "...", "secret_key": "..." }
+//   - gcs: { "service_account_json": "<full sa JSON>" }
+//
+// The keys above are the contract; see admin handler for
+// validation.
+func applyArtifactStorageOverride(ctx context.Context, st *store.Store, cipher *crypto.Cipher, cfg *config.Config, logger *slog.Logger) error {
+	row, err := st.GetPlatformSetting(ctx, platformSettingArtifactStorage)
+	if errors.Is(err, store.ErrPlatformSettingNotFound) {
+		return nil // no override — keep env config
+	}
+	if err != nil {
+		return err
+	}
+
+	backend, _ := row.Value["backend"].(string)
+	switch backend {
+	case "":
+		return fmt.Errorf("missing 'backend' field")
+	case "filesystem", "s3", "gcs":
+		// fall through
+	default:
+		return fmt.Errorf("unknown backend %q", backend)
+	}
+	cfg.ArtifactsBackend = backend
+
+	creds, err := store.DecryptPlatformCredentials(cipher, row.CredentialsEnc)
+	if err != nil {
+		return err
+	}
+
+	switch backend {
+	case "s3":
+		if v, ok := row.Value["bucket"].(string); ok {
+			cfg.ArtifactsS3Bucket = v
+		}
+		if v, ok := row.Value["region"].(string); ok && v != "" {
+			cfg.ArtifactsS3Region = v
+		}
+		if v, ok := row.Value["endpoint"].(string); ok {
+			cfg.ArtifactsS3Endpoint = v
+		}
+		if v, ok := row.Value["use_path_style"].(bool); ok {
+			cfg.ArtifactsS3UsePathStyle = v
+		}
+		if v, ok := row.Value["ensure_bucket"].(bool); ok {
+			cfg.ArtifactsS3EnsureBucket = v
+		}
+		if creds["access_key"] != "" {
+			cfg.ArtifactsS3AccessKey = creds["access_key"]
+		}
+		if creds["secret_key"] != "" {
+			cfg.ArtifactsS3SecretKey = creds["secret_key"]
+		}
+	case "gcs":
+		if v, ok := row.Value["bucket"].(string); ok {
+			cfg.ArtifactsGCSBucket = v
+		}
+		if v, ok := row.Value["project_id"].(string); ok {
+			cfg.ArtifactsGCSProjectID = v
+		}
+		if v, ok := row.Value["ensure_bucket"].(bool); ok {
+			cfg.ArtifactsGCSEnsureBucket = v
+		}
+		if creds["service_account_json"] != "" {
+			// The store reads inline JSON; we never need to write
+			// to a file in this path because the env-file fallback
+			// only matters when the operator chose to mount one.
+			cfg.ArtifactsGCSCredentialsJSON = creds["service_account_json"]
+		}
+	}
+	logger.Info("artifacts backend: applied DB override",
+		"key", row.Key, "backend", backend, "updated_at", row.UpdatedAt)
+	return nil
 }
 
 // buildArtifactBackend wires the configured artefact Store. Backends:

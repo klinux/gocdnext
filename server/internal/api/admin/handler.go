@@ -39,6 +39,25 @@ type WiringState struct {
 	ChecksReporterOn bool
 }
 
+// ArtifactsEnvSnapshot is the env-derived artifact config the
+// /admin/storage handler returns when no DB override exists. Lets
+// the UI prepopulate the form with what the boot path is actually
+// using without hooking the full *config.Config into the handler.
+type ArtifactsEnvSnapshot struct {
+	Backend             string
+	S3Bucket            string
+	S3Region            string
+	S3Endpoint          string
+	S3UsePathStyle      bool
+	S3EnsureBucket      bool
+	S3AccessKeyConfigured bool
+	S3SecretKeyConfigured bool
+	GCSBucket           string
+	GCSProjectID        string
+	GCSEnsureBucket     bool
+	GCSCredsPresent     bool
+}
+
 // Handler owns the /api/v1/admin/* routes.
 type Handler struct {
 	store   *store.Store
@@ -46,6 +65,10 @@ type Handler struct {
 	vcs     *vcs.Registry
 	wiring  WiringState
 	log     *slog.Logger
+	// artifacts captures the env-derived storage config so the
+	// /admin/storage handler can surface it as the "source: env"
+	// fallback. Wired post-construction via SetArtifactsEnv.
+	artifacts ArtifactsEnvSnapshot
 	// cipher is wired post-construction via SetCipher so the
 	// existing test harness (which builds Handler with NewHandler
 	// and never touches secrets) keeps compiling. Endpoints that
@@ -63,6 +86,14 @@ func NewHandler(s *store.Store, sweeper *retention.Sweeper, vcsRegistry *vcs.Reg
 		log = slog.Default()
 	}
 	return &Handler{store: s, sweeper: sweeper, vcs: vcsRegistry, wiring: wiring, log: log}
+}
+
+// SetArtifactsEnv records the env-derived artifact storage
+// configuration so the /admin/storage GET can surface it as the
+// "source: env" snapshot when no DB override exists. Call once
+// during boot after parsing config.
+func (h *Handler) SetArtifactsEnv(s ArtifactsEnvSnapshot) {
+	h.artifacts = s
 }
 
 // SetCipher attaches the AEAD used to encrypt runner profile

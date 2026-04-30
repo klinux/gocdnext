@@ -57,6 +57,8 @@ const (
 	AuditActionRunnerProfileCreate = "runner_profile.create"
 	AuditActionRunnerProfileUpdate = "runner_profile.update"
 	AuditActionRunnerProfileDelete = "runner_profile.delete"
+	AuditActionPlatformSettingSet  = "platform_setting.set"
+	AuditActionPlatformSettingDel  = "platform_setting.delete"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata

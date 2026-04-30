@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Archive,
+  Database,
   Lock,
   Plug,
   Webhook,
@@ -30,6 +31,7 @@ const tabs: Tab[] = [
   { label: "Health", href: "/settings/health" as Route, matchPrefix: "/settings/health", icon: Activity },
   { label: "Webhooks", href: "/settings/webhooks" as Route, matchPrefix: "/settings/webhooks", icon: Webhook },
   { label: "Retention", href: "/settings/retention" as Route, matchPrefix: "/settings/retention", icon: Archive },
+  { label: "Storage", href: "/settings/storage" as Route, matchPrefix: "/settings/storage", icon: Database },
   { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations", icon: Plug },
   { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth", icon: Lock },
 ];

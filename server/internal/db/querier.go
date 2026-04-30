@@ -109,6 +109,8 @@ type Querier interface {
 	DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
+	// Removes a setting; the boot path then falls back to env config.
+	DeletePlatformSetting(ctx context.Context, key string) error
 	// Returns the number of project rows deleted (0 or 1). ON DELETE
 	// CASCADE on every foreign key that points at projects carries
 	// the children (pipelines → materials → runs → artifacts, secrets,
@@ -227,6 +229,11 @@ type Querier interface {
 	// cheaper than two for what's already the hottest path on
 	// webhook-heavy workloads.
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	// Single-row lookup by string key. Returns the full envelope so
+	// the caller can decrypt the secret half locally with the cipher
+	// (no plaintext crosses the store boundary unless the caller
+	// explicitly decrypts).
+	GetPlatformSetting(ctx context.Context, key string) (PlatformSetting, error)
 	// Surfaces the per-project log_archive_enabled override (NULL =
 	// inherit global). Used by the archiver when resolving effective
 	// policy for a job.
@@ -761,6 +768,10 @@ type Querier interface {
 	// last-known-good SHA alongside the error rather than a blank.
 	UpsertMaterialPollState(ctx context.Context, arg UpsertMaterialPollStateParams) error
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
+	// Idempotent write. Replaces value + credentials_enc on key
+	// collision. updated_at refreshes on every write so audit / UI
+	// "last changed" stays honest.
+	UpsertPlatformSetting(ctx context.Context, arg UpsertPlatformSettingParams) (PlatformSetting, error)
 	// config_path defaults to '.gocdnext' at the SQL level. Apply
 	// callers that don't set it (legacy path, drift re-apply) get
 	// that default naturally via COALESCE on the column-side default.

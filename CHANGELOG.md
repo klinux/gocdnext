@@ -6,6 +6,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.0 — 2026-04-29
+
+Focused release: artifact storage configuration moves out of the
+env-only swimlane and into the admin UI. Operators can now point
+the control plane at a different S3 / GCS bucket without rebuilding
+a Helm release; the env path stays as the boot-time fallback.
+
+### Highlights
+
+- **Storage backend config in the UI** — new `/settings/storage`
+  tab. GET/PUT/DELETE on `/api/v1/admin/storage` back a
+  filesystem / S3 / GCS picker with per-backend validation and
+  AEAD-sealed credentials. The DB override wins over env when
+  present; clearing the override falls back to env.
+- **Generic `platform_settings` table** — one key/value/secret row
+  shape that future runtime-mutable platform config (SCM defaults,
+  retention overrides) reuses without a per-feature migration.
+- **Restart-required surfacing** — saves return
+  `X-Gocdnext-Restart-Required: true`; the UI shows an amber
+  banner so the operator knows to roll the server pod. Hot-reload
+  on the dispatch path is on the roadmap.
+- **Audit trail for platform settings** — `platform_setting.set`
+  and `platform_setting.delete` audit events record the actor +
+  backend kind + credential key names for compliance review.
+
+### Compatibility
+
+- No breaking changes for existing deployments — the env path
+  (`GOCDNEXT_ARTIFACTS_*`) keeps working unchanged. The new DB
+  override is opt-in: nothing happens until an admin saves a
+  config in `/settings/storage`.
+- Migration `00031_platform_settings.sql` runs on boot. Forward-
+  only; no destructive operation on existing data.
+
+### Schema migrations
+
+- `00031_platform_settings.sql` — generic key/value table for
+  runtime-mutable platform configuration with AEAD-encrypted
+  credentials column.
+
 ## v0.3.0 — 2026-04-30
 
 Big release. Real-cluster smoke surfaced enough rough edges that

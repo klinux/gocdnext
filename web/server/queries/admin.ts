@@ -105,6 +105,24 @@ export async function listGlobalSecrets(): Promise<SecretsList["secrets"]> {
   return secrets;
 }
 
+// StorageConfig is what the /api/v1/admin/storage GET returns.
+// `value` carries non-secret backend config; `credential_keys`
+// is a name-only list (server never echoes credential VALUES).
+// `source` distinguishes the DB override from the env fallback —
+// the UI shows a different banner per source.
+export type StorageConfig = {
+  backend: "filesystem" | "s3" | "gcs";
+  value: Record<string, unknown>;
+  credential_keys: string[];
+  updated_at?: string;
+  updated_by?: string;
+  source: "db" | "env";
+};
+
+export async function getStorageConfig(): Promise<StorageConfig> {
+  return readJSON<StorageConfig>("/api/v1/admin/storage");
+}
+
 export async function listAdminUsers(): Promise<UsersList> {
   return readJSON<UsersList>("/api/v1/admin/users");
 }

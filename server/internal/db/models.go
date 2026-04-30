@@ -219,6 +219,14 @@ type Pipeline struct {
 	UpdatedAt         pgtype.Timestamptz
 }
 
+type PlatformSetting struct {
+	Key            string
+	Value          []byte
+	CredentialsEnc []byte
+	UpdatedAt      pgtype.Timestamptz
+	UpdatedBy      pgtype.UUID
+}
+
 type Project struct {
 	ID                pgtype.UUID
 	Slug              string
