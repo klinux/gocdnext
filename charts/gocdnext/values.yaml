@@ -19,51 +19,11 @@ server:
     type: ClusterIP
     httpPort: 8153
     grpcPort: 8154
-  ingress:
-    enabled: false
-    className: nginx
-    # Single host shorthand (kept for back-compat). Multi-host
-    # deployments use `hosts` below — when non-empty it overrides
-    # `host` entirely.
-    host: gocdnext.example.com
-    hosts: []
-    # Free-form annotations merged into the rendered Ingress.
-    # Common cases:
-    #   cert-manager.io/cluster-issuer: letsencrypt-prod
-    #   nginx.ingress.kubernetes.io/proxy-body-size: 100m
-    #   external-dns.alpha.kubernetes.io/hostname: gocdnext.example.com
-    annotations: {}
-    pathType: Prefix
-    path: /
-    tls: false
-    tlsSecretName: ""
-  # Gateway API alternative — HTTPRoute + (optional) Gateway. Use
-  # this when your cluster runs an Envoy/Cilium/Istio/APISIX
-  # gateway operator that consumes Gateway resources. Mutually
-  # exclusive with ingress; the chart lets both render but you'd
-  # typically pick one.
-  gateway:
-    enabled: false
-    # parentRefs the HTTPRoute attaches to. Two shapes:
-    #   - `name: my-gateway, namespace: gateway-system, sectionName: https`
-    #   - shorthand: just `name` if same namespace + default
-    # When empty AND createGateway: true, the chart creates a
-    # Gateway in this release's namespace named
-    # `<release>-gocdnext` and points the HTTPRoute at it.
-    parentRefs: []
-    # createGateway controls whether the chart materialises its
-    # own Gateway resource. False = expect operator to provide
-    # one and reference it via parentRefs.
-    createGateway: false
-    # gatewayClassName picked up only when createGateway: true.
-    gatewayClassName: ""
-    # Same hostnames apply to the HTTPRoute regardless of who
-    # owns the Gateway.
-    hostnames: []
-    annotations: {}
-  # Externally-reachable URL (webhook + artifact signed URLs). If
-  # agents run in-cluster and ingress.enabled=false, use
-  # http://<release>-server:8153.
+  # Routing for the server lives at the TOP-LEVEL `ingress` /
+  # `gateway` blocks below — one resource per host with multiple
+  # paths is the only K8s-portable model (multiple Ingress
+  # resources targeting the same host is undefined behaviour
+  # across controllers; nginx merges them, others reject).
   publicBase: ""
   resources:
     requests:
@@ -142,54 +102,49 @@ web:
   service:
     type: ClusterIP
     port: 3000
-  ingress:
-    enabled: false
-    className: nginx
-    host: ui.gocdnext.example.com
-    hosts: []
-    annotations: {}
-    pathType: Prefix
-    path: /
-    tls: false
-    tlsSecretName: ""
-  # Gateway API alternative for the web UI. Same shape as the
-  # server.gateway block — see the comment there for fields.
-  gateway:
-    enabled: false
-    parentRefs: []
-    createGateway: false
-    gatewayClassName: ""
-    hostnames: []
-    annotations: {}
+  # Web routing flows through the top-level `ingress` /
+  # `gateway` blocks below. There's no per-component web ingress
+  # by design — see the routing comment on the server section.
 
-# ----- unified routing (single host: web at /, server at /api/...) ----
-# Same-origin pattern — one hostname routes API + UI through a
-# single Ingress (or HTTPRoute). Cookies + OIDC + signed URLs
-# stop fighting CORS, and the operator manages one DNS + one TLS
-# cert. Recommended for new deployments.
+# ----- routing (single host, web at /, server at /api/...) ------------
+# Same-origin pattern — ONE Ingress (or HTTPRoute) per host with
+# multiple paths is the only K8s-portable model: nginx-ingress
+# happens to merge multiple Ingress resources targeting the same
+# host, but most controllers reject the duplicate or pick one
+# arbitrarily, so the chart only ever emits ONE resource per host.
+#
+# Cookies, OIDC redirects and signed URLs all share the origin
+# with the API → no CORS, no SameSite drama. One DNS record, one
+# TLS cert. Recommended for every deployment.
 #
 # Path strategy: every prefix in `serverPaths` lands at the
-# server backend (in order, so most-specific first); `/` is a
-# catch-all to the web backend, evaluated last by Ingress nginx.
-# The defaults cover every server-side route gocdnext exposes
-# today — extend the list (don't replace) for custom paths.
-#
-# Mutually exclusive with `server.ingress.enabled` or
-# `web.ingress.enabled` — the chart fail-checks if both modes
-# are turned on at once.
+# server backend (in order, so most-specific first); `/` is the
+# catch-all to the web backend, evaluated last. Defaults cover
+# every server-side route gocdnext exposes today — extend the
+# list (don't replace) for custom paths.
 ingress:
   enabled: false
   className: nginx
   host: gocdnext.example.com
-  # Multi-host: when non-empty overrides `host`. Same set applies
-  # to the TLS block.
+  # Multi-host: when non-empty overrides `host`. Same set
+  # applies to the TLS block.
   hosts: []
+  # Free-form annotations merged into the rendered Ingress.
+  # Common cases:
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  #   nginx.ingress.kubernetes.io/proxy-body-size: 100m
+  #   external-dns.alpha.kubernetes.io/hostname: gocdnext.example.com
   annotations: {}
   tls: false
   tlsSecretName: ""
-  # Path prefixes routed to the server backend. Order matters
-  # (Ingress nginx evaluates first-match). Append, don't replace,
-  # to keep the operational + auth + API surface working.
+  # exposeServer / exposeWeb let an operator render only one half
+  # of the routing — useful when:
+  #   - exposeWeb=false → API-only deployment (no UI ingress)
+  #   - exposeServer=false → UI-only deployment (server stays
+  #     inside the cluster, called via in-cluster Service)
+  # Both default to true; `false` skips the corresponding paths.
+  exposeServer: true
+  exposeWeb: true
   serverPaths:
     - /api
     - /auth
@@ -199,9 +154,9 @@ ingress:
     - /version
     - /artifacts
 
-# Gateway API equivalent of the unified ingress above. Same paths,
-# Same hostnames; just renders an HTTPRoute (and optionally a
-# Gateway) instead of an Ingress object.
+# Gateway API equivalent of the unified ingress above. Same path
+# strategy, same hostnames, just renders an HTTPRoute (and
+# optionally a Gateway) instead of an Ingress.
 gateway:
   enabled: false
   parentRefs: []
@@ -209,6 +164,8 @@ gateway:
   gatewayClassName: ""
   hostnames: []
   annotations: {}
+  exposeServer: true
+  exposeWeb: true
   serverPaths:
     - /api
     - /auth

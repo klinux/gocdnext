@@ -1,18 +1,20 @@
-{{- include "gocdnext.validate.routing" . -}}
 {{- if .Values.ingress.enabled }}
 {{- $hosts := .Values.ingress.hosts -}}
 {{- if not $hosts -}}
 {{- $hosts = list .Values.ingress.host -}}
 {{- end -}}
+{{- if and (not .Values.ingress.exposeServer) (not .Values.ingress.exposeWeb) -}}
+{{- fail "ingress.enabled=true requires at least one of exposeServer / exposeWeb to be true." -}}
+{{- end -}}
 {{- /*
-Unified single-host routing. Server-bound prefixes (the API, auth
-flows, operational endpoints, artifact transfer) are listed first
-so Ingress nginx's first-match routing sends them to the server
-backend; `/` becomes the catch-all for the web UI.
+Single-host routing — ONE Ingress resource per host with server
+prefixes (API, auth, operational, artifacts) first and `/` as the
+catch-all to the web UI. Multiple Ingresses targeting the same
+host is undefined behaviour across controllers, so we always
+collapse into one resource here.
 
-Path order within each host's `paths:` list matters for nginx —
-most-specific prefixes first. The chart preserves
-`ingress.serverPaths` ordering verbatim.
+Path order matters for nginx-ingress (first-match) and is
+preserved verbatim from `ingress.serverPaths`.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -41,6 +43,7 @@ spec:
     - host: {{ . | quote }}
       http:
         paths:
+          {{- if $.Values.ingress.exposeServer }}
           {{- range $.Values.ingress.serverPaths }}
           - path: {{ . | quote }}
             pathType: Prefix
@@ -50,6 +53,8 @@ spec:
                 port:
                   name: http
           {{- end }}
+          {{- end }}
+          {{- if $.Values.ingress.exposeWeb }}
           - path: /
             pathType: Prefix
             backend:
@@ -57,5 +62,6 @@ spec:
                 name: {{ include "gocdnext.web.fullname" $ }}
                 port:
                   number: {{ $.Values.web.service.port }}
+          {{- end }}
     {{- end }}
 {{- end }}

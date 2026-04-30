@@ -44,32 +44,4 @@ spec:
       port: {{ .Values.web.service.port }}
       targetPort: http
   selector: {{- include "gocdnext.web.selectorLabels" . | nindent 4 }}
-{{- if .Values.web.ingress.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ include "gocdnext.web.fullname" . }}
-  labels: {{- include "gocdnext.labels" . | nindent 4 }}
-spec:
-  {{- with .Values.web.ingress.className }}
-  ingressClassName: {{ . }}
-  {{- end }}
-  {{- if .Values.web.ingress.tls }}
-  tls:
-    - hosts: [{{ .Values.web.ingress.host | quote }}]
-      secretName: {{ default (printf "%s-tls" (include "gocdnext.web.fullname" .)) .Values.web.ingress.tlsSecretName }}
-  {{- end }}
-  rules:
-    - host: {{ .Values.web.ingress.host }}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "gocdnext.web.fullname" . }}
-                port:
-                  name: http
-{{- end }}
 {{- end }}

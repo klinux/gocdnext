@@ -8,32 +8,25 @@ Next steps:
 
      kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
 
-{{- if .Values.server.ingress.enabled }}
+{{- if .Values.ingress.enabled }}
 
-2. Server is ingress-exposed at {{ .Values.server.ingress.host }}.
+2. Single-host routing: {{ .Values.ingress.host }}{{ if .Values.ingress.tls }} (TLS){{ end }}
+   {{- if .Values.ingress.exposeWeb }}
+   Web UI: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}/
+   {{- end }}
+   {{- if .Values.ingress.exposeServer }}
+   API:    http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}/api/v1/...
+   {{- end }}
+{{- else if .Values.gateway.enabled }}
+
+2. Gateway API routing — HTTPRoute for {{ join ", " .Values.gateway.hostnames }}.
 {{- else }}
 
-2. Server Service (in-cluster):
-
-     http://{{ include "gocdnext.server.fullname" . }}:{{ .Values.server.service.httpPort }}
-     grpc://{{ include "gocdnext.server.fullname" . }}:{{ .Values.server.service.grpcPort }}
-
-   Port-forward for local inspection:
+2. No external routing wired (ingress.enabled / gateway.enabled
+   both false). Inspect via port-forward:
 
      kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gocdnext.server.fullname" . }} 8153:{{ .Values.server.service.httpPort }}
-{{- end }}
-
-{{- if .Values.web.enabled }}
-
-3. Web UI:
-{{- if .Values.web.ingress.enabled }}
-
-     https://{{ .Values.web.ingress.host }}
-{{- else }}
-
      kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gocdnext.web.fullname" . }} 3000:{{ .Values.web.service.port }}
-     # then open http://localhost:3000
-{{- end }}
 {{- end }}
 
 {{- if .Values.devDatabase.enabled }}

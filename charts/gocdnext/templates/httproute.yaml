@@ -1,7 +1,9 @@
-{{- include "gocdnext.validate.routing" . -}}
 {{- if .Values.gateway.enabled }}
 {{- if and .Values.gateway.createGateway (not .Values.gateway.gatewayClassName) }}
 {{- fail "gateway.createGateway=true requires gateway.gatewayClassName" }}
+{{- end }}
+{{- if and (not .Values.gateway.exposeServer) (not .Values.gateway.exposeWeb) }}
+{{- fail "gateway.enabled=true requires at least one of exposeServer / exposeWeb to be true." }}
 {{- end }}
 {{- /*
 Unified Gateway API routing — same path strategy as the unified
@@ -62,6 +64,7 @@ spec:
     {{- end }}
   {{- end }}
   rules:
+    {{- if .Values.gateway.exposeServer }}
     {{- range .Values.gateway.serverPaths }}
     - matches:
         - path:
@@ -71,6 +74,8 @@ spec:
         - name: {{ include "gocdnext.server.fullname" $ }}
           port: {{ $.Values.server.service.httpPort }}
     {{- end }}
+    {{- end }}
+    {{- if .Values.gateway.exposeWeb }}
     - matches:
         - path:
             type: PathPrefix
@@ -78,4 +83,5 @@ spec:
       backendRefs:
         - name: {{ include "gocdnext.web.fullname" . }}
           port: {{ .Values.web.service.port }}
+    {{- end }}
 {{- end }}
