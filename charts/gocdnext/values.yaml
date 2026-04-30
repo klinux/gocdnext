@@ -66,10 +66,22 @@ agent:
   tokenSecret:
     existingSecret: ""
     value: ""  # required when existingSecret is empty
+  # Auto-registration: when true, the server accepts an unknown
+  # agent name on Register if the bearer token matches what's in
+  # tokenSecret. Lets `replicas: N` scale up new agents without
+  # an admin manually inserting rows. The trade is "every pod
+  # presenting this Secret becomes a worker" — fine for a single
+  # tenant's fleet, off by default for multi-tenant clusters that
+  # need per-agent provisioning.
+  autoRegister: true
   workspace:
     storageClass: ""        # "" = cluster default
     size: 20Gi
-    accessMode: ReadWriteMany
+    # Per-replica PVC via the StatefulSet's volumeClaimTemplates.
+    # ReadWriteOnce works on every CSI driver; the old shared
+    # ReadWriteMany model is gone — each agent now owns its own
+    # workspace, no cross-pod write contention.
+    accessMode: ReadWriteOnce
     mountPath: /workspace
   defaultJobImage: alpine:3.19
   jobCleanup:

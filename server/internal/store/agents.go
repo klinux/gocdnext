@@ -66,6 +66,31 @@ func VerifyToken(plain, hash string) bool {
 	return hmac.Equal(got[:], expected)
 }
 
+// CreateAgent inserts a new row keyed by name + token hash. Used by
+// the gRPC Register RPC's auto-register branch (when the operator
+// has opted in via GOCDNEXT_AGENT_REGISTRATION_TOKEN). The caller
+// passes the PLAINTEXT token; we hash here so the contract stays
+// "store never sees plaintext at rest".
+//
+// Status defaults to 'offline'; the caller flips to 'online' via
+// MarkAgentOnline once Register completes successfully.
+func (s *Store) CreateAgent(ctx context.Context, name, plainToken string, tags []string, capacity int32) (Agent, error) {
+	row, err := s.q.InsertAgent(ctx, db.InsertAgentParams{
+		Name:      name,
+		TokenHash: HashToken(plainToken),
+		Version:   nullableString(""),
+		Os:        nullableString(""),
+		Arch:      nullableString(""),
+		Tags:      emptyIfNil(tags),
+		Capacity:  capacity,
+		Status:    "offline",
+	})
+	if err != nil {
+		return Agent{}, fmt.Errorf("store: create agent %q: %w", name, err)
+	}
+	return agentFromDB(row), nil
+}
+
 // FindAgentByName returns ErrAgentNotFound when no row matches. Other errors
 // are wrapped verbatim.
 func (s *Store) FindAgentByName(ctx context.Context, name string) (Agent, error) {

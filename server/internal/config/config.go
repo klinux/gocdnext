@@ -83,6 +83,20 @@ type Config struct {
 	// disables seeding — the table is purely admin-UI driven.
 	RunnerProfilesFile string
 
+	// AgentRegistrationToken enables auto-registration on the gRPC
+	// Register RPC: when an agent presents a name that's not in
+	// the `agents` table AND the token equals this value, the
+	// server inserts a fresh row with hash(token) and lets the
+	// agent connect. Empty disables auto-registration; agents must
+	// be pre-provisioned via SQL/CLI/admin UI.
+	//
+	// The trust model is "shared cluster token" — the operator
+	// sets it once (via Helm's agent.tokenSecret), every agent
+	// shipping that token becomes a worker. Token rotation: change
+	// the value, restart agents; existing rows still authenticate
+	// against the OLD hash until manually reset.
+	AgentRegistrationToken string
+
 	// PluginCatalogDir is the root the server scans on boot for
 	// `plugin.yaml` manifests — one per `<dir>/plugin.yaml`. Empty
 	// disables catalog loading, which means pipelines using
@@ -289,6 +303,7 @@ func Load() (*Config, error) {
 	c.PublicBase = env("GOCDNEXT_PUBLIC_BASE", "")
 	c.WebhookPublicURL = env("GOCDNEXT_WEBHOOK_PUBLIC_URL", "")
 	c.RunnerProfilesFile = env("GOCDNEXT_RUNNER_PROFILES_FILE", "")
+	c.AgentRegistrationToken = env("GOCDNEXT_AGENT_REGISTRATION_TOKEN", "")
 	c.SecretBackend = strings.ToLower(env("GOCDNEXT_SECRET_BACKEND", "db"))
 	c.SecretK8sNamespace = env("GOCDNEXT_SECRET_K8S_NAMESPACE", "")
 	c.SecretK8sTemplate = env("GOCDNEXT_SECRET_K8S_NAME_TEMPLATE", "")

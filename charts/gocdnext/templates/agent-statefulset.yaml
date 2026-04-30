@@ -1,13 +1,45 @@
 {{- if .Values.agent.enabled }}
+# Headless service satisfies the StatefulSet's serviceName contract.
+# We never DNS-resolve agents from outside (gRPC is outbound from
+# the agent to the server), but the Service still has to exist for
+# the StatefulSet to come up. clusterIP: None keeps it free of
+# kube-proxy overhead.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gocdnext.agent.fullname" . }}-headless
+  labels:
+    {{- include "gocdnext.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  clusterIP: None
+  selector: {{- include "gocdnext.agent.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 1
+---
+# StatefulSet (not Deployment): the agent registers in the server
+# DB by name, and the row needs to outlive pod restarts. Pod-name
+# under a Deployment regenerates on every restart (random suffix
+# from the ReplicaSet hash) which would orphan the registration.
+# StatefulSet gives stable names — agent-0, agent-1 — that match a
+# durable row.
+#
+# `podManagementPolicy: Parallel` so scale + rollout run concurrent
+# on every replica. Default OrderedReady would scale up serially,
+# which is fine for databases but pointless for agents (no
+# election, no leader, each replica is independent).
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "gocdnext.agent.fullname" . }}
   labels:
     {{- include "gocdnext.labels" . | nindent 4 }}
     app.kubernetes.io/component: agent
 spec:
+  serviceName: {{ include "gocdnext.agent.fullname" . }}-headless
   replicas: {{ .Values.agent.replicas }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels: {{- include "gocdnext.agent.selectorLabels" . | nindent 6 }}
   template:
@@ -45,8 +77,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # Per-replica workspace PVC: the StatefulSet's VCT names
+            # the claim `workspace-<podname>` (e.g. workspace-agent-0).
+            # The agent reads this env to mount the right claim into
+            # job pods.
             - name: GOCDNEXT_K8S_WORKSPACE_PVC
-              value: {{ include "gocdnext.agent.fullname" . }}-workspace
+              value: $(WORKSPACE_PVC_NAME)
+            - name: WORKSPACE_PVC_NAME
+              value: workspace-$(POD_NAME)
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: GOCDNEXT_K8S_WORKSPACE_PATH
               value: {{ .Values.agent.workspace.mountPath | quote }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
@@ -62,10 +104,17 @@ spec:
               mountPath: {{ .Values.agent.workspace.mountPath }}
           {{- end }}
           resources: {{- toYaml .Values.agent.resources | nindent 12 }}
-      {{- if eq .Values.agent.engine "kubernetes" }}
-      volumes:
-        - name: workspace
-          persistentVolumeClaim:
-            claimName: {{ include "gocdnext.agent.fullname" . }}-workspace
-      {{- end }}
+  {{- if eq .Values.agent.engine "kubernetes" }}
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: [{{ .Values.agent.workspace.accessMode | quote }}]
+        {{- with .Values.agent.workspace.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.agent.workspace.size }}
+  {{- end }}
 {{- end }}

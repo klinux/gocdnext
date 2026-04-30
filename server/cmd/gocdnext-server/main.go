@@ -322,7 +322,8 @@ gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
 	runsHandler = runsHandler.WithCancelDispatcher(sessions)
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
 		WithChecksReporter(checksReporter).
-		WithLogBroker(logBroker)
+		WithLogBroker(logBroker).
+		WithAutoRegisterToken(cfg.AgentRegistrationToken)
 	if artifactStore != nil {
 		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour)
 	}

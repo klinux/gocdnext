@@ -216,6 +216,18 @@ spec:
             - name: GOCDNEXT_RUNNER_PROFILES_FILE
               value: /etc/gocdnext/runner-profiles.yaml
             {{- end }}
+            {{- if .Values.agent.autoRegister }}
+            # Auto-register: server accepts a Register RPC for an
+            # unknown agent name when the bearer token matches this
+            # value. Same Secret the agent ships → operator just
+            # scales `agent.replicas` and new pods register on
+            # first contact.
+            - name: GOCDNEXT_AGENT_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-token" (include "gocdnext.agent.fullname" .)) .Values.agent.tokenSecret.existingSecret }}
+                  key: token
+            {{- end }}
             {{- if .Values.githubApp.enabled }}
             - name: GOCDNEXT_GITHUB_APP_ID
               value: {{ .Values.githubApp.appID | quote }}

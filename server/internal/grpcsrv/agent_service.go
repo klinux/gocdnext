@@ -2,6 +2,7 @@ package grpcsrv
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"sync"
@@ -31,6 +32,13 @@ type AgentService struct {
 	sessions         *SessionStore
 	log              *slog.Logger
 	heartbeatSeconds int32
+
+	// autoRegisterToken enables on-demand agent row creation: when
+	// non-empty AND a Register RPC arrives with name=<unknown> +
+	// token=<this value>, the server inserts a fresh row keyed by
+	// the name + hash(token). Empty disables — agents must be
+	// pre-provisioned. Set via WithAutoRegisterToken.
+	autoRegisterToken string
 
 	// artifactStore + artifactTTL are optional: nil store means the
 	// server was started without a configured backend and artifact
@@ -106,6 +114,23 @@ func (a *AgentService) WithArtifactStore(st artifacts.Store, putURLTTL, getURLTT
 	return a
 }
 
+// WithAutoRegisterToken turns on opt-in agent auto-registration.
+// When set, a Register RPC with an unknown agent name + a token
+// matching this value creates the row before completing the
+// registration. Subsequent registers for the same name validate
+// against the token hash now stored on the row, so this token
+// only matters on first contact.
+//
+// Trust model: the operator wraps the agent fleet in a single
+// shared token (the same Helm secret each agent pod ships) and
+// the server accepts any pod presenting it. Multi-tenant
+// deployments where agents shouldn't share a token must keep
+// auto-register OFF and pre-provision via SQL/CLI.
+func (a *AgentService) WithAutoRegisterToken(token string) *AgentService {
+	a.autoRegisterToken = token
+	return a
+}
+
 // WithChecksReporter plugs the GitHub Checks API reporter that will
 // be called when a run reaches terminal state. Nil-safe: if the
 // server was started without an App configured, callers pass nil
@@ -147,10 +172,30 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 
 	agent, err := a.store.FindAgentByName(ctx, req.GetAgentId())
 	if errors.Is(err, store.ErrAgentNotFound) {
-		a.log.Warn("agent register: unknown agent", "agent_id", req.GetAgentId())
-		return nil, status.Error(codes.NotFound, "agent not registered")
-	}
-	if err != nil {
+		// Auto-register opt-in: when the operator configured a
+		// shared registration token AND the agent presents it,
+		// we mint the row on the spot. Constant-time compare so
+		// "wrong token" and "no token configured" are
+		// indistinguishable from a timing-attack perspective.
+		if a.autoRegisterToken != "" &&
+			subtle.ConstantTimeCompare([]byte(req.GetToken()), []byte(a.autoRegisterToken)) == 1 {
+			created, cerr := a.store.CreateAgent(
+				ctx, req.GetAgentId(), req.GetToken(),
+				req.GetTags(), req.GetCapacity(),
+			)
+			if cerr != nil {
+				a.log.Error("agent auto-register: create failed",
+					"agent_id", req.GetAgentId(), "err", cerr)
+				return nil, status.Error(codes.Internal, "internal error")
+			}
+			a.log.Info("agent auto-registered",
+				"agent_id", req.GetAgentId(), "agent_uuid", created.ID)
+			agent = created
+		} else {
+			a.log.Warn("agent register: unknown agent", "agent_id", req.GetAgentId())
+			return nil, status.Error(codes.NotFound, "agent not registered")
+		}
+	} else if err != nil {
 		a.log.Error("agent register: lookup failed", "agent_id", req.GetAgentId(), "err", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}

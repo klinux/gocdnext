@@ -87,6 +87,63 @@ func TestRegister_Succeeds(t *testing.T) {
 	}
 }
 
+func TestRegister_AutoRegister_CreatesRowOnFirstHit(t *testing.T) {
+	pool, client := bootServerWithAutoRegister(t, "shared-token")
+
+	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId:  "agent-0",
+		Token:    "shared-token",
+		Tags:     []string{"linux"},
+		Capacity: 2,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if resp.SessionId == "" {
+		t.Fatalf("empty session_id")
+	}
+
+	// Row must exist post-Register, with the token hashed in place
+	// so subsequent registers validate against it instead of the
+	// shared registration token.
+	s := store.New(pool)
+	a, err := s.FindAgentByName(context.Background(), "agent-0")
+	if err != nil {
+		t.Fatalf("auto-registered row missing: %v", err)
+	}
+	if !store.VerifyToken("shared-token", a.TokenHash) {
+		t.Fatalf("token hash not stored or wrong")
+	}
+	if a.Status != "online" {
+		t.Fatalf("status = %s, want online", a.Status)
+	}
+}
+
+func TestRegister_AutoRegister_RefusesWrongToken(t *testing.T) {
+	_, client := bootServerWithAutoRegister(t, "shared-token")
+
+	_, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "agent-0",
+		Token:   "different-token",
+	})
+	if code := status.Code(err); code != codes.NotFound {
+		t.Fatalf("code = %s, want NotFound (auto-register must not accept wrong token)", code)
+	}
+}
+
+func TestRegister_AutoRegister_OffByDefault(t *testing.T) {
+	// bootServer (no auto-register token) — same as before, unknown
+	// agent must be rejected with NotFound regardless of token.
+	_, client := bootServer(t)
+	_, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "agent-0",
+		Token:   "anything",
+	})
+	if code := status.Code(err); code != codes.NotFound {
+		t.Fatalf("code = %s, want NotFound", code)
+	}
+}
+
 func TestRegister_InvalidArgs(t *testing.T) {
 	_, client := bootServer(t)
 
@@ -111,11 +168,16 @@ func TestRegister_InvalidArgs(t *testing.T) {
 // --- test harness ---
 
 func bootServer(t *testing.T) (*pgxpool.Pool, gocdnextv1.AgentServiceClient) {
+	return bootServerWithAutoRegister(t, "")
+}
+
+func bootServerWithAutoRegister(t *testing.T, autoRegToken string) (*pgxpool.Pool, gocdnextv1.AgentServiceClient) {
 	t.Helper()
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	svc := grpcsrv.NewAgentService(s, grpcsrv.NewSessionStore(),
-		slog.New(slog.NewTextHandler(io.Discard, nil)), heartbeatSecs)
+		slog.New(slog.NewTextHandler(io.Discard, nil)), heartbeatSecs).
+		WithAutoRegisterToken(autoRegToken)
 
 	lis := bufconn.Listen(1 << 20)
 	grpcSrv := grpc.NewServer()
