@@ -1,11 +1,22 @@
 {{- if and .Values.server.enabled .Values.server.ingress.enabled }}
+{{- $hosts := .Values.server.ingress.hosts -}}
+{{- if not $hosts -}}
+{{- $hosts = list .Values.server.ingress.host -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "gocdnext.server.fullname" . }}
   labels: {{- include "gocdnext.labels" . | nindent 4 }}
   annotations:
+    # Default annotations the chart always emits. Operator's
+    # `server.ingress.annotations:` is rendered AFTER, so any key
+    # collision (cert-manager, custom proxy timeouts, etc.) just
+    # overrides the default — no merge gotchas.
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- with .Values.server.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   {{- with .Values.server.ingress.className }}
   ingressClassName: {{ . }}
@@ -13,18 +24,22 @@ spec:
   {{- if .Values.server.ingress.tls }}
   tls:
     - hosts:
-        - {{ .Values.server.ingress.host }}
-      secretName: {{ default (printf "%s-tls" (include "gocdnext.server.fullname" .)) .Values.server.ingress.tlsSecretName }}
+        {{- range $hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ default (printf "%s-tls" (include "gocdnext.server.fullname" $)) $.Values.server.ingress.tlsSecretName }}
   {{- end }}
   rules:
-    - host: {{ .Values.server.ingress.host }}
+    {{- range $hosts }}
+    - host: {{ . | quote }}
       http:
         paths:
-          - path: /
-            pathType: Prefix
+          - path: {{ $.Values.server.ingress.path | default "/" }}
+            pathType: {{ $.Values.server.ingress.pathType | default "Prefix" }}
             backend:
               service:
-                name: {{ include "gocdnext.server.fullname" . }}
+                name: {{ include "gocdnext.server.fullname" $ }}
                 port:
                   name: http
+    {{- end }}
 {{- end }}

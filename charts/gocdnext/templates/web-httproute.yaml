@@ -1,0 +1,58 @@
+{{- if and .Values.web.enabled .Values.web.gateway.enabled }}
+{{- if and .Values.web.gateway.createGateway (not .Values.web.gateway.gatewayClassName) }}
+{{- fail "web.gateway.createGateway=true requires web.gateway.gatewayClassName" }}
+{{- end }}
+{{- if .Values.web.gateway.createGateway }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "gocdnext.web.fullname" . }}-gw
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+  {{- with .Values.web.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ .Values.web.gateway.gatewayClassName | quote }}
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "gocdnext.web.fullname" . }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+  {{- with .Values.web.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- if .Values.web.gateway.createGateway }}
+    - name: {{ include "gocdnext.web.fullname" . }}-gw
+    {{- else }}
+    {{- range .Values.web.gateway.parentRefs }}
+    - {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
+  {{- with .Values.web.gateway.hostnames }}
+  hostnames:
+    {{- range . }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "gocdnext.web.fullname" . }}
+          port: {{ .Values.web.service.port }}
+{{- end }}

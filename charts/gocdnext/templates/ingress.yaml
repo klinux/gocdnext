@@ -1,0 +1,61 @@
+{{- include "gocdnext.validate.routing" . -}}
+{{- if .Values.ingress.enabled }}
+{{- $hosts := .Values.ingress.hosts -}}
+{{- if not $hosts -}}
+{{- $hosts = list .Values.ingress.host -}}
+{{- end -}}
+{{- /*
+Unified single-host routing. Server-bound prefixes (the API, auth
+flows, operational endpoints, artifact transfer) are listed first
+so Ingress nginx's first-match routing sends them to the server
+backend; `/` becomes the catch-all for the web UI.
+
+Path order within each host's `paths:` list matters for nginx —
+most-specific prefixes first. The chart preserves
+`ingress.serverPaths` ordering verbatim.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gocdnext.name" . }}-{{ .Release.Name }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts:
+        {{- range $hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ default (printf "%s-%s-tls" (include "gocdnext.name" $) $.Release.Name) $.Values.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    {{- range $hosts }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          {{- range $.Values.ingress.serverPaths }}
+          - path: {{ . | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gocdnext.server.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gocdnext.web.fullname" $ }}
+                port:
+                  number: {{ $.Values.web.service.port }}
+    {{- end }}
+{{- end }}

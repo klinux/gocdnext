@@ -1,0 +1,81 @@
+{{- include "gocdnext.validate.routing" . -}}
+{{- if .Values.gateway.enabled }}
+{{- if and .Values.gateway.createGateway (not .Values.gateway.gatewayClassName) }}
+{{- fail "gateway.createGateway=true requires gateway.gatewayClassName" }}
+{{- end }}
+{{- /*
+Unified Gateway API routing — same path strategy as the unified
+Ingress (server prefixes first, web `/` catch-all), rendered as
+an HTTPRoute the operator's gateway controller picks up. The
+chart can either materialise its own Gateway (createGateway:
+true) or attach to one the operator already manages
+(parentRefs: ...).
+
+Per-rule path matches map onto HTTPRoute's `matches:` list —
+gateway controllers evaluate matches in spec order and pick the
+most-specific one, similar enough to Ingress nginx semantics that
+the same `serverPaths` list works for both.
+*/}}
+{{- if .Values.gateway.createGateway }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "gocdnext.name" . }}-{{ .Release.Name }}-gw
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+  {{- with .Values.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gateway.gatewayClassName | quote }}
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "gocdnext.name" . }}-{{ .Release.Name }}
+  labels: {{- include "gocdnext.labels" . | nindent 4 }}
+  {{- with .Values.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- if .Values.gateway.createGateway }}
+    - name: {{ include "gocdnext.name" . }}-{{ .Release.Name }}-gw
+    {{- else }}
+    {{- range .Values.gateway.parentRefs }}
+    - {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
+  {{- with .Values.gateway.hostnames }}
+  hostnames:
+    {{- range . }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.gateway.serverPaths }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ . | quote }}
+      backendRefs:
+        - name: {{ include "gocdnext.server.fullname" $ }}
+          port: {{ $.Values.server.service.httpPort }}
+    {{- end }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "gocdnext.web.fullname" . }}
+          port: {{ .Values.web.service.port }}
+{{- end }}
