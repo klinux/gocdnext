@@ -8,6 +8,12 @@ export const metadata: Metadata = {
   title: "Docs — gocdnext",
 };
 
+// force-dynamic so listDocs() runs at request time. Without it the
+// page is statically prerendered at build time, when the docs/
+// folder isn't yet present at the resolved path (build cwd ≠
+// runtime cwd in the standalone container).
+export const dynamic = "force-dynamic";
+
 // Index page: renders a cover shot of what's in the docs folder
 // so first-time visitors know where to start. Clicking any tile
 // drops them into a single doc.

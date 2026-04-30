@@ -2,18 +2,15 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
 import { DocRenderer } from "@/components/docs/doc-renderer";
-import { readDoc, listDocs } from "@/server/queries/docs";
+import { readDoc } from "@/server/queries/docs";
 
 type Params = { slug: string };
 
-// generateStaticParams pre-renders every doc at build time so a
-// fresh docs visit is a single static response (no fs read on
-// the hot path). When new files land under monorepo docs/, a
-// rebuild picks them up.
-export async function generateStaticParams() {
-  const docs = await listDocs();
-  return docs.map((d) => ({ slug: d.slug }));
-}
+// force-dynamic so the doc reads land at request time. Static
+// prerendering would run at build time when docs/ isn't yet at
+// the runtime path (the standalone container mounts docs/ as a
+// sibling of /app — only visible at request time).
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({
   params,

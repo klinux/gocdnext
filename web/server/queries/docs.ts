@@ -1,13 +1,20 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-// DOCS_DIR is the absolute filesystem path to the monorepo's
-// `docs/` folder. Built from process.cwd() which is the web/
-// dir in dev (`pnpm dev`) and typically in production Docker
-// images. If the docs folder isn't where expected, listDocs
-// returns an empty list rather than crashing — docs are a
-// nice-to-have, not load-bearing for the app.
-const DOCS_DIR = path.resolve(process.cwd(), "..", "docs");
+// docsDir resolves the path lazily so we read process.cwd() at
+// request time, not at module-load time. The Next.js standalone
+// runtime can pick up docs that landed AFTER the build (e.g. when
+// the Docker image bundles /docs as a sibling of /app and listDocs
+// runs inside `pnpm dev` first).
+//
+// Layout:
+//   - dev (`pnpm dev` from web/): cwd=/repo/web → /repo/docs ✓
+//   - prod standalone: cwd=/app → /docs (Dockerfile COPYs to /docs)
+//
+// Missing dir is non-fatal: listDocs returns [] rather than crash.
+function docsDir(): string {
+  return path.resolve(process.cwd(), "..", "docs");
+}
 
 export type DocEntry = {
   // slug matches the filename without the .md extension.
@@ -58,7 +65,7 @@ function titleFor(slug: string): string {
 export async function listDocs(): Promise<DocEntry[]> {
   let files: string[];
   try {
-    files = await fs.readdir(DOCS_DIR);
+    files = await fs.readdir(docsDir());
   } catch {
     return [];
   }
@@ -84,9 +91,9 @@ export async function readDoc(slug: string): Promise<{
 } | null> {
   // Defensive against path traversal — the filename is bounded
   // to [A-Za-z0-9_-], rejecting slashes and dots entirely so a
-  // slug like "../../etc/passwd" can't escape DOCS_DIR.
+  // slug like "../../etc/passwd" can't escape docsDir().
   if (!/^[A-Za-z0-9_-]+$/.test(slug)) return null;
-  const filepath = path.join(DOCS_DIR, `${slug}.md`);
+  const filepath = path.join(docsDir(), `${slug}.md`);
   try {
     const markdown = await fs.readFile(filepath, "utf8");
     return { title: titleFor(slug), markdown };
