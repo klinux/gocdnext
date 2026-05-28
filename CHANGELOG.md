@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.2 — 2026-05-28
+
+Chart-only patch. Restores per-replica workspace PVC mounting on
+Kubernetes agents.
+
+### Fixes
+
+- **agent StatefulSet env-var ordering** — `GOCDNEXT_K8S_WORKSPACE_PVC`,
+  `WORKSPACE_PVC_NAME` and `POD_NAME` were declared in reverse
+  dependency order, so kubelet's `$(VAR)` expansion (which only
+  resolves against entries DEFINED EARLIER in the list) left both
+  derived values as literal strings. The agent then asked the
+  scheduler to mount a PVC literally named
+  `$(WORKSPACE_PVC_NAME)`. Reordered to POD_NAME → WORKSPACE_PVC_NAME
+  → GOCDNEXT_K8S_WORKSPACE_PVC so each step's reference is already
+  visible.
+
 ## v0.4.1 — 2026-05-28
 
 Patch release. GitHub App now actually authenticates the
