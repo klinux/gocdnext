@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.3 — 2026-05-28
+
+CI-only patch. Fixes how stable image tags are advanced so operators
+pinning to `:latest` or `:v1` get the last cut release, not the
+rolling main HEAD.
+
+### Fixes
+
+- **`:latest` and plugin `:v1` only advance on release tags** — both
+  channels were gated on `is_default_branch`, so every main commit
+  (not just releases) moved them. A non-release main push could land
+  a half-finished feature on a tag the operator pins to. Now the
+  gate is `startsWith(github.ref, 'refs/tags/v')`. main pushes still
+  publish `:main` and `:sha-...` so dev consumers have a HEAD tracker.
+- **Semver major tags carry the `v` prefix** — `pattern={{major}}`
+  emitted a bare `0` (today) or `1` (after v1.0.0); the bare `1`
+  would have silently clashed with the raw `v1` plugin-contract
+  channel. Switched to `pattern=v{{major}}` and
+  `pattern=v{{major}}.{{minor}}` for both core and plugin workflows.
+
 ## v0.4.2 — 2026-05-28
 
 Chart-only patch. Restores per-replica workspace PVC mounting on
