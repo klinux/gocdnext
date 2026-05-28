@@ -81,14 +81,20 @@ spec:
             # the claim `workspace-<podname>` (e.g. workspace-agent-0).
             # The agent reads this env to mount the right claim into
             # job pods.
-            - name: GOCDNEXT_K8S_WORKSPACE_PVC
-              value: $(WORKSPACE_PVC_NAME)
-            - name: WORKSPACE_PVC_NAME
-              value: workspace-$(POD_NAME)
+            #
+            # Order matters: kubelet only expands $(VAR) against env
+            # entries DEFINED EARLIER in the list — forward refs stay
+            # literal. POD_NAME (fieldRef) must come first, then
+            # WORKSPACE_PVC_NAME which interpolates it, then the
+            # public GOCDNEXT_K8S_WORKSPACE_PVC the agent reads.
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: WORKSPACE_PVC_NAME
+              value: workspace-$(POD_NAME)
+            - name: GOCDNEXT_K8S_WORKSPACE_PVC
+              value: $(WORKSPACE_PVC_NAME)
             - name: GOCDNEXT_K8S_WORKSPACE_PATH
               value: {{ .Values.agent.workspace.mountPath | quote }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
