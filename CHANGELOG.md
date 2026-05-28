@@ -6,6 +6,60 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.4 — 2026-05-28
+
+Bug-fix release. Unblocks webhook-driven runs for any project whose
+scm_source URL was registered in a different form (SSH vs HTTPS) than
+the form the provider emits in its push payload, fixes the UI's
+browser-side fetches when no public API URL is set, and wires the
+`when.branch:` filter at the pipeline level.
+
+### Fixes
+
+- **Webhook fingerprint divergence (SSH ↔ HTTPS)** — `normalizeGitURL`
+  now collapses `git@github.com:owner/repo` and
+  `https://github.com/owner/repo` to the same canonical
+  `host/owner/repo` form, so the implicit material's stored
+  fingerprint matches the webhook payload's HTTPS clone_url every
+  time. Pre-fix, a project bound with the SSH form received `202` from
+  the webhook with `drift.applied:true` but never created the run.
+  Stored URLs are now displayed in canonical scheme-less form (e.g.
+  `github.com/org/repo`); re-bind affected projects after upgrade.
+
+- **UI fetched `http://localhost:8153` in production** — the page
+  baked `env.GOCDNEXT_API_URL` into client component props, which
+  defaulted to localhost when the operator forgot `server.publicBase`.
+  Introduced `GOCDNEXT_PUBLIC_API_URL` (optional, defaults empty);
+  empty means the browser uses RELATIVE paths through the same
+  ingress, which is the right default for single-host deployments.
+  The chart's web Deployment now wires `GOCDNEXT_API_URL` to the
+  in-cluster server service for SSR and forwards `server.publicBase`
+  to `GOCDNEXT_PUBLIC_API_URL` only when set.
+
+- **Diagnostic-friendly webhook no-match log** — the "no matching
+  material" path now logs `clone_url`, `normalized_url`, `branch` and
+  `fingerprint` together so the operator can diff the lookup against
+  the apply-time material rows in one glance. The 202 response body
+  also carries a `warning` field surfacing the same message in
+  GitHub's webhook delivery viewer.
+
+### Features
+
+- **Pipeline-level `when.branch:` filter** — a single pipeline can
+  now declare multiple tracked branches:
+  ```yaml
+  name: build
+  when:
+    branch: [main, hotfix-stable]
+    event: [push]
+  stages: [...]
+  ```
+  The apply path fans the implicit project material out into one row
+  per branch so each push fingerprint (URL+branch) matches a distinct
+  material row — same dispatch path as multi-explicit-material
+  pipelines. Empty `when.branch:` falls back to the scm_source's
+  default branch (today's behaviour).
+
 ## v0.4.3 — 2026-05-28
 
 CI-only patch. Fixes how stable image tags are advanced so operators
