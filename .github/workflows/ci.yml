@@ -41,9 +41,12 @@ jobs:
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@v4
-      # pnpm action-setup honours web/package.json's packageManager
-      # pin (pnpm@10.x), keeping CI and local pnpm versions in sync.
+      # pnpm action-setup reads packageManager from web/package.json
+      # (defaults.working-directory only applies to run: steps, not
+      # uses:, so we point at the file explicitly).
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
