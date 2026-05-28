@@ -6,6 +6,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.1 — 2026-05-28
+
+Patch release. GitHub App now actually authenticates the
+`.gocdnext/` fetch on private repos, plus a CI speedup.
+
+### Fixes
+
+- **GitHub App wired into the configsync fetcher** — previously the
+  fetcher only consulted PAT-style credentials, so projects bound to
+  a GitHub App on a private repo got a silent `404` from the Contents
+  API (`config folder not found`) even with `Contents: Read` granted.
+  `MultiFetcher` now mints an installation-scoped token via the App
+  when no PAT is available, with the App's `apiBase` preserved so a
+  GHE-bound App never has its token sent to api.github.com.
+  `AppClient` caches the `(owner, repo) → installation_id` lookup and
+  invalidates it on token-mint failure to recover from
+  uninstall→reinstall without a server restart. A new
+  `MultiFetcher.Logger` hook emits a warn on App-fallback failures
+  so operators stop seeing the same "folder not found" symptom
+  regardless of root cause.
+- **`/settings/integrations` copy** — the GitHub App card no longer
+  claims a "PAT fallback" path that the UI never exposed.
+
+### CI
+
+- amd64-only image builds while we stabilise — QEMU-emulated arm64
+  was pacing every release at 15-25 min per image. Multi-arch
+  returns when needed.
+- Web job now uses pnpm with `--frozen-lockfile` and the
+  `actions/setup-node` pnpm cache, matching the locally-pinned
+  toolchain in `web/package.json`.
+
 ## v0.4.0 — 2026-04-29
 
 Focused release: artifact storage configuration moves out of the
