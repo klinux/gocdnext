@@ -99,8 +99,9 @@ export default async function IntegrationsPage() {
           authSummary={
             <>
               Uses an installed GitHub App. Configure the app credentials
-              below. Per-project <code>auth_ref</code> is only needed for
-              fine-grained PAT fallback.
+              below — the App grants both webhook registration and
+              <code> .gocdnext/</code> reads on every repo it is installed
+              on. No per-project token required.
             </>
           }
         />
