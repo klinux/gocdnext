@@ -41,8 +41,14 @@ jobs:
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@v4
+      # pnpm action-setup honours web/package.json's packageManager
+      # pin (pnpm@10.x), keeping CI and local pnpm versions in sync.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      - run: npm install
-      - run: npm run typecheck
-      - run: npm run build
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run build
