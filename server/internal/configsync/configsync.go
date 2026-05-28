@@ -16,6 +16,7 @@ package configsync
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -68,6 +69,22 @@ type CredentialResolver interface {
 	ResolveAuthRef(ctx context.Context, provider, repoURL, scmAuthRef string) (authRef, apiBase string)
 }
 
+// GitHubAppTokenSource is the optional hook the GitHub fetcher path
+// consults when neither a per-project auth_ref nor an org-level
+// scm_credentials row yields a PAT. The adapter wired in main
+// reaches into the vcs.Registry to grab the active *gh.AppClient
+// (if any) and mints an installation-scoped token for (owner, repo).
+//
+// Returns ("", "", nil) for "no App configured / not installed on
+// the repo" — the fetcher then falls through to an unauthenticated
+// call just like before. apiBase is the host the App was configured
+// against (e.g. a GitHub Enterprise URL) so the freshly-minted token
+// is sent to the same host that issued it — never to a different
+// GitHub instance.
+type GitHubAppTokenSource interface {
+	InstallationTokenFor(ctx context.Context, owner, repo string) (token, apiBase string, err error)
+}
+
 // MultiFetcher routes by source.Provider to the matching provider
 // client. Clients are constructed on demand with a shared
 // http.Client so connection reuse works across provider switches
@@ -88,6 +105,17 @@ type MultiFetcher struct {
 	// per-project source.AuthRef + per-instance APIBase are
 	// used verbatim.
 	Resolver CredentialResolver
+	// GitHubApp, when set, is consulted on the github code path
+	// after the Resolver returns no token: the fetcher mints a
+	// short-lived installation token for (owner, repo) so private
+	// repos reached only via the App still sync. nil keeps the
+	// previous PAT-only behaviour.
+	GitHubApp GitHubAppTokenSource
+	// Logger, when set, gets a warn line on every silent
+	// fall-through (App configured but token mint failed). Nil
+	// keeps the old "swallow and proceed unauthenticated" path
+	// so existing tests don't have to wire a logger.
+	Logger *slog.Logger
 }
 
 func (f *MultiFetcher) client() *http.Client {
@@ -133,7 +161,7 @@ func (f *MultiFetcher) Fetch(
 		if err != nil {
 			return nil, fmt.Errorf("configsync: parse github url: %w", err)
 		}
-		authRef, apiBase := f.resolve(ctx, source, f.GitHubAPIBase)
+		authRef, apiBase := f.resolveGitHub(ctx, source, owner, repo)
 		return gh.FetchGocdnextFolder(ctx, f.client(), gh.Config{
 			APIBase: apiBase,
 			Owner:   owner,
@@ -172,6 +200,42 @@ func (f *MultiFetcher) Fetch(
 	}
 }
 
+// resolveGitHub layers the App fallback on top of the generic
+// CredentialResolver: when no per-project / org-level PAT yields
+// a token, an installed GitHub App can mint an installation-scoped
+// one for (owner, repo). When the App supplies its own apiBase
+// (typically a GHE URL the App is bound to), that wins over the
+// generic GitHubAPIBase so the freshly-minted token is sent to the
+// host that issued it. Errors from the App path are LOGGED (when
+// a Logger is wired) and then the fetcher proceeds unauthenticated
+// — keeping pre-App behaviour for public repos while giving the
+// operator a debug breadcrumb instead of a silent 404.
+func (f *MultiFetcher) resolveGitHub(
+	ctx context.Context, source store.SCMSource, owner, repo string,
+) (authRef, apiBase string) {
+	authRef, apiBase = f.resolve(ctx, source, f.GitHubAPIBase)
+	if authRef != "" || f.GitHubApp == nil {
+		return
+	}
+	tok, appBase, err := f.GitHubApp.InstallationTokenFor(ctx, owner, repo)
+	if err != nil {
+		if f.Logger != nil {
+			f.Logger.WarnContext(ctx,
+				"configsync: github app token mint failed; falling back to unauthenticated",
+				"owner", owner, "repo", repo, "err", err)
+		}
+		return
+	}
+	if tok == "" {
+		return
+	}
+	authRef = tok
+	if appBase != "" {
+		apiBase = appBase
+	}
+	return
+}
+
 // HeadSHA dispatches by provider like Fetch. Returns the commit
 // SHA at the tip of `branch`.
 func (f *MultiFetcher) HeadSHA(
@@ -183,7 +247,7 @@ func (f *MultiFetcher) HeadSHA(
 		if err != nil {
 			return "", fmt.Errorf("configsync: parse github url: %w", err)
 		}
-		authRef, apiBase := f.resolve(ctx, source, f.GitHubAPIBase)
+		authRef, apiBase := f.resolveGitHub(ctx, source, owner, repo)
 		return gh.GetBranchHead(ctx, f.client(), gh.Config{
 			APIBase: apiBase,
 			Owner:   owner,

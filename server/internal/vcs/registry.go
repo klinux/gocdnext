@@ -7,6 +7,8 @@
 package vcs
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -77,6 +79,33 @@ func (r *Registry) GitHubApp() *ghscm.AppClient {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.githubApp
+}
+
+// InstallationTokenFor satisfies configsync.GitHubAppTokenSource so
+// the shared fetcher can mint an installation-scoped token for
+// (owner, repo) when no PAT is available. Returns ("", "", nil)
+// when no App is configured, the receiver is a typed-nil pointer,
+// or the App isn't installed on the repo — the fetcher then falls
+// through to an unauthenticated call, matching the original
+// PAT-or-public-only behaviour. apiBase is the host the App was
+// configured against so the freshly-minted token never crosses
+// over to a different GitHub instance.
+func (r *Registry) InstallationTokenFor(ctx context.Context, owner, repo string) (string, string, error) {
+	if r == nil {
+		return "", "", nil
+	}
+	app := r.GitHubApp()
+	if app == nil {
+		return "", "", nil
+	}
+	tok, err := app.TokenForRepo(ctx, owner, repo)
+	if errors.Is(err, ghscm.ErrNoInstallation) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return tok, app.APIBase(), nil
 }
 
 // List returns the metadata slice. Safe to hand to the admin

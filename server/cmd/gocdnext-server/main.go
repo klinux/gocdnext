@@ -260,7 +260,11 @@ func main() {
 // is empty. The local variable name stays "gitHubFetcher" to
 // minimise downstream churn; it's a MultiFetcher now but
 // backwards-compat at the call sites.
-gitHubFetcher := &configsync.MultiFetcher{Resolver: st}
+gitHubFetcher := &configsync.MultiFetcher{
+		Resolver:  st,
+		GitHubApp: vcsRegistry,
+		Logger:    logger,
+	}
 
 	webhookHandler := webhook.NewHandler(st, logger).
 		WithConfigFetcher(gitHubFetcher).

@@ -50,6 +50,12 @@ type AppClient struct {
 
 	mu    sync.Mutex
 	cache map[int64]cachedToken
+
+	// instMu guards instCache. Separate from mu so a token mint
+	// (which holds mu around the cache map) doesn't serialise with
+	// installation-id lookups on unrelated repos.
+	instMu    sync.Mutex
+	instCache map[string]int64 // "owner/repo" → installation id
 }
 
 type cachedToken struct {
@@ -111,6 +117,7 @@ func NewAppClient(cfg AppConfig) (*AppClient, error) {
 		httpClient: client,
 		now:        time.Now,
 		cache:      make(map[int64]cachedToken),
+		instCache:  make(map[string]int64),
 	}, nil
 }
 
@@ -188,6 +195,56 @@ func (c *AppClient) InstallationToken(ctx context.Context, installationID int64)
 	c.cache[installationID] = cachedToken{token: out.Token, expiresAt: out.ExpiresAt}
 	c.mu.Unlock()
 	return out.Token, nil
+}
+
+// TokenForRepo resolves (owner, repo) → installation → fresh (or
+// cached) installation token in one call. Convenience for callers
+// that only need the bearer string to attach to their own HTTP
+// requests (configsync fetcher, git clone with `x-access-token`).
+// Returns ErrNoInstallation when the App isn't installed on the repo
+// so the caller can fall through to "no auth" instead of failing.
+//
+// The installation-id lookup is cached per (owner, repo) — repeated
+// fetches of the same repo skip the /repos/.../installation round
+// trip. On token-mint failure the (owner, repo) entry is dropped
+// so an uninstall→reinstall cycle (which produces a new installation
+// id) recovers on the next call without a server restart.
+func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (string, error) {
+	id, err := c.cachedInstallationID(ctx, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	tok, err := c.InstallationToken(ctx, id)
+	if err != nil {
+		c.invalidateInstallation(owner, repo)
+		return "", err
+	}
+	return tok, nil
+}
+
+func (c *AppClient) cachedInstallationID(ctx context.Context, owner, repo string) (int64, error) {
+	key := owner + "/" + repo
+	c.instMu.Lock()
+	id, ok := c.instCache[key]
+	c.instMu.Unlock()
+	if ok {
+		return id, nil
+	}
+	id, err := c.InstallationID(ctx, owner, repo)
+	if err != nil {
+		return 0, err
+	}
+	c.instMu.Lock()
+	c.instCache[key] = id
+	c.instMu.Unlock()
+	return id, nil
+}
+
+func (c *AppClient) invalidateInstallation(owner, repo string) {
+	key := owner + "/" + repo
+	c.instMu.Lock()
+	delete(c.instCache, key)
+	c.instMu.Unlock()
 }
 
 // DoAsInstallation runs an HTTP request against the API with the
