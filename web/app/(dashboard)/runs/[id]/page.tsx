@@ -35,11 +35,16 @@ export default async function RunDetailPage({
     throw err;
   }
 
+  // Pass the BROWSER-facing API URL to the client tree. Empty
+  // string = same-origin: client fetches use relative paths and ride
+  // the ingress that already routes /api/v1/... to the control plane.
+  // env.GOCDNEXT_API_URL is the in-cluster URL used only by SSR
+  // fetches above (getRunDetail) — never serialised into the page.
   return (
     <RunLive
       initial={initial}
       runId={id}
-      apiBaseURL={env.GOCDNEXT_API_URL}
+      apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
     />
   );
 }

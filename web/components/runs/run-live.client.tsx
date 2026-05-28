@@ -38,9 +38,13 @@ async function fetchRun(
   id: string,
   cursors: Record<string, number>,
 ): Promise<RunDetail> {
+  // Empty apiBaseURL → same-origin: build a relative path so fetch
+  // routes through the page's host (the ingress also fronts /api/v1
+  // in prod). URLSearchParams is built separately because the URL
+  // constructor refuses a relative input without a base.
   const base = apiBaseURL.replace(/\/+$/, "");
-  const url = new URL(`${base}/api/v1/runs/${encodeURIComponent(id)}`);
-  url.searchParams.set("logs", String(SAFETY_LOGS_PER_JOB));
+  const search = new URLSearchParams();
+  search.set("logs", String(SAFETY_LOGS_PER_JOB));
   // Per-job cursors: `?since=<job_id>:<last_seen_seq>` (repeated).
   // When present, the server returns only lines with seq > cursor
   // for that job, which keeps the delta small AND makes bursty
@@ -49,9 +53,10 @@ async function fetchRun(
   // missing from the map fall back to the tail — that's what the
   // first fetch after mount gets.
   for (const [jobID, seq] of Object.entries(cursors)) {
-    url.searchParams.append("since", `${jobID}:${seq}`);
+    search.append("since", `${jobID}:${seq}`);
   }
-  const res = await fetch(url.toString(), {
+  const url = `${base}/api/v1/runs/${encodeURIComponent(id)}?${search.toString()}`;
+  const res = await fetch(url, {
     // credentials: "include" forwards the session cookie cross-
     // origin (web dev on :3000 → control plane on :8153). The
     // control plane's devCORS echoes the Origin and sets

@@ -25,12 +25,20 @@ spec:
             - name: http
               containerPort: 3000
           env:
-            # The browser needs to reach the server from OUTSIDE the
-            # cluster; in-cluster name works only for SSR calls from
-            # the web Pod itself. Operator sets server.publicBase for
-            # that — we reuse it here.
+            # SSR-only: the web Pod uses this for in-pod fetches to the
+            # control plane. Defaults to the in-cluster service so a
+            # plain `helm install` works without any operator input;
+            # override only for split-cluster topologies.
             - name: GOCDNEXT_API_URL
-              value: {{ .Values.server.publicBase | quote }}
+              value: {{ printf "http://%s:%d" (include "gocdnext.server.fullname" .) (int .Values.server.service.httpPort) | quote }}
+            # Browser-facing: empty means the client uses RELATIVE
+            # paths (`/api/v1/...`), which works whenever the same
+            # ingress fronts both `/` and `/api/v1`. Set this only for
+            # split-domain deployments where the UI and API are on
+            # different hosts. server.publicBase is the natural value
+            # in that case; we forward it when non-empty.
+            - name: GOCDNEXT_PUBLIC_API_URL
+              value: {{ default "" .Values.server.publicBase | quote }}
 ---
 apiVersion: v1
 kind: Service
