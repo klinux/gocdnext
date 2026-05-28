@@ -109,6 +109,9 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 	if f.When != nil && len(f.When.Event) > 0 {
 		p.TriggerEvents = append([]string(nil), f.When.Event...)
 	}
+	if f.When != nil && len(f.When.Branch) > 0 {
+		p.TriggerBranches = append([]string(nil), f.When.Branch...)
+	}
 
 	for _, sv := range f.Services {
 		svc, err := toService(sv)

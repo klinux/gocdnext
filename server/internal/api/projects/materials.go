@@ -21,9 +21,9 @@ func injectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMS
 	if scm == nil || scm.URL == "" {
 		return
 	}
-	branch := scm.DefaultBranch
-	if branch == "" {
-		branch = "main"
+	defaultBranch := scm.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "main"
 	}
 	normalizedScmURL := domain.NormalizeGitURL(scm.URL)
 
@@ -42,18 +42,31 @@ func injectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMS
 			// on every PR sync for a repo they just bound.
 			events = []string{"push"}
 		}
-		p.Materials = append(p.Materials, domain.Material{
-			Type:        domain.MaterialGit,
-			Fingerprint: domain.GitFingerprint(scm.URL, branch),
-			AutoUpdate:  true,
-			Implicit:    true,
-			Git: &domain.GitMaterial{
-				URL:                 scm.URL,
-				Branch:              branch,
-				Events:              append([]string(nil), events...),
-				AutoRegisterWebhook: true,
-			},
-		})
+		// `when.branch:` whitelists which branches fire this pipeline.
+		// Empty → fall back to the scm_source default branch (today's
+		// single-branch behaviour). Non-empty → emit ONE implicit
+		// material per branch so each push fingerprint (URL+branch)
+		// matches a distinct row. This is how a single pipeline
+		// declaration can serve multiple branches without forcing the
+		// operator to copy/paste explicit material blocks.
+		branches := p.TriggerBranches
+		if len(branches) == 0 {
+			branches = []string{defaultBranch}
+		}
+		for _, branch := range branches {
+			p.Materials = append(p.Materials, domain.Material{
+				Type:        domain.MaterialGit,
+				Fingerprint: domain.GitFingerprint(scm.URL, branch),
+				AutoUpdate:  true,
+				Implicit:    true,
+				Git: &domain.GitMaterial{
+					URL:                 scm.URL,
+					Branch:              branch,
+					Events:              append([]string(nil), events...),
+					AutoRegisterWebhook: true,
+				},
+			})
+		}
 	}
 }
 

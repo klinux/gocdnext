@@ -37,8 +37,15 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 		Template:    p.Template,
 		Concurrency: p.Concurrency,
 	}
-	if len(p.TriggerEvents) > 0 {
-		f.When = &WhenDef{Event: append([]string(nil), p.TriggerEvents...)}
+	if len(p.TriggerEvents) > 0 || len(p.TriggerBranches) > 0 {
+		w := &WhenDef{}
+		if len(p.TriggerEvents) > 0 {
+			w.Event = append([]string(nil), p.TriggerEvents...)
+		}
+		if len(p.TriggerBranches) > 0 {
+			w.Branch = append([]string(nil), p.TriggerBranches...)
+		}
+		f.When = w
 	}
 	for _, s := range p.Services {
 		f.Services = append(f.Services, ServiceSpec{

@@ -64,6 +64,56 @@ func TestInjectImplicitProjectMaterial_HonoursTriggerEvents(t *testing.T) {
 	}
 }
 
+func TestInjectImplicitProjectMaterial_FansOutOverTriggerBranches(t *testing.T) {
+	// Top-level YAML `when.branch: [main, teste]` produces ONE
+	// implicit material per branch so each branch's push fingerprint
+	// matches a distinct row — single pipeline declaration, multiple
+	// branch tracks.
+	p := &domain.Pipeline{
+		Name:            "ci-fanout",
+		TriggerEvents:   []string{"push"},
+		TriggerBranches: []string{"main", "teste"},
+	}
+	scm := &store.SCMSourceInput{
+		Provider: "github", URL: "https://github.com/klinux/gocdnext", DefaultBranch: "main",
+	}
+	injectImplicitProjectMaterial([]*domain.Pipeline{p}, scm)
+
+	if got := len(p.Materials); got != 2 {
+		t.Fatalf("want 2 materials, got %d", got)
+	}
+	seen := map[string]bool{}
+	for _, m := range p.Materials {
+		if m.Git == nil {
+			t.Errorf("material missing git block: %+v", m)
+			continue
+		}
+		seen[m.Git.Branch] = true
+		wantFP := domain.GitFingerprint(scm.URL, m.Git.Branch)
+		if m.Fingerprint != wantFP {
+			t.Errorf("branch=%q fingerprint=%q want=%q", m.Git.Branch, m.Fingerprint, wantFP)
+		}
+		if !m.Implicit {
+			t.Errorf("branch=%q expected implicit=true", m.Git.Branch)
+		}
+	}
+	if !seen["main"] || !seen["teste"] {
+		t.Errorf("expected materials for both main and teste, got %v", seen)
+	}
+}
+
+func TestInjectImplicitProjectMaterial_TriggerBranchesEmptyUsesDefault(t *testing.T) {
+	// Backwards-compat path: no TriggerBranches → single implicit
+	// material on scm_source.default_branch (today's behaviour).
+	p := &domain.Pipeline{Name: "ci-legacy"}
+	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
+		Provider: "github", URL: "https://github.com/klinux/gocdnext", DefaultBranch: "main",
+	})
+	if len(p.Materials) != 1 || p.Materials[0].Git.Branch != "main" {
+		t.Fatalf("want single material on main, got %+v", p.Materials)
+	}
+}
+
 func TestInjectImplicitProjectMaterial_SkipsWhenExplicitSameURL(t *testing.T) {
 	// Operator already wrote `git: url: .../gocdnext` explicitly —
 	// honour that, don't add a duplicate row. The match is on
