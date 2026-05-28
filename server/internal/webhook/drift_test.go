@@ -112,7 +112,9 @@ func TestGitHubWebhook_DriftApplyOnScmSourceMatch(t *testing.T) {
 	if fetcher.calls != 1 {
 		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
 	}
-	if fetcher.last.scm.URL != "https://github.com/gocdnext/gocdnext" {
+	// URL canonicalised at store-time (NormalizeGitURL collapses SSH
+	// and HTTPS spellings to the same host/path form).
+	if fetcher.last.scm.URL != "github.com/gocdnext/gocdnext" {
 		t.Fatalf("fetcher scm.URL = %q", fetcher.last.scm.URL)
 	}
 

@@ -15,8 +15,11 @@ import (
 // GitFingerprint returns the canonical fingerprint for a git material. Both
 // the YAML parser and the webhook handler must compute identical values for
 // (url, branch) so a push matches the material row stored at apply time.
-// Normalization: trim whitespace, strip trailing slash, drop ".git" suffix,
-// lowercase the host portion (path stays case-sensitive).
+// Normalization collapses SSH (git@host:owner/repo) and HTTPS
+// (https://host/owner/repo) into the same canonical host/path form so
+// they hash identically — GitHub webhook payloads always deliver the
+// HTTPS clone_url even when the project's scm_source was registered
+// with the SSH form, and a fingerprint mismatch silently drops the run.
 func GitFingerprint(cloneURL, branch string) string {
 	u := normalizeGitURL(cloneURL)
 	h := sha256.Sum256([]byte(u + "\x00" + branch))
@@ -51,19 +54,54 @@ func NormalizeGitURL(raw string) string {
 	return normalizeGitURL(raw)
 }
 
+// normalizeGitURL canonicalises a git URL into a `host/owner/repo`
+// scheme-less form so SSH and HTTPS spellings of the same repo hash
+// identically. Recognised inputs:
+//
+//	https://github.com/owner/repo[.git]    →  github.com/owner/repo
+//	ssh://git@github.com/owner/repo[.git]  →  github.com/owner/repo
+//	git@github.com:owner/repo[.git]        →  github.com/owner/repo
+//
+// Anything that does not match a recognised shape (e.g. a bare local
+// path) is returned lowercased on the host portion when possible and
+// otherwise untouched, so legacy callers and tests that fed odd
+// fixtures still get a stable string.
 func normalizeGitURL(raw string) string {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimRight(s, "/")
 	s = strings.TrimSuffix(s, ".git")
+
+	// SSH shorthand: git@host:owner/repo. The `:` separates host
+	// from path (unlike URL form which always has `/`). We strip
+	// the leading `git@`, lowercase the host, and rewrite the
+	// colon as a slash so it shares the canonical form with the
+	// URL paths below.
+	if strings.HasPrefix(s, "git@") {
+		after := strings.TrimPrefix(s, "git@")
+		if i := strings.Index(after, ":"); i > 0 {
+			host := strings.ToLower(after[:i])
+			path := strings.TrimLeft(after[i+1:], "/")
+			return host + "/" + path
+		}
+		return strings.ToLower(s)
+	}
+
+	// scheme://[user@]host[:port]/path — drop the scheme and any
+	// embedded credentials, lowercase the host, keep the path
+	// case-sensitive (forge paths often are).
 	if i := strings.Index(s, "://"); i != -1 {
 		rest := s[i+3:]
+		if at := strings.Index(rest, "@"); at != -1 {
+			// Strip credentials before the host (e.g. ssh://git@…).
+			rest = rest[at+1:]
+		}
 		if j := strings.Index(rest, "/"); j != -1 {
 			host := strings.ToLower(rest[:j])
-			s = s[:i+3] + host + rest[j:]
-		} else {
-			s = s[:i+3] + strings.ToLower(rest)
+			return host + rest[j:]
 		}
+		return strings.ToLower(rest)
 	}
+
 	return s
 }
 
@@ -99,6 +137,14 @@ type Pipeline struct {
 	// an explicit git material — those keep full control via the
 	// material's own events list.
 	TriggerEvents []string
+	// TriggerBranches whitelists branches that fire the pipeline's
+	// implicit project material. Sourced from YAML's top-level
+	// `when.branch:` list. Empty falls back to the scm_source's
+	// default_branch (today's single-branch behaviour). When set,
+	// the injection creates ONE implicit material per branch so each
+	// branch's push fingerprint matches a distinct row — same
+	// dispatch path as multi-explicit-material pipelines.
+	TriggerBranches []string
 	// Services are long-running sidecar containers (postgres, redis,
 	// localstack, …) that every job in the pipeline can reach by
 	// hostname. The agent brings them up on a job-scoped docker

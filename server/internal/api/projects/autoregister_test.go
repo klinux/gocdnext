@@ -176,7 +176,9 @@ func TestAutoRegister_CreatesHookWhenNoneExists(t *testing.T) {
 	if w.Status != "registered" || w.HookID != "999" {
 		t.Errorf("webhook = %+v", w)
 	}
-	if w.SCMSourceURL != "https://github.com/org/repo" {
+	// scm_sources.url is stored in canonical scheme-less form (see
+	// NormalizeGitURL); the webhook registration uses the same value.
+	if w.SCMSourceURL != "github.com/org/repo" {
 		t.Errorf("SCMSourceURL = %q", w.SCMSourceURL)
 	}
 

@@ -250,7 +250,10 @@ func TestApplyProject_WithSCMSourcePersists(t *testing.T) {
 	).Scan(&url, &provider, &branch); err != nil {
 		t.Fatalf("scm_sources row: %v", err)
 	}
-	if url != "https://github.com/org/demo" || provider != "github" || branch != "main" {
+	// URL stored canonicalised (scheme + .git suffix stripped, host
+	// lowercased) so SSH and HTTPS spellings of the same repo collide
+	// on the same fingerprint downstream.
+	if url != "github.com/org/demo" || provider != "github" || branch != "main" {
 		t.Fatalf("scm_sources row: url=%s provider=%s branch=%s", url, provider, branch)
 	}
 }

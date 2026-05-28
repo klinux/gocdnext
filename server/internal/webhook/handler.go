@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/gocdnext/gocdnext/server/internal/checks"
+	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 )
@@ -204,16 +205,31 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	normalizedURL := domain.NormalizeGitURL(ev.Repository.CloneURL)
 	fp := store.FingerprintFor(ev.Repository.CloneURL, branch)
 
 	material, err := h.store.FindMaterialByFingerprint(r.Context(), fp)
 	if errors.Is(err, store.ErrMaterialNotFound) {
+		// Log every dimension the lookup used so an operator can
+		// diff against the apply-time material row (visible via
+		// /api/v1/projects/{slug}). The most common no-match cause
+		// is the branch differing between push and the pipeline's
+		// material declaration; second is a URL form mismatch the
+		// canonicaliser doesn't yet handle.
 		h.log.Info("github webhook: no matching material",
-			"delivery", delivery, "repo", ev.Repository.FullName, "ref", ev.Ref,
-			"fingerprint", fp, "drift_applied", driftOutcome.Applied)
+			"delivery", delivery,
+			"repo", ev.Repository.FullName,
+			"clone_url", ev.Repository.CloneURL,
+			"normalized_url", normalizedURL,
+			"ref", ev.Ref,
+			"branch", branch,
+			"fingerprint", fp,
+			"drift_applied", driftOutcome.Applied)
 		// If drift ran (config-only push: scm_source matched but no material
 		// tied to this URL+branch), acknowledge with 202 + the outcome so the
-		// caller sees the sync happened. Legacy no-match pushes still 204.
+		// caller sees the sync happened. Surface a warning in the response
+		// body so the operator catches the silent "applied but no run" path
+		// from the GitHub webhook delivery viewer without tailing logs.
 		if driftOutcome.Attempted {
 			rec.status = store.WebhookStatusAccepted
 			w.Header().Set("Content-Type", "application/json")
@@ -224,6 +240,9 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 					"error":    driftOutcome.Error,
 					"revision": driftOutcome.Revision,
 				},
+				"warning": fmt.Sprintf(
+					"no pipeline material matched %s@%s — push did not trigger a run",
+					normalizedURL, branch),
 			})
 			return
 		}
