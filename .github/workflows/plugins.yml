@@ -97,15 +97,24 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-${{ matrix.plugin }}
+          # Stable channels (latest, v1, vMAJOR.MINOR, vMAJOR) ride ONLY
+          # on release-tag pushes — pinning to :v1 or :latest should track
+          # the last cut release, not the rolling main HEAD. main pushes
+          # only refresh :main and :sha-... so dev consumers have a HEAD
+          # tracker without polluting the stable channel pinned by users.
+          #
+          # NOTE: when the plugin contract bumps to v2, change the
+          # raw `value=v1` below to `value=v2`. Until then v1 = current
+          # stable contract regardless of gocdnext core version.
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
             type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=v1,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=v1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - uses: docker/build-push-action@v6
         with:
