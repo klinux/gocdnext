@@ -9,7 +9,7 @@ if [ -z "${PLUGIN_TOKEN:-}" ]; then
     exit 2
 fi
 
-cd "/workspace/${PLUGIN_WORKING_DIR:-.}"
+cd "${PLUGIN_WORKING_DIR:-.}"
 
 git config --global --add safe.directory '*' 2>/dev/null || true
 

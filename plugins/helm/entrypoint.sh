@@ -12,7 +12,6 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
     exit 2
 fi
 
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -23,8 +22,8 @@ fi
 # rationale.
 if [ -n "${PLUGIN_KUBECONFIG:-}" ]; then
     dest=/tmp/gocdnext-kubeconfig
-    if [ -f "/workspace/${PLUGIN_KUBECONFIG}" ]; then
-        cp "/workspace/${PLUGIN_KUBECONFIG}" "${dest}"
+    if [ -f "${PLUGIN_KUBECONFIG}" ]; then
+        cp "${PLUGIN_KUBECONFIG}" "${dest}"
     elif echo "${PLUGIN_KUBECONFIG}" | base64 -d >"${dest}" 2>/dev/null \
          && head -c 7 "${dest}" | grep -q 'apiVersion\|kind:'; then
         :

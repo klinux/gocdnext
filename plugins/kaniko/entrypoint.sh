@@ -42,7 +42,7 @@ fi
 
 set -- \
     --dockerfile="${CONTEXT}/${DOCKERFILE}" \
-    --context="dir:///workspace/${CONTEXT}" \
+    --context="dir://${CONTEXT}" \
     --destination="${PLUGIN_IMAGE}"
 
 if [ "${PUSH}" != "true" ]; then

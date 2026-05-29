@@ -36,7 +36,7 @@ case "${ACTION}" in
     sign)
         cmd=(sign --yes)
         if [ -n "${KEY}" ]; then
-            cmd+=(--key "/workspace/${KEY}")
+            cmd+=(--key "${KEY}")
             if [ -n "${PLUGIN_KEY_PASSWORD:-}" ]; then
                 export COSIGN_PASSWORD="${PLUGIN_KEY_PASSWORD}"
             fi
@@ -48,7 +48,7 @@ case "${ACTION}" in
     verify)
         cmd=(verify)
         if [ -n "${KEY}" ]; then
-            cmd+=(--key "/workspace/${KEY}")
+            cmd+=(--key "${KEY}")
         else
             if [ -z "${PLUGIN_CERT_IDENTITY:-}" ] || [ -z "${PLUGIN_CERT_OIDC_ISSUER:-}" ]; then
                 echo "gocdnext/cosign: keyless verify needs cert-identity + cert-oidc-issuer" >&2
@@ -66,12 +66,12 @@ case "${ACTION}" in
             echo "gocdnext/cosign: action=attest needs PLUGIN_PREDICATE" >&2
             exit 2
         fi
-        cmd=(attest --yes --predicate "/workspace/${PLUGIN_PREDICATE}")
+        cmd=(attest --yes --predicate "${PLUGIN_PREDICATE}")
         if [ -n "${PLUGIN_PREDICATE_TYPE:-}" ]; then
             cmd+=(--type "${PLUGIN_PREDICATE_TYPE}")
         fi
         if [ -n "${KEY}" ]; then
-            cmd+=(--key "/workspace/${KEY}")
+            cmd+=(--key "${KEY}")
             if [ -n "${PLUGIN_KEY_PASSWORD:-}" ]; then
                 export COSIGN_PASSWORD="${PLUGIN_KEY_PASSWORD}"
             fi

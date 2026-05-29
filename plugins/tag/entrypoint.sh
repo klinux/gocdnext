@@ -18,7 +18,6 @@ revision="${PLUGIN_REVISION:-HEAD}"
 remote="${PLUGIN_REMOTE:-origin}"
 username="${PLUGIN_USERNAME:-git}"
 
-cd /workspace
 
 # The host-cloned workspace is owned by the agent's UID while
 # the container runs as root; git 2.35+ refuses to operate on

@@ -13,19 +13,22 @@ fi
 WORKING_DIR="${PLUGIN_WORKING_DIR:-.}"
 MANAGER="${PLUGIN_MANAGER:-auto}"
 
-# Point every package manager's cache dir at a workspace-relative
+cd "${WORKING_DIR}"
+
+# Point every package manager's cache dir at a relative-to-PWD
 # path so the platform's `cache:` block can tar it. pip/uv/poetry
 # each read different env vars; we set them all defensively so
 # the user doesn't have to know which manager they're on today.
 # `pip install --no-cache-dir` in the pip branch below overrides
 # this deliberately — the venv itself becomes the artefact worth
 # caching (ephemeral .venv/), not the pip download cache.
-export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/workspace/.cache/pip}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/.cache/uv}"
-export POETRY_CACHE_DIR="${POETRY_CACHE_DIR:-/workspace/.cache/poetry}"
+# Set AFTER cd so caches sit next to the project, not next to
+# the monorepo root — matches what `cache: { path: .cache/pip }`
+# would persist when WORKING_DIR is a sub-directory.
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-.cache/pip}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-.cache/uv}"
+export POETRY_CACHE_DIR="${POETRY_CACHE_DIR:-.cache/poetry}"
 mkdir -p "${PIP_CACHE_DIR}" "${UV_CACHE_DIR}" "${POETRY_CACHE_DIR}"
-
-cd "/workspace/${WORKING_DIR}"
 
 # Auto-detection priority:
 #   poetry.lock    → poetry (library projects, pinned resolver)
@@ -73,7 +76,7 @@ case "${MANAGER}" in
         # shellcheck disable=SC1091
         source .venv/bin/activate
         # pip's cache dir default was redirected to
-        # /workspace/.cache/pip at the top of this script so a
+        # .cache/pip at the top of this script so a
         # pipeline `cache:` block can preserve the wheel cache
         # across runs — skip --no-cache-dir here.
         pip install -r "${req}"

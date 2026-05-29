@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-cd "/workspace/${PLUGIN_WORKING_DIR:-.}"
+cd "${PLUGIN_WORKING_DIR:-.}"
 
 # Redirect the JUnit reporter output to a known path so the
 # pipeline's `test_reports:` block can find it without the

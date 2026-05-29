@@ -22,7 +22,6 @@ fi
 
 # Land in the target directory — agent mounts the job workspace at
 # /workspace, operator's `working-dir` is a path relative to that.
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -48,7 +47,7 @@ corepack prepare --activate
 # call (install, exec, run) honours it without the plugin having
 # to intercept PLUGIN_COMMAND.
 if [ -z "${PNPM_STORE_DIR:-}" ]; then
-    PNPM_STORE_DIR=/workspace/.pnpm-store
+    PNPM_STORE_DIR=.pnpm-store
 fi
 mkdir -p "${PNPM_STORE_DIR}"
 pnpm config set store-dir "${PNPM_STORE_DIR}" >/dev/null

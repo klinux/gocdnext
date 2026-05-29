@@ -4,7 +4,6 @@
 
 set -euo pipefail
 
-cd /workspace
 
 # Same dubious-ownership opt-in as the other git plugins.
 git config --global --add safe.directory '*' 2>/dev/null || true
@@ -37,7 +36,7 @@ echo "==> range ${range} → ${output}"
 # formatters can split without regex gymnastics.
 raw=$(git log --pretty=format:'%h%x09%s%x09%an' "${range}" || true)
 
-dest="/workspace/${output#/}"
+dest="${output#/}"
 mkdir -p "$(dirname "${dest}")"
 : >"${dest}"
 

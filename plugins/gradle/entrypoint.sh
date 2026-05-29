@@ -13,7 +13,6 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
     exit 2
 fi
 
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -27,7 +26,7 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # round-trip an empty blob. Override via `variables:
 # GRADLE_USER_HOME: ...` in YAML for the rare case someone
 # wants a different layout.
-export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle-home}"
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-.gradle-home}"
 mkdir -p "${GRADLE_USER_HOME}"
 
 # Gradle wrapper is the best-practice CI entrypoint because it

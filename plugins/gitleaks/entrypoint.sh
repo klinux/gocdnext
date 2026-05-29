@@ -17,10 +17,10 @@ EXIT_CODE="${PLUGIN_EXIT_CODE:-1}"
 # advisory).
 case "${MODE}" in
   dir)
-    cmd=(detect --source "/workspace/${PATH_TO_SCAN}" --no-git)
+    cmd=(detect --source "${PATH_TO_SCAN}" --no-git)
     ;;
   git)
-    cmd=(detect --source "/workspace/${PATH_TO_SCAN}")
+    cmd=(detect --source "${PATH_TO_SCAN}")
     ;;
   *)
     echo "gocdnext/gitleaks: unknown scan_mode ${MODE} (accepted: dir, git)" >&2
@@ -31,11 +31,11 @@ esac
 cmd+=("--exit-code" "${EXIT_CODE}" "--report-format" "${FORMAT}")
 
 if [ -n "${PLUGIN_CONFIG:-}" ]; then
-  cmd+=("--config" "/workspace/${PLUGIN_CONFIG}")
+  cmd+=("--config" "${PLUGIN_CONFIG}")
 fi
 
 if [ -n "${PLUGIN_REPORT:-}" ]; then
-  cmd+=("--report-path" "/workspace/${PLUGIN_REPORT}")
+  cmd+=("--report-path" "${PLUGIN_REPORT}")
 fi
 
 # Git 2.35 dubious-ownership workaround, same as every other

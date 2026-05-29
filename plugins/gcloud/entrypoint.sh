@@ -11,7 +11,7 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
 fi
 
 WORKING_DIR="${PLUGIN_WORKING_DIR:-.}"
-cd "/workspace/${WORKING_DIR}"
+cd "${WORKING_DIR}"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT

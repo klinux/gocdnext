@@ -12,7 +12,6 @@
 
 set -eu
 
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -33,9 +32,9 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 #                         GOCACHE is the single biggest speed-up.
 # Defaults sit under $HOME (/root/...) which is outside the
 # workspace mount, so the cache block can't see them.
-export GOLANGCI_LINT_CACHE="${GOLANGCI_LINT_CACHE:-/workspace/.golangci-cache}"
-export GOMODCACHE="${GOMODCACHE:-/workspace/.go-mod}"
-export GOCACHE="${GOCACHE:-/workspace/.go-cache}"
+export GOLANGCI_LINT_CACHE="${GOLANGCI_LINT_CACHE:-.golangci-cache}"
+export GOMODCACHE="${GOMODCACHE:-.go-mod}"
+export GOCACHE="${GOCACHE:-.go-cache}"
 mkdir -p "${GOLANGCI_LINT_CACHE}" "${GOMODCACHE}" "${GOCACHE}"
 
 TIMEOUT="${PLUGIN_TIMEOUT:-5m}"
