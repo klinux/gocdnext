@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.12 — 2026-05-29
+
+### Fixes
+
+- **`gocdnext/buildx` plugin** — four hardening fixes on the entrypoint:
+  - **Default `PLUGIN_PLATFORMS` flips to `linux/amd64`**. Multi-arch
+    via QEMU emulation on amd64 runners adds 3-5x build time and
+    needs a privileged `docker run` for binfmt that
+    PodSecurity-strict clusters reject. Declare
+    `platforms: linux/amd64,linux/arm64` in `with:` to opt back in.
+  - **Binfmt only when actually cross-building.** The plugin now
+    detects host arch (`uname -m`) and skips `tonistiigi/binfmt`
+    when every target platform matches the host. Saves ~15s + one
+    privileged container per build on the common amd64-only case.
+  - **All `PLUGIN_*` inputs trimmed.** A YAML `|` block-scalar
+    leaves a trailing newline on the value (`platforms: |\n  linux/amd64\n`
+    → `linux/amd64\n`), which buildx then parses as a single
+    platform whose name has a trailing newline. Symptom was
+    `ERROR: resolve : lstat platform: no such file or directory`
+    miles away from the cause.
+  - **Final `docker buildx build` invocation echoed verbatim**
+    (via `printf %q`) before execution. Cryptic buildx errors now
+    come with the exact argv next to them — no `set -x` ceremony
+    needed to diagnose stray-whitespace inputs.
+
 ## v0.4.11 — 2026-05-29
 
 ### Features

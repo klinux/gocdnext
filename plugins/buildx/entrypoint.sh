@@ -1,21 +1,40 @@
 #!/bin/bash
-# gocdnext/buildx — multi-arch container build via docker buildx.
+# gocdnext/buildx — container build via docker buildx.
 # See Dockerfile for the full input contract.
 
 set -euo pipefail
 
-if [ -z "${PLUGIN_IMAGE:-}" ]; then
+# trim removes leading + trailing whitespace (including the trailing
+# newline YAML's `|` block-scalar leaves on every value). Buildx
+# parses `--platform "linux/amd64\n"` as a single platform whose
+# name has a trailing newline, then trips on `lstat platform` when
+# resolving the build context. Trim once at the boundary so every
+# subsequent var read is clean.
+trim() {
+    local s="${1-}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+PLUGIN_IMAGE="$(trim "${PLUGIN_IMAGE:-}")"
+if [ -z "${PLUGIN_IMAGE}" ]; then
     echo "gocdnext/buildx: PLUGIN_IMAGE is required" >&2
     echo "  example: image: ghcr.io/org/app" >&2
     exit 2
 fi
 
-DOCKERFILE="${PLUGIN_DOCKERFILE:-Dockerfile}"
-CONTEXT="${PLUGIN_CONTEXT:-.}"
-PUSH="${PLUGIN_PUSH:-true}"
-PLATFORMS="${PLUGIN_PLATFORMS:-linux/amd64,linux/arm64}"
+DOCKERFILE="$(trim "${PLUGIN_DOCKERFILE:-Dockerfile}")"
+CONTEXT="$(trim "${PLUGIN_CONTEXT:-.}")"
+PUSH="$(trim "${PLUGIN_PUSH:-true}")"
+# Default is amd64-only since v0.4.12 — multi-arch QEMU emulation on
+# x86 runners adds 3-5x build time and triggers a privileged `docker
+# run` for binfmt, which security-conscious clusters reject. Users
+# who actually need cross-arch declare `platforms: linux/amd64,linux/arm64`
+# explicitly and pay the QEMU cost knowingly.
+PLATFORMS="$(trim "${PLUGIN_PLATFORMS:-linux/amd64}")"
 
-tags_raw="${PLUGIN_TAGS:-latest}"
+tags_raw="$(trim "${PLUGIN_TAGS:-latest}")"
 tags_raw="${tags_raw//,/ }"
 read -ra TAGS <<<"${tags_raw}"
 
@@ -59,10 +78,31 @@ fi
 
 # QEMU emulators — tonistiigi/binfmt registers handlers inside
 # the running daemon, so a single amd64 builder can execute arm64
-# build steps. Idempotent; rerunning costs one image pull and a
-# short container lifetime.
-echo "==> registering QEMU handlers (binfmt)"
-docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null
+# build steps. ONLY runs when the target platforms include something
+# other than the host arch: pulling the binfmt image + a privileged
+# `docker run` for nothing wastes 10-30s + offends PodSecurity
+# policies that block privileged containers cluster-wide.
+case "$(uname -m)" in
+    x86_64)  host_platform=linux/amd64 ;;
+    aarch64) host_platform=linux/arm64 ;;
+    armv7l)  host_platform=linux/arm/v7 ;;
+    *)       host_platform="linux/$(uname -m)" ;;
+esac
+need_qemu=0
+IFS=',' read -ra _platforms <<<"${PLATFORMS}"
+for p in "${_platforms[@]}"; do
+    p="$(trim "$p")"
+    if [ -n "$p" ] && [ "$p" != "$host_platform" ]; then
+        need_qemu=1
+        break
+    fi
+done
+if [ "${need_qemu}" = "1" ]; then
+    echo "==> registering QEMU handlers (binfmt) — cross-arch target"
+    docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null
+else
+    echo "==> native build (${host_platform}), skipping QEMU"
+fi
 
 # A fresh builder per run keeps cache isolated and avoids a
 # "default" builder that already exists in some docker-in-docker
@@ -154,15 +194,23 @@ if [ ${#cache_args[@]} -gt 0 ]; then
     echo "==> layer cache: ${cache_args[*]}"
 fi
 
+# Compose the final invocation in one array so we can `printf` it
+# back to the operator before exec'ing. When buildx fails with a
+# cryptic `resolve : lstat X` (almost always a stray-whitespace input
+# the shell didn't expand the way the operator assumed), the printed
+# command makes the actual argv visible without `set -x` ceremony.
+final_cmd=(docker buildx build
+    --platform "${PLATFORMS}"
+    --file "${DOCKERFILE}"
+    "${tag_args[@]}"
+    "${build_arg_args[@]}"
+    "${cache_args[@]}"
+    "${push_args[@]}"
+    "${CONTEXT}")
 echo "==> docker buildx build --platform ${PLATFORMS} (${#TAGS[@]} tag(s))"
-docker buildx build \
-    --platform "${PLATFORMS}" \
-    --file "${DOCKERFILE}" \
-    "${tag_args[@]}" \
-    "${build_arg_args[@]}" \
-    "${cache_args[@]}" \
-    "${push_args[@]}" \
-    "${CONTEXT}"
+printf '    %q' "${final_cmd[@]}"
+printf '\n'
+"${final_cmd[@]}"
 
 if [ "${PUSH}" != "true" ]; then
     echo "==> push skipped (PLUGIN_PUSH=${PUSH}). Multi-arch images stay in the builder cache only."
