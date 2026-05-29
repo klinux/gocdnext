@@ -159,7 +159,14 @@ type Querier interface {
 	// status filter respects `materials.config.status` (default 'success') so a
 	// user can gate downstream on specific outcomes.
 	FindDownstreamUpstreamMaterials(ctx context.Context, arg FindDownstreamUpstreamMaterialsParams) ([]FindDownstreamUpstreamMaterialsRow, error)
-	FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error)
+	// N rows per fingerprint by design: materials are uniqued on
+	// (pipeline_id, fingerprint), so several pipelines that watch the
+	// same (repo, branch) legitimately share a hash. ORDER BY pipeline_id
+	// makes the dispatch order deterministic across replays / reaper
+	// requeues / multi-replica races. An earlier :one LIMIT 1 form
+	// silently kept only the first row, so only ONE pipeline fan-out
+	// happened on every push and "which one" was non-deterministic.
+	FindMaterialsByFingerprint(ctx context.Context, fingerprint string) ([]Material, error)
 	FindProjectBySlug(ctx context.Context, slug string) (FindProjectBySlugRow, error)
 	// Idempotency check for fanout: if we already created a downstream run for
 	// this (pipeline, upstream_run_id) pair, skip.

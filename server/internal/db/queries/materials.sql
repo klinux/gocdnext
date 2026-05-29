@@ -1,8 +1,15 @@
--- name: FindMaterialByFingerprint :one
+-- name: FindMaterialsByFingerprint :many
+-- N rows per fingerprint by design: materials are uniqued on
+-- (pipeline_id, fingerprint), so several pipelines that watch the
+-- same (repo, branch) legitimately share a hash. ORDER BY pipeline_id
+-- makes the dispatch order deterministic across replays / reaper
+-- requeues / multi-replica races. An earlier :one LIMIT 1 form
+-- silently kept only the first row, so only ONE pipeline fan-out
+-- happened on every push and "which one" was non-deterministic.
 SELECT id, pipeline_id, type, config, fingerprint, auto_update, created_at
 FROM materials
 WHERE fingerprint = $1
-LIMIT 1;
+ORDER BY pipeline_id;
 
 -- name: InsertMaterial :one
 INSERT INTO materials (pipeline_id, type, config, fingerprint, auto_update)

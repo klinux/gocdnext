@@ -44,33 +44,38 @@ func TestGitHubWebhook_PushWithMatchingMaterial(t *testing.T) {
 		t.Fatalf("status = %d, want 202; body=%s", resp.StatusCode, readBody(t, resp))
 	}
 
+	// Wire shape after v0.4.20 fan-out: a `runs: [...]` array carrying
+	// one entry per pipeline that actually got a run created. The first
+	// push creates exactly one run (single matching pipeline here).
 	var got struct {
-		ModificationID int64 `json:"modification_id"`
-		Created        bool  `json:"created"`
+		Materials int              `json:"materials"`
+		Runs      []map[string]any `json:"runs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.ModificationID == 0 {
-		t.Fatalf("modification_id = 0")
+	if got.Materials != 1 {
+		t.Fatalf("materials = %d, want 1", got.Materials)
 	}
-	if !got.Created {
-		t.Fatalf("created = false on first call")
+	if len(got.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1; body=%+v", len(got.Runs), got)
+	}
+	firstRunID, _ := got.Runs[0]["run_id"].(string)
+	if firstRunID == "" {
+		t.Fatalf("first run missing run_id: %+v", got.Runs[0])
 	}
 
-	// replay should dedupe (Created=false, same id)
+	// Replay dedupes via (material_id, revision, branch) uniqueness:
+	// the modification is the same row, no NEW run is created, runs[]
+	// comes back empty.
 	resp2 := postSigned(t, srv, "push", body)
 	defer resp2.Body.Close()
 	var got2 struct {
-		ModificationID int64 `json:"modification_id"`
-		Created        bool  `json:"created"`
+		Runs []map[string]any `json:"runs"`
 	}
 	_ = json.NewDecoder(resp2.Body).Decode(&got2)
-	if got2.Created {
-		t.Fatalf("replay Created = true")
-	}
-	if got2.ModificationID != got.ModificationID {
-		t.Fatalf("replay id = %d, want %d", got2.ModificationID, got.ModificationID)
+	if len(got2.Runs) != 0 {
+		t.Fatalf("replay should not spawn a new run, got %+v", got2.Runs)
 	}
 
 	_ = materialID // seeded, not asserted directly
@@ -93,21 +98,24 @@ func TestGitHubWebhook_PushTriggersRun(t *testing.T) {
 	}
 
 	var got struct {
-		ModificationID int64  `json:"modification_id"`
-		Created        bool   `json:"created"`
-		RunID          string `json:"run_id"`
+		Materials int              `json:"materials"`
+		Runs      []map[string]any `json:"runs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.RunID == "" {
-		t.Fatalf("run_id missing in response: %+v", got)
+	if len(got.Runs) != 1 {
+		t.Fatalf("runs = %+v, want 1 entry", got.Runs)
+	}
+	runID, _ := got.Runs[0]["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("run_id missing in response: %+v", got.Runs[0])
 	}
 
 	ctx := context.Background()
 	var status, cause string
 	if err := pool.QueryRow(ctx,
-		`SELECT status, cause FROM runs WHERE id = $1`, got.RunID,
+		`SELECT status, cause FROM runs WHERE id = $1`, runID,
 	).Scan(&status, &cause); err != nil {
 		t.Fatalf("run row: %v", err)
 	}
@@ -116,8 +124,8 @@ func TestGitHubWebhook_PushTriggersRun(t *testing.T) {
 	}
 
 	var stageCount, jobCount int
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM stage_runs WHERE run_id = $1`, got.RunID).Scan(&stageCount)
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM job_runs WHERE run_id = $1`, got.RunID).Scan(&jobCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM stage_runs WHERE run_id = $1`, runID).Scan(&stageCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM job_runs WHERE run_id = $1`, runID).Scan(&jobCount)
 	if stageCount != 2 || jobCount != 2 {
 		t.Fatalf("stages=%d jobs=%d, want 2/2", stageCount, jobCount)
 	}
@@ -126,12 +134,11 @@ func TestGitHubWebhook_PushTriggersRun(t *testing.T) {
 	resp2 := postSigned(t, srv, "push", body)
 	defer resp2.Body.Close()
 	var got2 struct {
-		Created bool   `json:"created"`
-		RunID   string `json:"run_id"`
+		Runs []map[string]any `json:"runs"`
 	}
 	_ = json.NewDecoder(resp2.Body).Decode(&got2)
-	if got2.Created {
-		t.Fatalf("replay Created = true")
+	if len(got2.Runs) != 0 {
+		t.Fatalf("replay spawned a new run: %+v", got2.Runs)
 	}
 
 	var runCount int
@@ -143,6 +150,101 @@ func TestGitHubWebhook_PushTriggersRun(t *testing.T) {
 	).Scan(&runCount)
 	if runCount != 1 {
 		t.Fatalf("run count after replay = %d, want 1", runCount)
+	}
+}
+
+// TestGitHubWebhook_PushFansOutToEveryPipeline is the v0.4.20
+// regression cover. The real-world report: project cora-pulse has
+// 4 pipelines that share the same git material fingerprint
+// (same repo + branch). Pre-fix only ONE ran per push because
+// FindMaterialByFingerprint was `:one LIMIT 1`. Post-fix, every
+// pipeline gets a run.
+func TestGitHubWebhook_PushFansOutToEveryPipeline(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newServer(t, s)
+	ctx := context.Background()
+
+	// seedMaterial registers the project+pipeline+scm_source with
+	// the first call. Add two more pipelines + matching materials
+	// sharing the same fingerprint to simulate the cora-pulse shape
+	// (ci-core, ci-web, security all on push to main).
+	fp := store.FingerprintFor("https://github.com/gocdnext/gocdnext.git", "main")
+	_ = seedMaterial(t, pool, fp)
+
+	var projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM projects WHERE slug = 'gocdnext-webhook-test'`,
+	).Scan(&projectID); err != nil {
+		t.Fatalf("lookup project: %v", err)
+	}
+	for _, name := range []string{"ci-web", "security"} {
+		var pipelineID uuid.UUID
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, $2, $3) RETURNING id`,
+			projectID, name, []byte(`{"name":"`+name+`","stages":["build"],"jobs":[{"name":"compile","stage":"build","script":"true"}]}`),
+		).Scan(&pipelineID); err != nil {
+			t.Fatalf("seed pipeline %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO materials (pipeline_id, type, config, fingerprint)
+			 VALUES ($1, 'git', $2, $3)`,
+			pipelineID, []byte(`{"url":"https://github.com/x/y.git","branch":"main"}`), fp,
+		); err != nil {
+			t.Fatalf("seed material %s: %v", name, err)
+		}
+	}
+
+	body := loadFixture(t, "push_main.json")
+	resp := postSigned(t, srv, "push", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	var got struct {
+		Materials int              `json:"materials"`
+		Runs      []map[string]any `json:"runs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Materials != 3 {
+		t.Fatalf("materials = %d, want 3", got.Materials)
+	}
+	if len(got.Runs) != 3 {
+		t.Fatalf("runs = %d, want 3; body=%+v", len(got.Runs), got)
+	}
+
+	// One run row per pipeline, all in the same project.
+	var runCount int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM runs r
+		 JOIN pipelines p ON p.id = r.pipeline_id
+		 WHERE p.project_id = $1`, projectID,
+	).Scan(&runCount)
+	if runCount != 3 {
+		t.Fatalf("runs in DB = %d, want 3 (one per pipeline)", runCount)
+	}
+
+	// Replay must dedupe per-material (the (material, revision, branch)
+	// uniqueness still holds), so a second delivery creates 0 new runs.
+	resp2 := postSigned(t, srv, "push", body)
+	defer resp2.Body.Close()
+	var got2 struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	_ = json.NewDecoder(resp2.Body).Decode(&got2)
+	if len(got2.Runs) != 0 {
+		t.Fatalf("replay spawned %d runs, want 0", len(got2.Runs))
+	}
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM runs r
+		 JOIN pipelines p ON p.id = r.pipeline_id
+		 WHERE p.project_id = $1`, projectID,
+	).Scan(&runCount)
+	if runCount != 3 {
+		t.Fatalf("runs in DB after replay = %d, want 3 (no new runs)", runCount)
 	}
 }
 

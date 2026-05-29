@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	bitbucketpkg "github.com/gocdnext/gocdnext/server/internal/webhook/bitbucket"
 	gitlabpkg "github.com/gocdnext/gocdnext/server/internal/webhook/gitlab"
@@ -53,8 +55,16 @@ func (h *Handler) persistPush(
 	}
 
 	fp := store.FingerprintFor(np.CloneURL, np.Branch)
-	material, err := h.store.FindMaterialByFingerprint(r.Context(), fp)
-	if errors.Is(err, store.ErrMaterialNotFound) {
+	materials, err := h.store.FindMaterialsByFingerprint(r.Context(), fp)
+	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "material lookup: " + err.Error()
+		h.log.Error(np.Provider+" webhook: material lookup failed",
+			"delivery", np.Delivery, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(materials) == 0 {
 		h.log.Info(np.Provider+" webhook: no matching material",
 			"delivery", np.Delivery, "clone_url", np.CloneURL, "branch", np.Branch,
 			"fingerprint", fp, "drift_applied", driftOutcome.Applied)
@@ -75,39 +85,25 @@ func (h *Handler) persistPush(
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err != nil {
-		rec.status = store.WebhookStatusError
-		rec.errText = "material lookup: " + err.Error()
-		h.log.Error(np.Provider+" webhook: material lookup failed",
-			"delivery", np.Delivery, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	rec.materialID = material.ID
 
-	mod := store.Modification{
-		MaterialID:  material.ID,
+	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
+		Materials:   materials,
 		Revision:    np.After,
 		Branch:      np.Branch,
 		Author:      np.AuthorName,
 		Message:     np.CommitMsg,
 		Payload:     json.RawMessage(np.Body),
 		CommittedAt: np.CommittedAt,
-	}
-	res, err := h.store.InsertModification(r.Context(), mod)
-	if err != nil {
-		rec.status = store.WebhookStatusError
-		rec.errText = "insert modification: " + err.Error()
-		h.log.Error(np.Provider+" webhook: insert modification failed",
-			"delivery", np.Delivery, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
+		Provider:    np.Provider,
+		Delivery:    np.Delivery,
+		TriggeredBy: "system:webhook",
+	})
+	rec.materialID = firstCreatedRunMaterialID(outcomes)
 
+	runs := runsPayload(outcomes)
 	resp := map[string]any{
-		"modification_id": res.ID,
-		"created":         res.Created,
-		"material_id":     material.ID.String(),
+		"runs":      runs,
+		"materials": len(materials),
 	}
 	if driftOutcome.Attempted {
 		resp["drift"] = map[string]any{
@@ -117,33 +113,26 @@ func (h *Handler) persistPush(
 		}
 	}
 
-	if res.Created {
-		runRes, err := h.store.CreateRunFromModification(r.Context(), store.CreateRunFromModificationInput{
-			PipelineID:     material.PipelineID,
-			MaterialID:     material.ID,
-			ModificationID: res.ID,
-			Revision:       np.After,
-			Branch:         np.Branch,
-			Provider:       np.Provider,
-			Delivery:       np.Delivery,
-			TriggeredBy:    "system:webhook",
-		})
-		if err != nil {
-			rec.status = store.WebhookStatusError
-			rec.errText = "create run: " + err.Error()
-			h.log.Error(np.Provider+" webhook: create run failed",
-				"delivery", np.Delivery, "modification_id", res.ID, "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+	allErrored := len(outcomes) > 0
+	for _, oc := range outcomes {
+		if oc.Err == nil {
+			allErrored = false
+			if oc.RunID != uuid.Nil {
+				h.log.Info(np.Provider+" webhook: run queued",
+					"delivery", np.Delivery, "pipeline_id", oc.PipelineID,
+					"run_id", oc.RunID, "counter", oc.RunCounter)
+			}
 		}
-		resp["run_id"] = runRes.RunID.String()
-		resp["run_counter"] = runRes.Counter
-		h.log.Info(np.Provider+" webhook: run queued",
-			"delivery", np.Delivery, "pipeline_id", material.PipelineID,
-			"run_id", runRes.RunID, "counter", runRes.Counter)
-	} else {
-		h.log.Info(np.Provider+" webhook: modification already present, no run queued",
-			"delivery", np.Delivery, "modification_id", res.ID)
+	}
+	if allErrored {
+		rec.status = store.WebhookStatusError
+		rec.errText = "fan-out: every pipeline errored"
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(runs) == 0 {
+		h.log.Info(np.Provider+" webhook: all modifications deduped, no runs queued",
+			"delivery", np.Delivery, "materials", len(materials))
 	}
 
 	rec.status = store.WebhookStatusAccepted

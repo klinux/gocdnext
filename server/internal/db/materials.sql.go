@@ -20,26 +20,46 @@ func (q *Queries) DeleteMaterial(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
-const findMaterialByFingerprint = `-- name: FindMaterialByFingerprint :one
+const findMaterialsByFingerprint = `-- name: FindMaterialsByFingerprint :many
 SELECT id, pipeline_id, type, config, fingerprint, auto_update, created_at
 FROM materials
 WHERE fingerprint = $1
-LIMIT 1
+ORDER BY pipeline_id
 `
 
-func (q *Queries) FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error) {
-	row := q.db.QueryRow(ctx, findMaterialByFingerprint, fingerprint)
-	var i Material
-	err := row.Scan(
-		&i.ID,
-		&i.PipelineID,
-		&i.Type,
-		&i.Config,
-		&i.Fingerprint,
-		&i.AutoUpdate,
-		&i.CreatedAt,
-	)
-	return i, err
+// N rows per fingerprint by design: materials are uniqued on
+// (pipeline_id, fingerprint), so several pipelines that watch the
+// same (repo, branch) legitimately share a hash. ORDER BY pipeline_id
+// makes the dispatch order deterministic across replays / reaper
+// requeues / multi-replica races. An earlier :one LIMIT 1 form
+// silently kept only the first row, so only ONE pipeline fan-out
+// happened on every push and "which one" was non-deterministic.
+func (q *Queries) FindMaterialsByFingerprint(ctx context.Context, fingerprint string) ([]Material, error) {
+	rows, err := q.db.Query(ctx, findMaterialsByFingerprint, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Material{}
+	for rows.Next() {
+		var i Material
+		if err := rows.Scan(
+			&i.ID,
+			&i.PipelineID,
+			&i.Type,
+			&i.Config,
+			&i.Fingerprint,
+			&i.AutoUpdate,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertMaterial = `-- name: InsertMaterial :one

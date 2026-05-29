@@ -3,7 +3,6 @@ package store_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -45,32 +44,82 @@ func TestFingerprintFor_NormalizesURL(t *testing.T) {
 	}
 }
 
-func TestStore_FindMaterialByFingerprint_NotFound(t *testing.T) {
+func TestStore_FindMaterialsByFingerprint_Empty(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 
-	_, err := s.FindMaterialByFingerprint(context.Background(), "does-not-exist")
-	if !errors.Is(err, store.ErrMaterialNotFound) {
-		t.Fatalf("err = %v, want ErrMaterialNotFound", err)
+	out, err := s.FindMaterialsByFingerprint(context.Background(), "does-not-exist")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Empty slice — not ErrNotFound — so the caller treats "no
+	// material" as a routine outcome (most pushes don't match any
+	// pipeline) instead of error handling.
+	if len(out) != 0 {
+		t.Fatalf("len(out) = %d, want 0", len(out))
 	}
 }
 
-func TestStore_FindMaterialByFingerprint_Found(t *testing.T) {
+func TestStore_FindMaterialsByFingerprint_FanOut(t *testing.T) {
+	// Several pipelines that watch the same (repo, branch) share
+	// the same fingerprint. Lookup must return ALL of them so the
+	// webhook handler can fan a run out to each. Pre-fix the query
+	// was `:one LIMIT 1` and silently dropped every pipeline except
+	// the first heap-scan row.
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
+	ctx := context.Background()
 
 	fp := store.FingerprintFor("https://github.com/gocdnext/gocdnext.git", "main")
-	materialID := seedMaterial(t, pool, fp)
 
-	m, err := s.FindMaterialByFingerprint(context.Background(), fp)
+	// One project, three pipelines, each with its own material row
+	// sharing the fingerprint — the real-world shape: ci-core,
+	// ci-web, security on the same repo+branch.
+	var projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO projects (slug, name) VALUES ($1, $2) RETURNING id`,
+		"fanout-test", "fanout test project",
+	).Scan(&projectID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	want := map[string]bool{}
+	for _, name := range []string{"ci-core", "ci-web", "security"} {
+		var pipelineID uuid.UUID
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, $2, $3) RETURNING id`,
+			projectID, name, []byte(`{}`),
+		).Scan(&pipelineID); err != nil {
+			t.Fatalf("seed pipeline %s: %v", name, err)
+		}
+		var materialID uuid.UUID
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO materials (pipeline_id, type, config, fingerprint)
+			 VALUES ($1, 'git', $2, $3) RETURNING id`,
+			pipelineID, []byte(`{"url":"https://github.com/x/y.git","branch":"main"}`), fp,
+		).Scan(&materialID); err != nil {
+			t.Fatalf("seed material for %s: %v", name, err)
+		}
+		want[materialID.String()] = true
+	}
+
+	got, err := s.FindMaterialsByFingerprint(ctx, fp)
 	if err != nil {
-		t.Fatalf("FindMaterialByFingerprint: %v", err)
+		t.Fatalf("FindMaterialsByFingerprint: %v", err)
 	}
-	if m.ID != materialID {
-		t.Fatalf("id = %s, want %s", m.ID, materialID)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3 (one per pipeline)", len(got))
 	}
-	if m.Fingerprint != fp {
-		t.Fatalf("fingerprint = %q, want %q", m.Fingerprint, fp)
+	for _, m := range got {
+		if m.Fingerprint != fp {
+			t.Errorf("fingerprint = %q, want %q", m.Fingerprint, fp)
+		}
+		if !want[m.ID.String()] {
+			t.Errorf("unexpected material id %s in results", m.ID)
+		}
+		delete(want, m.ID.String())
+	}
+	if len(want) > 0 {
+		t.Errorf("missing material ids: %v", want)
 	}
 }
 

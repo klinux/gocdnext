@@ -3,12 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
@@ -63,23 +61,32 @@ func (s *Store) ListGitMaterialsForPipeline(ctx context.Context, pipelineID uuid
 	return out, nil
 }
 
-// FindMaterialByFingerprint returns ErrMaterialNotFound if no row matches.
-// Other errors (DB down, driver issue) are wrapped and returned verbatim.
-func (s *Store) FindMaterialByFingerprint(ctx context.Context, fingerprint string) (Material, error) {
-	row, err := s.q.FindMaterialByFingerprint(ctx, fingerprint)
+// FindMaterialsByFingerprint returns every material row that hashes
+// to the same (url, branch) fingerprint. Materials are uniqued on
+// (pipeline_id, fingerprint), so N pipelines that watch the same
+// (repo, branch) legitimately share a hash — the caller (webhook
+// handlers, today) must fan out one run per row.
+//
+// Returns an EMPTY slice (not nil + error) for no matches; callers
+// distinguish "no pipeline material matched" from a hard DB error
+// by checking len(materials) instead of errors.Is(ErrMaterialNotFound).
+// Hard DB errors are wrapped and returned verbatim.
+func (s *Store) FindMaterialsByFingerprint(ctx context.Context, fingerprint string) ([]Material, error) {
+	rows, err := s.q.FindMaterialsByFingerprint(ctx, fingerprint)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Material{}, ErrMaterialNotFound
-		}
-		return Material{}, fmt.Errorf("store: find material: %w", err)
+		return nil, fmt.Errorf("store: find materials: %w", err)
 	}
-	return Material{
-		ID:          fromPgUUID(row.ID),
-		PipelineID:  fromPgUUID(row.PipelineID),
-		Type:        row.Type,
-		Config:      row.Config,
-		Fingerprint: row.Fingerprint,
-		AutoUpdate:  row.AutoUpdate,
-		CreatedAt:   row.CreatedAt.Time,
-	}, nil
+	out := make([]Material, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Material{
+			ID:          fromPgUUID(r.ID),
+			PipelineID:  fromPgUUID(r.PipelineID),
+			Type:        r.Type,
+			Config:      r.Config,
+			Fingerprint: r.Fingerprint,
+			AutoUpdate:  r.AutoUpdate,
+			CreatedAt:   r.CreatedAt.Time,
+		})
+	}
+	return out, nil
 }
