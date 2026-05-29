@@ -8,6 +8,7 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -43,6 +44,7 @@ func BuildAssignment(
 	downloads []*gocdnextv1.ArtifactDownload,
 	profileEnv map[string]string,
 	profileMasks []string,
+	cloneTokens map[string]string,
 ) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
@@ -150,7 +152,12 @@ func BuildAssignment(
 		}
 	}
 
-	checkouts := materialCheckouts(materials, revs)
+	checkouts, cloneMasks := materialCheckouts(materials, revs, cloneTokens)
+	// Append clone-token values to LogMasks so the bearer never
+	// appears verbatim in the agent's `$ git clone <url>` echo or in
+	// `git remote -v` output. applyMasks does a plain substring
+	// replace; duplicate entries are harmless.
+	masks = append(masks, cloneMasks...)
 
 	// Pipeline-level services travel per-assignment so the agent
 	// decides the network shape without re-reading the pipeline
@@ -349,8 +356,21 @@ func findJob(jobs []domain.Job, name string) (domain.Job, bool) {
 	return domain.Job{}, false
 }
 
-func materialCheckouts(materials []store.Material, revs map[string]revisionSnapshot) []*gocdnextv1.MaterialCheckout {
+// materialCheckouts emits the gRPC MaterialCheckout entries the agent
+// needs to clone each git material. When cloneTokens carries a token
+// for the material id, the token is embedded in the URL as
+// `https://x-access-token:TOKEN@host/...` so plain `git clone` picks
+// it up without a credential helper, and the token is returned in the
+// masks slice so the caller can append it to LogMasks. Non-https URLs
+// are passed through untouched — SSH URLs need an in-pod SSH key, not
+// a bearer.
+func materialCheckouts(
+	materials []store.Material,
+	revs map[string]revisionSnapshot,
+	cloneTokens map[string]string,
+) ([]*gocdnextv1.MaterialCheckout, []string) {
 	out := make([]*gocdnextv1.MaterialCheckout, 0, len(materials))
+	var masks []string
 	for _, m := range materials {
 		if m.Type != string(domain.MaterialGit) {
 			// Non-git materials don't need agent-side checkout (upstream/cron
@@ -362,16 +382,42 @@ func materialCheckouts(materials []store.Material, revs map[string]revisionSnaps
 			continue
 		}
 		rev := revs[m.ID.String()]
+		url := cfg.URL
+		if tok := cloneTokens[m.ID.String()]; tok != "" {
+			if rewritten, ok := injectBearerInHTTPSURL(url, tok); ok {
+				url = rewritten
+				masks = append(masks, tok)
+			}
+		}
 		out = append(out, &gocdnextv1.MaterialCheckout{
 			MaterialId: m.ID.String(),
-			Url:        cfg.URL,
+			Url:        url,
 			Revision:   rev.Revision,
 			Branch:     firstNonEmpty(rev.Branch, cfg.Branch),
 			TargetDir:  targetDirFor(m.ID),
 			SecretRef:  cfg.SecretRef,
 		})
 	}
-	return out
+	return out, masks
+}
+
+// injectBearerInHTTPSURL rewrites `https://host/...` into
+// `https://x-access-token:TOKEN@host/...` so plain git picks the
+// credential up without a helper. Returns (original, false) for any
+// shape that isn't a plain `https://` URL: SSH, ssh://, scheme-less
+// canonical form, or already-embedded credentials all fall through
+// to the unauthenticated clone path the operator can debug from logs.
+func injectBearerInHTTPSURL(raw, token string) (string, bool) {
+	const prefix = "https://"
+	if !strings.HasPrefix(raw, prefix) || token == "" {
+		return raw, false
+	}
+	rest := raw[len(prefix):]
+	if strings.Contains(rest, "@") {
+		// Pre-existing user:pass — leave it to the operator's intent.
+		return raw, false
+	}
+	return prefix + "x-access-token:" + token + "@" + rest, true
 }
 
 func firstNonEmpty(a, b string) string {

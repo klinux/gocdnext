@@ -359,7 +359,10 @@ gitHubFetcher := &configsync.MultiFetcher{
 			WithLogArchiveSource(artifactStore).
 			WithLogArchiveCache(logarchive.NewLineCache(cfg.LogArchiveCacheBytes))
 	}
-	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).WithSecretResolver(resolver).WithCipher(cipher)
+	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).
+		WithSecretResolver(resolver).
+		WithCipher(cipher).
+		WithGitTokens(vcsRegistry)
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}

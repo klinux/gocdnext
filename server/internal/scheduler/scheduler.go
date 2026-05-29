@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,16 @@ import (
 const DefaultTickInterval = 15 * time.Second
 
 // Scheduler turns queued runs into JobAssignments delivered to agents.
+// GitTokenSource resolves a short-lived clone token for a git URL.
+// Returns ("", nil) when no token is available (no App installed on
+// the repo, no PAT registered, public repo) so the caller falls
+// through to an unauthenticated clone — same behaviour as before
+// the App was wired. vcs.Registry implements this against the
+// active GitHub AppClient; tests can pass a static stub.
+type GitTokenSource interface {
+	TokenForGitURL(ctx context.Context, repoURL string) (token string, err error)
+}
+
 type Scheduler struct {
 	store    *store.Store
 	sessions *grpcsrv.SessionStore
@@ -43,6 +54,12 @@ type Scheduler struct {
 	// with a clear error, matching secrets behaviour.
 	artifactStore     artifacts.Store
 	artifactGetURLTTL time.Duration
+
+	// gitTokens, when set, mints per-repo clone tokens that get
+	// embedded in the MaterialCheckout URL + echoed into LogMasks
+	// so private-repo clones succeed without the operator wiring a
+	// per-project secret. nil = current PAT-only behaviour.
+	gitTokens GitTokenSource
 }
 
 // New wires the scheduler. dsn is used for a dedicated LISTEN connection —
@@ -58,6 +75,50 @@ func New(s *store.Store, sessions *grpcsrv.SessionStore, log *slog.Logger, dsn s
 		dsn:      dsn,
 		tick:     DefaultTickInterval,
 	}
+}
+
+// WithGitTokens wires the per-repo clone-token source. nil disables
+// the feature (clones run unauthenticated, same as pre-wire days).
+func (s *Scheduler) WithGitTokens(src GitTokenSource) *Scheduler {
+	s.gitTokens = src
+	return s
+}
+
+// resolveCloneTokens asks the gitTokens source for a fresh installation
+// token for every git material in the list. Errors are logged and
+// folded to empty so a partial failure (one repo unreachable, App not
+// installed on a sibling repo, etc.) doesn't take the whole dispatch
+// down — the failing clone bubbles up with the standard 128 exit code
+// and the operator chases the dependency on the right repo. Returns a
+// map keyed by material id so BuildAssignment can plumb each token to
+// the matching MaterialCheckout.
+func (s *Scheduler) resolveCloneTokens(ctx context.Context, materials []store.Material) map[string]string {
+	if s.gitTokens == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, m := range materials {
+		if m.Type != string(domain.MaterialGit) {
+			continue
+		}
+		var cfg domain.GitMaterial
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			continue
+		}
+		if cfg.URL == "" {
+			continue
+		}
+		tok, err := s.gitTokens.TokenForGitURL(ctx, cfg.URL)
+		if err != nil {
+			s.log.Warn("scheduler: clone token mint failed",
+				"material_id", m.ID, "url", cfg.URL, "err", err)
+			continue
+		}
+		if tok != "" {
+			out[m.ID.String()] = tok
+		}
+	}
+	return out
 }
 
 // WithTickInterval overrides the backstop tick. Mainly for tests.
@@ -336,7 +397,13 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profileEnv, profileMasks)
+		// Resolve a clone token for each git material URL before
+		// building the assignment. Best-effort: a missing source
+		// or a public repo returns "" and the clone runs unauth
+		// just like before.
+		cloneTokens := s.resolveCloneTokens(ctx, materials)
+
+		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profileEnv, profileMasks, cloneTokens)
 		if err != nil {
 			s.log.Warn("scheduler: build assignment", "job_id", job.ID, "err", err)
 			continue
