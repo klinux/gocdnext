@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.6 — 2026-05-28
+
+Two more hotfixes uncovered while validating v0.4.5: plugin tasks were
+silently no-op on the Kubernetes engine, and manual triggers stopped
+working after the v0.4.4 URL canonicalisation.
+
+### Fixes
+
+- **Plugin tasks ran `sh -c ""` on the Kubernetes engine** — the pod
+  spec hardcoded `Command: ["sh", "-c", spec.Script]`, so when the
+  runner left Script empty for a plugin task (the image's ENTRYPOINT
+  is the logic) Kubernetes overrode the entrypoint with a no-op shell.
+  The container exited 0 with nothing printed, the task showed
+  "success" in the run log, and no build / push / notification ever
+  ran. The docker engine already handled this correctly. Now the k8s
+  engine leaves Command nil when Script is empty so the image's
+  ENTRYPOINT runs as authored.
+
+- **Manual trigger 422 "no modifications yet"** — v0.4.4 changed
+  scm_sources.url to the canonical scheme-less form
+  (`github.com/owner/repo`). `seedHeadModification` hands that URL
+  back to `github.ParseRepoURL` to mint the App token; the parser
+  only handled scheme-bearing and SSH shapes, so the canonical form
+  was misread (host parsed as owner) and the seed silently failed.
+  Manual trigger then returned 422 because no modification existed
+  yet. ParseRepoURL now recognises the canonical form too.
+
 ## v0.4.5 — 2026-05-28
 
 Two more hotfixes — private-repo clones get an installation token, and
