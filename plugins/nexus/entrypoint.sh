@@ -93,7 +93,7 @@ if [ "${PLUGIN_ACTION}" = "download" ]; then
         exit 2
     fi
     dest_rel="${PLUGIN_DEST:-.}"
-    dest="/workspace/${dest_rel#/}"
+    dest="${dest_rel#/}"
     mkdir -p "$(dirname "${dest}/placeholder")"
     if [ "${version}" = "LATEST" ]; then
         url=$(resolve_latest)
@@ -120,7 +120,7 @@ if [ "${PLUGIN_ACTION}" = "upload" ]; then
         echo "gocdnext/nexus: file + upload-version are required for action=upload" >&2
         exit 2
     fi
-    src="/workspace/${file_rel#/}"
+    src="${file_rel#/}"
     if [ ! -f "${src}" ]; then
         echo "gocdnext/nexus: ${file_rel} not found in workspace" >&2
         exit 2

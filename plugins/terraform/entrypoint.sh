@@ -11,7 +11,7 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
 fi
 
 WORKING_DIR="${PLUGIN_WORKING_DIR:-.}"
-cd "/workspace/${WORKING_DIR}"
+cd "${WORKING_DIR}"
 
 # Subcommand is the first word of the command — we need it to
 # decide whether PLUGIN_VAR_FILE applies (init/plan/apply/destroy
@@ -23,7 +23,7 @@ var_file_args=()
 if [ -n "${PLUGIN_VAR_FILE:-}" ]; then
     case "${SUBCMD}" in
         plan|apply|destroy|refresh|import)
-            var_file_args+=("-var-file" "/workspace/${PLUGIN_VAR_FILE}")
+            var_file_args+=("-var-file" "${PLUGIN_VAR_FILE}")
             ;;
         *)
             echo "==> ignoring var-file for '${SUBCMD}' (not supported by this subcommand)"

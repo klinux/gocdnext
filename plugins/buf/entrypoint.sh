@@ -19,7 +19,6 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
     exit 2
 fi
 
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi

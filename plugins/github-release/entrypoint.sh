@@ -20,7 +20,6 @@ fi
 # agent might log at debug level.
 export GH_TOKEN="${PLUGIN_TOKEN}"
 
-cd /workspace
 git config --global --add safe.directory '*' 2>/dev/null || true
 
 # Build the gh release create argv. gh is chatty about missing

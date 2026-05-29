@@ -13,7 +13,7 @@ fi
 if [ -n "${PLUGIN_PAYLOAD_FILE:-}" ]; then
     # Escape hatch: operator built their own Adaptive Card or
     # MessageCard JSON; we just forward it.
-    body="/workspace/${PLUGIN_PAYLOAD_FILE}"
+    body="${PLUGIN_PAYLOAD_FILE}"
     if [ ! -f "${body}" ]; then
         echo "gocdnext/teams: payload-file ${PLUGIN_PAYLOAD_FILE} not found" >&2
         exit 2

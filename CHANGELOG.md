@@ -6,6 +6,54 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.22 — 2026-05-29
+
+### Fixes
+
+- **Plugin scripts hardcoded `/workspace/` as a prefix for every
+  user-supplied path, breaking every job on the Kubernetes engine.**
+  Symptoms in the wild:
+  - `gocdnext-python: line 28: cd: /workspace/services/core: No such
+    file or directory` when `working_dir: services/core` was set.
+  - `gitleaks: failed scan directory` with `stale NFS file handle`
+    errors across dozens of paths because `gitleaks detect --source
+    /workspace/.` was walking the entire PVC root, picking up files
+    from OTHER concurrent jobs in the same namespace as their
+    workspaces were torn down.
+
+  Root cause: the Docker engine bind-mounts `spec.WorkDir` to
+  `/workspace` inside the container, so `/workspace/$X` resolves
+  to checkout-relative. The Kubernetes engine mounts the whole PVC
+  at `/workspace` and sets `WorkingDir: /workspace/<run>/<job>/src/
+  <hash>`, so `/workspace/$X` resolves to PVC-root, escaping the
+  job's checkout and (worse) reading other jobs' state.
+
+  Fix touches 29 plugin entrypoints. All hardcoded `/workspace/`
+  prefixes for user-input paths (PLUGIN_PATH, PLUGIN_CONFIG,
+  PLUGIN_WORKING_DIR, PLUGIN_REPORT, PLUGIN_VAR_FILE,
+  PLUGIN_SETTINGS, PLUGIN_KUBECONFIG, file/dest paths in s3/nexus/
+  artifactory, etc.) are dropped — the paths now resolve relative
+  to the container's WorkingDir, which both engines set to the
+  checkout dir. Works identically under both runtimes.
+
+  Cache-dir defaults (`PIP_CACHE_DIR`, `GOMODCACHE`, `CARGO_HOME`,
+  `MAVEN_LOCAL_REPO`, etc.) also dropped the `/workspace/` prefix
+  so they sit next to the project being built, matching what a
+  `cache: { path: .cache/pip }` block expects. Caches in plugins
+  that have a working_dir (`python`, `rust`) had their export moved
+  to AFTER `cd "${WORKING_DIR}"` so a sub-project's caches land
+  next to the sub-project, not at the monorepo root.
+
+  Plugins with a leading `cd /workspace` (go, gradle, maven, node,
+  golangci-lint, buf, helm, kustomize, lighthouse-ci, release-notes,
+  github-release, tag) had it removed entirely — the container's
+  WorkingDir is already the right place, and `cd /workspace` was
+  actively escaping into the PVC root on K8s.
+
+  ssh plugin's `cd /workspace 2>/dev/null || true` fallback was a
+  symptom of the same confusion — removed; the default no-op
+  (stay in WorkingDir) is correct.
+
 ## v0.4.21 — 2026-05-29
 
 ### Features

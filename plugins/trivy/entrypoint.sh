@@ -45,7 +45,7 @@ if [ "${IGNORE_UNFIXED}" = "true" ]; then
 fi
 
 if [ -n "${PLUGIN_OUTPUT:-}" ]; then
-  args+=("--output" "/workspace/${PLUGIN_OUTPUT}")
+  args+=("--output" "${PLUGIN_OUTPUT}")
 fi
 
 args+=("${TARGET}")

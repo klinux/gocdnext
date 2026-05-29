@@ -9,7 +9,7 @@ if [ -z "${PLUGIN_TOKEN:-}" ]; then
     exit 2
 fi
 
-cd "/workspace/${PLUGIN_WORKING_DIR:-.}"
+cd "${PLUGIN_WORKING_DIR:-.}"
 
 # Same dubious-ownership opt-in as every other git-aware plugin.
 # codecov inspects the repo to derive the commit SHA + branch

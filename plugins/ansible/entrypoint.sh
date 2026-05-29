@@ -10,17 +10,17 @@ if [ -z "${PLUGIN_PLAYBOOK:-}" ]; then
     exit 2
 fi
 
-cmd=(ansible-playbook "/workspace/${PLUGIN_PLAYBOOK}")
+cmd=(ansible-playbook "${PLUGIN_PLAYBOOK}")
 
 if [ -n "${PLUGIN_INVENTORY:-}" ]; then
-    cmd+=("-i" "/workspace/${PLUGIN_INVENTORY}")
+    cmd+=("-i" "${PLUGIN_INVENTORY}")
 fi
 
 if [ -n "${PLUGIN_EXTRA_VARS:-}" ]; then
     # @path → ansible resolves the file itself. Anything else is a
     # raw key=value string passed as-is.
     if [[ "${PLUGIN_EXTRA_VARS}" == @* ]]; then
-        cmd+=("-e" "@/workspace/${PLUGIN_EXTRA_VARS#@}")
+        cmd+=("-e" "@${PLUGIN_EXTRA_VARS#@}")
     else
         cmd+=("-e" "${PLUGIN_EXTRA_VARS}")
     fi

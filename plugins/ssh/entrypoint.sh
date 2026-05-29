@@ -137,9 +137,7 @@ ssh_with_auth() {
 echo "==> ssh ${PLUGIN_USER}@${PLUGIN_HOST}:${PLUGIN_PORT}"
 
 if [ -n "$PLUGIN_WORKING_DIR" ]; then
-    cd "/workspace/$PLUGIN_WORKING_DIR" 2>/dev/null || cd "$PLUGIN_WORKING_DIR"
-else
-    cd /workspace 2>/dev/null || true
+    cd "$PLUGIN_WORKING_DIR"
 fi
 
 if [ -n "$PLUGIN_UPLOAD" ]; then

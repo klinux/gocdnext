@@ -14,7 +14,6 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
     exit 2
 fi
 
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -28,7 +27,7 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # flag on the CLI wins over settings.xml, so this applies
 # universally. Override via `variables: MAVEN_LOCAL_REPO: ...`
 # in YAML when a custom layout is needed.
-export MAVEN_LOCAL_REPO="${MAVEN_LOCAL_REPO:-/workspace/.m2-repo}"
+export MAVEN_LOCAL_REPO="${MAVEN_LOCAL_REPO:-.m2-repo}"
 mkdir -p "${MAVEN_LOCAL_REPO}"
 local_repo_arg=("-Dmaven.repo.local=${MAVEN_LOCAL_REPO}")
 
@@ -37,7 +36,7 @@ if [ -n "${PLUGIN_SETTINGS:-}" ]; then
     # Operator-provided settings.xml wins — they probably
     # already encode the repositories, mirrors, and policies
     # they care about.
-    settings_arg+=("--settings" "/workspace/${PLUGIN_SETTINGS}")
+    settings_arg+=("--settings" "${PLUGIN_SETTINGS}")
 elif [ -n "${PLUGIN_NEXUS_USERNAME:-}" ] && [ -n "${PLUGIN_NEXUS_PASSWORD:-}" ]; then
     # Synthesised shape: two <server> entries so both snapshot
     # and release IDs resolve without the operator maintaining

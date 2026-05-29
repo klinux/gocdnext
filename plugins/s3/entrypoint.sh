@@ -35,7 +35,7 @@ case "${PLUGIN_ACTION}" in
             echo "gocdnext/s3: file is required for action=upload" >&2
             exit 2
         fi
-        src="/workspace/${file_rel#/}"
+        src="${file_rel#/}"
         if [ ! -f "${src}" ]; then
             echo "gocdnext/s3: ${file_rel} not found in workspace" >&2
             exit 2
@@ -58,7 +58,7 @@ case "${PLUGIN_ACTION}" in
             # with the key's basename.
             dest_rel="$(basename "${key}")"
         fi
-        dest="/workspace/${dest_rel#/}"
+        dest="${dest_rel#/}"
         # If dest is a directory, write the object to <dir>/<basename>.
         # Mirrors curl -o semantics the other registry plugins
         # already use.

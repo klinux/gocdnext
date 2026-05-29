@@ -4,7 +4,6 @@
 
 set -euo pipefail
 
-cd /workspace
 
 # LHCI CLI is installed globally on the base image as `lhci`.
 # Collect stage: either point at URLs directly or honour an
@@ -12,7 +11,7 @@ cd /workspace
 
 collect_args=()
 if [ -n "${PLUGIN_CONFIG:-}" ]; then
-    cfg="/workspace/${PLUGIN_CONFIG#/}"
+    cfg="${PLUGIN_CONFIG#/}"
     if [ ! -f "${cfg}" ]; then
         echo "gocdnext/lighthouse-ci: config ${PLUGIN_CONFIG} not found" >&2
         exit 2

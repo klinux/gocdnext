@@ -117,7 +117,7 @@ if [ "${PLUGIN_ACTION}" = "download" ]; then
     url="${base}/${repo_rel}"
 
     dest_rel="${PLUGIN_DEST:-.}"
-    dest="/workspace/${dest_rel#/}"
+    dest="${dest_rel#/}"
     mkdir -p "$(dirname "${dest}/placeholder")"
     if [ -d "${dest}" ]; then
         fname="${url##*/}"
@@ -135,7 +135,7 @@ if [ "${PLUGIN_ACTION}" = "upload" ]; then
         echo "gocdnext/artifactory: file + upload-version are required for action=upload" >&2
         exit 2
     fi
-    src="/workspace/${file_rel#/}"
+    src="${file_rel#/}"
     if [ ! -f "${src}" ]; then
         echo "gocdnext/artifactory: ${file_rel} not found in workspace" >&2
         exit 2

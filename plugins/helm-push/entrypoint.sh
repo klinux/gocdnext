@@ -5,7 +5,7 @@
 set -euo pipefail
 
 chart_dir="${PLUGIN_CHART_DIR:-.}"
-src="/workspace/${chart_dir#/}"
+src="${chart_dir#/}"
 if [ ! -f "${src}/Chart.yaml" ]; then
     echo "gocdnext/helm-push: no Chart.yaml at ${chart_dir}" >&2
     exit 2

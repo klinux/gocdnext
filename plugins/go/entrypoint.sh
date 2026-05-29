@@ -19,7 +19,6 @@ if [ -z "${PLUGIN_COMMAND:-}" ]; then
     exit 2
 fi
 
-cd /workspace
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -34,8 +33,8 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # holds compiled package artefacts (incremental builds + test
 # result memoisation). Base image's defaults sit outside the
 # workspace at /root/go + /root/.cache/go-build.
-export GOMODCACHE="${GOMODCACHE:-/workspace/.go-mod}"
-export GOCACHE="${GOCACHE:-/workspace/.go-cache}"
+export GOMODCACHE="${GOMODCACHE:-.go-mod}"
+export GOCACHE="${GOCACHE:-.go-cache}"
 mkdir -p "${GOMODCACHE}" "${GOCACHE}"
 
 # Banner so the log shows what's about to run — `go vet` / `go
