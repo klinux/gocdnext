@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.14 — 2026-05-29
+
+### Changes
+
+- **Agent infers `WorkspaceRoot` from the engine choice** — v0.4.13
+  added `GOCDNEXT_WORKSPACE_ROOT` as a required env, but two env
+  vars that must agree (`GOCDNEXT_WORKSPACE_ROOT` and
+  `GOCDNEXT_K8S_WORKSPACE_PATH`) is exactly the misconfig trap a
+  default should eliminate. The agent now picks the right path on
+  its own:
+
+  | Engine | WorkspaceRoot |
+  |---|---|
+  | shell, docker, unset | `/tmp/gocdnext-workspace/` (runner default) |
+  | kubernetes | `GOCDNEXT_K8S_WORKSPACE_PATH` (REQUIRED — boot fails loud when missing) |
+
+  `GOCDNEXT_WORKSPACE_ROOT` stays available as an explicit override
+  for operators who mount the PVC at a non-default path; the chart
+  exposes it via `agent.workspace.rootOverride` and no longer sets
+  it by default.
+
 ## v0.4.13 — 2026-05-29
 
 ### Fixes
