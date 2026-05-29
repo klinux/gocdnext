@@ -81,6 +81,33 @@ func (r *Registry) GitHubApp() *ghscm.AppClient {
 	return r.githubApp
 }
 
+// TokenForGitURL satisfies scheduler.GitTokenSource so the dispatch
+// path mints an installation-scoped clone token for any github URL
+// the App has access to. Non-github URLs and unparseable inputs
+// return ("", nil) so the caller falls through to an unauthenticated
+// clone — same behaviour as before the App was wired.
+func (r *Registry) TokenForGitURL(ctx context.Context, repoURL string) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+	app := r.GitHubApp()
+	if app == nil {
+		return "", nil
+	}
+	owner, repo, err := ghscm.ParseRepoURL(repoURL)
+	if err != nil {
+		// Not a github URL shape — silently skip; the caller will
+		// hand the original URL to git and either succeed (public
+		// repo) or surface the credential prompt as a clear error.
+		return "", nil
+	}
+	tok, err := app.TokenForRepo(ctx, owner, repo)
+	if errors.Is(err, ghscm.ErrNoInstallation) {
+		return "", nil
+	}
+	return tok, err
+}
+
 // InstallationTokenFor satisfies configsync.GitHubAppTokenSource so
 // the shared fetcher can mint an installation-scoped token for
 // (owner, repo) when no PAT is available. Returns ("", "", nil)

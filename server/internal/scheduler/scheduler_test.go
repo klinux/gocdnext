@@ -322,7 +322,7 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 		"GH_TOKEN":          "ghp_abc123",
 		"REGISTRY_PASSWORD": "reg-pw-xyz",
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestBuildAssignment_MergesProfileEnvAndMasks(t *testing.T) {
 	}
 	profileMasks := []string{"AKIA"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profileEnv, profileMasks)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profileEnv, profileMasks, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestBuildAssignment_PropagatesProfileAndResources(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestBuildAssignment_NoResourcesLeavesProtoNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, nil, nil); err == nil {
+	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, nil, nil, nil); err == nil {
 		t.Fatalf("expected error when declared secret is unresolved")
 	}
 }
@@ -526,7 +526,7 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -541,6 +541,86 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 	}
 	if len(got.Checkouts) != 1 || got.Checkouts[0].Revision != "deadbeef" {
 		t.Fatalf("checkouts = %+v", got.Checkouts)
+	}
+}
+
+func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
+	// The dispatch path mints an installation-scoped token for the
+	// material's URL and hands it to BuildAssignment in cloneTokens.
+	// The checkout URL must come out with the token embedded in the
+	// https://x-access-token:TOKEN@host form so plain `git clone`
+	// picks it up, AND the token must land in LogMasks so the agent
+	// redacts it from the `$ git clone ...` echo and any error trail.
+	def := domain.Pipeline{
+		Stages: []string{"build"},
+		Jobs:   []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
+	}
+	defJSON, _ := json.Marshal(def)
+	materialID := uuid.New()
+	run := store.RunForDispatch{
+		ID:         uuid.New(),
+		PipelineID: uuid.New(),
+		Definition: defJSON,
+		Revisions: json.RawMessage(`{"` + materialID.String() +
+			`":{"revision":"deadbeef","branch":"main"}}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "compile", Image: "alpine"}
+	gitCfg, _ := json.Marshal(domain.GitMaterial{
+		URL:    "https://github.com/corabank/private-repo",
+		Branch: "main",
+	})
+	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
+	cloneTokens := map[string]string{materialID.String(): "ghs_fake_install_token"}
+
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, cloneTokens)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if len(got.Checkouts) != 1 {
+		t.Fatalf("checkouts = %+v", got.Checkouts)
+	}
+	wantURL := "https://x-access-token:ghs_fake_install_token@github.com/corabank/private-repo"
+	if got.Checkouts[0].Url != wantURL {
+		t.Errorf("checkout url = %q, want %q", got.Checkouts[0].Url, wantURL)
+	}
+	var masked bool
+	for _, m := range got.LogMasks {
+		if m == "ghs_fake_install_token" {
+			masked = true
+			break
+		}
+	}
+	if !masked {
+		t.Errorf("token not in LogMasks: %v", got.LogMasks)
+	}
+}
+
+func TestBuildAssignment_NoTokenLeavesURLUntouched(t *testing.T) {
+	// Public-repo path: no token in cloneTokens for this material →
+	// URL passes through verbatim, no LogMasks entry added.
+	def := domain.Pipeline{
+		Stages: []string{"build"},
+		Jobs:   []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
+	}
+	defJSON, _ := json.Marshal(def)
+	materialID := uuid.New()
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{"` + materialID.String() + `":{"revision":"abc","branch":"main"}}`)}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "compile", Image: "alpine"}
+	gitCfg, _ := json.Marshal(domain.GitMaterial{URL: "https://github.com/octocat/hello-world", Branch: "main"})
+	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
+
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.Checkouts[0].Url != "https://github.com/octocat/hello-world" {
+		t.Errorf("url mutated despite no token: %q", got.Checkouts[0].Url)
+	}
+	for _, m := range got.LogMasks {
+		if m == "" {
+			t.Errorf("empty mask leaked into LogMasks")
+		}
 	}
 }
 
@@ -568,7 +648,7 @@ func TestBuildAssignment_PropagatesPipelineServices(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "integration", Image: "golang:1.25"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -600,7 +680,7 @@ func TestBuildAssignment_NoServicesWhenPipelineHasNone(t *testing.T) {
 		Revisions: json.RawMessage(`{}`),
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "compile"}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
