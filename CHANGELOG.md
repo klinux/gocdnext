@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.17 — 2026-05-29
+
+### Fixes
+
+- **Runner profile edits no longer require re-typing every secret.**
+  The old "full-replace semantics" contract erased any secret the
+  UI didn't re-send with a fresh plaintext value, forcing the admin
+  to choose between the confusing "REMOVED because…" confirm and
+  re-typing every credential to change one env var. The server now
+  honours `__GOCDNEXT_SECRET_PRESERVE__` as a per-key value: it
+  resolves the sentinel against the row's current ciphertext,
+  keeping that secret untouched. Sentinels for keys that don't
+  exist are dropped (covers the race where another admin deletes
+  the secret between form load and save). The UI sends the
+  sentinel for existing rows the admin didn't touch and drops the
+  confirm dialog entirely.
+
+- **Secret dialog blew the modal out of the viewport on long
+  values.** A long single-line paste (kubeconfig, big base64) made
+  the textarea expand horizontally and pushed the footer buttons
+  off-screen. Added `break-all` on the textarea so unbroken strings
+  wrap, `max-h-[40vh] overflow-y-auto` so very long values scroll
+  inside, and a `maxLength={64 * 1024}` mirror of the server cap so
+  the wire round-trip fails locally with the same shape. Dialog
+  itself gains `max-h-[90vh] overflow-y-auto` for the same reason.
+
+- **Cleaner 413 on oversized secret submit.** Server-side handler
+  used to surface `MaxBytesReader` overflow as a generic
+  `400 invalid json: http: request body too large`. Now it returns
+  `413 secret value too large — cap is 64 KiB`.
+
 ## v0.4.16 — 2026-05-29
 
 ### Fixes

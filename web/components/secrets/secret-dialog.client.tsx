@@ -108,7 +108,7 @@ export function SecretDialog(props: Props) {
             New secret
           </Button>
       } />
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {rotating ? (
@@ -147,15 +147,27 @@ export function SecretDialog(props: Props) {
 
           <div className="space-y-2">
             <Label htmlFor="secret-value">Value</Label>
+            {/*
+              break-all: wraps long single-line values (kubeconfigs,
+              long base64 tokens) so they don't blow the dialog out
+              of the viewport. wrap="soft": explicit so future
+              shadcn updates can't flip it. max-h + overflow-y-auto:
+              very long pastes scroll inside the textarea instead of
+              pushing the footer buttons off-screen. maxLength:
+              matches the server-side cap so the wire round-trip
+              fails the same way locally.
+            */}
             <Textarea
               id="secret-value"
               name="value"
               autoComplete="off"
               spellCheck={false}
+              wrap="soft"
+              maxLength={64 * 1024}
               rows={4}
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              className="font-mono text-sm"
+              className="w-full font-mono text-sm break-all resize-y max-h-[40vh] overflow-y-auto"
               placeholder="ghp_..."
             />
             <p className="text-[11px] text-muted-foreground">

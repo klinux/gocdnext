@@ -293,6 +293,108 @@ func TestRunnerProfile_EnvAndSecrets_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestUpdateRunnerProfile_PreserveSentinel locks in the v0.4.17 fix:
+// the UI sends SecretPreserveSentinel for existing secrets the
+// operator didn't touch on edit. The server resolves each sentinel
+// to the row's current ciphertext so an env-only edit doesn't force
+// the admin to re-type credentials on every save.
+func TestUpdateRunnerProfile_PreserveSentinel(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	created, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:   "preserve-test",
+		Engine: "kubernetes",
+		Secrets: map[string]string{
+			"AWS_ACCESS_KEY_ID":     "AKIA-ORIG",
+			"AWS_SECRET_ACCESS_KEY": "secret-orig",
+			"DOCKER_PASSWORD":       "docker-orig",
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Operator edits the profile: rotates DOCKER_PASSWORD with a new
+	// value, leaves AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+	// untouched (UI sends sentinel for those).
+	err = s.UpdateRunnerProfile(ctx, cipher, created.ID, store.RunnerProfileInput{
+		Name:   "preserve-test",
+		Engine: "kubernetes",
+		Secrets: map[string]string{
+			"AWS_ACCESS_KEY_ID":     store.SecretPreserveSentinel,
+			"AWS_SECRET_ACCESS_KEY": store.SecretPreserveSentinel,
+			"DOCKER_PASSWORD":       "docker-NEW",
+		},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	env, _, err := s.ResolveProfileEnvByName(ctx, cipher, "preserve-test")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if env["AWS_ACCESS_KEY_ID"] != "AKIA-ORIG" {
+		t.Errorf("preserved AWS_ACCESS_KEY_ID = %q, want AKIA-ORIG", env["AWS_ACCESS_KEY_ID"])
+	}
+	if env["AWS_SECRET_ACCESS_KEY"] != "secret-orig" {
+		t.Errorf("preserved AWS_SECRET_ACCESS_KEY = %q, want secret-orig", env["AWS_SECRET_ACCESS_KEY"])
+	}
+	if env["DOCKER_PASSWORD"] != "docker-NEW" {
+		t.Errorf("replaced DOCKER_PASSWORD = %q, want docker-NEW", env["DOCKER_PASSWORD"])
+	}
+}
+
+// TestUpdateRunnerProfile_PreserveSentinel_DropsUnknownKeys covers
+// the edge case where the UI sends a sentinel for a key that isn't
+// present in the existing row (race: secret deleted by another admin
+// between the form load and save). The server drops it rather than
+// persisting the literal sentinel string as a credential.
+func TestUpdateRunnerProfile_PreserveSentinel_DropsUnknownKeys(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	created, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:    "preserve-orphan",
+		Engine:  "kubernetes",
+		Secrets: map[string]string{"KEPT": "real-value"},
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	err = s.UpdateRunnerProfile(ctx, cipher, created.ID, store.RunnerProfileInput{
+		Name:   "preserve-orphan",
+		Engine: "kubernetes",
+		Secrets: map[string]string{
+			"KEPT":   store.SecretPreserveSentinel,
+			"GHOST":  store.SecretPreserveSentinel, // never existed
+		},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := s.GetRunnerProfile(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.SecretKeys) != 1 || got.SecretKeys[0] != "KEPT" {
+		t.Errorf("secret keys = %+v, want [KEPT]", got.SecretKeys)
+	}
+	env, _, err := s.ResolveProfileEnvByName(ctx, cipher, "preserve-orphan")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if env["KEPT"] != "real-value" {
+		t.Errorf("preserved KEPT = %q, want real-value", env["KEPT"])
+	}
+	if _, ok := env["GHOST"]; ok {
+		t.Errorf("GHOST sentinel must NOT persist as a literal value: %v", env["GHOST"])
+	}
+}
+
 func TestRunnerProfile_SecretsWithoutCipher_FailsClosed(t *testing.T) {
 	s, ctx := newProfileStore(t)
 
