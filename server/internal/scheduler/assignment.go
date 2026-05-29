@@ -139,22 +139,37 @@ func BuildAssignment(
 		}
 	}
 
-	// Resolve `${{ NAME }}` refs in env values against secrets only.
-	// Variables-referencing-variables would need a topological sort
-	// to be deterministic (Go map iteration is random) — we don't
-	// want that complexity here. Documented contract: variables MAY
-	// reference secrets, settings MAY reference variables + secrets,
-	// variables MAY NOT reference other variables.
-	resolvedEnv, err := substituteRefsMap(env, secrets)
+	// CI_* built-ins (CI_BRANCH, CI_COMMIT_SHORT_SHA, CI_RUN_COUNTER, …)
+	// land in env BEFORE substitution so a pipeline variable like
+	// `IMAGE_TAG: 1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}` resolves
+	// against them at dispatch time. They also flow to the container
+	// at runtime so script tasks can read them directly.
+	ciVars := buildCIVars(run, job.Name)
+	for k, v := range ciVars {
+		env[k] = v
+	}
+
+	// Resolve `${{ NAME }}` refs in env values against secrets +
+	// CI built-ins. Variables-referencing-variables would need a
+	// topological sort to be deterministic (Go map iteration is
+	// random) — we don't want that complexity here. Documented
+	// contract: variables MAY reference secrets and CI vars,
+	// settings MAY reference variables + secrets + CI vars,
+	// variables MAY NOT reference other plain variables.
+	resolvedEnv, err := substituteRefsMap(env, secrets, ciVars)
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: env for job %s: %w", job.Name, err)
 	}
 	env = resolvedEnv
 
 	// Tasks: plugin Settings can pull from the resolved env (which
-	// carries variables + secrets) PLUS the raw secrets map. Secrets
-	// first so a secret with the same NAME as a variable wins — same
-	// precedence the env merge above enforced.
+	// carries variables + secrets + CI vars) PLUS the raw secrets
+	// map. Secrets first so a secret with the same NAME as a variable
+	// wins — same precedence the env merge above enforced. After the
+	// strict `${{ NAME }}` pass, a second pass resolves shell-style
+	// `${VAR}` refs (CI built-ins, env values) — soft so a literal
+	// `${HOME}` in a setting reaches the plugin entrypoint verbatim
+	// for runtime use.
 	tasks := make([]*gocdnextv1.TaskSpec, 0, len(jobDef.Tasks))
 	for _, tk := range jobDef.Tasks {
 		switch {
@@ -167,6 +182,7 @@ func BuildAssignment(
 			if err != nil {
 				return nil, fmt.Errorf("scheduler: plugin %q settings: %w", tk.Plugin.Image, err)
 			}
+			settings = substituteShellVarsMap(settings, secrets, env)
 			tasks = append(tasks, &gocdnextv1.TaskSpec{
 				Kind: &gocdnextv1.TaskSpec_Plugin{Plugin: &gocdnextv1.PluginSpec{
 					Image:    tk.Plugin.Image,
