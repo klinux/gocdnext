@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.23 — 2026-05-29
+
+### Fixes
+
+- **`gocdnext/python` plugin with `manager: uv` failed with `bash: -
+  : invalid option` after `uv sync` succeeded.** Root cause: `uv
+  run bash -lc "${PLUGIN_COMMAND}"` lets uv consume the `-l` flag
+  as one of its own (uv 0.5+ treats unknown short flags before the
+  command name ambiguously), leaving bash invoked as `bash c
+  "command"` — bash then complains about the bare `c` and the bare
+  `-` it sees in the residual argv. Fix is the canonical
+  shell-passthrough form: `uv run -- bash -lc "${PLUGIN_COMMAND}"`,
+  the `--` separator makes everything after it the verbatim
+  command. Same fix applied to the `poetry run` branch for
+  consistency (poetry handles it today but the `--` form is
+  defensive against future poetry CLI changes).
+
 ## v0.4.22 — 2026-05-29
 
 ### Fixes
