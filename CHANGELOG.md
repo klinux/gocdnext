@@ -6,6 +6,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.13 — 2026-05-29
+
+### Fixes
+
+- **Workspace was on the agent's local fs, invisible to job pods**
+  — `runner.Config.WorkspaceRoot` defaulted to `/tmp/gocdnext-workspace/`
+  on the agent pod's ephemeral disk. Job pods (the docker buildx
+  plugin and any other k8s-engine task) mount the workspace PVC at
+  `/workspace` but receive `WorkingDir = /tmp/gocdnext-workspace/...`
+  pointing at a path that doesn't exist in their filesystem. `docker
+  buildx build .` then sends an empty context to DinD and buildx
+  fails with `ERROR: resolve : lstat <first-path-component>: no such
+  file or directory` (the daemon sees an empty tar and can't find
+  the Dockerfile's leading directory).
+
+  The shell engine "worked" because shell tasks run on the agent
+  directly via `os/exec`, so they hit the same local fs the runner
+  wrote to. Any docker / k8s engine task with a non-trivial
+  Dockerfile path hit the bug.
+
+  Wires `GOCDNEXT_WORKSPACE_ROOT` env into `rpc.Config.WorkspaceRoot`;
+  chart sets it to `agent.workspace.mountPath` (default `/workspace`)
+  so the agent + every spawned job pod share the same PVC view of
+  the cloned source. Shell-engine deployments leave it unset and
+  keep the `/tmp` behaviour.
+
 ## v0.4.12 — 2026-05-29
 
 ### Fixes
