@@ -38,7 +38,6 @@ import type { CurrentUser } from "@/types/api";
 
 type Props = {
   user?: CurrentUser;
-  loginBase?: string;
 };
 
 type NavItem = {
@@ -86,7 +85,7 @@ const adminNav: NavItem[] = [
   { label: "Service accounts", href: "/admin/service-accounts", icon: Bot },
 ];
 
-export function AppSidebar({ user, loginBase }: Props) {
+export function AppSidebar({ user }: Props) {
   const pathname = usePathname();
 
   return (
@@ -137,7 +136,7 @@ export function AppSidebar({ user, loginBase }: Props) {
 
       <SidebarFooter>
         {user ? (
-          <SidebarUserMenu user={user} loginBase={loginBase ?? ""} />
+          <SidebarUserMenu user={user} />
         ) : (
           <p className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground group-data-[collapsible=icon]:hidden">
             Control plane

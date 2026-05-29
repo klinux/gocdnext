@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 
 import { LocalLoginForm } from "@/components/auth/local-login-form.client";
 import { Logo } from "@/components/brand/logo";
-import { env } from "@/lib/env";
 import { listProviders } from "@/server/queries/auth";
 
 export const metadata: Metadata = {
@@ -28,7 +27,15 @@ export default async function LoginPage({ searchParams }: Props) {
   const next = strParam(sp.next);
   const error = strParam(sp.error);
 
-  const loginBase = env.GOCDNEXT_API_URL.replace(/\/+$/, "");
+  // The /auth/login/<provider> endpoint lives on the SAME host the
+  // browser is currently on (the ingress fronts both the web pod
+  // and the gocdnext-server pod). A relative href makes the browser
+  // hit the public-facing hostname (e.g. gocdnext.cora.tools)
+  // instead of env.GOCDNEXT_API_URL — that env points at the
+  // in-cluster service (gocdnext-gocdnext-server:8153) used by SSR
+  // fetches inside the web pod, and prefixing the href with it
+  // sent the post-Keycloak redirect to a hostname only reachable
+  // from inside the cluster.
   const sanitizedNext = sanitizeNext(next);
 
   return (
@@ -71,7 +78,7 @@ export default async function LoginPage({ searchParams }: Props) {
               return (
                 <li key={p.name}>
                   <a
-                    href={`${loginBase}/auth/login/${p.name}${qs}`}
+                    href={`/auth/login/${p.name}${qs}`}
                     className="flex w-full items-center justify-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
                   >
                     Continue with {p.display}

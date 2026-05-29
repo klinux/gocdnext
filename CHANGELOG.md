@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.26 — 2026-05-29
+
+### Fixes
+
+- **Keycloak/OIDC login redirected to the in-cluster service URL
+  after the IdP callback** (e.g. `http://gocdnext-gocdnext-server:
+  8153/auth/login/keycloak?next=%2F`), unreachable from the
+  user's browser. Two pages built the login href as
+  `${env.GOCDNEXT_API_URL}/auth/login/<provider>` — but
+  `GOCDNEXT_API_URL` is the in-cluster service hostname meant for
+  SSR fetches inside the web pod, NOT for the browser. Replaced
+  with a relative `/auth/login/<provider>` href in both
+  `app/login/page.tsx` and the sidebar; the ingress already fronts
+  both the web pod and the gocdnext-server pod under the public
+  hostname (e.g. gocdnext.cora.tools), so the browser hits the
+  right path on the right host without any env wiring. Dropped
+  the now-unused `loginBase` prop from `AppSidebar` /
+  `SidebarUserMenu` and the debug-only "via <provider> · <url>"
+  footer text that was leaking the internal hostname.
+
 ## v0.4.25 — 2026-05-29
 
 ### Fixes
