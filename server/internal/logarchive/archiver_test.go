@@ -153,16 +153,26 @@ func TestArchiver_RoundTrip(t *testing.T) {
 
 	a.Submit(jobID)
 
-	// Poll until the archive lands. Should be near-instant; cap at
-	// 3s so a stuck test doesn't wedge the suite.
+	// Poll until BOTH the archive lands AND log_lines have been
+	// deleted. The archiver stamps the archive URI FIRST and runs
+	// DeleteLogLinesByJob immediately after — but on a slow CI
+	// runner, cancelling on just-archived raced with the delete and
+	// left rows orphaned (a real production-safe path, but a flake
+	// for this test). Waiting for both stamps removes the race
+	// without needing the archiver to swap ordering (which would
+	// break the production semantics: stamp-then-delete is what
+	// makes a crash mid-delete recoverable — re-running re-deletes,
+	// while delete-then-stamp would lose lines on crash between).
 	deadline := time.Now().Add(3 * time.Second)
 	var archived bool
+	var remaining int
 	for time.Now().Before(deadline) {
 		arch, err := s.GetJobLogArchive(ctx, jobID)
 		if err != nil {
 			t.Fatalf("lookup: %v", err)
 		}
-		if arch.HasArchive {
+		_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id = $1`, jobID).Scan(&remaining)
+		if arch.HasArchive && remaining == 0 {
 			archived = true
 			break
 		}
@@ -172,13 +182,7 @@ func TestArchiver_RoundTrip(t *testing.T) {
 	<-done
 
 	if !archived {
-		t.Fatal("archive never recorded")
-	}
-
-	var remaining int
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id = $1`, jobID).Scan(&remaining)
-	if remaining != 0 {
-		t.Errorf("log_lines remaining = %d, want 0", remaining)
+		t.Fatalf("archive never fully landed: hasArchive timing out OR log_lines remaining=%d", remaining)
 	}
 
 	rc, err := blobs.Get(ctx, "logs/"+jobID.String()+".log.gz")
