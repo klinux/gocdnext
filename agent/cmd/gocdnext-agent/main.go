@@ -148,6 +148,7 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 		}
 		cfg.CleanupOnSuccess = os.Getenv("GOCDNEXT_K8S_CLEANUP_ON_SUCCESS") != "false"
 		cfg.CleanupOnFailure = strings.EqualFold(os.Getenv("GOCDNEXT_K8S_CLEANUP_ON_FAILURE"), "true")
+		cfg.ForceImagePullAlways = strings.EqualFold(os.Getenv("GOCDNEXT_K8S_FORCE_IMAGE_PULL_ALWAYS"), "true")
 
 		eng, err := engine.NewKubernetes(cfg)
 		if err != nil {

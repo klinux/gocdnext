@@ -103,6 +103,8 @@ spec:
               value: {{ .Values.agent.jobCleanup.onSuccess | quote }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_FAILURE
               value: {{ .Values.agent.jobCleanup.onFailure | quote }}
+            - name: GOCDNEXT_K8S_FORCE_IMAGE_PULL_ALWAYS
+              value: {{ .Values.agent.forceImagePullAlways | default false | quote }}
             {{- end }}
           {{- if eq .Values.agent.engine "kubernetes" }}
           volumeMounts:

@@ -495,3 +495,60 @@ func TestNewKubernetes_RejectsMissingNamespace(t *testing.T) {
 		t.Error("expected error for missing namespace")
 	}
 }
+
+// TestBuildPodSpec_ImagePullPolicy_MovingTagAlwaysPullsFresh is the
+// v0.4.10 regression cover: a job pulling :v1 (or any other moving
+// tag) must mark the container ImagePullPolicy: Always so a node with
+// the old image cached re-pulls after a release moves the tag.
+// Pre-fix, k8s defaulted to IfNotPresent for any tag except :latest,
+// and the GKE node kept serving the stale image indefinitely.
+func TestBuildPodSpec_ImagePullPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		image     string
+		want      corev1.PullPolicy
+		forceAll  bool
+		wantForce corev1.PullPolicy
+	}{
+		// Moving channel tags → Always.
+		{"plugin v1 channel", "ghcr.io/klinux/gocdnext-plugin-buildx:v1", corev1.PullAlways, true, corev1.PullAlways},
+		{"plugin v0.4 channel", "ghcr.io/klinux/gocdnext-plugin-buildx:v0.4", corev1.PullAlways, true, corev1.PullAlways},
+		{"explicit latest", "alpine:latest", corev1.PullAlways, true, corev1.PullAlways},
+		{"implicit latest (no tag)", "alpine", corev1.PullAlways, true, corev1.PullAlways},
+		{"named channel main", "myorg/app:main", corev1.PullAlways, true, corev1.PullAlways},
+		{"named channel nightly", "myorg/app:nightly", corev1.PullAlways, true, corev1.PullAlways},
+		// Pinned tags → IfNotPresent (unless force-always on).
+		{"semver pinned", "myorg/app:v1.2.3", corev1.PullIfNotPresent, true, corev1.PullAlways},
+		{"alpine point release", "alpine:3.19", corev1.PullIfNotPresent, true, corev1.PullAlways},
+		{"sha-prefixed tag", "ghcr.io/klinux/gocdnext-server:sha-deadbeef", corev1.PullIfNotPresent, true, corev1.PullAlways},
+		{"digest reference", "ghcr.io/klinux/app@sha256:00000000000000000000000000000000000000000000000000000000deadbeef", corev1.PullIfNotPresent, true, corev1.PullAlways},
+		// Registry with port handled correctly (a naive last-`:` rule would
+		// read "5000" as the tag for the first case).
+		{"localhost registry port, no tag", "localhost:5000/foo", corev1.PullAlways, true, corev1.PullAlways},
+		{"localhost registry port + moving tag", "localhost:5000/foo:v1", corev1.PullAlways, true, corev1.PullAlways},
+		{"localhost registry port + pinned tag", "localhost:5000/foo:1.2.3", corev1.PullIfNotPresent, true, corev1.PullAlways},
+		// Empty image → BuildPodSpec resolves to DefaultImage
+		// (alpine:3.19 by default) — pinned tag → IfNotPresent.
+		// The empty-string Always branch in imagePullPolicyFor only
+		// kicks in when an operator override of DefaultImage is itself
+		// empty, which the constructor short-circuits at boot.
+		{"empty image (default fallback alpine:3.19)", "", corev1.PullIfNotPresent, true, corev1.PullAlways},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng, _ := newFakeEngine(t, engine.KubernetesConfig{})
+			pod := eng.BuildPodSpec(engine.ScriptSpec{Image: tc.image, Script: "true"})
+			if got := pod.Spec.Containers[0].ImagePullPolicy; got != tc.want {
+				t.Errorf("image=%q heuristic policy = %q, want %q", tc.image, got, tc.want)
+			}
+
+			// With ForceImagePullAlways the operator overrides every
+			// per-tag decision uniformly.
+			engForce, _ := newFakeEngine(t, engine.KubernetesConfig{ForceImagePullAlways: true})
+			podForce := engForce.BuildPodSpec(engine.ScriptSpec{Image: tc.image, Script: "true"})
+			if got := podForce.Spec.Containers[0].ImagePullPolicy; got != tc.wantForce {
+				t.Errorf("image=%q force-always policy = %q, want %q", tc.image, got, tc.wantForce)
+			}
+		})
+	}
+}

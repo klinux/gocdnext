@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,72 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+// movingTagPattern marks image tags that point to a moving target
+// (`latest`, named channels, and shortened semver like `v1` or
+// `v0.4` which we ourselves publish on every release per
+// .github/workflows/release.yml + plugins.yml). When a tag matches,
+// imagePullPolicyFor returns PullAlways so the agent re-resolves the
+// manifest on every job — otherwise k8s defaults to IfNotPresent
+// for non-`latest` tags and a node with a stale `:v1` cached image
+// keeps using the old build indefinitely after we cut a release.
+//
+// Full semver (`v1.2.3`, `0.4.9`), SHA-prefixed (`sha-abc123`) and
+// arbitrary pinned tags fall to IfNotPresent: the user pinned
+// tightly to opt OUT of per-job re-pulls.
+var movingTagPattern = regexp.MustCompile(
+	`^(latest|v\d+|v\d+\.\d+|main|master|dev|develop|edge|nightly|stable)$`,
+)
+
+// imagePullPolicyFor picks Always vs IfNotPresent based on whether
+// the image reference points at a moving target. Treats:
+//
+//	`<image>@sha256:...`          → IfNotPresent (digest-pinned, immutable)
+//	`` (empty)                    → Always       (falls back to default image)
+//	`<image>` (no tag)            → Always       (implicit `:latest`)
+//	`<image>:latest`              → Always
+//	`<image>:v1`, `:v0.4`         → Always       (major / major.minor channels)
+//	`<image>:main|nightly|dev|…`  → Always       (named channels)
+//	everything else               → IfNotPresent (pinned semver, SHA tags, …)
+//
+// Defined at package level + tested separately so kubernetes.go stays
+// the consumer of a tiny, deterministic policy decision.
+func imagePullPolicyFor(image string) corev1.PullPolicy {
+	if image == "" {
+		return corev1.PullAlways
+	}
+	// Digest references are by construction immutable; the docker
+	// content-addressable store guarantees identical bytes for the
+	// same sha256, so re-pulling buys nothing.
+	if strings.Contains(image, "@") {
+		return corev1.PullIfNotPresent
+	}
+	tag := extractImageTag(image)
+	if tag == "" {
+		// No tag = implicit :latest = moving by docker convention.
+		return corev1.PullAlways
+	}
+	if movingTagPattern.MatchString(tag) {
+		return corev1.PullAlways
+	}
+	return corev1.PullIfNotPresent
+}
+
+// extractImageTag returns the tag portion of an image reference or
+// "" when there is none. Handles `registry:port/image:tag` by only
+// scanning for the last `:` after the last `/` — a naive
+// LastIndex(":") would mistakenly read the registry port as the tag
+// for inputs like `localhost:5000/foo`.
+func extractImageTag(image string) string {
+	afterLastSlash := image
+	if i := strings.LastIndex(image, "/"); i != -1 {
+		afterLastSlash = image[i+1:]
+	}
+	if i := strings.LastIndex(afterLastSlash, ":"); i != -1 {
+		return afterLastSlash[i+1:]
+	}
+	return ""
+}
 
 // KubernetesConfig configures the K8s engine. Deployment pattern:
 // the agent itself runs in-cluster with an emptyDir OR PVC at
@@ -60,6 +127,17 @@ type KubernetesConfig struct {
 	CleanupOnSuccess bool
 	// CleanupOnFailure ditto for non-zero exits.
 	CleanupOnFailure bool
+
+	// ForceImagePullAlways overrides the per-tag pull policy heuristic
+	// (imagePullPolicyFor) and sets ImagePullPolicy: Always on every
+	// task container regardless of tag. Default false → moving tags
+	// (`v1`, `latest`, named channels) get Always, pinned semver and
+	// digest refs get IfNotPresent. Useful for clusters fronted by a
+	// registry mirror where a HEAD against the cache is cheap and the
+	// operator wants every job to re-resolve the manifest — including
+	// "pinned" tags that an internal registry may have been retagged
+	// under the same name.
+	ForceImagePullAlways bool
 }
 
 // Kubernetes is an Engine that runs each script as a Pod in the
@@ -230,12 +308,23 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		}
 	}
 
+	pullPolicy := imagePullPolicyFor(image)
+	if k.cfg.ForceImagePullAlways {
+		// Operator override: cluster routes pulls through a registry
+		// cache (HEAD is cheap, body served from local mirror) and
+		// wants every job to re-resolve the manifest regardless of
+		// the tag's apparent immutability. Pinned tags too — defends
+		// against an operator retagging a "pinned" version in their
+		// internal registry under the same name.
+		pullPolicy = corev1.PullAlways
+	}
 	taskContainer := corev1.Container{
-		Name:       "task",
-		Image:      image,
-		WorkingDir: workDir,
-		Env:        env,
-		Resources:  buildResourceRequirements(spec.Resources),
+		Name:            "task",
+		Image:           image,
+		ImagePullPolicy: pullPolicy,
+		WorkingDir:      workDir,
+		Env:             env,
+		Resources:       buildResourceRequirements(spec.Resources),
 		VolumeMounts: []corev1.VolumeMount{{
 			Name:      "workspace",
 			MountPath: k.cfg.WorkspaceMountPath,
