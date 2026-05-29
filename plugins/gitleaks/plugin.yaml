@@ -43,6 +43,57 @@ inputs:
     description: >
       Exit code when leaks are found. Set to "0" for advisory-
       only scans that attach a report but don't fail CI.
+  verbose:
+    required: false
+    default: "true"
+    description: >
+      When "true", each finding is printed inline to the build
+      log as it's discovered (file:line, rule, redacted secret).
+      Set "false" to silence inline output — the report file
+      (if `report:` is set) still gets the full details. Default
+      on so operators don't have to download the JSON report to
+      see what was flagged.
+  redact:
+    required: false
+    default: "75"
+    description: >
+      Percentage of each secret's body to mask in the verbose
+      inline output. 75 leaves prefix + suffix visible so the
+      operator can identify the credential without leaving the
+      key in plaintext in the build log stream. "0" disables
+      masking (DANGEROUS — prints the secret); "100" fully masks.
+
+# Suppressing false positives
+#
+# The plugin runs upstream gitleaks unchanged, so all of gitleaks'
+# native suppression mechanisms work as-is. Both files live in the
+# repo, so they're versioned alongside the code and behave
+# identically on a local `gitleaks detect` run.
+#
+#   1) .gitleaksignore at the repo root — line-level allowlist.
+#      Format: `commit:file:rule:line`. Copy the "Fingerprint:"
+#      line from a verbose finding directly:
+#
+#        abc1234:services/core/tests/fixtures/fake.py:aws-access-token:42
+#
+#   2) .gitleaks.toml + `config:` input — richer ruleset overrides.
+#      Path-glob / regex allowlists, custom rules, or wholesale
+#      rule disables:
+#
+#        [allowlist]
+#        paths = [
+#          '''.*tests/fixtures/.*''',
+#          '''.*\.example$''',
+#        ]
+#        regexes = ['''GENERIC_FAKE_KEY=''']
+#
+#      Reference via `config: .gitleaks.toml` (workspace-relative).
+#      Same `--config` flag the gitleaks CLI uses — a TOML that
+#      works locally works in CI.
+#
+# Rule of thumb: .gitleaksignore for one-off "yes that's a test
+# fixture"; .gitleaks.toml when the rule is "anything under tests/
+# is allowed."
 
 examples:
   - name: block PR on leak
@@ -62,3 +113,14 @@ examples:
         exit-code: "0"
       artifacts:
         optional: [gitleaks-report.json]
+
+  - name: with allowlist config
+    description: >
+      Point gitleaks at a project-managed `.gitleaks.toml` to
+      whitelist test fixtures + example files. The TOML file
+      lives in the repo so a local `gitleaks detect --config
+      .gitleaks.toml` matches CI behaviour exactly.
+    yaml: |
+      uses: gocdnext/gitleaks@v1
+      with:
+        config: .gitleaks.toml
