@@ -224,10 +224,21 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, jobID string)
 			NodeSelector:     k.cfg.NodeSelector,
 			ImagePullSecrets: pullSecrets,
 			Containers: []corev1.Container{{
-				Name:            "service",
-				Image:           svc.Image,
-				Env:             env,
-				Command:         append([]string(nil), svc.Command...),
+				Name:  "service",
+				Image: svc.Image,
+				Env:   env,
+				// svc.Command maps to Container.Args (NOT Command).
+				// Docker semantics: `docker run image foo bar` makes
+				// `foo bar` the CMD, appended to the image's
+				// ENTRYPOINT (e.g. postgres' docker-entrypoint.sh).
+				// K8s mirror: Container.Command overrides ENTRYPOINT;
+				// Container.Args is the CMD-equivalent. Using Command
+				// here would shadow the image's entrypoint and try to
+				// exec `-c` as a binary (the original bug:
+				// `command: [-c, fsync=off]` worked under Docker
+				// engine but broke containerd with
+				// `exec: "-c": executable file not found`).
+				Args:            append([]string(nil), svc.Command...),
 				ImagePullPolicy: policy,
 			}},
 		},

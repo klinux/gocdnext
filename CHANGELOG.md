@@ -6,6 +6,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.24 — 2026-05-29
+
+### Fixes
+
+- **K8s engine sent `svc.Command` into `Container.Command` instead
+  of `Container.Args`, shadowing the image's ENTRYPOINT.** A
+  pipeline declaring
+  ```yaml
+  services:
+    - name: postgres
+      image: postgres:16-alpine
+      command: ["-c", "fsync=off"]
+  ```
+  failed at containerd-create time with `exec: "-c": executable
+  file not found in $PATH` because the K8s API was told to run
+  `-c fsync=off` as the entrypoint instead of the image's own
+  `docker-entrypoint.sh -c fsync=off`. Docker engine masked this
+  because `docker run image -c fsync=off` correctly appends the
+  args to the image's ENTRYPOINT.
+
+  Fix: `svc.Command` now populates `Container.Args` (the
+  K8s-equivalent of Docker's CMD), leaving `Container.Command`
+  empty so the image's ENTRYPOINT runs. Matches docker engine
+  semantics exactly.
+
+  Regression cover: `TestEnsureServices_CommandLandsInArgsNotCommand`
+  asserts the right slot is used; the generic happy-path test now
+  also fails if any service pod has a populated `Command`.
+
 ## v0.4.23 — 2026-05-29
 
 ### Fixes
