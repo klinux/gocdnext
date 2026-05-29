@@ -2,8 +2,25 @@ apiVersion: v1
 entries:
   gocdnext:
   - apiVersion: v2
+    appVersion: 0.4.18
+    created: "2026-05-29T06:37:58.643742461Z"
+    description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
+    digest: 0826e5aa22be3feac8cbb9d107bb38af134f4554e334e4fceb7c6855215fe392
+    home: https://github.com/klinux/gocdnext
+    keywords:
+    - ci
+    - cd
+    - pipelines
+    name: gocdnext
+    sources:
+    - https://github.com/klinux/gocdnext
+    type: application
+    urls:
+    - https://klinux.github.io/gocdnext/gocdnext-0.4.18.tgz
+    version: 0.4.18
+  - apiVersion: v2
     appVersion: 0.4.17
-    created: "2026-05-29T06:23:44.406116954Z"
+    created: "2026-05-29T06:37:58.642587001Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 41c401244bbda2bd608cf7e6b394bcdfdb2b445d7d52b1715d74462b3c9a512f
     home: https://github.com/klinux/gocdnext
@@ -20,7 +37,7 @@ entries:
     version: 0.4.17
   - apiVersion: v2
     appVersion: 0.4.16
-    created: "2026-05-29T06:23:44.405005002Z"
+    created: "2026-05-29T06:37:58.641329189Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 202b10e8d0a46776de373f881c8115345cb4086d3ded42651d15292fea196dd2
     home: https://github.com/klinux/gocdnext
@@ -37,7 +54,7 @@ entries:
     version: 0.4.16
   - apiVersion: v2
     appVersion: 0.4.15
-    created: "2026-05-29T06:23:44.403335062Z"
+    created: "2026-05-29T06:37:58.640113917Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: f075b2bb4c94974fcf707d4223bf5ada1a58772d3a14dcb79169be7a80683508
     home: https://github.com/klinux/gocdnext
@@ -54,7 +71,7 @@ entries:
     version: 0.4.15
   - apiVersion: v2
     appVersion: 0.4.14
-    created: "2026-05-29T06:23:44.402063521Z"
+    created: "2026-05-29T06:37:58.638811201Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 4fe60203e711be2c8b0f65a1c8dadb3b2cb175e3ea6bd47dc6ab441bcf9ed1a4
     home: https://github.com/klinux/gocdnext
@@ -71,7 +88,7 @@ entries:
     version: 0.4.14
   - apiVersion: v2
     appVersion: 0.4.13
-    created: "2026-05-29T06:23:44.400965324Z"
+    created: "2026-05-29T06:37:58.636895062Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: f0fccd49b508f0ab9ce062a33c89d69e182420f72990a06d297e90f4c8ae0f1f
     home: https://github.com/klinux/gocdnext
@@ -88,7 +105,7 @@ entries:
     version: 0.4.13
   - apiVersion: v2
     appVersion: 0.4.12
-    created: "2026-05-29T06:23:44.399849395Z"
+    created: "2026-05-29T06:37:58.635377394Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: f3e2e85eaf81b256bc28105d9c3848951984938d55f7d638e2620fbfe73291ce
     home: https://github.com/klinux/gocdnext
@@ -105,7 +122,7 @@ entries:
     version: 0.4.12
   - apiVersion: v2
     appVersion: 0.4.11
-    created: "2026-05-29T06:23:44.398733556Z"
+    created: "2026-05-29T06:37:58.634217085Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 4859bd88e21d110ca3b61218710fa0eae10415dc27140ff67d92bccd60641bfc
     home: https://github.com/klinux/gocdnext
@@ -122,7 +139,7 @@ entries:
     version: 0.4.11
   - apiVersion: v2
     appVersion: 0.4.10
-    created: "2026-05-29T06:23:44.397584494Z"
+    created: "2026-05-29T06:37:58.632986965Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 59a84aa76daf193fb815c26357a15b2064895d20baeb867032df479e77f84727
     home: https://github.com/klinux/gocdnext
@@ -139,7 +156,7 @@ entries:
     version: 0.4.10
   - apiVersion: v2
     appVersion: 0.4.9
-    created: "2026-05-29T06:23:44.416053207Z"
+    created: "2026-05-29T06:37:58.654695202Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 6360ad1236bb86427adc01ba6261fc84fb4ccf394fe7312a1a1c64be0e7dabd0
     home: https://github.com/klinux/gocdnext
@@ -156,7 +173,7 @@ entries:
     version: 0.4.9
   - apiVersion: v2
     appVersion: 0.4.8
-    created: "2026-05-29T06:23:44.414952636Z"
+    created: "2026-05-29T06:37:58.653559809Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 062313629f869c62b7b06e2a9b2847c78673a9048616dfa4acfc36ed438523a3
     home: https://github.com/klinux/gocdnext
@@ -173,7 +190,7 @@ entries:
     version: 0.4.8
   - apiVersion: v2
     appVersion: 0.4.7
-    created: "2026-05-29T06:23:44.413799758Z"
+    created: "2026-05-29T06:37:58.652421681Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: cd4f60c147e9acffb23dc5d6a749022f24fca890ac8af177860b0a18d0fa4a74
     home: https://github.com/klinux/gocdnext
@@ -190,7 +207,7 @@ entries:
     version: 0.4.7
   - apiVersion: v2
     appVersion: 0.4.6
-    created: "2026-05-29T06:23:44.411601495Z"
+    created: "2026-05-29T06:37:58.651273044Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 6ddb95924df4971c48475dadcc9bfb8fddfd8fe8f057b5ca0ae20f686ba542b3
     home: https://github.com/klinux/gocdnext
@@ -207,7 +224,7 @@ entries:
     version: 0.4.6
   - apiVersion: v2
     appVersion: 0.4.5
-    created: "2026-05-29T06:23:44.410513818Z"
+    created: "2026-05-29T06:37:58.650054335Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 5a2338600d5062f2a44710a6d800f46dd0ee6eb783177add6263d3ffbf65719e
     home: https://github.com/klinux/gocdnext
@@ -224,7 +241,7 @@ entries:
     version: 0.4.5
   - apiVersion: v2
     appVersion: 0.4.4
-    created: "2026-05-29T06:23:44.409423757Z"
+    created: "2026-05-29T06:37:58.648753022Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 00fb200a7d90ac25e7e417cb2ebed26d032c306f56e545ae7cb8c1e7ee34f998
     home: https://github.com/klinux/gocdnext
@@ -241,7 +258,7 @@ entries:
     version: 0.4.4
   - apiVersion: v2
     appVersion: 0.4.3
-    created: "2026-05-29T06:23:44.408329287Z"
+    created: "2026-05-29T06:37:58.646133291Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: aece4a9a6d67e7f61aeb5f057a9cccb5e5a043a5e089b6bd0ef76669b9bb484a
     home: https://github.com/klinux/gocdnext
@@ -258,7 +275,7 @@ entries:
     version: 0.4.3
   - apiVersion: v2
     appVersion: 0.4.2
-    created: "2026-05-29T06:23:44.407212797Z"
+    created: "2026-05-29T06:37:58.644867465Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 9b650922aad8f938e249c45463ca6ac22dc523c7188e5788fccf4072cd763bea
     home: https://github.com/klinux/gocdnext
@@ -275,7 +292,7 @@ entries:
     version: 0.4.2
   - apiVersion: v2
     appVersion: 0.4.1
-    created: "2026-05-29T06:23:44.396418651Z"
+    created: "2026-05-29T06:37:58.631827377Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: e88eb04b78402cb28109171b349370019c5e2c0a53c24c11b366ca5ec439242f
     home: https://github.com/klinux/gocdnext
@@ -292,7 +309,7 @@ entries:
     version: 0.4.1
   - apiVersion: v2
     appVersion: 0.4.0
-    created: "2026-05-29T06:23:44.39448878Z"
+    created: "2026-05-29T06:37:58.630654173Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: fbd77b2ef725f73afd0eef00035df1e768b81551c1cb8094dc74ead1acc413fb
     home: https://github.com/klinux/gocdnext
@@ -309,7 +326,7 @@ entries:
     version: 0.4.0
   - apiVersion: v2
     appVersion: 0.3.0
-    created: "2026-05-29T06:23:44.393340991Z"
+    created: "2026-05-29T06:37:58.629481912Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 4d7f6c7dbc9763ac3fb64b296e43496121496b35e3a4aa8334ba3aa78d6df235
     home: https://github.com/klinux/gocdnext
@@ -326,7 +343,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-05-29T06:23:44.392227566Z"
+    created: "2026-05-29T06:37:58.62706318Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 9eb1c2af6d68436404670d6edbcb06a89b7c7cb42873ecf2084381bd88a27989
     home: https://github.com/klinux/gocdnext
@@ -343,7 +360,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.1
-    created: "2026-05-29T06:23:44.39137526Z"
+    created: "2026-05-29T06:37:58.626203462Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: dde9a4d69d67ff9fa989a5cde08c9fa39dbab3a831ced732503fe740a4bcbde8
     home: https://github.com/klinux/gocdnext
@@ -360,7 +377,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-05-29T06:23:44.390693674Z"
+    created: "2026-05-29T06:37:58.625305213Z"
     description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
     digest: 90b869277ac6464af06a4daa58a6ec04e7019898743bfe87c499aebf1598d188
     home: https://github.com/klinux/gocdnext
@@ -375,4 +392,4 @@ entries:
     urls:
     - https://klinux.github.io/gocdnext/gocdnext-0.1.0.tgz
     version: 0.1.0
-generated: "2026-05-29T06:23:44.389836589Z"
+generated: "2026-05-29T06:37:58.62421797Z"
