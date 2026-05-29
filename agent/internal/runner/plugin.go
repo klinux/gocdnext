@@ -44,10 +44,21 @@ func (r *Runner) runPlugin(
 	}
 
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
-		WorkDir:   workDir,
-		Image:     plugin.GetImage(),
-		Env:       env,
-		Script:    "", // empty → engine runs image's ENTRYPOINT as-is
+		WorkDir: workDir,
+		Image:   plugin.GetImage(),
+		Env:     env,
+		Script:  "", // empty → engine runs image's ENTRYPOINT as-is
+		// Docker MUST propagate from the JobAssignment so plugins
+		// that declare `docker: true` on the YAML job actually get
+		// a DinD sidecar + DOCKER_HOST pointing at it. Pre-fix, this
+		// field was unset and the k8s engine treated every plugin
+		// task as `Docker: false`: no sidecar, no env var, the
+		// plugin's `docker run` fell back to /var/run/docker.sock
+		// (absent inside the plugin container) and failed with
+		// "Cannot connect to the Docker daemon" miles away from the
+		// cause. runScript at runner.go:422 already does this for
+		// script tasks; the plugin path silently dropped it.
+		Docker:    a.GetDocker(),
 		Network:   network,
 		Resources: assignmentResources(a),
 		Profile:   a.GetProfile(),
