@@ -70,22 +70,27 @@ func TestGitHubWebhook_PROpened_TriggersRun(t *testing.T) {
 	}
 
 	var got struct {
-		ModificationID int64  `json:"modification_id"`
-		Created        bool   `json:"created"`
-		RunID          string `json:"run_id"`
-		RunCounter     int64  `json:"run_counter"`
-		PRNumber       int    `json:"pr_number"`
+		Materials int              `json:"materials"`
+		Runs      []map[string]any `json:"runs"`
+		PRNumber  int              `json:"pr_number"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.RunID == "" || got.RunCounter != 1 || got.PRNumber != 42 || !got.Created {
+	if len(got.Runs) != 1 || got.PRNumber != 42 {
 		t.Fatalf("unexpected response %+v", got)
+	}
+	runIDStr, _ := got.Runs[0]["run_id"].(string)
+	if runIDStr == "" {
+		t.Fatalf("run_id missing in response: %+v", got.Runs[0])
+	}
+	if counter, _ := got.Runs[0]["run_counter"].(float64); counter != 1 {
+		t.Fatalf("run_counter = %v, want 1", got.Runs[0]["run_counter"])
 	}
 
 	// Run row must carry cause='pull_request' + the PR metadata in
 	// cause_detail; branch must be the PR head ref.
-	runID, _ := uuid.Parse(got.RunID)
+	runID, _ := uuid.Parse(runIDStr)
 	var cause, branch string
 	var causeDetail []byte
 	_ = pool.QueryRow(context.Background(), `

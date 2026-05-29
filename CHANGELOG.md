@@ -6,6 +6,49 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.20 — 2026-05-29
+
+### Fixes
+
+- **Webhook only triggered ONE pipeline per push when several
+  shared a fingerprint.** A project with N pipelines watching the
+  same (repo, branch) creates N material rows with the same
+  fingerprint (materials are uniqued on `(pipeline_id, fingerprint)`,
+  not on `fingerprint` alone). `FindMaterialByFingerprint` was a
+  `:one LIMIT 1` query with no `ORDER BY`, so it returned an
+  arbitrary single row and the other pipelines silently never
+  fired. Which one "won" changed across DB resets because the heap
+  scan order changed.
+
+  The store query becomes `FindMaterialsByFingerprint :many ORDER
+  BY pipeline_id` and the three webhook entry points (push,
+  pull_request, multi-provider) iterate every match. Each
+  pipeline's modification dedup stays in place independently —
+  one bad replay on pipeline A doesn't block pipeline B's run.
+  Per-pipeline run-creation errors are logged but don't fail the
+  delivery; only when EVERY pipeline errors does the response go
+  500 (so the provider retries).
+
+  Wire shape changed: the 202 body now carries `runs: [{run_id,
+  run_counter, pipeline_id, material_id}, ...]` instead of the
+  pre-fix top-level `run_id` / `run_counter`. The pull_request
+  path also pre-filters materials by the per-material
+  `events: [pull_request]` opt-in so push-only pipelines stay
+  push-only even when they share the base ref.
+
+- **Services on the kubernetes engine failed with a cryptic
+  `docker network create: exit status 1`.** The runner's
+  `startServices` unconditionally shelled out to `docker` even
+  when the agent's engine was kubernetes or shell — those have
+  no docker socket in the task container. The error misled the
+  operator into chasing docker / DinD wiring instead of the real
+  gap (services aren't yet wired for non-docker engines).
+
+  Pre-flight check now refuses the run with a clear
+  "services: %d declared but agent engine is %q — only the docker
+  engine wires services today" before any `docker` call. Proper
+  kubernetes sidecar implementation is a separate PR.
+
 ## v0.4.19 — 2026-05-29
 
 ### Fixes

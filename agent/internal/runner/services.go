@@ -17,11 +17,13 @@ import (
 // MUST defer — tears down containers first, then the network,
 // with force-rm semantics so a partial startup still cleans.
 //
-// Assumes `docker` is on PATH — only called when the Docker
-// engine is active (which does its own preflight check at agent
-// boot). Shell-engine jobs with services: print a warning and
-// return ("", noop, nil) so the script still runs, just without
-// the sidecar connectivity — the service names won't resolve.
+// Engine preflight: ONLY the docker engine wires services today.
+// shell + kubernetes engines surface a clear error at boot of the
+// service phase instead of letting `docker network create` run
+// inside a container that has no docker daemon (the kubelet sees
+// `exit status 1` and the operator chases the wrong layer). A
+// proper k8s implementation lives in a separate PR — services as
+// sidecar containers in the same Pod + hostAliases for DNS.
 //
 // Errors bubble up only on FIRST-container failure; successful
 // services are included in the cleanup func so nothing leaks
@@ -34,6 +36,18 @@ func (r *Runner) startServices(
 	services := a.GetServices()
 	if len(services) == 0 {
 		return "", func() {}, nil
+	}
+
+	if name := strings.ToLower(r.cfg.Engine.Name()); name != "docker" {
+		// Surface the gap with engine name + recommendation so the
+		// operator changes the pipeline or the agent engine — not
+		// the cryptic `docker network create: exit status 1` the
+		// previous code printed inside a non-docker container.
+		return "", func() {}, fmt.Errorf(
+			"services: %d declared but agent engine is %q — only the docker engine wires services today; "+
+				"remove the `services:` block from the pipeline, switch the runner profile to a docker-engine agent, "+
+				"or wait for the kubernetes-sidecar implementation",
+			len(services), name)
 	}
 
 	// Job id is unique per dispatch → safe container + network

@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -208,8 +210,15 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	normalizedURL := domain.NormalizeGitURL(ev.Repository.CloneURL)
 	fp := store.FingerprintFor(ev.Repository.CloneURL, branch)
 
-	material, err := h.store.FindMaterialByFingerprint(r.Context(), fp)
-	if errors.Is(err, store.ErrMaterialNotFound) {
+	materials, err := h.store.FindMaterialsByFingerprint(r.Context(), fp)
+	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "material lookup: " + err.Error()
+		h.log.Error("github webhook: material lookup failed", "delivery", delivery, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(materials) == 0 {
 		// Log every dimension the lookup used so an operator can
 		// diff against the apply-time material row (visible via
 		// /api/v1/projects/{slug}). The most common no-match cause
@@ -250,38 +259,25 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err != nil {
-		rec.status = store.WebhookStatusError
-		rec.errText = "material lookup: " + err.Error()
-		h.log.Error("github webhook: material lookup failed", "delivery", delivery, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	rec.materialID = material.ID
 
-	mod := store.Modification{
-		MaterialID:  material.ID,
+	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
+		Materials:   materials,
 		Revision:    ev.After,
 		Branch:      branch,
 		Author:      ev.HeadCommit.Author.Name,
 		Message:     ev.HeadCommit.Message,
 		Payload:     json.RawMessage(body),
 		CommittedAt: ev.HeadCommit.Timestamp,
-	}
+		Provider:    "github",
+		Delivery:    delivery,
+		TriggeredBy: "system:webhook",
+	})
+	rec.materialID = firstCreatedRunMaterialID(outcomes)
 
-	res, err := h.store.InsertModification(r.Context(), mod)
-	if err != nil {
-		rec.status = store.WebhookStatusError
-		rec.errText = "insert modification: " + err.Error()
-		h.log.Error("github webhook: insert modification failed", "delivery", delivery, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
+	runs := runsPayload(outcomes)
 	resp := map[string]any{
-		"modification_id": res.ID,
-		"created":         res.Created,
-		"material_id":     material.ID.String(),
+		"runs":      runs,
+		"materials": len(materials),
 	}
 	if driftOutcome.Attempted {
 		resp["drift"] = map[string]any{
@@ -291,39 +287,39 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Only trigger a fresh run on a newly-inserted modification. If run creation
-	// fails after the modification was persisted, the retry on GitHub's side
-	// will see Created=false and skip this branch — a known gap to plug when we
-	// introduce EnsureRun (C1.6 or later).
-	if res.Created {
-		runRes, err := h.store.CreateRunFromModification(r.Context(), store.CreateRunFromModificationInput{
-			PipelineID:     material.PipelineID,
-			MaterialID:     material.ID,
-			ModificationID: res.ID,
-			Revision:       ev.After,
-			Branch:         branch,
-			Provider:       "github",
-			Delivery:       delivery,
-			TriggeredBy:    "system:webhook",
-		})
-		if err != nil {
-			rec.status = store.WebhookStatusError
-			rec.errText = "create run: " + err.Error()
-			h.log.Error("github webhook: create run failed",
-				"delivery", delivery, "modification_id", res.ID, "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+	// Trigger a run per matched material. Fan-out failures on
+	// individual pipelines are logged but don't fail the whole
+	// delivery — partial success is still actionable. If EVERY
+	// matched pipeline errored, surface a 500 so the provider
+	// retries (matching the pre-fan-out semantics for a single
+	// pipeline error).
+	allErrored := len(outcomes) > 0
+	for _, oc := range outcomes {
+		if oc.Err == nil {
+			allErrored = false
+			if oc.RunID != uuid.Nil {
+				h.log.Info("github webhook: run queued",
+					"delivery", delivery, "pipeline_id", oc.PipelineID,
+					"run_id", oc.RunID, "counter", oc.RunCounter)
+				h.reporter.ReportRunCreated(r.Context(), oc.RunID)
+			}
 		}
-		resp["run_id"] = runRes.RunID.String()
-		resp["run_counter"] = runRes.Counter
-		h.log.Info("github webhook: run queued",
-			"delivery", delivery, "pipeline_id", material.PipelineID,
-			"run_id", runRes.RunID, "counter", runRes.Counter,
-			"stages", len(runRes.StageRuns), "jobs", len(runRes.JobRuns))
-		h.reporter.ReportRunCreated(r.Context(), runRes.RunID)
-	} else {
-		h.log.Info("github webhook: modification already present, no run queued",
-			"delivery", delivery, "modification_id", res.ID)
+	}
+	if allErrored {
+		rec.status = store.WebhookStatusError
+		rec.errText = fmt.Sprintf("fan-out: all %d pipelines errored", len(outcomes))
+		h.log.Error("github webhook: every pipeline fan-out failed",
+			"delivery", delivery, "materials", len(materials))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(runs) == 0 {
+		// Every modification deduped (provider retry of an
+		// already-processed push). Nothing new to run — log once
+		// at info level so an operator inspecting deliveries
+		// understands why the 202 body has runs: [].
+		h.log.Info("github webhook: all modifications deduped, no runs queued",
+			"delivery", delivery, "materials", len(materials))
 	}
 
 	rec.status = store.WebhookStatusAccepted

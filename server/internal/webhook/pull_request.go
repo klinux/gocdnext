@@ -2,10 +2,11 @@ package webhook
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+
+	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -51,16 +52,11 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	// Match by (url, base_ref). Fingerprint is the same normalisation
 	// the material uses on its own side, so this finds the material a
 	// user declared with `branch: main on: [push, pull_request]`.
+	// N pipelines can share the same fingerprint — fan-out one run
+	// per pipeline that ALSO opts into pull_request via its events
+	// list.
 	fp := store.FingerprintFor(ev.Repository.CloneURL, ev.BaseRef)
-	material, err := h.store.FindMaterialByFingerprint(r.Context(), fp)
-	if errors.Is(err, store.ErrMaterialNotFound) {
-		rec.status = store.WebhookStatusIgnored
-		h.log.Info("github webhook: no material for PR base",
-			"delivery", delivery, "repo", ev.Repository.FullName,
-			"base_ref", ev.BaseRef, "fingerprint", fp)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
+	allMaterials, err := h.store.FindMaterialsByFingerprint(r.Context(), fp)
 	if err != nil {
 		rec.status = store.WebhookStatusError
 		rec.errText = "material lookup (PR): " + err.Error()
@@ -69,101 +65,95 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	rec.materialID = material.ID
-
-	// Does this material opt into PR events? `on: [pull_request]`.
-	// Events live inside the JSONB config (Git material); decode only
-	// that subset.
-	var gitCfg domain.GitMaterial
-	if err := json.Unmarshal(material.Config, &gitCfg); err != nil {
-		rec.status = store.WebhookStatusError
-		rec.errText = "decode material config: " + err.Error()
-		h.log.Warn("github webhook: decode material config (PR)",
-			"delivery", delivery, "material_id", material.ID, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if !slices.Contains(gitCfg.Events, "pull_request") {
+	if len(allMaterials) == 0 {
 		rec.status = store.WebhookStatusIgnored
-		h.log.Info("github webhook: material does not listen for pull_request",
-			"delivery", delivery, "material_id", material.ID,
-			"events", gitCfg.Events)
+		h.log.Info("github webhook: no material for PR base",
+			"delivery", delivery, "repo", ev.Repository.FullName,
+			"base_ref", ev.BaseRef, "fingerprint", fp)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	mod := store.Modification{
-		MaterialID:  material.ID,
+	// Per-material event filter: only the materials that declare
+	// `pull_request` in their events list are eligible. A pipeline
+	// that hasn't opted in (push-only) is silently skipped — the
+	// other pipelines still fire.
+	materials := make([]store.Material, 0, len(allMaterials))
+	for _, m := range allMaterials {
+		var cfg domain.GitMaterial
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			h.log.Warn("github webhook: decode material config (PR)",
+				"delivery", delivery, "material_id", m.ID, "err", err)
+			continue
+		}
+		if !slices.Contains(cfg.Events, "pull_request") {
+			continue
+		}
+		materials = append(materials, m)
+	}
+	if len(materials) == 0 {
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("github webhook: no PR-listening material for this base ref",
+			"delivery", delivery, "material_candidates", len(allMaterials))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	causeDetail, _ := json.Marshal(map[string]any{
+		"pr_number":   ev.Number,
+		"pr_title":    ev.Title,
+		"pr_author":   ev.Author,
+		"pr_url":      ev.HTMLURL,
+		"pr_head_ref": ev.HeadRef,
+		"pr_head_sha": ev.HeadSHA,
+		"pr_base_ref": ev.BaseRef,
+		"pr_action":   ev.Action,
+	})
+	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
+		Materials:   materials,
 		Revision:    ev.HeadSHA,
 		Branch:      ev.HeadRef,
 		Author:      ev.Author,
 		Message:     ev.Title,
 		Payload:     json.RawMessage(body),
 		CommittedAt: ev.At,
+		Provider:    "github",
+		Delivery:    delivery,
+		TriggeredBy: "system:webhook",
+		Cause:       "pull_request",
+		CauseDetail: causeDetail,
+	})
+	rec.materialID = firstCreatedRunMaterialID(outcomes)
+
+	runs := runsPayload(outcomes)
+	allErrored := len(outcomes) > 0
+	for _, oc := range outcomes {
+		if oc.Err == nil {
+			allErrored = false
+			if oc.RunID != uuid.Nil {
+				h.log.Info("github webhook: PR run queued",
+					"delivery", delivery, "pipeline_id", oc.PipelineID,
+					"run_id", oc.RunID, "counter", oc.RunCounter,
+					"pr_number", ev.Number, "head_sha", ev.HeadSHA, "head_ref", ev.HeadRef)
+				h.reporter.ReportRunCreated(r.Context(), oc.RunID)
+			}
+		}
 	}
-	res, err := h.store.InsertModification(r.Context(), mod)
-	if err != nil {
+	if allErrored {
 		rec.status = store.WebhookStatusError
-		rec.errText = "insert PR modification: " + err.Error()
-		h.log.Error("github webhook: insert PR modification failed",
-			"delivery", delivery, "err", err)
+		rec.errText = "PR fan-out: every pipeline errored"
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
-	}
-
-	resp := map[string]any{
-		"modification_id": res.ID,
-		"created":         res.Created,
-		"material_id":     material.ID.String(),
-		"pr_number":       ev.Number,
-	}
-
-	if res.Created {
-		causeDetail, _ := json.Marshal(map[string]any{
-			"pr_number":   ev.Number,
-			"pr_title":    ev.Title,
-			"pr_author":   ev.Author,
-			"pr_url":      ev.HTMLURL,
-			"pr_head_ref": ev.HeadRef,
-			"pr_head_sha": ev.HeadSHA,
-			"pr_base_ref": ev.BaseRef,
-			"pr_action":   ev.Action,
-		})
-		runRes, err := h.store.CreateRunFromModification(r.Context(), store.CreateRunFromModificationInput{
-			PipelineID:     material.PipelineID,
-			MaterialID:     material.ID,
-			ModificationID: res.ID,
-			Revision:       ev.HeadSHA,
-			Branch:         ev.HeadRef,
-			Provider:       "github",
-			Delivery:       delivery,
-			TriggeredBy:    "system:webhook",
-			Cause:          "pull_request",
-			CauseDetail:    causeDetail,
-		})
-		if err != nil {
-			rec.status = store.WebhookStatusError
-			rec.errText = "create PR run: " + err.Error()
-			h.log.Error("github webhook: PR run create failed",
-				"delivery", delivery, "modification_id", res.ID, "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		resp["run_id"] = runRes.RunID.String()
-		resp["run_counter"] = runRes.Counter
-		h.log.Info("github webhook: PR run queued",
-			"delivery", delivery, "pipeline_id", material.PipelineID,
-			"run_id", runRes.RunID, "counter", runRes.Counter,
-			"pr_number", ev.Number, "head_sha", ev.HeadSHA, "head_ref", ev.HeadRef)
-		h.reporter.ReportRunCreated(r.Context(), runRes.RunID)
-	} else {
-		h.log.Info("github webhook: PR modification already present, no run queued",
-			"delivery", delivery, "modification_id", res.ID, "pr_number", ev.Number)
 	}
 
 	rec.status = store.WebhookStatusAccepted
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
+	resp := map[string]any{
+		"runs":      runs,
+		"materials": len(materials),
+		"pr_number": ev.Number,
+	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		h.log.Warn("github webhook: encode response failed", "err", fmt.Sprint(err))
 	}
