@@ -19,6 +19,30 @@ tags_raw="${PLUGIN_TAGS:-latest}"
 tags_raw="${tags_raw//,/ }"
 read -ra TAGS <<<"${tags_raw}"
 
+# Wait for the Docker daemon before issuing any `docker run` /
+# `docker buildx` against it. The agent's k8s engine adds a DinD
+# sidecar when the YAML job declares `docker: true`, and DinD takes
+# ~1-2s to listen on tcp://localhost:2375. The convention (per the
+# agent's kubernetes.go comment) is "the daemon-readiness check
+# belongs in user code" — so we own it here. Up to 60s; longer waits
+# usually indicate DinD failed to start at all (image pull, privileged
+# denied by PSP) and a clear timeout error is more useful than a
+# silent hang.
+echo "==> waiting for docker daemon"
+for i in $(seq 1 60); do
+    if docker info >/dev/null 2>&1; then
+        echo "==> docker daemon ready after ${i}s"
+        break
+    fi
+    if [ "${i}" = "60" ]; then
+        echo "gocdnext/buildx: docker daemon did not become reachable within 60s" >&2
+        echo "  DOCKER_HOST=${DOCKER_HOST:-<unset>}" >&2
+        echo "  is \`docker: true\` set on the job? agent wires a DinD sidecar only then" >&2
+        exit 2
+    fi
+    sleep 1
+done
+
 if [ -n "${PLUGIN_USERNAME:-}" ]; then
     registry="${PLUGIN_REGISTRY:-}"
     if [ -z "${registry}" ]; then

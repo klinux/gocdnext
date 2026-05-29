@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.9 — 2026-05-28
+
+### Fixes
+
+- **`docker: true` was silently dropped on plugin tasks** —
+  `runScript` propagated the YAML's `docker: true` flag through to
+  `engine.ScriptSpec.Docker`, but `runPlugin` did not. Plugin tasks
+  always ran without a DinD sidecar and without `DOCKER_HOST`, so
+  every `docker` invocation inside a plugin fell back to
+  `/var/run/docker.sock` (absent in the plugin's filesystem) with
+  the misleading "Cannot connect to the Docker daemon" error. Now
+  the plugin path mirrors `runScript`, and the agent's k8s engine
+  attaches the DinD sidecar + sets `DOCKER_HOST=tcp://localhost:2375`
+  whenever the job declares `docker: true`.
+
+- **`gocdnext/buildx` plugin waited zero seconds for the daemon** —
+  the entrypoint issued its first `docker run` immediately, which
+  raced DinD's 1-2s startup. Now waits up to 60s for `docker info`
+  to succeed; on timeout, prints a clear diagnostic mentioning
+  whether `docker: true` was set so the operator knows whether DinD
+  was even wired.
+
 ## v0.4.8 — 2026-05-28
 
 Wires the `${{ NAME }}` substitution the docs have always advertised
