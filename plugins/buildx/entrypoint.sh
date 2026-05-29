@@ -158,6 +158,40 @@ if [ "${needs_no_checksum}" = "1" ]; then
         echo "==> buildkit: pinning ${buildkit_image} for a modern aws-sdk-go-v2"
     fi
 fi
+
+# AWS credentials live in the PLUGIN container's env (injected by
+# the runner profile's `secrets:` list). The BuildKit container is
+# a SEPARATE process — `docker buildx create` spawns it with
+# whatever env the operator passed via --driver-opt; nothing else
+# crosses the boundary. Without explicit propagation BuildKit's S3
+# cache backend has no AWS_ACCESS_KEY_ID at all and fails with the
+# tell-tale empty-RequestID 403:
+#   StatusCode: 403, RequestID: , HostID: , api error Forbidden
+# (no GCS round-trip happened — credential resolution gave up
+# before the SDK could even build a signed HEAD).
+#
+# Propagate the standard AWS env trio so BuildKit's S3 client picks
+# them up via the same default credential chain it would on a fresh
+# CI runner. AWS_SESSION_TOKEN is forwarded when present for SSO /
+# STS setups; for GCS HMAC the key+secret pair is all that matters.
+# We do it only when cache uses a bucket — for `registry`/`inline`
+# the BuildKit container has no use for AWS env and we'd be
+# leaking an env scope it doesn't need.
+if [ "${PLUGIN_CACHE:-}" = "bucket" ]; then
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+        buildx_create_args+=(--driver-opt "env.AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}")
+    fi
+    if [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        buildx_create_args+=(--driver-opt "env.AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}")
+    fi
+    if [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+        buildx_create_args+=(--driver-opt "env.AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}")
+    fi
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+        echo "==> buildkit: forwarding AWS credentials for cache backend"
+    fi
+fi
+
 if [ -n "${buildkit_image}" ]; then
     buildx_create_args+=(--driver-opt "image=${buildkit_image}")
 fi

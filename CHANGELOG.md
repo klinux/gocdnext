@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.19 — 2026-05-29
+
+### Fixes
+
+- **AWS credentials now reach the BuildKit container.** Tell-tale of
+  the bug: `403 Forbidden, RequestID: , HostID: , api error
+  Forbidden` — empty RequestID/HostID because no GCS round-trip
+  ever happened. BuildKit's S3 cache backend gave up at credential
+  resolution. The plugin had `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` in its own env (injected by the runner
+  profile's `secrets:` list) but BuildKit runs in a SEPARATE
+  container spawned by `docker buildx create`; nothing crossed
+  the boundary except what we explicitly passed via `--driver-opt
+  env.X=Y`. v0.4.16 propagated the checksum opt-out env vars;
+  v0.4.19 also propagates `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` (when present)
+  whenever the cache backend is `bucket`. Other cache backends
+  (`registry`, `inline`) don't need AWS env and the plugin keeps
+  the BuildKit env clean for them.
+
 ## v0.4.18 — 2026-05-29
 
 ### Fixes
