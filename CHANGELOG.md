@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.8 — 2026-05-28
+
+Wires the `${{ NAME }}` substitution the docs have always advertised
+but the code never honoured. Unblocks every plugin recipe that pulls
+a secret into `with:` (buildx login, helm push token, slack webhook,
+trivy registry, etc.).
+
+### Features
+
+- **`${{ NAME }}` reference resolution in plugin `with:` and env**
+  values, against the job's declared `secrets:` first, then the
+  pipeline's `variables:` map. Single-pass (no recursion), with
+  identifier-only refs (`[A-Za-z_]\w*`) — Actions-style expressions
+  (`secrets.X.Y`, `A && B`, function calls) deliberately fail with
+  a clear "unsupported reference expression" message instead of
+  silently passing through. Unresolved refs fail the dispatch with
+  the reference name listed in the run error so the operator sees
+  the typo at scheduler time, not as a downstream auth error from
+  the plugin container. Resolved secret values land in `LogMasks`
+  so they continue to be redacted from agent logs.
+
+### Engineering
+
+- New CLAUDE.md section **"Postura de implementação (dev sênior)"**
+  codifies the corner-cases / security / performance lenses every
+  PR (hotfix included) goes through. Adopted retroactively for the
+  refs implementation: substitution errors never disclose
+  neighbouring resolved values, regex compiled once at package
+  init, fast path bypasses the regex when the input contains no
+  `${{` token.
+
 ## v0.4.7 — 2026-05-28
 
 Three fallout fixes from the v0.4.4 URL canonicalisation, all of

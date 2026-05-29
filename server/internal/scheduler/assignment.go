@@ -87,23 +87,10 @@ func BuildAssignment(
 		}
 	}
 
-	tasks := make([]*gocdnextv1.TaskSpec, 0, len(jobDef.Tasks))
-	for _, tk := range jobDef.Tasks {
-		switch {
-		case tk.Script != "":
-			tasks = append(tasks, &gocdnextv1.TaskSpec{
-				Kind: &gocdnextv1.TaskSpec_Script{Script: tk.Script},
-			})
-		case tk.Plugin != nil:
-			tasks = append(tasks, &gocdnextv1.TaskSpec{
-				Kind: &gocdnextv1.TaskSpec_Plugin{Plugin: &gocdnextv1.PluginSpec{
-					Image:    tk.Plugin.Image,
-					Settings: tk.Plugin.Settings,
-				}},
-			})
-		}
-	}
-
+	// Build env FIRST so plugin Settings (below) can resolve
+	// `${{ NAME }}` refs against the same pool variables+secrets
+	// land in. Pre-fix, settings shipped to the agent verbatim and
+	// the literal `${{ DOCKER_USERNAME }}` reached `docker login`.
 	env := map[string]string{}
 	// Profile env first — operator-level defaults that pipeline/job
 	// vars can override below. Profile secrets are pre-decrypted by
@@ -149,6 +136,43 @@ func BuildAssignment(
 		env[name] = v
 		if v != "" {
 			masks = append(masks, v)
+		}
+	}
+
+	// Resolve `${{ NAME }}` refs in env values against secrets only.
+	// Variables-referencing-variables would need a topological sort
+	// to be deterministic (Go map iteration is random) — we don't
+	// want that complexity here. Documented contract: variables MAY
+	// reference secrets, settings MAY reference variables + secrets,
+	// variables MAY NOT reference other variables.
+	resolvedEnv, err := substituteRefsMap(env, secrets)
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: env for job %s: %w", job.Name, err)
+	}
+	env = resolvedEnv
+
+	// Tasks: plugin Settings can pull from the resolved env (which
+	// carries variables + secrets) PLUS the raw secrets map. Secrets
+	// first so a secret with the same NAME as a variable wins — same
+	// precedence the env merge above enforced.
+	tasks := make([]*gocdnextv1.TaskSpec, 0, len(jobDef.Tasks))
+	for _, tk := range jobDef.Tasks {
+		switch {
+		case tk.Script != "":
+			tasks = append(tasks, &gocdnextv1.TaskSpec{
+				Kind: &gocdnextv1.TaskSpec_Script{Script: tk.Script},
+			})
+		case tk.Plugin != nil:
+			settings, err := substituteRefsMap(tk.Plugin.Settings, secrets, env)
+			if err != nil {
+				return nil, fmt.Errorf("scheduler: plugin %q settings: %w", tk.Plugin.Image, err)
+			}
+			tasks = append(tasks, &gocdnextv1.TaskSpec{
+				Kind: &gocdnextv1.TaskSpec_Plugin{Plugin: &gocdnextv1.PluginSpec{
+					Image:    tk.Plugin.Image,
+					Settings: settings,
+				}},
+			})
 		}
 	}
 
