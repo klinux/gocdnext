@@ -3,6 +3,7 @@ package projects
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -52,6 +53,13 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSecretBytes)
 	var req setSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w,
+				fmt.Sprintf("secret value too large — cap is %d KiB", maxSecretBytes>>10),
+				http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}

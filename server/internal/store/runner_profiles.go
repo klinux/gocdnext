@@ -23,6 +23,17 @@ import (
 // validation error ("unknown profile X").
 var ErrRunnerProfileNotFound = errors.New("store: runner profile not found")
 
+// SecretPreserveSentinel is the magic string the UI sends as the value
+// of an existing secret it doesn't want to modify on update. The
+// server detects it and substitutes the already-stored ciphertext for
+// that key, sidestepping the previous "full-replace = re-type
+// everything" trap. The token is intentionally long + structured so
+// collision with a real secret value is implausible — an operator who
+// somehow chose this exact string as a credential gets the existing
+// value kept silently, which is the least-bad failure mode (no auth
+// rotation versus an aggressive overwrite).
+const SecretPreserveSentinel = "__GOCDNEXT_SECRET_PRESERVE__"
+
 // RunnerProfile is the store-facing shape. Strings carry k8s
 // quantity format ("100m", "256Mi"); empty means "not set" so the
 // caller falls back to either user input or zero policy.
@@ -164,7 +175,29 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 // match an existing row; returns ErrRunnerProfileNotFound when the
 // row is gone (treated as zero rows affected). Secrets get sealed
 // with the cipher before the write — same contract as Insert.
+//
+// Secrets carrying the SecretPreserveSentinel as their value are
+// resolved against the row's current ciphertext first, so a UI edit
+// that touches an env var (or any non-secret field) doesn't force
+// the operator to re-type every existing secret. Sentinels for keys
+// that aren't present in the existing row are dropped — preserving
+// a non-existent key is meaningless.
 func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, id uuid.UUID, in RunnerProfileInput) error {
+	if hasPreserveSentinel(in.Secrets) {
+		row, err := s.q.GetRunnerProfile(ctx, toPgUUID(id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrRunnerProfileNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: update runner profile %s: lookup: %w", id, err)
+		}
+		existing, err := decodeProfileSecrets(cipher, row.Secrets)
+		if err != nil {
+			return fmt.Errorf("store: update runner profile %s: decode existing secrets: %w", id, err)
+		}
+		in.Secrets = resolvePreserveSentinels(in.Secrets, existing)
+	}
+
 	cfg, err := encodeProfileConfig(in.Config)
 	if err != nil {
 		return err
@@ -551,6 +584,43 @@ func decodeProfileEnv(raw []byte) (map[string]string, error) {
 		return nil, fmt.Errorf("store: unmarshal profile env: %w", err)
 	}
 	return out, nil
+}
+
+// hasPreserveSentinel reports whether any value in the payload is
+// the SecretPreserveSentinel — used to short-circuit the existing-row
+// fetch in UpdateRunnerProfile so the happy path (operator typed new
+// values for every secret) pays zero extra cost.
+func hasPreserveSentinel(in map[string]string) bool {
+	for _, v := range in {
+		if v == SecretPreserveSentinel {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePreserveSentinels replaces every SecretPreserveSentinel value
+// in `in` with the corresponding entry from `existing`. Keys whose
+// preserve target is missing from existing are DROPPED from the
+// returned map (preserving a non-existent key is meaningless and
+// would otherwise persist the sentinel string as a real secret).
+//
+// Returns a fresh map; the input is not mutated so callers can hand
+// in a payload that's still bound to a request body without
+// surprising other readers.
+func resolvePreserveSentinels(in, existing map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if v != SecretPreserveSentinel {
+			out[k] = v
+			continue
+		}
+		if ev, ok := existing[k]; ok {
+			out[k] = ev
+		}
+		// else: drop — see godoc.
+	}
+	return out
 }
 
 // encodeProfileSecrets seals each value with the cipher and stores

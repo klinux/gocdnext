@@ -188,28 +188,23 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
     }
     return out;
   };
-  // collectSecrets emits ONLY the keys the admin actually wants to
-  // persist with a (possibly new) plaintext value. Existing keys
-  // not flagged for replace are kept by re-sending the key with an
-  // empty value... wait, that would erase. Pattern instead:
-  // existing+!replace → drop the entry entirely on the wire so the
-  // server keeps whatever it has. The contract for that is the
-  // "merge on update" behaviour we documented; full-replace would
-  // require us to send all values. Stage 1 of the UI uses the
-  // simpler model: we ALWAYS send what the user typed. Existing
-  // secrets with replace=false carry through as the remembered key
-  // with no plaintext — we surface that on save with a guard
-  // forcing the admin to either replace or remove unchanged ones.
+  // The server (since v0.4.17) accepts SECRET_PRESERVE_SENTINEL as a
+  // value to mean "keep whatever ciphertext is already in the row for
+  // this key" — sidesteps the previous full-replace trap where editing
+  // any field forced the admin to re-type every existing secret. Rows
+  // the admin didn't touch send the sentinel; rows marked replace send
+  // the new plaintext; rows marked removed are simply omitted from the
+  // payload (the server's full-replace semantics drop them).
+  const SECRET_PRESERVE_SENTINEL = "__GOCDNEXT_SECRET_PRESERVE__";
   const collectSecrets = (rows: SecretRow[]): Record<string, string> => {
     const out: Record<string, string> = {};
     for (const r of rows) {
       const k = r.key.trim();
       if (!k) continue;
-      // Existing secret left untouched: the server treats missing
-      // keys as deletions on full-replace, but we don't want to
-      // erase. So we don't send it. The admin must explicitly
-      // click "Remove" to delete an existing secret.
-      if (r.existing && !r.replace) continue;
+      if (r.existing && !r.replace) {
+        out[k] = SECRET_PRESERVE_SENTINEL;
+        continue;
+      }
       out[k] = r.value;
     }
     return out;
@@ -222,26 +217,14 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
       toast.error("Name is required");
       return;
     }
-    // Force the admin to confront existing secrets: if any are
-    // still in the "keep, don't replace" state on save, we treat
-    // that as a deliberate intent to keep them — but tell the user
-    // that the wire payload will silently drop them. This is the
-    // simplest UX given the server's full-replace contract; a
-    // future iteration can add a per-row "preserve" flag that the
-    // server understands.
+    // With the v0.4.17 preserve sentinel, the wire payload always
+    // carries every existing secret — either as the sentinel
+    // (server keeps current ciphertext) or as the new plaintext
+    // when the row was marked replace. No more "REMOVED because
+    // full-replace" confirm dialog: removing an existing secret is
+    // now an explicit per-row action via the Remove button.
     const envMap = collectEnv(form.envRows);
     const secretsMap = collectSecrets(form.secretRows);
-    const newSecretsCount = form.secretRows.filter((r) => !r.existing && r.key.trim()).length;
-    const replacedCount = form.secretRows.filter((r) => r.existing && r.replace && r.key.trim()).length;
-    const droppedCount = form.secretRows.filter((r) => r.existing && !r.replace && r.key.trim()).length;
-    if (form.id && droppedCount > 0 && newSecretsCount === 0 && replacedCount === 0) {
-      // Update with no secret changes at all — fast path: confirm
-      // we're sending an empty secrets map will erase. Block save.
-      const proceed = confirm(
-        `${droppedCount} existing secret(s) will be REMOVED because the server uses full-replace semantics on update.\n\nClick OK to remove them, or Cancel to mark them "Replace" with their current values.`,
-      );
-      if (!proceed) return;
-    }
     startTransition(async () => {
       const body = {
         name,
