@@ -168,14 +168,44 @@ if [ -z "${cache_to}" ] && [ -z "${cache_from}" ]; then
                 echo "gocdnext/buildx: cache: bucket requires GOCDNEXT_LAYER_CACHE_BUCKET (set it on the runner profile env)" >&2
                 exit 2
             fi
-            backend="${GOCDNEXT_LAYER_CACHE_BACKEND:-s3}"
-            region="${GOCDNEXT_LAYER_CACHE_REGION:-${AWS_REGION:-us-east-1}}"
+            # GCS is supported via S3-interop (https://cloud.google.com/storage/docs/interoperability).
+            # BuildKit has no native gcs cache type, so when the operator sets
+            # GOCDNEXT_LAYER_CACHE_BACKEND=gcs we translate to type=s3 +
+            # storage.googleapis.com endpoint behind the scenes. The HMAC
+            # access-key / secret pair must reach the container via the
+            # runner profile's `secrets:` as AWS_ACCESS_KEY_ID +
+            # AWS_SECRET_ACCESS_KEY (BuildKit's s3 backend reads them from
+            # the standard AWS env names regardless of the actual provider).
+            backend_raw="$(trim "${GOCDNEXT_LAYER_CACHE_BACKEND:-s3}")"
+            backend="${backend_raw}"
+            endpoint="$(trim "${GOCDNEXT_LAYER_CACHE_ENDPOINT:-}")"
+            case "${backend_raw}" in
+                gcs|gs)
+                    backend="s3"
+                    endpoint="${endpoint:-https://storage.googleapis.com}"
+                    # GCS doesn't use AWS regions; "auto" is the standard
+                    # placeholder that keeps BuildKit's s3 client happy
+                    # without imposing a fake region on the operator.
+                    region="${GOCDNEXT_LAYER_CACHE_REGION:-auto}"
+                    if [ -z "${AWS_ACCESS_KEY_ID:-}${AWS_SECRET_ACCESS_KEY:-}" ]; then
+                        echo "gocdnext/buildx: cache: gcs backend requires AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (GCS HMAC keys); declare them in the job's secrets: or runner profile" >&2
+                        exit 2
+                    fi
+                    ;;
+                s3|"")
+                    backend="s3"
+                    region="${GOCDNEXT_LAYER_CACHE_REGION:-${AWS_REGION:-us-east-1}}"
+                    ;;
+                *)
+                    region="${GOCDNEXT_LAYER_CACHE_REGION:-${AWS_REGION:-us-east-1}}"
+                    ;;
+            esac
             # Cache key namespaces by image repo so multiple
             # images can share one bucket without colliding.
             name="${GOCDNEXT_LAYER_CACHE_NAME:-${PLUGIN_IMAGE}}"
             spec="type=${backend},region=${region},bucket=${GOCDNEXT_LAYER_CACHE_BUCKET},name=${name}"
-            if [ -n "${GOCDNEXT_LAYER_CACHE_ENDPOINT:-}" ]; then
-                spec="${spec},endpoint_url=${GOCDNEXT_LAYER_CACHE_ENDPOINT}"
+            if [ -n "${endpoint}" ]; then
+                spec="${spec},endpoint_url=${endpoint}"
             fi
             cache_to="${spec},mode=max"
             cache_from="${spec}"

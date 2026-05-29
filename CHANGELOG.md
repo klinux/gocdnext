@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.15 — 2026-05-29
+
+### Features
+
+- **`gocdnext/buildx` cache: GCS-via-interop shorthand.** BuildKit
+  has no native gcs cache type, but GCS speaks S3 protocol through
+  its interop endpoint. The buildx plugin now translates
+  `GOCDNEXT_LAYER_CACHE_BACKEND=gcs` (or `gs`) into
+  `type=s3,endpoint_url=https://storage.googleapis.com,region=auto`
+  automatically. HMAC credentials must come in via the runner
+  profile / job secrets as `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`
+  (BuildKit reads them under those names regardless of provider).
+  Missing HMAC keys fail loud at plugin boot with a clear
+  "cache: gcs backend requires AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY"
+  instead of producing a cryptic IMDS lookup failure inside the
+  build.
+
 ## v0.4.14 — 2026-05-29
 
 ### Changes
