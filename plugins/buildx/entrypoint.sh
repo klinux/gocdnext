@@ -104,12 +104,45 @@ else
     echo "==> native build (${host_platform}), skipping QEMU"
 fi
 
+# Pre-detect whether the layer cache backend points at a non-AWS
+# S3-compatible endpoint (GCS interop, MinIO, R2, etc.). Recent
+# aws-sdk-go-v2 (which BuildKit uses internally) sends
+# x-amz-checksum-* headers on PutObject by default; non-AWS
+# endpoints don't recognise those headers, include them in the v4
+# signature canonical request, and reject the call as
+# SignatureDoesNotMatch (surfaces upstream as a generic 403). The
+# SDK reads AWS_REQUEST_CHECKSUM_CALCULATION / _RESPONSE_VALIDATION
+# from the BuildKit container's env to opt out — we propagate it
+# via `docker buildx create --driver-opt env.NAME=VALUE` so the fix
+# lands inside BuildKit itself, not just the plugin shell.
+needs_no_checksum=0
+if [ "${PLUGIN_CACHE:-}" = "bucket" ]; then
+    _backend_for_probe="$(trim "${GOCDNEXT_LAYER_CACHE_BACKEND:-s3}")"
+    _endpoint_for_probe="$(trim "${GOCDNEXT_LAYER_CACHE_ENDPOINT:-}")"
+    case "${_backend_for_probe}" in
+        gcs|gs)
+            needs_no_checksum=1
+            ;;
+        *)
+            # Backend == s3 but with a custom endpoint URL → not
+            # AWS S3 native; opt out defensively.
+            [ -n "${_endpoint_for_probe}" ] && needs_no_checksum=1
+            ;;
+    esac
+fi
+
 # A fresh builder per run keeps cache isolated and avoids a
 # "default" builder that already exists in some docker-in-docker
 # setups from being reused in a way that skips the QEMU wiring.
 BUILDER="gocdnext-${RANDOM}"
 trap 'docker buildx rm "${BUILDER}" >/dev/null 2>&1 || true' EXIT
-docker buildx create --name "${BUILDER}" --use >/dev/null
+buildx_create_args=(--name "${BUILDER}" --use)
+if [ "${needs_no_checksum}" = "1" ]; then
+    echo "==> buildkit: disabling AWS SDK auto-checksum (non-AWS S3 endpoint detected)"
+    buildx_create_args+=(--driver-opt "env.AWS_REQUEST_CHECKSUM_CALCULATION=when_required")
+    buildx_create_args+=(--driver-opt "env.AWS_RESPONSE_CHECKSUM_VALIDATION=when_required")
+fi
+docker buildx create "${buildx_create_args[@]}" >/dev/null
 docker buildx inspect --bootstrap >/dev/null
 
 tag_args=()

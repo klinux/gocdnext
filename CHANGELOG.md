@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.16 — 2026-05-29
+
+### Fixes
+
+- **`gocdnext/buildx` cache against GCS / MinIO / R2 failed with
+  `SignatureDoesNotMatch` (often surfaced as 403).** Recent
+  aws-sdk-go-v2 (used internally by BuildKit) sends
+  `x-amz-checksum-*` headers on PutObject by default; non-AWS
+  S3-compatible endpoints don't recognise those headers, include
+  them in the v4 canonical request, and the signature check fails.
+  The plugin now pre-detects non-AWS endpoints (BACKEND=gcs/gs OR
+  any custom GOCDNEXT_LAYER_CACHE_ENDPOINT) and propagates
+  `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` +
+  `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` into the
+  BuildKit container via `docker buildx create --driver-opt env.*=*`.
+  Native AWS S3 cache stays on the default behaviour — checksums
+  there improve integrity and AWS accepts them.
+
 ## v0.4.15 — 2026-05-29
 
 ### Features
