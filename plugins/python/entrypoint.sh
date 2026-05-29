@@ -53,15 +53,18 @@ case "${MANAGER}" in
     poetry)
         poetry config virtualenvs.in-project true
         poetry install --no-interaction
-        # Prefix the command so pytest/ruff/etc resolve from the
-        # poetry-managed venv without the user having to write
-        # `poetry run` in every plugin example. The `--` separator
-        # is required: poetry/uv consume their own flags before the
-        # command name, so `poetry run bash -lc "..."` would let
-        # poetry try to interpret `-l` (and `uv` actually does on
-        # 0.5+, breaking with "bash: - : invalid option"). The
-        # `--` makes everything after it the command verbatim.
-        exec poetry run -- bash -lc "${PLUGIN_COMMAND}"
+        # Activate the in-project venv directly instead of going
+        # through `poetry run` / `uv run`. v0.4.23 tried `poetry
+        # run -- bash -lc "..."` but uv 0.5.5 still mangled the
+        # `-lc` argv into a bare `-`, breaking with `bash: - :
+        # invalid option`. Sourcing the venv's activate gives the
+        # same PATH + VIRTUAL_ENV the wrapper would set, and the
+        # subsequent `bash -lc` is invoked directly by this script
+        # so nothing else can touch the args. Same pattern the pip
+        # branch has always used.
+        # shellcheck disable=SC1091
+        source .venv/bin/activate
+        exec bash -lc "${PLUGIN_COMMAND}"
         ;;
     uv)
         if [ -f "uv.lock" ]; then
@@ -69,7 +72,9 @@ case "${MANAGER}" in
         else
             uv sync
         fi
-        exec uv run -- bash -lc "${PLUGIN_COMMAND}"
+        # shellcheck disable=SC1091
+        source .venv/bin/activate
+        exec bash -lc "${PLUGIN_COMMAND}"
         ;;
     pip)
         req="${PLUGIN_REQUIREMENTS:-requirements.txt}"
