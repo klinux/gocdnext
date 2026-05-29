@@ -382,7 +382,13 @@ func materialCheckouts(
 			continue
 		}
 		rev := revs[m.ID.String()]
-		url := cfg.URL
+		// Restore a clonable scheme on URLs that were canonicalised
+		// at apply time. The store layer matches scm_sources rows by
+		// the canonical scheme-less form (`github.com/owner/repo`);
+		// `git clone` can't speak that, so HTTPCloneURL hands it the
+		// HTTPS variant. URLs that already carry a scheme (or are
+		// SSH shorthand) pass through.
+		url := domain.HTTPCloneURL(cfg.URL)
 		if tok := cloneTokens[m.ID.String()]; tok != "" {
 			if rewritten, ok := injectBearerInHTTPSURL(url, tok); ok {
 				url = rewritten

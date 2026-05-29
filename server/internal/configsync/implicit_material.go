@@ -1,15 +1,22 @@
-package projects
+package configsync
 
 import (
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// injectImplicitProjectMaterial adds a git material derived from the
+// InjectImplicitProjectMaterial adds a git material derived from the
 // project's scm_source to every pipeline that doesn't already declare
 // a git material pointing at the same URL. Lets operators write
 // pipelines whose YAML omits the obvious "this project's repo"
 // material — it's already implied by the scm_source binding.
+//
+// Lives in configsync (not api/projects) so the three call sites that
+// need it can share one implementation without crossing the
+// webhook ↔ api/projects layering rule. Today's call sites: the
+// project-apply handler, the project-sync handler, and the webhook
+// drift path. Adding a fourth call site that needs the same shape
+// (e.g. a future CLI apply) imports configsync just like the others.
 //
 // No-op when `scm` is nil or has no URL (legacy flows, manual/upstream
 // only projects). Pipelines that explicitly declare a git material
@@ -17,7 +24,12 @@ import (
 // declaration untouched — the implicit one rides alongside. Pipelines
 // whose explicit git url matches the scm's url short-circuit the
 // injection so there's no duplicate row at apply time.
-func injectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMSourceInput) {
+//
+// The material's `Git.URL` is stored as a clonable HTTPS URL via
+// HTTPCloneURL so the agent's `git clone` always sees a fully-
+// qualified URL even when the scm_source row was canonicalised to
+// the scheme-less form at store time.
+func InjectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMSourceInput) {
 	if scm == nil || scm.URL == "" {
 		return
 	}
@@ -26,6 +38,7 @@ func injectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMS
 		defaultBranch = "main"
 	}
 	normalizedScmURL := domain.NormalizeGitURL(scm.URL)
+	cloneURL := domain.HTTPCloneURL(scm.URL)
 
 	for _, p := range pipelines {
 		if p == nil {
@@ -60,7 +73,7 @@ func injectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMS
 				AutoUpdate:  true,
 				Implicit:    true,
 				Git: &domain.GitMaterial{
-					URL:                 scm.URL,
+					URL:                 cloneURL,
 					Branch:              branch,
 					Events:              append([]string(nil), events...),
 					AutoRegisterWebhook: true,

@@ -271,7 +271,7 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	injectImplicitProjectMaterial(pipelines, effectiveSCM)
+	configsync.InjectImplicitProjectMaterial(pipelines, effectiveSCM)
 
 	// Resolve runner profiles BEFORE persisting so a YAML that
 	// names a non-existent profile or breaches the cap fails the

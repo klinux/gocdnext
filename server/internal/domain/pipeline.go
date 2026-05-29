@@ -54,6 +54,25 @@ func NormalizeGitURL(raw string) string {
 	return normalizeGitURL(raw)
 }
 
+// HTTPCloneURL turns a canonical scheme-less URL (NormalizeGitURL
+// output, e.g. `github.com/owner/repo`) back into a clonable HTTPS
+// URL. Used at dispatch + material-write time so the agent's
+// `git clone` always sees a fully-qualified URL even though the
+// canonical form is what the store layer matches on. URLs that
+// already carry a scheme (https://, http://, ssh://) or the SSH
+// shorthand (`git@host:`) pass through unchanged. Empty input
+// returns empty so callers don't have to special-case it.
+func HTTPCloneURL(canonical string) string {
+	s := strings.TrimSpace(canonical)
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, "://") || strings.HasPrefix(s, "git@") {
+		return s
+	}
+	return "https://" + s
+}
+
 // normalizeGitURL canonicalises a git URL into a `host/owner/repo`
 // scheme-less form so SSH and HTTPS spellings of the same repo hash
 // identically. Recognised inputs:

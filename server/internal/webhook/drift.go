@@ -81,6 +81,15 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		AuthRef:       scm.AuthRef,
 	}
 
+	// Apply the same implicit-material synthesis the UI's apply +
+	// sync paths do. Without this, a config-only push that drives
+	// drift would rebuild the project's pipeline rows WITHOUT the
+	// implicit "this project's repo" material — subsequent pushes
+	// would then fail the fingerprint lookup and silently 202 with
+	// no run. (Same code path the project-apply and project-sync
+	// handlers already go through.)
+	configsync.InjectImplicitProjectMaterial(pipelines, scmInput)
+
 	if _, err := h.store.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug:        project.Slug,
 		Name:        project.Name,

@@ -101,7 +101,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	// project is already bound (detail.SCMSource is non-nil or we'd
 	// have 409'd above), so synthesize a git material for every
 	// pipeline that doesn't already declare one for this repo.
-	injectImplicitProjectMaterial(parsed, &store.SCMSourceInput{
+	configsync.InjectImplicitProjectMaterial(parsed, &store.SCMSourceInput{
 		Provider:      detail.SCMSource.Provider,
 		URL:           detail.SCMSource.URL,
 		DefaultBranch: detail.SCMSource.DefaultBranch,

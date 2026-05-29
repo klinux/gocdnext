@@ -83,6 +83,36 @@ func TestGitFingerprint_DifferentBranchesStayDistinct(t *testing.T) {
 	}
 }
 
+// TestHTTPCloneURL_RestoresSchemeOnCanonicalInput proves the
+// scheme-restoration the dispatch layer relies on: canonical
+// scheme-less URLs (the storage form since v0.4.4) come out as
+// clonable https://… URLs; URLs that already carry a scheme or
+// the SSH shorthand pass through.
+func TestHTTPCloneURL_RestoresSchemeOnCanonicalInput(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"github.com/octocat/hello-world", "https://github.com/octocat/hello-world"},
+		{"gitea.example.com:3000/team/api", "https://gitea.example.com:3000/team/api"},
+		// Pass-through cases — scheme already there, SSH form
+		// (clones via SSH key on the agent), empty.
+		{"https://github.com/octocat/hello-world", "https://github.com/octocat/hello-world"},
+		{"http://internal.git/team/api", "http://internal.git/team/api"},
+		{"ssh://git@github.com/octocat/hello-world", "ssh://git@github.com/octocat/hello-world"},
+		{"git@github.com:octocat/hello-world", "git@github.com:octocat/hello-world"},
+		{"", ""},
+		{"  github.com/x/y  ", "https://github.com/x/y"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got := domain.HTTPCloneURL(tc.in)
+			if got != tc.want {
+				t.Errorf("HTTPCloneURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestGitFingerprint_DifferentReposStayDistinct guards against host
 // or owner mishandling silently collapsing unrelated repos.
 func TestGitFingerprint_DifferentReposStayDistinct(t *testing.T) {
