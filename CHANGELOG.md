@@ -6,6 +6,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.7 — 2026-05-28
+
+Three fallout fixes from the v0.4.4 URL canonicalisation, all of
+which surface on a real `push` → run dispatch:
+
+### Fixes
+
+- **`git clone` failed with exit 128 on every pipeline** — the
+  implicit project material stored the canonical scheme-less URL
+  (`github.com/owner/repo`), which `git clone` can't speak. New
+  `domain.HTTPCloneURL` reattaches `https://` so the agent always
+  sees a clonable URL. Applied in both `InjectImplicitProjectMaterial`
+  (write time) and `scheduler.materialCheckouts` (dispatch time, as
+  defence-in-depth for legacy material rows).
+
+- **Webhook drift created pipelines without the implicit material**
+  — `applyDrift` called `ApplyProject` directly on the parsed YAML
+  without running the `injectImplicitProjectMaterial` synthesis the
+  UI's `apply` and `sync` handlers ran. A config-only push that
+  drove drift therefore rebuilt the pipeline rows MINUS the implicit
+  "this project's repo" material, and the next push silently 202'd
+  with no run. Moved the helper to `configsync` (shared package) and
+  call it from all three call sites: apply, sync, drift.
+
+- **Scm_source URL came back without a scheme in API responses** —
+  the store layer canonicalised the URL on insert AND surfaced the
+  scheme-less form on read, so `https://github.com/x/y` typed by the
+  operator came out as `github.com/x/y` in the UI / API. Store reads
+  now rehydrate via `HTTPCloneURL` so the API response carries a
+  fully-qualified URL while the canonical form remains the matching
+  key under the hood.
+
 ## v0.4.6 — 2026-05-28
 
 Two more hotfixes uncovered while validating v0.4.5: plugin tasks were
