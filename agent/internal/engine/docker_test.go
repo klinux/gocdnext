@@ -196,6 +196,9 @@ func (f stubEngineFn) Name() string { return "stub" }
 func (f stubEngineFn) RunScript(ctx context.Context, spec engine.ScriptSpec) (int, error) {
 	return f(ctx, spec)
 }
+func (stubEngineFn) EnsureServices(context.Context, []engine.ServiceSpec, string, func(string, string)) (engine.ServicesWireup, error) {
+	return engine.ServicesWireup{Cleanup: func() {}}, nil
+}
 
 func stubEngine(fn stubEngineFn) engine.Engine {
 	return fn
