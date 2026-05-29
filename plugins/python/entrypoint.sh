@@ -55,8 +55,13 @@ case "${MANAGER}" in
         poetry install --no-interaction
         # Prefix the command so pytest/ruff/etc resolve from the
         # poetry-managed venv without the user having to write
-        # `poetry run` in every plugin example.
-        exec poetry run bash -lc "${PLUGIN_COMMAND}"
+        # `poetry run` in every plugin example. The `--` separator
+        # is required: poetry/uv consume their own flags before the
+        # command name, so `poetry run bash -lc "..."` would let
+        # poetry try to interpret `-l` (and `uv` actually does on
+        # 0.5+, breaking with "bash: - : invalid option"). The
+        # `--` makes everything after it the command verbatim.
+        exec poetry run -- bash -lc "${PLUGIN_COMMAND}"
         ;;
     uv)
         if [ -f "uv.lock" ]; then
@@ -64,7 +69,7 @@ case "${MANAGER}" in
         else
             uv sync
         fi
-        exec uv run bash -lc "${PLUGIN_COMMAND}"
+        exec uv run -- bash -lc "${PLUGIN_COMMAND}"
         ;;
     pip)
         req="${PLUGIN_REQUIREMENTS:-requirements.txt}"
