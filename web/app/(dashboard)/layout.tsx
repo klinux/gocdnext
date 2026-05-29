@@ -14,7 +14,6 @@ import { CommandPalette } from "@/components/layout/command-palette.client";
 import { ThemeToggle } from "@/components/layout/theme-toggle.client";
 import { QueryClientProvider } from "@/components/providers/query-client-provider.client";
 import { Toaster } from "@/components/ui/sonner";
-import { env } from "@/lib/env";
 import { resolveAuthState } from "@/server/queries/auth";
 
 type Props = { children: ReactNode };
@@ -30,12 +29,11 @@ export default async function DashboardLayout({ children }: Props) {
   }
 
   const user = auth.mode === "authenticated" ? auth.user : undefined;
-  const loginBase = env.GOCDNEXT_API_URL.replace(/\/+$/, "");
 
   return (
     <QueryClientProvider>
       <SidebarProvider>
-        <AppSidebar user={user} loginBase={loginBase} />
+        <AppSidebar user={user} />
         <SidebarInset>
           <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <SidebarTrigger className="-ml-1" />

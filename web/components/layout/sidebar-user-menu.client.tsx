@@ -19,13 +19,13 @@ import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui
 import { logoutAction } from "@/server/actions/auth";
 import type { CurrentUser } from "@/types/api";
 
-type Props = { user: CurrentUser; loginBase: string };
+type Props = { user: CurrentUser };
 
 // SidebarUserMenu lives at the bottom of the AppSidebar. Trigger is
 // a SidebarMenuButton so it inherits sidebar layout + collapsing
 // behavior (avatar-only in icon mode). Dropdown floats to the right
 // + above so it doesn't cover the sidebar content.
-export function SidebarUserMenu({ user, loginBase }: Props) {
+export function SidebarUserMenu({ user }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
@@ -107,7 +107,7 @@ export function SidebarUserMenu({ user, loginBase }: Props) {
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem disabled className="text-[10px] text-muted-foreground">
-              via {user.provider} · {loginBase}
+              via {user.provider}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
