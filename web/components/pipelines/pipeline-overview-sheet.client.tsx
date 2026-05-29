@@ -25,7 +25,6 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { cn } from "@/lib/utils";
-import { env } from "@/lib/env";
 import { formatDurationSeconds } from "@/lib/format";
 import type {
   PipelineEdge,
@@ -392,7 +391,7 @@ function ArtifactsPanel({
     let cancelled = false;
     setState({ kind: "loading" });
     fetch(
-      `${env.GOCDNEXT_API_URL.replace(/\/+$/, "")}/api/v1/runs/${encodeURIComponent(runId)}/artifacts`,
+      `/api/v1/runs/${encodeURIComponent(runId)}/artifacts`,
       { cache: "no-store", credentials: "include" },
     )
       .then(async (res) => {
@@ -512,7 +511,7 @@ function YAMLPanel({ pipeline }: { pipeline: PipelineSummary }) {
     queryKey: ["pipeline-yaml", pipeline.id, pipeline.definition_version],
     queryFn: async () => {
       const res = await fetch(
-        `${env.GOCDNEXT_API_URL.replace(/\/+$/, "")}/api/v1/pipelines/${encodeURIComponent(pipeline.id)}/yaml`,
+        `/api/v1/pipelines/${encodeURIComponent(pipeline.id)}/yaml`,
         { cache: "no-store", credentials: "include" },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
