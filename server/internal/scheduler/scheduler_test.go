@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -541,6 +542,114 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 	}
 	if len(got.Checkouts) != 1 || got.Checkouts[0].Revision != "deadbeef" {
 		t.Fatalf("checkouts = %+v", got.Checkouts)
+	}
+}
+
+// TestBuildAssignment_SubstitutesPluginSettings is the e2e cover for
+// the v0.4.8 fix: a `${{ NAME }}` token inside a plugin `with:` value
+// must be replaced with the declared secret's value before the
+// assignment hits the gRPC wire. Pre-fix, the literal token reached
+// the agent (e.g. `docker login --username "${{ DOCKER_USERNAME }}"`).
+func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
+	def := domain.Pipeline{
+		Stages:    []string{"publish"},
+		Variables: map[string]string{"REGISTRY": "img.cora.tools"},
+		Jobs: []domain.Job{{
+			Name:    "buildx",
+			Stage:   "publish",
+			Secrets: []string{"DOCKER_USERNAME", "DOCKER_PASSWORD"},
+			Tasks: []domain.Task{{
+				Plugin: &domain.PluginStep{
+					Image: "ghcr.io/klinux/gocdnext-plugin-buildx:v1",
+					Settings: map[string]string{
+						"image":    "${{ REGISTRY }}/cora-pulse",
+						"username": "${{ DOCKER_USERNAME }}",
+						"password": "${{ DOCKER_PASSWORD }}",
+					},
+				},
+			}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "buildx"}
+	secrets := map[string]string{
+		"DOCKER_USERNAME": "deploybot",
+		"DOCKER_PASSWORD": "hunter2",
+	}
+
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if len(got.Tasks) != 1 {
+		t.Fatalf("tasks = %+v", got.Tasks)
+	}
+	plug := got.Tasks[0].GetPlugin()
+	if plug == nil {
+		t.Fatalf("expected plugin task")
+	}
+	wantSettings := map[string]string{
+		"image":    "img.cora.tools/cora-pulse",
+		"username": "deploybot",
+		"password": "hunter2",
+	}
+	for k, v := range wantSettings {
+		if plug.Settings[k] != v {
+			t.Errorf("settings[%q] = %q, want %q", k, plug.Settings[k], v)
+		}
+	}
+	// Secret values must show up in LogMasks so the runner redacts
+	// them from the `docker login` echo and any subsequent error.
+	var maskHits int
+	for _, m := range got.LogMasks {
+		if m == "deploybot" || m == "hunter2" {
+			maskHits++
+		}
+	}
+	if maskHits != 2 {
+		t.Errorf("LogMasks missing secret values: %v", got.LogMasks)
+	}
+}
+
+// TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch guards the
+// "fail fast at scheduler, not inside the plugin container" contract.
+// Without this, an operator typo (`${{ DOCKR_USERNAME }}`) would only
+// surface as a downstream auth error miles away from the cause.
+func TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"publish"},
+		Jobs: []domain.Job{{
+			Name:    "buildx",
+			Stage:   "publish",
+			Secrets: []string{"DOCKER_USERNAME"},
+			Tasks: []domain.Task{{
+				Plugin: &domain.PluginStep{
+					Image: "buildx:v1",
+					Settings: map[string]string{
+						"username": "${{ DOCKER_USERNAME }}",
+						"password": "${{ NOT_DECLARED }}", // typo
+					},
+				},
+			}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "buildx"}
+
+	_, err := scheduler.BuildAssignment(run, job, nil,
+		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for unresolved ref")
+	}
+	if !strings.Contains(err.Error(), "NOT_DECLARED") {
+		t.Errorf("err missing the unresolved name: %v", err)
+	}
+	// The error must NOT leak the resolved secret value (the
+	// neighbouring `${{ DOCKER_USERNAME }}` ref).
+	if strings.Contains(err.Error(), "deploybot") {
+		t.Errorf("err leaked sibling secret value: %v", err)
 	}
 }
 

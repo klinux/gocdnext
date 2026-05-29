@@ -10,6 +10,25 @@ Decisões arquiteturais já fechadas (stack, layout `.gocdnext/`, LISTEN/NOTIFY,
 - **~400 linhas por arquivo.** Passou disso, quebrar. Vale para `.go`, `.ts`, `.tsx`, `.sql`. Testes podem exceder se for um único suite coeso.
 - **shadcn para UI.** Todo componente visual no `web/` sai de shadcn/ui. Não escrever Button, Dialog, Input próprios quando o equivalente shadcn existe. Customização via `className` e variantes.
 
+## Postura de implementação (dev sênior)
+
+Todo PR — incluindo hotfix — passa por essas lentes. "Funciona no teste feliz" não é critério de done.
+
+- **Corner cases primeiro.** Antes de escrever a função, listar: input vazio, input nil, valor muito grande, duplicatas, unicode/case, race com outra goroutine, ctx cancelado mid-call, dependência ausente. Cada item vira teste ou comentário explicando por que é impossível.
+- **Segurança não é opcional.**
+  - Substituição/template: nunca leva input do usuário direto pra shell, SQL, exec, log, mensagem de erro sem sanitizar. Erros sobre referências não resolvidas citam o **nome** da referência, nunca o **valor** de outra coisa.
+  - Secrets: valor resolvido vai pra `LogMasks` no mesmo passo em que é injetado em env/settings. Quem esquece de adicionar à mask vaza no log.
+  - Substituição é **single-pass**. Sem expandir resultado de uma substituição (impede recursão `${{ X }}` → `${{ Y }}` → loop e leak via chain).
+  - Limites de parsing (regex, recursão YAML, depth de JSON) explícitos. Sem `\w+` sem limite, sem unmarshal de blob sem `MaxBytes`.
+  - Comparações de credencial usam `subtle.ConstantTimeCompare`. HMAC e tokens nunca com `==`.
+- **Performance medida, não adivinhada.**
+  - Regex compilada uma vez no `init`, não por chamada.
+  - Allocations dentro de loops quentes (scheduler dispatch, log streaming, webhook hot path) minimizadas — `make([]T, 0, n)` quando `n` é conhecido.
+  - Hot path mexido = `go test -bench` antes/depois. Diff de allocs no PR description.
+  - Query nova com JOIN ou subquery = `EXPLAIN ANALYZE` na migração, ou comentário justificando "OK em < N rows".
+- **Falhas barulhentas, não silenciosas.** Erro engolido com `_ = ...` precisa de um comentário explicando por que é OK. Default é propagar + log estruturado.
+- **Defesa em profundidade.** Mesma validação no servidor e no agente (não confiar que upstream sanitizou). Mesmo invariante checado no parse, no apply, e no dispatch.
+
 ## Go (server, agent, cli, plugins)
 
 - **Lint**: `golangci-lint` com `.golangci.yml` na raiz. Presets ativos: `errcheck`, `govet`, `staticcheck`, `gosec`, `revive`, `gocyclo`, `ineffassign`, `unused`. CI falha no primeiro warning.
