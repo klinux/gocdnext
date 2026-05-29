@@ -228,6 +228,48 @@ func TestSubstituteRefsMap_NilInputPassesThrough(t *testing.T) {
 	}
 }
 
+func TestSubstituteShellVars(t *testing.T) {
+	// `${VAR}` is shell-style. Unlike `${{ NAME }}` it's SOFT: an
+	// unknown name lands in the output literal so a legitimate shell
+	// fragment (`echo ${HOME}`) survives the dispatch substitution
+	// pass and gets expanded at container runtime.
+	sources := map[string]string{
+		"CI_BRANCH":           "gocdnext-tests",
+		"CI_COMMIT_SHORT_SHA": "f5b5f8a6",
+		"CI_RUN_COUNTER":      "42",
+	}
+
+	tests := []struct {
+		name, in, want string
+	}{
+		{"single known var", "${CI_BRANCH}", "gocdnext-tests"},
+		{"composite tag", "myapp:1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}-gocdnext",
+			"myapp:1.42.f5b5f8a6-gocdnext"},
+		{"unknown left literal (runtime shell handles it)", "${HOME}/cache", "${HOME}/cache"},
+		{"mixed known + unknown", "${CI_BRANCH} in ${HOME}", "gocdnext-tests in ${HOME}"},
+		{"empty input", "", ""},
+		{"no shell-var token (fast path)", "plain string", "plain string"},
+		{"bash parameter expansion `${VAR:-x}` NOT a ref",
+			"${VAR:-default}", "${VAR:-default}"},
+		{"positional `$1` NOT a ref", "${1}", "${1}"},
+		{"adjacent vars", "${CI_BRANCH}${CI_RUN_COUNTER}", "gocdnext-tests42"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := substituteShellVars(tc.in, sources); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSubstituteShellVarsMap_NilPassesThrough(t *testing.T) {
+	got := substituteShellVarsMap(nil, map[string]string{"X": "1"})
+	if got != nil {
+		t.Errorf("nil input should pass through, got %v", got)
+	}
+}
+
 func TestSubstituteRefs_RegexCompiledOnce(t *testing.T) {
 	// Compile-once invariant: refPattern is package-level; this test
 	// just exercises the var once so a future refactor that moves it

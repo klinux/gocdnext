@@ -653,6 +653,73 @@ func TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch(t *testing.T) {
 	}
 }
 
+// TestBuildAssignment_SubstitutesCIVarsAndShellRefs is the e2e cover
+// for v0.4.11: a plugin `with:` value that mixes `${{ SECRET }}`
+// (gocdnext-template, strict) and `${CI_*}` (shell-style, soft)
+// resolves both at dispatch time. The user's real-world failure was
+// `tags: 1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}-gocdnext` reaching
+// `docker buildx build` literal — invalid tag reference format.
+func TestBuildAssignment_SubstitutesCIVarsAndShellRefs(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"publish"},
+		Jobs: []domain.Job{{
+			Name:    "buildx",
+			Stage:   "publish",
+			Secrets: []string{"DOCKER_USERNAME"},
+			Tasks: []domain.Task{{
+				Plugin: &domain.PluginStep{
+					Image: "ghcr.io/klinux/gocdnext-plugin-buildx:v1",
+					Settings: map[string]string{
+						"image":    "img.cora.tools/app",
+						"username": "${{ DOCKER_USERNAME }}",
+						"tags":     "1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}-gocdnext",
+						"branch":   "${CI_BRANCH}",
+					},
+				},
+			}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	materialID := uuid.New()
+	run := store.RunForDispatch{
+		ID:         uuid.New(),
+		PipelineID: uuid.New(),
+		ProjectID:  uuid.New(),
+		Counter:    42,
+		Definition: defJSON,
+		Revisions: json.RawMessage(`{"` + materialID.String() +
+			`":{"revision":"f5b5f8a66a753e4fc64fc80ec518ad27be57e75c","branch":"gocdnext-tests"}}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "buildx"}
+
+	got, err := scheduler.BuildAssignment(run, job, nil,
+		map[string]string{"DOCKER_USERNAME": "deploybot"},
+		nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	plug := got.Tasks[0].GetPlugin()
+	want := map[string]string{
+		"image":    "img.cora.tools/app",
+		"username": "deploybot",
+		"tags":     "1.42.f5b5f8a6-gocdnext",
+		"branch":   "gocdnext-tests",
+	}
+	for k, v := range want {
+		if plug.Settings[k] != v {
+			t.Errorf("settings[%q] = %q, want %q", k, plug.Settings[k], v)
+		}
+	}
+	// CI vars must also flow into the container env so script tasks
+	// in the same job can `echo $CI_COMMIT_SHORT_SHA` natively.
+	if got.Env["CI_COMMIT_SHORT_SHA"] != "f5b5f8a6" {
+		t.Errorf("CI_COMMIT_SHORT_SHA missing from env: %v", got.Env["CI_COMMIT_SHORT_SHA"])
+	}
+	if got.Env["CI_RUN_COUNTER"] != "42" {
+		t.Errorf("CI_RUN_COUNTER missing from env: %v", got.Env["CI_RUN_COUNTER"])
+	}
+}
+
 func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
 	// The dispatch path mints an installation-scoped token for the
 	// material's URL and hands it to BuildAssignment in cloneTokens.

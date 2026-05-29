@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.11 — 2026-05-29
+
+### Features
+
+- **CI_* built-in variables** exposed to every job — `CI_BRANCH`,
+  `CI_COMMIT_SHA`, `CI_COMMIT_SHORT_SHA`, `CI_RUN_COUNTER`,
+  `CI_RUN_ID`, `CI_PIPELINE_ID`, `CI_PROJECT_ID`, `CI_JOB_NAME`,
+  plus the `CI=true` / `GOCDNEXT=true` markers that recipe ports
+  from Drone / GitLab / Woodpecker check. Drawn from the
+  `RunForDispatch` at dispatch time (deterministic across replays
+  via sorted material-uuid pick), absent when the run has no
+  revision so substitution can fail-fast instead of producing
+  `myapp:1.7.`-style empty interpolations.
+
+- **`${VAR}` shell-style substitution in plugin `with:` values** —
+  the docs (and every plugin recipe ported from another platform)
+  reference CI built-ins as `${CI_COMMIT_SHORT_SHA}`. Pre-fix, that
+  literal token reached `docker buildx build` and failed with
+  `invalid reference format`. Substitution is SOFT (unknown names
+  pass through verbatim) so a legitimate `${HOME}` in a setting
+  still gets shell-expanded at container runtime — only `${{ NAME }}`
+  stays hard-fail-on-unknown.
+
 ## v0.4.10 — 2026-05-29
 
 ### Fixes

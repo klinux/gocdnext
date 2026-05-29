@@ -26,6 +26,20 @@ var refPattern = regexp.MustCompile(`\$\{\{\s*([^}]+?)\s*\}\}`)
 // and refusing it loudly avoids the silent-no-op trap.
 var identPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// shellVarPattern matches `${VAR}` shell-style references — the form
+// CI built-ins use (`${CI_COMMIT_SHORT_SHA}`, `${CI_BRANCH}`, …) and
+// what every Drone / Woodpecker / GitLab plugin recipe expects. We
+// substitute these at dispatch time for plugin Settings (the agent
+// hands the literal value to the plugin's ENTRYPOINT, no shell
+// expansion happens at runtime) — but NOT for script env: a script
+// using `${HOME}` or `${PATH}` should still get the runtime
+// expansion bash provides natively.
+//
+// Only identifier names match — `${1}`, `${PATH:-/usr}` and other
+// bash parameter-expansion forms are ignored so legitimate shell
+// syntax in setting values doesn't get accidentally stomped.
+var shellVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
 // substituteRefs replaces every `${{ NAME }}` token in s with the
 // corresponding value from sources. Sources are consulted in order:
 // the first hit wins (so a job-local override shadows the pipeline
@@ -85,6 +99,46 @@ func substituteRefs(s string, sources ...map[string]string) (string, error) {
 			strings.Join(dedupeSorted(unresolved), ", "))
 	}
 	return out, nil
+}
+
+// substituteShellVars replaces every `${VAR}` token whose name is
+// present in one of the sources. Unknown names are LEFT LITERAL —
+// the opposite of substituteRefs' hard-fail contract. The rationale:
+// `${VAR}` is shell syntax and may legitimately appear in plugin
+// settings as a runtime placeholder the operator wants the inner
+// shell to expand (e.g. `script: 'echo ${HOME}'` running on an
+// agent's container). Substituting at dispatch when we know the
+// value, leaving alone when we don't, lets both styles coexist.
+//
+// Strict mode (hard-fail) lives on `${{ NAME }}` because that form
+// is the gocdnext-specific contract: the operator MUST have
+// declared the name.
+func substituteShellVars(s string, sources ...map[string]string) string {
+	if !strings.Contains(s, "${") {
+		return s
+	}
+	return shellVarPattern.ReplaceAllStringFunc(s, func(match string) string {
+		name := shellVarPattern.FindStringSubmatch(match)[1]
+		for _, src := range sources {
+			if v, ok := src[name]; ok {
+				return v
+			}
+		}
+		return match
+	})
+}
+
+// substituteShellVarsMap is the map-valued lift of substituteShellVars.
+// Same fresh-map / nil-passes-through contract as substituteRefsMap.
+func substituteShellVarsMap(in map[string]string, sources ...map[string]string) map[string]string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = substituteShellVars(v, sources...)
+	}
+	return out
 }
 
 // substituteRefsMap is the map-valued lift of substituteRefs. Walks
