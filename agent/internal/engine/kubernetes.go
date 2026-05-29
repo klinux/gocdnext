@@ -338,7 +338,12 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 	// every plugin task no-op with exit 0 ("success but nothing
 	// happened").
 	if spec.Script != "" {
-		taskContainer.Command = []string{"sh", "-c", spec.Script}
+		// `--` after -c stops sh's option parsing — without it, a
+		// user script literal starting with `-` (e.g. plugin command
+		// like `-m uv sync`) would be interpreted as a flag and the
+		// container would die at startup with `sh: - : invalid
+		// option`. Same fix applied in the docker + shell engines.
+		taskContainer.Command = []string{"sh", "-c", "--", spec.Script}
 	}
 	containers := []corev1.Container{taskContainer}
 

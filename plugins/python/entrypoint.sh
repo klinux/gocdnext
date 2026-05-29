@@ -64,7 +64,7 @@ case "${MANAGER}" in
         # branch has always used.
         # shellcheck disable=SC1091
         source .venv/bin/activate
-        exec bash -lc "${PLUGIN_COMMAND}"
+        exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     uv)
         if [ -f "uv.lock" ]; then
@@ -74,7 +74,7 @@ case "${MANAGER}" in
         fi
         # shellcheck disable=SC1091
         source .venv/bin/activate
-        exec bash -lc "${PLUGIN_COMMAND}"
+        exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     pip)
         req="${PLUGIN_REQUIREMENTS:-requirements.txt}"
@@ -90,11 +90,11 @@ case "${MANAGER}" in
         # pipeline `cache:` block can preserve the wheel cache
         # across runs — skip --no-cache-dir here.
         pip install -r "${req}"
-        exec bash -lc "${PLUGIN_COMMAND}"
+        exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     none)
         echo "==> skipping dependency install (manager=none)"
-        exec bash -lc "${PLUGIN_COMMAND}"
+        exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     *)
         echo "gocdnext/python: unknown manager '${MANAGER}' (accepted: auto, uv, pip, poetry, none)" >&2

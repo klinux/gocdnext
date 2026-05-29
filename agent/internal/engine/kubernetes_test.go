@@ -87,11 +87,15 @@ func TestKubernetes_BuildPodSpec_Defaults(t *testing.T) {
 	if c.Image != "alpine:3.19" {
 		t.Errorf("image = %q", c.Image)
 	}
-	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
+	// `sh -c -- <script>` — `--` after -c stops option parsing so a
+	// script that legitimately starts with `-` reaches sh as the
+	// command, not as a flag. Asserting on the exact shape locks
+	// the behaviour against accidental drift.
+	if len(c.Command) != 4 || c.Command[0] != "sh" || c.Command[1] != "-c" || c.Command[2] != "--" {
 		t.Errorf("command = %+v", c.Command)
 	}
-	if c.Command[2] != "echo hi" {
-		t.Errorf("script = %q", c.Command[2])
+	if c.Command[3] != "echo hi" {
+		t.Errorf("script = %q", c.Command[3])
 	}
 	// Env must include FOO=bar.
 	var foo *corev1.EnvVar

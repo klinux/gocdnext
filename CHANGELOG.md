@@ -6,6 +6,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.27 — 2026-05-29
+
+### Fixes
+
+- **`bash -lc "${PLUGIN_COMMAND}"` and `sh -c "${spec.Script}"`
+  failed with `bash: - : invalid option` when the user-supplied
+  command literal started with a dash.** Reproduction the user
+  hit: a pipeline written as
+  ```yaml
+  with:
+    command: -m uv sync --frozen
+  ```
+  expanded to `bash -lc "-m uv sync --frozen"`; bash's `-c` flag
+  doesn't stop option parsing on the next arg, so the leading `-m`
+  was interpreted as another (invalid) bash flag and the
+  command-string never ran.
+
+  Fix everywhere user-controlled command text reaches a shell `-c`:
+  insert the canonical `--` end-of-options marker between `-c` and
+  the command string.
+  - `plugins/python/entrypoint.sh`: all four `exec bash -lc` calls
+    (poetry / uv / pip / none branches).
+  - `agent/internal/engine/kubernetes.go`: task container
+    `Command: ["sh", "-c", "--", spec.Script]`.
+  - `agent/internal/engine/docker.go`: `docker run … sh -c -- "$cmd"`.
+  - `agent/internal/engine/shell.go`: `exec.CommandContext("sh",
+    "-c", "--", spec.Script)`.
+
+  With `--`, a literal `-m foo` now reaches the shell as the
+  command string and fails (correctly, much more clearly) with
+  `sh: line 1: -m: command not found` — actionable error for the
+  YAML author instead of bash's argv-parsing confusion.
+
 ## v0.4.26 — 2026-05-29
 
 ### Fixes

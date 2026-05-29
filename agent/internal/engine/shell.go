@@ -71,7 +71,10 @@ func (*Shell) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 			"shell engine: plugin task (image=%q) cannot run — use the docker engine for plugins",
 			spec.Image)
 	}
-	cmd := exec.CommandContext(ctx, "sh", "-c", spec.Script)
+	// `--` after -c stops sh option parsing so a user script literal
+	// starting with `-` runs as the command instead of being parsed
+	// as a flag. Same fix in docker + kubernetes engines.
+	cmd := exec.CommandContext(ctx, "sh", "-c", "--", spec.Script)
 	// Run sh in its own process group so we can SIGKILL the whole
 	// tree on cancel. Without this, exec.CommandContext kills only
 	// the immediate sh process — when sh forks (bash on most distros)
