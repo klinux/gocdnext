@@ -45,6 +45,15 @@ func TestParseRepoURL(t *testing.T) {
 		{"https://github.com/org/repo.git", "org", "repo", false},
 		{"https://github.com/org/repo/", "org", "repo", false},
 		{"git@github.com:org/repo.git", "org", "repo", false},
+		// Canonical scheme-less form (NormalizeGitURL output) — must
+		// round-trip through ParseRepoURL too, otherwise callers that
+		// hand the stored scm_sources.url back to ParseRepoURL (the
+		// manual-trigger seed, the configsync fetcher) read the host
+		// as the owner.
+		{"github.com/org/repo", "org", "repo", false},
+		{"github.com/org/repo.git", "org", "repo", false},
+		{"github.com/", "", "", true},
+		{"github.com/org", "", "", true},
 		{"https://github.com/", "", "", true},
 		{"", "", "", true},
 		{"not-a-url", "", "", true},
