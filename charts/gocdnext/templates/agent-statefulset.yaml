@@ -105,15 +105,16 @@ spec:
               value: {{ .Values.agent.jobCleanup.onFailure | quote }}
             - name: GOCDNEXT_K8S_FORCE_IMAGE_PULL_ALWAYS
               value: {{ .Values.agent.forceImagePullAlways | default false | quote }}
-            # WorkspaceRoot for the runner: MUST match the PVC mount
-            # so the cloned source the agent writes is visible to
-            # spawned job pods (which mount the same PVC at the same
-            # path). Without this, the runner falls back to its
-            # /tmp default and plugin tasks fail with `lstat <path>:
-            # no such file or directory` because their working dir
-            # references a path on the agent's local fs, not the PVC.
+            {{- with .Values.agent.workspace.rootOverride }}
+            # Override only — the agent infers WorkspaceRoot from
+            # GOCDNEXT_K8S_WORKSPACE_PATH automatically when
+            # GOCDNEXT_AGENT_ENGINE=kubernetes. Set
+            # agent.workspace.rootOverride when the PVC is mounted at
+            # a non-default path that doesn't match the K8s engine
+            # mount the job pods receive.
             - name: GOCDNEXT_WORKSPACE_ROOT
-              value: {{ .Values.agent.workspace.mountPath | quote }}
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
           {{- if eq .Values.agent.engine "kubernetes" }}
           volumeMounts:

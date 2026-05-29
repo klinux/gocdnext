@@ -82,17 +82,10 @@ func loadConfig() (rpc.Config, error) {
 		capacity = int32(n)
 	}
 
-	// WorkspaceRoot must point at the SAME path the k8s engine
-	// mounts the workspace PVC into job pods, otherwise the runner
-	// clones into the agent's local filesystem (default /tmp/...)
-	// and the spawned plugin pod can't see the source — the docker
-	// build sends an empty context to DinD and buildx fails on
-	// `lstat <first-path-component>: no such file or directory`.
-	// The chart wires this env to agent.workspace.mountPath so
-	// agent + every job pod share the same PVC view; running with
-	// the shell or docker engine, leaving it unset keeps the
-	// default /tmp behaviour.
-	workspaceRoot := os.Getenv("GOCDNEXT_WORKSPACE_ROOT")
+	workspaceRoot, err := resolveWorkspaceRoot()
+	if err != nil {
+		return rpc.Config{}, err
+	}
 
 	return rpc.Config{
 		ServerAddr:    addr,
@@ -103,6 +96,42 @@ func loadConfig() (rpc.Config, error) {
 		Capacity:      capacity,
 		WorkspaceRoot: workspaceRoot,
 	}, nil
+}
+
+// resolveWorkspaceRoot derives the path the runner clones into so
+// the agent + every spawned job pod see the SAME bytes:
+//
+//  1. GOCDNEXT_WORKSPACE_ROOT explicit override → use as-is. Reserved
+//     for operators who mount the PVC at a non-default path or want
+//     /tmp behaviour for a particular reason.
+//  2. engine == "kubernetes" → GOCDNEXT_K8S_WORKSPACE_PATH (the PVC
+//     mount point job pods receive). REQUIRED in this mode; an
+//     empty value is a misconfig the operator should hear about at
+//     boot, not as a `lstat` failure inside a buildx plugin three
+//     minutes into the first real job.
+//  3. shell / docker / unset → empty, runner falls back to its
+//     `/tmp/gocdnext-workspace/` default. Shell tasks run on the
+//     agent's own fs; docker tasks share the host fs through the
+//     docker socket. Either way `/tmp` is fine.
+//
+// The chart no longer needs to set GOCDNEXT_WORKSPACE_ROOT — picking
+// the k8s engine + setting the PVC mount path is enough.
+func resolveWorkspaceRoot() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("GOCDNEXT_WORKSPACE_ROOT")); override != "" {
+		return override, nil
+	}
+	engine := strings.ToLower(strings.TrimSpace(os.Getenv("GOCDNEXT_AGENT_ENGINE")))
+	if engine != "kubernetes" {
+		return "", nil
+	}
+	mount := strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_PATH"))
+	if mount == "" {
+		return "", fmt.Errorf(
+			"GOCDNEXT_AGENT_ENGINE=kubernetes requires GOCDNEXT_K8S_WORKSPACE_PATH " +
+				"to be set so the agent + spawned job pods share the same PVC view; " +
+				"the chart wires it to agent.workspace.mountPath")
+	}
+	return mount, nil
 }
 
 // buildEngine picks the runtime used for each script task. The
