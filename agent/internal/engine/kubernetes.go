@@ -230,10 +230,9 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		}
 	}
 
-	containers := []corev1.Container{{
+	taskContainer := corev1.Container{
 		Name:       "task",
 		Image:      image,
-		Command:    []string{"sh", "-c", spec.Script},
 		WorkingDir: workDir,
 		Env:        env,
 		Resources:  buildResourceRequirements(spec.Resources),
@@ -241,7 +240,18 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 			Name:      "workspace",
 			MountPath: k.cfg.WorkspaceMountPath,
 		}},
-	}}
+	}
+	// Empty Script = plugin task: the image's own ENTRYPOINT is the
+	// logic and PLUGIN_* env vars carry the inputs. Leaving Command
+	// (and Args) nil tells Kubernetes to use the image's ENTRYPOINT
+	// + CMD as declared — matching the docker engine's behaviour at
+	// engine/docker.go:253. Forcing `sh -c ""` here previously made
+	// every plugin task no-op with exit 0 ("success but nothing
+	// happened").
+	if spec.Script != "" {
+		taskContainer.Command = []string{"sh", "-c", spec.Script}
+	}
+	containers := []corev1.Container{taskContainer}
 
 	if spec.Docker {
 		// DinD runs as a plain sibling container (not an init
