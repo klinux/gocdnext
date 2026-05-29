@@ -6,6 +6,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.29 — 2026-05-29
+
+### Fixes
+
+- **Downstream jobs failed with `Failed to spawn: ruff / No such
+  file or directory` when consuming a `.venv/` artifact from an
+  upstream install job.** Root cause: python venvs are
+  non-relocatable by default. The install job's `uv sync` created
+  `.venv/bin/ruff` (and every other entry-point script) with a
+  hardcoded shebang pointing at its own workspace:
+  ```
+  #!/workspace/<install-job-uuid>/.../services/core/.venv/bin/python
+  ```
+  The artifact carried that shebang verbatim. The test/lint job
+  extracted into a different `/workspace/<test-job-uuid>/...` and
+  the kernel returned ENOENT trying to exec the now-stale
+  interpreter path. (uv's "VIRTUAL_ENV ... will be ignored"
+  warning was the first clue — it only re-installed the editable
+  package, not the script shebangs.)
+
+  Fix: plugin pre-creates the venv with `uv venv --relocatable
+  .venv` before calling `uv sync`, which writes
+  `#!/usr/bin/env python` shebangs. The artifact-shipped scripts
+  now spawn the consumer job's interpreter correctly without any
+  pipeline-side workaround. Skip when `.venv` already exists so
+  a caller-provided venv isn't blown away.
+
+  Note: this only helps the `uv` manager branch. Poetry doesn't
+  expose a relocatable-venv flag; the pip branch uses `python -m
+  venv` which doesn't either. For those, the right pattern stays:
+  share the package-manager cache via `cache:` and let each job
+  sync into its own venv (~few seconds when wheels are cached).
+
 ## v0.4.28 — 2026-05-29
 
 ### Fixes

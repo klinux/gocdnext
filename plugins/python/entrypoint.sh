@@ -67,6 +67,21 @@ case "${MANAGER}" in
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     uv)
+        # Pre-create a RELOCATABLE venv before sync so the entry-
+        # point scripts under .venv/bin/* land with
+        # `#!/usr/bin/env python` shebangs instead of absolute
+        # paths. Without this, `uv sync` creates a venv whose
+        # scripts hardcode the install job's workspace path
+        # (`#!/workspace/<install-job>/.../.venv/bin/python`); a
+        # downstream job that consumes the .venv via artifact then
+        # tries to exec scripts whose interpreter path no longer
+        # exists and fails with the opaque
+        #   `Failed to spawn: ruff / No such file or directory`.
+        # Skip when .venv already exists so we don't blow away a
+        # caller-provided one.
+        if [ ! -d .venv ]; then
+            uv venv --relocatable .venv
+        fi
         if [ -f "uv.lock" ]; then
             uv sync --frozen
         else
