@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.5 — 2026-05-28
+
+Two more hotfixes — private-repo clones get an installation token, and
+the pipeline overview sheet stops trying to reach localhost from the
+browser.
+
+### Fixes
+
+- **Private-repo clones via GitHub App** — the agent failed every
+  private-repo clone with `fatal: could not read Username for
+  'https://github.com'` because `MaterialCheckout.url` was the bare
+  repo URL with no credential. The scheduler now mints a per-repo
+  installation token before dispatch (via `vcs.Registry.TokenForGitURL`)
+  and embeds it as `https://x-access-token:TOKEN@host/...`. The token
+  is also appended to `LogMasks` so the agent redacts it from the
+  `$ git clone` echo and any error output. Public repos and SSH URLs
+  fall through untouched.
+
+- **Pipeline overview sheet's artifacts + YAML tabs hit localhost** —
+  the sheet imported `env.GOCDNEXT_API_URL` directly from a Client
+  Component. `process.env.GOCDNEXT_API_URL` is undefined in the
+  browser bundle, so Zod defaulted the URL to `http://localhost:8153`
+  and every fetch failed with "Failed to fetch". Now uses relative
+  paths the same way `runs/[id]` already does after v0.4.4.
+
 ## v0.4.4 — 2026-05-28
 
 Bug-fix release. Unblocks webhook-driven runs for any project whose
