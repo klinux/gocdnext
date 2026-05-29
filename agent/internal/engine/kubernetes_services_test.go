@@ -188,6 +188,16 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 		if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 			t.Errorf("pod %s restart policy = %v, want Never", pod.Name, pod.Spec.RestartPolicy)
 		}
+		c := pod.Spec.Containers[0]
+		// Critical: svc.Command must land in Container.Args, NOT
+		// Container.Command. Postgres + similar images carry an
+		// ENTRYPOINT (docker-entrypoint.sh) that interprets `-c
+		// fsync=off`-style args; setting Container.Command would
+		// shadow the entrypoint and runc would fail with
+		// "exec: -c: executable file not found".
+		if len(c.Command) != 0 {
+			t.Errorf("pod %s sets Container.Command=%v — must be empty so image ENTRYPOINT runs", pod.Name, c.Command)
+		}
 	}
 
 	// Cleanup must delete every pod it brought up. Important: even
@@ -205,6 +215,55 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 			names = append(names, p.Name)
 		}
 		t.Errorf("pods remaining after cleanup: %v", names)
+	}
+}
+
+// TestEnsureServices_CommandLandsInArgsNotCommand is the regression
+// cover for v0.4.23 → v0.4.24: pipelines declaring
+//
+//	services:
+//	  - name: postgres
+//	    image: postgres:16-alpine
+//	    command: ["-c", "fsync=off"]
+//
+// previously made the engine populate Container.Command = ["-c",
+// "fsync=off"], which shadowed the image's ENTRYPOINT
+// (docker-entrypoint.sh) and failed at containerd-create time with
+// `exec: "-c": executable file not found`. Container.Args is the
+// correct slot — it appends to the image's ENTRYPOINT, matching the
+// docker engine's `docker run postgres -c fsync=off` semantics.
+func TestEnsureServices_CommandLandsInArgsNotCommand(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage:   "alpine:3.19",
+		PollInterval:   2 * time.Millisecond,
+		StartupTimeout: time.Second,
+	})
+
+	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-jobwithcmd1-postgres", "10.0.0.30", 5*time.Millisecond)
+
+	_, err := k.EnsureServices(context.Background(),
+		[]engine.ServiceSpec{
+			{
+				Name:    "postgres",
+				Image:   "postgres:16-alpine",
+				Command: []string{"-c", "fsync=off"},
+			},
+		},
+		"jobwithcmd1", nil)
+	if err != nil {
+		t.Fatalf("EnsureServices: %v", err)
+	}
+
+	pod, err := cli.CoreV1().Pods("gocdnext-tests").Get(context.Background(), "gocdnext-svc-jobwithcmd1-postgres", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	c := pod.Spec.Containers[0]
+	if len(c.Command) != 0 {
+		t.Errorf("Container.Command = %v, want empty (image ENTRYPOINT must run)", c.Command)
+	}
+	if len(c.Args) != 2 || c.Args[0] != "-c" || c.Args[1] != "fsync=off" {
+		t.Errorf("Container.Args = %v, want [-c fsync=off]", c.Args)
 	}
 }
 
