@@ -6,6 +6,59 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.21 — 2026-05-29
+
+### Features
+
+- **Kubernetes engine now wires pipeline services as separate pods
+  per service (Woodpecker-style) with `hostAliases` on the task pod
+  resolving each declared service name to its pod IP.** v0.4.20
+  fail-loud rejected services on the k8s engine because the runner
+  was hardcoded to the docker-network path; this release plumbs a
+  proper `engine.EnsureServices` contract every engine implements.
+  YAML stays identical (`services: { postgres: { image: postgres:16 }
+  }`) — the script reaches `postgres:5432` exactly as it does under
+  the docker engine, just resolved via `/etc/hosts` (zero DNS
+  latency) instead of docker DNS.
+
+  Why pod-per-service + hostAliases rather than sidecars or k8s
+  Service objects:
+  - Sidecars share the pod's network namespace, which forces every
+    service onto the same lifecycle as the task — a restarting
+    sidecar takes the task down with it. Pod-per-service decouples
+    them and matches the Woodpecker mental model.
+  - K8s Service objects would require either declaring ports in the
+    YAML (we don't) or wrestling with headless-Service DNS, name
+    collisions across concurrent jobs in the same namespace, and
+    extra RBAC for `services.create`. HostAliases on the task pod
+    sidesteps all of that: no Service objects, no extra RBAC, no DNS
+    lookup on the hot path.
+
+  Implementation:
+  - `engine.Engine` gains `EnsureServices(ctx, services, jobID, log)
+    (ServicesWireup, error)` — docker returns `{Network: ...}`, k8s
+    returns `{HostAliases: ...}`, shell errors loud, contract makes
+    cleanup non-nil and safe to call even on partial startup.
+  - Pod naming `gocdnext-svc-<jobshort>-<svcname>` so an operator can
+    `kubectl get pods -l gocdnext.io/job=<id>` and see every backing
+    pod for a job.
+  - Service names validated against a strict DNS-1123 charset (max
+    32 chars) to keep pod-name length under the 63-char limit and
+    block argv-injection paths through pipeline YAML.
+  - PodIPs collected in parallel via a `sync.WaitGroup` + buffered
+    errChan with first-error-cancels-the-rest semantics — image
+    pulls dominate startup, serialising waits would multiply latency
+    by the number of services.
+  - Cleanup uses `context.Background()` so it survives the runner's
+    ctx cancel (typical reason cleanup runs) and force-deletes
+    (`gracePeriodSeconds: 0`) to avoid the 30s graceful-shutdown lag
+    between job end and pod-IP recycling.
+
+  Test coverage in `agent/internal/engine/kubernetes_services_test.go`:
+  noop on empty, rejects empty jobID / bad names / duplicate names /
+  empty image, builds correct pods + hostAliases + labels, cleanup
+  runs after caller-ctx cancel, timeout cleans up started pods.
+
 ## v0.4.20 — 2026-05-29
 
 ### Fixes

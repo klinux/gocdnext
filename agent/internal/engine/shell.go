@@ -32,6 +32,20 @@ func NewShell() *Shell { return &Shell{} }
 // Name returns a stable identifier for logging/metrics.
 func (*Shell) Name() string { return "shell" }
 
+// EnsureServices: shell engine has no isolation layer where a
+// declared service container could live, so any services-block
+// is rejected with a clear error. Empty list is a noop. The
+// returned cleanup is always non-nil so callers can defer it
+// unconditionally.
+func (*Shell) EnsureServices(_ context.Context, services []ServiceSpec, _ string, _ func(string, string)) (ServicesWireup, error) {
+	if len(services) == 0 {
+		return ServicesWireup{Cleanup: func() {}}, nil
+	}
+	return ServicesWireup{Cleanup: func() {}}, fmt.Errorf(
+		"shell engine: %d service(s) declared but the shell engine has no isolation layer to host them — "+
+			"remove the `services:` block or switch the runner profile to docker/kubernetes", len(services))
+}
+
 // RunScript shells out via `sh -c`. See Engine.RunScript for the
 // error contract — exit != 0 is returned as (N, nil); fork or pipe
 // failure is returned as (-1, err).

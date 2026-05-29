@@ -54,7 +54,34 @@ type ScriptSpec struct {
 	// Pod. Helps debug "which pool ran this job" without trawling
 	// agent logs.
 	AgentTags []string
-	OnLine    func(stream, text string)
+	// HostAliases maps service names to IPs the task container can
+	// reach. The Kubernetes engine writes these into PodSpec.hostAliases
+	// so a `postgres:5432`-style lookup resolves to the service pod's
+	// IP. EnsureServices (below) builds the list before RunScript is
+	// called. The Docker engine ignores this field — it uses
+	// container-network DNS aliases instead.
+	HostAliases []HostAlias
+	OnLine      func(stream, text string)
+}
+
+// ServiceSpec is the engine-facing shape of a pipeline-level
+// service. Mirrors the gocdnextv1.ServiceSpec proto but lives in
+// the engine package so engines don't have to depend on the proto
+// package directly.
+type ServiceSpec struct {
+	Name    string
+	Image   string
+	Env     map[string]string
+	Command []string
+}
+
+// HostAlias is the engine-agnostic shape an engine plumbs into its
+// runtime's hostname-resolution layer. For Kubernetes this maps
+// 1-to-1 onto corev1.HostAlias; for Docker it's redundant with the
+// network-DNS alias the engine already wires.
+type HostAlias struct {
+	IP        string
+	Hostnames []string
 }
 
 // Resources mirrors the proto ResourceRequirements but lives in the
@@ -71,6 +98,20 @@ type Resources struct {
 // the resources mapping when true.
 func (r Resources) IsZero() bool { return r == Resources{} }
 
+// ServicesWireup is what an engine returns from EnsureServices so
+// the runner can plumb the result back into the task's ScriptSpec.
+// Different engines populate different fields — docker uses Network
+// (a docker network the task container joins so service hostnames
+// resolve via container DNS), kubernetes uses HostAliases (mapping
+// each service name to its pod IP via /etc/hosts entries on the
+// task pod). Cleanup is always non-nil and idempotent — safe to
+// call whether services started cleanly, partially, or not at all.
+type ServicesWireup struct {
+	Network     string
+	HostAliases []HostAlias
+	Cleanup     func()
+}
+
 // Engine is the narrow contract: "run this, tell me when each line
 // comes out, give me the exit code". Errors are reserved for
 // lifecycle problems (fork/exec failure, Pod creation failure) —
@@ -83,4 +124,14 @@ type Engine interface {
 	// Returns the exit code. err != nil signals "could not run at
 	// all" (distinct from "ran and failed").
 	RunScript(ctx context.Context, spec ScriptSpec) (exitCode int, err error)
+
+	// EnsureServices brings up the declared pipeline services in the
+	// engine's own runtime — docker brings up containers on a job
+	// network, kubernetes brings up one Pod per service. Returns a
+	// ServicesWireup the runner plumbs into ScriptSpec (Network for
+	// docker, HostAliases for kubernetes) plus a Cleanup safe to call
+	// even on partial startup. Empty services → zero ServicesWireup
+	// with a noop Cleanup. Engines that don't implement services
+	// return an error when len(services) > 0.
+	EnsureServices(ctx context.Context, services []ServiceSpec, jobID string, log func(stream, text string)) (ServicesWireup, error)
 }

@@ -370,6 +370,14 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		})
 	}
 
+	hostAliases := make([]corev1.HostAlias, 0, len(spec.HostAliases))
+	for _, ha := range spec.HostAliases {
+		hostAliases = append(hostAliases, corev1.HostAlias{
+			IP:        ha.IP,
+			Hostnames: append([]string(nil), ha.Hostnames...),
+		})
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      k.nowName(),
@@ -382,6 +390,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 			ImagePullSecrets: pullSecrets,
 			Volumes:          []corev1.Volume{workspaceVolume},
 			Containers:       containers,
+			HostAliases:      hostAliases,
 		},
 	}
 }

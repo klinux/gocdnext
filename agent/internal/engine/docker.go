@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -68,6 +69,112 @@ func NewDocker(cfg DockerConfig, fallback Engine) *Docker {
 
 // Name returns a stable identifier used in logs and metric labels.
 func (*Docker) Name() string { return "docker" }
+
+// dockerServiceNameRE is the strict charset for a pipeline service
+// name reaching `docker run --name` / `docker network create`. We
+// intentionally pin it tighter than docker's own grammar (which
+// allows `.`) because the value also becomes a DNS alias on the
+// network and gets concatenated into a hostname — anything that's
+// not [a-z0-9-] risks "Error response from daemon: Invalid network
+// name" or "Invalid container name" at run time.
+//
+// Critical: this is part of the substitution-time security perimeter.
+// The service name + image come from pipeline YAML that may live in
+// a public PR branch; without this check, a malicious `name: "--rm"`
+// or `name: "$(touch /tmp/x)"` would land verbatim in argv. exec.Cmd
+// doesn't run a shell, so we're safe from `$( )`-style command
+// substitution, but argv injection — `name: "x --network host"`
+// breaking out of the --name slot — is still possible without a
+// strict charset gate.
+var dockerServiceNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+// EnsureServices brings up each declared service as a standalone
+// container on a job-scoped docker network. The task container joins
+// the same network later via ScriptSpec.Network (the engine reads
+// Wireup.Network from the runner and threads it into `docker run`).
+// Service names become DNS aliases on the network, so the script
+// reaches `postgres:5432` without any host-aliases plumbing.
+//
+// Cleanup tears containers down first (they hold references to the
+// network) then the network. It's safe to call on partial startup —
+// `docker network rm` of an in-use network is a no-op error we
+// swallow, and we only collect ids for containers that actually
+// reported `docker run` success.
+func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, jobID string, log func(stream, text string)) (ServicesWireup, error) {
+	noop := ServicesWireup{Cleanup: func() {}}
+	if len(services) == 0 {
+		return noop, nil
+	}
+	if jobID == "" {
+		return noop, errors.New("docker engine: EnsureServices needs a non-empty jobID for collision-free naming")
+	}
+
+	jobShort := shortDockerID(jobID)
+	network := "gocdnext-" + jobShort
+
+	if out, err := exec.CommandContext(ctx, "docker", "network", "create", network).CombinedOutput(); err != nil {
+		return noop, fmt.Errorf("docker engine: create network %s: %w (docker said: %s)",
+			network, err, strings.TrimSpace(string(out)))
+	}
+
+	var started []string
+	cleanup := func() {
+		for _, cid := range started {
+			_ = exec.Command("docker", "rm", "-f", cid).Run()
+		}
+		_ = exec.Command("docker", "network", "rm", network).Run()
+	}
+
+	for _, svc := range services {
+		if !dockerServiceNameRE.MatchString(svc.Name) {
+			cleanup()
+			return noop, fmt.Errorf(
+				"docker engine: service name %q is invalid — expected lowercase alphanumerics and dashes only, starting with a letter, max 63 chars",
+				svc.Name)
+		}
+		if svc.Image == "" {
+			cleanup()
+			return noop, fmt.Errorf("docker engine: service %q has empty image", svc.Name)
+		}
+		container := "gocdnext-" + jobShort + "-" + svc.Name
+		args := []string{
+			"run", "-d", "--rm",
+			"--name", container,
+			"--network", network,
+			"--network-alias", svc.Name,
+		}
+		for _, kv := range envPairsSorted(svc.Env) {
+			args = append(args, "-e", kv)
+		}
+		args = append(args, svc.Image)
+		args = append(args, svc.Command...)
+
+		if log != nil {
+			log("stdout", fmt.Sprintf("$ starting service %s (%s)", svc.Name, svc.Image))
+		}
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		if err != nil {
+			cleanup()
+			return noop, fmt.Errorf("docker engine: start service %s: %w (docker said: %s)",
+				svc.Name, err, strings.TrimSpace(string(out)))
+		}
+		started = append(started, container)
+	}
+
+	return ServicesWireup{Network: network, Cleanup: cleanup}, nil
+}
+
+// shortDockerID trims a UUID-ish id down to a dns-safe prefix.
+// Docker network + container names get an overall length cap (63
+// chars for DNS labels); 12 chars of hex is plenty of entropy for
+// per-job scoping on a single agent.
+func shortDockerID(id string) string {
+	clean := strings.ReplaceAll(id, "-", "")
+	if len(clean) > 12 {
+		clean = clean[:12]
+	}
+	return clean
+}
 
 // RunScript dispatches to `docker run` with the workspace
 // bind-mounted. Returns (N, nil) for script exit codes, (-1, err)

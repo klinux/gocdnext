@@ -29,6 +29,10 @@ func (c *captureEngine) RunScript(_ context.Context, spec engine.ScriptSpec) (in
 	return 0, nil
 }
 
+func (c *captureEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, func(string, string)) (engine.ServicesWireup, error) {
+	return engine.ServicesWireup{Cleanup: func() {}}, nil
+}
+
 // TestRunPlugin_PropagatesDockerFlag is the regression cover for the
 // v0.4.9 fix: a job declaring `docker: true` on its YAML must reach
 // the plugin task's ScriptSpec so the engine wires DinD + DOCKER_HOST.
