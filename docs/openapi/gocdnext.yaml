@@ -923,6 +923,75 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  # -------------------- admin (artifact storage) --------------------
+  /api/v1/admin/storage:
+    get:
+      tags: [admin]
+      summary: Read the active artifact storage configuration (admin only).
+      description: |
+        Returns the DB override row when present (`source: db`) or
+        an env-derived snapshot (`source: env`) so the UI can
+        prepopulate the form with what the boot path is actually
+        using. Credential VALUES never round-trip — only
+        `credential_keys` (sorted names) so the UI can render
+        "•••• stored" badges.
+      responses:
+        "200":
+          description: storage configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageConfig" }
+    put:
+      tags: [admin]
+      summary: Set / replace the artifact storage configuration (admin only).
+      description: |
+        Per-backend validation: `s3` and `gcs` require `value.bucket`;
+        `filesystem` accepts an empty value (the FS root comes from
+        env, since changing it at runtime would orphan existing
+        artifacts). Credentials are PLAINTEXT on the wire and
+        AEAD-sealed before persisting. The server reads this
+        override only at boot today — the response carries an
+        `X-Gocdnext-Restart-Required: true` header to surface this
+        in the UI banner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StorageConfigWrite" }
+      responses:
+        "200":
+          description: configuration saved
+          headers:
+            X-Gocdnext-Restart-Required:
+              schema: { type: string, enum: ["true"] }
+              description: |
+                Set when the change requires a server restart to take
+                effect (always "true" today; hot-reload is on the
+                roadmap).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageConfig" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          description: cipher not configured (cannot accept credentials)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [admin]
+      summary: Drop the storage override (admin only).
+      description: |
+        Clears the DB override; the next boot falls back to the
+        env-derived configuration. Idempotent — deleting a missing
+        override is a no-op. Same restart-required semantics as PUT.
+      responses:
+        "204":
+          description: override cleared
+          headers:
+            X-Gocdnext-Restart-Required:
+              schema: { type: string, enum: ["true"] }
+
   # -------------------- webhooks --------------------
   /api/webhooks/github:
     post:
@@ -1390,3 +1459,68 @@ components:
             new value automatically. Templates can compose with
             literal text (`prefix-{{secret:DB_PASSWORD}}-suffix`).
             Unresolvable references fail the dispatch closed.
+
+    StorageConfig:
+      type: object
+      required: [backend, value, credential_keys, source]
+      properties:
+        backend:
+          type: string
+          enum: [filesystem, s3, gcs]
+        value:
+          type: object
+          additionalProperties: true
+          description: |
+            Non-secret backend configuration. Shape varies per
+            backend: s3 carries `bucket`, `region`, `endpoint`,
+            `use_path_style`, `ensure_bucket`; gcs carries
+            `bucket`, `project_id`, `ensure_bucket`; filesystem
+            is empty (root path comes from env).
+        credential_keys:
+          type: array
+          items: { type: string }
+          description: |
+            Sorted names of credentials configured for this
+            backend. The DB-row source returns the sentinel
+            `["configured"]` when an encrypted blob is present
+            (the names live in audit metadata, not the row
+            itself); the env source returns the actual key
+            names (`access_key`, `secret_key`,
+            `service_account_json`) flagged as wired via env.
+        updated_at:
+          type: string
+          format: date-time
+          description: Set when source = "db".
+        updated_by:
+          type: string
+          format: uuid
+          description: Admin user that last wrote the override.
+        source:
+          type: string
+          enum: [db, env]
+          description: |
+            "db" when an override row exists; "env" when the boot
+            path will fall back to environment variables.
+
+    StorageConfigWrite:
+      type: object
+      required: [backend]
+      properties:
+        backend:
+          type: string
+          enum: [filesystem, s3, gcs]
+        value:
+          type: object
+          additionalProperties: true
+          description: |
+            Non-secret backend config. s3 / gcs require `bucket`;
+            filesystem accepts an empty object.
+        credentials:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Plaintext credentials to seal and persist. Empty /
+            missing for backends that should fall through to
+            env-provided credentials (IRSA, Workload Identity,
+            mounted SA file). Keys: s3 uses `access_key` and
+            `secret_key`; gcs uses `service_account_json`.
