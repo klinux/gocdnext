@@ -6,6 +6,52 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.28 — 2026-05-29
+
+### Fixes
+
+- **Many concurrent jobs → UI stuck at "running" even after cancel.**
+  The agent's outbound gRPC channel was a single 256-slot buffer
+  feeding all message kinds (logs, results, heartbeats). With a
+  fleet of parallel jobs spamming log lines, the buffer filled,
+  `sendOutbound` blocked the producer, and the K8s engine's
+  `streamLogs` goroutine wedged inside an `emit` call. With that
+  goroutine wedged the engine couldn't return from `RunScript`,
+  the runner never reached `sendResult`, and `cancel` could only
+  flip the run row — never the jobs, because the agent never
+  acknowledged the cancellation.
+
+  Two-tier delivery policy now: LogLine messages are non-blocking
+  (dropped silently when outbound is full, counted, and surfaced
+  via a 30s WARN tick so operators see the back-pressure) while
+  JobResult / ArtifactClaim / Progress / Pong / TestResults stay
+  blocking. Buffer also grew from 256 to 4096 so genuine bursts
+  don't immediately exercise the drop path.
+
+  Dropping a log line is a bad operator UX trade — losing the
+  JobResult is catastrophic. With this split a stalled server
+  consumer or a particularly chatty job degrades to "missed some
+  log lines" instead of "the pipeline is stuck forever".
+
+- **Artifact extraction refused python venv symlinks** (`bin/python
+  → /usr/local/bin/python3.12`), breaking the install →
+  lint/test artifact handoff pattern. The blanket "no absolute
+  symlinks" check was too coarse — the venv symlink is intentional
+  and the consumer downstream needs it as-is to find the
+  interpreter.
+
+  Allow absolute symlinks. Defend the historical concern (tar's
+  symlink-then-write CVE class — symlink `evil → /etc/passwd`
+  followed by a regular file at the same path clobbers
+  `/etc/passwd`) with `O_NOFOLLOW` on file opens, so a malicious
+  producer's permissive symlink can't be weaponised into an
+  arbitrary file write. Relative symlinks still validated to
+  resolve inside the dest tree.
+
+  Test coverage: `TestUntarGz_AllowsAbsoluteSymlinks` (venv-style
+  round-trip) + `TestUntarGz_RefusesToFollowSymlinkForFileWrite`
+  (CVE-class regression cover with a sentinel outside dest).
+
 ## v0.4.27 — 2026-05-29
 
 ### Fixes

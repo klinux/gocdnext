@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
@@ -301,7 +302,17 @@ func UntarGz(dest string, src io.Reader, wantSHA string) error {
 			if mode == 0 {
 				mode = 0o644
 			}
-			out, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			// O_NOFOLLOW refuses to open `full` if its final component
+			// is a symlink. Defends against the classic tar-extract
+			// CVE: tar has (symlink:/etc/passwd, regfile:/etc/passwd
+			// with malicious content); without O_NOFOLLOW the second
+			// write follows the symlink and clobbers /etc/passwd. We
+			// allow absolute symlink TARGETS (below) so python venv
+			// links like `bin/python → /usr/local/bin/python3.12`
+			// round-trip through artifacts; O_NOFOLLOW is the
+			// belt-and-suspenders so a producer can't weaponise that
+			// permissive symlink stance into arbitrary file writes.
+			out, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
 			if err != nil {
 				return fmt.Errorf("artifact: create %q: %w", full, err)
 			}
@@ -313,23 +324,31 @@ func UntarGz(dest string, src io.Reader, wantSHA string) error {
 				return fmt.Errorf("artifact: close %q: %w", full, err)
 			}
 		case tar.TypeSymlink:
-			// Recreate relative symlinks — pnpm node_modules is
-			// full of them (`node_modules/react →
-			// .pnpm/react@X/node_modules/react`). Reject absolute
-			// targets + any relative target that resolves outside
-			// dest so a malicious producer can't drop links at
-			// /etc/passwd or ../../host-sensitive.
-			if filepath.IsAbs(hdr.Linkname) {
-				return fmt.Errorf(
-					"artifact: symlink %q has absolute target %q — refused",
-					hdr.Name, hdr.Linkname)
-			}
-			resolved := filepath.Clean(filepath.Join(filepath.Dir(full), hdr.Linkname))
-			linkRel, err := filepath.Rel(destAbs, resolved)
-			if err != nil || strings.HasPrefix(linkRel, "..") {
-				return fmt.Errorf(
-					"artifact: symlink %q target %q escapes dest — refused",
-					hdr.Name, hdr.Linkname)
+			// Two distinct symlink shapes survive a round-trip:
+			//
+			//  - Relative: pnpm node_modules is full of them
+			//    (`node_modules/react → .pnpm/react@X/.../react`).
+			//    Allowed as long as the resolved target stays
+			//    inside dest — a producer can't drop links at
+			//    `../../host-sensitive`.
+			//
+			//  - Absolute: python venv stores absolute links to the
+			//    interpreter (`bin/python → /usr/local/bin/python3.12`)
+			//    because the venv is bound to the image's Python.
+			//    Allowed verbatim — the link is just text; what
+			//    matters is whether SUBSEQUENT file writes follow it
+			//    to clobber `/etc/passwd`-style targets. O_NOFOLLOW
+			//    on file opens above blocks that classic CVE
+			//    pattern, so a permissive symlink stance here is
+			//    safe.
+			if !filepath.IsAbs(hdr.Linkname) {
+				resolved := filepath.Clean(filepath.Join(filepath.Dir(full), hdr.Linkname))
+				linkRel, err := filepath.Rel(destAbs, resolved)
+				if err != nil || strings.HasPrefix(linkRel, "..") {
+					return fmt.Errorf(
+						"artifact: symlink %q target %q escapes dest — refused",
+						hdr.Name, hdr.Linkname)
+				}
 			}
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return fmt.Errorf("artifact: mkdir parent %q: %w", full, err)
