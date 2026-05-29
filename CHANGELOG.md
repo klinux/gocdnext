@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.25 — 2026-05-29
+
+### Fixes
+
+- **`gocdnext/python` plugin: uv branch STILL failed with `bash: -
+  : invalid option` after v0.4.23.** uv 0.5.5 mangles `-l` even
+  with the `--` separator (clap quirk we couldn't talk around).
+  Replaced `uv run -- bash -lc "..."` and `poetry run -- bash -lc
+  "..."` with manual venv activation (`source .venv/bin/activate`
+  then `exec bash -lc`) — same pattern the pip branch has always
+  used. The wrapper-vs-venv distinction was never necessary;
+  removing it sidesteps the whole class of argv-mangling bugs
+  across uv/poetry CLI versions.
+
+### Features
+
+- **Trivy plugin caches its CVE database across runs.** Default
+  `TRIVY_CACHE_DIR=.cache/trivy` (PWD-relative) so a `cache:
+  [{ key: trivy-db, paths: [.cache/trivy] }]` block in the pipeline
+  persists the ~50 MB DB blob. Trivy still verifies freshness on
+  every run (default 24h policy) — caching just turns the cold-path
+  download into a HEAD-only freshness check on warm runs. New
+  `skip_db_update: true` knob for fully offline / air-gapped
+  runners that need to skip the HEAD too.
+
+- **Gitleaks plugin prints findings inline instead of just the
+  count.** Default `verbose: true` now passes `--verbose` so each
+  leak's file:line + rule + redacted secret hits stderr as it's
+  discovered. Previously the operator saw only "leaks found: 13"
+  and had to dig through a separately-shipped JSON report. New
+  `redact: 75` default masks 75% of the secret body in the inline
+  output (leaves prefix/suffix visible for identification without
+  leaving the key in plaintext). Override `redact: 0` to disable
+  masking (DANGEROUS — prints the secret) or `redact: 100` to
+  fully mask.
+
+- **Log viewer renders ANSI escape codes (foreground colours +
+  bold).** Tools like gitleaks/trivy/go-test emit ANSI SGR codes
+  to highlight warnings (yellow), errors (red), and informational
+  prefixes (gray). Previously the codes rendered as literal text
+  noise (`[90m4:54PM[0m`). The viewer now parses the SGR
+  sequences and maps them onto the same tailwind palette
+  `classifyLine` already uses (red-500/amber-500/emerald-500/
+  cyan-500/blue-500/fuchsia-500), so a tool-coloured ERR matches
+  our own error tint. Scope is narrow: foreground codes 30–37 +
+  90–97, bold (1), reset (0/22/39). Backgrounds, italics, blink,
+  underline, and 256-colour / truecolour are silently dropped —
+  they'd dilute scan-ability without adding signal. Test
+  coverage in `components/runs/log-viewer.test.tsx`.
+
 ## v0.4.24 — 2026-05-29
 
 ### Fixes

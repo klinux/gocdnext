@@ -18,7 +18,18 @@ inputs:
     required: false
     description: >
       What to point the scan at. Required for image + repo;
-      defaults to `/workspace` for fs + config.
+      defaults to "." (the workspace root) for fs + config.
+  skip-db-update:
+    required: false
+    default: "false"
+    description: >
+      Skip the upstream HEAD that checks whether the cached
+      vulnerability DB is fresh. Default off — trivy verifies
+      freshness on every run and only downloads when stale
+      (24h policy). Force "true" on fully offline / air-gapped
+      runners where the freshness check itself would error.
+      Pair with `cache: [{ key: trivy-db, paths: [.cache/trivy] }]`
+      to persist the DB across runs.
   severity:
     required: false
     default: HIGH,CRITICAL
