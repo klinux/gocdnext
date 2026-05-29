@@ -189,17 +189,20 @@ func TestTarGzPath_RoundTripsSymlinks(t *testing.T) {
 	}
 }
 
-func TestUntarGz_RejectsAbsoluteSymlinks(t *testing.T) {
-	// Guard: a producer that writes a symlink with target
-	// `/etc/passwd` would let the extracted node_modules reach
-	// sensitive host files. Reject on extract.
+func TestUntarGz_AllowsAbsoluteSymlinks(t *testing.T) {
+	// python venv stores absolute links to the interpreter
+	// (`bin/python → /usr/local/bin/python3.12`). Artifact
+	// round-trip must preserve them verbatim; the file-write
+	// defense (O_NOFOLLOW on regular entries) is what stops a
+	// malicious producer from weaponising a permissive symlink
+	// stance into arbitrary file writes.
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	if err := tw.WriteHeader(&tar.Header{
-		Name:     "evil",
+		Name:     "bin/python",
 		Typeflag: tar.TypeSymlink,
-		Linkname: "/etc/passwd",
+		Linkname: "/usr/local/bin/python3.12",
 		Mode:     0o777,
 	}); err != nil {
 		t.Fatal(err)
@@ -207,9 +210,64 @@ func TestUntarGz_RejectsAbsoluteSymlinks(t *testing.T) {
 	_ = tw.Close()
 	_ = gz.Close()
 
+	dest := t.TempDir()
+	if err := runner.UntarGz(dest, &buf, ""); err != nil {
+		t.Fatalf("absolute symlink unexpectedly rejected: %v", err)
+	}
+	target, err := os.Readlink(filepath.Join(dest, "bin/python"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != "/usr/local/bin/python3.12" {
+		t.Errorf("symlink target = %q, want preserved absolute path", target)
+	}
+}
+
+func TestUntarGz_RefusesToFollowSymlinkForFileWrite(t *testing.T) {
+	// Tar-extraction CVE class: a producer writes a symlink
+	// `evil → /tmp/sentinel`, then a regular file entry at the
+	// same path with malicious content. Without O_NOFOLLOW the
+	// second write follows the link and clobbers /tmp/sentinel.
+	// We use a sentinel inside t.TempDir so the test can assert
+	// content didn't change.
+	sentinelDir := t.TempDir()
+	sentinel := filepath.Join(sentinelDir, "innocent")
+	if err := os.WriteFile(sentinel, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "evil",
+		Typeflag: tar.TypeSymlink,
+		Linkname: sentinel,
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "evil",
+		Typeflag: tar.TypeReg,
+		Size:     int64(len("clobbered")),
+		Mode:     0o644,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("clobbered")); err != nil {
+		t.Fatal(err)
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+
 	err := runner.UntarGz(t.TempDir(), &buf, "")
-	if err == nil || !strings.Contains(err.Error(), "absolute") {
-		t.Fatalf("expected absolute-symlink refusal, got %v", err)
+	if err == nil {
+		t.Fatal("expected file-write through symlink to be refused")
+	}
+	got, _ := os.ReadFile(sentinel)
+	if string(got) != "original" {
+		t.Errorf("sentinel clobbered: %q", got)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -137,13 +138,49 @@ func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_C
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	outbound := make(chan *gocdnextv1.AgentMessage, 256)
+	// outbound feeds every non-heartbeat message (logs, results,
+	// progress, artefact claims) into the single-writer sendLoop.
+	// Buffer is generously sized so a burst of log lines from a
+	// concurrent fleet of jobs doesn't immediately stall the
+	// producer.
+	outbound := make(chan *gocdnextv1.AgentMessage, 4096)
+	var droppedLogs atomic.Int64
 	sendOutbound := func(msg *gocdnextv1.AgentMessage) {
+		// Two-tier policy by message kind:
+		//   - LogLine: non-blocking send. If outbound is full
+		//     (server slow / network congested / many concurrent
+		//     jobs spamming logs), DROP the line and increment a
+		//     counter. Dropping a log line is bad for the operator
+		//     UX; blocking the producer is catastrophic — the
+		//     blocked engine goroutine never returns, so the
+		//     JobResult never gets sent, the server never marks
+		//     the job terminal, and `cancel` can't unstick the UI
+		//     (the engine.streamLogs goroutine is waiting on the
+		//     full channel, so even after the job's ctx is canceled
+		//     the K8s engine's RunScript can't observe streamDone).
+		//     The classic deadlock surfaced as: many parallel jobs,
+		//     stuck "running" in the UI even after cancel.
+		//   - Anything else (JobResult, ArtifactClaim, Progress,
+		//     Pong, TestResults): block until delivered OR the
+		//     stream is shutting down. These are low-volume and
+		//     critical for correctness.
+		if _, isLog := msg.Kind.(*gocdnextv1.AgentMessage_Log); isLog {
+			select {
+			case outbound <- msg:
+			default:
+				droppedLogs.Add(1)
+			}
+			return
+		}
 		select {
 		case outbound <- msg:
 		case <-streamCtx.Done():
 		}
 	}
+	// Periodic warn so operators see drops in the agent log without
+	// the noise of per-line warns. Ticker is cheap; the goroutine
+	// exits when streamCtx cancels along with everything else.
+	go c.logDroppedLines(streamCtx, &droppedLogs)
 	rn := c.buildRunner(sendOutbound, uploader, cache)
 
 	recvErrCh := make(chan error, 1)
@@ -203,6 +240,32 @@ func (c *Client) recvLoop(ctx context.Context, stream gocdnextv1.AgentService_Co
 			return err
 		}
 		c.handleServerMessage(ctx, msg, send, rn)
+	}
+}
+
+// logDroppedLines emits a periodic WARN when sendOutbound has dropped
+// log lines since the previous tick. Quiet when there's nothing to
+// report so a healthy agent log stays clean. Exits when streamCtx
+// cancels (stream shutting down).
+func (c *Client) logDroppedLines(ctx context.Context, counter *atomic.Int64) {
+	const tick = 30 * time.Second
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	var lastReported int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cur := counter.Load()
+			if cur > lastReported {
+				c.log.Warn("agent: log lines dropped (outbound full)",
+					"new_drops", cur-lastReported,
+					"total_drops", cur,
+					"hint", "server consumer slow OR many jobs spamming logs concurrently")
+				lastReported = cur
+			}
+		}
 	}
 }
 
