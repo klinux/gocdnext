@@ -137,10 +137,29 @@ fi
 BUILDER="gocdnext-${RANDOM}"
 trap 'docker buildx rm "${BUILDER}" >/dev/null 2>&1 || true' EXIT
 buildx_create_args=(--name "${BUILDER}" --use)
+# When the operator sets PLUGIN_BUILDKIT_IMAGE explicitly we honour
+# it as-is. Otherwise, the default fork below picks a sensible
+# image for the cache backend in play.
+buildkit_image="$(trim "${PLUGIN_BUILDKIT_IMAGE:-}")"
 if [ "${needs_no_checksum}" = "1" ]; then
     echo "==> buildkit: disabling AWS SDK auto-checksum (non-AWS S3 endpoint detected)"
     buildx_create_args+=(--driver-opt "env.AWS_REQUEST_CHECKSUM_CALCULATION=when_required")
     buildx_create_args+=(--driver-opt "env.AWS_RESPONSE_CHECKSUM_VALIDATION=when_required")
+    if [ -z "${buildkit_image}" ]; then
+        # `moby/buildkit:buildx-stable-1` (v0.18.x) ships an
+        # aws-sdk-go-v2 < v1.30 that doesn't read
+        # AWS_REQUEST_CHECKSUM_CALCULATION — setting the env on the
+        # container is a no-op there. Pinning v0.20.2 (Feb 2025)
+        # gets a modern SDK that honours the opt-out. The version
+        # is intentionally explicit (not `latest`) so a future
+        # upstream regression can't silently break GCS/MinIO/R2
+        # cache for every gocdnext install at once.
+        buildkit_image="moby/buildkit:v0.20.2"
+        echo "==> buildkit: pinning ${buildkit_image} for a modern aws-sdk-go-v2"
+    fi
+fi
+if [ -n "${buildkit_image}" ]; then
+    buildx_create_args+=(--driver-opt "image=${buildkit_image}")
 fi
 docker buildx create "${buildx_create_args[@]}" >/dev/null
 docker buildx inspect --bootstrap >/dev/null

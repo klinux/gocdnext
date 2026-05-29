@@ -24,6 +24,16 @@
 #                                 PLUGIN_IMAGE up to the first "/".
 #   PLUGIN_USERNAME   (optional)  registry user. Empty = skip login.
 #   PLUGIN_PASSWORD   (optional)  piped from secrets:.
+#   PLUGIN_BUILDKIT_IMAGE (optional)  override the BuildKit container
+#                                 image used by `docker buildx
+#                                 create`. Defaults to the docker
+#                                 default (`moby/buildkit:buildx-stable-1`)
+#                                 EXCEPT when a non-AWS S3 cache
+#                                 backend is selected — in that case
+#                                 the plugin auto-pins moby/buildkit
+#                                 to a version whose aws-sdk-go-v2
+#                                 honours the auto-checksum opt-out
+#                                 env vars (see Layer cache below).
 #
 # Layer cache (PLUGIN_CACHE shorthand + env from runner profile):
 #   PLUGIN_CACHE                  registry | inline | bucket | none

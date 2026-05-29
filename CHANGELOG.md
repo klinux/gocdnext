@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.18 — 2026-05-29
+
+### Fixes
+
+- **`gocdnext/buildx` plugin pins a newer BuildKit when targeting
+  non-AWS S3 cache.** v0.4.16 set
+  `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` on the BuildKit
+  container via `--driver-opt env.X=Y`, but BuildKit's stable image
+  `moby/buildkit:buildx-stable-1` (v0.18.x) ships an aws-sdk-go-v2
+  predating the v1.30 release that learned to read those env vars —
+  so the opt-out was a no-op and the GCS interop request still went
+  out with checksum headers + failed signature validation. The
+  plugin now auto-pins `moby/buildkit:v0.20.2` when a non-AWS
+  endpoint is detected; operators can override the image
+  globally via `PLUGIN_BUILDKIT_IMAGE` in `with:` (in case the
+  pinned version regresses upstream).
+
 ## v0.4.17 — 2026-05-29
 
 ### Fixes
