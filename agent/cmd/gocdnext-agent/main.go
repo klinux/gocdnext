@@ -82,13 +82,26 @@ func loadConfig() (rpc.Config, error) {
 		capacity = int32(n)
 	}
 
+	// WorkspaceRoot must point at the SAME path the k8s engine
+	// mounts the workspace PVC into job pods, otherwise the runner
+	// clones into the agent's local filesystem (default /tmp/...)
+	// and the spawned plugin pod can't see the source — the docker
+	// build sends an empty context to DinD and buildx fails on
+	// `lstat <first-path-component>: no such file or directory`.
+	// The chart wires this env to agent.workspace.mountPath so
+	// agent + every job pod share the same PVC view; running with
+	// the shell or docker engine, leaving it unset keeps the
+	// default /tmp behaviour.
+	workspaceRoot := os.Getenv("GOCDNEXT_WORKSPACE_ROOT")
+
 	return rpc.Config{
-		ServerAddr: addr,
-		AgentID:    name,
-		Token:      token,
-		Version:    versionString(),
-		Tags:       tags,
-		Capacity:   capacity,
+		ServerAddr:    addr,
+		AgentID:       name,
+		Token:         token,
+		Version:       versionString(),
+		Tags:          tags,
+		Capacity:      capacity,
+		WorkspaceRoot: workspaceRoot,
 	}, nil
 }
 
