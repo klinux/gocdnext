@@ -1,8 +1,9 @@
-package projects
+package configsync_test
 
 import (
 	"testing"
 
+	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -17,7 +18,7 @@ func TestInjectImplicitProjectMaterial_AddsWhenAbsent(t *testing.T) {
 		URL:           "https://github.com/klinux/gocdnext",
 		DefaultBranch: "main",
 	}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, scm)
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, scm)
 
 	if len(p.Materials) != 1 {
 		t.Fatalf("expected 1 material, got %d", len(p.Materials))
@@ -52,7 +53,7 @@ func TestInjectImplicitProjectMaterial_HonoursTriggerEvents(t *testing.T) {
 		Name:          "ci-server",
 		TriggerEvents: []string{"push", "pull_request"},
 	}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
 		Provider: "github", URL: "https://github.com/klinux/gocdnext", DefaultBranch: "main",
 	})
 	if len(p.Materials) != 1 {
@@ -77,7 +78,7 @@ func TestInjectImplicitProjectMaterial_FansOutOverTriggerBranches(t *testing.T) 
 	scm := &store.SCMSourceInput{
 		Provider: "github", URL: "https://github.com/klinux/gocdnext", DefaultBranch: "main",
 	}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, scm)
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, scm)
 
 	if got := len(p.Materials); got != 2 {
 		t.Fatalf("want 2 materials, got %d", got)
@@ -106,7 +107,7 @@ func TestInjectImplicitProjectMaterial_TriggerBranchesEmptyUsesDefault(t *testin
 	// Backwards-compat path: no TriggerBranches → single implicit
 	// material on scm_source.default_branch (today's behaviour).
 	p := &domain.Pipeline{Name: "ci-legacy"}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
 		Provider: "github", URL: "https://github.com/klinux/gocdnext", DefaultBranch: "main",
 	})
 	if len(p.Materials) != 1 || p.Materials[0].Git.Branch != "main" {
@@ -133,7 +134,7 @@ func TestInjectImplicitProjectMaterial_SkipsWhenExplicitSameURL(t *testing.T) {
 		}},
 	}
 	before := len(p.Materials)
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
 		Provider: "github", URL: scmURL, DefaultBranch: "main",
 	})
 	if len(p.Materials) != before {
@@ -162,7 +163,7 @@ func TestInjectImplicitProjectMaterial_RidesAlongsideExtras(t *testing.T) {
 			},
 		},
 	}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
 		Provider: "github", URL: scmURL, DefaultBranch: "main",
 	})
 	if len(p.Materials) != 3 {
@@ -177,7 +178,7 @@ func TestInjectImplicitProjectMaterial_RidesAlongsideExtras(t *testing.T) {
 
 func TestInjectImplicitProjectMaterial_NoopWhenScmNil(t *testing.T) {
 	p := &domain.Pipeline{Name: "legacy"}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, nil)
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, nil)
 	if len(p.Materials) != 0 {
 		t.Fatalf("no scm → no injection; got %d materials", len(p.Materials))
 	}
@@ -185,7 +186,7 @@ func TestInjectImplicitProjectMaterial_NoopWhenScmNil(t *testing.T) {
 
 func TestInjectImplicitProjectMaterial_NoopWhenScmURLEmpty(t *testing.T) {
 	p := &domain.Pipeline{Name: "legacy"}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{Provider: "github"})
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{Provider: "github"})
 	if len(p.Materials) != 0 {
 		t.Fatalf("empty scm url → no injection; got %d materials", len(p.Materials))
 	}
@@ -193,7 +194,7 @@ func TestInjectImplicitProjectMaterial_NoopWhenScmURLEmpty(t *testing.T) {
 
 func TestInjectImplicitProjectMaterial_DefaultsBranchToMain(t *testing.T) {
 	p := &domain.Pipeline{Name: "no-branch"}
-	injectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
+	configsync.InjectImplicitProjectMaterial([]*domain.Pipeline{p}, &store.SCMSourceInput{
 		Provider: "github", URL: "https://github.com/klinux/gocdnext",
 		// DefaultBranch intentionally empty — caller shouldn't have
 		// to know the default before binding.

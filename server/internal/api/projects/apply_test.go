@@ -322,11 +322,9 @@ func TestApply_EmptyFilesWithSCMSourceRegistersBoth(t *testing.T) {
 	if !resp.ProjectCreated {
 		t.Fatalf("project not created")
 	}
-	// URL comes back in canonical scheme-less form (host/owner/repo).
-	// NormalizeGitURL collapses SSH and HTTPS spellings into this
-	// shared form so a webhook's HTTPS clone_url matches a project
-	// registered with the SSH URL.
-	if resp.SCMSource == nil || resp.SCMSource.URL != "github.com/org/repo" {
+	// Stored canonical, rehydrated with https:// on read so the
+	// operator sees a fully-qualified URL in the API response.
+	if resp.SCMSource == nil || resp.SCMSource.URL != "https://github.com/org/repo" {
 		t.Fatalf("scm_source = %+v", resp.SCMSource)
 	}
 }

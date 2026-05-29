@@ -112,9 +112,10 @@ func TestGitHubWebhook_DriftApplyOnScmSourceMatch(t *testing.T) {
 	if fetcher.calls != 1 {
 		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
 	}
-	// URL canonicalised at store-time (NormalizeGitURL collapses SSH
-	// and HTTPS spellings to the same host/path form).
-	if fetcher.last.scm.URL != "github.com/gocdnext/gocdnext" {
+	// Stored canonicalised at write time but rehydrated with the
+	// https:// prefix on read (HTTPCloneURL) so downstream consumers
+	// see a fully-qualified URL.
+	if fetcher.last.scm.URL != "https://github.com/gocdnext/gocdnext" {
 		t.Fatalf("fetcher scm.URL = %q", fetcher.last.scm.URL)
 	}
 
@@ -151,6 +152,49 @@ func TestGitHubWebhook_DriftApplyOnScmSourceMatch(t *testing.T) {
 	}
 	if syncedRev == nil || *syncedRev == "" {
 		t.Fatalf("last_synced_revision not set")
+	}
+}
+
+// TestGitHubWebhook_DriftCreatesImplicitMaterial regression test for
+// the v0.4.6 → v0.4.7 fix: applyDrift must run the same implicit-
+// material synthesis the UI's apply + sync paths do. Without it, a
+// config-only push that drives drift rebuilt the project's pipeline
+// rows WITHOUT the implicit "this project's repo" material, and the
+// next push silently 202'd with no run because the fingerprint
+// lookup missed.
+func TestGitHubWebhook_DriftCreatesImplicitMaterial(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
+
+	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext", "main")
+
+	fetcher := &fakeFetcher{files: []gh.RawFile{
+		{Name: "ci.yaml", Content: driftCiYAML},
+	}}
+	h := webhook.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithConfigFetcher(fetcher)
+	srv := http.HandlerFunc(h.HandleGitHub)
+
+	body := loadFixture(t, "push_main.json")
+	resp := postSigned(t, srv, "push", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// A git material must exist for the project after drift —
+	// the pipeline YAML in driftCiYAML doesn't declare one, so
+	// the implicit synthesis is the only path that can produce it.
+	var materialCount int
+	_ = pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM materials m
+		 JOIN pipelines p ON p.id = m.pipeline_id
+		 JOIN projects pr ON pr.id = p.project_id
+		 WHERE pr.slug = 'gocdnext-webhook-test' AND m.type = 'git'`,
+	).Scan(&materialCount)
+	if materialCount != 1 {
+		t.Fatalf("git material count after drift = %d, want 1 (implicit material missing)", materialCount)
 	}
 }
 

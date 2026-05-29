@@ -247,7 +247,7 @@ func (s *Store) upsertSCMSource(ctx context.Context, q *db.Queries, projectID pg
 	return &SCMSourceApplied{
 		ID:                     fromPgUUID(row.ID),
 		Provider:               row.Provider,
-		URL:                    row.Url,
+		URL:                    domain.HTTPCloneURL(row.Url),
 		DefaultBranch:          row.DefaultBranch,
 		AuthRef:                stringValue(row.AuthRef),
 		Created:                row.Created,
