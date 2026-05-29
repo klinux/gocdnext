@@ -378,7 +378,12 @@ func (d *Docker) buildArgs(image string, spec ScriptSpec, cidFile string) []stri
 	// without git and a blanket fix everywhere else — saves us
 	// from making every pipeline remember a workaround line.
 	const gitSafe = `git config --global --add safe.directory '*' 2>/dev/null || true; `
-	args = append(args, image, "sh", "-c", gitSafe+spec.Script)
+	// `--` after -c stops sh option parsing so a user script literal
+	// starting with `-` runs as the command instead of being parsed
+	// as a flag. gitSafe always prefixes a `git config …; ` so the
+	// command string here never actually starts with `-`, but adding
+	// `--` keeps the engines consistent with kubernetes + shell.
+	args = append(args, image, "sh", "-c", "--", gitSafe+spec.Script)
 	return args
 }
 
