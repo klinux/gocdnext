@@ -83,6 +83,14 @@ agent:
   jobCleanup:
     onSuccess: true
     onFailure: false
+  # forceImagePullAlways overrides the per-tag heuristic the agent
+  # applies when picking ImagePullPolicy for job containers. Default
+  # is false → moving tags (:v1, :latest, :main, named channels) get
+  # PullAlways, pinned semver and digest references get
+  # IfNotPresent. Flip to true if the cluster routes through a
+  # pull-through registry mirror or you want every job to re-resolve
+  # the manifest regardless of tag.
+  forceImagePullAlways: false
   resources:
     requests:
       cpu: 50m

@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.10 — 2026-05-29
+
+### Fixes
+
+- **Plugin images cached as `:v1` never re-pulled after a release** —
+  the agent's Kubernetes engine left ImagePullPolicy unset, so any
+  tag except `:latest` defaulted to IfNotPresent and a node with the
+  old `:v1` image cached kept serving it indefinitely after we
+  cut a release. New `imagePullPolicyFor` heuristic maps tags to
+  policy: moving channels (`:latest`, `:v\d+`, `:v\d+\.\d+`, `main`,
+  `dev`, `nightly`, `edge`, `stable`) → PullAlways; pinned semver,
+  SHA-prefixed and digest references → IfNotPresent. The plugin's
+  `:v1` channel now refreshes automatically on every job; the
+  agent's own `:0.4.10` immutable tag does not pay a per-job
+  re-pull cost.
+
+### Features
+
+- **`agent.forceImagePullAlways` chart value** (env
+  `GOCDNEXT_K8S_FORCE_IMAGE_PULL_ALWAYS=true`) — operator override
+  that flips every task container to PullAlways regardless of the
+  heuristic. Useful for clusters fronted by a registry mirror where
+  HEAD is cheap and the operator wants every job to re-resolve the
+  manifest, including internally-retagged "pinned" versions.
+
 ## v0.4.9 — 2026-05-28
 
 ### Fixes
