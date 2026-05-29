@@ -41,8 +41,15 @@ type Config struct {
 // existing call sites keep compiling after the type moved.
 type RawFile = scm.RawFile
 
-// ParseRepoURL extracts (owner, repo) from a common git URL. It accepts
-// https://github.com/<owner>/<repo>[.git] and git@github.com:<owner>/<repo>.
+// ParseRepoURL extracts (owner, repo) from a git URL. Accepts:
+//
+//   https://github.com/<owner>/<repo>[.git]
+//   git@github.com:<owner>/<repo>[.git]
+//   github.com/<owner>/<repo>           (canonical scheme-less form
+//                                        that NormalizeGitURL produces
+//                                        and that the store layer
+//                                        uses for scm_sources rows
+//                                        as of v0.4.4)
 func ParseRepoURL(raw string) (owner, repo string, err error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimSuffix(trimmed, "/")
@@ -64,15 +71,30 @@ func ParseRepoURL(raw string) (owner, repo string, err error) {
 		return parts[0], parts[1], nil
 	}
 
-	u, parseErr := url.Parse(trimmed)
-	if parseErr != nil {
-		return "", "", fmt.Errorf("github: parse url: %w", parseErr)
+	// scheme://host/owner/repo
+	if strings.Contains(trimmed, "://") {
+		u, parseErr := url.Parse(trimmed)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("github: parse url: %w", parseErr)
+		}
+		segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
+			return "", "", fmt.Errorf("github: url missing owner/repo: %q", raw)
+		}
+		return segments[0], segments[1], nil
 	}
-	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
+
+	// Canonical scheme-less form: host/owner/repo. NormalizeGitURL
+	// produces this for every URL it sees, and the store layer
+	// persists scm_sources.url in this shape — callers that hand
+	// the stored URL back to ParseRepoURL (the manual-trigger seed,
+	// the configsync fetcher) would otherwise read the host as the
+	// owner.
+	segments := strings.Split(trimmed, "/")
+	if len(segments) < 3 || segments[0] == "" || segments[1] == "" || segments[2] == "" {
 		return "", "", fmt.Errorf("github: url missing owner/repo: %q", raw)
 	}
-	return segments[0], segments[1], nil
+	return segments[1], segments[2], nil
 }
 
 // FetchGocdnextFolder lists every `*.yaml`/`*.yml` file directly
