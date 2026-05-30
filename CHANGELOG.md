@@ -6,6 +6,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.30 — 2026-05-30
+
+### Fixes
+
+- **`Failed to spawn: ruff/mypy/...` STILL happened after v0.4.29.**
+  v0.4.29 added `uv venv --relocatable` but that flag only makes
+  the `activate` script portable — it does NOT change the shebangs
+  of entry-point scripts (`bin/ruff`, `bin/mypy`, etc.), which pip/uv
+  write at install time pointing at the venv's interpreter path:
+  ```
+  #!/workspace/<install-job>/.../.venv/bin/python
+  ```
+  When the consumer job extracted the .venv via artifact, kernel
+  exec of those scripts ENOENT'd on the now-stale interpreter
+  path. `uv sync` only re-installed packages whose source changed
+  (the editable corapulse-core), so it didn't regenerate the
+  scripts. The previous fix's `uv venv --relocatable` was also a
+  no-op on the consumer side because `.venv` already existed (from
+  artifact extract), so the `[ ! -d .venv ]` guard skipped it.
+
+  Real fix: `rewrite_venv_shebangs` helper runs in each python
+  plugin invocation after dep install. Walks `.venv/bin/*`, finds
+  scripts whose first line is `#!...python...`, and substitutes
+  the shebang with the consumer job's own `$PWD/.venv/bin/python`.
+  Idempotent — if the shebang already matches, the substitution
+  writes the same line back. Fast (~30 entry-point scripts per
+  typical venv, microseconds each).
+
+  Applies to all three branches: `uv`, `poetry`, `pip`. Same root
+  cause across them. Previous v0.4.29's `--relocatable` line
+  removed from the uv branch — it was misleading dead code.
+
 ## v0.4.29 — 2026-05-29
 
 ### Fixes

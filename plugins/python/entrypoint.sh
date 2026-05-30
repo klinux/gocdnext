@@ -15,6 +15,43 @@ MANAGER="${PLUGIN_MANAGER:-auto}"
 
 cd "${WORKING_DIR}"
 
+# rewrite_venv_shebangs makes a .venv that arrived via artefact
+# usable in this job. Python entry-point scripts (.venv/bin/ruff,
+# /mypy, /alembic, …) carry a shebang like
+#   `#!/workspace/<install-job-uuid>/.../.venv/bin/python`
+# which is exactly what pip/uv wrote at install time — pointing at
+# the upstream job's workspace. When the consumer job's kernel
+# tries to exec the script, that interpreter path is gone and
+# exec() returns ENOENT — surfaces as the opaque
+#   `Failed to spawn: ruff / No such file or directory`.
+# `uv venv --relocatable` (tried in v0.4.29) only makes the
+# activate script portable, NOT the entry-point shebangs.
+#
+# Fix: rewrite the first line of each .venv/bin/* script to point
+# at THIS job's `$PWD/.venv/bin/python` so the entry-points spawn
+# correctly. Idempotent — if the shebang already matches our path,
+# sed substitutes a line with the same content. The venv's own
+# `python` lives as a SYMLINK (not a script) so we only touch
+# regular files. Fast: a typical venv has ~30 entry-point scripts.
+rewrite_venv_shebangs() {
+    [ -d .venv/bin ] || return 0
+    local venv_python="$(pwd)/.venv/bin/python"
+    [ -e "$venv_python" ] || return 0
+    local f
+    for f in .venv/bin/*; do
+        [ -f "$f" ] || continue
+        # Only touch scripts that start with a python shebang. The
+        # `IFS= read` form gives us the first line without slurping
+        # binaries; on a non-text file the read fails and we skip.
+        IFS= read -r line < "$f" 2>/dev/null || continue
+        case "$line" in
+            "#!"*python*)
+                sed -i "1c\\#!$venv_python" "$f"
+                ;;
+        esac
+    done
+}
+
 # Point every package manager's cache dir at a relative-to-PWD
 # path so the platform's `cache:` block can tar it. pip/uv/poetry
 # each read different env vars; we set them all defensively so
@@ -53,40 +90,18 @@ case "${MANAGER}" in
     poetry)
         poetry config virtualenvs.in-project true
         poetry install --no-interaction
-        # Activate the in-project venv directly instead of going
-        # through `poetry run` / `uv run`. v0.4.23 tried `poetry
-        # run -- bash -lc "..."` but uv 0.5.5 still mangled the
-        # `-lc` argv into a bare `-`, breaking with `bash: - :
-        # invalid option`. Sourcing the venv's activate gives the
-        # same PATH + VIRTUAL_ENV the wrapper would set, and the
-        # subsequent `bash -lc` is invoked directly by this script
-        # so nothing else can touch the args. Same pattern the pip
-        # branch has always used.
+        rewrite_venv_shebangs
         # shellcheck disable=SC1091
         source .venv/bin/activate
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     uv)
-        # Pre-create a RELOCATABLE venv before sync so the entry-
-        # point scripts under .venv/bin/* land with
-        # `#!/usr/bin/env python` shebangs instead of absolute
-        # paths. Without this, `uv sync` creates a venv whose
-        # scripts hardcode the install job's workspace path
-        # (`#!/workspace/<install-job>/.../.venv/bin/python`); a
-        # downstream job that consumes the .venv via artifact then
-        # tries to exec scripts whose interpreter path no longer
-        # exists and fails with the opaque
-        #   `Failed to spawn: ruff / No such file or directory`.
-        # Skip when .venv already exists so we don't blow away a
-        # caller-provided one.
-        if [ ! -d .venv ]; then
-            uv venv --relocatable .venv
-        fi
         if [ -f "uv.lock" ]; then
             uv sync --frozen
         else
             uv sync
         fi
+        rewrite_venv_shebangs
         # shellcheck disable=SC1091
         source .venv/bin/activate
         exec bash -lc -- "${PLUGIN_COMMAND}"
@@ -105,6 +120,7 @@ case "${MANAGER}" in
         # pipeline `cache:` block can preserve the wheel cache
         # across runs — skip --no-cache-dir here.
         pip install -r "${req}"
+        rewrite_venv_shebangs
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     none)
