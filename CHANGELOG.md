@@ -6,6 +6,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.31 — 2026-05-30
+
+### Fixes
+
+- **`Failed to spawn: ruff` STILL happened after v0.4.30.** v0.4.30
+  rewrote `.venv/bin/*` script shebangs correctly, but the plugin
+  still ran `source .venv/bin/activate` afterward — and the activate
+  script hardcodes the venv's absolute path at install time:
+  ```bash
+  VIRTUAL_ENV="/install-job/.../.venv"
+  PATH="$VIRTUAL_ENV/bin:$PATH"
+  ```
+  Sourcing that in the consumer job poisoned both env vars with
+  the install job's workspace path. When the user's command was
+  `uv run ruff …`, uv resolved `ruff` via `$VIRTUAL_ENV/bin/ruff`,
+  hit the nonexistent install-job path, and surfaced the same
+  ENOENT as before. The "VIRTUAL_ENV does not match" warning we
+  kept seeing was uv telling us exactly this — we just hadn't
+  acted on it.
+
+  Replace `source .venv/bin/activate` with a small in-process
+  `activate_venv` helper that does the same env mutations
+  (VIRTUAL_ENV, PATH prepend, unset PYTHONHOME) but uses the
+  CURRENT `$PWD/.venv` path. Three branches (uv, poetry, pip) all
+  go through the helper now. Idempotent + ~3 lines + zero IO.
+
+  Together with v0.4.30's shebang rewrite, the install → lint/test
+  artifact handoff should finally just work for the uv manager.
+
 ## v0.4.30 — 2026-05-30
 
 ### Fixes
