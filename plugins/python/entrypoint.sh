@@ -33,6 +33,31 @@ cd "${WORKING_DIR}"
 # sed substitutes a line with the same content. The venv's own
 # `python` lives as a SYMLINK (not a script) so we only touch
 # regular files. Fast: a typical venv has ~30 entry-point scripts.
+# activate_venv replaces `source .venv/bin/activate` so we don't
+# inherit the install-time hardcoded paths from the upstream
+# activate script. uv (and python -m venv) write activate with
+# the venv's absolute path baked in:
+#   VIRTUAL_ENV="/install-job/path/.venv"
+#   PATH="$VIRTUAL_ENV/bin:$PATH"
+# When a downstream job sources that, PATH ends up prefixed with
+# a nonexistent directory, and `uv run X` resolves X via
+# $VIRTUAL_ENV/bin/X — ENOENT, "Failed to spawn X". The mismatch
+# warning uv prints is the visible symptom; the ENOENT is the
+# actual failure.
+#
+# We do exactly the same env mutations the upstream activate
+# would, just with the CURRENT $PWD/.venv path. Idempotent; cheap.
+activate_venv() {
+    local venv
+    venv="$(pwd)/.venv"
+    export VIRTUAL_ENV="${venv}"
+    export PATH="${venv}/bin:${PATH}"
+    # Standard activate also unsets PYTHONHOME so the venv's
+    # interpreter isn't poisoned by an outer python install
+    # leaking via PYTHONHOME. Match that behaviour for parity.
+    unset PYTHONHOME
+}
+
 rewrite_venv_shebangs() {
     [ -d .venv/bin ] || return 0
     local venv_python="$(pwd)/.venv/bin/python"
@@ -91,8 +116,7 @@ case "${MANAGER}" in
         poetry config virtualenvs.in-project true
         poetry install --no-interaction
         rewrite_venv_shebangs
-        # shellcheck disable=SC1091
-        source .venv/bin/activate
+        activate_venv
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     uv)
@@ -102,8 +126,7 @@ case "${MANAGER}" in
             uv sync
         fi
         rewrite_venv_shebangs
-        # shellcheck disable=SC1091
-        source .venv/bin/activate
+        activate_venv
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     pip)
@@ -113,8 +136,7 @@ case "${MANAGER}" in
             exit 2
         fi
         python -m venv .venv
-        # shellcheck disable=SC1091
-        source .venv/bin/activate
+        activate_venv
         # pip's cache dir default was redirected to
         # .cache/pip at the top of this script so a
         # pipeline `cache:` block can preserve the wheel cache
