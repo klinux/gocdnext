@@ -120,6 +120,57 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 	return i, err
 }
 
+const listAgentsForRun = `-- name: ListAgentsForRun :many
+SELECT DISTINCT j.agent_id
+FROM job_runs j
+JOIN agents a ON a.id = j.agent_id
+WHERE j.run_id = $1
+  AND j.agent_id IS NOT NULL
+  AND (a.engine = '' OR a.engine = 'kubernetes')
+`
+
+// Every distinct agent that ran (or is running) at least one job
+// of the given run, FILTERED to engines that can actually do the
+// cleanup work — k8s today. Used by the run-terminal
+// CleanupRunServices dispatch.
+//
+// Why the engine filter:
+//   - A mixed-engine run (job 1 on k8s, job 2 on docker) puts
+//     BOTH agents on the unfiltered list. The docker agent's
+//     CleanupRunServices is a no-op that returns
+//     success-with-0-deleted, which the server's ok-counter
+//     would mistakenly count as a successful cleanup,
+//     masking the fact that the disconnected k8s agent's pods
+//     never got reaped.
+//   - Filtering at the SQL layer means the ok-count surfaces
+//     ONLY engines that COULD have done useful work, so a "0
+//     successful dispatches" log line is operationally
+//     trustworthy.
+//
+// agents.engine=” (empty / legacy / pre-v0.4.35) passes the
+// filter defensively — a rolling upgrade window where old agents
+// haven't been redeployed yet still gets best-effort cleanup
+// coverage; the value is overwritten on the next Register.
+func (q *Queries) ListAgentsForRun(ctx context.Context, runID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listAgentsForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var agent_id pgtype.UUID
+		if err := rows.Scan(&agent_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDispatchableJobs = `-- name: ListDispatchableJobs :many
 WITH active_stage AS (
     SELECT MIN(s.ordinal) AS ordinal
@@ -262,6 +313,25 @@ func (q *Queries) OtherRunningRunForPipeline(ctx context.Context, arg OtherRunni
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const runHasServices = `-- name: RunHasServices :one
+SELECT has_services FROM runs WHERE id = $1
+`
+
+// Snapshot read: was the run created with a non-empty `Services`
+// block in its pipeline definition? Persisted on insert
+// (migration 00036) rather than computed live from
+// pipelines.definition, so an ApplyProject that adds/removes
+// services mid-run doesn't lie to the cleanup cascade. Defaults
+// to false when the run row is missing (cleanup skipped, safer
+// than fail-open here — operator can run manual sweep if a stale
+// leak surfaces).
+func (q *Queries) RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, runHasServices, id)
+	var has_services bool
+	err := row.Scan(&has_services)
+	return has_services, err
 }
 
 const setRunQueueReason = `-- name: SetRunQueueReason :exec

@@ -304,7 +304,7 @@ func TestGetRunDetail_LogCursorReturnsOnlyDelta(t *testing.T) {
 	for seq := int64(1); seq <= 5; seq++ {
 		if err := s.InsertLogLine(ctx, store.LogLine{
 			JobRunID: jobID, Seq: seq, Stream: "stdout",
-			At: now.Add(time.Duration(seq) * time.Millisecond),
+			At:   now.Add(time.Duration(seq) * time.Millisecond),
 			Text: fmt.Sprintf("line %d", seq),
 		}); err != nil {
 			t.Fatalf("log %d: %v", seq, err)

@@ -336,10 +336,10 @@ func TestApply_WithSCMSourcePersistsAndReturnsID(t *testing.T) {
 		"slug": "scm", "name": "SCM",
 		"files": []map[string]string{{"name": "build.yaml", "content": sampleFile}},
 		"scm_source": map[string]any{
-			"provider":        "github",
-			"url":             "https://github.com/org/demo",
-			"default_branch":  "main",
-			"webhook_secret":  "sek",
+			"provider":       "github",
+			"url":            "https://github.com/org/demo",
+			"default_branch": "main",
+			"webhook_secret": "sek",
 		},
 	})
 	if rr.Code != http.StatusOK {

@@ -571,4 +571,3 @@ func canonicalArtifactPath(p string) string {
 	}
 	return p
 }
-

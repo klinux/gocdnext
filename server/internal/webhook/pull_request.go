@@ -21,13 +21,14 @@ import (
 // without having to mirror the material to every feature branch.
 //
 // Run metadata:
-//   revision    = PR head SHA
-//   branch      = PR head ref (so git checkout of the run pulls the
-//                 PR code, not main)
-//   cause       = "pull_request"
-//   cause_detail = { pr_number, pr_title, pr_author, pr_url,
-//                    pr_head_ref, pr_head_sha, pr_base_ref,
-//                    pr_action }
+//
+//	revision    = PR head SHA
+//	branch      = PR head ref (so git checkout of the run pulls the
+//	              PR code, not main)
+//	cause       = "pull_request"
+//	cause_detail = { pr_number, pr_title, pr_author, pr_url,
+//	                 pr_head_ref, pr_head_sha, pr_base_ref,
+//	                 pr_action }
 //
 // Only opened / synchronize / reopened trigger runs. Close/merge are
 // ack'd with 204 — the subsequent push to base handles itself.

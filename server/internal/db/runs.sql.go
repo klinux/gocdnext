@@ -113,9 +113,10 @@ func (q *Queries) InsertJobRun(ctx context.Context, arg InsertJobRunParams) (Ins
 
 const insertRun = `-- name: InsertRun :one
 INSERT INTO runs (
-    pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by
+    pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
+    has_services
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6
+    $1, $2, $3, $4, 'queued', $5, $6, $7
 )
 RETURNING id, pipeline_id, counter, cause, status, created_at
 `
@@ -127,6 +128,7 @@ type InsertRunParams struct {
 	CauseDetail []byte
 	Revisions   []byte
 	TriggeredBy *string
+	HasServices bool
 }
 
 type InsertRunRow struct {
@@ -138,6 +140,15 @@ type InsertRunRow struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+// has_services is a snapshot of `pipeline.Services` non-emptiness
+// (migration 00036). Stamped here so the run-terminal cleanup
+// cascade can decide whether to broadcast CleanupRunServices
+// without re-reading the (possibly-drifted) current pipeline
+// definition. The Go layer (store.insertRunSkeleton) computes the
+// value from the SAME `domain.Pipeline` it just used to materialise
+// stages + jobs — without this, a concurrent ApplyProject between
+// the Go decode and a re-read inside SQL could give us mismatched
+// snapshots under READ COMMITTED.
 func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error) {
 	row := q.db.QueryRow(ctx, insertRun,
 		arg.PipelineID,
@@ -146,6 +157,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRun
 		arg.CauseDetail,
 		arg.Revisions,
 		arg.TriggeredBy,
+		arg.HasServices,
 	)
 	var i InsertRunRow
 	err := row.Scan(

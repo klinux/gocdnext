@@ -75,8 +75,8 @@ func (s *Store) DeleteLogLinesByJob(ctx context.Context, jobRunID uuid.UUID) err
 // JobLogArchive describes the archive metadata for a job_run. URI
 // is empty when no archive has been recorded.
 type JobLogArchive struct {
-	URI         string
-	HasArchive  bool
+	URI        string
+	HasArchive bool
 }
 
 // GetJobLogArchive returns the archive URI for a job_run. Used by

@@ -17,25 +17,25 @@ import (
 // vocabulary and a typo at a call site surfaces as a
 // compile-time miss instead of a silent orphan in the log.
 const (
-	AuditActionProjectApply        = "project.apply"
-	AuditActionProjectDelete       = "project.delete"
-	AuditActionProjectSync         = "project.sync"
-	AuditActionSecretSet           = "secret.set"
-	AuditActionSecretDelete        = "secret.delete"
-	AuditActionGlobalSecretSet     = "global_secret.set"
-	AuditActionGlobalSecretDelete  = "global_secret.delete"
-	AuditActionCachePurge          = "cache.purge"
-	AuditActionRunTrigger          = "run.trigger"
-	AuditActionRunCancel           = "run.cancel"
-	AuditActionRunRerun            = "run.rerun"
-	AuditActionJobRerun            = "job.rerun"
-	AuditActionApprovalApprove     = "approval.approve"
-	AuditActionApprovalReject      = "approval.reject"
-	AuditActionUserRoleChange      = "user.role_change"
-	AuditActionUserCreate          = "user.create"
-	AuditActionWebhookSecretRotate = "webhook_secret.rotate"
-	AuditActionProjectNotifsSet    = "project_notifications.set"
-	AuditActionProjectPollSet      = "project_poll.set"
+	AuditActionProjectApply         = "project.apply"
+	AuditActionProjectDelete        = "project.delete"
+	AuditActionProjectSync          = "project.sync"
+	AuditActionSecretSet            = "secret.set"
+	AuditActionSecretDelete         = "secret.delete"
+	AuditActionGlobalSecretSet      = "global_secret.set"
+	AuditActionGlobalSecretDelete   = "global_secret.delete"
+	AuditActionCachePurge           = "cache.purge"
+	AuditActionRunTrigger           = "run.trigger"
+	AuditActionRunCancel            = "run.cancel"
+	AuditActionRunRerun             = "run.rerun"
+	AuditActionJobRerun             = "job.rerun"
+	AuditActionApprovalApprove      = "approval.approve"
+	AuditActionApprovalReject       = "approval.reject"
+	AuditActionUserRoleChange       = "user.role_change"
+	AuditActionUserCreate           = "user.create"
+	AuditActionWebhookSecretRotate  = "webhook_secret.rotate"
+	AuditActionProjectNotifsSet     = "project_notifications.set"
+	AuditActionProjectPollSet       = "project_poll.set"
 	AuditActionProjectLogArchiveSet = "project_log_archive.set"
 	AuditActionAPITokenCreate       = "api_token.create"
 	AuditActionAPITokenRevoke       = "api_token.revoke"
@@ -43,22 +43,22 @@ const (
 	AuditActionServiceAccountUpdate = "service_account.update"
 	AuditActionServiceAccountDelete = "service_account.delete"
 	AuditActionServiceAccountToken  = "service_account_token.create"
-	AuditActionProjectCronCreate   = "project_cron.create"
-	AuditActionProjectCronUpdate   = "project_cron.update"
-	AuditActionProjectCronDelete   = "project_cron.delete"
-	AuditActionProjectRunAll       = "project.run_all"
-	AuditActionGroupCreate         = "group.create"
-	AuditActionGroupUpdate         = "group.update"
-	AuditActionGroupDelete         = "group.delete"
-	AuditActionGroupMemberAdd      = "group.member_add"
-	AuditActionGroupMemberRemove   = "group.member_remove"
-	AuditActionSCMCredentialSet    = "scm_credential.set"
-	AuditActionSCMCredentialDelete = "scm_credential.delete"
-	AuditActionRunnerProfileCreate = "runner_profile.create"
-	AuditActionRunnerProfileUpdate = "runner_profile.update"
-	AuditActionRunnerProfileDelete = "runner_profile.delete"
-	AuditActionPlatformSettingSet  = "platform_setting.set"
-	AuditActionPlatformSettingDel  = "platform_setting.delete"
+	AuditActionProjectCronCreate    = "project_cron.create"
+	AuditActionProjectCronUpdate    = "project_cron.update"
+	AuditActionProjectCronDelete    = "project_cron.delete"
+	AuditActionProjectRunAll        = "project.run_all"
+	AuditActionGroupCreate          = "group.create"
+	AuditActionGroupUpdate          = "group.update"
+	AuditActionGroupDelete          = "group.delete"
+	AuditActionGroupMemberAdd       = "group.member_add"
+	AuditActionGroupMemberRemove    = "group.member_remove"
+	AuditActionSCMCredentialSet     = "scm_credential.set"
+	AuditActionSCMCredentialDelete  = "scm_credential.delete"
+	AuditActionRunnerProfileCreate  = "runner_profile.create"
+	AuditActionRunnerProfileUpdate  = "runner_profile.update"
+	AuditActionRunnerProfileDelete  = "runner_profile.delete"
+	AuditActionPlatformSettingSet   = "platform_setting.set"
+	AuditActionPlatformSettingDel   = "platform_setting.delete"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata
@@ -109,12 +109,12 @@ func (s *Store) EmitAuditEvent(ctx context.Context, in AuditEmit) (AuditEvent, e
 		metaBytes = b
 	}
 	row, err := s.q.InsertAuditEvent(ctx, db.InsertAuditEventParams{
-		ActorID:     nullableUUID(in.ActorID),
-		ActorEmail:  in.ActorEmail,
-		Action:      in.Action,
-		TargetType:  in.TargetType,
-		TargetID:    in.TargetID,
-		Metadata:    metaBytes,
+		ActorID:    nullableUUID(in.ActorID),
+		ActorEmail: in.ActorEmail,
+		Action:     in.Action,
+		TargetType: in.TargetType,
+		TargetID:   in.TargetID,
+		Metadata:   metaBytes,
 	})
 	if err != nil {
 		return AuditEvent{}, fmt.Errorf("store: audit emit: %w", err)

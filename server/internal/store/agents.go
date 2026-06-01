@@ -42,6 +42,12 @@ type RegisterUpdate struct {
 	Arch     string
 	Tags     []string
 	Capacity int32
+	// Engine is the agent's announced execution engine name —
+	// "kubernetes" / "docker" / "shell" / "" (legacy / unknown).
+	// Persisted on agents.engine (migration 00037) so the
+	// CleanupRunServices broadcast can filter ListAgentsForRun
+	// to k8s-capable agents.
+	Engine string
 }
 
 // HashToken returns a deterministic hex-encoded SHA-256 of the plain token.
@@ -125,6 +131,7 @@ func (s *Store) MarkAgentOnline(ctx context.Context, id uuid.UUID, upd RegisterU
 		Arch:     nullableString(upd.Arch),
 		Tags:     emptyIfNil(upd.Tags),
 		Capacity: upd.Capacity,
+		Engine:   upd.Engine,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("store: mark agent online: %w", err)

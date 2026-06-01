@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/agent/internal/runner"
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
 // ArtifactUploader implements runner.ArtifactUploader by calling

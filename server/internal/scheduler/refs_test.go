@@ -62,15 +62,15 @@ func TestSubstituteRefs(t *testing.T) {
 			wantOut: "X=",
 		},
 		{
-			name:    "no refs at all (fast path)",
-			in:      "plain text without any markers",
-			wantOut: "plain text without any markers",
+			name:      "no refs at all (fast path)",
+			in:        "plain text without any markers",
+			wantOut:   "plain text without any markers",
 			wantNoSub: true,
 		},
 		{
-			name:    "shell-style ${VAR} is NOT a ref",
-			in:      "${REGISTRY}/x",
-			wantOut: "${REGISTRY}/x",
+			name:      "shell-style ${VAR} is NOT a ref",
+			in:        "${REGISTRY}/x",
+			wantOut:   "${REGISTRY}/x",
 			wantNoSub: true,
 		},
 		{

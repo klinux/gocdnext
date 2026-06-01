@@ -46,6 +46,14 @@ message RegisterRequest {
   string   arch        = 5;
   repeated string tags = 6;  // "linux", "docker", "gpu", labels custom
   int32    capacity    = 7;  // jobs paralelos
+  // engine is the agent's configured execution engine name —
+  // "kubernetes" / "docker" / "shell". Used server-side to filter
+  // CleanupRunServices broadcasts to k8s-capable agents only
+  // (Docker/Shell agents would no-op the cleanup, and broadcasting
+  // to them at scale wastes wire + log noise). Empty string is
+  // treated as "unknown engine" — server includes the agent in
+  // the broadcast as a defensive fallback.
+  string   engine      = 8;
 }
 
 message RegisterResponse {
@@ -56,12 +64,41 @@ message RegisterResponse {
 // ── Mensagens AGENT → SERVER ─────────────────────────────────────────
 message AgentMessage {
   oneof kind {
-    Heartbeat         heartbeat      = 1;
-    JobProgress       progress       = 2;
-    LogLine           log            = 3;
-    JobResult         result         = 4;
-    TestResultBatch   test_results   = 5;
+    Heartbeat                 heartbeat                    = 1;
+    JobProgress               progress                     = 2;
+    LogLine                   log                          = 3;
+    JobResult                 result                       = 4;
+    TestResultBatch           test_results                 = 5;
+    CleanupRunServicesResult  cleanup_run_services_result  = 6;
   }
+}
+
+// CleanupRunServicesResult is the per-agent ack for a server-issued
+// CleanupRunServices broadcast. Sent AFTER the agent's engine call
+// returns — best-effort: if the stream is disconnected at ack
+// time, the ack is dropped (the engine call's local log is the
+// fallback). The server logs every ack so an operator can grep
+// "which agent deleted what" when investigating leak suspicions.
+//
+// `deleted` is the count returned by Engine.CleanupRunServices —
+// 0 is legitimate (no labeled pods in this agent's namespace,
+// either because it didn't run this run OR because a sibling
+// agent's broadcast won the race). `error_message` is non-empty
+// only when the engine call returned an error; the engine's local
+// "cleanup run services failed" log is still emitted as well, so
+// having BOTH the agent log and the server log on the same
+// failure is intentional belt-and-braces.
+//
+// `engine` echoes the agent's configured engine name (matches the
+// value sent in RegisterRequest.engine). Useful in mixed-engine
+// fleets to confirm the broadcast filter is doing its job — a
+// Docker agent's ack with deleted=0 hitting this surface would
+// signal a filter regression upstream.
+message CleanupRunServicesResult {
+  string run_id        = 1;
+  int32  deleted       = 2;
+  string error_message = 3;
+  string engine        = 4;
 }
 
 message Heartbeat {
@@ -206,10 +243,36 @@ message ArtifactUploadTicket {
 // ── Mensagens SERVER → AGENT ─────────────────────────────────────────
 message ServerMessage {
   oneof kind {
-    JobAssignment assign = 1;
-    CancelJob     cancel = 2;
-    Pong          pong   = 3;
+    JobAssignment       assign                = 1;
+    CancelJob           cancel                = 2;
+    Pong                pong                  = 3;
+    CleanupRunServices  cleanup_run_services  = 4;
   }
+}
+
+// CleanupRunServices tells the agent to tear down every service pod
+// (k8s) labelled with the given run_id. Sent once when the run
+// reaches terminal — the cascade in CompleteJob (and the manual
+// Cancel path) BROADCASTS this to a wide target set: every agent
+// that ran a job of the run (filtered by SQL to engine='kubernetes'
+// or legacy-unknown), UNION every currently-connected k8s agent
+// (in-memory filtered by Session.Engine). The engine filter is
+// load-bearing: without it a Docker/Shell agent that participated
+// in a mixed-engine run would receive the cleanup, return
+// success-with-0-deleted, and let the server's ok-counter
+// mistakenly report a successful cleanup while disconnected k8s
+// agents' pods leak.
+//
+// When EVERY targeted dispatch fails — no k8s agents online at
+// terminal — the pods stay until an operator runs `kubectl delete
+// pods -l app.kubernetes.io/managed-by=gocdnext-agent,gocdnext.io/run-id=<id>`
+// manually. Documented limitation.
+//
+// Idempotent: each agent's label-selector delete against an
+// already-cleaned run is a successful no-op (NotFound on a
+// concurrent race is treated as success).
+message CleanupRunServices {
+  string run_id = 1;
 }
 
 message JobAssignment {

@@ -95,10 +95,10 @@ type ApplyFile struct {
 }
 
 type ApplyRequest struct {
-	Slug        string          `json:"slug"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	ConfigRepo  string          `json:"config_repo,omitempty"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	ConfigRepo  string `json:"config_repo,omitempty"`
 	// ConfigPath overrides the default ".gocdnext" folder where
 	// pipelines live inside the repo. Leave empty to keep the
 	// current value (or default on insert). Validated in the

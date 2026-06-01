@@ -351,6 +351,47 @@ func TestSessionStore_FenceStaleSession_DoesNotMarkSuperseded(t *testing.T) {
 	}
 }
 
+// TestSessionStore_AllAgentIDs_EngineFilter — the cleanup-broadcast
+// target set is filtered to k8s + legacy-empty engines at the
+// in-memory layer (mirrors the SQL filter in ListAgentsForRun).
+// Without this in-mem filter, a docker session connected now would
+// receive cleanups for runs whose k8s agent went offline → no-op
+// success masks the leak.
+func TestSessionStore_AllAgentIDs_EngineFilter(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	k8sID := uuid.New()
+	dockerID := uuid.New()
+	legacyID := uuid.New() // empty Engine string
+
+	s.CreateSession(k8sID, nil, 1, 1, grpcsrv.CreateSessionOpts{Engine: "kubernetes"})
+	s.CreateSession(dockerID, nil, 1, 1, grpcsrv.CreateSessionOpts{Engine: "docker"})
+	s.CreateSession(legacyID, nil, 1, 1) // no engine opts → ""
+
+	// No filter → every connected agent.
+	all := s.AllAgentIDs("")
+	if len(all) != 3 {
+		t.Fatalf("AllAgentIDs(\"\") len = %d, want 3 (no filter): %v", len(all), all)
+	}
+
+	// k8s filter → only k8s + legacy (defensive).
+	k8s := s.AllAgentIDs("kubernetes")
+	seen := map[uuid.UUID]bool{}
+	for _, id := range k8s {
+		seen[id] = true
+	}
+	if !seen[k8sID] {
+		t.Errorf("k8s agent missing from k8s filter: got %v", k8s)
+	}
+	if !seen[legacyID] {
+		t.Errorf("legacy (engine='') agent missing from k8s filter: got %v", k8s)
+	}
+	if seen[dockerID] {
+		t.Errorf("docker agent leaked through k8s filter: got %v", k8s)
+	}
+}
+
 func TestSessionStore_ConcurrentUse(t *testing.T) {
 	t.Parallel()
 

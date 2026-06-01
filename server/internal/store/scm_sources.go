@@ -16,7 +16,7 @@ import (
 // ErrSCMSourceNotFound is returned by FindSCMSourceByURL / GetProjectByID
 // when no row matches.
 var (
-	ErrSCMSourceNotFound = errors.New("store: scm_source not found")
+	ErrSCMSourceNotFound   = errors.New("store: scm_source not found")
 	ErrProjectByIDNotFound = errors.New("store: project not found")
 )
 
@@ -142,6 +142,7 @@ type SCMSourceWebhookAuth struct {
 //   - ErrSCMSourceNotFound when no row binds this URL
 //   - ErrAuthProviderCipherUnset when the server was started
 //     without GOCDNEXT_SECRET_KEY (can't decrypt)
+//
 // An empty Secret with nil error means "row exists but no secret
 // registered yet" — the caller should answer 401 in that case.
 func (s *Store) FindSCMSourceWebhookSecret(ctx context.Context, rawURL string) (SCMSourceWebhookAuth, error) {

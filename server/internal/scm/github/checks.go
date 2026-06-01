@@ -40,17 +40,17 @@ type CreateCheckRunInput struct {
 	Repo       string
 	Name       string
 	HeadSHA    string
-	Status     CheckRunStatus     // empty = queued
-	DetailsURL string             // run page on gocdnext UI
-	ExternalID string             // our run id, returned verbatim on future queries
-	Output     *CheckRunOutput    // optional summary
+	Status     CheckRunStatus  // empty = queued
+	DetailsURL string          // run page on gocdnext UI
+	ExternalID string          // our run id, returned verbatim on future queries
+	Output     *CheckRunOutput // optional summary
 }
 
 // UpdateCheckRunInput is the patch side. Any zero field is omitted
 // from the wire payload.
 type UpdateCheckRunInput struct {
 	Owner      string
-	Repo      string
+	Repo       string
 	CheckRunID int64
 	Status     CheckRunStatus
 	Conclusion CheckRunConclusion
@@ -67,8 +67,8 @@ type CheckRunOutput struct {
 
 // CheckRun is the minimum we care about from a create/patch response.
 type CheckRun struct {
-	ID     int64
-	Status CheckRunStatus
+	ID      int64
+	Status  CheckRunStatus
 	HTMLURL string
 }
 

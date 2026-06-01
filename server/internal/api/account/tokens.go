@@ -105,7 +105,7 @@ type createTokenRequest struct {
 }
 
 type createTokenResponse struct {
-	Token     tokenView `json:"token"`
+	Token tokenView `json:"token"`
 	// Plaintext is shown to the user EXACTLY ONCE — they copy it
 	// to a password manager + we never see it again. Subsequent
 	// reads through ListTokens omit this field by design.

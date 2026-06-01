@@ -43,13 +43,13 @@ type RawFile = scm.RawFile
 
 // ParseRepoURL extracts (owner, repo) from a git URL. Accepts:
 //
-//   https://github.com/<owner>/<repo>[.git]
-//   git@github.com:<owner>/<repo>[.git]
-//   github.com/<owner>/<repo>           (canonical scheme-less form
-//                                        that NormalizeGitURL produces
-//                                        and that the store layer
-//                                        uses for scm_sources rows
-//                                        as of v0.4.4)
+//	https://github.com/<owner>/<repo>[.git]
+//	git@github.com:<owner>/<repo>[.git]
+//	github.com/<owner>/<repo>           (canonical scheme-less form
+//	                                     that NormalizeGitURL produces
+//	                                     and that the store layer
+//	                                     uses for scm_sources rows
+//	                                     as of v0.4.4)
 func ParseRepoURL(raw string) (owner, repo string, err error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimSuffix(trimmed, "/")

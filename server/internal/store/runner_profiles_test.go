@@ -368,8 +368,8 @@ func TestUpdateRunnerProfile_PreserveSentinel_DropsUnknownKeys(t *testing.T) {
 		Name:   "preserve-orphan",
 		Engine: "kubernetes",
 		Secrets: map[string]string{
-			"KEPT":   store.SecretPreserveSentinel,
-			"GHOST":  store.SecretPreserveSentinel, // never existed
+			"KEPT":  store.SecretPreserveSentinel,
+			"GHOST": store.SecretPreserveSentinel, // never existed
 		},
 	})
 	if err != nil {

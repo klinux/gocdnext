@@ -175,4 +175,3 @@ func DecryptPlatformCredentials(cipher *crypto.Cipher, blob []byte) (map[string]
 	}
 	return out, nil
 }
-

@@ -104,12 +104,12 @@ type CronSpec struct {
 
 // JobDef — definition of one job. Supports `extends` via YAML anchors.
 type JobDef struct {
-	Stage     string            `yaml:"stage"`
-	Image     string            `yaml:"image,omitempty"`
-	Extends   string            `yaml:"extends,omitempty"`
-	Needs     []string          `yaml:"needs,omitempty"`
-	Script    []string          `yaml:"script,omitempty"`
-	Settings  map[string]string `yaml:"settings,omitempty"` // plugin step (legacy)
+	Stage    string            `yaml:"stage"`
+	Image    string            `yaml:"image,omitempty"`
+	Extends  string            `yaml:"extends,omitempty"`
+	Needs    []string          `yaml:"needs,omitempty"`
+	Script   []string          `yaml:"script,omitempty"`
+	Settings map[string]string `yaml:"settings,omitempty"` // plugin step (legacy)
 	// Uses + With are the GH-Actions-flavoured sugar for a plugin
 	// job: `uses:` names a container image that ships its own
 	// entrypoint, `with:` is the settings map the agent translates
@@ -117,8 +117,8 @@ type JobDef struct {
 	// `script:` needed — the plugin's entrypoint IS the logic.
 	// Mutually exclusive with `image` + `settings` on the same job;
 	// parser rejects the combination.
-	Uses string            `yaml:"uses,omitempty"`
-	With map[string]string `yaml:"with,omitempty"`
+	Uses      string            `yaml:"uses,omitempty"`
+	With      map[string]string `yaml:"with,omitempty"`
 	Variables map[string]string `yaml:"variables,omitempty"`
 	// Cache entries let this job reuse tar'd directories across
 	// runs, keyed by name. The agent fetches each cache BEFORE
@@ -127,31 +127,31 @@ type JobDef struct {
 	// same key intentionally share the blob. Dead schema before
 	// — wired end-to-end starting with commit that lands this
 	// comment.
-	Cache          []CacheSpec         `yaml:"cache,omitempty"`
-	Artifacts      *Artifacts          `yaml:"artifacts,omitempty"`
-	NeedsArtifacts []NeedsArtifactDef  `yaml:"needs_artifacts,omitempty"`
+	Cache          []CacheSpec        `yaml:"cache,omitempty"`
+	Artifacts      *Artifacts         `yaml:"artifacts,omitempty"`
+	NeedsArtifacts []NeedsArtifactDef `yaml:"needs_artifacts,omitempty"`
 	// TestReports is a list of glob patterns the agent scans
 	// after tasks complete. Each match is parsed as JUnit/xUnit
 	// XML and the per-case results ship back as a TestResultBatch
 	// alongside the JobResult. Empty list = no test reporting.
-	TestReports    []string            `yaml:"test_reports,omitempty"`
-	Parallel       *Parallel           `yaml:"parallel,omitempty"`
-	Rules          []RuleDef           `yaml:"rules,omitempty"`
-	When           *WhenDef            `yaml:"when,omitempty"`
-	Timeout        string              `yaml:"timeout,omitempty"`
-	Retry          int                 `yaml:"retry,omitempty"`
-	Secrets        []string            `yaml:"secrets,omitempty"`
-	Tags           []string            `yaml:"tags,omitempty"`
+	TestReports []string  `yaml:"test_reports,omitempty"`
+	Parallel    *Parallel `yaml:"parallel,omitempty"`
+	Rules       []RuleDef `yaml:"rules,omitempty"`
+	When        *WhenDef  `yaml:"when,omitempty"`
+	Timeout     string    `yaml:"timeout,omitempty"`
+	Retry       int       `yaml:"retry,omitempty"`
+	Secrets     []string  `yaml:"secrets,omitempty"`
+	Tags        []string  `yaml:"tags,omitempty"`
 	// Agent picks a runner profile by name and may add extra tag
 	// constraints. Profile resolution happens at apply time; the
 	// resolved profile's tags merge (union) with the job's own
 	// tags before scheduler matching, so neither origin can grant
 	// itself a silent veto over the other.
-	Agent          *AgentDef           `yaml:"agent,omitempty"`
+	Agent *AgentDef `yaml:"agent,omitempty"`
 	// Resources is the optional compute envelope. Empty fields fall
 	// back to the resolved profile's defaults; non-empty fields are
 	// validated against profile.max at apply time.
-	Resources      *ResourcesDef       `yaml:"resources,omitempty"`
+	Resources *ResourcesDef `yaml:"resources,omitempty"`
 	// Docker = true asks the agent for docker API access inside the
 	// job (socket mount / DinD sidecar). Pair with `image:` to spawn
 	// sibling containers for testcontainers / docker compose.
@@ -190,8 +190,8 @@ type ApprovalDef struct {
 type NeedsArtifactDef struct {
 	FromJob      string   `yaml:"from_job"`
 	FromPipeline string   `yaml:"from_pipeline,omitempty"` // "" = same run; set = upstream run triggered by this pipeline
-	Paths        []string `yaml:"paths,omitempty"`          // subset filter; empty = all
-	Dest         string   `yaml:"dest,omitempty"`           // default "./"
+	Paths        []string `yaml:"paths,omitempty"`         // subset filter; empty = all
+	Dest         string   `yaml:"dest,omitempty"`          // default "./"
 }
 
 // CacheSpec is one entry in a job's `cache:` list. `key` identifies

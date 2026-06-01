@@ -298,8 +298,10 @@ jobs:
 // partial unique index on (job_run_id, path) normalizes trailing
 // slashes (`dist/` collapses to `dist`). Without parser-side
 // canonical dedupe, a job like
-//   paths:    [dist, dist/]
-//   optional: [dist/, screenshots]
+//
+//	paths:    [dist, dist/]
+//	optional: [dist/, screenshots]
+//
 // produces an ArtifactPaths list with `dist` AND `dist/` — the
 // agent uploader's own dedupe collapses them, fine for required.
 // But required + optional run as TWO separate Upload calls in the

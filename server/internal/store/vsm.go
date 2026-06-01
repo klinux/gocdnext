@@ -20,12 +20,12 @@ import (
 // to another. A pipeline with no runs yet still shows up as a node
 // with LatestRun == nil.
 type VSM struct {
-	ProjectID   uuid.UUID  `json:"project_id"`
-	ProjectSlug string     `json:"project_slug"`
-	ProjectName string     `json:"project_name"`
-	Nodes       []VSMNode  `json:"nodes"`
-	Edges       []VSMEdge  `json:"edges"`
-	GeneratedAt time.Time  `json:"generated_at"`
+	ProjectID   uuid.UUID `json:"project_id"`
+	ProjectSlug string    `json:"project_slug"`
+	ProjectName string    `json:"project_name"`
+	Nodes       []VSMNode `json:"nodes"`
+	Edges       []VSMEdge `json:"edges"`
+	GeneratedAt time.Time `json:"generated_at"`
 }
 
 // VSMNode carries enough for the graph to label + colour a pipeline
@@ -33,11 +33,11 @@ type VSM struct {
 // when present (accurate to what actually executed) and left nil
 // otherwise — the frontend falls back to "unknown structure".
 type VSMNode struct {
-	PipelineID        uuid.UUID        `json:"pipeline_id"`
-	Name              string           `json:"name"`
-	DefinitionVersion int              `json:"definition_version"`
-	GitMaterials      []GitRef         `json:"git_materials,omitempty"`
-	LatestRun         *RunSummary      `json:"latest_run,omitempty"`
+	PipelineID        uuid.UUID   `json:"pipeline_id"`
+	Name              string      `json:"name"`
+	DefinitionVersion int         `json:"definition_version"`
+	GitMaterials      []GitRef    `json:"git_materials,omitempty"`
+	LatestRun         *RunSummary `json:"latest_run,omitempty"`
 	// Metrics mirror the PipelineSummary.Metrics shape so the VSM
 	// node can render p50 + pass rate + bottleneck indicators with
 	// the same client-side formatting helpers as the pipeline card.
@@ -217,4 +217,3 @@ func (s *Store) GetProjectVSM(ctx context.Context, slug string) (VSM, error) {
 		GeneratedAt: time.Now().UTC(),
 	}, nil
 }
-

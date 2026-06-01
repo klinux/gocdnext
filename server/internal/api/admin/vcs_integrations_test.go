@@ -67,14 +67,14 @@ func TestVCSIntegrationsHandler_UpsertHotSwaps(t *testing.T) {
 	_, _, registry, srv := buildVCSAdmin(t)
 
 	body := map[string]any{
-		"name":          "main-gh",
-		"kind":          "github_app",
-		"display_name":  "gocdnext",
-		"app_id":        int64(123456),
-		"private_key":   realPEM(t),
+		"name":           "main-gh",
+		"kind":           "github_app",
+		"display_name":   "gocdnext",
+		"app_id":         int64(123456),
+		"private_key":    realPEM(t),
 		"webhook_secret": "wh-secret",
-		"api_base":      "",
-		"enabled":       true,
+		"api_base":       "",
+		"enabled":        true,
 	}
 	raw, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/integrations/vcs", bytes.NewReader(raw))

@@ -14,8 +14,11 @@ import (
 // calls and echoes back canned responses. One per test keeps
 // assertions isolated.
 type fakeGitLab struct {
-	t         *testing.T
-	hooks     []struct{ ID int64; URL string }
+	t     *testing.T
+	hooks []struct {
+		ID  int64
+		URL string
+	}
 	lastCreate map[string]any
 	lastUpdate map[string]any
 	lastPath   string

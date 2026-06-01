@@ -44,18 +44,18 @@ type WiringState struct {
 // the UI prepopulate the form with what the boot path is actually
 // using without hooking the full *config.Config into the handler.
 type ArtifactsEnvSnapshot struct {
-	Backend             string
-	S3Bucket            string
-	S3Region            string
-	S3Endpoint          string
-	S3UsePathStyle      bool
-	S3EnsureBucket      bool
+	Backend               string
+	S3Bucket              string
+	S3Region              string
+	S3Endpoint            string
+	S3UsePathStyle        bool
+	S3EnsureBucket        bool
 	S3AccessKeyConfigured bool
 	S3SecretKeyConfigured bool
-	GCSBucket           string
-	GCSProjectID        string
-	GCSEnsureBucket     bool
-	GCSCredsPresent     bool
+	GCSBucket             string
+	GCSProjectID          string
+	GCSEnsureBucket       bool
+	GCSCredsPresent       bool
 }
 
 // Handler owns the /api/v1/admin/* routes.

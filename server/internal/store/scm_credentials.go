@@ -101,12 +101,12 @@ func (s *Store) UpsertSCMCredential(ctx context.Context, in SCMCredentialInput) 
 		return SCMCredential{}, fmt.Errorf("store: seal scm_credential: %w", err)
 	}
 	row, err := s.q.UpsertSCMCredential(ctx, db.UpsertSCMCredentialParams{
-		Provider:          in.Provider,
-		Host:              host,
-		ApiBase:           strings.TrimSpace(in.APIBase),
-		DisplayName:       strings.TrimSpace(in.DisplayName),
-		AuthRefEncrypted:  sealed,
-		CreatedBy:         pgUUIDFromPtr(in.CreatedBy),
+		Provider:         in.Provider,
+		Host:             host,
+		ApiBase:          strings.TrimSpace(in.APIBase),
+		DisplayName:      strings.TrimSpace(in.DisplayName),
+		AuthRefEncrypted: sealed,
+		CreatedBy:        pgUUIDFromPtr(in.CreatedBy),
 	})
 	if err != nil {
 		return SCMCredential{}, fmt.Errorf("store: upsert scm_credential: %w", err)

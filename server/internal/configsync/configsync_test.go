@@ -254,10 +254,10 @@ func TestMultiFetcher_HeadSHAUsesAppToken(t *testing.T) {
 // --- helpers ---
 
 type gitHubMockSpec struct {
-	expectRef, expectAuthBearer        string
-	mintedToken                        string
-	mintedInstallID                    int64
-	contentsYAMLFile, contentsYAMLBody string
+	expectRef, expectAuthBearer         string
+	mintedToken                         string
+	mintedInstallID                     int64
+	contentsYAMLFile, contentsYAMLBody  string
 	installationOwner, installationRepo string
 }
 

@@ -21,16 +21,16 @@ import (
 // mirror the table columns so the UI reads consistently against
 // the SQL source of truth.
 type projectCronDTO struct {
-	ID           string     `json:"id"`
-	ProjectID    string     `json:"project_id"`
-	Name         string     `json:"name"`
-	Expression   string     `json:"expression"`
-	PipelineIDs  []string   `json:"pipeline_ids"`
-	Enabled      bool       `json:"enabled"`
-	LastFiredAt  *time.Time `json:"last_fired_at,omitempty"`
-	CreatedBy    string     `json:"created_by,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID          string     `json:"id"`
+	ProjectID   string     `json:"project_id"`
+	Name        string     `json:"name"`
+	Expression  string     `json:"expression"`
+	PipelineIDs []string   `json:"pipeline_ids"`
+	Enabled     bool       `json:"enabled"`
+	LastFiredAt *time.Time `json:"last_fired_at,omitempty"`
+	CreatedBy   string     `json:"created_by,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type projectCronsResponse struct {

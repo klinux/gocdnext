@@ -36,9 +36,9 @@ type PullRequestEvent struct {
 }
 
 type prPayload struct {
-	Action      string     `json:"action"`
-	Number      int        `json:"number"`
-	PullRequest *prDetails `json:"pull_request"`
+	Action      string      `json:"action"`
+	Number      int         `json:"number"`
+	PullRequest *prDetails  `json:"pull_request"`
 	Repository  *Repository `json:"repository"`
 }
 

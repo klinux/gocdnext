@@ -66,9 +66,9 @@ type ApprovalResult struct {
 	RunCompleted   bool
 	RunStatus      string
 
-	PendingQuorum      bool
-	ApprovalsNow       int
-	ApprovalsRequired  int
+	PendingQuorum     bool
+	ApprovalsNow      int
+	ApprovalsRequired int
 }
 
 // ApproveGate flips an awaiting approval row directly to 'success'

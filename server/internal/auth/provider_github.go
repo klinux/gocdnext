@@ -67,7 +67,7 @@ type githubProvider struct {
 	httpClient *http.Client
 }
 
-func (p *githubProvider) Name() ProviderName { return ProviderGitHub }
+func (p *githubProvider) Name() ProviderName  { return ProviderGitHub }
 func (p *githubProvider) DisplayName() string { return "GitHub" }
 
 func (p *githubProvider) AuthorizeURL(state, _ string) string {

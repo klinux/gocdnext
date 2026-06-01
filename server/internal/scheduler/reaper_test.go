@@ -106,9 +106,9 @@ func TestReaper_Sweep_RequeuesOfflineAgentJobs(t *testing.T) {
 	reaper.Sweep(ctx)
 
 	var (
-		status     string
-		pgAgentID  *uuid.UUID
-		attempt    int32
+		status    string
+		pgAgentID *uuid.UUID
+		attempt   int32
 	)
 	_ = pool.QueryRow(ctx,
 		`SELECT status, agent_id, attempt FROM job_runs WHERE run_id=$1 AND name='compile'`,
@@ -249,13 +249,13 @@ func TestReaper_Sweep_FencesEachAgentOnce(t *testing.T) {
 // → no-op.
 //
 // We simulate this by:
-//   1. Planting a stale row with agents.session_generation = 3
-//      (the snapshot value the reaper will read).
-//   2. Telling the recordingFencer the LIVE generation is 4
-//      (the successor's value — distinct from the snapshot).
-//   3. Asserting the row got requeued (DB work happens regardless)
-//      AND the fence call returned false (Revoked: false) instead
-//      of closing the successor.
+//  1. Planting a stale row with agents.session_generation = 3
+//     (the snapshot value the reaper will read).
+//  2. Telling the recordingFencer the LIVE generation is 4
+//     (the successor's value — distinct from the snapshot).
+//  3. Asserting the row got requeued (DB work happens regardless)
+//     AND the fence call returned false (Revoked: false) instead
+//     of closing the successor.
 func TestReaper_Sweep_SkipsFenceWhenGenerationChanged(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

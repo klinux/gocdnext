@@ -141,7 +141,7 @@ func TestSetSecret_RejectsInvalidNames(t *testing.T) {
 	applied, _ := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "demo", Name: "Demo"})
 
 	bad := []string{
-		"",                // empty
+		"", // empty
 		"1STARTS_WITH_NUM",
 		"has-dash",
 		"spaces are bad",

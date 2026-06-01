@@ -17,14 +17,14 @@ var ErrAgentByIDNotFound = errors.New("store: agent not found")
 
 // DashboardMetrics is the payload the `/` widget row needs.
 type DashboardMetrics struct {
-	RunsToday      int64   `json:"runs_today"`
-	Successes7d    int64   `json:"successes_7d"`
-	Failures7d     int64   `json:"failures_7d"`
-	Canceled7d     int64   `json:"canceled_7d"`
-	SuccessRate7d  float64 `json:"success_rate_7d"` // 0..1 over (success+failure)
-	P50Seconds7d   float64 `json:"p50_seconds_7d"`
-	QueuedRuns     int64   `json:"queued_runs"`
-	PendingJobs    int64   `json:"pending_jobs"`
+	RunsToday     int64   `json:"runs_today"`
+	Successes7d   int64   `json:"successes_7d"`
+	Failures7d    int64   `json:"failures_7d"`
+	Canceled7d    int64   `json:"canceled_7d"`
+	SuccessRate7d float64 `json:"success_rate_7d"` // 0..1 over (success+failure)
+	P50Seconds7d  float64 `json:"p50_seconds_7d"`
+	QueuedRuns    int64   `json:"queued_runs"`
+	PendingJobs   int64   `json:"pending_jobs"`
 }
 
 // GetDashboardMetrics issues the four small queries in parallel-
@@ -170,7 +170,7 @@ type AgentSummary struct {
 	Arch         string     `json:"arch,omitempty"`
 	Tags         []string   `json:"tags"`
 	Capacity     int32      `json:"capacity"`
-	Status       string     `json:"status"` // raw value from agents.status
+	Status       string     `json:"status"`       // raw value from agents.status
 	HealthState  string     `json:"health_state"` // online | stale | offline
 	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
 	RegisteredAt time.Time  `json:"registered_at"`

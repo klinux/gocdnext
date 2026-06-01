@@ -17,9 +17,9 @@ import (
 
 // Auth-layer errors. Handlers map these to HTTP status codes.
 var (
-	ErrAuthStateNotFound = errors.New("store: auth state not found or expired")
+	ErrAuthStateNotFound   = errors.New("store: auth state not found or expired")
 	ErrUserSessionNotFound = errors.New("store: user session not found or expired")
-	ErrUserDisabled      = errors.New("store: user is disabled")
+	ErrUserDisabled        = errors.New("store: user is disabled")
 )
 
 // Role constants so callers and migrations agree on the enum.
@@ -371,4 +371,3 @@ func (s *Store) SweepAuthStates(ctx context.Context) error {
 func (s *Store) SweepUserSessions(ctx context.Context) error {
 	return s.q.DeleteExpiredUserSessions(ctx)
 }
-

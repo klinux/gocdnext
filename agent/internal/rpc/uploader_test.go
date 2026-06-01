@@ -41,12 +41,13 @@ func (s *stubAgentClient) RequestArtifactUpload(
 // server's perfectly-valid response.
 //
 // Asserts:
-//   (1) The RPC carries the deduped path list, not the raw one.
-//   (2) First-occurrence shape survives (the operator wrote `dist`
-//       first, so `dist` reaches the server even though `dist/`
-//       came right after).
-//   (3) The length check uses the deduped count, so a server that
-//       returns N tickets for N unique paths is accepted.
+//
+//	(1) The RPC carries the deduped path list, not the raw one.
+//	(2) First-occurrence shape survives (the operator wrote `dist`
+//	    first, so `dist` reaches the server even though `dist/`
+//	    came right after).
+//	(3) The length check uses the deduped count, so a server that
+//	    returns N tickets for N unique paths is accepted.
 func TestUpload_DedupesPathsBeforeRPC(t *testing.T) {
 	// Prep a workspace with the files the tar step needs.
 	workDir := t.TempDir()

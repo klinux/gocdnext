@@ -228,7 +228,7 @@ func TestEmit_ExplicitMaterialsStillVisible(t *testing.T) {
 				Type:        domain.MaterialGit,
 				Fingerprint: domain.GitFingerprint("https://github.com/klinux/gocdnext", "main"),
 				Implicit:    true, // synthesized — hide
-				Git: &domain.GitMaterial{URL: "https://github.com/klinux/gocdnext", Branch: "main"},
+				Git:         &domain.GitMaterial{URL: "https://github.com/klinux/gocdnext", Branch: "main"},
 			},
 		},
 		Jobs: []domain.Job{{Name: "bundle", Stage: "build", Tasks: []domain.Task{{Script: "pnpm build"}}}},

@@ -102,10 +102,10 @@ func CreateProjectHook(
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	payload := map[string]any{
-		"url":                      in.URL,
-		"token":                    in.Secret,
-		"push_events":              true,
-		"enable_ssl_verification":  true,
+		"url":                     in.URL,
+		"token":                   in.Secret,
+		"push_events":             true,
+		"enable_ssl_verification": true,
 	}
 	body, _ := json.Marshal(payload)
 	u := fmt.Sprintf(

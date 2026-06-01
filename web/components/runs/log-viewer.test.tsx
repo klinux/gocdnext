@@ -31,6 +31,38 @@ describe("LogViewer", () => {
     render(<LogViewer logs={[]} />);
     expect(screen.getByText(/no log lines/i)).toBeTruthy();
   });
+
+  // Per-op timings (Woodpecker-style): when jobStartedAt is provided,
+  // each log line shows the cumulative elapsed time, but ONLY when
+  // the second changed from the previous rendered line. Consecutive
+  // same-second lines elide the timing so the column stays scannable.
+  it("renders cumulative elapsed time and elides repeated seconds", () => {
+    const logs: LogLine[] = [
+      { seq: 1, stream: "stdout", at: "2026-04-17T12:00:00.100Z", text: "a" },
+      // Same second as the previous line → no label.
+      { seq: 2, stream: "stdout", at: "2026-04-17T12:00:00.900Z", text: "b" },
+      // New second → label.
+      { seq: 3, stream: "stdout", at: "2026-04-17T12:00:02.000Z", text: "c" },
+      // 75s elapsed → minutes+seconds format.
+      { seq: 4, stream: "stdout", at: "2026-04-17T12:01:15.000Z", text: "d" },
+    ];
+    const { container } = render(
+      <LogViewer logs={logs} jobStartedAt="2026-04-17T12:00:00Z" />,
+    );
+    const cells = Array.from(
+      container.querySelectorAll("[data-stream] > span:last-child"),
+    ).map((el) => el.textContent ?? "");
+    expect(cells).toEqual(["0s", "", "2s", "1m15s"]);
+  });
+
+  it("drops the timing column when jobStartedAt is missing", () => {
+    const { container } = render(<LogViewer logs={sample} />);
+    // Without jobStartedAt the grid stays 2-column; assert by
+    // class on the first row.
+    const firstRow = container.querySelector("[data-stream]") as HTMLElement;
+    expect(firstRow.className).toContain("grid-cols-[3rem_1fr]");
+    expect(firstRow.className).not.toContain("3.5rem");
+  });
 });
 
 describe("classifyLine", () => {

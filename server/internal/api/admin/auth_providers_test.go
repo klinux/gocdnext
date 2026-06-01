@@ -102,9 +102,9 @@ func TestAuthProvidersHandler_List_IncludesConfiguredAndEnvOnly(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	var payload struct {
-		Enabled   bool                          `json:"enabled"`
-		Providers []store.ConfiguredProvider    `json:"providers"`
-		EnvOnly   []string                      `json:"env_only"`
+		Enabled   bool                       `json:"enabled"`
+		Providers []store.ConfiguredProvider `json:"providers"`
+		EnvOnly   []string                   `json:"env_only"`
 	}
 	_ = json.Unmarshal(rr.Body.Bytes(), &payload)
 

@@ -22,16 +22,16 @@ var ErrProjectCronNotFound = errors.New("store: project_cron not found")
 // schedule. PipelineIDs empty = "every pipeline in the project
 // at fire time" (dynamic membership, see ticker).
 type ProjectCron struct {
-	ID           uuid.UUID
-	ProjectID    uuid.UUID
-	Name         string
-	Expression   string
-	PipelineIDs  []uuid.UUID
-	Enabled      bool
-	LastFiredAt  *time.Time
-	CreatedBy    *uuid.UUID
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID          uuid.UUID
+	ProjectID   uuid.UUID
+	Name        string
+	Expression  string
+	PipelineIDs []uuid.UUID
+	Enabled     bool
+	LastFiredAt *time.Time
+	CreatedBy   *uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // ProjectCronInput is the write shape for Insert + Update. CreatedBy

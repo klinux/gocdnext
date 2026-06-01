@@ -88,6 +88,57 @@ func (s *Store) OtherRunningRunForPipeline(ctx context.Context, pipelineID, runI
 	return fromPgUUID(row), true, nil
 }
 
+// ListAgentsForRun returns every distinct agent that ran (or is
+// running) a job of the given run, FILTERED by engine='kubernetes'
+// or legacy-empty (pre-engine-column registrations). Used by the
+// run-terminal CleanupRunServices dispatch — services come up on
+// whichever k8s agent ran the first job of the run, so the
+// candidate set is "k8s agents that touched this run", not "every
+// agent". Docker/Shell agents are excluded at the SQL layer
+// because their cleanup would be a wasted RPC (no service pods to
+// label-select against) AND the wasted dispatch would still count
+// as ok in the server's aggregate, hiding a real leak under a
+// "we tried" signal.
+//
+// Returns an empty slice (not error) when no k8s agent ran this
+// run — could mean either a Docker/Shell-only run (no services to
+// clean) or a k8s run whose agents have all been deleted from the
+// agents table. The dispatch path unions this with currently-
+// online k8s agents to cover the second case.
+func (s *Store) ListAgentsForRun(ctx context.Context, runID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.q.ListAgentsForRun(ctx, pgUUID(runID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list agents for run: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromPgUUID(r))
+	}
+	return out, nil
+}
+
+// RunHasServices is the cheap pre-flight before dispatching
+// CleanupRunServices to an agent: pipelines without a `services:`
+// block don't need a cleanup at all, and the alternative (always
+// dispatching) costs one k8s `kubectl get pods -l ...` per run
+// completion. Reads runs.has_services — a snapshot bool stamped at
+// run-insert time from the parsed pipeline definition (see
+// migration 00036 + store.insertRunSkeleton). Snapshot rather than
+// re-parsing the pipeline's `definition` JSONB at terminal time
+// means the answer survives pipeline-row deletion AND avoids the
+// JSONB key-casing trap (json.Marshal emits "Services", not
+// "services"). Fail-closed when the run row is gone entirely.
+func (s *Store) RunHasServices(ctx context.Context, runID uuid.UUID) (bool, error) {
+	has, err := s.q.RunHasServices(ctx, pgUUID(runID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("store: has services: %w", err)
+	}
+	return has, nil
+}
+
 // SetRunQueueReason records why a queued run isn't advancing —
 // today only the scheduler's serial-busy path uses this, but the
 // column is plain TEXT so future producers (no-eligible-agent,

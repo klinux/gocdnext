@@ -37,7 +37,15 @@ func (*Shell) Name() string { return "shell" }
 // is rejected with a clear error. Empty list is a noop. The
 // returned cleanup is always non-nil so callers can defer it
 // unconditionally.
-func (*Shell) EnsureServices(_ context.Context, services []ServiceSpec, _ string, _ func(string, string)) (ServicesWireup, error) {
+// CleanupRunServices: shell engine never brought any services up,
+// so cleanup is a no-op. Returning 0 lets the runner's RPC handler
+// log "agent cleaned up 0 services" without needing engine-specific
+// branches.
+func (*Shell) CleanupRunServices(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
+func (*Shell) EnsureServices(_ context.Context, services []ServiceSpec, _, _ string, _ func(string, string)) (ServicesWireup, error) {
 	if len(services) == 0 {
 		return ServicesWireup{Cleanup: func() {}}, nil
 	}

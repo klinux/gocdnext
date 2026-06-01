@@ -133,9 +133,9 @@ type Config struct {
 	// Secret backend: "db" (default, uses SecretKeyHex to decrypt
 	// ciphertext stored in Postgres) or "kubernetes" (reads K8s
 	// Secret objects named by template).
-	SecretBackend      string
-	SecretK8sNamespace string
-	SecretK8sTemplate  string // default "gocdnext-secrets-{slug}"
+	SecretBackend       string
+	SecretK8sNamespace  string
+	SecretK8sTemplate   string // default "gocdnext-secrets-{slug}"
 	SecretK8sKubeconfig string // empty = in-cluster
 
 	// Auth (UI.6): GOCDNEXT_AUTH_ENABLED=true turns on session
@@ -145,8 +145,8 @@ type Config struct {
 	// PublicBase is reused as the callback base — we only mint
 	// callback URLs when auth is on, so the startup check is local
 	// to NewRegistryFromConfig.
-	AuthEnabled       bool
-	AuthAdminEmails   []string // comma list; matched case-insensitively on first login
+	AuthEnabled        bool
+	AuthAdminEmails    []string // comma list; matched case-insensitively on first login
 	AuthAllowedDomains []string // optional allowlist; empty = anyone who passes IdP
 
 	// Per-provider settings. Each provider becomes "enabled" by

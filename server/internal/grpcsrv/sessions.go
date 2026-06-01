@@ -29,6 +29,14 @@ type Session struct {
 	AgentID  uuid.UUID
 	Tags     []string
 	Capacity int32
+	// Engine is the agent's announced execution engine name —
+	// "kubernetes", "docker", "shell", or "" for legacy agents
+	// that don't announce. Used by AllAgentIDs's engine filter so
+	// the run-terminal CleanupRunServices broadcast targets only
+	// k8s-capable agents (Docker/Shell would no-op the cleanup).
+	// Empty value passes the filter — defensive fallback for
+	// pre-v0.4.35 agents in a rolling upgrade window.
+	Engine string
 	// generation is the agents.session_generation value captured at
 	// register time. The Connect handler's defer passes this back to
 	// MarkAgentOffline as `observed_generation`; the SQL only flips
@@ -173,6 +181,13 @@ func (s *SessionStore) Create(agentID uuid.UUID) string {
 	return s.CreateSession(agentID, nil, 1, 0).ID
 }
 
+// CreateSessionOpts is the optional metadata bag that
+// CreateSessionWith threads onto the new Session. Callers without
+// metadata can keep using CreateSession (zero-valued opts).
+type CreateSessionOpts struct {
+	Engine string
+}
+
 // CreateSession issues a session and invalidates any previous session the
 // agent had — a re-registration supersedes a zombie stream that might still
 // be reading with stale credentials. The returned Session owns a fresh send
@@ -187,15 +202,20 @@ func (s *SessionStore) Create(agentID uuid.UUID) string {
 // the mu lock makes every later read race-free via the happens-before
 // chain (publish-under-lock → lookup-under-lock → safe to read
 // immutable field).
-func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity int32, generation int64) *Session {
+func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity int32, generation int64, opts ...CreateSessionOpts) *Session {
 	if capacity <= 0 {
 		capacity = 1
+	}
+	var meta CreateSessionOpts
+	if len(opts) > 0 {
+		meta = opts[0]
 	}
 	sess := &Session{
 		ID:         uuid.NewString(),
 		AgentID:    agentID,
 		Tags:       append([]string(nil), tags...),
 		Capacity:   capacity,
+		Engine:     meta.Engine,
 		generation: generation,
 		out:        make(chan *gocdnextv1.ServerMessage, defaultSendBuffer),
 	}
@@ -450,8 +470,9 @@ func (s *SessionStore) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage
 
 // DispatchAssignment is the atomic record-and-dispatch path the
 // scheduler uses for Assign messages. The two operations
-//   1. Session.RecordAssignment(jobID, attempt)
-//   2. send msg onto sess.out
+//  1. Session.RecordAssignment(jobID, attempt)
+//  2. send msg onto sess.out
+//
 // MUST happen on the SAME session — without atomicity, a successor
 // Register firing between the lookup-for-record and the lookup-
 // for-dispatch could move the agent to a new session. Recording
@@ -513,6 +534,48 @@ func (s *SessionStore) DispatchAssignment(
 		}
 		return ErrSessionBusy
 	}
+}
+
+// AllAgentIDs returns every agent currently holding a session,
+// optionally filtered to a specific engine name. Used by the
+// run-terminal CleanupRunServices broadcast to widen the target
+// set beyond "agents that ran a job of this run": the k8s agent
+// that created the pods may have disconnected, but ANY other k8s
+// agent in the cluster (online right now, even if not part of
+// this run) can do the label-selector delete since the pods
+// live in a cluster-wide namespace.
+//
+// engineFilter empty = no filter (returns every connected agent
+// — preserves the v0.4.34 behaviour). Setting a value (e.g.
+// "kubernetes") restricts the result to sessions whose Engine
+// field matches AND sessions whose Engine is empty (legacy
+// agents from before the Register-engine field shipped — included
+// defensively so a rolling upgrade window doesn't lose cleanup
+// coverage). Anything else (Docker/Shell with known names) is
+// excluded — those engines no-op the cleanup, and broadcasting
+// to them at scale wastes wire + log noise.
+//
+// Order is unspecified (Go map iteration). Callers DEDUPE against
+// their primary set before dispatching.
+func (s *SessionStore) AllAgentIDs(engineFilter string) []uuid.UUID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]uuid.UUID, 0, len(s.latestByAg))
+	for agentID, sessID := range s.latestByAg {
+		if engineFilter != "" {
+			sess, ok := s.byID[sessID]
+			if !ok {
+				continue
+			}
+			// Empty Engine = unknown (pre-v0.4.35 agent); include
+			// defensively. Otherwise strict equality.
+			if sess.Engine != "" && sess.Engine != engineFilter {
+				continue
+			}
+		}
+		out = append(out, agentID)
+	}
+	return out
 }
 
 // Release decrements the running counter for the agent's current session.

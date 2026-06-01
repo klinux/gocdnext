@@ -134,4 +134,3 @@ func cleanupTestPartitions(t *testing.T, pool *pgxpool.Pool, m0 time.Time, n int
 	wipe()
 	t.Cleanup(wipe)
 }
-

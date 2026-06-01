@@ -13,12 +13,12 @@ import (
 // corporate SSO all go through here — only the display name and
 // issuer URL differ.
 type OIDCConfig struct {
-	Name        ProviderName
-	DisplayText string
-	Issuer      string
-	ClientID    string
+	Name         ProviderName
+	DisplayText  string
+	Issuer       string
+	ClientID     string
 	ClientSecret string
-	CallbackURL string
+	CallbackURL  string
 	// Scopes default to ["openid", "profile", "email"]. Providers
 	// that require custom scopes (offline_access etc.) override it.
 	Scopes []string
@@ -64,7 +64,7 @@ type oidcProvider struct {
 	verifier    *oidc.IDTokenVerifier
 }
 
-func (p *oidcProvider) Name() ProviderName { return p.name }
+func (p *oidcProvider) Name() ProviderName  { return p.name }
 func (p *oidcProvider) DisplayName() string { return p.displayName }
 
 func (p *oidcProvider) AuthorizeURL(state, nonce string) string {
@@ -93,11 +93,11 @@ func (p *oidcProvider) Exchange(ctx context.Context, code, _, nonce string) (Cla
 	}
 
 	var raw struct {
-		Subject   string `json:"sub"`
-		Email     string `json:"email"`
-		EmailVerified *bool `json:"email_verified,omitempty"`
-		Name      string `json:"name"`
-		Picture   string `json:"picture"`
+		Subject       string `json:"sub"`
+		Email         string `json:"email"`
+		EmailVerified *bool  `json:"email_verified,omitempty"`
+		Name          string `json:"name"`
+		Picture       string `json:"picture"`
 		// Keycloak exposes `preferred_username` when the profile
 		// has no name set; we fall back to it below.
 		PreferredUsername string `json:"preferred_username"`

@@ -26,8 +26,10 @@ func vsmHandler(t *testing.T) (*projects.Handler, *pgxpool.Pool) {
 }
 
 // seedFanoutProject creates one project with 3 pipelines:
-//   core (git) → test stage → deploy-api (upstream: core@test)
-//                             → deploy-worker (upstream: core@test)
+//
+//	core (git) → test stage → deploy-api (upstream: core@test)
+//	                          → deploy-worker (upstream: core@test)
+//
 // That's the fanout shape the VSM should draw.
 func seedFanoutProject(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()

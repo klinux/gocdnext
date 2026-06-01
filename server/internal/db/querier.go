@@ -432,6 +432,15 @@ type Querier interface {
 	// ending up with orphan objects keyed off a stale PK.
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
 	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
+	// has_services is a snapshot of `pipeline.Services` non-emptiness
+	// (migration 00036). Stamped here so the run-terminal cleanup
+	// cascade can decide whether to broadcast CleanupRunServices
+	// without re-reading the (possibly-drifted) current pipeline
+	// definition. The Go layer (store.insertRunSkeleton) computes the
+	// value from the SAME `domain.Pipeline` it just used to materialise
+	// stages + jobs — without this, a concurrent ApplyProject between
+	// the Go decode and a re-read inside SQL could give us mismatched
+	// snapshots under READ COMMITTED.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
@@ -470,6 +479,29 @@ type Querier interface {
 	ListAPITokensByServiceAccount(ctx context.Context, serviceAccountID pgtype.UUID) ([]ListAPITokensByServiceAccountRow, error)
 	// Tokens this user owns, newest first. Used by /settings/api-tokens.
 	ListAPITokensByUser(ctx context.Context, userID pgtype.UUID) ([]ListAPITokensByUserRow, error)
+	// Every distinct agent that ran (or is running) at least one job
+	// of the given run, FILTERED to engines that can actually do the
+	// cleanup work — k8s today. Used by the run-terminal
+	// CleanupRunServices dispatch.
+	//
+	// Why the engine filter:
+	//   - A mixed-engine run (job 1 on k8s, job 2 on docker) puts
+	//     BOTH agents on the unfiltered list. The docker agent's
+	//     CleanupRunServices is a no-op that returns
+	//     success-with-0-deleted, which the server's ok-counter
+	//     would mistakenly count as a successful cleanup,
+	//     masking the fact that the disconnected k8s agent's pods
+	//     never got reaped.
+	//   - Filtering at the SQL layer means the ok-count surfaces
+	//     ONLY engines that COULD have done useful work, so a "0
+	//     successful dispatches" log line is operationally
+	//     trustworthy.
+	//
+	// agents.engine='' (empty / legacy / pre-v0.4.35) passes the
+	// filter defensively — a rolling upgrade window where old agents
+	// haven't been redeployed yet still gets best-effort cleanup
+	// coverage; the value is overwritten on the next Register.
+	ListAgentsForRun(ctx context.Context, runID pgtype.UUID) ([]pgtype.UUID, error)
 	// Dashboard + /agents list: every agent with its declared metadata
 	// + a count of currently-running job_runs it's been assigned.
 	// LEFT JOIN + FILTER gives 0 for idle agents without needing a
@@ -835,6 +867,15 @@ type Querier interface {
 	// Idempotent: revoke-on-already-revoked is a no-op. Caller filters
 	// by user_id or service_account_id to gate ownership.
 	RevokeAPIToken(ctx context.Context, id pgtype.UUID) error
+	// Snapshot read: was the run created with a non-empty `Services`
+	// block in its pipeline definition? Persisted on insert
+	// (migration 00036) rather than computed live from
+	// pipelines.definition, so an ApplyProject that adds/removes
+	// services mid-run doesn't lie to the cleanup cascade. Defaults
+	// to false when the run row is missing (cleanup skipped, safer
+	// than fail-open here — operator can run manual sweep if a stale
+	// leak surfaces).
+	RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
