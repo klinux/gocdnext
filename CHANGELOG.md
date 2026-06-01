@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.33 — 2026-06-01
+
+Closes [issue #2](https://github.com/klinux/gocdnext/issues/2) — python
+plugin re-resolved the venv on every job and stripped PEP 621 extras
+(ruff/mypy/pytest under `[project.optional-dependencies].dev`), making
+the install-once-reuse-N pattern decorative. Three new plugin inputs:
+
+- **`extras`** (list) — `[dev, test]` enables those extras at install
+  time. uv → repeated `--extra X`, poetry → `--extras "X Y"`, pip →
+  `pip install -e ".[X,Y]"` after the requirements file.
+- **`all-extras`** (bool) — uv/poetry `--all-extras`. pip has no
+  equivalent; honoured as a no-op + warn so multi-manager pipelines
+  don't break on the pip leg.
+- **`no-install`** (bool) — skip the dependency sync, trust the
+  `.venv/` already in the workspace. `rewrite_venv_shebangs` +
+  `activate_venv` still run so an artifact-restored venv from an
+  upstream install job is immediately usable. Manager-agnostic.
+
+The combination closes the original symptom: a `install` job syncs
+with `all-extras: true` and exposes `.venv/` as an artifact; downstream
+`ruff`, `pytest`, `mypy` jobs declare `no-install: true` and consume
+the venv without re-resolving. No more `--all-extras` workarounds in
+every `uv run` command, and the artifact transfer actually saves work.
+
+Refuses `all-extras: true` + `extras: [...]` together (ambiguous) and
+refuses `no-install: true` when `.venv/` is missing (with a hint to
+add it to `needs_artifacts`).
+
+Doc additions in `plugins/python/plugin.yaml`:
+- new example "install once, reuse across jobs" demonstrating the
+  fan-out pattern with `all-extras` + `no-install`.
+- new example "install with explicit extras (not all)" for the
+  `extras: dev, test` variant.
+
 ## v0.4.32 — 2026-06-01
 
 Closes [issue #4](https://github.com/klinux/gocdnext/issues/4) — operator

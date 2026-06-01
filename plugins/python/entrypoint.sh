@@ -13,6 +13,41 @@ fi
 WORKING_DIR="${PLUGIN_WORKING_DIR:-.}"
 MANAGER="${PLUGIN_MANAGER:-auto}"
 
+# Issue #2 inputs.
+#
+# `extras` is comma/space-separated (same shape every other plugin
+# uses for list inputs — see buildx's TAGS handling). Translation
+# per-manager lives in the case statement below; here we just
+# tokenize once. Empty input → empty array, the case handlers skip
+# their `--extra` flags.
+#
+# `all-extras` and `no-install` are bools — accept "1", "true", "yes"
+# (case-insensitive) as truthy, anything else as false. Matches how
+# the rest of the gocdnext plugin set parses boolean inputs.
+EXTRAS_RAW="${PLUGIN_EXTRAS:-}"
+EXTRAS_RAW="${EXTRAS_RAW//,/ }"
+read -ra EXTRAS <<<"${EXTRAS_RAW}"
+
+is_truthy() {
+    case "${1,,}" in
+        1|true|yes|y|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+ALL_EXTRAS=false
+NO_INSTALL=false
+if is_truthy "${PLUGIN_ALL_EXTRAS:-false}"; then ALL_EXTRAS=true; fi
+if is_truthy "${PLUGIN_NO_INSTALL:-false}"; then NO_INSTALL=true; fi
+
+# all-extras + extras together is ambiguous — all-extras already
+# covers the named ones. Refuse the combo so the user sees the
+# conflict instead of one silently winning.
+if [ "${ALL_EXTRAS}" = "true" ] && [ "${#EXTRAS[@]}" -gt 0 ]; then
+    echo "gocdnext/python: 'all-extras: true' and 'extras: [...]' are mutually exclusive" >&2
+    echo "  drop one — all-extras already includes everything in extras" >&2
+    exit 2
+fi
+
 cd "${WORKING_DIR}"
 
 # rewrite_venv_shebangs makes a .venv that arrived via artefact
@@ -111,19 +146,67 @@ if [ "${MANAGER}" = "auto" ]; then
 fi
 
 echo "==> manager: ${MANAGER}"
+
+# no-install short-circuit. Lets a downstream job consume a `.venv/`
+# restored via `needs_artifacts:` from an upstream install job
+# without paying the resolve cost again — AND without the original
+# bug: the upstream install used `--all-extras`, but a vanilla
+# `uv sync --frozen` here would uninstall everything not in the
+# base lockfile (ruff/mypy/pytest), then the user's `uv run ruff …`
+# would ENOENT-fail because the entry-point script was just deleted.
+#
+# We deliberately still call rewrite_venv_shebangs + activate_venv
+# — those are what make the cross-job .venv usable (the install-job's
+# absolute path baked into both the shebangs and the activate
+# script). The install step itself is the only piece skipped.
+#
+# Manager-agnostic: works on whichever upstream chose uv/poetry/pip
+# because it touches none of them.
+if [ "${NO_INSTALL}" = "true" ]; then
+    echo "==> no-install: true — skipping dependency sync, reusing existing .venv"
+    if [ ! -d ".venv" ]; then
+        echo "gocdnext/python: no-install: true requires an existing .venv (none found at ${WORKING_DIR}/.venv)" >&2
+        echo "  add the upstream install job's '.venv/' to needs_artifacts" >&2
+        exit 2
+    fi
+    rewrite_venv_shebangs
+    activate_venv
+    exec bash -lc -- "${PLUGIN_COMMAND}"
+fi
+
 case "${MANAGER}" in
     poetry)
         poetry config virtualenvs.in-project true
-        poetry install --no-interaction
+        # poetry takes a single --extras with space-separated names,
+        # OR --all-extras. The bash array tokens come from EXTRAS;
+        # joining with IFS=' ' gives poetry the format it wants.
+        poetry_args=(--no-interaction)
+        if [ "${ALL_EXTRAS}" = "true" ]; then
+            poetry_args+=(--all-extras)
+        elif [ "${#EXTRAS[@]}" -gt 0 ]; then
+            poetry_args+=(--extras "${EXTRAS[*]}")
+        fi
+        poetry install "${poetry_args[@]}"
         rewrite_venv_shebangs
         activate_venv
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
     uv)
-        if [ -f "uv.lock" ]; then
-            uv sync --frozen
+        # uv takes repeated --extra X flags, OR --all-extras. Build
+        # the args explicitly so the lockfile-present branch and the
+        # lockfile-absent branch share the same extras handling.
+        uv_extras=()
+        if [ "${ALL_EXTRAS}" = "true" ]; then
+            uv_extras+=(--all-extras)
         else
-            uv sync
+            for e in "${EXTRAS[@]}"; do
+                uv_extras+=(--extra "$e")
+            done
+        fi
+        if [ -f "uv.lock" ]; then
+            uv sync --frozen "${uv_extras[@]}"
+        else
+            uv sync "${uv_extras[@]}"
         fi
         rewrite_venv_shebangs
         activate_venv
@@ -142,6 +225,26 @@ case "${MANAGER}" in
         # pipeline `cache:` block can preserve the wheel cache
         # across runs — skip --no-cache-dir here.
         pip install -r "${req}"
+        # pip has no project-wide --all-extras. Extras only attach
+        # to a specific package spec, so we install the project
+        # itself with .[X,Y] after the requirements file. Falls
+        # through cleanly when EXTRAS is empty (no install step).
+        # all-extras on pip can't be honoured (it would require
+        # parsing pyproject to enumerate them); warn so a pipeline
+        # that targets multiple managers gets a clear message
+        # instead of silent divergence.
+        if [ "${ALL_EXTRAS}" = "true" ]; then
+            echo "gocdnext/python: all-extras: true has no pip equivalent — enumerate extras: [a, b, ...] instead" >&2
+        elif [ "${#EXTRAS[@]}" -gt 0 ]; then
+            if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "setup.cfg" ]; then
+                # Comma-join (no spaces) — pip's bracket syntax requires it.
+                IFS=, eval 'extras_csv="${EXTRAS[*]}"'
+                pip install -e ".[${extras_csv}]"
+            else
+                echo "gocdnext/python: extras requested but no pyproject.toml/setup.py — extras only attach to a package spec on pip" >&2
+                exit 2
+            fi
+        fi
         rewrite_venv_shebangs
         exec bash -lc -- "${PLUGIN_COMMAND}"
         ;;
