@@ -13,9 +13,11 @@ plugin re-resolved the venv on every job and stripped PEP 621 extras
 (ruff/mypy/pytest under `[project.optional-dependencies].dev`), making
 the install-once-reuse-N pattern decorative. Three new plugin inputs:
 
-- **`extras`** (list) — `[dev, test]` enables those extras at install
-  time. uv → repeated `--extra X`, poetry → `--extras "X Y"`, pip →
-  `pip install -e ".[X,Y]"` after the requirements file.
+- **`extras`** (comma/space-separated string) — `extras: dev, test`
+  enables those extras at install time. uv → repeated `--extra X`,
+  poetry → `--extras "X Y"`, pip → `pip install -e ".[X,Y]"` after
+  the requirements file. Pipeline `with:` is `map[string]string`,
+  so the value is a single string, not a YAML list.
 - **`all-extras`** (bool) — uv/poetry `--all-extras`. pip has no
   equivalent; honoured as a no-op + warn so multi-manager pipelines
   don't break on the pip leg.
