@@ -33,12 +33,14 @@ inputs:
   extras:
     required: false
     description: >
-      Comma- or space-separated list of optional-dependency extras
+      Comma- or space-separated STRING of optional-dependency extras
       (PEP 621 `[project.optional-dependencies]`) to enable on the
-      install step. Translation per manager: uv → repeated `--extra X`,
-      poetry → `--extras "X Y"`, pip → installs the project itself
-      with `.[X,Y]` after the requirements file. Empty = base
-      install only.
+      install step. Example: `extras: dev, test`. Pipeline `with:` is
+      `map[string]string` so YAML list syntax (`extras: [dev, test]`)
+      is NOT accepted by the parser — pass a single string. Translation
+      per manager: uv → repeated `--extra X`, poetry → `--extras "X Y"`,
+      pip → installs the project itself with `.[X,Y]` after the
+      requirements file. Empty = base install only.
   all-extras:
     required: false
     default: "false"
@@ -57,7 +59,7 @@ inputs:
       shebang rewriter and activate-venv path still run, so a
       `.venv/` restored via `needs_artifacts:` from an upstream
       install job is usable as-is. Pair with an install job that
-      sets `all-extras: true` (or `extras: [dev, test]`) and exposes
+      sets `all-extras: true` (or `extras: dev, test`) and exposes
       `services/<x>/.venv/` as an artifact to get the
       install-once-reuse-N pattern without paying the resolve cost
       in every downstream job.
