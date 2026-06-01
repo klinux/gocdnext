@@ -21,6 +21,12 @@ var (
 	ErrRunRevisionsMissing       = errors.New("store: run has no revisions to replay")
 	ErrJobRunNotFound            = errors.New("store: job_run not found")
 	ErrJobRunActive              = errors.New("store: job_run still active (queued/running)")
+	// ErrSnapshotStale is returned by snapshot-CAS write paths
+	// (currently WriteTestResults) when the row's current
+	// (agent_id, attempt) no longer matches what the caller
+	// observed. Callers treat this as "another path took ownership
+	// of this row; drop my write" rather than a hard error.
+	ErrSnapshotStale = errors.New("store: snapshot stale — row changed under us")
 )
 
 // RunningJobRef points the HTTP handler at a job_run that was still
@@ -357,6 +363,14 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	// the log tab honest about what the new attempt produced.
 	if _, err := tx.Exec(ctx, `DELETE FROM log_lines WHERE job_run_id = $1`, in.JobRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: clear logs: %w", err)
+	}
+	// Same treatment for test_results: WriteTestResults is
+	// delete+reinsert per job_run_id, so a rerun whose new attempt
+	// either crashes before emitting or produces a different test
+	// set would leave the old results visible in the Tests tab
+	// under the rerun. Clear them up-front.
+	if _, err := tx.Exec(ctx, `DELETE FROM test_results WHERE job_run_id = $1`, in.JobRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: clear test results: %w", err)
 	}
 
 	// Un-finish the parent stage + run so dispatch + UI stop

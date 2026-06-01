@@ -13,7 +13,9 @@ import (
 
 const cancelActiveRun = `-- name: CancelActiveRun :one
 UPDATE runs
-SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
+SET status = 'canceled',
+    finished_at = COALESCE(finished_at, NOW()),
+    queue_reason = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
 RETURNING id
 `
@@ -22,6 +24,12 @@ RETURNING id
 // a second call on a terminal run returns no rows so the handler
 // can answer 409. Returns the row id so the caller can tell the
 // update happened.
+//
+// queue_reason is cleared in the same UPDATE so a canceled-while-
+// queued run doesn't carry a "waiting on #N" message into the
+// runs list. Doing it in this UPDATE (vs a follow-up
+// ClearRunQueueReason call) keeps the cancel atomic and saves a
+// round-trip.
 func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, cancelActiveRun, id)
 	err := row.Scan(&id)

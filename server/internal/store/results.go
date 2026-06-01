@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
@@ -92,10 +93,84 @@ func (s *Store) InsertLogLine(ctx context.Context, in LogLine) error {
 // produces empty batches). At ~5 columns per row, Postgres' 65k
 // parameter ceiling lets a single call carry up to ~13k lines —
 // comfortably above any reasonable batch size.
+//
+// CAUTION: this entrypoint has NO snapshot-CAS — anything calling
+// it can land lines on a job_run regardless of who currently owns
+// it. The live agent log path uses BulkInsertLogLinesForJob below
+// instead. This raw variant is kept for tests / retention / archive
+// callers that operate on detached rows where ownership isn't the
+// relevant invariant.
 func (s *Store) BulkInsertLogLines(ctx context.Context, lines []LogLine) error {
 	if len(lines) == 0 {
 		return nil
 	}
+	return bulkInsertLogLinesQ(ctx, s.pool, lines)
+}
+
+// BulkInsertLogLinesForJob is the snapshot-validating log-write
+// path the live agent stream uses. Locks the job_run row FOR UPDATE
+// inside a transaction, verifies (agent_id, attempt) still matches
+// the snapshot the caller captured at dispatch time, then inserts
+// the batch. Returns ErrSnapshotStale when the row has been
+// reclaimed / redispatched out from under us — the caller drops
+// the batch rather than letting a dying stream poison the next
+// attempt's logs.
+//
+// Same race the test_results path closes: an old stream alive past
+// a reaper-driven requeue (whose DeleteLogLinesByJob just cleared
+// the row) could otherwise repopulate log_lines, which would then
+// either look stale alongside the new attempt's logs OR win the
+// (job_run_id, seq, at) ON CONFLICT race and silently drop the
+// new attempt's legitimate lines.
+//
+// All lines in `lines` MUST share the given jobID — the caller
+// (batcher) groups by job_run_id before calling.
+func (s *Store) BulkInsertLogLinesForJob(
+	ctx context.Context,
+	jobID, expectedAgentID uuid.UUID,
+	expectedAttempt int32,
+	lines []LogLine,
+) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("store: bulk insert log lines for job: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var rowAgent pgtype.UUID
+	var rowAttempt int32
+	if err := tx.QueryRow(ctx,
+		`SELECT agent_id, attempt FROM job_runs WHERE id = $1 FOR UPDATE`, jobID,
+	).Scan(&rowAgent, &rowAttempt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSnapshotStale
+		}
+		return fmt.Errorf("store: bulk insert log lines for job: lock: %w", err)
+	}
+	if fromPgUUID(rowAgent) != expectedAgentID || rowAttempt != expectedAttempt {
+		return ErrSnapshotStale
+	}
+	if err := bulkInsertLogLinesQ(ctx, tx, lines); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: bulk insert log lines for job: commit: %w", err)
+	}
+	return nil
+}
+
+// bulkInsertLogLinesQ is the shared multi-VALUES build/exec used by
+// both BulkInsertLogLines (no CAS) and BulkInsertLogLinesForJob
+// (inside snapshot-CAS tx). `q` is anything implementing pgx's
+// Exec — pool, tx, or conn.
+type pgExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func bulkInsertLogLinesQ(ctx context.Context, q pgExecer, lines []LogLine) error {
 	const cols = 5
 	args := make([]any, 0, len(lines)*cols)
 	var sb strings.Builder
@@ -122,7 +197,7 @@ func (s *Store) BulkInsertLogLines(ctx context.Context, lines []LogLine) error {
 		)
 	}
 	sb.WriteString(" ON CONFLICT (job_run_id, seq, at) DO NOTHING")
-	if _, err := s.pool.Exec(ctx, sb.String(), args...); err != nil {
+	if _, err := q.Exec(ctx, sb.String(), args...); err != nil {
 		return fmt.Errorf("store: bulk insert log lines: %w", err)
 	}
 	return nil
@@ -130,11 +205,35 @@ func (s *Store) BulkInsertLogLines(ctx context.Context, lines []LogLine) error {
 
 // CompleteJobInput captures the terminal payload coming off an agent's
 // JobResult. Status must be "success" or "failed".
+//
+// ExpectedAgentID + ExpectedAttempt together form the load-bearing
+// race guard: the SQL predicate uses
+//   `agent_id IS NOT DISTINCT FROM @expected_agent_id
+//    AND attempt = @expected_attempt`
+// so callers MUST set both correctly or the UPDATE will silently
+// no-op (ok=false).
+//
+//   - Agent-driven result via handleJobResult: the caller looks up
+//     the per-session assignment record (set at dispatch time —
+//     see sessions.go RecordAssignment) and passes the recorded
+//     (agent, attempt) pair. A stale result from a revoked session
+//     for a job that has since been redispatched (same agent_id,
+//     attempt bumped) won't match because the attempt mismatches.
+//     This is the TOCTOU close-up: even if the session-revoked
+//     check passed at handler entry, the SQL CAS still refuses to
+//     complete the NEW attempt with the OLD exit code.
+//
+//   - Scheduler dispatch-time fail (failJobWithError): row is in
+//     (queued, agent_id=NULL, attempt=0 unless reaper requeued).
+//     Pass uuid.Nil + the current attempt fetched at observation
+//     time (via DispatchableJob.Attempt).
 type CompleteJobInput struct {
-	JobRunID uuid.UUID
-	Status   string
-	ExitCode int32
-	ErrorMsg string
+	JobRunID        uuid.UUID
+	Status          string
+	ExitCode        int32
+	ErrorMsg        string
+	ExpectedAgentID uuid.UUID
+	ExpectedAttempt int32
 }
 
 // JobCompletion summarises the cascade that CompleteJob kicked off: which
@@ -179,10 +278,12 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 
 	exitCode := in.ExitCode
 	row, err := q.CompleteJobRun(ctx, db.CompleteJobRunParams{
-		ID:       pgUUID(in.JobRunID),
-		Status:   in.Status,
-		ExitCode: &exitCode,
-		Error:    nullableString(in.ErrorMsg),
+		ID:              pgUUID(in.JobRunID),
+		Status:          in.Status,
+		ExitCode:        &exitCode,
+		Error:           nullableString(in.ErrorMsg),
+		ExpectedAgentID: pgUUIDNullable(in.ExpectedAgentID),
+		ExpectedAttempt: in.ExpectedAttempt,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

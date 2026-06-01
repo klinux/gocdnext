@@ -45,7 +45,14 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	// One batcher per stream. Push from handleLogLine, drain on
 	// stream close. Lifecycle is tied to Connect's defer ladder so
 	// a final flush always runs even on irregular exits.
-	batcher := newLogBatcher(a.store, log)
+	// The receive-side (handleLogLine) captures the per-job attempt
+	// snapshot from sess.LookupAssignment at Push time and tags each
+	// line with it. The batcher groups by (jobID, attempt) at flush
+	// and the snapshot-CAS log write decides per-group whether the
+	// row still belongs to us. Doing the lookup at receive (not
+	// flush) keeps the tail intact for fast-finishing jobs whose
+	// JobResult triggers ClearAssignment between push and flush.
+	batcher := newLogBatcher(a.store, log, agentID)
 	batcher.Start(stream.Context())
 	defer batcher.Stop()
 
@@ -67,9 +74,41 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	defer func() {
 		a.sessions.Revoke(sessionID)
 		<-pumpDone
+		// Session-aware offline marking: if a successor agent
+		// process already Registered (the supersededByRegister
+		// flag is set by RevokeForAgent / CreateSession's internal
+		// revoke), or if a different session has taken the
+		// latestByAg slot, our defer must NOT clobber the agents
+		// row back to 'offline'. The reaper treats offline as
+		// always-stale regardless of last_seen_at, so a stray
+		// offline mark from a superseded stream's defer would
+		// trigger reaper reclaims on the new session's healthy
+		// jobs.
+		//
+		// Two-flag check: supersededByRegister covers the window
+		// BEFORE CreateSession publishes the new session in
+		// latestByAg (where IsAgentSuperseded still returns false);
+		// IsAgentSuperseded covers the post-publish state. Together
+		// they close both halves of the race.
+		if sess.supersededByRegister.Load() || a.sessions.IsAgentSuperseded(agentID, sessionID) {
+			// Drop pending log batcher contents too: lines that
+			// landed in the buffer BEFORE revoke would otherwise
+			// flush on Stop and pollute the new attempt's log_lines
+			// (or win the ON CONFLICT race and silently drop the
+			// new attempt's legitimate lines). Discard MUST happen
+			// before batcher.Stop runs its drain.
+			batcher.Discard()
+			log.Info("agent stream closed (superseded — leaving agents.status alone)")
+			return
+		}
 		offCtx, cancel := context.WithTimeout(context.Background(), offlineFlushTimeout)
 		defer cancel()
-		if err := a.store.MarkAgentOffline(offCtx, agentID); err != nil {
+		// Pass THIS session's generation so the SQL CAS no-ops when
+		// a successor Register has since bumped the counter. Belt
+		// over the supersededByRegister suspender — handles the
+		// race where this defer's Revoke() ran before any successor
+		// register could find a session to flag.
+		if err := a.store.MarkAgentOffline(offCtx, agentID, sess.Generation()); err != nil {
 			log.Warn("agent stream close: mark offline failed", "err", err)
 		}
 		log.Info("agent stream closed")
@@ -107,13 +146,32 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				log.Debug("pong dispatch skipped", "err", err)
 			}
 		case *gocdnextv1.AgentMessage_Log:
-			a.handleLogLine(stream.Context(), log, batcher, kind.Log)
+			// Revoked-session drop: log lines from a revoked stream
+			// could re-populate rows the reaper just DELETE'd as part
+			// of a retry/reclaim (see store.DeleteLogLinesByJob in the
+			// reclaim path). Without this guard, an in-flight log
+			// batch from the old process can land AFTER the row was
+			// cleared and mix with the new attempt's output. The
+			// new-attempt run picks up its own logs cleanly without
+			// the stale ones interleaving.
+			if sess.revoked.Load() {
+				continue
+			}
+			a.handleLogLine(stream.Context(), log, sess, batcher, kind.Log)
 		case *gocdnextv1.AgentMessage_Progress:
 			log.Debug("agent progress", "kind", kindName(msg))
 		case *gocdnextv1.AgentMessage_Result:
-			a.handleJobResult(stream.Context(), log, agentID, kind.Result)
+			a.handleJobResult(stream.Context(), log, sess, kind.Result)
 		case *gocdnextv1.AgentMessage_TestResults:
-			a.handleTestResultBatch(stream.Context(), log, kind.TestResults)
+			// Same drop policy. WriteTestResults wipes-and-reinserts
+			// every test row for the job_run_id (see store.WriteTestResults),
+			// so a stale revoked-session batch would CLOBBER the new
+			// attempt's actual results with whatever the dying agent
+			// shipped. Strictly worse than just losing the late batch.
+			if sess.revoked.Load() {
+				continue
+			}
+			a.handleTestResultBatch(stream.Context(), log, sess, kind.TestResults)
 		default:
 			log.Warn("stream msg: unknown kind", "kind_type", kind)
 		}
@@ -126,15 +184,54 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 // batcher dedupes via ON CONFLICT (job_run_id, seq, at), so an agent
 // retransmit is harmless.
 //
+// Assignment-gated at receive time: sess.LookupAssignment must
+// return an attempt for jobID before we either buffer the line OR
+// publish it via SSE. Doing the lookup HERE (not at flush) closes
+// two windows:
+//
+//  1. Fast-job tail loss — agent emits log, then JobResult; the
+//     result handler completes the job and calls ClearAssignment;
+//     when the 200ms ticker fires the assignment would be gone and
+//     a flush-time lookup would drop every buffered line. Captured
+//     attempt + per-(jobID, attempt) snapshot-CAS at the DB layer
+//     keeps the tail intact while still rejecting genuinely stale
+//     writes from a reclaimed row.
+//
+//  2. SSE leakage of stale streams — without this gate, a revoked-
+//     but-still-draining session could publish lines to live tail
+//     subscribers even though the DB write would later be dropped.
+//     The receive-time check closes the BIG window (stale session
+//     pushing logs after ClearAssignment / revoke). A small window
+//     remains: after we capture the attempt here and publish to SSE,
+//     a reclaim/rerun can still flip the row's snapshot before the
+//     batcher flushes; the DB drops via ErrSnapshotStale but the
+//     tail subscriber already saw the line. Closing this completely
+//     would mean publishing only after the DB CAS (≥200ms latency
+//     floor) or tagging events with (attempt, generation) for
+//     downstream filtering — deliberately deferred.
+//
 // Trade-off: the SSE event lands up to flushEvery (~200ms) before
 // the row is durable. A page reload in that window may briefly
 // fetch a tail without the freshly-emitted line, but the live SSE
 // stream catches up immediately after — the user-visible latency
 // floor stays at network RTT, not DB commit.
-func (a *AgentService) handleLogLine(ctx context.Context, log logger, batcher *logBatcher, l *gocdnextv1.LogLine) {
+func (a *AgentService) handleLogLine(ctx context.Context, log logger, sess *Session, batcher *logBatcher, l *gocdnextv1.LogLine) {
 	jobID, err := uuid.Parse(l.GetJobId())
 	if err != nil {
 		log.Warn("agent log: bad job_id", "job_id", l.GetJobId())
+		return
+	}
+	// Receive-time snapshot capture. Missing entry = the session
+	// has no right to ship logs for this job (it was never assigned,
+	// the terminal result already cleared it, OR a reclaim already
+	// transferred ownership to a successor session). Drop silently
+	// at debug so a noisy stale-agent stream doesn't drown the logs
+	// — the recv-loop's revoked check upstream already warns on the
+	// gross cases.
+	attempt, ok := sess.LookupAssignment(jobID)
+	if !ok {
+		log.Debug("agent log: dropped — session has no assignment for this job",
+			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", jobID)
 		return
 	}
 	at := time.Time{}
@@ -147,7 +244,7 @@ func (a *AgentService) handleLogLine(ctx context.Context, log logger, batcher *l
 		Stream:   l.GetStream(),
 		At:       at,
 		Text:     l.GetText(),
-	})
+	}, attempt)
 	a.publishLogLine(ctx, log, jobID, logstream.Event{
 		JobRunID: jobID,
 		Seq:      l.GetSeq(),
@@ -203,10 +300,30 @@ const maxTestFieldBytes = 64 << 10 // 64 KiB per field
 // tests are a nice-to-have layer on top of the run result, a
 // DB hiccup shouldn't fail the agent's stream or block the
 // JobResult that comes right after.
-func (a *AgentService) handleTestResultBatch(ctx context.Context, log logger, batch *gocdnextv1.TestResultBatch) {
+//
+// Assignment-gated: WriteTestResults is delete-and-reinsert per
+// job_run_id. A stale session (revoked-but-still-draining, OR a
+// reaper-requeued-then-redispatched scenario where this session
+// happens to outlive the redispatch) writing through this handler
+// would clobber the new attempt's results with the old payload.
+// Looking up the per-session (job, attempt) snapshot before the
+// store call drops batches that the session doesn't legitimately
+// own.
+func (a *AgentService) handleTestResultBatch(ctx context.Context, log logger, sess *Session, batch *gocdnextv1.TestResultBatch) {
+	if sess.revoked.Load() {
+		log.Warn("agent test results: dropped — session revoked",
+			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", batch.GetJobId())
+		return
+	}
 	jobID, err := uuid.Parse(batch.GetJobId())
 	if err != nil {
 		log.Warn("agent test results: bad job_id", "job_id", batch.GetJobId())
+		return
+	}
+	expectedAttempt, ok := sess.LookupAssignment(jobID)
+	if !ok {
+		log.Warn("agent test results: dropped — session has no assignment for this job",
+			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", jobID)
 		return
 	}
 	in := make([]store.TestResultIn, 0, len(batch.GetResults()))
@@ -224,7 +341,17 @@ func (a *AgentService) handleTestResultBatch(ctx context.Context, log logger, ba
 			SystemErr:      clampBytes(r.GetSystemErr(), maxTestFieldBytes),
 		})
 	}
-	if err := a.store.WriteTestResults(ctx, jobID, in); err != nil {
+	// Snapshot-CAS write. If the row was reclaimed/redispatched
+	// between LookupAssignment above and the tx below, the store
+	// returns ErrSnapshotStale and we drop the batch — better to
+	// lose results than to clobber the new attempt's actual ones
+	// via the delete+insert pattern inside WriteTestResults.
+	if err := a.store.WriteTestResults(ctx, jobID, sess.AgentID, expectedAttempt, in); err != nil {
+		if errors.Is(err, store.ErrSnapshotStale) {
+			log.Warn("agent test results: dropped — snapshot stale (row reclaimed/redispatched)",
+				"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", jobID)
+			return
+		}
 		log.Warn("agent test results: persist failed", "err", err, "job_id", jobID, "count", len(in))
 		return
 	}
@@ -242,10 +369,51 @@ func clampBytes(s string, max int) string {
 // the agent's session capacity, and nudges the scheduler to pick up the next
 // stage when the run keeps going. All errors surface as warnings — the stream
 // stays open for subsequent traffic.
-func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID uuid.UUID, r *gocdnextv1.JobResult) {
+//
+// The whole-Session pointer (rather than just an agentID) is load-bearing:
+// when a successor agent process registers, the prior session is Revoked
+// but its Connect handler may still be draining inbound messages from a
+// half-open stream until stream.Recv errors. A late JobResult from that
+// revoked path arriving here must NOT be allowed to complete a job that
+// the register-fence already reclaimed, otherwise we'd mark the new
+// attempt success/failed using the old process's exit code.
+//
+// Two layers guard against that:
+//  1. sess.revoked check below — drops the message before any DB write.
+//  2. CompleteJob's predicate now validates the row's agent_id against
+//     the expected agent (the calling session's), so even if the
+//     revoked check is bypassed (e.g. a stale message hits at the
+//     exact tick a Revoke completes), the SQL won't match a reclaimed
+//     (agent_id=NULL) or redispatched (different agent) row.
+func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Session, r *gocdnextv1.JobResult) {
+	if sess.revoked.Load() {
+		log.Warn("agent result: dropped — session revoked",
+			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", r.GetJobId())
+		return
+	}
+	agentID := sess.AgentID
 	jobID, err := uuid.Parse(r.GetJobId())
 	if err != nil {
 		log.Warn("agent result: bad job_id", "job_id", r.GetJobId())
+		return
+	}
+
+	// Per-session assignment snapshot. The scheduler stamped
+	// (jobID → attempt) when it dispatched this work TO THIS session;
+	// a stale revoked-session result for a job the fence redispatched
+	// (same agent_id, higher attempt on a NEW session) won't have an
+	// entry here at all OR will have the OLD attempt — both cases
+	// fail the SQL CAS below and the row stays safe.
+	//
+	// Missing entry = session never owned this job. Don't act on a
+	// result the session has no right to send (an agent shouldn't be
+	// reporting on a job the server never assigned to it; defending
+	// here means an over-eager / replayed agent client can't be used
+	// to inject completions for jobs it didn't run).
+	expectedAttempt, hasAssignment := sess.LookupAssignment(jobID)
+	if !hasAssignment {
+		log.Warn("agent result: dropped — session has no assignment for this job",
+			"session", sess.ID, "agent_uuid", agentID, "job_id", jobID)
 		return
 	}
 
@@ -270,22 +438,50 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, agentID 
 			"job_id", jobID, "detail", artifactErr)
 	}
 
+	// Re-check revocation just before the DB write. confirmArtifacts can
+	// take seconds (HEADs against S3), and the TOCTOU window between
+	// the entry check and CompleteJob is exactly when a successor
+	// Register can fence + redispatch the same job. If we got revoked
+	// while reconciling, the result's snapshot is by definition stale.
+	if sess.revoked.Load() {
+		log.Warn("agent result: dropped post-reconcile — session revoked during handling",
+			"session", sess.ID, "agent_uuid", agentID, "job_id", jobID)
+		return
+	}
+
 	comp, ok, err := a.store.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: jobID,
-		Status:   status,
-		ExitCode: r.GetExitCode(),
-		ErrorMsg: r.GetError(),
+		JobRunID:        jobID,
+		Status:          status,
+		ExitCode:        r.GetExitCode(),
+		ErrorMsg:        r.GetError(),
+		ExpectedAgentID: agentID,
+		ExpectedAttempt: expectedAttempt,
 	})
 	if err != nil {
 		log.Warn("agent result: complete job", "err", err, "job_id", jobID)
 		return
 	}
 	if !ok {
-		log.Debug("agent result: job already terminal", "job_id", jobID)
+		log.Debug("agent result: job already terminal or snapshot stale",
+			"job_id", jobID, "session_agent", agentID,
+			"expected_attempt", expectedAttempt)
 		return
 	}
 
-	a.sessions.Release(agentID)
+	// Job is terminal. Drop the per-session assignment entry so the
+	// session's sync.Map stays bounded over its lifetime (one entry
+	// per concurrently-running job, freed on terminal result).
+	sess.ClearAssignment(jobID)
+	// Decrement THIS session's running counter directly. The old
+	// path went through a.sessions.Release(agentID) which looked
+	// up the CURRENT session by agent — broken under a successor-
+	// register race: if a new session swapped in between
+	// CompleteJob's return and Release's lookup, the new session
+	// would get decremented to -1 and admit one extra dispatch
+	// beyond its real capacity. Going via sess directly pins the
+	// decrement to the session that actually accepted the
+	// assignment.
+	sess.DecRunning()
 
 	// Metrics: pair the scheduler's dispatch-time JobsRunning.Inc
 	// with a Dec here so a healthy run round-trips the gauge to

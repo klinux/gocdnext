@@ -105,9 +105,20 @@ func (s *Store) FindAgentByName(ctx context.Context, name string) (Agent, error)
 }
 
 // MarkAgentOnline persists the metadata coming from a Register call and flips
-// the agent to status='online', last_seen_at=NOW().
-func (s *Store) MarkAgentOnline(ctx context.Context, id uuid.UUID, upd RegisterUpdate) error {
-	err := s.q.UpdateAgentOnRegister(ctx, db.UpdateAgentOnRegisterParams{
+// the agent to status='online', last_seen_at=NOW(). The per-agent
+// session_generation counter is bumped atomically and returned —
+// the caller (Connect handler) captures it for its eventual
+// MarkAgentOffline defer, which only fires if the generation still
+// matches at close-time (no-op if a successor Register has since
+// bumped it).
+//
+// Why a counter instead of the session UUID: session ids are bearer
+// credentials accepted by Connect's auth. Persisting them gives any
+// read-only DB leak (backup, snapshot, log) the power to impersonate
+// live sessions. A monotonic int carries the "is this defer's epoch
+// still current?" signal with zero auth power.
+func (s *Store) MarkAgentOnline(ctx context.Context, id uuid.UUID, upd RegisterUpdate) (int64, error) {
+	gen, err := s.q.UpdateAgentOnRegister(ctx, db.UpdateAgentOnRegisterParams{
 		ID:       pgUUID(id),
 		Version:  nullableString(upd.Version),
 		Os:       nullableString(upd.OS),
@@ -116,15 +127,22 @@ func (s *Store) MarkAgentOnline(ctx context.Context, id uuid.UUID, upd RegisterU
 		Capacity: upd.Capacity,
 	})
 	if err != nil {
-		return fmt.Errorf("store: mark agent online: %w", err)
+		return 0, fmt.Errorf("store: mark agent online: %w", err)
 	}
-	return nil
+	return gen, nil
 }
 
-// MarkAgentOffline flips status without touching metadata. Called when the
-// Connect stream closes.
-func (s *Store) MarkAgentOffline(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.MarkAgentOffline(ctx, pgUUID(id)); err != nil {
+// MarkAgentOffline flips status to 'offline' IF the agents row's
+// session_generation still matches the caller's observed value.
+// A successor Register bumps session_generation, so the old
+// stream's defer (which captured the prior value at register time)
+// finds no rows to touch and no-ops — preserving the successor's
+// online state.
+func (s *Store) MarkAgentOffline(ctx context.Context, id uuid.UUID, observedGeneration int64) error {
+	if err := s.q.MarkAgentOffline(ctx, db.MarkAgentOfflineParams{
+		ID:                 pgUUID(id),
+		ObservedGeneration: observedGeneration,
+	}); err != nil {
 		return fmt.Errorf("store: mark agent offline: %w", err)
 	}
 	return nil

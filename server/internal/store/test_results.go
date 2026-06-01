@@ -47,13 +47,46 @@ type TestResultIn struct {
 // operations run in one transaction so a partial failure rolls
 // the whole batch back; a rerun that fails mid-insert doesn't
 // leave a half-populated state behind.
-func (s *Store) WriteTestResults(ctx context.Context, jobRunID uuid.UUID, results []TestResultIn) error {
+//
+// expectedAgentID + expectedAttempt are the snapshot the caller
+// observed when it took possession of the work. WriteTestResults
+// looks up the job_run row FOR UPDATE inside the transaction and
+// aborts (returning ErrSnapshotStale) if the row's current
+// (agent_id, attempt) no longer matches — meaning a reaper /
+// fence / rerun moved this job to a different attempt or agent
+// between the caller's check and our commit, and writing the
+// delete+insert would clobber whoever owns the row now.
+//
+// The FOR UPDATE serialises against concurrent CompleteJob /
+// ReclaimJobForRetry / RerunJob calls within the predicate
+// window. They can still race outside the tx, but the snapshot
+// check inside the lock is the load-bearing guard.
+func (s *Store) WriteTestResults(ctx context.Context, jobRunID, expectedAgentID uuid.UUID, expectedAttempt int32, results []TestResultIn) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("store: write test results: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
+
+	// Snapshot CAS: lock the row + verify the (agent, attempt)
+	// pair the caller observed is still on it. ErrSnapshotStale
+	// surfaces the race so the handler can drop the batch loudly
+	// instead of silently clobbering.
+	var rowAgent pgtype.UUID
+	var rowAttempt int32
+	if err := tx.QueryRow(ctx,
+		`SELECT agent_id, attempt FROM job_runs WHERE id = $1 FOR UPDATE`, jobRunID,
+	).Scan(&rowAgent, &rowAttempt); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrSnapshotStale
+		}
+		return fmt.Errorf("store: write test results: lock row: %w", err)
+	}
+	rowAgentUUID := fromPgUUID(rowAgent)
+	if rowAgentUUID != expectedAgentID || rowAttempt != expectedAttempt {
+		return ErrSnapshotStale
+	}
 
 	if err := q.DeleteTestResultsByJobRun(ctx, pgUUID(jobRunID)); err != nil {
 		return fmt.Errorf("store: write test results: clear: %w", err)

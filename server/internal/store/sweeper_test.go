@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -175,6 +176,885 @@ func TestReclaimStaleJobs_IgnoresNullAgent(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("reclaimed %d queued jobs, want 0", len(got))
+	}
+}
+
+// TestReclaimStaleJobs_ReclaimsRunningWithNullAgent covers the defensive
+// secondary path: an agent_id NULL'd out (manual DB intervention, future
+// regression, or partial migration) on a row that's still 'running'
+// would otherwise be invisible to the reaper forever — its INNER JOIN
+// to agents drops these rows silently. The LEFT-JOIN variant picks them
+// up after the same staleness window applied to started_at.
+//
+// This is the (running, agent_id=NULL) trap issue #4 documents.
+func TestReclaimStaleJobs_ReclaimsRunningWithNullAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+	// Simulate the trap: NULL out agent_id while leaving status='running'.
+	// started_at is set well outside the staleness window so the reaper
+	// commits to reclaiming this orphan.
+	_, err := pool.Exec(ctx, `
+		UPDATE job_runs
+		SET agent_id = NULL, started_at = NOW() - INTERVAL '10 minutes'
+		WHERE id = $1`, jobID)
+	if err != nil {
+		t.Fatalf("seed null-agent orphan: %v", err)
+	}
+
+	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionRequeued {
+		t.Fatalf("got = %+v, want 1 requeue", got)
+	}
+	if got[0].JobRunID != jobID {
+		t.Fatalf("reclaimed job_id %s, want %s", got[0].JobRunID, jobID)
+	}
+
+	var status string
+	var agent *uuid.UUID
+	_ = pool.QueryRow(ctx, `SELECT status, agent_id FROM job_runs WHERE id=$1`, jobID).
+		Scan(&status, &agent)
+	if status != "queued" {
+		t.Fatalf("post-reclaim status = %q, want queued", status)
+	}
+	if agent != nil {
+		t.Fatalf("post-reclaim agent_id = %v, want nil", agent)
+	}
+}
+
+// TestReclaimStaleJobs_LeavesFreshNullAgentAlone — counterpart: a NULL-agent
+// row whose started_at is WITHIN the staleness window must not be touched.
+// Otherwise a job that's in the brief window between AssignJob's UPDATE and
+// the agent's first heartbeat would get yanked out from under itself.
+// In practice AssignJob is atomic (status + agent_id together) so this
+// state shouldn't exist via normal paths, but the reaper's behaviour must
+// still be deterministic for any caller that constructs it.
+func TestReclaimStaleJobs_LeavesFreshNullAgentAlone(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+	_, err := pool.Exec(ctx, `
+		UPDATE job_runs SET agent_id = NULL, started_at = NOW()
+		WHERE id = $1`, jobID)
+	if err != nil {
+		t.Fatalf("seed fresh null-agent: %v", err)
+	}
+
+	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("reclaimed %d fresh null-agent rows, want 0", len(got))
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&status)
+	if status != "running" {
+		t.Fatalf("status = %q, want running (untouched)", status)
+	}
+}
+
+// TestReclaimAgentJobs_RequeuesAllRunningJobsForAgent locks in the
+// register-fence path: when an agent re-registers, the orchestrator
+// declares every running job assigned to that agent_id as stale (the
+// agent process that took them is gone — registration is a singular
+// event per process lifetime). This is the actual fix for the
+// "agent restarts, job stuck running forever, reaper skips because
+// last_seen_at is fresh" deadlock the operator hit.
+func TestReclaimAgentJobs_RequeuesAllRunningJobsForAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, runID := seedRunningAgentJob(t, pool)
+	// Keep agent looking healthy — that's the point: the existing
+	// reaper wouldn't pick this up, only the fence does.
+	_, _ = pool.Exec(ctx, `UPDATE agents SET status='online', last_seen_at=NOW() WHERE id=$1`, agentID)
+
+	if err := s.InsertLogLine(ctx, store.LogLine{
+		JobRunID: jobID, Seq: 1, Stream: "stdout", Text: "from previous incarnation", At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+
+	got, err := s.ReclaimAgentJobs(ctx, agentID, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionRequeued {
+		t.Fatalf("got = %+v, want 1 requeue", got)
+	}
+	if got[0].RunID != runID || got[0].JobRunID != jobID {
+		t.Fatalf("reclaimed ids mismatch: %+v", got[0])
+	}
+
+	var status string
+	var agent *uuid.UUID
+	var attempt int32
+	_ = pool.QueryRow(ctx, `SELECT status, agent_id, attempt FROM job_runs WHERE id=$1`, jobID).
+		Scan(&status, &agent, &attempt)
+	if status != "queued" || agent != nil || attempt != 1 {
+		t.Fatalf("post-fence row: status=%q agent=%v attempt=%d", status, agent, attempt)
+	}
+
+	// Old log lines wiped (matches the existing reclaim path) so the
+	// retry doesn't inherit stale output.
+	var logCount int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id=$1`, jobID).Scan(&logCount)
+	if logCount != 0 {
+		t.Fatalf("log lines remaining = %d, want 0", logCount)
+	}
+}
+
+// TestReclaimAgentJobs_FailsAtMaxAttempts — fence-on-register can also push
+// a job over the retry cap. Cap-exceeded path uses CompleteJob so stage/run
+// cascade matches the legacy reaper failure flow.
+func TestReclaimAgentJobs_FailsAtMaxAttempts(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, runID := seedRunningAgentJob(t, pool)
+	_, _ = pool.Exec(ctx, `UPDATE job_runs SET attempt = 3 WHERE id=$1`, jobID)
+
+	got, err := s.ReclaimAgentJobs(ctx, agentID, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionFailed {
+		t.Fatalf("got = %+v, want 1 fail", got)
+	}
+
+	var status, errMsg string
+	_ = pool.QueryRow(ctx, `SELECT status, COALESCE(error,'') FROM job_runs WHERE id=$1`, jobID).
+		Scan(&status, &errMsg)
+	if status != "failed" || errMsg == "" {
+		t.Fatalf("post-fence row: status=%q err=%q", status, errMsg)
+	}
+	var runStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, runID).Scan(&runStatus)
+	if runStatus != "failed" {
+		t.Fatalf("run cascade status = %q, want failed", runStatus)
+	}
+}
+
+// TestReclaimAgentJobs_NoopOnFreshAgent — first-ever register or an agent
+// that genuinely has no running jobs must produce a zero-cost noop. This is
+// the hot path (every register hits it).
+func TestReclaimAgentJobs_NoopOnFreshAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	var agentID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agents (name, token_hash) VALUES ('fresh-agent', 'h') RETURNING id`,
+	).Scan(&agentID); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+
+	got, err := s.ReclaimAgentJobs(ctx, agentID, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("reclaimed %d on fresh agent, want 0", len(got))
+	}
+}
+
+// TestReclaimAgentJobs_OnlyTouchesGivenAgent guards the scope: an agent
+// re-registering must not yank jobs assigned to OTHER agents. With multiple
+// agents in the fleet this is the difference between "self-heal stuck
+// runs" and "stampede that crashes the cluster".
+func TestReclaimAgentJobs_OnlyTouchesGivenAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobAID, agentA, _ := seedRunningAgentJob(t, pool)
+	// Spin a second running job tied to a DIFFERENT agent. Both
+	// agents look healthy.
+	jobBID, agentB, _ := seedRunningAgentJob(t, pool)
+	_, _ = pool.Exec(ctx, `UPDATE agents SET status='online', last_seen_at=NOW() WHERE id IN ($1, $2)`, agentA, agentB)
+
+	got, err := s.ReclaimAgentJobs(ctx, agentA, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].JobRunID != jobAID {
+		t.Fatalf("got = %+v, want only jobA reclaimed", got)
+	}
+
+	// jobB stays running because agentB didn't register.
+	var statusB string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobBID).Scan(&statusB)
+	if statusB != "running" {
+		t.Fatalf("jobB status = %q, want running (untouched)", statusB)
+	}
+}
+
+// TestReclaimAgentJobs_IgnoresAlreadyTerminal handles the race where the
+// agent's last JobResult lands AFTER the agent's stream broke but BEFORE
+// our fence fires. The job is already success/failed by the time we get
+// here — touching it would corrupt the audit trail.
+func TestReclaimAgentJobs_IgnoresAlreadyTerminal(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	// Race-window simulation: result landed first.
+	_, _ = pool.Exec(ctx,
+		`UPDATE job_runs SET status='success', finished_at=NOW(), exit_code=0 WHERE id=$1`, jobID)
+
+	got, err := s.ReclaimAgentJobs(ctx, agentID, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("reclaimed %d terminal jobs, want 0", len(got))
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&status)
+	if status != "success" {
+		t.Fatalf("status = %q, want success (untouched)", status)
+	}
+}
+
+// TestReclaimJobForRetry_StaleSnapshotIsNoop exercises the CAS guard
+// directly on the SQL: a caller that observed (agent=A0, attempt=N)
+// must not be able to requeue the row after a concurrent path moved
+// it to (agent=A1, attempt=N+1). This is the predicate inside
+// ReclaimJobForRetry — running the higher-level Reclaim* paths
+// can't reach this directly because the List step filters by the
+// stale agent and returns zero. Hits the query directly via the
+// store internals so the guard itself is what we cover.
+//
+// Reviewer caught that the earlier version of this test mutated the
+// row before the List step, so neither CAS query actually ran —
+// the test passed even without the snapshot predicate. This
+// version goes one level deeper and proves the predicate is the
+// load-bearing check.
+func TestReclaimJobForRetry_StaleSnapshotIsNoop(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, originalAgent, _ := seedRunningAgentJob(t, pool)
+
+	// Simulate the race: between our snapshot read and our reclaim,
+	// a concurrent path requeued + redispatched the row to a NEW
+	// agent with attempt bumped. Our caller still holds the
+	// (originalAgent, attempt=0) snapshot.
+	var newAgent uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agents (name, token_hash, status, last_seen_at)
+		 VALUES ('redispatched-agent', 'h', 'online', NOW()) RETURNING id`,
+	).Scan(&newAgent); err != nil {
+		t.Fatalf("seed redispatched agent: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET agent_id=$1, attempt=attempt+1 WHERE id=$2`,
+		newAgent, jobID,
+	); err != nil {
+		t.Fatalf("simulate redispatch: %v", err)
+	}
+
+	// Invoke the snapshot-validating CAS directly with the STALE
+	// (originalAgent, attempt=0) snapshot. Predicate must refuse
+	// to match — agent_id is now newAgent and attempt is 1.
+	res := store.ReclaimResult{JobRunID: jobID}
+	err := s.RequeueStaleJobForTest(ctx, jobID, 3,
+		0 /*expectedAttempt=stale*/, originalAgent /*expectedAgent=stale*/, false, &res)
+	if err != nil {
+		t.Fatalf("requeueStaleJob: %v", err)
+	}
+	if res.Action != store.ReclaimActionSkipped {
+		t.Fatalf("res.Action = %q, want Skipped (stale snapshot rejected)", res.Action)
+	}
+
+	// Row must be untouched: still running on the NEW agent at
+	// attempt=1. The stale snapshot didn't clobber it.
+	var status string
+	var agent uuid.UUID
+	var attempt int32
+	if err := pool.QueryRow(ctx,
+		`SELECT status, agent_id, attempt FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&status, &agent, &attempt); err != nil {
+		t.Fatalf("post-snapshot lookup: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("status = %q, want running (CAS protected)", status)
+	}
+	if agent != newAgent {
+		t.Fatalf("agent_id = %s, want %s (CAS protected)", agent, newAgent)
+	}
+	if attempt != 1 {
+		t.Fatalf("attempt = %d, want 1 (CAS protected)", attempt)
+	}
+}
+
+// TestFailStaleJobAtMax_StaleSnapshotIsNoop — twin of the test above
+// for the cap-exceeded path. Same race shape; the FailStaleJobAtMax
+// predicate must refuse to flip status=failed when the (agent,
+// attempt) snapshot is stale.
+func TestFailStaleJobAtMax_StaleSnapshotIsNoop(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, originalAgent, _ := seedRunningAgentJob(t, pool)
+	// Push attempt to the cap so the fail-at-max path would fire
+	// if the snapshot were fresh.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET attempt=3 WHERE id=$1`, jobID,
+	); err != nil {
+		t.Fatalf("prime attempt: %v", err)
+	}
+
+	// Race-window: row gets requeued + redispatched + bumped to
+	// attempt=4 on a different agent before our cap-exceeded path
+	// runs.
+	var newAgent uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agents (name, token_hash, status, last_seen_at)
+		 VALUES ('redispatched-cap', 'h', 'online', NOW()) RETURNING id`,
+	).Scan(&newAgent); err != nil {
+		t.Fatalf("seed redispatched agent: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET agent_id=$1, attempt=attempt+1 WHERE id=$2`,
+		newAgent, jobID,
+	); err != nil {
+		t.Fatalf("simulate redispatch: %v", err)
+	}
+
+	_, ok, err := s.FailJobIfStaleForTest(ctx, jobID, 3, originalAgent, "stale fence")
+	if err != nil {
+		t.Fatalf("FailJobIfStale: %v", err)
+	}
+	if ok {
+		t.Fatal("FailStaleJobAtMax matched the stale snapshot; CAS guard is gone")
+	}
+
+	var status string
+	var agent uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT status, agent_id FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&status, &agent); err != nil {
+		t.Fatalf("post-snapshot lookup: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("status = %q, want running (CAS protected)", status)
+	}
+	if agent != newAgent {
+		t.Fatalf("agent_id = %s, want %s (CAS protected)", agent, newAgent)
+	}
+}
+
+// TestReclaimStaleJobs_NullAgentWithNullStartedAt_ReclaimsImmediately —
+// reviewer caught that the old COALESCE(started_at, NOW()) hid a class
+// of corruption: status='running' AND agent_id IS NULL AND started_at
+// IS NULL would never trip the staleness window because COALESCE made
+// it look infinitely fresh. That state is unreachable via normal paths
+// (AssignJob sets both, ReclaimJobForRetry flips both), so when it
+// exists, it's data corruption and should be reclaimed on the next
+// reaper tick instead of waiting forever.
+func TestReclaimStaleJobs_NullAgentWithNullStartedAt_ReclaimsImmediately(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+	// The pathological combo: NULL agent, NULL started_at, running.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET agent_id = NULL, started_at = NULL WHERE id = $1`,
+		jobID,
+	); err != nil {
+		t.Fatalf("seed corrupt orphan: %v", err)
+	}
+
+	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionRequeued {
+		t.Fatalf("got = %+v, want 1 requeue (corruption pattern)", got)
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&status)
+	if status != "queued" {
+		t.Fatalf("status = %q, want queued", status)
+	}
+}
+
+// TestReclaimAgentJobs_NoNotifyDuringFence locks in the
+// no-notify-while-fencing contract: the fence path must NOT emit
+// pg_notify on RunQueuedChannel while it's reclaiming, otherwise the
+// scheduler can wake up, see the old session as idle, and re-dispatch
+// the just-requeued job to it (the prior incarnation of the agent
+// that the fence is fencing OFF). Asserts the fence-path requeue
+// completes WITHOUT pushing into the LISTEN channel.
+func TestReclaimAgentJobs_NoNotifyDuringFence(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+
+	// Open a LISTENer BEFORE the fence so we don't miss the notify.
+	listenConn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire listen conn: %v", err)
+	}
+	defer listenConn.Release()
+	if _, err := listenConn.Exec(ctx, "LISTEN "+store.RunQueuedChannel); err != nil {
+		t.Fatalf("LISTEN: %v", err)
+	}
+
+	got, err := s.ReclaimAgentJobs(ctx, agentID, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionRequeued {
+		t.Fatalf("got = %+v, want 1 requeue", got)
+	}
+	_ = jobID
+
+	// Try to receive any notify with a short deadline. None should
+	// arrive — the fence path passes notify=false to requeueStaleJob,
+	// the test fails fast if anything got through.
+	waitCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	n, err := listenConn.Conn().WaitForNotification(waitCtx)
+	if err == nil {
+		t.Fatalf("unexpected NOTIFY during fence: %+v", n)
+	}
+}
+
+// TestCompleteJob_RejectsStaleAgentSnapshot — the result-handler
+// twin of the reclaim CAS tests. A late JobResult from a session
+// whose job was reclaimed (agent_id=NULL now) or redispatched
+// (different agent_id) must NOT match the CompleteJobRun predicate.
+// Reviewer caught that the OLD predicate `status IN ('queued',
+// 'running')` had NO agent_id check, so a stale revoked-session
+// message could complete the new attempt with the old exit code.
+func TestCompleteJob_RejectsStaleAgentSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, originalAgent, _ := seedRunningAgentJob(t, pool)
+
+	// Simulate: row was reclaimed by the register-fence. agent_id
+	// is now NULL, status flipped back to queued, attempt bumped.
+	// (We don't go through ReclaimAgentJobs here — direct UPDATE
+	// matches the post-fence state precisely.)
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='queued', agent_id=NULL,
+		 started_at=NULL, finished_at=NULL, attempt=attempt+1 WHERE id=$1`,
+		jobID,
+	); err != nil {
+		t.Fatalf("simulate reclaim: %v", err)
+	}
+
+	// A stale result from the original agent now arrives. Passes
+	// originalAgent as ExpectedAgentID. The CompleteJobRun predicate
+	// must refuse: agent_id IS NULL on the row, expected is non-NULL,
+	// so `IS NOT DISTINCT FROM` is false. ok=false; row stays queued.
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        jobID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: originalAgent,
+	})
+	if err != nil {
+		t.Fatalf("CompleteJob: %v", err)
+	}
+	if ok {
+		t.Fatal("stale result was accepted after reclaim — CAS guard is gone")
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&status)
+	if status != "queued" {
+		t.Fatalf("status = %q, want queued (untouched)", status)
+	}
+}
+
+// TestCompleteJob_AcceptsMatchingAgentSnapshot is the positive twin:
+// when the predicate matches, the result lands as before. Sanity
+// check that adding the CAS didn't break the happy path.
+func TestCompleteJob_AcceptsMatchingAgentSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        jobID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: agentID,
+	})
+	if err != nil || !ok {
+		t.Fatalf("CompleteJob: ok=%v err=%v", ok, err)
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&status)
+	if status != "success" {
+		t.Fatalf("status = %q, want success", status)
+	}
+}
+
+// TestCompleteJob_AcceptsQueuedWithNullExpected is the third case:
+// the scheduler's dispatch-time fail path (failJobWithError) flips
+// a queued (agent_id=NULL) row to failed. Must pass uuid.Nil as
+// ExpectedAgentID so the NULL-NULL match via IS NOT DISTINCT FROM
+// works.
+func TestCompleteJob_AcceptsQueuedWithNullExpected(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	res, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	// Pick any queued job — they're still (queued, NULL).
+	var queuedJob uuid.UUID
+	for _, j := range res.JobRuns {
+		queuedJob = j.ID
+		break
+	}
+
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        queuedJob,
+		Status:          "failed",
+		ExitCode:        -1,
+		ErrorMsg:        "dispatch-time fail",
+		ExpectedAgentID: uuid.Nil,
+	})
+	if err != nil || !ok {
+		t.Fatalf("dispatch-time fail: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestCompleteJob_RejectsStaleAttemptOnSameAgent is the regression
+// cover for HIGH #1 (round 2): the agent-id CAS alone wasn't enough.
+// A k8s rolling agent restart reuses the SAME agent UUID, so a stale
+// result from the OLD agent process for a job that's been
+// redispatched to the NEW process matches the agent_id check.
+// Attempt validation closes that gap.
+func TestCompleteJob_RejectsStaleAttemptOnSameAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+
+	// Simulate the redispatch: same agent UUID, attempt bumped to 1.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET attempt=1 WHERE id=$1`, jobID,
+	); err != nil {
+		t.Fatalf("simulate redispatch attempt bump: %v", err)
+	}
+
+	// Stale result with attempt=0 (the OLD attempt the dead process
+	// just finished). Agent UUID matches the row's agent_id. Without
+	// the attempt predicate, this would erroneously complete attempt 1.
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        jobID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: agentID,
+		ExpectedAttempt: 0, // STALE
+	})
+	if err != nil {
+		t.Fatalf("CompleteJob: %v", err)
+	}
+	if ok {
+		t.Fatal("stale-attempt result was accepted; attempt CAS guard missing")
+	}
+
+	var status string
+	var attempt int32
+	_ = pool.QueryRow(ctx,
+		`SELECT status, attempt FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&status, &attempt)
+	if status != "running" {
+		t.Fatalf("status = %q, want running (CAS protected)", status)
+	}
+	if attempt != 1 {
+		t.Fatalf("attempt = %d, want 1 (untouched)", attempt)
+	}
+}
+
+// TestUnassignJob_RollsBackOnExactSnapshot covers HIGH #1: when
+// the scheduler's AssignJob succeeded but DispatchAssignment failed
+// (busy session queue, agent vanished in the gRPC ms), the row must
+// roll back to (queued, NULL, attempt unchanged) — otherwise the
+// agent's last_seen_at keeps it looking healthy to the reaper and
+// the job is orphan-running forever.
+func TestUnassignJob_RollsBackOnExactSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	var attempt int32
+	_ = pool.QueryRow(ctx, `SELECT attempt FROM job_runs WHERE id=$1`, jobID).Scan(&attempt)
+
+	runID, ok, err := s.UnassignJob(ctx, jobID, agentID, attempt)
+	if err != nil {
+		t.Fatalf("UnassignJob: %v", err)
+	}
+	if !ok {
+		t.Fatal("UnassignJob ok=false on exact snapshot")
+	}
+	if runID == uuid.Nil {
+		t.Fatal("UnassignJob returned uuid.Nil run id")
+	}
+
+	var status string
+	var aid *uuid.UUID
+	var newAttempt int32
+	_ = pool.QueryRow(ctx, `SELECT status, agent_id, attempt FROM job_runs WHERE id=$1`, jobID).
+		Scan(&status, &aid, &newAttempt)
+	if status != "queued" {
+		t.Errorf("status = %q, want queued", status)
+	}
+	if aid != nil {
+		t.Errorf("agent_id = %v, want NULL", aid)
+	}
+	if newAttempt != attempt {
+		t.Errorf("attempt bumped from %d to %d; rollback must preserve", attempt, newAttempt)
+	}
+}
+
+// TestUnassignJob_NoopOnStaleSnapshot — a concurrent reaper /
+// rerun / fence may have moved the row to a different state
+// between AssignJob and our Unassign attempt. The CAS must refuse
+// to undo what's now somebody else's row.
+func TestUnassignJob_NoopOnStaleSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	// Simulate concurrent attempt-bump (a redispatch on the same row).
+	_, _ = pool.Exec(ctx, `UPDATE job_runs SET attempt=attempt+1 WHERE id=$1`, jobID)
+
+	_, ok, err := s.UnassignJob(ctx, jobID, agentID, 0 /*stale attempt*/)
+	if err != nil {
+		t.Fatalf("UnassignJob: %v", err)
+	}
+	if ok {
+		t.Fatal("UnassignJob matched the stale snapshot — CAS guard missing")
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&status)
+	if status != "running" {
+		t.Errorf("status = %q after stale Unassign, want running (untouched)", status)
+	}
+}
+
+// TestMarkAgentOffline_NoopWhenSessionSuperseded — HIGH #2's
+// regression cover. agents.session_generation is the CAS key the
+// Connect handler's defer carries; MarkAgentOffline must no-op
+// when a successor MarkAgentOnline has bumped the counter past
+// the value the closing defer observed.
+//
+// Why generation instead of session UUID: persisting the session
+// id in the DB would leak a bearer credential through any
+// read-only DB exposure (backup, snapshot, log). A monotonic int
+// carries the "is this defer's epoch current?" signal with no
+// authentication power — see migration 00033.
+func TestMarkAgentOffline_NoopWhenSessionSuperseded(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	var agentID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agents (name, token_hash) VALUES ('mao-test', 'h') RETURNING id`,
+	).Scan(&agentID); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+
+	// Old session → online; capture generation.
+	oldGen, err := s.MarkAgentOnline(ctx, agentID, store.RegisterUpdate{})
+	if err != nil {
+		t.Fatalf("MarkAgentOnline old: %v", err)
+	}
+	// Successor session → online (bumps generation).
+	newGen, err := s.MarkAgentOnline(ctx, agentID, store.RegisterUpdate{})
+	if err != nil {
+		t.Fatalf("MarkAgentOnline new: %v", err)
+	}
+	if newGen <= oldGen {
+		t.Fatalf("generation didn't bump: old=%d new=%d", oldGen, newGen)
+	}
+
+	// Old stream's defer eventually fires, carrying oldGen. Row's
+	// session_generation is newGen by now → CAS mismatch → no-op.
+	if err := s.MarkAgentOffline(ctx, agentID, oldGen); err != nil {
+		t.Fatalf("MarkAgentOffline old: %v", err)
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM agents WHERE id=$1`, agentID).Scan(&status)
+	if status != "online" {
+		t.Fatalf("status = %q, want online (CAS protected the successor)", status)
+	}
+}
+
+// TestMarkAgentOffline_FiresWhenSessionStillCurrent — twin: when
+// the defer's observed generation IS the row's current generation,
+// the offline mark goes through (normal disconnect path).
+func TestMarkAgentOffline_FiresWhenSessionStillCurrent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	var agentID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agents (name, token_hash) VALUES ('mao-fires', 'h') RETURNING id`,
+	).Scan(&agentID); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+	gen, err := s.MarkAgentOnline(ctx, agentID, store.RegisterUpdate{})
+	if err != nil {
+		t.Fatalf("MarkAgentOnline: %v", err)
+	}
+	if err := s.MarkAgentOffline(ctx, agentID, gen); err != nil {
+		t.Fatalf("MarkAgentOffline: %v", err)
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM agents WHERE id=$1`, agentID).Scan(&status)
+	if status != "offline" {
+		t.Fatalf("status = %q, want offline (normal disconnect)", status)
+	}
+}
+
+// TestWriteTestResults_RejectsStaleSnapshot — MED regression cover:
+// the test results CAS must reject a batch whose (agent, attempt)
+// snapshot no longer matches the row. Without it, a session that
+// outlives a reaper-driven reclaim could silently clobber the new
+// attempt's test_results via the delete+insert pattern.
+func TestWriteTestResults_RejectsStaleSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	// Caller observes attempt=0, agent=originalAgent. Concurrent
+	// reaper requeues + redispatches: attempt=1, different agent.
+	var newAgent uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agents (name, token_hash, status, last_seen_at)
+		 VALUES ('tr-new', 'h', 'online', NOW()) RETURNING id`,
+	).Scan(&newAgent); err != nil {
+		t.Fatalf("seed new agent: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET agent_id=$1, attempt=attempt+1 WHERE id=$2`,
+		newAgent, jobID,
+	); err != nil {
+		t.Fatalf("simulate redispatch: %v", err)
+	}
+
+	err := s.WriteTestResults(ctx, jobID, agentID, 0,
+		[]store.TestResultIn{{Suite: "s", Name: "t", Status: store.TestStatusPassed}})
+	if !errors.Is(err, store.ErrSnapshotStale) {
+		t.Fatalf("err = %v, want ErrSnapshotStale", err)
+	}
+
+	// Row's test_results count should be 0 (no clobber).
+	var count int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM test_results WHERE job_run_id=$1`, jobID,
+	).Scan(&count)
+	if count != 0 {
+		t.Fatalf("test_results count = %d, want 0 (stale write blocked)", count)
+	}
+}
+
+// TestWriteTestResults_AcceptsMatchingSnapshot is the happy path:
+// the (agent, attempt) the caller observed is what's on the row,
+// the delete+insert lands cleanly.
+func TestWriteTestResults_AcceptsMatchingSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	err := s.WriteTestResults(ctx, jobID, agentID, 0,
+		[]store.TestResultIn{
+			{Suite: "s", Name: "t1", Status: store.TestStatusPassed},
+			{Suite: "s", Name: "t2", Status: store.TestStatusFailed},
+		})
+	if err != nil {
+		t.Fatalf("WriteTestResults: %v", err)
+	}
+
+	var count int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM test_results WHERE job_run_id=$1`, jobID,
+	).Scan(&count)
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+}
+
+// TestReclaim_WipesTestResults — the reaper's requeue path now
+// deletes test_results alongside log_lines so a retry doesn't
+// inherit the prior attempt's JUnit display. Without this the
+// Tests tab would show stale rows on the new attempt until the
+// agent emits a fresh report (which it may not — the rerun could
+// fail before test stages run).
+func TestReclaim_WipesTestResults(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+	// Seed test_results that the reclaim should wipe.
+	if err := s.WriteTestResults(ctx, jobID, agentID, 0,
+		[]store.TestResultIn{{Suite: "old", Name: "t1", Status: store.TestStatusPassed}}); err != nil {
+		t.Fatalf("seed test results: %v", err)
+	}
+
+	// Reap via the agent-offline path.
+	_, _ = pool.Exec(ctx, `UPDATE agents SET status='offline' WHERE id=$1`, agentID)
+	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionRequeued {
+		t.Fatalf("expected 1 requeue, got %+v", got)
+	}
+
+	var count int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM test_results WHERE job_run_id=$1`, jobID,
+	).Scan(&count)
+	if count != 0 {
+		t.Fatalf("test_results count = %d, want 0 (reclaim should wipe)", count)
 	}
 }
 

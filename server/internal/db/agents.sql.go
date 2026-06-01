@@ -12,7 +12,7 @@ import (
 )
 
 const findAgentByName = `-- name: FindAgentByName :one
-SELECT id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at
+SELECT id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation
 FROM agents
 WHERE name = $1
 LIMIT 1
@@ -33,6 +33,7 @@ func (q *Queries) FindAgentByName(ctx context.Context, name string) (Agent, erro
 		&i.Status,
 		&i.LastSeenAt,
 		&i.RegisteredAt,
+		&i.SessionGeneration,
 	)
 	return i, err
 }
@@ -40,7 +41,7 @@ func (q *Queries) FindAgentByName(ctx context.Context, name string) (Agent, erro
 const insertAgent = `-- name: InsertAgent :one
 INSERT INTO agents (name, token_hash, version, os, arch, tags, capacity, status)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at
+RETURNING id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation
 `
 
 type InsertAgentParams struct {
@@ -78,6 +79,7 @@ func (q *Queries) InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent
 		&i.Status,
 		&i.LastSeenAt,
 		&i.RegisteredAt,
+		&i.SessionGeneration,
 	)
 	return i, err
 }
@@ -86,23 +88,36 @@ const markAgentOffline = `-- name: MarkAgentOffline :exec
 UPDATE agents
 SET status = 'offline'
 WHERE id = $1
+  AND session_generation = $2::bigint
 `
 
-func (q *Queries) MarkAgentOffline(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, markAgentOffline, id)
+type MarkAgentOfflineParams struct {
+	ID                 pgtype.UUID
+	ObservedGeneration int64
+}
+
+// Generation-aware offline mark. Only flips status when the
+// closing handler's observed generation still matches the row.
+// A successor Register bumps session_generation, so an old
+// defer (which captured the prior value) finds no rows to
+// update and no-ops — preserving the successor's online state.
+func (q *Queries) MarkAgentOffline(ctx context.Context, arg MarkAgentOfflineParams) error {
+	_, err := q.db.Exec(ctx, markAgentOffline, arg.ID, arg.ObservedGeneration)
 	return err
 }
 
-const updateAgentOnRegister = `-- name: UpdateAgentOnRegister :exec
+const updateAgentOnRegister = `-- name: UpdateAgentOnRegister :one
 UPDATE agents
-SET version      = $2,
-    os           = $3,
-    arch         = $4,
-    tags         = $5,
-    capacity     = $6,
-    status       = 'online',
-    last_seen_at = NOW()
+SET version            = $2,
+    os                 = $3,
+    arch               = $4,
+    tags               = $5,
+    capacity           = $6,
+    status             = 'online',
+    last_seen_at       = NOW(),
+    session_generation = session_generation + 1
 WHERE id = $1
+RETURNING session_generation
 `
 
 type UpdateAgentOnRegisterParams struct {
@@ -114,8 +129,20 @@ type UpdateAgentOnRegisterParams struct {
 	Capacity int32
 }
 
-func (q *Queries) UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error {
-	_, err := q.db.Exec(ctx, updateAgentOnRegister,
+// Bumps the per-agent session_generation counter atomically with
+// the online-stamp. The new generation flows back to the caller
+// (Connect handler) which captures it for its eventual
+// MarkAgentOffline defer.
+//
+// Why this is monotonic int rather than session_id (TEXT):
+// session_id is a bearer credential used by Connect's auth — the
+// in-memory SessionStore.Lookup compares raw strings, so anything
+// holding the id can impersonate. Persisting it would mean a
+// read-only DB leak (backup, snapshot, log) effectively dumps live
+// session tokens. The CAS only needs an epoch indicator — a
+// counter carries exactly that signal with no auth power.
+func (q *Queries) UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) (int64, error) {
+	row := q.db.QueryRow(ctx, updateAgentOnRegister,
 		arg.ID,
 		arg.Version,
 		arg.Os,
@@ -123,5 +150,7 @@ func (q *Queries) UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRe
 		arg.Tags,
 		arg.Capacity,
 	)
-	return err
+	var session_generation int64
+	err := row.Scan(&session_generation)
+	return session_generation, err
 }

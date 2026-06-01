@@ -1,16 +1,45 @@
--- name: OtherRunningRunExistsForPipeline :one
--- Returns true when the pipeline has any run in 'running' status
--- other than the one we're about to dispatch. The scheduler checks
--- this for pipelines configured with concurrency: serial and
--- leaves the run queued when another one is already in flight.
--- Excluded self so a re-entrant tick (scheduler evaluates the
--- same run twice) doesn't see itself as a blocker.
-SELECT EXISTS (
-    SELECT 1 FROM runs
-    WHERE pipeline_id = $1
-      AND status = 'running'
-      AND id <> $2
-)::boolean AS running;
+-- name: OtherRunningRunForPipeline :one
+-- Returns the run_id of an in-flight predecessor blocking the
+-- pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
+-- Used by the scheduler for two things on one query: (1) the busy
+-- decision (leave queued vs proceed), and (2) the predecessor id to
+-- stamp on runs.queue_reason so the UI can render "waiting on #N".
+--
+-- Replaces the prior boolean-returning OtherRunningRunExistsForPipeline
+-- — the boolean was load-bearing for the decision alone, but the id
+-- is needed for the operator-visibility surface (issue #4 path #2).
+-- Excluded self so a re-entrant tick (scheduler evaluates the same
+-- run twice) doesn't see itself as a blocker. LIMIT 1 is fine: any
+-- one blocking run is enough to leave queued; we don't need the
+-- full set.
+SELECT id
+FROM runs
+WHERE pipeline_id = $1
+  AND status = 'running'
+  AND id <> $2
+LIMIT 1;
+
+-- name: SetRunQueueReason :exec
+-- Sets runs.queue_reason on a still-queued run. Callers stamp this
+-- AFTER the busy decision so the field reflects the latest tick's
+-- reasoning. A run that flipped to a terminal status between the
+-- scheduler's read and this write would write to a stale row;
+-- the `status='queued'` guard turns that into a no-op rather than
+-- planting a confusing message on a finished run.
+UPDATE runs
+SET queue_reason = $2
+WHERE id = $1
+  AND status = 'queued';
+
+-- name: ClearRunQueueReason :exec
+-- Clears queue_reason. Called by the scheduler when a run transitions
+-- to running (predecessor finished, run is dispatchable). Also called
+-- by terminal-transition paths so a canceled-while-queued run doesn't
+-- carry a stale "waiting on #N" message in the runs list.
+UPDATE runs
+SET queue_reason = NULL
+WHERE id = $1
+  AND queue_reason IS NOT NULL;
 
 -- name: ListDispatchableJobs :many
 -- Returns queued jobs in the lowest-ordinal stage that still has queued or
@@ -21,7 +50,7 @@ WITH active_stage AS (
     FROM stage_runs s
     WHERE s.run_id = $1 AND s.status IN ('queued', 'running')
 )
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs, j.attempt
 FROM job_runs j
 JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1
@@ -33,10 +62,38 @@ ORDER BY j.name, j.matrix_key NULLS FIRST;
 -- name: AssignJob :one
 -- Moves a queued, unassigned job to running and records the agent. The status
 -- predicate prevents a race where two scheduler ticks pick the same job.
+--
+-- `attempt` flows back so the scheduler can RecordAssignment on the
+-- target session — the result handler then validates the (agent,
+-- attempt) snapshot to refuse stale results from revoked sessions
+-- whose job got redispatched to the same agent_id on a higher
+-- attempt. See sessions.Session.RecordAssignment.
 UPDATE job_runs
 SET status = 'running', agent_id = $2, started_at = NOW()
 WHERE id = $1 AND status = 'queued' AND agent_id IS NULL
-RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, agent_id;
+RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, agent_id, attempt;
+
+-- name: UnassignJob :one
+-- Rolls back an AssignJob whose Dispatch failed downstream (busy
+-- session queue, session vanished between AssignJob commit and the
+-- gRPC send). Snapshot-validating CAS — only undoes the row if it's
+-- still (running, $agentID, $attempt), matching exactly what we
+-- just claimed. Anything else means a reaper / fence already moved
+-- the row out from under us and our undo would clobber legitimate
+-- state. Returns the run_id so the caller can fire a NOTIFY to
+-- nudge the scheduler back into the dispatch loop.
+--
+-- The row goes back to (queued, NULL, attempt unchanged) — we do
+-- NOT bump attempt here. The attempt counter exists to detect
+-- crashes mid-execution; a dispatch failure that never reached the
+-- agent doesn't count as an attempt.
+UPDATE job_runs
+SET status = 'queued', agent_id = NULL, started_at = NULL
+WHERE id = $1
+  AND status = 'running'
+  AND agent_id = $2
+  AND attempt = @expected_attempt::int
+RETURNING id, run_id;
 
 -- name: MarkRunRunningIfQueued :exec
 UPDATE runs

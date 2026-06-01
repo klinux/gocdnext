@@ -23,6 +23,71 @@ func (q *Queries) DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID)
 	return err
 }
 
+const failStaleJobAtMax = `-- name: FailStaleJobAtMax :one
+UPDATE job_runs
+SET status = 'failed', finished_at = NOW(), exit_code = -1, error = $2::text
+WHERE id = $1
+  AND status = 'running'
+  AND attempt = $3::int
+  AND agent_id IS NOT DISTINCT FROM $4::uuid
+RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at
+`
+
+type FailStaleJobAtMaxParams struct {
+	ID              pgtype.UUID
+	Reason          string
+	ExpectedAttempt int32
+	ExpectedAgentID pgtype.UUID
+}
+
+type FailStaleJobAtMaxRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	AgentID    pgtype.UUID
+	Name       string
+	StartedAt  pgtype.Timestamptz
+	FinishedAt pgtype.Timestamptz
+}
+
+// Cap-exceeded path for the reaper / fence: flips a still-running
+// row to 'failed' with a fixed error message, IF the snapshot the
+// caller saw still matches. Snapshot validation has the same role
+// as in ReclaimJobForRetry — a concurrent rerun or redispatch could
+// have moved this row to a healthy state on another agent, and
+// failing it on our stale read would corrupt the run.
+//
+// We don't go through CompleteJobRun because that UPDATE is
+// intentionally permissive (accepts both queued+running so a
+// dispatch-time fail-from-queued path works), and adding the
+// snapshot check there would ripple across every result-handler
+// call site. The caller (FailJobIfStale in store/sweeper.go) wraps
+// this query + the existing cascadeAfterJobCompletion helper in
+// one transaction so the stage/run promotion stays identical to
+// the normal terminal path.
+//
+// Return columns mirror CompleteJobRun so the Go caller can
+// reuse the same JobCompletion struct + cascade helper.
+func (q *Queries) FailStaleJobAtMax(ctx context.Context, arg FailStaleJobAtMaxParams) (FailStaleJobAtMaxRow, error) {
+	row := q.db.QueryRow(ctx, failStaleJobAtMax,
+		arg.ID,
+		arg.Reason,
+		arg.ExpectedAttempt,
+		arg.ExpectedAgentID,
+	)
+	var i FailStaleJobAtMaxRow
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StageRunID,
+		&i.AgentID,
+		&i.Name,
+		&i.StartedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const getJobAttempt = `-- name: GetJobAttempt :one
 SELECT id, status, attempt FROM job_runs WHERE id = $1 LIMIT 1
 `
@@ -42,30 +107,130 @@ func (q *Queries) GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAtte
 	return i, err
 }
 
+const listRunningJobsForAgent = `-- name: ListRunningJobsForAgent :many
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id
+FROM job_runs j
+WHERE j.status = 'running' AND j.agent_id = $1
+`
+
+type ListRunningJobsForAgentRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	Name       string
+	Attempt    int32
+	AgentID    pgtype.UUID
+}
+
+// Every running job currently assigned to a given agent_id. The
+// register-fence path uses this: when an agent re-registers (= the
+// prior process is gone), every still-'running' row attributed to it
+// is by definition orphaned and must be reclaimed before we accept
+// new assignments for the new session. This is the primary fix for
+// "agent restarts → job stuck running forever → reaper skips because
+// last_seen_at is fresh" (issue #4).
+//
+// Returned columns mirror ListStaleRunningJobs so the reaper-Go
+// side can reuse the same ReclaimResult shape.
+func (q *Queries) ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListRunningJobsForAgentRow, error) {
+	rows, err := q.db.Query(ctx, listRunningJobsForAgent, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunningJobsForAgentRow{}
+	for rows.Next() {
+		var i ListRunningJobsForAgentRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.StageRunID,
+			&i.Name,
+			&i.Attempt,
+			&i.AgentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleRunningJobs = `-- name: ListStaleRunningJobs :many
 SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id,
-       a.status AS agent_status, a.last_seen_at
+       a.status AS agent_status, a.last_seen_at,
+       COALESCE(a.session_generation, 0)::bigint AS agent_session_generation
 FROM job_runs j
-JOIN agents a ON a.id = j.agent_id
+LEFT JOIN agents a ON a.id = j.agent_id
 WHERE j.status = 'running'
-  AND (a.status = 'offline' OR a.last_seen_at IS NULL
-       OR a.last_seen_at < NOW() - $1::INTERVAL)
+  AND (
+    -- Category 1: has agent + agent is stale.
+    (a.id IS NOT NULL AND (
+        a.status = 'offline'
+        OR a.last_seen_at IS NULL
+        OR a.last_seen_at < NOW() - $1::INTERVAL
+    ))
+    -- Category 2: no agent + job itself looks orphaned.
+    -- ` + "`" + `started_at IS NULL` + "`" + ` AND status='running' is an impossible
+    -- combination via normal paths (AssignJob sets both atomically;
+    -- ReclaimJobForRetry flips to 'queued' atomically); when we
+    -- see it, the row was corrupted by manual intervention / failed
+    -- migration / future-code regression and should be reclaimed
+    -- IMMEDIATELY — waiting out a staleness window for an impossible
+    -- state buys nothing and can leave a serial-concurrency block in
+    -- place forever. For NULL-agent rows that DO have a started_at,
+    -- the staleness window still applies.
+    OR (a.id IS NULL AND (j.started_at IS NULL OR j.started_at < NOW() - $1::INTERVAL))
+  )
 `
 
 type ListStaleRunningJobsRow struct {
-	ID          pgtype.UUID
-	RunID       pgtype.UUID
-	StageRunID  pgtype.UUID
-	Name        string
-	Attempt     int32
-	AgentID     pgtype.UUID
-	AgentStatus string
-	LastSeenAt  pgtype.Timestamptz
+	ID                     pgtype.UUID
+	RunID                  pgtype.UUID
+	StageRunID             pgtype.UUID
+	Name                   string
+	Attempt                int32
+	AgentID                pgtype.UUID
+	AgentStatus            *string
+	LastSeenAt             pgtype.Timestamptz
+	AgentSessionGeneration int64
 }
 
-// Running jobs whose agent is either offline or hasn't been seen within
-// @staleness. The reaper walks this list every tick and either re-queues or
-// fails them.
+// Running jobs the reaper should reclaim. Two distinct categories live
+// under the same SELECT so a single sweep tick handles both:
+//
+//  1. Has agent, agent is unhealthy: status='offline', missing
+//     last_seen_at, or last_seen_at older than @staleness. Original
+//     reaper case — agent process died and we wait the heartbeat
+//     grace window before declaring its jobs gone.
+//  2. Has NO agent (agent_id IS NULL) and the row has been sitting
+//     that way past @staleness. This state shouldn't be reachable
+//     via normal paths (AssignJob is atomic on both fields, and
+//     ReclaimJobForRetry flips status to 'queued' in the same UPDATE
+//     that NULLs the agent), but it surfaces from:
+//     - Manual DB intervention to scrub an agent without flipping
+//     status.
+//     - Future code regression that splits the agent/status update.
+//     - Partial migration that nulled agent_id mid-flight.
+//     The INNER JOIN variant this replaced was invisible to such
+//     orphans — they'd sit 'running' forever, blocking serial
+//     pipelines indefinitely. Issue #4 walks the operator-visibility
+//     consequences.
+//
+// agent_status / last_seen_at come back NULL for category (2); the
+// reaper-Go side doesn't act on those fields beyond logging.
+//
+// agent_session_generation is the per-agent monotonic epoch counter
+// snapshotted at SELECT time. The reaper-Go side passes this back to
+// SessionStore.FenceStaleSession so a successor Register that bumped
+// the counter between SELECT and fence (race that previously could
+// revoke a freshly-online healthy session) is correctly skipped.
+// COALESCE to 0 for category (2) so the Go side gets a stable int —
+// the NULL-agent fence path uses agent_id == uuid.Nil as its skip
+// predicate anyway.
 func (q *Queries) ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error) {
 	rows, err := q.db.Query(ctx, listStaleRunningJobs, staleness)
 	if err != nil {
@@ -84,6 +249,7 @@ func (q *Queries) ListStaleRunningJobs(ctx context.Context, staleness pgtype.Int
 			&i.AgentID,
 			&i.AgentStatus,
 			&i.LastSeenAt,
+			&i.AgentSessionGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -99,13 +265,19 @@ const reclaimJobForRetry = `-- name: ReclaimJobForRetry :one
 UPDATE job_runs
 SET status = 'queued', agent_id = NULL, started_at = NULL, finished_at = NULL,
     exit_code = NULL, error = NULL, attempt = attempt + 1
-WHERE id = $1 AND status = 'running' AND attempt < $2::int
+WHERE id = $1
+  AND status = 'running'
+  AND attempt < $2::int
+  AND attempt = $3::int
+  AND agent_id IS NOT DISTINCT FROM $4::uuid
 RETURNING id, run_id, stage_run_id, name, attempt
 `
 
 type ReclaimJobForRetryParams struct {
-	ID          pgtype.UUID
-	MaxAttempts int32
+	ID              pgtype.UUID
+	MaxAttempts     int32
+	ExpectedAttempt int32
+	ExpectedAgentID pgtype.UUID
 }
 
 type ReclaimJobForRetryRow struct {
@@ -116,11 +288,31 @@ type ReclaimJobForRetryRow struct {
 	Attempt    int32
 }
 
-// Flips a running job back to queued, IF it is still running AND still under
-// the retry cap. Returns the new attempt number; ErrNoRows signals the caller
-// should take a different code path (failed-at-max or already-handled).
+// Flips a running job back to queued, IF it is still running, still
+// under the retry cap, AND its (agent_id, attempt) STILL matches the
+// snapshot the caller observed when it decided the job was stale.
+//
+// Snapshot match is load-bearing: between ListStaleRunningJobs and
+// this UPDATE, a concurrent reaper / register-fence / rerun could
+// have flipped status=queued → scheduler dispatched → AssignJob set
+// (running, NEW_AGENT, attempt+1). Without snapshot validation, this
+// UPDATE would happily requeue a healthy job actively running on
+// the new agent, kicking off a cascade of unnecessary retries that
+// the operator perceives as "jobs randomly re-running for no reason".
+//
+// `agent_id IS NOT DISTINCT FROM` honours NULL equality — the
+// NULL-agent reaper category sees `expected_agent_id` as NULL and
+// only requeues rows that still have NULL there.
+//
+// ErrNoRows signals the caller should take a different code path
+// (failed-at-max, already-reclaimed, raced-out-of-window).
 func (q *Queries) ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error) {
-	row := q.db.QueryRow(ctx, reclaimJobForRetry, arg.ID, arg.MaxAttempts)
+	row := q.db.QueryRow(ctx, reclaimJobForRetry,
+		arg.ID,
+		arg.MaxAttempts,
+		arg.ExpectedAttempt,
+		arg.ExpectedAgentID,
+	)
 	var i ReclaimJobForRetryRow
 	err := row.Scan(
 		&i.ID,

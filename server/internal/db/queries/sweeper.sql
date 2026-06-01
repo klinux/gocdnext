@@ -4,26 +4,134 @@
 UPDATE agents SET last_seen_at = NOW() WHERE id = $1;
 
 -- name: ListStaleRunningJobs :many
--- Running jobs whose agent is either offline or hasn't been seen within
--- @staleness. The reaper walks this list every tick and either re-queues or
--- fails them.
+-- Running jobs the reaper should reclaim. Two distinct categories live
+-- under the same SELECT so a single sweep tick handles both:
+--
+--   1) Has agent, agent is unhealthy: status='offline', missing
+--      last_seen_at, or last_seen_at older than @staleness. Original
+--      reaper case — agent process died and we wait the heartbeat
+--      grace window before declaring its jobs gone.
+--   2) Has NO agent (agent_id IS NULL) and the row has been sitting
+--      that way past @staleness. This state shouldn't be reachable
+--      via normal paths (AssignJob is atomic on both fields, and
+--      ReclaimJobForRetry flips status to 'queued' in the same UPDATE
+--      that NULLs the agent), but it surfaces from:
+--        - Manual DB intervention to scrub an agent without flipping
+--          status.
+--        - Future code regression that splits the agent/status update.
+--        - Partial migration that nulled agent_id mid-flight.
+--      The INNER JOIN variant this replaced was invisible to such
+--      orphans — they'd sit 'running' forever, blocking serial
+--      pipelines indefinitely. Issue #4 walks the operator-visibility
+--      consequences.
+--
+-- agent_status / last_seen_at come back NULL for category (2); the
+-- reaper-Go side doesn't act on those fields beyond logging.
+--
+-- agent_session_generation is the per-agent monotonic epoch counter
+-- snapshotted at SELECT time. The reaper-Go side passes this back to
+-- SessionStore.FenceStaleSession so a successor Register that bumped
+-- the counter between SELECT and fence (race that previously could
+-- revoke a freshly-online healthy session) is correctly skipped.
+-- COALESCE to 0 for category (2) so the Go side gets a stable int —
+-- the NULL-agent fence path uses agent_id == uuid.Nil as its skip
+-- predicate anyway.
 SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id,
-       a.status AS agent_status, a.last_seen_at
+       a.status AS agent_status, a.last_seen_at,
+       COALESCE(a.session_generation, 0)::bigint AS agent_session_generation
 FROM job_runs j
-JOIN agents a ON a.id = j.agent_id
+LEFT JOIN agents a ON a.id = j.agent_id
 WHERE j.status = 'running'
-  AND (a.status = 'offline' OR a.last_seen_at IS NULL
-       OR a.last_seen_at < NOW() - @staleness::INTERVAL);
+  AND (
+    -- Category 1: has agent + agent is stale.
+    (a.id IS NOT NULL AND (
+        a.status = 'offline'
+        OR a.last_seen_at IS NULL
+        OR a.last_seen_at < NOW() - @staleness::INTERVAL
+    ))
+    -- Category 2: no agent + job itself looks orphaned.
+    -- `started_at IS NULL` AND status='running' is an impossible
+    -- combination via normal paths (AssignJob sets both atomically;
+    -- ReclaimJobForRetry flips to 'queued' atomically); when we
+    -- see it, the row was corrupted by manual intervention / failed
+    -- migration / future-code regression and should be reclaimed
+    -- IMMEDIATELY — waiting out a staleness window for an impossible
+    -- state buys nothing and can leave a serial-concurrency block in
+    -- place forever. For NULL-agent rows that DO have a started_at,
+    -- the staleness window still applies.
+    OR (a.id IS NULL AND (j.started_at IS NULL OR j.started_at < NOW() - @staleness::INTERVAL))
+  );
+
+-- name: ListRunningJobsForAgent :many
+-- Every running job currently assigned to a given agent_id. The
+-- register-fence path uses this: when an agent re-registers (= the
+-- prior process is gone), every still-'running' row attributed to it
+-- is by definition orphaned and must be reclaimed before we accept
+-- new assignments for the new session. This is the primary fix for
+-- "agent restarts → job stuck running forever → reaper skips because
+-- last_seen_at is fresh" (issue #4).
+--
+-- Returned columns mirror ListStaleRunningJobs so the reaper-Go
+-- side can reuse the same ReclaimResult shape.
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id
+FROM job_runs j
+WHERE j.status = 'running' AND j.agent_id = $1;
 
 -- name: ReclaimJobForRetry :one
--- Flips a running job back to queued, IF it is still running AND still under
--- the retry cap. Returns the new attempt number; ErrNoRows signals the caller
--- should take a different code path (failed-at-max or already-handled).
+-- Flips a running job back to queued, IF it is still running, still
+-- under the retry cap, AND its (agent_id, attempt) STILL matches the
+-- snapshot the caller observed when it decided the job was stale.
+--
+-- Snapshot match is load-bearing: between ListStaleRunningJobs and
+-- this UPDATE, a concurrent reaper / register-fence / rerun could
+-- have flipped status=queued → scheduler dispatched → AssignJob set
+-- (running, NEW_AGENT, attempt+1). Without snapshot validation, this
+-- UPDATE would happily requeue a healthy job actively running on
+-- the new agent, kicking off a cascade of unnecessary retries that
+-- the operator perceives as "jobs randomly re-running for no reason".
+--
+-- `agent_id IS NOT DISTINCT FROM` honours NULL equality — the
+-- NULL-agent reaper category sees `expected_agent_id` as NULL and
+-- only requeues rows that still have NULL there.
+--
+-- ErrNoRows signals the caller should take a different code path
+-- (failed-at-max, already-reclaimed, raced-out-of-window).
 UPDATE job_runs
 SET status = 'queued', agent_id = NULL, started_at = NULL, finished_at = NULL,
     exit_code = NULL, error = NULL, attempt = attempt + 1
-WHERE id = $1 AND status = 'running' AND attempt < @max_attempts::int
+WHERE id = $1
+  AND status = 'running'
+  AND attempt < @max_attempts::int
+  AND attempt = @expected_attempt::int
+  AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
 RETURNING id, run_id, stage_run_id, name, attempt;
+
+-- name: FailStaleJobAtMax :one
+-- Cap-exceeded path for the reaper / fence: flips a still-running
+-- row to 'failed' with a fixed error message, IF the snapshot the
+-- caller saw still matches. Snapshot validation has the same role
+-- as in ReclaimJobForRetry — a concurrent rerun or redispatch could
+-- have moved this row to a healthy state on another agent, and
+-- failing it on our stale read would corrupt the run.
+--
+-- We don't go through CompleteJobRun because that UPDATE is
+-- intentionally permissive (accepts both queued+running so a
+-- dispatch-time fail-from-queued path works), and adding the
+-- snapshot check there would ripple across every result-handler
+-- call site. The caller (FailJobIfStale in store/sweeper.go) wraps
+-- this query + the existing cascadeAfterJobCompletion helper in
+-- one transaction so the stage/run promotion stays identical to
+-- the normal terminal path.
+--
+-- Return columns mirror CompleteJobRun so the Go caller can
+-- reuse the same JobCompletion struct + cascade helper.
+UPDATE job_runs
+SET status = 'failed', finished_at = NOW(), exit_code = -1, error = @reason::text
+WHERE id = $1
+  AND status = 'running'
+  AND attempt = @expected_attempt::int
+  AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
+RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at;
 
 -- name: DeleteLogLinesByJob :exec
 -- Called after a successful reclaim so the retry starts with a clean log

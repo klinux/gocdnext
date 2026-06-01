@@ -19,7 +19,7 @@ import (
 // first build after a pipeline lands should do.
 func TestRequestCacheGet_MissReturnsNotFound(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "cache-agent-miss")
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "cache-agent-miss")
 
 	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
 		AgentId: "cache-agent-miss", Token: "tok-art",
@@ -27,6 +27,7 @@ func TestRequestCacheGet_MissReturnsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	flipJobRunning(t, pool, jobID, agentID)
 
 	got, err := client.RequestCacheGet(context.Background(), &gocdnextv1.RequestCacheGetRequest{
 		SessionId: resp.SessionId,
@@ -51,7 +52,7 @@ func TestRequestCacheGet_MissReturnsNotFound(t *testing.T) {
 // a signed URL against the same storage_key the PUT used.
 func TestCacheRoundTrip(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "cache-agent-rt")
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "cache-agent-rt")
 
 	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
 		AgentId: "cache-agent-rt", Token: "tok-art",
@@ -59,6 +60,7 @@ func TestCacheRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	flipJobRunning(t, pool, jobID, agentID)
 	ctx := context.Background()
 
 	put, err := client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
@@ -128,7 +130,12 @@ func TestCacheRoundTrip(t *testing.T) {
 // regression would surface here first.
 func TestRequestCachePut_RejectsForeignAgentSession(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "cache-owner")
+	runID, jobID, ownerID := seedDispatchedJob(t, pool, "cache-owner")
+	// Owner never registers, so its agent_id never goes through the
+	// fence. Flip the job to running before the foreign register so
+	// the ownership check has a non-NULL owner agent_id to compare
+	// against the foreign session's AgentID.
+	flipJobRunning(t, pool, jobID, ownerID)
 
 	if _, err := pool.Exec(context.Background(),
 		`INSERT INTO agents (name, token_hash) VALUES ($1, $2)`,
@@ -160,7 +167,7 @@ func TestRequestCachePut_RejectsForeignAgentSession(t *testing.T) {
 // way, refuse rather than masking the bug with a miss.
 func TestRequestCacheGet_RejectsMissingKey(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "cache-badkey")
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "cache-badkey")
 
 	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
 		AgentId: "cache-badkey", Token: "tok-art",
@@ -168,6 +175,7 @@ func TestRequestCacheGet_RejectsMissingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	flipJobRunning(t, pool, jobID, agentID)
 
 	_, err = client.RequestCacheGet(context.Background(), &gocdnextv1.RequestCacheGetRequest{
 		SessionId: resp.SessionId,
@@ -211,7 +219,7 @@ func TestMarkCacheReady_UnknownCacheID(t *testing.T) {
 // WithArtifactStore call — the same flag the upload path checks.
 func TestCacheRPCs_UnconfiguredBackend(t *testing.T) {
 	pool, client := bootServer(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "cache-noart")
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "cache-noart")
 
 	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
 		AgentId: "cache-noart", Token: "tok-art",
@@ -219,6 +227,10 @@ func TestCacheRPCs_UnconfiguredBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	// Unimplemented check fires AFTER ownership in cache.go, so the
+	// job must be dispatched to this agent for the test to reach
+	// the assertion (auth must pass first).
+	flipJobRunning(t, pool, jobID, agentID)
 
 	_, err = client.RequestCacheGet(context.Background(), &gocdnextv1.RequestCacheGetRequest{
 		SessionId: resp.SessionId, RunId: runID.String(), JobId: jobID.String(), Key: "k",

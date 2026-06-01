@@ -366,7 +366,7 @@ gitHubFetcher := &configsync.MultiFetcher{
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
-	reaper := scheduler.NewReaper(st, logger)
+	reaper := scheduler.NewReaper(st, logger).WithSessionFencer(sessions)
 	sweeper := retention.New(st, artifactStore, logger).
 		WithKeepLast(cfg.ArtifactsKeepLast).
 		WithProjectQuotaBytes(cfg.ArtifactsProjectQuotaBytes).

@@ -29,10 +29,111 @@ type Session struct {
 	AgentID  uuid.UUID
 	Tags     []string
 	Capacity int32
+	// generation is the agents.session_generation value captured at
+	// register time. The Connect handler's defer passes this back to
+	// MarkAgentOffline as `observed_generation`; the SQL only flips
+	// the row offline if it still matches, so a successor Register
+	// that bumped the counter neutralises this defer's offline mark.
+	// See migration 00033 for the full race walk.
+	//
+	// UNEXPORTED + IMMUTABLE post-construction: any external write
+	// (the prior `sess.Generation = X` after CreateSession returned)
+	// is a data race because FenceStaleSession reads this field from
+	// the reaper goroutine. CreateSession initialises it in the
+	// struct literal BEFORE publishing into byID/latestByAg, so the
+	// mu lock + happens-before chain make every read race-free
+	// without needing atomics.
+	generation int64
 
 	out     chan *gocdnextv1.ServerMessage
 	running atomic.Int32
 	revoked atomic.Bool
+	// supersededByRegister is the signal a Connect-handler defer
+	// uses to decide whether to MarkAgentOffline. When the
+	// successor agent's Register flow revoked us (RevokeForAgent
+	// path or CreateSession's internal revoke), this is true and
+	// the defer MUST skip the offline mark — otherwise the
+	// freshly-online successor's agents row gets clobbered back
+	// to offline. Normal client-driven disconnects leave this
+	// false; the defer marks offline as before.
+	supersededByRegister atomic.Bool
+
+	// assignedJobs is the per-session record of (job_run_id →
+	// attempt) the scheduler stamped on dispatch. The result
+	// handler reads this back to feed CompleteJob's snapshot CAS
+	// — a stale revoked-session result for an already-redispatched
+	// job has the OLD attempt, so the SQL won't match even if the
+	// agent_id check happens to align (k8s rolling restart =
+	// same agent UUID).
+	//
+	// sync.Map is fine here: writes happen once per dispatch
+	// (scheduler goroutine), reads happen once per result
+	// (recv-loop goroutine). No bulk iteration.
+	assignedJobs sync.Map // map[uuid.UUID]int32
+}
+
+// RecordAssignment stamps the scheduler's just-dispatched (job, attempt)
+// pair onto the session so the result handler can validate the snapshot
+// when the agent reports back. Called by the scheduler right after
+// AssignJob succeeds — sequentially in the same dispatch goroutine, no
+// race with the recv-loop read because the agent can't possibly send a
+// result before it sees the Assign frame.
+//
+// Production code MUST go through DispatchAssignment (which uses
+// RecordAssignmentCAS) — bare RecordAssignment overwrites any
+// existing entry unconditionally and is retained only for test
+// scaffolding that needs to plant a specific snapshot.
+func (s *Session) RecordAssignment(jobID uuid.UUID, attempt int32) {
+	s.assignedJobs.Store(jobID, attempt)
+}
+
+// RecordAssignmentCAS is the safe-overwrite variant DispatchAssignment
+// uses on the production path. Stores (jobID → attempt) ONLY when:
+//   - no entry exists for jobID yet (first dispatch), OR
+//   - an entry exists with the SAME attempt (idempotent retry).
+//
+// Returns false when an entry exists with a DIFFERENT attempt — the
+// signal that something raced ahead of us (reaper requeue without a
+// session fence in flight, redispatch landing before the old result
+// drained). Overwriting would conflate the old attempt's eventual
+// JobResult/logs with the new attempt's row identity: a late
+// JobResult from attempt N would look up the recorded attempt, find
+// N+1, and the snapshot CAS on CompleteJob would match the new row
+// and complete it with the old payload.
+//
+// LoadOrStore is the right primitive here: if the key is absent it
+// stores `attempt` and returns (newly-stored value, false). If the
+// key is present it returns (existing value, true) WITHOUT storing,
+// so a CAS failure leaves the stale entry intact for the result
+// handler to validate against.
+func (s *Session) RecordAssignmentCAS(jobID uuid.UUID, attempt int32) bool {
+	existing, loaded := s.assignedJobs.LoadOrStore(jobID, attempt)
+	if !loaded {
+		return true
+	}
+	return existing.(int32) == attempt
+}
+
+// LookupAssignment returns the recorded attempt for a job if this
+// session has one. ok=false signals the session does not own the
+// job — caller should drop the message rather than process it.
+// Used by handleJobResult / handleLogLine / handleTestResultBatch
+// to keep stale-session traffic from rewriting state that has been
+// reassigned out from under us.
+func (s *Session) LookupAssignment(jobID uuid.UUID) (int32, bool) {
+	v, ok := s.assignedJobs.Load(jobID)
+	if !ok {
+		return 0, false
+	}
+	return v.(int32), true
+}
+
+// ClearAssignment drops the entry once a terminal JobResult has
+// been processed. Keeps the map bounded — a long-lived session
+// accumulates one entry per job otherwise, and the recv-loop reads
+// LookupAssignment on every job-scoped message.
+func (s *Session) ClearAssignment(jobID uuid.UUID) {
+	s.assignedJobs.Delete(jobID)
 }
 
 // Out returns the receive side of the session's send queue. The Connect
@@ -64,29 +165,50 @@ func NewSessionStore() *SessionStore {
 // Create issues a new session for the given agent (MVP: no tags/capacity). It
 // exists so older callsites and tests that only care about session identity
 // keep working; richer metadata comes in via CreateSession.
+//
+// Passes generation=0 — fine for tests/legacy callers that don't
+// exercise the reaper-fence CAS (FenceStaleSession would still
+// compare against 0 here, but those tests don't trigger it).
 func (s *SessionStore) Create(agentID uuid.UUID) string {
-	return s.CreateSession(agentID, nil, 1).ID
+	return s.CreateSession(agentID, nil, 1, 0).ID
 }
 
 // CreateSession issues a session and invalidates any previous session the
 // agent had — a re-registration supersedes a zombie stream that might still
 // be reading with stale credentials. The returned Session owns a fresh send
 // queue that Revoke will close.
-func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity int32) *Session {
+//
+// `generation` is the value MarkAgentOnline returned to the caller (or 0
+// for tests that don't go through the agents table). It MUST be passed
+// here, not assigned to the returned Session afterwards: post-create
+// writes to the field race with reaper-side FenceStaleSession reads
+// AND opened a window where the session was published with the wrong
+// value (round 12 HIGH). Initialising inside the struct literal under
+// the mu lock makes every later read race-free via the happens-before
+// chain (publish-under-lock → lookup-under-lock → safe to read
+// immutable field).
+func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity int32, generation int64) *Session {
 	if capacity <= 0 {
 		capacity = 1
 	}
 	sess := &Session{
-		ID:       uuid.NewString(),
-		AgentID:  agentID,
-		Tags:     append([]string(nil), tags...),
-		Capacity: capacity,
-		out:      make(chan *gocdnextv1.ServerMessage, defaultSendBuffer),
+		ID:         uuid.NewString(),
+		AgentID:    agentID,
+		Tags:       append([]string(nil), tags...),
+		Capacity:   capacity,
+		generation: generation,
+		out:        make(chan *gocdnextv1.ServerMessage, defaultSendBuffer),
 	}
 
 	s.mu.Lock()
 	if prev, ok := s.latestByAg[agentID]; ok {
 		if prevSess, ok := s.byID[prev]; ok {
+			// Mark superseded BEFORE we drop the revoked flag so
+			// the Connect handler's defer (which races with this
+			// CreateSession from the OLD stream's goroutine) sees
+			// the "don't mark offline" signal regardless of which
+			// flag check it reads first.
+			prevSess.supersededByRegister.Store(true)
 			prevSess.revoked.Store(true)
 			close(prevSess.out)
 		}
@@ -128,6 +250,143 @@ func (s *SessionStore) Lookup(sessionID string) (*Session, bool) {
 	return sess, ok
 }
 
+// RevokeForAgent revokes whatever session is currently associated with
+// the given agent, if any. Used by the Register handler to fence off
+// the OLD session BEFORE the register-fence requeues running jobs:
+// without this, the scheduler could wake from the requeue's NOTIFY,
+// see the still-live old session as idle, and re-dispatch the
+// just-requeued job to it — undoing the fence and re-orphaning the
+// row. Safe on missing entries (idempotent).
+//
+// Sets supersededByRegister=true on the closing session so the
+// Connect handler's defer knows not to MarkAgentOffline when its
+// recv loop eventually exits — the successor's Register will (or
+// already did) flip the agents row to online, and a stray offline
+// mark from the obsolete defer would clobber it.
+func (s *SessionStore) RevokeForAgent(agentID uuid.UUID) {
+	s.mu.Lock()
+	id, ok := s.latestByAg[agentID]
+	var sess *Session
+	if ok {
+		sess = s.byID[id]
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	if sess != nil {
+		sess.supersededByRegister.Store(true)
+	}
+	s.Revoke(id)
+}
+
+// FenceResult tells the reaper which branch FenceStaleSession took
+// so the sweep log can distinguish "agent had no live session"
+// (normal: process already exited cleanly) from "a successor took
+// over before we got here" (race) from "we actually revoked the
+// stale session" (the load-bearing outcome). All three are valid;
+// the differentiation matters for operational investigation, not
+// correctness.
+type FenceResult int
+
+const (
+	// FenceResultRevoked means the live session's generation matched
+	// the snapshot and we closed it — the load-bearing outcome.
+	FenceResultRevoked FenceResult = iota
+	// FenceResultNoSession means there was nothing to fence; the
+	// agent had already disconnected by the time we got here.
+	FenceResultNoSession
+	// FenceResultGenerationChanged means a successor Register raced
+	// ahead of the reaper between SELECT and fence. Successor is
+	// preserved; the reaper's notify will reach it as the fresh
+	// available agent for the requeued work.
+	FenceResultGenerationChanged
+)
+
+// FenceStaleSession is the reaper-side variant of RevokeForAgent.
+// Two differences from RevokeForAgent:
+//
+//  1. CAS by generation. The reaper observed `observedGeneration`
+//     in `agents.session_generation` at SELECT time. Between SELECT
+//     and now, the agent may have re-Registered — bumping the
+//     counter and creating a NEW healthy session. Revoking by
+//     agentID alone would kill the freshly-online successor.
+//     This method ONLY revokes when the live session's Generation
+//     still matches the observed snapshot; mismatch → no-op.
+//
+//  2. supersededByRegister is NOT set. RevokeForAgent uses that
+//     flag so the closing session's Connect defer skips
+//     MarkAgentOffline (Register will MarkAgentOnline anyway).
+//     The reaper path has no successor Register coming —
+//     the agent really is dead from our POV, and the defer SHOULD
+//     mark the row offline so the agents view reflects reality.
+//     The defer's MarkAgentOffline uses CAS-by-generation itself,
+//     so a successor Register that DOES come along later won't be
+//     clobbered.
+//
+// Safe on missing entries (idempotent). Returns a FenceResult so
+// the caller can log the three outcomes distinctly: revoked /
+// no-session / generation-changed. Correctness doesn't depend on
+// the differentiation; operational visibility does.
+func (s *SessionStore) FenceStaleSession(agentID uuid.UUID, observedGeneration int64) FenceResult {
+	s.mu.Lock()
+	id, ok := s.latestByAg[agentID]
+	var sess *Session
+	if ok {
+		sess = s.byID[id]
+	}
+	s.mu.Unlock()
+	if !ok || sess == nil {
+		return FenceResultNoSession
+	}
+	// Generation check happens outside the mu lock — sess.generation
+	// is set once in the CreateSession struct literal (under mu) and
+	// never mutated afterward, so the read is race-free via the
+	// happens-before chain (publish-under-lock → lookup-under-lock).
+	// A concurrent CreateSession would have already pointed
+	// latestByAg at a DIFFERENT session id; the id we read above
+	// would be stale, but the sess pointer we captured is the
+	// matching one. Either we hit the right (now-removed-from-latest)
+	// session OR we read the NEW session and its generation !=
+	// observedGeneration → no-op.
+	if sess.generation != observedGeneration {
+		return FenceResultGenerationChanged
+	}
+	s.Revoke(id)
+	return FenceResultRevoked
+}
+
+// Generation returns the per-agent monotonic epoch counter that
+// agents.session_generation held when this session was created.
+// Immutable for the session's lifetime — readers (Connect defer's
+// MarkAgentOffline, reaper's FenceStaleSession CAS) can rely on
+// the value not changing under them.
+func (s *Session) Generation() int64 { return s.generation }
+
+// IsAgentSuperseded reports whether the SessionStore currently has a
+// session for `agentID` whose ID is NOT `closingSessionID`. Used by
+// the Connect handler's defer to decide if a stream close should
+// also flip agents.status='offline' in the DB.
+//
+// Without this guard, an old stream that closes AFTER a successor
+// register would mark the freshly-online agent offline — and the
+// reaper, treating any offline agent as stale regardless of
+// heartbeat freshness, would reclaim the new session's healthy
+// jobs.
+//
+// Returns false when (a) there's no session at all (normal
+// disconnect that already ran through Revoke's latestByAg cleanup)
+// OR (b) the latest session IS the closing one (race-free terminal
+// state). Returns true only when a DIFFERENT, live session has
+// taken over the slot — meaning the agent is online via that
+// successor and our defer must skip MarkAgentOffline.
+func (s *SessionStore) IsAgentSuperseded(agentID uuid.UUID, closingSessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	latest, ok := s.latestByAg[agentID]
+	return ok && latest != closingSessionID
+}
+
 // Revoke drops the session and closes its send queue. Safe to call on
 // missing/unknown ids — calling it on the same session twice is also safe.
 func (s *SessionStore) Revoke(sessionID string) {
@@ -149,18 +408,30 @@ func (s *SessionStore) Revoke(sessionID string) {
 	metrics.AgentsOnline.Set(gauge)
 }
 
-// Dispatch enqueues msg onto the agent's current session. Returns ErrNoSession
-// if the agent is not connected, ErrSessionBusy if the queue is full. Callers
-// should treat busy as "try another agent".
+// Dispatch enqueues msg onto the agent's current session. Returns
+// ErrNoSession if the agent is not connected, ErrSessionBusy if the
+// queue is full. Callers should treat busy as "try another agent".
+//
+// Holds the store mutex through the channel send. That's atypical
+// but necessary: Revoke also takes the mutex before close(sess.out),
+// so doing the send inside the lock prevents a send-on-closed-channel
+// panic when a concurrent Revoke races us. The channel has a small
+// buffer (defaultSendBuffer=16) and we `select default` for the
+// busy case, so the lock-held duration is bounded.
+//
+// For Assign messages, use DispatchAssignment instead — it records
+// the (jobID, attempt) snapshot on the same session that receives
+// the frame, atomically. Calling Dispatch with an Assign won't
+// stamp the assignment and the eventual JobResult will be dropped
+// as "no assignment for this job".
 func (s *SessionStore) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	id, ok := s.latestByAg[agentID]
-	var sess *Session
-	if ok {
-		sess = s.byID[id]
+	if !ok {
+		return ErrNoSession
 	}
-	s.mu.Unlock()
-
+	sess := s.byID[id]
 	if sess == nil || sess.revoked.Load() {
 		return ErrNoSession
 	}
@@ -173,6 +444,73 @@ func (s *SessionStore) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage
 		}
 		return nil
 	default:
+		return ErrSessionBusy
+	}
+}
+
+// DispatchAssignment is the atomic record-and-dispatch path the
+// scheduler uses for Assign messages. The two operations
+//   1. Session.RecordAssignment(jobID, attempt)
+//   2. send msg onto sess.out
+// MUST happen on the SAME session — without atomicity, a successor
+// Register firing between the lookup-for-record and the lookup-
+// for-dispatch could move the agent to a new session. Recording
+// stamps session A; dispatch enqueues on session B; the agent
+// (running on B's stream) reports a result B has no assignment
+// for and the result handler drops it.
+//
+// Holds the store mutex throughout, just like Dispatch — same
+// reasoning, plus this guarantees the recorded assignment lives
+// on whatever session actually receives the frame.
+func (s *SessionStore) DispatchAssignment(
+	agentID uuid.UUID,
+	msg *gocdnextv1.ServerMessage,
+	jobID uuid.UUID,
+	attempt int32,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.latestByAg[agentID]
+	if !ok {
+		return ErrNoSession
+	}
+	sess := s.byID[id]
+	if sess == nil || sess.revoked.Load() {
+		return ErrNoSession
+	}
+	// Record BEFORE the channel write so the recv side cannot
+	// observe an Assign without the matching assignment entry
+	// (the goroutine reading sess.out can't proceed until we
+	// release the mutex, but it doesn't take the SessionStore
+	// mutex — only sess.assignedJobs's internal sync.Map mutex,
+	// which RecordAssignmentCAS finished by then).
+	//
+	// CAS rejection: if this session already holds a DIFFERENT
+	// attempt for jobID, refuse the dispatch as busy. This is
+	// the trip-wire for the "reaper requeue with notify-before-
+	// fence" race: the in-memory session of a stale agent must
+	// not be allowed to silently accept a redispatch under a new
+	// attempt while still holding the old one. The fence ordering
+	// in Reaper.Sweep is the primary defense; this is the safety
+	// net for misconfigured / test paths / future regressions.
+	if !sess.RecordAssignmentCAS(jobID, attempt) {
+		return ErrSessionBusy
+	}
+	select {
+	case sess.out <- msg:
+		if msg.GetAssign() != nil {
+			sess.IncRunning()
+		}
+		return nil
+	default:
+		// Roll back the record so a scheduler retry can re-stamp
+		// cleanly without leaving a phantom assignment. Only roll
+		// back if we actually planted THIS attempt (idempotent
+		// re-record path returned true without writing — we'd
+		// otherwise nuke a healthy concurrent entry).
+		if existing, ok := sess.LookupAssignment(jobID); ok && existing == attempt {
+			sess.ClearAssignment(jobID)
+		}
 		return ErrSessionBusy
 	}
 }

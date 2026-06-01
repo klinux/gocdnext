@@ -12,6 +12,22 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
+// jobAgentID looks up a job_run's current agent_id. Tests that call
+// CompleteJob directly need to feed this back as ExpectedAgentID
+// — the snapshot guard added to CompleteJobRun in the register-fence
+// change requires the caller to pass what the row should still
+// look like.
+func jobAgentID(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID) uuid.UUID {
+	t.Helper()
+	var agent uuid.UUID
+	if err := pool.QueryRow(context.Background(),
+		`SELECT agent_id FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&agent); err != nil {
+		t.Fatalf("lookup agent for job %s: %v", jobID, err)
+	}
+	return agent
+}
+
 // seedRunningJob sets up a run with two stages (build/test, one job each) and
 // flips the first job to 'running' so CompleteJob has something to work on.
 // Returns the job_run_id + related ids needed by assertions.
@@ -175,7 +191,10 @@ func TestCompleteJob_StageAndRunPromoteOnSuccess(t *testing.T) {
 
 	// Complete the build-stage job.
 	got, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: jobCompileID, Status: "success", ExitCode: 0,
+		JobRunID:        jobCompileID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: jobAgentID(t, pool, jobCompileID),
 	})
 	if err != nil || !ok {
 		t.Fatalf("complete compile: ok=%v err=%v", ok, err)
@@ -197,7 +216,10 @@ func TestCompleteJob_StageAndRunPromoteOnSuccess(t *testing.T) {
 	}
 
 	got2, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: jobUnitID, Status: "success", ExitCode: 0,
+		JobRunID:        jobUnitID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: jobAgentID(t, pool, jobUnitID),
 	})
 	if err != nil || !ok {
 		t.Fatalf("complete unit: ok=%v err=%v", ok, err)
@@ -223,7 +245,11 @@ func TestCompleteJob_FailedJobFailsStageAndCancelsRest(t *testing.T) {
 	runID, stageBuildID, stageTestID, jobCompileID, jobUnitID := seedRunningJob(t, pool)
 
 	got, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: jobCompileID, Status: "failed", ExitCode: 1, ErrorMsg: "boom",
+		JobRunID:        jobCompileID,
+		Status:          "failed",
+		ExitCode:        1,
+		ErrorMsg:        "boom",
+		ExpectedAgentID: jobAgentID(t, pool, jobCompileID),
 	})
 	if err != nil || !ok {
 		t.Fatalf("complete compile: ok=%v err=%v", ok, err)
@@ -247,8 +273,9 @@ func TestCompleteJob_DuplicateResultIsNoOp(t *testing.T) {
 	ctx := context.Background()
 
 	_, _, _, jobCompileID, _ := seedRunningJob(t, pool)
+	compileAgent := jobAgentID(t, pool, jobCompileID)
 	if _, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: jobCompileID, Status: "success",
+		JobRunID: jobCompileID, Status: "success", ExpectedAgentID: compileAgent,
 	}); err != nil || !ok {
 		t.Fatalf("first complete: ok=%v err=%v", ok, err)
 	}
@@ -296,7 +323,10 @@ func TestCompleteJob_MixedMatrixFailureFailsStage(t *testing.T) {
 		`SELECT id FROM job_runs WHERE run_id=$1 AND name='compile' LIMIT 1`, res.RunID,
 	).Scan(&compileID)
 	got, _, err := s.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: compileID, Status: "failed", ExitCode: 2,
+		JobRunID:        compileID,
+		Status:          "failed",
+		ExitCode:        2,
+		ExpectedAgentID: jobAgentID(t, pool, compileID),
 	})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
