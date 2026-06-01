@@ -6,6 +6,130 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.34 — 2026-06-01
+
+Closes [issue #3](https://github.com/klinux/gocdnext/issues/3) —
+duplicate artifact rows for the same path on a single run + the
+downstream consumer getting `no ready artefacts from job "X"
+matching paths [...]` even though the UI showed the artifacts as
+ready.
+
+### Root cause
+
+`requeueStaleJob` (reaper / register-fence path, v0.4.32) and
+`RerunJob` deleted `log_lines` and `test_results` on a retry but
+left the prior attempt's **artifacts** as-is. When the new attempt
+re-uploaded the same paths, two `ready` rows accumulated for the
+same `(job_run_id, path)`. Same incident also explained the
+"missing `artifact uploaded:` log line" — the prior attempt's
+log_lines were cleared by the reclaim AFTER they were emitted.
+
+### Fix
+
+- **Migration 00035**: partial unique index on
+  `artifacts(job_run_id, path) WHERE deleted_at IS NULL`.
+  Defends the invariant at the schema layer — a future regression
+  in the retire path fails loudly instead of silently producing
+  duplicates again.
+- **`RetireArtifactsByJobRun`** (new query + store method):
+  soft-deletes every still-active artifact for a job_run
+  (`deleted_at = NOW`, `status = 'deleting'`, `expires_at = NOW`).
+  Mirrors `DeleteLogLinesByJob` / `DeleteTestResultsByJobRun`
+  semantics — runs in the SAME transaction that bumps
+  `job_runs.attempt`. After commit, `ListReadyArtifactsByRunAndJobName`
+  no longer surfaces stale rows to downstream consumers, and the
+  sweeper GC's the storage objects on its next pass via the
+  existing 'deleting'-status branch.
+- Wired into both `sweeper.requeueStaleJob` and
+  `runs_actions.RerunJob`.
+- **Path normalization** (`store/artifacts.go`): trailing slashes
+  trimmed on `InsertPendingArtifact` AND on `ListReadyArtifactsByRunAndJob`
+  so producer and consumer YAMLs can disagree on the trailing slash
+  without breaking the lookup. Operator-level robustness — `dist/`
+  and `dist` collapse to the same canonical key.
+
+### Plugin cascade audit
+
+Audited every plugin under `plugins/` for the same class of bug
+that issue #2 fixed in `python` (hardcoded install step that
+destroys artifact-restored state). Verdict: **only `python` had a
+real bug**. `terraform` was flagged as "wasteful" by an automated
+scan, but actually delegates the `init` decision to the operator's
+`command:` input — no fix needed.
+
+Plugins surveyed (all SAFE): `node`, `go`, `maven`, `gradle`,
+`terraform`, `ansible`, `docker`, `helm`, `kubectl`, `aws-cli`,
+`gcloud`. Pure-wrapper plugins (`slack`, `discord`, `email`,
+`teams`, `gitleaks`, `trivy`) have no install step at all.
+
+### Hardening from review (rounds 2-5)
+
+- **Migration 00035 is now upgrade-safe** on DBs that ALREADY hit
+  the bug. Two backfill steps run BEFORE the unique index is
+  created: `regexp_replace` trims trailing slashes from existing
+  paths (so post-upgrade lookups by `dist/` still find legacy
+  `dist/` rows), and a CTE retires all-but-one duplicate per
+  `(job_run_id, path)` (pinned > ready > newest wins). Idempotent
+  on clean DBs.
+- **`RetireArtifactsByJobRun` clears `pinned_at`** — a pinned
+  artifact whose owning attempt died otherwise sat invisible to the
+  lookup (`deleted_at` filter) AND skipped by the sweeper
+  (`pinned_at IS NULL` guard), orphaning the storage object forever.
+  Same fix applied to the `RerunJob` UPDATE.
+- **Sweeper now reaps stale `pending` rows** older than the grace
+  window. Closes the leak path where a gRPC drop or `SignedPutURL`
+  failure mid-batch left pending rows that the partial unique index
+  would then refuse to overwrite on the agent's next attempt.
+- **`RequestArtifactUpload` dedupes paths and inserts atomically.**
+  `dist`, `dist/`, `dist` in the same request now produce ONE
+  ticket (first-occurrence shape wins for round-tripping back to
+  the agent), and the per-batch insert uses
+  `InsertPendingArtifactsBatch` so a mid-loop failure rolls back
+  cleanly instead of leaking half a batch of pending rows.
+- **Agent uploader dedupes BEFORE the RPC** (round 3). The
+  server-side dedupe alone broke the agent's
+  `len(tickets) == len(paths)` check: server returned 1 ticket
+  for `[dist, dist/, dist]`, agent refused the response as
+  malformed. Agent now dedupes by canonical form before the RPC
+  AND the length check compares against the deduped count.
+- **Migration backfill clears `pinned_at`** on retired duplicates
+  (round 3). The runtime retire path already does this, but the
+  in-migration UPDATE didn't — leaving a pinned legacy duplicate
+  as `status='deleting'` / `deleted_at NOT NULL` / `pinned_at
+  NOT NULL`, invisible to the lookup AND skipped by the sweeper's
+  `pinned_at IS NULL` guard.
+- **Migration takes `LOCK TABLE artifacts IN SHARE MODE`** (round
+  4). Rolling-upgrade safety: kubernetes keeps the old pod
+  serving RequestArtifactUpload until the new pod passes readiness,
+  so without the lock an old-pod insert between dedupe and
+  CREATE UNIQUE INDEX could plant a fresh duplicate the index then
+  refuses, trapping the operator in a half-upgraded cluster. SHARE
+  blocks writes (queued, not failed) while letting reads through;
+  the window is sub-second on realistic deployments.
+- **Parser dedupes artifact paths by canonical form** (round 4).
+  `paths: [dist, dist/]` + `optional: [dist/, screenshots]` used to
+  produce a job assignment with both `dist` and `dist/` in
+  ArtifactPaths — agent-side dedupe collapsed the required batch,
+  but the optional batch then tried to insert `dist/` (which the
+  store canonicalizes to `dist`), hit the unique index, the txn
+  rolled back, and `screenshots` was lost as collateral. Parser
+  dedupe means the wire shape carries a clean (canonical-unique,
+  cross-list-deduped) separation before the agent ever sees it.
+- **`BuildAssignment` also dedupes at dispatch** (round 5). The
+  parser dedupe runs at `apply` time, but `run.Definition` is the
+  persisted snapshot from whatever release applied the pipeline.
+  Pre-fix pipelines living in the DB before upgrade still carried
+  the raw duplicates; dispatching them re-opened the cross-list
+  collision the parser dedupe was supposed to close. Deduping in
+  `BuildAssignment` covers any persisted definition regardless of
+  apply-time release.
+
+### Schema
+
+- Partial unique index `idx_artifacts_jobrun_path_active` (00035)
+  with in-migration backfill (path normalization + duplicate
+  retirement).
+
 ## v0.4.33 — 2026-06-01
 
 Closes [issue #2](https://github.com/klinux/gocdnext/issues/2) — python

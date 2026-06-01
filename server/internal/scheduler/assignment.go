@@ -232,6 +232,9 @@ func BuildAssignment(
 		}
 	}
 
+	dedupedArtifactPaths, dedupedOptionalPaths :=
+		dedupeArtifactPaths(jobDef.ArtifactPaths, jobDef.OptionalArtifactPaths)
+
 	return &gocdnextv1.JobAssignment{
 		RunId:          run.ID.String(),
 		JobId:          job.ID.String(),
@@ -242,9 +245,25 @@ func BuildAssignment(
 		Checkouts:      checkouts,
 		Workspace:      "/workspace",
 		TimeoutSeconds: 0,
-		LogMasks:              masks,
-		ArtifactPaths:         append([]string(nil), jobDef.ArtifactPaths...),
-		OptionalArtifactPaths: append([]string(nil), jobDef.OptionalArtifactPaths...),
+		LogMasks: masks,
+		// Dedupe artifact paths by canonical form (trailing slashes
+		// trimmed) WITHIN each list AND ACROSS the two lists. The
+		// parser already does this at apply time, but `run.Definition`
+		// is the persisted snapshot taken when the pipeline was first
+		// applied — pre-fix pipelines stored before this release still
+		// carry the raw (potentially-duplicated) shape. Deduping here
+		// in BuildAssignment means the wire format the agent sees is
+		// always clean, regardless of which release applied the
+		// pipeline.
+		//
+		// Without this layer: a pipeline applied pre-fix with
+		// `paths: [dist]` / `optional: [dist/]` would still trip the
+		// optional batch's INSERT against the partial unique index
+		// (storage layer canonicalizes `dist/` to `dist`, collides
+		// with the required `dist` row), rolling back the optional
+		// txn and silently dropping any other optional artifacts.
+		ArtifactPaths:         dedupedArtifactPaths,
+		OptionalArtifactPaths: dedupedOptionalPaths,
 		ArtifactDownloads:     downloads,
 		Docker:                jobDef.Docker,
 		Services:              services,
@@ -476,4 +495,48 @@ func firstNonEmpty(a, b string) string {
 func targetDirFor(id uuid.UUID) string {
 	// Deterministic + short; agents create this dir under the workspace.
 	return "src/" + id.String()[:8]
+}
+
+// dedupeArtifactPaths cleans the (required, optional) pair the
+// agent receives so neither list contains canonically-identical
+// duplicates AND optional never overlaps required. Defensive
+// duplicate of the parser's apply-time dedupe (parse.go), applied
+// here at dispatch so pipelines whose definition was persisted
+// BEFORE the parser fix shipped still get a clean assignment.
+//
+// First-occurrence shape wins (operator's typing round-trips to
+// the agent's tar entry name). Required wins over optional on
+// cross-list collisions — the existing semantic.
+//
+// Uses store.NormalizeArtifactPath as the canonical form so the
+// dedupe key here matches the one the storage layer's partial
+// unique index enforces — drift between the two would let an
+// "agent-deduped" assignment still trip the index. The package
+// already imports store for other reasons, so reusing the helper
+// has no dep cost.
+func dedupeArtifactPaths(required, optional []string) (req, opt []string) {
+	canonReq := make(map[string]struct{}, len(required))
+	req = make([]string, 0, len(required))
+	for _, p := range required {
+		canon := store.NormalizeArtifactPath(p)
+		if _, dup := canonReq[canon]; dup {
+			continue
+		}
+		canonReq[canon] = struct{}{}
+		req = append(req, p)
+	}
+	canonOpt := make(map[string]struct{}, len(optional))
+	opt = make([]string, 0, len(optional))
+	for _, p := range optional {
+		canon := store.NormalizeArtifactPath(p)
+		if _, dup := canonReq[canon]; dup {
+			continue
+		}
+		if _, dup := canonOpt[canon]; dup {
+			continue
+		}
+		canonOpt[canon] = struct{}{}
+		opt = append(opt, p)
+	}
+	return req, opt
 }

@@ -262,19 +262,44 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		}
 	}
 	if jd.Artifacts != nil {
-		j.ArtifactPaths = append([]string(nil), jd.Artifacts.Paths...)
-		// De-dup against required — a path in both lists is kept
-		// only in ArtifactPaths (required wins). Rare but possible
-		// when someone adds `optional:` to an existing job without
-		// removing from `paths:`.
-		required := make(map[string]struct{}, len(jd.Artifacts.Paths))
+		// Dedupe by CANONICAL form (trailing slashes trimmed) so the
+		// downstream storage layer's partial unique index on
+		// (job_run_id, path) — migration 00035 — can't be tripped by
+		// `dist` and `dist/` appearing in the same job. Without this:
+		//   paths:    [dist]
+		//   optional: [dist/, screenshots]
+		// would survive parse → assignment → agent → server's batch
+		// insert blows up on the canonical-form unique index (the
+		// required `dist` row blocks the optional `dist/` insert that
+		// the server normalizes to `dist`). The batch txn rolls back
+		// and `screenshots` is lost as collateral. Deduping at the
+		// PARSER means the proto wire shape carries a clean
+		// separation and neither agent run nor server batch ever sees
+		// the conflict.
+		//
+		// First-occurrence shape wins within each list so the
+		// operator's typing round-trips back to the UI; required
+		// wins over optional on cross-list collisions (the existing
+		// contract).
+		canonRequired := make(map[string]struct{}, len(jd.Artifacts.Paths))
 		for _, p := range jd.Artifacts.Paths {
-			required[p] = struct{}{}
-		}
-		for _, p := range jd.Artifacts.Optional {
-			if _, dup := required[p]; dup {
+			canon := canonicalArtifactPath(p)
+			if _, dup := canonRequired[canon]; dup {
 				continue
 			}
+			canonRequired[canon] = struct{}{}
+			j.ArtifactPaths = append(j.ArtifactPaths, p)
+		}
+		canonOptional := make(map[string]struct{}, len(jd.Artifacts.Optional))
+		for _, p := range jd.Artifacts.Optional {
+			canon := canonicalArtifactPath(p)
+			if _, dup := canonRequired[canon]; dup {
+				continue
+			}
+			if _, dup := canonOptional[canon]; dup {
+				continue
+			}
+			canonOptional[canon] = struct{}{}
 			j.OptionalArtifactPaths = append(j.OptionalArtifactPaths, p)
 		}
 	}
@@ -531,5 +556,19 @@ func defaultServiceNameFromImage(image string) string {
 		s = s[i+1:]
 	}
 	return strings.TrimSpace(s)
+}
+
+// canonicalArtifactPath strips trailing slashes so `dist` and
+// `dist/` collapse to the same key when deduping artifact entries.
+// Mirrors store.NormalizeArtifactPath (kept inline rather than
+// importing — the parser shouldn't depend on the storage layer).
+// Only the trailing slash is touched — we deliberately do NOT
+// resolve `.`/`..` or otherwise rewrite the path, since the
+// agent's tar/untar loop preserves operator-declared shape verbatim.
+func canonicalArtifactPath(p string) string {
+	for len(p) > 1 && p[len(p)-1] == '/' {
+		p = p[:len(p)-1]
+	}
+	return p
 }
 

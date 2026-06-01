@@ -545,6 +545,70 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 	}
 }
 
+// TestBuildAssignment_DedupesArtifactPathsCanonical guards the
+// dispatch-side defence: the parser already dedupes at apply time,
+// but `run.Definition` is the persisted snapshot — pipelines
+// applied BEFORE the parser fix shipped still carry the raw
+// (potentially-duplicated) shape. BuildAssignment must clean
+// them, otherwise the runner's required+optional two-RPC pattern
+// would land an optional `dist/` insert that the storage layer
+// canonicalizes to `dist`, collides with the required `dist` row
+// on the partial unique index (00035), and rolls back the optional
+// batch — dropping any other optional artifacts as collateral.
+func TestBuildAssignment_DedupesArtifactPathsCanonical(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"build"},
+		Jobs: []domain.Job{{
+			Name: "compile", Stage: "build",
+			Tasks: []domain.Task{{Script: "make"}},
+			// Pre-upgrade pipeline shape: duplicates in `paths`,
+			// canonical-overlap across paths/optional, AND an
+			// optional that's unique. Post-dedupe wire shape:
+			//   ArtifactPaths         = [dist]
+			//   OptionalArtifactPaths = [screenshots]
+			ArtifactPaths:         []string{"dist", "dist/"},
+			OptionalArtifactPaths: []string{"dist/", "screenshots"},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	materialID := uuid.New()
+	run := store.RunForDispatch{
+		ID:         uuid.New(),
+		PipelineID: uuid.New(),
+		Definition: defJSON,
+		Revisions: json.RawMessage(`{"` + materialID.String() +
+			`":{"revision":"deadbeef","branch":"main"}}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "compile", Image: "alpine:3.19"}
+	gitCfg, _ := json.Marshal(domain.GitMaterial{URL: "https://github.com/x/y", Branch: "main"})
+	materials := []store.Material{{
+		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
+	}}
+
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if want := []string{"dist"}; !slicesEqual(got.ArtifactPaths, want) {
+		t.Fatalf("ArtifactPaths = %v, want %v", got.ArtifactPaths, want)
+	}
+	if want := []string{"screenshots"}; !slicesEqual(got.OptionalArtifactPaths, want) {
+		t.Fatalf("OptionalArtifactPaths = %v, want %v (dist/ canonical-deduped against required)", got.OptionalArtifactPaths, want)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestBuildAssignment_SubstitutesPluginSettings is the e2e cover for
 // the v0.4.8 fix: a `${{ NAME }}` token inside a plugin `with:` value
 // must be replaced with the declared secret's value before the

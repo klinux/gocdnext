@@ -50,6 +50,28 @@ type InsertPendingArtifact struct {
 	ExpiresAt  *time.Time // nil = never (pinned by default, or global default on the caller)
 }
 
+// NormalizeArtifactPath strips trailing slashes so producer and
+// consumer can disagree on the trailing slash without breaking the
+// lookup (`packages/types/src/generated/` and
+// `packages/types/src/generated` collapse to the same key).
+// Only the trailing slash is touched — we deliberately do NOT call
+// path.Clean: that would collapse `./foo` → `foo` and resolve `..`,
+// changing operator-declared paths in ways the agent's tar/untar
+// loop doesn't share.
+//
+// Issue #3 round 1: producer YAML and consumer YAML inconsistencies
+// produced 0-row lookups even though the upload demonstrably ran.
+// Trimming on insert AND on lookup is the smallest fix that makes
+// every operator's preferred shape interoperate. Exported because
+// the gRPC RequestArtifactUpload handler also dedupes by the
+// canonical form before issuing tickets.
+func NormalizeArtifactPath(p string) string {
+	for len(p) > 1 && p[len(p)-1] == '/' {
+		p = p[:len(p)-1]
+	}
+	return p
+}
+
 // InsertPendingArtifact creates the row.
 func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtifact) (Artifact, error) {
 	row, err := s.q.InsertPendingArtifact(ctx, db.InsertPendingArtifactParams{
@@ -57,7 +79,7 @@ func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtif
 		JobRunID:   pgUUID(in.JobRunID),
 		PipelineID: pgUUID(in.PipelineID),
 		ProjectID:  pgUUID(in.ProjectID),
-		Path:       in.Path,
+		Path:       NormalizeArtifactPath(in.Path),
 		StorageKey: in.StorageKey,
 		ExpiresAt:  pgTimestamptzFromPtr(in.ExpiresAt),
 	})
@@ -76,6 +98,90 @@ func (s *Store) InsertPendingArtifact(ctx context.Context, in InsertPendingArtif
 		ExpiresAt:  pgTimePtr(row.ExpiresAt),
 		CreatedAt:  row.CreatedAt.Time,
 	}, nil
+}
+
+// InsertPendingArtifactsBatch creates every row in one transaction
+// so partial-loop failures roll back cleanly. Two motivations
+// (both surfaced post-migration 00035, which made naked partial
+// failure observably worse):
+//
+//  1. A mid-loop error (sign URL failure for row N) used to leave
+//     rows 0..N-1 as orphan pending — visible to the UI as ghost
+//     uploads, and (since the agent has no retry) eventually
+//     reaped only by the new pending-TTL sweep branch.
+//  2. The partial unique index now refuses two active rows for the
+//     same (job_run_id, path). The handler dedupes incoming paths
+//     by canonical form, but if the operator's YAML somehow gets
+//     two identical entries past the parser, the second insert
+//     in the loop hits the index and fails — without a tx, row 1
+//     stays around and a later legitimate retry can't recreate it.
+//
+// Caller is expected to have already deduped the paths via
+// NormalizeArtifactPath; this function just runs the inserts.
+func (s *Store) InsertPendingArtifactsBatch(ctx context.Context, ins []InsertPendingArtifact) ([]Artifact, error) {
+	if len(ins) == 0 {
+		return nil, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("store: insert artifacts batch: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+	out := make([]Artifact, 0, len(ins))
+	for _, in := range ins {
+		row, err := q.InsertPendingArtifact(ctx, db.InsertPendingArtifactParams{
+			RunID:      pgUUID(in.RunID),
+			JobRunID:   pgUUID(in.JobRunID),
+			PipelineID: pgUUID(in.PipelineID),
+			ProjectID:  pgUUID(in.ProjectID),
+			Path:       NormalizeArtifactPath(in.Path),
+			StorageKey: in.StorageKey,
+			ExpiresAt:  pgTimestamptzFromPtr(in.ExpiresAt),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("store: insert artifact %q: %w", in.Path, err)
+		}
+		out = append(out, Artifact{
+			ID:         fromPgUUID(row.ID),
+			RunID:      fromPgUUID(row.RunID),
+			JobRunID:   fromPgUUID(row.JobRunID),
+			PipelineID: fromPgUUID(row.PipelineID),
+			ProjectID:  fromPgUUID(row.ProjectID),
+			Path:       row.Path,
+			StorageKey: row.StorageKey,
+			Status:     row.Status,
+			ExpiresAt:  pgTimePtr(row.ExpiresAt),
+			CreatedAt:  row.CreatedAt.Time,
+		})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: insert artifacts batch: commit: %w", err)
+	}
+	return out, nil
+}
+
+// RetireArtifactsByJobRun soft-deletes every still-active artifact
+// row for a job_run so a reaper-driven reclaim or a manual rerun
+// can re-upload the same paths without colliding with the prior
+// attempt's rows (issue #3 — duplicate `ready` rows for the same
+// path on a retried job).
+//
+// Mirrors DeleteLogLinesByJob / DeleteTestResultsByJobRun: called
+// inside the same transaction that bumps job_runs.attempt. After
+// this commit, ListReadyArtifactsByRunAndJobName no longer sees
+// the prior attempt's rows (deleted_at filter), the storage
+// objects get GC'd by the next sweeper pass via the existing
+// 'deleting' status path, and the new attempt's InsertPendingArtifact
+// satisfies the partial-unique-index invariant (00035).
+//
+// Returning error so callers can fail-fast the transaction; in
+// practice the only failure mode is connection loss.
+func (s *Store) RetireArtifactsByJobRun(ctx context.Context, jobRunID uuid.UUID) error {
+	if err := s.q.RetireArtifactsByJobRun(ctx, pgUUID(jobRunID)); err != nil {
+		return fmt.Errorf("store: retire artifacts: %w", err)
+	}
+	return nil
 }
 
 // MarkArtifactReady flips a pending row to ready once the server
@@ -183,13 +289,22 @@ func (s *Store) ListArtifactsWithJobByRun(ctx context.Context, runID uuid.UUID) 
 // further — empty = all that job's artefacts. Used by the scheduler
 // when resolving `needs_artifacts` for a downstream job.
 func (s *Store) ListReadyArtifactsByRunAndJob(ctx context.Context, runID uuid.UUID, jobName string, paths []string) ([]ArtifactWithJob, error) {
-	if paths == nil {
-		paths = []string{}
+	// Normalize each input path so the lookup matches rows that were
+	// stored under the canonical (trimmed-of-trailing-slash) form.
+	// Producer and consumer YAMLs may legitimately disagree on the
+	// trailing slash; we converge here so the operator never has to
+	// notice.
+	normalized := make([]string, len(paths))
+	for i, p := range paths {
+		normalized[i] = NormalizeArtifactPath(p)
+	}
+	if normalized == nil {
+		normalized = []string{}
 	}
 	rows, err := s.q.ListReadyArtifactsByRunAndJobName(ctx, db.ListReadyArtifactsByRunAndJobNameParams{
 		RunID:   pgUUID(runID),
 		Name:    jobName,
-		Column3: paths,
+		Column3: normalized,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list ready artifacts by job: %w", err)

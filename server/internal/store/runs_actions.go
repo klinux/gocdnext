@@ -372,6 +372,25 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	if _, err := tx.Exec(ctx, `DELETE FROM test_results WHERE job_run_id = $1`, in.JobRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: clear test results: %w", err)
 	}
+	// Same for artifacts (issue #3): a rerun re-uploads the same
+	// paths, and without retiring the prior attempt's rows the new
+	// inserts would either fail the partial-unique-index in
+	// migration 00035 OR (pre-migration) accumulate duplicate
+	// `ready` rows. Soft-delete here, sweeper GC's the storage
+	// objects in the background — mirrors RetireArtifactsByJobRun's
+	// behaviour in sweeper.requeueStaleJob.
+	// pinned_at = NULL: same reasoning as RetireArtifactsByJobRun —
+	// the prior attempt is being thrown away; preserving its pin
+	// would leave the storage object orphan because the sweeper
+	// skips pinned rows.
+	if _, err := tx.Exec(ctx,
+		`UPDATE artifacts
+		    SET status = 'deleting', deleted_at = NOW(),
+		        expires_at = NOW(), pinned_at = NULL
+		  WHERE job_run_id = $1 AND deleted_at IS NULL`,
+		in.JobRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: retire artifacts: %w", err)
+	}
 
 	// Un-finish the parent stage + run so dispatch + UI stop
 	// treating them as done. Leaves sibling jobs / stages alone —

@@ -294,6 +294,52 @@ jobs:
 	}
 }
 
+// TestParse_ArtifactsDedupeByCanonicalForm — the storage layer's
+// partial unique index on (job_run_id, path) normalizes trailing
+// slashes (`dist/` collapses to `dist`). Without parser-side
+// canonical dedupe, a job like
+//   paths:    [dist, dist/]
+//   optional: [dist/, screenshots]
+// produces an ArtifactPaths list with `dist` AND `dist/` — the
+// agent uploader's own dedupe collapses them, fine for required.
+// But required + optional run as TWO separate Upload calls in the
+// runner; the second batch's server-side insert for `dist/`
+// canonicalizes to `dist`, hits the unique index because the
+// required `dist` row is already there, transaction rolls back,
+// and `screenshots` is lost as collateral. Parser-level canonical
+// dedupe makes the proto wire shape carry a clean separation.
+func TestParse_ArtifactsDedupeByCanonicalForm(t *testing.T) {
+	y := `
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    script: [make]
+    artifacts:
+      paths: [dist, dist/]
+      optional: [dist/, screenshots]
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	j := p.Jobs[0]
+
+	// Within paths: `dist` and `dist/` collapse — first-occurrence
+	// shape (`dist`) wins.
+	if len(j.ArtifactPaths) != 1 || j.ArtifactPaths[0] != "dist" {
+		t.Fatalf("required = %v, want [dist]", j.ArtifactPaths)
+	}
+	// Across lists: optional `dist/` is dropped because required
+	// `dist` already covers it (canonical match). `screenshots`
+	// survives.
+	if len(j.OptionalArtifactPaths) != 1 || j.OptionalArtifactPaths[0] != "screenshots" {
+		t.Fatalf("optional = %v, want [screenshots] (dist/ canonical-deduped against required)", j.OptionalArtifactPaths)
+	}
+}
+
 func TestParse_NeedsArtifacts(t *testing.T) {
 	y := `
 stages: [build, deploy]

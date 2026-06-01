@@ -221,6 +221,64 @@ func TestRequestArtifactUpload_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRequestArtifactUpload_DedupesPaths — the same path appearing
+// twice in `paths[]` (in canonical or trailing-slash form) must
+// produce ONE ticket, not two. Without the dedupe, the second
+// InsertPendingArtifact would hit the partial unique index from
+// migration 00035 and abort the batch — leaving the agent with no
+// way to upload even the unique paths.
+func TestRequestArtifactUpload_DedupesPaths(t *testing.T) {
+	pool, client, _ := bootServerWithArtifacts(t)
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "runner-art-dedupe")
+
+	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "runner-art-dedupe", Token: "tok-art",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	flipJobRunning(t, pool, jobID, agentID)
+
+	// `dist`, `dist/`, and `dist` again all canonicalize to "dist".
+	// `coverage.out` is the unique companion.
+	up, err := client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
+		SessionId: resp.SessionId,
+		RunId:     runID.String(),
+		JobId:     jobID.String(),
+		Paths:     []string{"dist", "dist/", "dist", "coverage.out"},
+	})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if got := len(up.Tickets); got != 2 {
+		t.Fatalf("tickets = %d, want 2 (dedupe should collapse dist/dist//dist)", got)
+	}
+
+	// First occurrence's shape ("dist") wins for the ticket round-trip.
+	if up.Tickets[0].Path != "dist" {
+		t.Errorf("ticket[0].Path = %q, want %q (first-occurrence shape)", up.Tickets[0].Path, "dist")
+	}
+	if up.Tickets[1].Path != "coverage.out" {
+		t.Errorf("ticket[1].Path = %q, want %q", up.Tickets[1].Path, "coverage.out")
+	}
+
+	// Exactly one row landed for `dist` (stored as canonical, no trailing slash).
+	s := store.New(pool)
+	rows, err := s.ListArtifactsByJobRun(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	distCount := 0
+	for _, r := range rows {
+		if r.Path == "dist" {
+			distCount++
+		}
+	}
+	if distCount != 1 {
+		t.Fatalf("rows with path=dist = %d, want 1", distCount)
+	}
+}
+
 func TestRequestArtifactUpload_RejectsBadSession(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
 	// Bad-session test: the session check fails before any ownership
