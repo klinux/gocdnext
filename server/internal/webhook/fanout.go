@@ -107,7 +107,29 @@ func fanOutMaterials(ctx context.Context, log *slog.Logger, s *store.Store, in f
 		// provider retries the dedup keeps us from spawning a second
 		// run for the same SHA. Each pipeline's run is independent —
 		// a stale dedup on pipeline A doesn't block pipeline B.
+		//
+		// Operator visibility (issue #4 path #1): without this log,
+		// a deduped delivery looks identical to "pipeline never
+		// fired" — the operator pushes, no UI entry appears, no
+		// clue why. Common triggers:
+		//   - GitHub re-delivered an older SHA (delivery retried).
+		//   - Poller raced webhook and inserted the modification
+		//     first (poller wins → webhook dedup logs nothing under
+		//     the prior policy).
+		//   - Pipeline was disabled when the SHA was first seen
+		//     then re-enabled — the SHA dedup persists.
+		// One-line Info log is enough: grep + delivery id is what
+		// operators reach for. The webhooks admin view exposes the
+		// same fact in a follow-up Cut.
 		if !mod.Created {
+			log.Info("webhook fan-out: dedup — modification already existed, no run created",
+				"pipeline_id", m.PipelineID,
+				"material_id", m.ID,
+				"modification_id", mod.ID,
+				"revision", in.Revision,
+				"branch", in.Branch,
+				"delivery", in.Delivery,
+				"provider", in.Provider)
 			out = append(out, oc)
 			continue
 		}

@@ -54,15 +54,20 @@ func (q *Queries) CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID
 const completeJobRun = `-- name: CompleteJobRun :one
 UPDATE job_runs
 SET status = $2, exit_code = $3, error = $4, finished_at = NOW()
-WHERE id = $1 AND status IN ('queued', 'running')
+WHERE id = $1
+  AND status IN ('queued', 'running')
+  AND agent_id IS NOT DISTINCT FROM $5::uuid
+  AND attempt = $6::int
 RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at
 `
 
 type CompleteJobRunParams struct {
-	ID       pgtype.UUID
-	Status   string
-	ExitCode *int32
-	Error    *string
+	ID              pgtype.UUID
+	Status          string
+	ExitCode        *int32
+	Error           *string
+	ExpectedAgentID pgtype.UUID
+	ExpectedAttempt int32
 }
 
 type CompleteJobRunRow struct {
@@ -75,16 +80,33 @@ type CompleteJobRunRow struct {
 	FinishedAt pgtype.Timestamptz
 }
 
-// Flips a queued or running job to its terminal state. Idempotent: matches
-// only non-terminal rows. Accepting 'queued' lets the scheduler fail a job
-// at dispatch time (e.g. unresolved secret) without first flipping it to
-// running via AssignJob. Returns stage/run ids so the caller can cascade.
+// Flips a queued or running job to its terminal state, IF the caller's
+// expected agent_id snapshot still matches what's on the row.
+// Idempotent: matches only non-terminal rows.
+//
+// Accepting both 'queued' AND 'running' covers two distinct callers:
+//   - handleJobResult (agent gRPC): row was 'running' when AssignJob
+//     dispatched it. Passes the calling session's agent UUID as
+//     expected_agent_id. A stale result from a revoked agent session
+//     whose job was reclaimed (agent_id NULL'd) or redispatched
+//     (different agent) will NOT match — `IS NOT DISTINCT FROM` is
+//     load-bearing here, both on the NULL-NULL match for the
+//     scheduler path AND on the NULL-mismatch reject after reclaim.
+//   - scheduler.failJobWithError (dispatch-time fail): row is still
+//     'queued' (never got AssignJob'd) with agent_id=NULL. Passes
+//     NULL for expected_agent_id; the IS NOT DISTINCT FROM matches.
+//
+// Returns stage/run ids so the caller can cascade. ErrNoRows when
+// the predicate doesn't match — caller treats as "another path
+// handled this row already" and drops the message silently.
 func (q *Queries) CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error) {
 	row := q.db.QueryRow(ctx, completeJobRun,
 		arg.ID,
 		arg.Status,
 		arg.ExitCode,
 		arg.Error,
+		arg.ExpectedAgentID,
+		arg.ExpectedAttempt,
 	)
 	var i CompleteJobRunRow
 	err := row.Scan(

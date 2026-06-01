@@ -15,7 +15,7 @@ const assignJob = `-- name: AssignJob :one
 UPDATE job_runs
 SET status = 'running', agent_id = $2, started_at = NOW()
 WHERE id = $1 AND status = 'queued' AND agent_id IS NULL
-RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, agent_id
+RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, agent_id, attempt
 `
 
 type AssignJobParams struct {
@@ -32,10 +32,17 @@ type AssignJobRow struct {
 	Image      *string
 	Status     string
 	AgentID    pgtype.UUID
+	Attempt    int32
 }
 
 // Moves a queued, unassigned job to running and records the agent. The status
 // predicate prevents a race where two scheduler ticks pick the same job.
+//
+// `attempt` flows back so the scheduler can RecordAssignment on the
+// target session — the result handler then validates the (agent,
+// attempt) snapshot to refuse stale results from revoked sessions
+// whose job got redispatched to the same agent_id on a higher
+// attempt. See sessions.Session.RecordAssignment.
 func (q *Queries) AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error) {
 	row := q.db.QueryRow(ctx, assignJob, arg.ID, arg.AgentID)
 	var i AssignJobRow
@@ -48,8 +55,25 @@ func (q *Queries) AssignJob(ctx context.Context, arg AssignJobParams) (AssignJob
 		&i.Image,
 		&i.Status,
 		&i.AgentID,
+		&i.Attempt,
 	)
 	return i, err
+}
+
+const clearRunQueueReason = `-- name: ClearRunQueueReason :exec
+UPDATE runs
+SET queue_reason = NULL
+WHERE id = $1
+  AND queue_reason IS NOT NULL
+`
+
+// Clears queue_reason. Called by the scheduler when a run transitions
+// to running (predecessor finished, run is dispatchable). Also called
+// by terminal-transition paths so a canceled-while-queued run doesn't
+// carry a stale "waiting on #N" message in the runs list.
+func (q *Queries) ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearRunQueueReason, id)
+	return err
 }
 
 const getRunForDispatch = `-- name: GetRunForDispatch :one
@@ -102,7 +126,7 @@ WITH active_stage AS (
     FROM stage_runs s
     WHERE s.run_id = $1 AND s.status IN ('queued', 'running')
 )
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs, j.attempt
 FROM job_runs j
 JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1
@@ -121,6 +145,7 @@ type ListDispatchableJobsRow struct {
 	Image      *string
 	Status     string
 	Needs      []string
+	Attempt    int32
 }
 
 // Returns queued jobs in the lowest-ordinal stage that still has queued or
@@ -144,6 +169,7 @@ func (q *Queries) ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) (
 			&i.Image,
 			&i.Status,
 			&i.Needs,
+			&i.Attempt,
 		); err != nil {
 			return nil, err
 		}
@@ -204,29 +230,100 @@ func (q *Queries) MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) 
 	return err
 }
 
-const otherRunningRunExistsForPipeline = `-- name: OtherRunningRunExistsForPipeline :one
-SELECT EXISTS (
-    SELECT 1 FROM runs
-    WHERE pipeline_id = $1
-      AND status = 'running'
-      AND id <> $2
-)::boolean AS running
+const otherRunningRunForPipeline = `-- name: OtherRunningRunForPipeline :one
+SELECT id
+FROM runs
+WHERE pipeline_id = $1
+  AND status = 'running'
+  AND id <> $2
+LIMIT 1
 `
 
-type OtherRunningRunExistsForPipelineParams struct {
+type OtherRunningRunForPipelineParams struct {
 	PipelineID pgtype.UUID
 	ID         pgtype.UUID
 }
 
-// Returns true when the pipeline has any run in 'running' status
-// other than the one we're about to dispatch. The scheduler checks
-// this for pipelines configured with concurrency: serial and
-// leaves the run queued when another one is already in flight.
-// Excluded self so a re-entrant tick (scheduler evaluates the
-// same run twice) doesn't see itself as a blocker.
-func (q *Queries) OtherRunningRunExistsForPipeline(ctx context.Context, arg OtherRunningRunExistsForPipelineParams) (bool, error) {
-	row := q.db.QueryRow(ctx, otherRunningRunExistsForPipeline, arg.PipelineID, arg.ID)
-	var running bool
-	err := row.Scan(&running)
-	return running, err
+// Returns the run_id of an in-flight predecessor blocking the
+// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
+// Used by the scheduler for two things on one query: (1) the busy
+// decision (leave queued vs proceed), and (2) the predecessor id to
+// stamp on runs.queue_reason so the UI can render "waiting on #N".
+//
+// Replaces the prior boolean-returning OtherRunningRunExistsForPipeline
+// — the boolean was load-bearing for the decision alone, but the id
+// is needed for the operator-visibility surface (issue #4 path #2).
+// Excluded self so a re-entrant tick (scheduler evaluates the same
+// run twice) doesn't see itself as a blocker. LIMIT 1 is fine: any
+// one blocking run is enough to leave queued; we don't need the
+// full set.
+func (q *Queries) OtherRunningRunForPipeline(ctx context.Context, arg OtherRunningRunForPipelineParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, otherRunningRunForPipeline, arg.PipelineID, arg.ID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const setRunQueueReason = `-- name: SetRunQueueReason :exec
+UPDATE runs
+SET queue_reason = $2
+WHERE id = $1
+  AND status = 'queued'
+`
+
+type SetRunQueueReasonParams struct {
+	ID          pgtype.UUID
+	QueueReason *string
+}
+
+// Sets runs.queue_reason on a still-queued run. Callers stamp this
+// AFTER the busy decision so the field reflects the latest tick's
+// reasoning. A run that flipped to a terminal status between the
+// scheduler's read and this write would write to a stale row;
+// the `status='queued'` guard turns that into a no-op rather than
+// planting a confusing message on a finished run.
+func (q *Queries) SetRunQueueReason(ctx context.Context, arg SetRunQueueReasonParams) error {
+	_, err := q.db.Exec(ctx, setRunQueueReason, arg.ID, arg.QueueReason)
+	return err
+}
+
+const unassignJob = `-- name: UnassignJob :one
+UPDATE job_runs
+SET status = 'queued', agent_id = NULL, started_at = NULL
+WHERE id = $1
+  AND status = 'running'
+  AND agent_id = $2
+  AND attempt = $3::int
+RETURNING id, run_id
+`
+
+type UnassignJobParams struct {
+	ID              pgtype.UUID
+	AgentID         pgtype.UUID
+	ExpectedAttempt int32
+}
+
+type UnassignJobRow struct {
+	ID    pgtype.UUID
+	RunID pgtype.UUID
+}
+
+// Rolls back an AssignJob whose Dispatch failed downstream (busy
+// session queue, session vanished between AssignJob commit and the
+// gRPC send). Snapshot-validating CAS — only undoes the row if it's
+// still (running, $agentID, $attempt), matching exactly what we
+// just claimed. Anything else means a reaper / fence already moved
+// the row out from under us and our undo would clobber legitimate
+// state. Returns the run_id so the caller can fire a NOTIFY to
+// nudge the scheduler back into the dispatch loop.
+//
+// The row goes back to (queued, NULL, attempt unchanged) — we do
+// NOT bump attempt here. The attempt counter exists to detect
+// crashes mid-execution; a dispatch failure that never reached the
+// agent doesn't count as an attempt.
+func (q *Queries) UnassignJob(ctx context.Context, arg UnassignJobParams) (UnassignJobRow, error) {
+	row := q.db.QueryRow(ctx, unassignJob, arg.ID, arg.AgentID, arg.ExpectedAttempt)
+	var i UnassignJobRow
+	err := row.Scan(&i.ID, &i.RunID)
+	return i, err
 }

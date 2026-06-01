@@ -9,17 +9,18 @@ import (
 )
 
 type Agent struct {
-	ID           pgtype.UUID
-	Name         string
-	TokenHash    string
-	Version      *string
-	Os           *string
-	Arch         *string
-	Tags         []string
-	Capacity     int32
-	Status       string
-	LastSeenAt   pgtype.Timestamptz
-	RegisteredAt pgtype.Timestamptz
+	ID                pgtype.UUID
+	Name              string
+	TokenHash         string
+	Version           *string
+	Os                *string
+	Arch              *string
+	Tags              []string
+	Capacity          int32
+	Status            string
+	LastSeenAt        pgtype.Timestamptz
+	RegisteredAt      pgtype.Timestamptz
+	SessionGeneration int64
 }
 
 type ApiToken struct {
@@ -264,6 +265,8 @@ type Run struct {
 	StartedAt   pgtype.Timestamptz
 	FinishedAt  pgtype.Timestamptz
 	CreatedAt   pgtype.Timestamptz
+	// Operator-visible reason a queued run is not advancing. Format key:detail. Cleared when the run leaves queued.
+	QueueReason *string
 }
 
 type RunnerProfile struct {

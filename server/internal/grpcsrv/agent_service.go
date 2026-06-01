@@ -73,7 +73,22 @@ type AgentService struct {
 	// stale; the worst case is the process growing one uuid entry
 	// per job seen since last restart, which is negligible.
 	jobRunIDCache sync.Map
+
+	// registerFenceMaxAttempts caps how many times a job that gets
+	// caught by the register-fence path can be re-queued before
+	// being failed. Mirrors the reaper's MaxAttempts default (3)
+	// so a job whose agent flap-restarts repeatedly fails after
+	// the same total tries, regardless of which path (heartbeat-
+	// stale vs re-register) detected the orphan. Override via
+	// WithRegisterFenceMaxAttempts for tests / operators tuning
+	// the policy globally.
+	registerFenceMaxAttempts int32
 }
+
+// DefaultRegisterFenceMaxAttempts is duplicated from
+// scheduler.DefaultReaperMaxAttempts to avoid an import cycle
+// (scheduler depends on grpcsrv). Keep the two in sync.
+const DefaultRegisterFenceMaxAttempts int32 = 3
 
 // NewAgentService wires the service. heartbeatSeconds is the cadence the server
 // asks the agent to use; zero means "let the agent pick" — we default to 30.
@@ -85,11 +100,24 @@ func NewAgentService(s *store.Store, sessions *SessionStore, log *slog.Logger, h
 		heartbeatSeconds = 30
 	}
 	return &AgentService{
-		store:            s,
-		sessions:         sessions,
-		log:              log,
-		heartbeatSeconds: heartbeatSeconds,
+		store:                    s,
+		sessions:                 sessions,
+		log:                      log,
+		heartbeatSeconds:         heartbeatSeconds,
+		registerFenceMaxAttempts: DefaultRegisterFenceMaxAttempts,
 	}
+}
+
+// WithRegisterFenceMaxAttempts lets the operator (or tests) tune
+// how many times the register-fence path will re-queue an orphan
+// before failing it. Zero or negative leaves the default in place
+// — there's no "disable the fence" mode because that mode is just
+// the old "jobs stuck running forever" bug.
+func (a *AgentService) WithRegisterFenceMaxAttempts(n int32) *AgentService {
+	if n > 0 {
+		a.registerFenceMaxAttempts = n
+	}
+	return a
 }
 
 // WithArtifactStore enables the RequestArtifactUpload + cache RPCs.
@@ -205,6 +233,79 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
+	// Orphan-recovery + session-publish sequence. Order matters; each
+	// step addresses a specific race (issue #4 + 4 review rounds):
+	//
+	//   1. RevokeForAgent: kill the OLD session and set its
+	//      supersededByRegister flag so the Connect-handler defer on
+	//      that stream knows not to MarkAgentOffline (which would
+	//      clobber the fresh online stamp we set below). After this,
+	//      latestByAg has no entry for this agent — the scheduler
+	//      can't dispatch to either old or new yet.
+	//
+	//   2. ReclaimAgentJobs: requeue / fail-at-max every running row
+	//      attributed to this agent. Snapshot-validating CAS inside
+	//      the store rejects rows that a concurrent path already
+	//      redispatched. notify=false — the wake-up is coalesced and
+	//      fired after CreateSession (step 4).
+	//
+	//   3. MarkAgentOnline: flip agents.status='online' BEFORE
+	//      publishing the new session. If this DB UPDATE fails we
+	//      bail with no in-memory state created — the old session
+	//      is gone (step 1), but agents.status keeps whatever value
+	//      it had. The reaper's stale-last_seen_at path is the
+	//      eventual safety net.
+	//
+	//   4. CreateSession: publishes the new session in latestByAg
+	//      AND fires onReady. Both happen AFTER MarkAgentOnline
+	//      committed, so the scheduler can never observe a live
+	//      session for an agents.status='offline' row. (Prior
+	//      ordering — CreateSession before MarkAgentOnline — let
+	//      onReady wake the scheduler while the DB still said
+	//      offline; the reaper would then reclaim the very job the
+	//      scheduler was about to dispatch.)
+	//
+	//   5. NotifyRunQueued: coalesced wake-up for every requeued
+	//      run. By this point the new session exists AND the agents
+	//      row is online, so FindIdle picks it cleanly.
+	//
+	// Error policy: log + continue inside reclaim (per-row failures
+	// are tolerable; reaper retries them). MarkAgentOnline is the
+	// one hard gate — if it fails we have no inconsistent in-memory
+	// state to clean up.
+	a.sessions.RevokeForAgent(agent.ID)
+
+	var notifyRunIDs []uuid.UUID
+	if results, err := a.store.ReclaimAgentJobs(ctx, agent.ID, a.registerFenceMaxAttempts); err != nil {
+		a.log.Warn("agent register: fence failed",
+			"agent_id", req.GetAgentId(), "agent_uuid", agent.ID, "err", err)
+	} else if len(results) > 0 {
+		var requeued, failed, skipped, errored int
+		seenRuns := make(map[uuid.UUID]struct{}, len(results))
+		for _, r := range results {
+			switch {
+			case r.Err != nil:
+				errored++
+				a.log.Warn("agent register: fence entry error",
+					"agent_uuid", agent.ID, "job_id", r.JobRunID, "err", r.Err)
+			case r.Action == store.ReclaimActionRequeued:
+				requeued++
+				if _, dup := seenRuns[r.RunID]; !dup {
+					seenRuns[r.RunID] = struct{}{}
+					notifyRunIDs = append(notifyRunIDs, r.RunID)
+				}
+			case r.Action == store.ReclaimActionFailed:
+				failed++
+			default:
+				skipped++
+			}
+		}
+		a.log.Info("agent register: fence reclaimed orphans",
+			"agent_id", req.GetAgentId(), "agent_uuid", agent.ID,
+			"requeued", requeued, "failed", failed,
+			"skipped", skipped, "errors", errored)
+	}
+
 	upd := store.RegisterUpdate{
 		Version:  req.GetVersion(),
 		OS:       req.GetOs(),
@@ -212,12 +313,41 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 		Tags:     req.GetTags(),
 		Capacity: req.GetCapacity(),
 	}
-	if err := a.store.MarkAgentOnline(ctx, agent.ID, upd); err != nil {
+	// MarkAgentOnline bumps agents.session_generation atomically
+	// and returns the new value. We pass it INTO CreateSession so
+	// the field is initialised inside the struct literal before the
+	// session gets published in latestByAg — a prior version
+	// assigned `sess.Generation = generation` AFTER CreateSession
+	// returned, which (a) data-raced with the reaper's read in
+	// FenceStaleSession and (b) opened a window where the published
+	// session carried generation=0 even though the DB had already
+	// bumped, letting an old reaper observation with observed=0
+	// match-and-revoke the freshly-online successor.
+	//
+	// Why this isn't a session UUID stored in the DB: session ids
+	// are bearer credentials accepted by Connect's auth. A read-only
+	// DB leak (backup, log, snapshot) of a session UUID would let
+	// the leak holder impersonate live sessions. A monotonic int
+	// carries the "is this defer's epoch still current?" signal
+	// with zero auth power.
+	generation, err := a.store.MarkAgentOnline(ctx, agent.ID, upd)
+	if err != nil {
 		a.log.Error("agent register: update failed", "agent_id", req.GetAgentId(), "err", err)
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
-	sess := a.sessions.CreateSession(agent.ID, req.GetTags(), req.GetCapacity())
+	sess := a.sessions.CreateSession(agent.ID, req.GetTags(), req.GetCapacity(), generation)
+
+	// Now that the new session exists, fire the deferred wake-ups.
+	// One NOTIFY per distinct run id — the scheduler dedups at its
+	// LISTEN side anyway, but coalescing here keeps the channel
+	// quieter on agents that had many concurrent jobs in flight.
+	for _, runID := range notifyRunIDs {
+		if err := a.store.NotifyRunQueued(ctx, runID); err != nil {
+			a.log.Warn("agent register: fence notify failed",
+				"agent_uuid", agent.ID, "run_id", runID, "err", err)
+		}
+	}
 	a.log.Info("agent registered",
 		"agent_id", req.GetAgentId(),
 		"agent_uuid", agent.ID,

@@ -210,6 +210,15 @@ type RunSummary struct {
 	Counter      int64      `json:"counter"`
 	Cause        string     `json:"cause"`
 	Status       string     `json:"status"`
+	// QueueReason is the operator-visible explanation for a queued
+	// run that hasn't advanced. Today only the scheduler's serial-
+	// concurrency gate stamps this (format: "serial-busy:<run-id>"),
+	// but the field is a free-form key:detail string so future
+	// gates (no-eligible-agent, approval-pending, etc.) can
+	// extend the vocabulary without an API contract change.
+	// Empty for runs not currently blocked — the UI uses presence
+	// to decide whether to render the "waiting on …" pill.
+	QueueReason  string     `json:"queue_reason,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
@@ -677,6 +686,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Counter:      r.Counter,
 			Cause:        r.Cause,
 			Status:       r.Status,
+			QueueReason:  stringValue(r.QueueReason),
 			CreatedAt:    r.CreatedAt.Time,
 			StartedAt:    pgTimePtr(r.StartedAt),
 			FinishedAt:   pgTimePtr(r.FinishedAt),
@@ -816,6 +826,7 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 			Counter:      run.Counter,
 			Cause:        run.Cause,
 			Status:       run.Status,
+			QueueReason:  stringValue(run.QueueReason),
 			CreatedAt:    run.CreatedAt.Time,
 			StartedAt:    pgTimePtr(run.StartedAt),
 			FinishedAt:   pgTimePtr(run.FinishedAt),

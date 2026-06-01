@@ -96,7 +96,7 @@ func TestDispatchRun_PushesAssignmentToIdleAgent(t *testing.T) {
 
 	runID, materialID := seed(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-1")
-	sess := sessions.CreateSession(agentID, nil, 1)
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -157,7 +157,7 @@ func TestDispatchRun_SkipsSecondStageJobs(t *testing.T) {
 
 	runID, _ := seed(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-1")
-	sess := sessions.CreateSession(agentID, nil, 4)
+	sess := sessions.CreateSession(agentID, nil, 4, 0)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -225,8 +225,8 @@ func TestDispatchRun_RoutesToAgentMatchingTags(t *testing.T) {
 	// Two agents: plain (no docker) and dockerized.
 	plainID := seedAgentRow(t, pool, "plain")
 	dockerID := seedAgentRow(t, pool, "dockerized")
-	plainSess := sessions.CreateSession(plainID, []string{"linux"}, 1)
-	dockerSess := sessions.CreateSession(dockerID, []string{"linux", "docker"}, 1)
+	plainSess := sessions.CreateSession(plainID, []string{"linux"}, 1, 0)
+	dockerSess := sessions.CreateSession(dockerID, []string{"linux", "docker"}, 1, 0)
 
 	sched.DispatchRun(ctx, run.RunID)
 
@@ -290,7 +290,7 @@ func TestDispatchRun_LeavesJobQueuedWhenNoAgentHasRequiredTags(t *testing.T) {
 	}
 
 	plainID := seedAgentRow(t, pool, "plain-only")
-	sessions.CreateSession(plainID, []string{"linux"}, 1)
+	sessions.CreateSession(plainID, []string{"linux"}, 1, 0)
 
 	sched.DispatchRun(ctx, run.RunID)
 
@@ -895,7 +895,7 @@ func TestRun_DispatchesOnAgentRegister(t *testing.T) {
 	// Now bring an agent online; the ready-hook should kick the
 	// scheduler into an immediate drainQueued.
 	agentID := seedAgentRow(t, pool, "late-agent")
-	sess := sessions.CreateSession(agentID, nil, 1)
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
 
 	select {
 	case msg := <-sess.Out():
@@ -931,7 +931,7 @@ func TestRun_ReactsToNotify(t *testing.T) {
 	defer cancel()
 
 	agentID := seedAgentRow(t, pool, "agent-1")
-	sess := sessions.CreateSession(agentID, nil, 1)
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
 
 	done := make(chan error, 1)
 	go func() { done <- sched.Run(ctx) }()
@@ -1035,7 +1035,7 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 	}
 
 	agentID := seedAgentRow(t, pool, "serial-agent")
-	sess := sessions.CreateSession(agentID, nil, 2)
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
 
 	sched.DispatchRun(ctx, second.RunID)
 
@@ -1044,6 +1044,25 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 		t.Fatalf("expected no dispatch while busy, got: %+v", msg)
 	case <-time.After(200 * time.Millisecond):
 		// good — stayed queued
+	}
+
+	// runs.queue_reason must be stamped so the UI can render
+	// "waiting on #N". Issue #4 path #2: without this surface, a
+	// queued run looks identical to "scheduler isn't ticking" to
+	// the operator.
+	var reason *string
+	if err := pool.QueryRow(ctx,
+		`SELECT queue_reason FROM runs WHERE id=$1`, second.RunID,
+	).Scan(&reason); err != nil {
+		t.Fatalf("read queue_reason: %v", err)
+	}
+	wantReason := "serial-busy:" + first.RunID.String()
+	if reason == nil || *reason != wantReason {
+		got := "<nil>"
+		if reason != nil {
+			got = *reason
+		}
+		t.Fatalf("queue_reason = %q, want %q", got, wantReason)
 	}
 
 	// Unblock: mark first as finished. Dispatching again should
@@ -1059,5 +1078,17 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("no dispatch after previous run finished")
+	}
+
+	// Past the gate — queue_reason must be cleared so the run
+	// detail doesn't keep advertising a "waiting on …" message
+	// after the run is actually proceeding.
+	if err := pool.QueryRow(ctx,
+		`SELECT queue_reason FROM runs WHERE id=$1`, second.RunID,
+	).Scan(&reason); err != nil {
+		t.Fatalf("read queue_reason after dispatch: %v", err)
+	}
+	if reason != nil {
+		t.Fatalf("queue_reason = %q after dispatch, want NULL (cleared)", *reason)
 	}
 }

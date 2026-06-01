@@ -17,11 +17,23 @@ type Querier interface {
 	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
+	//
+	// `attempt` flows back so the scheduler can RecordAssignment on the
+	// target session — the result handler then validates the (agent,
+	// attempt) snapshot to refuse stale results from revoked sessions
+	// whose job got redispatched to the same agent_id on a higher
+	// attempt. See sessions.Session.RecordAssignment.
 	AssignJob(ctx context.Context, arg AssignJobParams) (AssignJobRow, error)
 	// Flips a run to 'canceled' only if it was still active. Idempotent:
 	// a second call on a terminal run returns no rows so the handler
 	// can answer 409. Returns the row id so the caller can tell the
 	// update happened.
+	//
+	// queue_reason is cleared in the same UPDATE so a canceled-while-
+	// queued run doesn't carry a "waiting on #N" message into the
+	// runs list. Doing it in this UPDATE (vs a follow-up
+	// ClearRunQueueReason call) keeps the cancel atomic and saves a
+	// round-trip.
 	CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	// Pending approval gates in a failed run also get canceled so a
 	// rejected deploy doesn't leave a "ready to approve" ghost sitting
@@ -51,10 +63,30 @@ type Querier interface {
 	// FOR UPDATE SKIP LOCKED makes this safe to run from multiple
 	// schedulers/sweepers at once; each gets a disjoint batch.
 	ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifactsForSweepParams) ([]ClaimArtifactsForSweepRow, error)
-	// Flips a queued or running job to its terminal state. Idempotent: matches
-	// only non-terminal rows. Accepting 'queued' lets the scheduler fail a job
-	// at dispatch time (e.g. unresolved secret) without first flipping it to
-	// running via AssignJob. Returns stage/run ids so the caller can cascade.
+	// Clears queue_reason. Called by the scheduler when a run transitions
+	// to running (predecessor finished, run is dispatchable). Also called
+	// by terminal-transition paths so a canceled-while-queued run doesn't
+	// carry a stale "waiting on #N" message in the runs list.
+	ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
+	// Flips a queued or running job to its terminal state, IF the caller's
+	// expected agent_id snapshot still matches what's on the row.
+	// Idempotent: matches only non-terminal rows.
+	//
+	// Accepting both 'queued' AND 'running' covers two distinct callers:
+	//   - handleJobResult (agent gRPC): row was 'running' when AssignJob
+	//     dispatched it. Passes the calling session's agent UUID as
+	//     expected_agent_id. A stale result from a revoked agent session
+	//     whose job was reclaimed (agent_id NULL'd) or redispatched
+	//     (different agent) will NOT match — `IS NOT DISTINCT FROM` is
+	//     load-bearing here, both on the NULL-NULL match for the
+	//     scheduler path AND on the NULL-mismatch reject after reclaim.
+	//   - scheduler.failJobWithError (dispatch-time fail): row is still
+	//     'queued' (never got AssignJob'd) with agent_id=NULL. Passes
+	//     NULL for expected_agent_id; the IS NOT DISTINCT FROM matches.
+	//
+	// Returns stage/run ids so the caller can cascade. ErrNoRows when
+	// the predicate doesn't match — caller treats as "another path
+	// handled this row already" and drops the message silently.
 	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
@@ -149,6 +181,25 @@ type Querier interface {
 	// but-not-including-this-row (so we always demote enough, never
 	// less).
 	ExpireOldestInProjectByExcess(ctx context.Context, arg ExpireOldestInProjectByExcessParams) (int64, error)
+	// Cap-exceeded path for the reaper / fence: flips a still-running
+	// row to 'failed' with a fixed error message, IF the snapshot the
+	// caller saw still matches. Snapshot validation has the same role
+	// as in ReclaimJobForRetry — a concurrent rerun or redispatch could
+	// have moved this row to a healthy state on another agent, and
+	// failing it on our stale read would corrupt the run.
+	//
+	// We don't go through CompleteJobRun because that UPDATE is
+	// intentionally permissive (accepts both queued+running so a
+	// dispatch-time fail-from-queued path works), and adding the
+	// snapshot check there would ripple across every result-handler
+	// call site. The caller (FailJobIfStale in store/sweeper.go) wraps
+	// this query + the existing cascadeAfterJobCompletion helper in
+	// one transaction so the stage/run promotion stays identical to
+	// the normal terminal path.
+	//
+	// Return columns mirror CompleteJobRun so the Go caller can
+	// reuse the same JobCompletion struct + cascade helper.
+	FailStaleJobAtMax(ctx context.Context, arg FailStaleJobAtMaxParams) (FailStaleJobAtMaxRow, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// Same shape as ListAgentsWithRunning but for one row — reused by
 	// the /agents/{id} page. Returns ErrNoRows when the UUID is not
@@ -558,6 +609,17 @@ type Querier interface {
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
+	// Every running job currently assigned to a given agent_id. The
+	// register-fence path uses this: when an agent re-registers (= the
+	// prior process is gone), every still-'running' row attributed to it
+	// is by definition orphaned and must be reclaimed before we accept
+	// new assignments for the new session. This is the primary fix for
+	// "agent restarts → job stuck running forever → reaper skips because
+	// last_seen_at is fresh" (issue #4).
+	//
+	// Returned columns mirror ListStaleRunningJobs so the reaper-Go
+	// side can reuse the same ReclaimResult shape.
+	ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListRunningJobsForAgentRow, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	// Cross-project timeline: most recent runs first. Carries the
 	// pipeline + project names so list views can link without per-row
@@ -583,9 +645,38 @@ type Querier interface {
 	// Issuing one query per card would mean N+1 round trips; this
 	// amortizes them into a single scan.
 	ListStageRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListStageRunsForRunsRow, error)
-	// Running jobs whose agent is either offline or hasn't been seen within
-	// @staleness. The reaper walks this list every tick and either re-queues or
-	// fails them.
+	// Running jobs the reaper should reclaim. Two distinct categories live
+	// under the same SELECT so a single sweep tick handles both:
+	//
+	//   1) Has agent, agent is unhealthy: status='offline', missing
+	//      last_seen_at, or last_seen_at older than @staleness. Original
+	//      reaper case — agent process died and we wait the heartbeat
+	//      grace window before declaring its jobs gone.
+	//   2) Has NO agent (agent_id IS NULL) and the row has been sitting
+	//      that way past @staleness. This state shouldn't be reachable
+	//      via normal paths (AssignJob is atomic on both fields, and
+	//      ReclaimJobForRetry flips status to 'queued' in the same UPDATE
+	//      that NULLs the agent), but it surfaces from:
+	//        - Manual DB intervention to scrub an agent without flipping
+	//          status.
+	//        - Future code regression that splits the agent/status update.
+	//        - Partial migration that nulled agent_id mid-flight.
+	//      The INNER JOIN variant this replaced was invisible to such
+	//      orphans — they'd sit 'running' forever, blocking serial
+	//      pipelines indefinitely. Issue #4 walks the operator-visibility
+	//      consequences.
+	//
+	// agent_status / last_seen_at come back NULL for category (2); the
+	// reaper-Go side doesn't act on those fields beyond logging.
+	//
+	// agent_session_generation is the per-agent monotonic epoch counter
+	// snapshotted at SELECT time. The reaper-Go side passes this back to
+	// SessionStore.FenceStaleSession so a successor Register that bumped
+	// the counter between SELECT and fence (race that previously could
+	// revoke a freshly-online healthy session) is correctly skipped.
+	// COALESCE to 0 for category (2) so the Go side gets a stable int —
+	// the NULL-agent fence path uses agent_id == uuid.Nil as its skip
+	// predicate anyway.
 	ListStaleRunningJobs(ctx context.Context, staleness pgtype.Interval) ([]ListStaleRunningJobsRow, error)
 	// Returns the last N executions of a single case across every
 	// run of every pipeline. Used by the Tests-tab "history" popup
@@ -628,7 +719,12 @@ type Querier interface {
 	// Filter by provider + status keep the page useful even under
 	// heavy traffic. Empty string = no filter on that axis.
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
-	MarkAgentOffline(ctx context.Context, id pgtype.UUID) error
+	// Generation-aware offline mark. Only flips status when the
+	// closing handler's observed generation still matches the row.
+	// A successor Register bumps session_generation, so an old
+	// defer (which captured the prior value) finds no rows to
+	// update and no-ops — preserving the successor's online state.
+	MarkAgentOffline(ctx context.Context, arg MarkAgentOfflineParams) error
 	// Called after the server HEADs the storage and confirms the object is
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.
@@ -644,13 +740,20 @@ type Querier interface {
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
-	// Returns true when the pipeline has any run in 'running' status
-	// other than the one we're about to dispatch. The scheduler checks
-	// this for pipelines configured with concurrency: serial and
-	// leaves the run queued when another one is already in flight.
-	// Excluded self so a re-entrant tick (scheduler evaluates the
-	// same run twice) doesn't see itself as a blocker.
-	OtherRunningRunExistsForPipeline(ctx context.Context, arg OtherRunningRunExistsForPipelineParams) (bool, error)
+	// Returns the run_id of an in-flight predecessor blocking the
+	// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
+	// Used by the scheduler for two things on one query: (1) the busy
+	// decision (leave queued vs proceed), and (2) the predecessor id to
+	// stamp on runs.queue_reason so the UI can render "waiting on #N".
+	//
+	// Replaces the prior boolean-returning OtherRunningRunExistsForPipeline
+	// — the boolean was load-bearing for the decision alone, but the id
+	// is needed for the operator-visibility surface (issue #4 path #2).
+	// Excluded self so a re-entrant tick (scheduler evaluates the same
+	// run twice) doesn't see itself as a blocker. LIMIT 1 is fine: any
+	// one blocking run is enough to leave queued; we don't need the
+	// full set.
+	OtherRunningRunForPipeline(ctx context.Context, arg OtherRunningRunForPipelineParams) (pgtype.UUID, error)
 	// Per-pipeline aggregate stats over the last $2 interval. Terminal
 	// runs only — queued/running are excluded so the medians don't move
 	// during active work. `process_time_p50_seconds` is the median of
@@ -669,9 +772,24 @@ type Querier interface {
 	// per project, so aggregating in SQL saves an N×round-trip dance
 	// when compared with looping the per-slug query per project.
 	ProjectMetricsAggregated(ctx context.Context, sinceWindow pgtype.Interval) ([]ProjectMetricsAggregatedRow, error)
-	// Flips a running job back to queued, IF it is still running AND still under
-	// the retry cap. Returns the new attempt number; ErrNoRows signals the caller
-	// should take a different code path (failed-at-max or already-handled).
+	// Flips a running job back to queued, IF it is still running, still
+	// under the retry cap, AND its (agent_id, attempt) STILL matches the
+	// snapshot the caller observed when it decided the job was stale.
+	//
+	// Snapshot match is load-bearing: between ListStaleRunningJobs and
+	// this UPDATE, a concurrent reaper / register-fence / rerun could
+	// have flipped status=queued → scheduler dispatched → AssignJob set
+	// (running, NEW_AGENT, attempt+1). Without snapshot validation, this
+	// UPDATE would happily requeue a healthy job actively running on
+	// the new agent, kicking off a cascade of unnecessary retries that
+	// the operator perceives as "jobs randomly re-running for no reason".
+	//
+	// `agent_id IS NOT DISTINCT FROM` honours NULL equality — the
+	// NULL-agent reaper category sees `expected_agent_id` as NULL and
+	// only requeues rows that still have NULL there.
+	//
+	// ErrNoRows signals the caller should take a different code path
+	// (failed-at-max, already-reclaimed, raced-out-of-window).
 	ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error)
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
@@ -685,6 +803,13 @@ type Querier interface {
 	// UI writes here; the column has a NOT NULL default of '[]' so a
 	// fresh project never needs an initial INSERT against this field.
 	SetProjectNotifications(ctx context.Context, arg SetProjectNotificationsParams) error
+	// Sets runs.queue_reason on a still-queued run. Callers stamp this
+	// AFTER the busy decision so the field reflects the latest tick's
+	// reasoning. A run that flipped to a terminal status between the
+	// scheduler's read and this write would write to a stale row;
+	// the `status='queued'` guard turns that into a no-op rather than
+	// planting a confusing message on a finished run.
+	SetRunQueueReason(ctx context.Context, arg SetRunQueueReasonParams) error
 	// Disabling stops new tokens from authenticating (the bearer
 	// middleware loads the SA after token lookup and bounces 401 when
 	// disabled_at is set). Existing tokens stay in the table — wipe
@@ -709,10 +834,36 @@ type Querier interface {
 	// debounce in the middleware so we don't rewrite the row on every
 	// 2s dashboard poll.
 	TouchUserSession(ctx context.Context, id []byte) error
+	// Rolls back an AssignJob whose Dispatch failed downstream (busy
+	// session queue, session vanished between AssignJob commit and the
+	// gRPC send). Snapshot-validating CAS — only undoes the row if it's
+	// still (running, $agentID, $attempt), matching exactly what we
+	// just claimed. Anything else means a reaper / fence already moved
+	// the row out from under us and our undo would clobber legitimate
+	// state. Returns the run_id so the caller can fire a NOTIFY to
+	// nudge the scheduler back into the dispatch loop.
+	//
+	// The row goes back to (queued, NULL, attempt unchanged) — we do
+	// NOT bump attempt here. The attempt counter exists to detect
+	// crashes mid-execution; a dispatch failure that never reached the
+	// agent doesn't count as an attempt.
+	UnassignJob(ctx context.Context, arg UnassignJobParams) (UnassignJobRow, error)
 	// Called from the gRPC heartbeat handler so the reaper can tell which agents
 	// are still alive. Tiny write per heartbeat (default cadence 30s).
 	UpdateAgentLastSeen(ctx context.Context, id pgtype.UUID) error
-	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) error
+	// Bumps the per-agent session_generation counter atomically with
+	// the online-stamp. The new generation flows back to the caller
+	// (Connect handler) which captures it for its eventual
+	// MarkAgentOffline defer.
+	//
+	// Why this is monotonic int rather than session_id (TEXT):
+	// session_id is a bearer credential used by Connect's auth — the
+	// in-memory SessionStore.Lookup compares raw strings, so anything
+	// holding the id can impersonate. Persisting it would mean a
+	// read-only DB leak (backup, snapshot, log) effectively dumps live
+	// session tokens. The CAS only needs an epoch indicator — a
+	// counter carries exactly that signal with no auth power.
+	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) (int64, error)
 	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	// Dedicated password-only write. Used when an admin changes their
 	// own password from /settings/account — we never want to let the

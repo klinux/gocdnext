@@ -295,15 +295,36 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 	// both paths self-heal without a dedicated "run finished"
 	// notification channel. A follow-up could wire one for
 	// sub-tick latency on hot serial deploys.
+	//
+	// When the gate fires, stamp queue_reason='serial-busy:<id>' so
+	// the runs list / detail can render "waiting on #N" (issue #4
+	// path #2). The stamp is best-effort: if it fails, we still
+	// leave the run queued — the operator just loses the surface
+	// for THIS tick. The next tick will re-stamp.
 	if concurrency, _ := concurrencyFromDefinition(run.Definition); concurrency == domain.ConcurrencySerial {
-		busy, err := s.store.OtherRunningRunExistsForPipeline(ctx, run.PipelineID, runID)
+		predecessor, busy, err := s.store.OtherRunningRunForPipeline(ctx, run.PipelineID, runID)
 		if err != nil {
 			s.log.Warn("scheduler: concurrency check", "run_id", runID, "err", err)
 		} else if busy {
+			reason := "serial-busy:" + predecessor.String()
+			if err := s.store.SetRunQueueReason(ctx, runID, reason); err != nil {
+				s.log.Warn("scheduler: set queue_reason failed",
+					"run_id", runID, "predecessor", predecessor, "err", err)
+			}
 			s.log.Info("scheduler: serial pipeline busy, leaving queued",
-				"run_id", runID, "pipeline_id", run.PipelineID)
+				"run_id", runID, "pipeline_id", run.PipelineID,
+				"predecessor", predecessor)
 			return
 		}
+	}
+
+	// Past the gate — clear any prior queue_reason so a run that was
+	// previously stamped 'serial-busy:X' (and is now proceeding
+	// because X finished) doesn't carry the stale message into its
+	// running window. Idempotent in SQL (IS NOT NULL guard), so the
+	// common path (no prior stamp) is cheap.
+	if err := s.store.ClearRunQueueReason(ctx, runID); err != nil {
+		s.log.Warn("scheduler: clear queue_reason failed", "run_id", runID, "err", err)
 	}
 
 	jobs, err := s.store.ListDispatchableJobs(ctx, runID)
@@ -419,21 +440,55 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		// Labels carry the pipeline + project IDs (UUIDs) — names
-		// would require an extra lookup per dispatch and most
-		// dashboards either filter to one pipeline at a time OR
-		// sum() over them, where the ID label disappears.
-		metrics.JobsScheduled.WithLabelValues(run.PipelineID.String(), run.ProjectID.String()).Inc()
-		metrics.JobsRunning.Inc()
-
 		msg := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{Assign: assign}}
-		if err := s.sessions.Dispatch(agentID, msg); err != nil {
-			// Job is already marked running with this agent; heartbeat-timeout
-			// logic (C5) will re-queue if the agent never picks it up.
-			s.log.Warn("scheduler: dispatch failed, job stays running",
-				"run_id", runID, "job_id", job.ID, "agent_id", agentID, "err", err)
+		// Atomic record-and-dispatch: the snapshot stamp and the
+		// channel enqueue MUST land on the SAME session. A two-call
+		// version (record then dispatch) had a TOCTOU window where
+		// a successor Register could swap the session in between —
+		// the record landed on the obsolete session, the dispatch
+		// went to the new one, and the new one had no assignment
+		// for the job → eventual JobResult got dropped as "no
+		// assignment". DispatchAssignment holds the SessionStore
+		// mutex for both operations on whichever session is
+		// current at lock-acquire time.
+		if err := s.sessions.DispatchAssignment(agentID, msg, assigned.ID, assigned.Attempt); err != nil {
+			// Frame never reached an agent. Roll the row back via
+			// snapshot CAS so it goes back to (queued, NULL) and
+			// the scheduler retries on the next tick. Metrics:
+			// NOTHING was incremented yet (JobsScheduled/JobsRunning
+			// fire only on successful dispatch below), so there's
+			// nothing to undo here.
+			runIDForNotify, ok, undoErr := s.store.UnassignJob(ctx, job.ID, agentID, assigned.Attempt)
+			switch {
+			case undoErr != nil:
+				s.log.Warn("scheduler: dispatch failed AND unassign errored",
+					"run_id", runID, "job_id", job.ID, "agent_id", agentID,
+					"dispatch_err", err, "unassign_err", undoErr)
+			case ok:
+				if nerr := s.store.NotifyRunQueued(ctx, runIDForNotify); nerr != nil {
+					s.log.Warn("scheduler: dispatch undo notify failed",
+						"run_id", runIDForNotify, "err", nerr)
+				}
+				s.log.Warn("scheduler: dispatch failed, row rolled back to queued",
+					"run_id", runID, "job_id", job.ID, "agent_id", agentID, "err", err)
+			default:
+				// Snapshot didn't match — a concurrent path already
+				// claimed this row in a different state. Leave it.
+				s.log.Warn("scheduler: dispatch failed, snapshot stale on unassign — leaving row alone",
+					"run_id", runID, "job_id", job.ID, "agent_id", agentID, "err", err)
+			}
 			continue
 		}
+
+		// Metrics fire AFTER successful dispatch so a dispatch
+		// failure (rolled back above) doesn't leak counters that
+		// nobody decrements. Labels carry pipeline + project IDs
+		// (UUIDs) — names would require an extra lookup per
+		// dispatch and most dashboards either filter to one
+		// pipeline at a time OR sum() over them, where the ID
+		// label disappears.
+		metrics.JobsScheduled.WithLabelValues(run.PipelineID.String(), run.ProjectID.String()).Inc()
+		metrics.JobsRunning.Inc()
 
 		if err := s.store.MarkStageRunning(ctx, job.StageRunID); err != nil {
 			s.log.Warn("scheduler: mark stage running", "err", err)
@@ -602,9 +657,22 @@ func (s *Scheduler) resolveDepRunID(ctx context.Context, run store.RunForDispatc
 // fails — e.g. a declared secret isn't set on the project. CompleteJob's
 // WHERE clause accepts both queued and running, so we don't need to flip
 // to running first just to fail it.
+//
+// ExpectedAgentID is uuid.Nil here on purpose: a queued job has
+// agent_id IS NULL, and CompleteJobRun's `IS NOT DISTINCT FROM`
+// predicate matches NULL with NULL. If a scheduler tick raced the
+// agent (somehow the row got AssignJob'd between our list and our
+// fail), this NULL-expected guard makes our fail no-op via ErrNoRows
+// — which is the correct outcome, since a job that's been picked up
+// by a live agent should not be failed by the dispatch path.
 func (s *Scheduler) failJobWithError(ctx context.Context, job store.DispatchableJob, errMsg string) {
 	if _, _, err := s.store.CompleteJob(ctx, store.CompleteJobInput{
-		JobRunID: job.ID, Status: string(domain.StatusFailed), ExitCode: -1, ErrorMsg: errMsg,
+		JobRunID:        job.ID,
+		Status:          string(domain.StatusFailed),
+		ExitCode:        -1,
+		ErrorMsg:        errMsg,
+		ExpectedAgentID: uuid.Nil,
+		ExpectedAttempt: job.Attempt,
 	}); err != nil {
 		s.log.Warn("scheduler: fail job", "job_id", job.ID, "err", err)
 		return

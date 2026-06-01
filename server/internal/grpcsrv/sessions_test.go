@@ -95,7 +95,7 @@ func TestSessionStore_DispatchDeliversToCurrentSession(t *testing.T) {
 
 	s := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
-	sess := s.CreateSession(agentID, nil, 2)
+	sess := s.CreateSession(agentID, nil, 2, 0)
 
 	msg := noopMsg()
 	if err := s.Dispatch(agentID, msg); err != nil {
@@ -122,7 +122,7 @@ func TestSessionStore_DispatchBusyWhenQueueFull(t *testing.T) {
 
 	s := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
-	_ = s.CreateSession(agentID, nil, 1)
+	_ = s.CreateSession(agentID, nil, 1, 0)
 
 	// defaultSendBuffer is 16; fill it with messages and the next Dispatch
 	// should fail fast with ErrSessionBusy rather than block the caller.
@@ -141,7 +141,7 @@ func TestSessionStore_FindIdlePicksConnectedAgent(t *testing.T) {
 
 	s := grpcsrv.NewSessionStore()
 	want := uuid.New()
-	_ = s.CreateSession(want, nil, 1)
+	_ = s.CreateSession(want, nil, 1, 0)
 
 	got, ok := s.FindIdle()
 	if !ok || got != want {
@@ -154,7 +154,7 @@ func TestSessionStore_FindIdleRespectsCapacity(t *testing.T) {
 
 	s := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
-	sess := s.CreateSession(agentID, nil, 1)
+	sess := s.CreateSession(agentID, nil, 1, 0)
 	sess.IncRunning()
 
 	if _, ok := s.FindIdle(); ok {
@@ -172,8 +172,8 @@ func TestSessionStore_FindIdleWithTags_MatchesSupersets(t *testing.T) {
 	s := grpcsrv.NewSessionStore()
 	linuxAgent := uuid.New()
 	dockerAgent := uuid.New()
-	s.CreateSession(linuxAgent, []string{"linux"}, 1)
-	s.CreateSession(dockerAgent, []string{"linux", "docker"}, 1)
+	s.CreateSession(linuxAgent, []string{"linux"}, 1, 0)
+	s.CreateSession(dockerAgent, []string{"linux", "docker"}, 1, 0)
 
 	// Requiring just "linux" can hit either agent.
 	if _, ok := s.FindIdleWithTags([]string{"linux"}); !ok {
@@ -202,7 +202,7 @@ func TestSessionStore_FindIdleWithTags_RespectsCapacityAndRevoked(t *testing.T) 
 
 	s := grpcsrv.NewSessionStore()
 	agent := uuid.New()
-	sess := s.CreateSession(agent, []string{"linux", "docker"}, 1)
+	sess := s.CreateSession(agent, []string{"linux", "docker"}, 1, 0)
 	sess.IncRunning()
 	if _, ok := s.FindIdleWithTags([]string{"docker"}); ok {
 		t.Fatalf("should not match when capacity exhausted")
@@ -222,7 +222,7 @@ func TestSessionStore_RevokeClosesChannel(t *testing.T) {
 	t.Parallel()
 
 	s := grpcsrv.NewSessionStore()
-	sess := s.CreateSession(uuid.New(), nil, 1)
+	sess := s.CreateSession(uuid.New(), nil, 1, 0)
 	s.Revoke(sess.ID)
 
 	if _, ok := <-sess.Out(); ok {
@@ -237,7 +237,7 @@ func TestSessionStore_OnSessionReadyFiresAfterCreate(t *testing.T) {
 	fired := make(chan struct{}, 1)
 	s.SetOnSessionReady(func() { fired <- struct{}{} })
 
-	s.CreateSession(uuid.New(), []string{"linux"}, 2)
+	s.CreateSession(uuid.New(), []string{"linux"}, 2, 0)
 
 	select {
 	case <-fired:
@@ -253,7 +253,102 @@ func TestSessionStore_OnSessionReadyNilSafe(t *testing.T) {
 	// block. Regression guard for the nil-hook path on boot,
 	// before the scheduler has wired itself in.
 	s := grpcsrv.NewSessionStore()
-	_ = s.CreateSession(uuid.New(), nil, 1)
+	_ = s.CreateSession(uuid.New(), nil, 1, 0)
+}
+
+// TestSessionStore_FenceStaleSession_RevokesMatchingGeneration —
+// happy path: the reaper observed generation N at SELECT, the live
+// session still carries N, the fence revokes it.
+func TestSessionStore_FenceStaleSession_RevokesMatchingGeneration(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	agentID := uuid.New()
+	// Pass generation in the constructor — sess.generation is
+	// immutable after CreateSession returns (round 12 fix).
+	sess := s.CreateSession(agentID, nil, 1, 5)
+
+	if got := s.FenceStaleSession(agentID, 5); got != grpcsrv.FenceResultRevoked {
+		t.Fatalf("FenceStaleSession = %v, want FenceResultRevoked", got)
+	}
+	if _, ok := s.Lookup(sess.ID); ok {
+		t.Fatal("session still resolves after fence")
+	}
+	// Out channel must be closed so the Connect pump exits.
+	if _, ok := <-sess.Out(); ok {
+		t.Fatal("out channel still open after fence")
+	}
+}
+
+// TestSessionStore_FenceStaleSession_SkipsGenerationMismatch is the
+// round-11 HIGH regression test at the SessionStore layer. The
+// reaper snapshotted generation 5 from the agents table, but
+// between then and now the agent re-Registered, bumping the live
+// session's Generation to 6. FenceStaleSession MUST NOT revoke
+// the successor.
+func TestSessionStore_FenceStaleSession_SkipsGenerationMismatch(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	agentID := uuid.New()
+	// Successor session published with generation=6 (already bumped
+	// by MarkAgentOnline). Reaper's observed snapshot is 5.
+	sess := s.CreateSession(agentID, nil, 1, 6)
+
+	if got := s.FenceStaleSession(agentID, 5); got != grpcsrv.FenceResultGenerationChanged {
+		t.Fatalf("FenceStaleSession = %v, want FenceResultGenerationChanged (must not revoke successor)", got)
+	}
+	if _, ok := s.Lookup(sess.ID); !ok {
+		t.Fatal("successor session disappeared despite generation mismatch")
+	}
+	// Out channel must still be open — the pump should keep running.
+	select {
+	case _, ok := <-sess.Out():
+		if !ok {
+			t.Fatal("out channel closed despite generation mismatch")
+		}
+	default:
+		// expected: no message yet, channel open
+	}
+}
+
+// TestSessionStore_FenceStaleSession_NoSessionForAgent — calling
+// fence on an agent that has no live session is a no-op, not a
+// panic. Mirrors the production case where the agent's stream
+// already EOF'd before the reaper got there.
+func TestSessionStore_FenceStaleSession_NoSessionForAgent(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	if got := s.FenceStaleSession(uuid.New(), 1); got != grpcsrv.FenceResultNoSession {
+		t.Fatalf("FenceStaleSession = %v, want FenceResultNoSession", got)
+	}
+}
+
+// TestSessionStore_FenceStaleSession_DoesNotMarkSuperseded covers
+// the round-11 MED: RevokeForAgent sets supersededByRegister=true
+// so the Connect handler's defer skips MarkAgentOffline. The reaper
+// path WANTS the offline mark (the agent really is dead); fence
+// must not set the flag.
+func TestSessionStore_FenceStaleSession_DoesNotMarkSuperseded(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	agentID := uuid.New()
+	sess := s.CreateSession(agentID, nil, 1, 2)
+
+	if got := s.FenceStaleSession(agentID, 2); got != grpcsrv.FenceResultRevoked {
+		t.Fatalf("FenceStaleSession = %v, want FenceResultRevoked", got)
+	}
+	// Even though the session is revoked, the superseded-by-register
+	// flag must remain false — the Connect defer reads this to
+	// decide whether to MarkAgentOffline. Reaper path: yes please.
+	if sess.SupersededByRegisterForTest() {
+		t.Fatal("supersededByRegister was set by FenceStaleSession — would block the offline mark in the Connect defer")
+	}
+	if !sess.RevokedForTest() {
+		t.Fatal("session revoked flag should be true after fence")
+	}
 }
 
 func TestSessionStore_ConcurrentUse(t *testing.T) {

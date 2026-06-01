@@ -68,10 +68,14 @@ func bootServerWithArtifacts(t *testing.T) (*pgxpool.Pool, gocdnextv1.AgentServi
 	return pool, gocdnextv1.NewAgentServiceClient(conn), fs
 }
 
-// seedDispatchedJob: runs a fresh pipeline, flips one job to running +
-// bound to a given agent. Returns the run_id, the dispatched job_run_id,
-// and the agent's UUID (so the test can register that agent and get a
-// session whose AgentID matches).
+// seedDispatchedJob: seeds a pipeline + run + one job + an agent row
+// for the given name. The job is left in 'queued' state and ONLY gets
+// flipped to 'running' + bound to the agent AFTER the caller registers
+// (see flipJobRunning below) — matching the real-world order
+// (Register → scheduler dispatch → RPC) and avoiding the register-fence
+// reclaiming a pre-seeded "running" row that no real agent process ever
+// owned. Returns the run_id, the queued job_run_id, and the agent's
+// UUID (caller registers and then calls flipJobRunning to dispatch).
 func seedDispatchedJob(t *testing.T, pool *pgxpool.Pool, agentName string) (runID, jobID, agentID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
@@ -138,20 +142,36 @@ func seedDispatchedJob(t *testing.T, pool *pgxpool.Pool, agentName string) (runI
 		t.Fatalf("lookup agent: %v", err)
 	}
 
+	// NOTE: NO dispatch here. The job stays 'queued' until the caller
+	// has registered the agent and calls flipJobRunning. Pre-fence,
+	// this helper did the dispatch in one shot; the fence rightly
+	// reclaims any 'running' row attributed to an agent at Register
+	// time (it can only have come from the prior process), so the
+	// dispatch MUST happen after Register or the fence undoes it.
+	return
+}
+
+// flipJobRunning is the post-Register dispatch the new seedDispatchedJob
+// flow leaves to the caller. Sets status='running', agent_id, started_at
+// — the same UPDATE the real scheduler issues via AssignJob (in
+// scheduler.sql), just bypassing the LISTEN/NOTIFY path tests don't need.
+func flipJobRunning(t *testing.T, pool *pgxpool.Pool, jobID, agentID uuid.UUID) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	if _, err := pool.Exec(ctx,
 		`UPDATE job_runs SET status='running', agent_id=$1, started_at=NOW() WHERE id=$2`,
 		agentID, jobID,
 	); err != nil {
-		t.Fatalf("dispatch job: %v", err)
+		t.Fatalf("flipJobRunning: %v", err)
 	}
-	return
 }
 
 func TestRequestArtifactUpload_HappyPath(t *testing.T) {
 	pool, client, fs := bootServerWithArtifacts(t)
 	_ = fs
 
-	runID, jobID, _ := seedDispatchedJob(t, pool, "runner-art-1")
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "runner-art-1")
 
 	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
 		AgentId: "runner-art-1", Token: "tok-art",
@@ -159,6 +179,10 @@ func TestRequestArtifactUpload_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	// Dispatch AFTER Register so the register-fence sees no
+	// orphaned-running rows to reclaim. Matches the production
+	// order: agent registers → scheduler dispatches.
+	flipJobRunning(t, pool, jobID, agentID)
 
 	up, err := client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
 		SessionId: resp.SessionId,
@@ -199,6 +223,9 @@ func TestRequestArtifactUpload_HappyPath(t *testing.T) {
 
 func TestRequestArtifactUpload_RejectsBadSession(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
+	// Bad-session test: the session check fails before any ownership
+	// lookup, so the job_run can stay 'queued' — we just need the
+	// run/job ids to feed into the RPC. No flipJobRunning needed.
 	runID, jobID, _ := seedDispatchedJob(t, pool, "runner-art-2")
 
 	_, err := client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
@@ -214,7 +241,12 @@ func TestRequestArtifactUpload_RejectsBadSession(t *testing.T) {
 
 func TestRequestArtifactUpload_RejectsForeignAgentSession(t *testing.T) {
 	pool, client, _ := bootServerWithArtifacts(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "owner-agent")
+	runID, jobID, ownerID := seedDispatchedJob(t, pool, "owner-agent")
+	// Owner never registers, so its agent_id never goes through the
+	// fence. Flip the job to running for the owner BEFORE the foreign
+	// register — the test needs the job to be owned (non-NULL
+	// agent_id) so the ownership mismatch is what surfaces.
+	flipJobRunning(t, pool, jobID, ownerID)
 
 	// Register a *different* agent and use its session.
 	if _, err := pool.Exec(context.Background(),
@@ -244,16 +276,19 @@ func TestRequestArtifactUpload_RejectsForeignAgentSession(t *testing.T) {
 func TestRequestArtifactUpload_UnconfiguredBackend(t *testing.T) {
 	// Server without WithArtifactStore — default bootServer.
 	pool, client := bootServer(t)
-	runID, jobID, _ := seedDispatchedJob(t, pool, "agent-no-art")
+	runID, jobID, agentID := seedDispatchedJob(t, pool, "agent-no-art")
 
 	// Register so we have a session; the Unimplemented check fires
-	// before any DB lookup.
+	// AFTER the ownership check, so dispatch the job to the agent
+	// post-register (post-fence) for the ownership check to pass
+	// before the Unimplemented branch is reached.
 	resp, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
 		AgentId: "agent-no-art", Token: "tok-art",
 	})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	flipJobRunning(t, pool, jobID, agentID)
 
 	_, err = client.RequestArtifactUpload(context.Background(), &gocdnextv1.RequestArtifactUploadRequest{
 		SessionId: resp.SessionId,

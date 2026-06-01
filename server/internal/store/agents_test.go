@@ -81,7 +81,7 @@ func TestStore_MarkAgentOnline_UpdatesMetadata(t *testing.T) {
 
 	id := seedAgent(t, pool, "runner-02", store.HashToken("tok"))
 
-	err := s.MarkAgentOnline(context.Background(), id, store.RegisterUpdate{
+	_, err := s.MarkAgentOnline(context.Background(), id, store.RegisterUpdate{
 		Version:  "0.1.0",
 		OS:       "linux",
 		Arch:     "amd64",

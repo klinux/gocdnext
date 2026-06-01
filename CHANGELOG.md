@@ -6,6 +6,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.32 — 2026-06-01
+
+Closes [issue #4](https://github.com/klinux/gocdnext/issues/4) — operator
+visibility: "I pushed a commit and the runs tab shows nothing / a
+phantom-running pipeline blocks all subsequent pushes". Three distinct
+silent paths fixed; the schema and control-plane invariants around the
+register/dispatch/reaper cycle hardened against the data corruption the
+operator-visibility gap was masking.
+
+### HIGH — stuck-running rows & their cascade
+
+The reaper's `INNER JOIN agents` made NULL-agent `running` rows invisible
+forever; combined with the serial-concurrency gate's silent "leaving
+queued" log, a single phantom-running job_run permanently froze every
+subsequent push on the same pipeline. Fix is a stack of small invariants
+that close every overtaking-race we could find:
+
+- `ListStaleRunningJobs` switched to `LEFT JOIN` + a second category
+  catching `agent_id IS NULL AND (started_at IS NULL OR < staleness)`
+  rows. Manual DB scrub or future regressions that null agent_id no
+  longer create unreapable phantoms.
+- **Register-fence**: when an agent re-Registers (k8s pod restart, OOM
+  + supervisor retry), `ReclaimAgentJobs` requeues every still-running
+  row attributed to it BEFORE the new session is published. Without
+  this, the prior process's MarkAgentSeen kept the row fresh and the
+  reaper skipped it forever. Snapshot CAS (`expected_agent_id`,
+  `expected_attempt`) prevents the fence from clobbering healthy rows
+  that already moved on.
+- **Reaper-fence**: ReclaimStaleJobs now uses `notify=false`,
+  `Reaper.Sweep` revokes affected agents' in-memory sessions, THEN
+  fires the coalesced NotifyRunQueued. Without the fence ordering, the
+  scheduler could wake on the NOTIFY and redispatch the just-requeued
+  job to the SAME stale session.
+- **`session_generation`** (new `agents` column, migration 00033): a
+  per-agent monotonic int set on every Register, captured into the
+  in-memory `Session` at construction time and used as CAS predicate
+  by `MarkAgentOffline` AND `FenceStaleSession`. Defends against the
+  three subtle races: (a) old defer's offline mark clobbering a
+  successor's online row, (b) reaper revoking a freshly-registered
+  successor session, (c) data race on `Session.Generation` (field now
+  unexported + immutable post-construction).
+- **Snapshot-CAS on every state-changing path**: `CompleteJob`,
+  `ReclaimJobForRetry`, `FailStaleJobAtMax`, `WriteTestResults`, new
+  `BulkInsertLogLinesForJob`, new `RecordAssignmentCAS` on dispatch.
+  A late JobResult / log / test-results batch from a revoked session
+  whose job has been redispatched will fail the CAS instead of
+  corrupting the new attempt's row.
+- **Log batcher**: captures `(attempt)` at receive-time, groups flush
+  by `(jobID, attempt)`, calls `BulkInsertLogLinesForJob` per group.
+  Fast-finishing jobs no longer lose their tail when `ClearAssignment`
+  fires between push and flush.
+- **`test_results` cleared on retry/rerun**: matches log-line
+  semantics so a retried job doesn't surface the prior attempt's
+  results in the Tests tab.
+
+### Operator-visibility surfaces (the original issue)
+
+- **`runs.queue_reason`** (new column, migration 00034): when the
+  serial-concurrency gate fires, the scheduler stamps
+  `serial-busy:<predecessor-run-id>` on the queued run. Exposed in
+  the run-detail and run-list APIs as `queue_reason`. UI can render
+  "waiting on #N" instead of a status-only badge.
+- **Webhook fan-out logs dedup**: when `InsertModification` finds an
+  existing row and skips run creation, fanout now logs Info with
+  `pipeline_id`, `delivery`, `revision`, `branch`. Resolves "I pushed
+  and nothing happened" being grep-invisible.
+
+### Other observability
+
+- Reaper logs `fenced`, `fence_no_session`, `fence_skipped_generation_changed`
+  counters per sweep. New `FenceResult` enum distinguishes the three
+  outcomes — "no session" (stale process already gone) is fundamentally
+  different from "generation changed" (successor raced ahead).
+- Partial index `idx_job_runs_running_agent` (migration 00032) for
+  the fence hot path.
+
+### Schema
+
+- `agents.session_generation BIGINT NOT NULL DEFAULT 0` (00033)
+- `runs.queue_reason TEXT` (00034)
+- Partial index on `job_runs (agent_id) WHERE status='running'` (00032)
+
+### Notes
+
+- 12 rounds of adversarial review went into this cut. See PR for the
+  per-round race walk if you want the full archaeology.
+- SSE log-tail vs DB-persistence: the receive-time gate closes the
+  big window (stale session pushing after revoke), but a small window
+  remains between SSE publish and the batcher's CAS flush — tailers
+  may briefly see lines the DB later drops via `ErrSnapshotStale`.
+  Closing it completely would mean publishing only post-CAS
+  (+200ms latency floor) or tagging events with `(attempt, generation)`
+  for downstream filtering — deliberately deferred.
+
 ## v0.4.31 — 2026-05-30
 
 ### Fixes
