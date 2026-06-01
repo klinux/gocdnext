@@ -30,6 +30,37 @@ inputs:
     description: >
       Override path to a requirements file (pip manager only).
       Default is "requirements.txt" at the working-dir root.
+  extras:
+    required: false
+    description: >
+      Comma- or space-separated list of optional-dependency extras
+      (PEP 621 `[project.optional-dependencies]`) to enable on the
+      install step. Translation per manager: uv → repeated `--extra X`,
+      poetry → `--extras "X Y"`, pip → installs the project itself
+      with `.[X,Y]` after the requirements file. Empty = base
+      install only.
+  all-extras:
+    required: false
+    default: "false"
+    description: >
+      Install every optional-dependency extra defined by the project.
+      uv/poetry pass `--all-extras` directly. pip has no equivalent
+      (extras must be enumerated against a package spec), so the
+      flag is honoured as a no-op + warn so a pipeline that runs on
+      multiple managers doesn't break on the pip leg.
+  no-install:
+    required: false
+    default: "false"
+    description: >
+      Skip the dependency-install step entirely and run the command
+      against the `.venv` already present in the workspace. The
+      shebang rewriter and activate-venv path still run, so a
+      `.venv/` restored via `needs_artifacts:` from an upstream
+      install job is usable as-is. Pair with an install job that
+      sets `all-extras: true` (or `extras: [dev, test]`) and exposes
+      `services/<x>/.venv/` as an artifact to get the
+      install-once-reuse-N pattern without paying the resolve cost
+      in every downstream job.
 
 examples:
   - name: pytest with poetry
@@ -76,3 +107,52 @@ examples:
       uses: gocdnext/python@v1
       with:
         command: pytest -q
+
+  - name: install once, reuse across jobs (extras + no-install)
+    description: >
+      The fan-out pattern for monorepos / fast pipelines: a single
+      `install` job resolves the venv WITH every dev extra, exposes
+      `.venv/` as an artifact, and every downstream job (lint,
+      typecheck, test, ...) consumes that venv without re-resolving.
+      `no-install: true` tells the plugin to skip its own sync and
+      trust the artifact — but still rewrite venv shebangs and
+      activate the venv so the .venv/bin entry-points spawn
+      correctly under the new job's workspace path.
+    yaml: |
+      jobs:
+        - name: install
+          uses: gocdnext/python@v1
+          with:
+            command: "true"      # nothing to run, the install IS the job
+            all-extras: true     # sync ruff, mypy, pytest, ...
+          artifacts: [.venv/]
+
+        - name: ruff
+          needs_artifacts:
+            - from_job: install
+              paths: [.venv/]
+          uses: gocdnext/python@v1
+          with:
+            command: ruff check .
+            no-install: true     # reuse the artifact venv as-is
+
+        - name: pytest
+          needs_artifacts:
+            - from_job: install
+              paths: [.venv/]
+          uses: gocdnext/python@v1
+          with:
+            command: pytest -q
+            no-install: true
+
+  - name: install with explicit extras (not all)
+    description: >
+      Same fan-out pattern but enabling only specific extras —
+      handy when `[project.optional-dependencies]` declares a
+      heavy `gpu` group nobody wants in CI.
+    yaml: |
+      uses: gocdnext/python@v1
+      with:
+        command: "true"
+        extras: dev, test    # uv → --extra dev --extra test
+      artifacts: [.venv/]
