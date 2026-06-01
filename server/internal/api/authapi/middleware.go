@@ -26,8 +26,8 @@ const (
 // Kept distinct from RequireAuth so routes like /auth/login and /
 // healthz stay public.
 type Middleware struct {
-	store  *store.Store
-	log    *slog.Logger
+	store *store.Store
+	log   *slog.Logger
 	// enabled guards whether session validation actually happens.
 	// When false (auth disabled), every request passes anonymously
 	// and RequireAuth + RequireRole short-circuit to allow. Lets

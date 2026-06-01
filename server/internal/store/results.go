@@ -208,8 +208,10 @@ func bulkInsertLogLinesQ(ctx context.Context, q pgExecer, lines []LogLine) error
 //
 // ExpectedAgentID + ExpectedAttempt together form the load-bearing
 // race guard: the SQL predicate uses
-//   `agent_id IS NOT DISTINCT FROM @expected_agent_id
-//    AND attempt = @expected_attempt`
+//
+//	`agent_id IS NOT DISTINCT FROM @expected_agent_id
+//	 AND attempt = @expected_attempt`
+//
 // so callers MUST set both correctly or the UPDATE will silently
 // no-op (ok=false).
 //

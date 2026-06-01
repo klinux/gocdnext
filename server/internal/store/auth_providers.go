@@ -21,7 +21,7 @@ const (
 
 // Sentinel errors for the admin CRUD endpoints.
 var (
-	ErrAuthProviderNotFound   = errors.New("store: auth provider not found")
+	ErrAuthProviderNotFound    = errors.New("store: auth provider not found")
 	ErrAuthProviderCipherUnset = errors.New("store: auth provider encryption not configured")
 )
 

@@ -36,28 +36,28 @@ const maxCaseFieldBytes = 64 << 10
 // the unmarshal fills Suites with exactly one element via the
 // fallback path below.
 type junitSuites struct {
-	XMLName xml.Name      `xml:"testsuites"`
-	Suites  []junitSuite  `xml:"testsuite"`
+	XMLName xml.Name     `xml:"testsuites"`
+	Suites  []junitSuite `xml:"testsuite"`
 }
 
 type junitSuite struct {
-	Name    string      `xml:"name,attr"`
-	Cases   []junitCase `xml:"testcase"`
+	Name  string      `xml:"name,attr"`
+	Cases []junitCase `xml:"testcase"`
 }
 
 type junitCase struct {
-	Name      string    `xml:"name,attr"`
-	Classname string    `xml:"classname,attr"`
+	Name      string `xml:"name,attr"`
+	Classname string `xml:"classname,attr"`
 	// Time is seconds as a string because JUnit writers sometimes
 	// emit "0.123", sometimes "123" (ms), sometimes empty. Parse
 	// as seconds with a float fallback; ambiguous units are the
 	// cost of a format with no real spec.
-	Time      string    `xml:"time,attr"`
+	Time      string     `xml:"time,attr"`
 	Failure   *junitFail `xml:"failure"`
 	Errorr    *junitFail `xml:"error"`
 	Skipped   *junitSkip `xml:"skipped"`
-	SystemOut string    `xml:"system-out"`
-	SystemErr string    `xml:"system-err"`
+	SystemOut string     `xml:"system-out"`
+	SystemErr string     `xml:"system-err"`
 }
 
 type junitFail struct {

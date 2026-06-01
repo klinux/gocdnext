@@ -4,18 +4,32 @@ import type { LogLine } from "@/types/api";
 
 type Props = {
   logs: LogLine[];
+  // jobStartedAt anchors the per-line elapsed time displayed on the
+  // right (Woodpecker-style "0s", "2s", "6s"). When omitted, the
+  // grid drops the timing column gracefully — useful for log
+  // fragments rendered outside a job context (test fixtures, the
+  // archive viewer's per-file tail, etc).
+  jobStartedAt?: string;
   className?: string;
 };
 
 // Static server-rendered tail — good enough for a completed run. Live tailing
 // (SSE) is a later slice; keeping this component pure makes that drop-in easy:
 // the client variant just replaces `logs` with a streamed state.
-export function LogViewer({ logs, className }: Props) {
+export function LogViewer({ logs, jobStartedAt, className }: Props) {
   if (logs.length === 0) {
     return (
       <p className="px-3 py-2 text-xs text-muted-foreground">No log lines captured.</p>
     );
   }
+  const start = jobStartedAt ? Date.parse(jobStartedAt) : Number.NaN;
+  const showElapsed = Number.isFinite(start);
+  // Elapsed second is shown ONLY when it differs from the previous
+  // rendered line — keeps consecutive same-second lines uncluttered
+  // (matches the Woodpecker right-aligned timing column). Tracked
+  // via a top-scope mutable; the map below runs synchronously in a
+  // single render so the implicit ordering is stable.
+  let lastShown = -1;
   return (
     <pre
       className={cn(
@@ -25,22 +39,57 @@ export function LogViewer({ logs, className }: Props) {
     >
       {logs.map((line) => {
         const tone = classifyLine(line.text, line.stream);
+        let elapsedLabel: string | null = null;
+        if (showElapsed) {
+          const t = Date.parse(line.at);
+          if (Number.isFinite(t)) {
+            const sec = Math.max(0, Math.floor((t - start) / 1000));
+            if (sec !== lastShown) {
+              elapsedLabel = formatElapsed(sec);
+              lastShown = sec;
+            }
+          }
+        }
+        const cols = showElapsed
+          ? "grid grid-cols-[3rem_1fr_3.5rem] gap-3"
+          : "grid grid-cols-[3rem_1fr] gap-3";
         return (
           <div
             key={line.seq}
             data-stream={line.stream}
             data-tone={tone}
-            className={cn("grid grid-cols-[3rem_1fr] gap-3", toneClass[tone])}
+            className={cn(cols, toneClass[tone])}
           >
             <span className="select-none text-right text-muted-foreground">
               {line.seq}
             </span>
             <span className="whitespace-pre-wrap break-all">{ansiToReact(line.text)}</span>
+            {showElapsed && (
+              <span
+                className="select-none text-right text-muted-foreground tabular-nums"
+                aria-label={elapsedLabel ? `${elapsedLabel} elapsed` : undefined}
+              >
+                {elapsedLabel ?? ""}
+              </span>
+            )}
           </div>
         );
       })}
     </pre>
   );
+}
+
+// formatElapsed renders the cumulative seconds the way Woodpecker
+// does: small numbers stay in seconds, then minutes, then minutes
+// + seconds for the long tail. Keeps the right-aligned column
+// narrow (max 6 chars) — anything beyond ~99m is degenerate enough
+// that the grid widening is acceptable.
+function formatElapsed(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (s === 0) return `${m}m`;
+  return `${m}m${s}s`;
 }
 
 // LogTone classifies a line into a semantic colour bucket. Priority

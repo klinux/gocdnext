@@ -37,7 +37,7 @@ func assignPodIPAsync(t *testing.T, cli *fake.Clientset, ns, name, ip string, af
 
 func TestEnsureServices_NoopWhenEmpty(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
-	wireup, err := k.EnsureServices(context.Background(), nil, "job-1", nil)
+	wireup, err := k.EnsureServices(context.Background(), nil, "run-1", "job-1", nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -51,13 +51,16 @@ func TestEnsureServices_NoopWhenEmpty(t *testing.T) {
 	wireup.Cleanup()
 }
 
-func TestEnsureServices_RejectsEmptyJobID(t *testing.T) {
+func TestEnsureServices_RejectsEmptyRunID(t *testing.T) {
+	// runID is now the load-bearing identity for run-scoped pod
+	// naming (gocdnext-svc-<runShort>-<svc>); jobID stays for label
+	// observability only.
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		"", nil)
-	if err == nil || !strings.Contains(err.Error(), "non-empty jobID") {
-		t.Fatalf("expected non-empty jobID error, got %v", err)
+		"", "job-1", nil)
+	if err == nil || !strings.Contains(err.Error(), "non-empty runID") {
+		t.Fatalf("expected non-empty runID error, got %v", err)
 	}
 }
 
@@ -75,7 +78,7 @@ func TestEnsureServices_RejectsBadServiceName(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := k.EnsureServices(context.Background(),
 				[]engine.ServiceSpec{{Name: name, Image: "postgres:16"}},
-				"job-1", nil)
+				"run-1", "job-1", nil)
 			if err == nil {
 				t.Fatalf("expected error for name %q", name)
 			}
@@ -91,7 +94,7 @@ func TestEnsureServices_RejectsDuplicateServiceName(t *testing.T) {
 	_, err := k.EnsureServices(context.Background(), []engine.ServiceSpec{
 		{Name: "postgres", Image: "postgres:16"},
 		{Name: "postgres", Image: "postgres:15"},
-	}, "job-1", nil)
+	}, "run-1", "job-1", nil)
 	if err == nil || !strings.Contains(err.Error(), "declared twice") {
 		t.Fatalf("expected duplicate-name error, got %v", err)
 	}
@@ -101,7 +104,7 @@ func TestEnsureServices_RejectsEmptyImage(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: ""}},
-		"job-1", nil)
+		"run-1", "job-1", nil)
 	if err == nil || !strings.Contains(err.Error(), "empty image") {
 		t.Fatalf("expected empty-image error, got %v", err)
 	}
@@ -116,11 +119,13 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 
 	// Pre-arm: simulate kubelet assigning podIPs after a short delay.
 	// Pod names match the engine's deterministic scheme:
-	// gocdnext-svc-<jobshort>-<svcname>. jobID is 12 chars w/o dashes
-	// so shortDockerID is the identity here — keeps the expected
-	// pod name straightforward to assert on.
-	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-jobxyz12abcd-postgres", "10.0.0.10", 5*time.Millisecond)
-	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-jobxyz12abcd-redis", "10.0.0.11", 5*time.Millisecond)
+	// gocdnext-svc-<runshort>-<svcname>. The runID is 12 chars w/o
+	// dashes so shortDockerID is the identity here — keeps the
+	// expected pod name straightforward to assert on. (Run-scoped
+	// naming is the round-1 fix: every job of the same run resolves
+	// to the same pod; jobID stays in labels for observability.)
+	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-runxyz12abcd-postgres", "10.0.0.10", 5*time.Millisecond)
+	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-runxyz12abcd-redis", "10.0.0.11", 5*time.Millisecond)
 
 	var logs []string
 	var mu sync.Mutex
@@ -135,7 +140,7 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 			{Name: "postgres", Image: "postgres:16", Env: map[string]string{"POSTGRES_PASSWORD": "x"}},
 			{Name: "redis", Image: "redis:7"},
 		},
-		"jobxyz12abcd", log)
+		"runxyz12abcd", "jobxyz12abcd", log)
 	if err != nil {
 		t.Fatalf("EnsureServices: %v", err)
 	}
@@ -200,21 +205,39 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 		}
 	}
 
-	// Cleanup must delete every pod it brought up. Important: even
-	// after caller's ctx might be canceled, the cleanup needs to
-	// reach the API — services_kubernetes.go uses context.Background
-	// inside the cleanup closure specifically for this.
+	// wireup.Cleanup is a NO-OP in the run-scoped model — per-job
+	// teardown would kill services other jobs of the same run still
+	// need. Run-terminal teardown happens via CleanupRunServices
+	// (label-selector delete), exercised separately below.
 	wireup.Cleanup()
 	pods, err = cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
 	if err != nil {
-		t.Fatalf("list pods after cleanup: %v", err)
+		t.Fatalf("list pods after Cleanup: %v", err)
+	}
+	if len(pods.Items) != 2 {
+		t.Errorf("Cleanup should be a no-op; pods=%d, want 2", len(pods.Items))
+	}
+
+	// Now exercise the run-terminal teardown: CleanupRunServices does
+	// the label-selector delete by runID. This is the path the server
+	// fires via the CleanupRunServices ServerMessage on run terminal.
+	deleted, err := k.CleanupRunServices(context.Background(), "runxyz12abcd")
+	if err != nil {
+		t.Fatalf("CleanupRunServices: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("CleanupRunServices deleted %d, want 2", deleted)
+	}
+	pods, err = cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list pods after CleanupRunServices: %v", err)
 	}
 	if len(pods.Items) != 0 {
 		var names []string
 		for _, p := range pods.Items {
 			names = append(names, p.Name)
 		}
-		t.Errorf("pods remaining after cleanup: %v", names)
+		t.Errorf("pods remaining after CleanupRunServices: %v", names)
 	}
 }
 
@@ -239,7 +262,7 @@ func TestEnsureServices_CommandLandsInArgsNotCommand(t *testing.T) {
 		StartupTimeout: time.Second,
 	})
 
-	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-jobwithcmd1-postgres", "10.0.0.30", 5*time.Millisecond)
+	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-runwithcmd1-postgres", "10.0.0.30", 5*time.Millisecond)
 
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{
@@ -249,12 +272,12 @@ func TestEnsureServices_CommandLandsInArgsNotCommand(t *testing.T) {
 				Command: []string{"-c", "fsync=off"},
 			},
 		},
-		"jobwithcmd1", nil)
+		"runwithcmd1", "jobwithcmd1", nil)
 	if err != nil {
 		t.Fatalf("EnsureServices: %v", err)
 	}
 
-	pod, err := cli.CoreV1().Pods("gocdnext-tests").Get(context.Background(), "gocdnext-svc-jobwithcmd1-postgres", metav1.GetOptions{})
+	pod, err := cli.CoreV1().Pods("gocdnext-tests").Get(context.Background(), "gocdnext-svc-runwithcmd1-postgres", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
@@ -267,50 +290,57 @@ func TestEnsureServices_CommandLandsInArgsNotCommand(t *testing.T) {
 	}
 }
 
-func TestEnsureServices_CleanupRunsAfterCallerCtxCanceled(t *testing.T) {
+// TestEnsureServices_CleanupIsNoop locks in the run-scoped semantics:
+// the returned Cleanup is intentionally a no-op so a single job's
+// teardown doesn't kill services other jobs of the same run still
+// need. Run-terminal teardown is the server's job via the new
+// CleanupRunServices RPC. Pre-refactor, the wireup's Cleanup
+// force-deleted the per-job pod — the test below was the cover.
+// The assertion is inverted: pods MUST survive Cleanup.
+func TestEnsureServices_CleanupIsNoop(t *testing.T) {
 	k, cli := newFakeEngine(t, engine.KubernetesConfig{
 		DefaultImage:   "alpine:3.19",
 		PollInterval:   2 * time.Millisecond,
 		StartupTimeout: time.Second,
 	})
 
-	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-jobcancel001-postgres", "10.0.0.20", 5*time.Millisecond)
+	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-runnoopclean-postgres", "10.0.0.20", 5*time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	wireup, err := k.EnsureServices(ctx, []engine.ServiceSpec{
+	wireup, err := k.EnsureServices(context.Background(), []engine.ServiceSpec{
 		{Name: "postgres", Image: "postgres:16"},
-	}, "jobcancel001", nil)
+	}, "runnoopclean", "jobnoopclean", nil)
 	if err != nil {
 		t.Fatalf("EnsureServices: %v", err)
 	}
-
-	// Simulate the runner exiting and canceling the job ctx before
-	// invoking cleanup. Real flow: defer servicesPhase.cleanup() at
-	// runner.go runs AFTER ctx cancel in normal cancellation paths.
-	cancel()
 
 	wireup.Cleanup()
 	pods, err := cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list pods: %v", err)
 	}
-	if len(pods.Items) != 0 {
-		t.Errorf("cleanup did not reach API after ctx cancel: %d pods left", len(pods.Items))
+	if len(pods.Items) != 1 {
+		t.Errorf("Cleanup is supposed to be a no-op; pods=%d, want 1 (sibling jobs may still need it)", len(pods.Items))
 	}
 }
 
-func TestEnsureServices_TimeoutCleansUpStartedPods(t *testing.T) {
+// TestEnsureServices_TimeoutLeavesPodForRunCleanup — when waitForPodIP
+// times out, EnsureServices now LEAVES the (broken) pod up rather
+// than tearing it down per-job. Rationale: another job of the same
+// run may be about to retry; OR the run will fail and the
+// CleanupRunServices on run terminal will sweep the corpse via the
+// gocdnext.io/run-id label selector. Tests the latter path
+// end-to-end.
+func TestEnsureServices_TimeoutLeavesPodForRunCleanup(t *testing.T) {
 	k, cli := newFakeEngine(t, engine.KubernetesConfig{
 		DefaultImage:   "alpine:3.19",
 		PollInterval:   2 * time.Millisecond,
 		StartupTimeout: 50 * time.Millisecond,
 	})
 
-	// NEVER assign a podIP — forces waitForPodIP to time out so we
-	// can verify the cleanup-on-error path tears the created pod down.
+	// NEVER assign a podIP — forces waitForPodIP to time out.
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		"jobstuck00001", nil)
+		"runstuck00001", "jobstuck00001", nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -318,15 +348,168 @@ func TestEnsureServices_TimeoutCleansUpStartedPods(t *testing.T) {
 		t.Errorf("error should call out the wait-podIP failure: %v", err)
 	}
 
-	pods, listErr := cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
-	if listErr != nil {
-		t.Fatalf("list pods: %v", listErr)
+	// Pod stays. CleanupRunServices then sweeps it via label.
+	pods, _ := cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
+	if len(pods.Items) != 1 {
+		t.Fatalf("pod count after timeout = %d, want 1 (left for run-terminal sweep)", len(pods.Items))
 	}
-	if len(pods.Items) != 0 {
-		var names []string
-		for _, p := range pods.Items {
-			names = append(names, p.Name)
-		}
-		t.Errorf("timeout did not clean up created pods: %v", names)
+
+	deleted, err := k.CleanupRunServices(context.Background(), "runstuck00001")
+	if err != nil {
+		t.Fatalf("CleanupRunServices: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("CleanupRunServices deleted %d, want 1", deleted)
+	}
+}
+
+// TestEnsureServices_RefusesUnlabelledExistingPod — defends against
+// silent adoption of an unrelated pod that just happens to share
+// our deterministic name (12-hex collision / leftover from an old
+// gocdnext version / operator-deployed pod). EnsureServices Gets
+// the existing pod and refuses to reuse it unless the full label
+// tuple matches.
+func TestEnsureServices_RefusesUnlabelledExistingPod(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage:   "alpine:3.19",
+		PollInterval:   2 * time.Millisecond,
+		StartupTimeout: time.Second,
+	})
+
+	// Plant a pod with our exact NAME but missing the
+	// managed-by/component labels — looks ours by name, isn't ours
+	// by ownership.
+	const runID = "runalien0001"
+	podName := "gocdnext-svc-" + runID + "-postgres"
+	_, err := cli.CoreV1().Pods("gocdnext-tests").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: "gocdnext-tests",
+			Labels: map[string]string{
+				// note: missing managed-by + component + service
+				"gocdnext.io/run-id": runID,
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "x", Image: "alpine:3.19"}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("seed alien pod: %v", err)
+	}
+
+	_, err = k.EnsureServices(context.Background(),
+		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
+		runID, "jobalien", nil)
+	if err == nil {
+		t.Fatal("expected error refusing to reuse unlabelled pod")
+	}
+	if !strings.Contains(err.Error(), "refusing to reuse pod") {
+		t.Errorf("error should call out refuse-to-reuse: %v", err)
+	}
+	if !strings.Contains(err.Error(), "managed-by") &&
+		!strings.Contains(err.Error(), "component") {
+		t.Errorf("error should name which label was missing: %v", err)
+	}
+}
+
+// TestCleanupRunServices_RequiresFullLabelTuple guards the
+// MED/SEC concern: a bare gocdnext.io/run-id filter could match
+// non-service pods that happen to carry the label. The label
+// selector must include managed-by + component too so the
+// deletion is bounded to our own resources.
+func TestCleanupRunServices_RequiresFullLabelTuple(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage: "alpine:3.19",
+	})
+
+	const runID = "runtight00001"
+
+	// A real gocdnext service pod (full label set).
+	_, _ = cli.CoreV1().Pods("gocdnext-tests").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gocdnext-svc-" + runID + "-postgres",
+			Namespace: "gocdnext-tests",
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "gocdnext-agent",
+				"app.kubernetes.io/component":  "service",
+				"gocdnext.io/service":          "postgres",
+				"gocdnext.io/run-id":           runID,
+			},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "x", Image: "alpine"}}},
+	}, metav1.CreateOptions{})
+
+	// An imposter pod with the run-id label but NOT the
+	// managed-by/component tuple. Operator-deployed, must survive.
+	_, _ = cli.CoreV1().Pods("gocdnext-tests").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "user-pod-with-runid",
+			Namespace: "gocdnext-tests",
+			Labels:    map[string]string{"gocdnext.io/run-id": runID},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "x", Image: "alpine"}}},
+	}, metav1.CreateOptions{})
+
+	deleted, err := k.CleanupRunServices(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("CleanupRunServices: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted=%d, want 1 (only the labelled service pod)", deleted)
+	}
+
+	// Imposter must still exist.
+	_, err = cli.CoreV1().Pods("gocdnext-tests").Get(context.Background(), "user-pod-with-runid", metav1.GetOptions{})
+	if err != nil {
+		t.Errorf("imposter pod swept by cleanup — selector too loose: %v", err)
+	}
+}
+
+// TestEnsureServices_AlreadyExistsReusesPod — the round-1 fix's
+// hot path: when two jobs of the same run race EnsureServices,
+// only the first creates the pod; the second gets AlreadyExists
+// from Create + Get returns the same PodIP. Both jobs end up
+// with HostAliases pointing at the same /etc/hosts entry, so the
+// `postgres:5432` resolution is shared.
+func TestEnsureServices_AlreadyExistsReusesPod(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage:   "alpine:3.19",
+		PollInterval:   2 * time.Millisecond,
+		StartupTimeout: time.Second,
+	})
+
+	const runID = "runshared001"
+	podName := "gocdnext-svc-" + runID + "-postgres"
+	assignPodIPAsync(t, cli, "gocdnext-tests", podName, "10.0.0.50", 5*time.Millisecond)
+
+	// Job 1 creates the pod.
+	w1, err := k.EnsureServices(context.Background(),
+		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
+		runID, "jobone", nil)
+	if err != nil {
+		t.Fatalf("first EnsureServices: %v", err)
+	}
+	if len(w1.HostAliases) != 1 || w1.HostAliases[0].IP != "10.0.0.50" {
+		t.Fatalf("first hostAliases = %+v", w1.HostAliases)
+	}
+
+	// Job 2 of the same run — Create returns AlreadyExists, engine
+	// recovers via Get + waitForPodIP.
+	w2, err := k.EnsureServices(context.Background(),
+		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
+		runID, "jobtwo", nil)
+	if err != nil {
+		t.Fatalf("second EnsureServices (should reuse): %v", err)
+	}
+	if len(w2.HostAliases) != 1 || w2.HostAliases[0].IP != "10.0.0.50" {
+		t.Fatalf("second hostAliases mismatch: %+v", w2.HostAliases)
+	}
+
+	// Exactly ONE pod in the cluster — the second EnsureServices
+	// did NOT create a duplicate.
+	pods, _ := cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
+	if len(pods.Items) != 1 {
+		t.Errorf("expected 1 shared pod, got %d", len(pods.Items))
 	}
 }

@@ -246,8 +246,10 @@ func jobToDef(j domain.Job) JobDef {
 }
 
 // buildRootNode emits a MappingNode with a fixed key order:
-//   name, version (skipped, File has none set), concurrency,
-//   stages, variables, materials, jobs.
+//
+//	name, version (skipped, File has none set), concurrency,
+//	stages, variables, materials, jobs.
+//
 // Jobs are grouped by the pipeline's declared stage order, then
 // sorted alphabetically within each stage. Unknown-stage jobs
 // (shouldn't happen post-parse validation, but keep it defensive)

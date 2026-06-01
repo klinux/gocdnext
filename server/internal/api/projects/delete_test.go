@@ -78,4 +78,3 @@ func TestDelete_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 }
-

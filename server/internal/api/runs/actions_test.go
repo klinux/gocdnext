@@ -128,6 +128,14 @@ func (f *fakeDispatcher) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessa
 	return nil
 }
 
+// AllAgentIDs: the cancel path now also broadcasts
+// CleanupRunServices to every currently-connected agent (union
+// with agents-that-ran-the-run). The test's fake doesn't simulate
+// connected agents — returning nil makes the broadcast a no-op,
+// which keeps the existing assertions (per-job CancelJob calls)
+// focused.
+func (*fakeDispatcher) AllAgentIDs(string) []uuid.UUID { return nil }
+
 func TestCancel_DispatchesCancelJobToRunningAgents(t *testing.T) {
 	// Regression cover for the cancel-kills-container fix: running
 	// jobs assigned to an agent must receive a CancelJob push so the

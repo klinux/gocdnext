@@ -22,10 +22,10 @@ var ErrRunNotFound = errors.New("store: run not found")
 
 // ProjectSummary is the dashboard-level view of a project.
 type ProjectSummary struct {
-	ID            uuid.UUID  `json:"id"`
-	Slug          string     `json:"slug"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description,omitempty"`
+	ID          uuid.UUID `json:"id"`
+	Slug        string    `json:"slug"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
 	// ConfigPath surfaces the repo-relative folder that holds
 	// pipeline YAMLs — the edit dialog prefills its "Config
 	// folder" input with this so round-tripping through Apply
@@ -172,12 +172,12 @@ type StageStat struct {
 // render stage boxes — one box per entry, coloured by Status,
 // with Jobs rendered inline as a vertical list à la GitLab CI.
 type StageRunSummary struct {
-	ID         uuid.UUID          `json:"id"`
-	Name       string             `json:"name"`
-	Ordinal    int                `json:"ordinal"`
-	Status     string             `json:"status"`
-	StartedAt  *time.Time         `json:"started_at,omitempty"`
-	FinishedAt *time.Time         `json:"finished_at,omitempty"`
+	ID         uuid.UUID           `json:"id"`
+	Name       string              `json:"name"`
+	Ordinal    int                 `json:"ordinal"`
+	Status     string              `json:"status"`
+	StartedAt  *time.Time          `json:"started_at,omitempty"`
+	FinishedAt *time.Time          `json:"finished_at,omitempty"`
 	Jobs       []JobRunSummaryLite `json:"jobs,omitempty"`
 }
 
@@ -204,12 +204,12 @@ type DefinitionJob struct {
 }
 
 type RunSummary struct {
-	ID           uuid.UUID  `json:"id"`
-	PipelineID   uuid.UUID  `json:"pipeline_id"`
-	PipelineName string     `json:"pipeline_name"`
-	Counter      int64      `json:"counter"`
-	Cause        string     `json:"cause"`
-	Status       string     `json:"status"`
+	ID           uuid.UUID `json:"id"`
+	PipelineID   uuid.UUID `json:"pipeline_id"`
+	PipelineName string    `json:"pipeline_name"`
+	Counter      int64     `json:"counter"`
+	Cause        string    `json:"cause"`
+	Status       string    `json:"status"`
 	// QueueReason is the operator-visible explanation for a queued
 	// run that hasn't advanced. Today only the scheduler's serial-
 	// concurrency gate stamps this (format: "serial-busy:<run-id>"),
@@ -218,15 +218,15 @@ type RunSummary struct {
 	// extend the vocabulary without an API contract change.
 	// Empty for runs not currently blocked — the UI uses presence
 	// to decide whether to render the "waiting on …" pill.
-	QueueReason  string     `json:"queue_reason,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	TriggeredBy  string     `json:"triggered_by,omitempty"`
+	QueueReason string     `json:"queue_reason,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	TriggeredBy string     `json:"triggered_by,omitempty"`
 }
 
 type ProjectDetail struct {
-	Project   ProjectSummary    `json:"project"`
+	Project ProjectSummary `json:"project"`
 	// SCMSource is nil when the project has no repo bound yet —
 	// the UI uses that to show the "Connect repo" affordance
 	// instead of the edit-binding controls.
@@ -237,8 +237,8 @@ type ProjectDetail struct {
 	// project page uses them to lay pipelines out as a DAG so
 	// dependencies are visible at a glance instead of being
 	// hidden under "upstream" in the YAML.
-	Edges []PipelineEdge    `json:"edges,omitempty"`
-	Runs  []RunSummary      `json:"runs"`
+	Edges []PipelineEdge `json:"edges,omitempty"`
+	Runs  []RunSummary   `json:"runs"`
 }
 
 // PipelineEdge is a directed dependency: FromPipeline's Stage

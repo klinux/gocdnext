@@ -33,11 +33,20 @@ const defaultLogsPerJob int32 = 200
 const downloadTTL = 5 * time.Minute
 
 // CancelDispatcher is the narrow slice of grpcsrv.SessionStore the
-// Cancel handler needs to push CancelJob messages down to the agent
-// that's running a given job. Defined locally so this package
-// doesn't need to import grpcsrv just for the type.
+// Cancel handler needs:
+//   - per-agent Dispatch for CancelJob frames (one per running job).
+//   - AllAgentIDs for the CleanupRunServices broadcast, which
+//     unions every agent that ran a job of the run with every
+//     currently-connected agent (k8s pods are cluster-wide, so
+//     any k8s agent in the cluster can do the label-selector
+//     delete; the union maximises the chance that at least one
+//     such agent receives the message).
+//
+// Defined locally so this package doesn't need to import grpcsrv
+// just for the type.
 type CancelDispatcher interface {
 	Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage) error
+	AllAgentIDs(engineFilter string) []uuid.UUID
 }
 
 type Handler struct {
@@ -139,14 +148,14 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 
 // ArtifactResponse is the wire shape the UI consumes.
 type ArtifactResponse struct {
-	ID            string    `json:"id"`
-	JobRunID      string    `json:"job_run_id"`
-	JobName       string    `json:"job_name"`
-	Path          string    `json:"path"`
-	Status        string    `json:"status"`
-	SizeBytes     int64     `json:"size_bytes"`
-	ContentSHA256 string    `json:"content_sha256"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            string     `json:"id"`
+	JobRunID      string     `json:"job_run_id"`
+	JobName       string     `json:"job_name"`
+	Path          string     `json:"path"`
+	Status        string     `json:"status"`
+	SizeBytes     int64      `json:"size_bytes"`
+	ContentSHA256 string     `json:"content_sha256"`
+	CreatedAt     time.Time  `json:"created_at"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	// DownloadURL is a short-lived signed GET. Absent when the row is
 	// still pending (agent hasn't uploaded yet) or when the backend

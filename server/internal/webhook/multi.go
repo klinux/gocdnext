@@ -393,4 +393,3 @@ func extractBitbucketCloneURL(body []byte) string {
 	}
 	return env.Repository.Links.HTML.Href
 }
-

@@ -13,10 +13,10 @@ import (
 // echo "deleted N pipelines, M runs, K secrets" — collecting the
 // counts after the cascading delete would see zeros.
 type DeletionCounts struct {
-	Pipelines   int64
-	Runs        int64
-	Secrets     int64
-	SCMSources  int64
+	Pipelines  int64
+	Runs       int64
+	Secrets    int64
+	SCMSources int64
 }
 
 // DeleteProject removes the project and cascades to pipelines,

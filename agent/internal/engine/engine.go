@@ -2,11 +2,11 @@
 // portion of a job. Different engines map to different runtimes:
 //
 //   - Shell:      exec.Command against the agent's own host. Fast,
-//                 zero dependencies; ignores Image and Env isolation.
-//                 The dev/local default.
+//     zero dependencies; ignores Image and Env isolation.
+//     The dev/local default.
 //   - Kubernetes: (F3.2) spawns one Pod per script with the job's
-//                 declared Image, streaming logs back via the watch
-//                 API.
+//     declared Image, streaming logs back via the watch
+//     API.
 //
 // The runner (`agent/internal/runner`) owns everything outside the
 // engine's responsibility — checkout, artifact download/upload, log
@@ -125,13 +125,49 @@ type Engine interface {
 	// all" (distinct from "ran and failed").
 	RunScript(ctx context.Context, spec ScriptSpec) (exitCode int, err error)
 
-	// EnsureServices brings up the declared pipeline services in the
-	// engine's own runtime — docker brings up containers on a job
-	// network, kubernetes brings up one Pod per service. Returns a
-	// ServicesWireup the runner plumbs into ScriptSpec (Network for
-	// docker, HostAliases for kubernetes) plus a Cleanup safe to call
-	// even on partial startup. Empty services → zero ServicesWireup
-	// with a noop Cleanup. Engines that don't implement services
-	// return an error when len(services) > 0.
-	EnsureServices(ctx context.Context, services []ServiceSpec, jobID string, log func(stream, text string)) (ServicesWireup, error)
+	// EnsureServices brings up the declared pipeline services scoped
+	// to a RUN (not a job): the first job of a run that needs a given
+	// service creates the pod, every subsequent job of the same run
+	// reuses it via the deterministic per-runID name. The wireup
+	// returned plumbs into ScriptSpec (Network for docker,
+	// HostAliases for kubernetes). Empty services → zero ServicesWireup
+	// with a noop Cleanup.
+	//
+	// runID is the run-level identity used to name + label pods. jobID
+	// stays in the label set for observability (`kubectl get pods -l
+	// gocdnext.io/job=...` still works to trace which job FIRST brought
+	// the service up) but does NOT factor into naming.
+	//
+	// The returned Cleanup is now a NO-OP: per-job teardown would kill
+	// services other jobs in the same run still depend on. Service
+	// lifecycle is run-scoped, driven solely by the server's
+	// run-terminal CleanupRunServices RPC broadcast. If that
+	// dispatch fails (no eligible agent connected at terminal),
+	// pods leak until manual cleanup via `kubectl delete pods -l
+	// app.kubernetes.io/managed-by=gocdnext-agent,gocdnext.io/run-id=<id>`.
+	//
+	// Engines that don't implement services return an error when
+	// len(services) > 0.
+	EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string)) (ServicesWireup, error)
+
+	// CleanupRunServices tears down every service pod/container
+	// labelled with the given runID. Driven by the server's
+	// CleanupRunServices ServerMessage (issued on run terminal,
+	// BROADCAST to every agent that ran a job of the run plus every
+	// currently-connected agent — the wide target set guarantees a
+	// k8s-capable agent receives the message even if the original
+	// creator has disconnected). Idempotent: a label-selector delete
+	// against an already-cleaned run is a successful no-op.
+	// Returns the count of resources actually deleted; errors from
+	// partial deletes are aggregated and returned alongside the
+	// count.
+	//
+	// Engines that don't host services (Shell, Docker today) return
+	// (0, nil). The server now filters the broadcast at SQL layer
+	// (agents.engine='kubernetes' or legacy '') AND at the
+	// in-memory session layer (Session.Engine match), so non-k8s
+	// agents shouldn't normally receive this message. The
+	// defensive no-op stays in place to cover legacy/unknown
+	// engines during a rolling upgrade.
+	CleanupRunServices(ctx context.Context, runID string) (int, error)
 }

@@ -23,6 +23,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
 
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	"github.com/gocdnext/gocdnext/agent/internal/rpc"
 )
 
@@ -61,6 +62,45 @@ func TestClient_RegisterAndHeartbeat(t *testing.T) {
 	req := fake.lastRegister()
 	if req.AgentId != "agent-1" || req.Token != "tok" || req.Version != "test-0.0.1" || req.Capacity != 2 {
 		t.Fatalf("register req = %+v", req)
+	}
+	// Engine is empty when Config.Engine is nil (this test doesn't
+	// wire one). The presence of the field on RegisterRequest is
+	// the load-bearing bit — the server uses it to filter cleanup
+	// broadcasts; a nil-Engine agent legitimately announces "".
+	if req.Engine != "" {
+		t.Fatalf("register Engine = %q, want empty when Config.Engine is nil", req.Engine)
+	}
+}
+
+// TestClient_RegisterAnnouncesEngine — when Config.Engine is wired,
+// its Name() must reach the server via RegisterRequest.Engine.
+// Load-bearing for run-terminal cleanup filtering (server's
+// AllAgentIDs("kubernetes") + ListAgentsForRun engine column).
+func TestClient_RegisterAnnouncesEngine(t *testing.T) {
+	fake := newFakeServer(t, map[string]string{"agent-eng": "tok"})
+
+	client := rpc.New(rpc.Config{
+		ServerAddr: "passthrough:///bufnet",
+		AgentID:    "agent-eng",
+		Token:      "tok",
+		Heartbeat:  20 * time.Millisecond,
+		Engine:     fakeEngine("kubernetes"),
+		DialOpts: []grpc.DialOption{
+			grpc.WithContextDialer(fake.dialer()),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = client.Run(ctx)
+
+	req := fake.lastRegister()
+	if req == nil {
+		t.Fatal("no register req captured")
+	}
+	if req.Engine != "kubernetes" {
+		t.Fatalf("register Engine = %q, want %q", req.Engine, "kubernetes")
 	}
 }
 
@@ -190,4 +230,20 @@ func (f *fakeServer) Connect(stream gocdnextv1.AgentService_ConnectServer) error
 			}
 		}
 	}
+}
+
+// fakeEngine is the smallest engine.Engine satisfying the
+// interface — Run/Cleanup never called from these tests, only
+// Name() is asserted via RegisterRequest.Engine.
+type fakeEngine string
+
+func (f fakeEngine) Name() string { return string(f) }
+func (fakeEngine) RunScript(context.Context, engine.ScriptSpec) (int, error) {
+	return 0, nil
+}
+func (fakeEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string)) (engine.ServicesWireup, error) {
+	return engine.ServicesWireup{Cleanup: func() {}}, nil
+}
+func (fakeEngine) CleanupRunServices(context.Context, string) (int, error) {
+	return 0, nil
 }

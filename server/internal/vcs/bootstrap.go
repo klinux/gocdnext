@@ -21,15 +21,15 @@ type DBSource interface {
 // VCS integrations and returns a populated Registry. Resolution
 // rules:
 //
-//   1. Env config (GOCDNEXT_GITHUB_APP_ID + private key) seeds a
-//      "env" integration. Kept even when DB rows exist, so an
-//      admin can see what the bootstrap was.
-//   2. DB rows are appended. First-seen position wins on display;
-//      name collision resolves to DB (later entry).
-//   3. The active GitHubApp() client is the FIRST enabled
-//      github_app in final iteration order. That lets DB
-//      configuration override env when the admin sets up a real
-//      app via the UI.
+//  1. Env config (GOCDNEXT_GITHUB_APP_ID + private key) seeds a
+//     "env" integration. Kept even when DB rows exist, so an
+//     admin can see what the bootstrap was.
+//  2. DB rows are appended. First-seen position wins on display;
+//     name collision resolves to DB (later entry).
+//  3. The active GitHubApp() client is the FIRST enabled
+//     github_app in final iteration order. That lets DB
+//     configuration override env when the admin sets up a real
+//     app via the UI.
 //
 // A nil dbSource is valid (DB unreachable at boot); env-only
 // loads cleanly.

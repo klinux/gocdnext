@@ -169,7 +169,7 @@ export function JobCard({ job, runID }: Props) {
           Logs ({job.logs?.length ?? 0})
         </summary>
         <div className="mt-2 overflow-hidden rounded-md border border-border">
-          <LogViewer logs={job.logs ?? []} />
+          <LogViewer logs={job.logs ?? []} jobStartedAt={job.started_at ?? undefined} />
         </div>
       </details>
     </div>

@@ -41,11 +41,11 @@ type ApplyProjectInput struct {
 // SCMSourceInput is the subset of scm_sources fields a caller can set. The
 // server fills in timestamps and id.
 type SCMSourceInput struct {
-	Provider       string // "github" | "gitlab" | "bitbucket" | "manual"
-	URL            string
-	DefaultBranch  string
-	WebhookSecret  string
-	AuthRef        string
+	Provider      string // "github" | "gitlab" | "bitbucket" | "manual"
+	URL           string
+	DefaultBranch string
+	WebhookSecret string
+	AuthRef       string
 }
 
 type SCMSourceApplied struct {

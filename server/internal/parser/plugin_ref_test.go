@@ -55,12 +55,12 @@ func TestResolvePluginRef(t *testing.T) {
 
 func TestResolvePluginRef_RejectsMalformed(t *testing.T) {
 	cases := map[string]string{
-		"empty":            "",
-		"whitespace":       "   \t\n",
-		"embedded space":   "gocdnext/node @v1",
-		"missing image":    "@v1",
-		"missing version":  "gocdnext/node@",
-		"only-at":          "@",
+		"empty":           "",
+		"whitespace":      "   \t\n",
+		"embedded space":  "gocdnext/node @v1",
+		"missing image":   "@v1",
+		"missing version": "gocdnext/node@",
+		"only-at":         "@",
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

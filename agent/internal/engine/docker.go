@@ -100,7 +100,25 @@ var dockerServiceNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 // `docker network rm` of an in-use network is a no-op error we
 // swallow, and we only collect ids for containers that actually
 // reported `docker run` success.
-func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, jobID string, log func(stream, text string)) (ServicesWireup, error) {
+//
+// runID is accepted to satisfy the Engine interface but currently
+// IGNORED here: docker engine is typically single-host and the
+// existing per-job scoping is fine. If a future deployment hits the
+// per-job-network cost the k8s engine fix (run-scoped naming + reuse)
+// can be ported here too — TODO when there's a real consumer.
+// CleanupRunServices is a no-op for the docker engine today —
+// docker services are still per-job (see EnsureServices doc) so
+// there's no run-scoped state to tear down. Future work that
+// ports the k8s run-scoped model to docker would implement this
+// by listing+removing containers labelled with the runID; for now
+// returning (0, nil) keeps the Engine contract satisfied without
+// pretending we did anything.
+func (d *Docker) CleanupRunServices(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
+func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string)) (ServicesWireup, error) {
+	_ = runID // see docstring; docker engine stays per-job for now
 	noop := ServicesWireup{Cleanup: func() {}}
 	if len(services) == 0 {
 		return noop, nil

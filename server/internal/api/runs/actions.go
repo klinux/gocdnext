@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -19,9 +20,10 @@ import (
 
 // Cancel handles POST /api/v1/runs/{id}/cancel.
 // Response:
-//   202 Accepted   — the run was active and is now canceled
-//   404 Not Found  — unknown run id
-//   409 Conflict   — run already in a terminal status
+//
+//	202 Accepted   — the run was active and is now canceled
+//	404 Not Found  — unknown run id
+//	409 Conflict   — run already in a terminal status
 func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -41,6 +43,13 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		// cancel-kills-container roadmap for the incident that
 		// motivated this wiring.
 		h.dispatchCancel(runID, res.RunningJobs)
+		// Run-scoped service teardown: same logic as the
+		// CompleteJob run-terminal cascade in connect.go.
+		// Dispatched off the request context — if the client
+		// disconnects after CancelRun committed the DB mutation,
+		// the cleanup needs to keep running, otherwise the pods
+		// leak. A short fixed timeout bounds the work.
+		go h.dispatchCleanupServices(runID)
 		audit.Emit(r.Context(), h.log, h.store,
 			store.AuditActionRunCancel, "run", runID.String(),
 			map[string]any{"signaled_jobs": len(res.RunningJobs)})
@@ -91,6 +100,97 @@ func (h *Handler) dispatchCancel(runID uuid.UUID, jobs []store.RunningJobRef) {
 	}
 }
 
+// dispatchCleanupServices broadcasts CleanupRunServices to the
+// union of (agents that ran a job of this run) ∪ (all currently
+// connected agents). The wider net matters because the k8s agent
+// that originally created the pods may have disconnected before
+// the cancel, but ANY other k8s agent in the cluster can do the
+// label-selector delete — pods are cluster-scoped.
+//
+// Owns its own context: callers invoke this in a goroutine after
+// the HTTP request completes, so the request context is already
+// expired by the time we run. A bounded fresh context lets the
+// store lookup + per-agent dispatch finish without depending on
+// client liveness.
+//
+// Best-effort: per-agent dispatch failure (agent disconnected)
+// is logged but doesn't escalate. When the target set is empty
+// OR every dispatch fails, we surface a warn-level log so the
+// operator can grep for "pods may leak".
+func (h *Handler) dispatchCleanupServices(runID uuid.UUID) {
+	if h.dispatcher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Mirror the RunCompleted-cascade gate in connect.go: pipelines
+	// without a `services:` block don't have pods to clean, so skip
+	// the broadcast entirely. Saves ListAgentsForRun + a k8s List
+	// per agent per cancel. Fail-open on error: better to do one
+	// extra empty List than to leak.
+	hasServices, hsErr := h.store.RunHasServices(ctx, runID)
+	if hsErr != nil {
+		h.log.Warn("cancel: has-services check failed; dispatching cleanup anyway",
+			"run_id", runID, "err", hsErr)
+		hasServices = true
+	}
+	if !hasServices {
+		return
+	}
+
+	ranAgents, err := h.store.ListAgentsForRun(ctx, runID)
+	if err != nil {
+		h.log.Warn("cancel: list agents for cleanup failed; continuing with connected-agents only",
+			"run_id", runID, "err", err)
+	}
+	// k8s-only filter mirrors connect.go's RunCompleted broadcast.
+	connected := h.dispatcher.AllAgentIDs("kubernetes")
+
+	seen := make(map[uuid.UUID]struct{}, len(ranAgents)+len(connected))
+	targets := make([]uuid.UUID, 0, len(ranAgents)+len(connected))
+	for _, id := range ranAgents {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		targets = append(targets, id)
+	}
+	for _, id := range connected {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		targets = append(targets, id)
+	}
+	if len(targets) == 0 {
+		h.log.Warn("cancel: cleanup has no targets; pods may leak until manual cleanup",
+			"run_id", runID)
+		return
+	}
+
+	msg := &gocdnextv1.ServerMessage{
+		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
+			CleanupRunServices: &gocdnextv1.CleanupRunServices{
+				RunId: runID.String(),
+			},
+		},
+	}
+	var ok int
+	for _, id := range targets {
+		if err := h.dispatcher.Dispatch(id, msg); err != nil {
+			h.log.Debug("cancel: cleanup dispatch to agent failed",
+				"run_id", runID, "agent_id", id, "err", err)
+			continue
+		}
+		ok++
+	}
+	if ok == 0 {
+		h.log.Warn("cancel: all cleanup dispatches failed; pods may leak until manual cleanup",
+			"run_id", runID, "targets", len(targets))
+	}
+}
+
 // rerunBody optional JSON body for Rerun. triggered_by lands on the
 // new run row so the UI can show who asked. Omit it and the store
 // synthesizes "rerun:<orig>" automatically.
@@ -100,7 +200,9 @@ type rerunBody struct {
 
 // Rerun handles POST /api/v1/runs/{id}/rerun.
 // Response on success (202):
-//   { "run_id": "...", "counter": <int>, "rerun_of": "<orig>" }
+//
+//	{ "run_id": "...", "counter": <int>, "rerun_of": "<orig>" }
+//
 // 422 when the original run's revisions can't be replayed (e.g.,
 // modifications pruned, blank revisions JSON).
 func (h *Handler) Rerun(w http.ResponseWriter, r *http.Request) {
@@ -147,9 +249,10 @@ func (h *Handler) Rerun(w http.ResponseWriter, r *http.Request) {
 
 // RerunJob handles POST /api/v1/job_runs/{id}/rerun — re-executes a
 // single terminal job inside its existing run. Returns:
-//   202 Accepted → { job_run_id, run_id, attempt }
-//   404          → unknown job_run id
-//   409          → job still active (queued/running); cancel first
+//
+//	202 Accepted → { job_run_id, run_id, attempt }
+//	404          → unknown job_run id
+//	409          → job still active (queued/running); cancel first
 func (h *Handler) RerunJob(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")

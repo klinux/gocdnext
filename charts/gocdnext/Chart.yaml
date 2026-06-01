@@ -2,8 +2,8 @@ apiVersion: v2
 name: gocdnext
 description: Modern CI/CD orchestrator with VSM, fanout and webhook-first ingest
 type: application
-version: 0.4.34
-appVersion: "0.4.34"
+version: 0.4.35
+appVersion: "0.4.35"
 keywords:
   - ci
   - cd

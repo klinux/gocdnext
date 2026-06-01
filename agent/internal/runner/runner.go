@@ -21,8 +21,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
 // Config wires the runner. Send is the single outbound callback; callers plug
@@ -88,6 +88,16 @@ func New(cfg Config) *Runner {
 // true when a matching job was running (and its context was canceled),
 // false when the job had already finished or never registered. Safe to
 // call concurrently with Execute from the gRPC message dispatch loop.
+// CleanupRunServices is the runner-side entry point for the
+// server's CleanupRunServices RPC (handled in rpc/client.go).
+// Delegates straight to the engine — the runner adds no logic of
+// its own here, but keeping the indirection means future signals
+// (metrics, audit log line, etc.) can be added without changing
+// the rpc/client.go call site.
+func (r *Runner) CleanupRunServices(ctx context.Context, runID string) (int, error) {
+	return r.cfg.Engine.CleanupRunServices(ctx, runID)
+}
+
 func (r *Runner) Cancel(jobID string) bool {
 	r.inflightMu.Lock()
 	cancel, ok := r.inflight[jobID]

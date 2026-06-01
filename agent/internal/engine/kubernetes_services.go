@@ -17,7 +17,7 @@ import (
 // k8sServiceNameRE enforces DNS-1123 label rules and adds a tighter
 // length cap (32 chars) so the resulting pod name
 //
-//	gocdnext-svc-<12-hex-of-jobid>-<svcname>
+//	gocdnext-svc-<12-hex-of-runid>-<svcname>
 //
 // stays under the 63-char DNS label limit. Critical: the value comes
 // from pipeline YAML — without strict validation, a malicious name
@@ -26,48 +26,70 @@ import (
 // it can collide with another job's resources.
 var k8sServiceNameRE = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$`)
 
-// EnsureServices brings up one Pod per declared service in the
-// configured namespace and returns hostAliases mapping each service
-// name to its pod IP. The runner threads the aliases into the task
-// pod's ScriptSpec.HostAliases so a `postgres:5432`-style hostname
-// resolves via /etc/hosts (no DNS query, no Service object needed,
-// no port spec in the pipeline YAML).
+// EnsureServices brings up one Pod per declared service, SCOPED TO
+// THE RUN (not to the job). Pod name is derived from runID so every
+// job of the same run resolves to the same pod via the deterministic
+// name — first creator wins, every subsequent job's Create returns
+// AlreadyExists and the engine just Gets the existing PodIP. The
+// HostAliases wireup the runner threads into ScriptSpec lets the
+// job pod resolve `postgres:5432` via /etc/hosts without needing a
+// k8s Service object or per-job DNS.
 //
-// Pod naming: gocdnext-svc-<jobshort>-<svcname>. Deterministic per
-// (jobID, svcName) so a runner restart can identify (and force-
-// delete) leftovers from a previous attempt.
+// Pod naming: gocdnext-svc-<runshort>-<svcname>. Pods are labelled
+// with `gocdnext.io/run-id=<runID>` so the server's
+// CleanupRunServices RPC (issued on run terminal) can sweep them
+// with a single label-selector delete instead of needing to know
+// per-pod names.
+//
+// Lifecycle:
+//   - Per-job teardown is GONE: the returned Cleanup is a no-op.
+//     Killing the service when ONE of N jobs finishes would break
+//     the other N-1 jobs still using it.
+//   - Run-terminal teardown is the server's job: when the run
+//     reaches terminal (CompleteJob cascade OR Cancel path), the
+//     server BROADCASTS CleanupRunServices(runID) to a wide target
+//     set — agents that ran a job of the run UNION every connected
+//     agent — and each agent's k8s engine does
+//     `kubectl delete pods -l app.kubernetes.io/managed-by=gocdnext-agent,
+//     app.kubernetes.io/component=service,gocdnext.io/run-id=<runID>`.
+//     Multi-agent races resolve via NotFound (success).
+//   - Pods leak (until manual cleanup with `kubectl delete pods
+//     -l app.kubernetes.io/managed-by=gocdnext-agent,gocdnext.io/run-id=<id>`)
+//     only when the server's engine-filtered target set is empty
+//     OR every targeted dispatch errors. A non-k8s agent's no-op
+//     does NOT cause a leak here because the server's SQL/in-mem
+//     filters route the message away from those engines.
 //
 // Errors:
 //   - empty services → no-op ServicesWireup with a noop cleanup.
-//   - invalid name / empty image → fail before any API call, no
-//     cleanup needed.
-//   - pod creation conflict → likely a leftover from a previous
-//     job; surface with a hint to delete + retry. The cleanup we
-//     return still tears down anything we DID create in this call.
-//   - podIP wait timeout (StartupTimeout) → cleanup is called
-//     internally so the caller sees a clean error path with
-//     no leaked pods to mop up.
+//   - invalid name / empty image → fail before any API call.
+//   - pod creation conflict NOT due to label match → real error
+//     (a previous leak from a prior gocdnext version with the same
+//     runID — extremely unlikely, but surfaced loudly).
+//   - podIP wait timeout (StartupTimeout) → bubble up; the pod is
+//     left in place. A sibling job of the same run will see the
+//     failed-state pod via AlreadyExists and surface a refuse-to-
+//     reuse error so the operator can delete it manually.
 //
-// Concurrency: pods are created sequentially (cheap API calls);
-// the wait-for-podIP step runs in parallel via errgroup since
-// image pulls dominate and serialising would multiply latency by
-// the number of services.
+// Concurrency: the wait-for-podIP step runs in parallel via
+// errgroup since image pulls dominate and serialising would
+// multiply latency by the number of services.
 func (k *Kubernetes) EnsureServices(
 	ctx context.Context,
 	services []ServiceSpec,
-	jobID string,
+	runID, jobID string,
 	log func(stream, text string),
 ) (ServicesWireup, error) {
 	noop := ServicesWireup{Cleanup: func() {}}
 	if len(services) == 0 {
 		return noop, nil
 	}
-	if jobID == "" {
-		return noop, errors.New("kubernetes engine: EnsureServices needs a non-empty jobID for collision-free pod naming")
+	if runID == "" {
+		return noop, errors.New("kubernetes engine: EnsureServices needs a non-empty runID for run-scoped pod naming")
 	}
 
-	jobShort := shortDockerID(jobID)
-	prefix := "gocdnext-svc-" + jobShort + "-"
+	runShort := shortDockerID(runID)
+	prefix := "gocdnext-svc-" + runShort + "-"
 
 	// seen guards against the same name being declared twice in
 	// one pipeline — the server-side parser SHOULD reject this,
@@ -89,53 +111,47 @@ func (k *Kubernetes) EnsureServices(
 		}
 	}
 
-	// created tracks every pod we successfully POSTed so cleanup
-	// can target exactly what this call brought up — important when
-	// a later service's Create fails partway through and we don't
-	// want to wipe an unrelated pod that happens to match the name
-	// prefix from a concurrent job (jobShort makes that unlikely
-	// but the explicit list keeps cleanup correctness independent of
-	// the naming scheme).
-	var (
-		mu      sync.Mutex
-		created []string
-	)
-	cleanup := func() {
-		mu.Lock()
-		names := append([]string(nil), created...)
-		mu.Unlock()
-		// Use a background context so cleanup still runs after
-		// the caller's ctx was canceled (typical reason cleanup
-		// is invoked). Force-delete (grace period 0) because the
-		// services don't need graceful shutdown and the alternative
-		// is a 30s lag between job end and pod-IP recycling.
-		gp := int64(0)
-		bg := context.Background()
-		for _, name := range names {
-			_ = k.client.CoreV1().Pods(k.cfg.Namespace).Delete(bg, name, metav1.DeleteOptions{
-				GracePeriodSeconds: &gp,
-			})
-		}
-	}
+	// Cleanup is a no-op in the run-scoped model: per-job teardown
+	// would kill services other jobs of the same run still need.
+	// Run-terminal cleanup is the server's job — see
+	// dispatchRunServiceCleanup in connect.go.
+	cleanup := func() {}
 
 	for _, svc := range services {
 		name := prefix + svc.Name
-		pod := k.buildServicePod(name, svc, jobID)
+		pod := k.buildServicePod(name, svc, runID, jobID)
 		if log != nil {
 			log("stdout", fmt.Sprintf("$ starting service %s (%s)", svc.Name, svc.Image))
 		}
-		if _, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
-			cleanup()
-			if kerrors.IsAlreadyExists(err) {
-				return noop, fmt.Errorf(
-					"kubernetes engine: service pod %s already exists — leftover from a previous job? delete it and retry",
-					name)
+		_, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+		switch {
+		case err == nil:
+			// We created it. waitForPodIP below will block on its
+			// status; nothing else to do here.
+		case kerrors.IsAlreadyExists(err):
+			// Another job of THIS run got here first — ideally.
+			// Before trusting reuse, Get the existing pod and
+			// validate it carries OUR labels: same managed-by,
+			// component=service, run-id=our-run, service=our-svc.
+			// Without this check a stale pod from a previous
+			// gocdnext version, a name collision (12-hex prefix is
+			// ~10^14 space but not infinite), or an unrelated
+			// operator-deployed pod sharing the namespace could be
+			// silently adopted — and never cleaned up since our
+			// label-selector delete wouldn't match it back.
+			existing, getErr := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
+			if getErr != nil {
+				return noop, fmt.Errorf("kubernetes engine: pod %s exists but Get failed: %w", name, getErr)
 			}
+			if err := assertOurServicePod(existing, runID, svc.Name); err != nil {
+				return noop, fmt.Errorf("kubernetes engine: refusing to reuse pod %s: %w — delete it manually and retry", name, err)
+			}
+			if log != nil {
+				log("stdout", fmt.Sprintf("$ reusing service %s from sibling job (run-scoped)", svc.Name))
+			}
+		default:
 			return noop, fmt.Errorf("kubernetes engine: create service pod %s: %w", name, err)
 		}
-		mu.Lock()
-		created = append(created, name)
-		mu.Unlock()
 	}
 
 	// Wait in parallel for each service's podIP. Image pulls (the
@@ -180,11 +196,22 @@ func (k *Kubernetes) EnsureServices(
 	return ServicesWireup{HostAliases: aliases, Cleanup: cleanup}, nil
 }
 
-// buildServicePod materialises a ServiceSpec into a corev1.Pod. The
-// pod is labelled with the originating job id so an operator running
-// `kubectl get pods -l gocdnext.io/job=<id>` sees both the task pod
-// and every service pod that backs it.
-func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, jobID string) *corev1.Pod {
+// buildServicePod materialises a ServiceSpec into a corev1.Pod.
+//
+// Labels:
+//   - gocdnext.io/run-id: the LOAD-BEARING label. The server's
+//     CleanupRunServices RPC deletes by this selector (in
+//     combination with managed-by + component), so any future
+//     code that creates service pods MUST stamp it or risk
+//     leaving leaks behind.
+//   - gocdnext.io/job: the originating job id — observability only.
+//     A subsequent job of the same run will Get an existing pod
+//     whose job label points at whichever sibling brought it up,
+//     not at the current job. That's fine for `kubectl get pods
+//     -l gocdnext.io/job=<id>` debugging (it still surfaces the
+//     pod the job is actually using, just under a different
+//     originator).
+func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID string) *corev1.Pod {
 	env := make([]corev1.EnvVar, 0, len(svc.Env))
 	// Iterate the sorted key order so two identical specs produce
 	// byte-identical PodSpecs. Helps test assertions + log diffs.
@@ -208,6 +235,10 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, jobID string)
 		"app.kubernetes.io/component":  "service",
 		"app.kubernetes.io/managed-by": "gocdnext-agent",
 		"gocdnext.io/service":          svc.Name,
+	}
+	if v, ok := sanitizeLabelValue(runID); ok {
+		// Load-bearing for CleanupRunServices selector.
+		labels["gocdnext.io/run-id"] = v
 	}
 	if v, ok := sanitizeLabelValue(jobID); ok {
 		labels["gocdnext.io/job"] = v
@@ -243,6 +274,108 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, jobID string)
 			}},
 		},
 	}
+}
+
+// assertOurServicePod refuses to adopt a pre-existing pod that
+// doesn't carry the full label set EnsureServices stamps. A bare
+// `gocdnext.io/run-id` match isn't enough — could be:
+//
+//   - A pod from a previous gocdnext version that doesn't share our
+//     CleanupRunServices contract (won't get reaped on run terminal).
+//   - A name collision in the rare-but-possible 12-hex-prefix space.
+//   - An unrelated operator-deployed pod whose labels happen to
+//     include our run-id (unlikely but defensive).
+//
+// Requires the full label tuple: managed-by + component + run-id +
+// service. Returns nil when the pod is ours; an error otherwise so
+// the caller can surface a precise "refusing to reuse" message.
+func assertOurServicePod(pod *corev1.Pod, runID, svcName string) error {
+	if pod == nil {
+		return fmt.Errorf("nil pod")
+	}
+	labels := pod.GetLabels()
+	if labels == nil {
+		return fmt.Errorf("missing labels")
+	}
+	if labels["app.kubernetes.io/managed-by"] != "gocdnext-agent" {
+		return fmt.Errorf("managed-by label = %q, want gocdnext-agent", labels["app.kubernetes.io/managed-by"])
+	}
+	if labels["app.kubernetes.io/component"] != "service" {
+		return fmt.Errorf("component label = %q, want service", labels["app.kubernetes.io/component"])
+	}
+	if labels["gocdnext.io/service"] != svcName {
+		return fmt.Errorf("service label = %q, want %q", labels["gocdnext.io/service"], svcName)
+	}
+	wantRunID, ok := sanitizeLabelValue(runID)
+	if !ok {
+		return fmt.Errorf("internal: bad runID %q for label validation", runID)
+	}
+	if labels["gocdnext.io/run-id"] != wantRunID {
+		return fmt.Errorf("run-id label = %q, want %q", labels["gocdnext.io/run-id"], wantRunID)
+	}
+	return nil
+}
+
+// CleanupRunServices deletes every service pod labelled with the
+// given runID. Called by the agent on receipt of a server-side
+// CleanupRunServices RPC (issued when CompleteJob's cascade marks
+// a run terminal). Grace period 0 because services don't need
+// graceful shutdown — the run is over.
+//
+// Selector is TIGHT: matches our managed-by + component + run-id
+// triple, not just run-id. Without the first two an
+// operator-deployed pod that happened to inherit our run-id
+// label (unlikely but defensive) would be eligible for deletion;
+// scoping to our component-service marker shuts that door.
+//
+// Error handling:
+//   - List error bubbles up unchanged (RBAC misconfig is loud).
+//   - NotFound on Delete counts as success (another agent raced).
+//   - Other Delete errors are joined into a single returned error
+//     so the caller (and the server's eventual log) sees the
+//     full picture. Without aggregation a partial RBAC deny
+//     (list ok, delete denied) would log "deleted N" while the
+//     pods stayed alive — silent failure.
+//
+// Returns the count of pods that actually went away (delete
+// succeeded OR was NotFound). Combined with the error, the
+// caller can distinguish "all good" from "partial failure".
+func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string) (int, error) {
+	v, ok := sanitizeLabelValue(runID)
+	if !ok || v == "" {
+		return 0, fmt.Errorf("kubernetes engine: invalid runID %q for label selector", runID)
+	}
+	selector := strings.Join([]string{
+		"app.kubernetes.io/managed-by=gocdnext-agent",
+		"app.kubernetes.io/component=service",
+		"gocdnext.io/run-id=" + v,
+	}, ",")
+	pods, err := k.client.CoreV1().Pods(k.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list service pods for run %s: %w", runID, err)
+	}
+	gp := int64(0)
+	var (
+		deleted int
+		errs    []error
+	)
+	for _, pod := range pods.Items {
+		delErr := k.client.CoreV1().Pods(k.cfg.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: &gp,
+		})
+		switch {
+		case delErr == nil, kerrors.IsNotFound(delErr):
+			deleted++
+		default:
+			errs = append(errs, fmt.Errorf("delete %s: %w", pod.Name, delErr))
+		}
+	}
+	if len(errs) > 0 {
+		return deleted, fmt.Errorf("kubernetes engine: cleanup run services partial: %w", errors.Join(errs...))
+	}
+	return deleted, nil
 }
 
 // waitForPodIP polls the Pod status until status.podIP is populated

@@ -239,6 +239,7 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
         >
           <LogViewer
             logs={job.logs ?? []}
+            jobStartedAt={job.started_at ?? undefined}
             className="h-full max-h-none overflow-visible"
           />
         </div>

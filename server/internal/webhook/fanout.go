@@ -173,10 +173,10 @@ func runsPayload(outcomes []fanOutOutcome) []map[string]any {
 			continue
 		}
 		runs = append(runs, map[string]any{
-			"pipeline_id":  oc.PipelineID.String(),
-			"material_id":  oc.MaterialID.String(),
-			"run_id":       oc.RunID.String(),
-			"run_counter":  oc.RunCounter,
+			"pipeline_id": oc.PipelineID.String(),
+			"material_id": oc.MaterialID.String(),
+			"run_id":      oc.RunID.String(),
+			"run_counter": oc.RunCounter,
 		})
 	}
 	return runs

@@ -21,6 +21,7 @@ type stubEngine struct {
 	name           string
 	ensureCalls    int
 	ensureSawSpecs []engine.ServiceSpec
+	ensureSawRunID string
 	ensureSawJobID string
 	wireup         engine.ServicesWireup
 	wireupErr      error
@@ -35,11 +36,12 @@ func (s *stubEngine) RunScript(context.Context, engine.ScriptSpec) (int, error) 
 func (s *stubEngine) EnsureServices(
 	_ context.Context,
 	services []engine.ServiceSpec,
-	jobID string,
+	runID, jobID string,
 	_ func(string, string),
 ) (engine.ServicesWireup, error) {
 	s.ensureCalls++
 	s.ensureSawSpecs = append([]engine.ServiceSpec(nil), services...)
+	s.ensureSawRunID = runID
 	s.ensureSawJobID = jobID
 	if s.wireupErr != nil {
 		// Mirror the real-engine contract: even on error, callers
@@ -53,6 +55,10 @@ func (s *stubEngine) EnsureServices(
 		s.wireup.Cleanup = func() {}
 	}
 	return s.wireup, nil
+}
+
+func (s *stubEngine) CleanupRunServices(context.Context, string) (int, error) {
+	return 0, nil
 }
 
 // TestStartServices_PropagatesEngineError checks that an error from

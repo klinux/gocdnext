@@ -64,8 +64,8 @@ type AgentService struct {
 	// enqueues the just-completed job for archiving. nil means
 	// "feature off" — log_lines stays in the partitioned heap.
 	// Set via WithLogArchiver.
-	logArchiver       *logarchive.Archiver
-	logArchivePolicy  domain.LogArchivePolicy
+	logArchiver      *logarchive.Archiver
+	logArchivePolicy domain.LogArchivePolicy
 
 	// jobRunIDCache memoises jobID → runID lookups so the log hot
 	// path avoids a DB round-trip per line. Job IDs are stable for
@@ -312,6 +312,7 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 		Arch:     req.GetArch(),
 		Tags:     req.GetTags(),
 		Capacity: req.GetCapacity(),
+		Engine:   req.GetEngine(),
 	}
 	// MarkAgentOnline bumps agents.session_generation atomically
 	// and returns the new value. We pass it INTO CreateSession so
@@ -336,7 +337,8 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
-	sess := a.sessions.CreateSession(agent.ID, req.GetTags(), req.GetCapacity(), generation)
+	sess := a.sessions.CreateSession(agent.ID, req.GetTags(), req.GetCapacity(), generation,
+		CreateSessionOpts{Engine: req.GetEngine()})
 
 	// Now that the new session exists, fire the deferred wake-ups.
 	// One NOTIFY per distinct run id — the scheduler dedups at its

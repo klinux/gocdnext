@@ -245,7 +245,7 @@ func BuildAssignment(
 		Checkouts:      checkouts,
 		Workspace:      "/workspace",
 		TimeoutSeconds: 0,
-		LogMasks: masks,
+		LogMasks:       masks,
 		// Dedupe artifact paths by canonical form (trailing slashes
 		// trimmed) WITHIN each list AND ACROSS the two lists. The
 		// parser already does this at apply time, but `run.Definition`

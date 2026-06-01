@@ -17,15 +17,15 @@ import (
 // XOR'd FK collapsed into a (Subject, SubjectID) pair so callers
 // don't have to look at two nullable columns.
 type APIToken struct {
-	ID          uuid.UUID
-	Subject     TokenSubject
-	SubjectID   uuid.UUID
-	Name        string
-	Prefix      string
-	ExpiresAt   *time.Time
-	LastUsedAt  *time.Time
-	RevokedAt   *time.Time
-	CreatedAt   time.Time
+	ID         uuid.UUID
+	Subject    TokenSubject
+	SubjectID  uuid.UUID
+	Name       string
+	Prefix     string
+	ExpiresAt  *time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
 }
 
 // TokenSubject narrows the API token's identity boundary.

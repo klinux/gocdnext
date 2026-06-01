@@ -6,6 +6,124 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.35 — 2026-06-01
+
+Run-scoped Kubernetes services (one pod per run vs per-job leak),
+Woodpecker-style per-operation timings in the log viewer, a
+bounded-and-coalescing cleanup-worker subsystem on the agent with
+async server-side ack, and the session_generation reaper fence on
+the server.
+
+### Run-scoped k8s service pods
+
+Previously each job that referenced `services:` brought up its own
+`postgres`/`redis`/etc. sidecar pod, so a 5-job pipeline with one
+postgres service produced 5 postgres pods that all leaked when the
+run finished. The agent now keys service pods by `runID` (not
+`jobID`) and uses a label selector + `assertOurServicePod` to reuse
+the existing pod across jobs of the same run.
+
+- **Pod naming**: `gocdnext-svc-<runShort>-<svcName>`; full label
+  tuple `managed-by=gocdnext-agent`, `component=service`,
+  `run-id=<runID>`, `service=<name>`.
+- **Cleanup**: new `Engine.CleanupRunServices(ctx, runID)` method
+  on the agent's engine interface. The server broadcasts a
+  `CleanupRunServices` message at run-terminal, filtered to
+  k8s-capable agents only (SQL filter on `engine='kubernetes'`
+  plus in-memory `Session.Engine`).
+- **`runs.has_services` snapshot** (migration 00036) computed at
+  insert time from the parsed pipeline definition. Avoids the
+  JSONB key-casing trap (`json.Marshal` emits `Services`, not
+  `services`) and survives pipeline-row deletion.
+- **`agents.engine` column** (migration 00037) persists the
+  engine name reported on Register, used by the SQL filter.
+
+### Cleanup-worker subsystem (agent)
+
+The cleanup dispatch landed on the agent through 15 review rounds.
+Final shape:
+
+- **Bounded queue + coalesce**: 256-cap channel + per-runID
+  pending set, so N broadcasts for the same run collapse to 1
+  backlog slot. 4-worker pool caps concurrent k8s API pressure.
+- **Process-lifetime workers**: started in `Run()` rather than
+  per-stream, so a future in-process reconnect (today the
+  supervisor restarts on disconnect) would not drop backlog.
+- **Shutdown semantics**: shared `drainBudget` ctx (30s) installed
+  in `Run()`'s defer BEFORE `cancelWorkers()`. Workers in drain
+  mode derive per-item ctxs from this so the global wall-clock is
+  bounded — items popped after the budget fires stay on the
+  channel (single-shot abandonment audit Warn reports queued +
+  pending totals after `Wait()`).
+- **Race recovery**: when Go's `select` picks the queue arm with
+  `ctx` already cancelled, `processShutdownRaceItem` uses the
+  drain-budget parent and drains the rest, matching what the
+  ctx-Done arm would have done.
+- **Async ack**: new `AgentMessage.CleanupRunServicesResult`
+  (oneof field 6) carries `{run_id, deleted, error_message,
+  engine}` back to the server. Non-blocking send via a separate
+  `cleanupAckSend` bridge — never backpressures cleanup workers
+  even on a congested outbound channel; drops are reported
+  periodically + on stream shutdown.
+
+### Cleanup ack handler (server)
+
+`handleCleanupRunServicesResult` is pure observability — no DB
+writes — but with hardened validation so a buggy or compromised
+agent can't poison the audit log:
+
+- `uuid.Parse` on `run_id`; malformed payloads dropped at Warn
+  with `clampBytes(64)` on the raw value.
+- `clampBytes` on `engine` (64 B) and `error_message` (4 KiB).
+- `deleted < 0` clamped to 0 and Warn'd explicitly.
+- `sess.revoked` drop policy matches Log/TestResults paths.
+- Engine self-report vs `Session.Engine` mismatch fires a Warn
+  tripwire (proto comment markets this as the misconfiguration
+  signal).
+- `ErrSessionBusy` on dispatch loop logs at Warn (was Debug, so
+  silent in prod when an agent's send queue saturated).
+
+### Per-operation timings in logs (web)
+
+Woodpecker-style cumulative-elapsed-since-job-start in the right
+margin of the log viewer. `formatElapsed` lives in
+`web/components/runs/log-viewer.tsx`; `JobCard` and
+`JobDetailSheet` thread `jobStartedAt` through.
+
+### Session generation reaper fence (server)
+
+- **`agents.session_generation`** counter bumped atomically in
+  `UpdateAgentOnRegister`. Captured at register time, returned via
+  RPC, kept in the in-memory `Session.generation` (immutable after
+  `CreateSession`). The reaper observes the counter at SELECT and
+  fences via `FenceStaleSession(agentID, observedGen)`. Why a
+  counter and not the session UUID: a DB backup containing
+  session IDs would leak bearer credentials; a monotonic int
+  carries the epoch signal with zero auth power.
+- **`MarkAgentOffline`** is now generation-CAS so a zombie
+  stream's deferred offline-mark no-ops once a successor Register
+  has bumped the counter.
+
+### Operator visibility on queued runs (issue #4 follow-through)
+
+- `OtherRunningRunForPipeline` replaces the boolean-returning
+  predecessor existence check: returns the in-flight run's id so
+  the scheduler can stamp `runs.queue_reason` ("waiting on #N")
+  for the runs-list UI.
+- `ClearRunQueueReason` is idempotent and also fires on
+  terminal-cancel paths so a canceled-while-queued run doesn't
+  carry a stale waiting-on message.
+
+### Misc
+
+- `UnassignJob` snapshot-CAS on `(agent_id, attempt)` so a
+  dispatch failure rolling back doesn't clobber a reaper-requeued
+  row. Attempt is NOT bumped (dispatch never reached the agent =
+  not a failed attempt).
+- `clampBytes` constant trio added on the server cleanup-ack path:
+  `cleanupAckRunIDMax=64`, `cleanupAckEngineMax=64`,
+  `cleanupAckErrorMax=4 KiB`.
+
 ## v0.4.34 — 2026-06-01
 
 Closes [issue #3](https://github.com/klinux/gocdnext/issues/3) —

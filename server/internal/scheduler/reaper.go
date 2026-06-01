@@ -141,24 +141,24 @@ func (r *Reaper) Run(ctx context.Context) error {
 //
 // Three-phase ordering — load-bearing for correctness:
 //
-//   1. ReclaimStaleJobs (notify=false internally): atomically requeues
-//      each stale row with snapshot CAS; the row's (agent_id, attempt)
-//      gets bumped but no LISTEN/NOTIFY fires.
+//  1. ReclaimStaleJobs (notify=false internally): atomically requeues
+//     each stale row with snapshot CAS; the row's (agent_id, attempt)
+//     gets bumped but no LISTEN/NOTIFY fires.
 //
-//   2. RevokeForAgent on each unique previous_agent: kills the in-
-//      memory session whose stream was attributed to that agent.
-//      MUST happen BEFORE notify. If we notified first, the scheduler
-//      would wake on the next LISTEN tick, FindIdle would still see
-//      the stale session (which has spare capacity since its jobs
-//      were just requeued out from under it), and DispatchAssignment
-//      would reassign the same job to the same session — overwriting
-//      its (jobID → attempt) record with the new attempt and turning
-//      the late JobResult from the OLD attempt into a snapshot-CAS
-//      match for the NEW row.
+//  2. RevokeForAgent on each unique previous_agent: kills the in-
+//     memory session whose stream was attributed to that agent.
+//     MUST happen BEFORE notify. If we notified first, the scheduler
+//     would wake on the next LISTEN tick, FindIdle would still see
+//     the stale session (which has spare capacity since its jobs
+//     were just requeued out from under it), and DispatchAssignment
+//     would reassign the same job to the same session — overwriting
+//     its (jobID → attempt) record with the new attempt and turning
+//     the late JobResult from the OLD attempt into a snapshot-CAS
+//     match for the NEW row.
 //
-//   3. NotifyRunQueued per unique run_id: one coalesced wake-up after
-//      the fence is complete. By this point the scheduler can't pick
-//      the dead session.
+//  3. NotifyRunQueued per unique run_id: one coalesced wake-up after
+//     the fence is complete. By this point the scheduler can't pick
+//     the dead session.
 //
 // DispatchAssignment's RecordAssignmentCAS is the secondary trip-wire
 // — if a stale session somehow survives phase 2 (test setup, future

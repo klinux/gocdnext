@@ -12,7 +12,7 @@ import (
 )
 
 const findAgentByName = `-- name: FindAgentByName :one
-SELECT id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation
+SELECT id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation, engine
 FROM agents
 WHERE name = $1
 LIMIT 1
@@ -34,6 +34,7 @@ func (q *Queries) FindAgentByName(ctx context.Context, name string) (Agent, erro
 		&i.LastSeenAt,
 		&i.RegisteredAt,
 		&i.SessionGeneration,
+		&i.Engine,
 	)
 	return i, err
 }
@@ -41,7 +42,7 @@ func (q *Queries) FindAgentByName(ctx context.Context, name string) (Agent, erro
 const insertAgent = `-- name: InsertAgent :one
 INSERT INTO agents (name, token_hash, version, os, arch, tags, capacity, status)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation
+RETURNING id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation, engine
 `
 
 type InsertAgentParams struct {
@@ -80,6 +81,7 @@ func (q *Queries) InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent
 		&i.LastSeenAt,
 		&i.RegisteredAt,
 		&i.SessionGeneration,
+		&i.Engine,
 	)
 	return i, err
 }
@@ -113,6 +115,7 @@ SET version            = $2,
     arch               = $4,
     tags               = $5,
     capacity           = $6,
+    engine             = $7,
     status             = 'online',
     last_seen_at       = NOW(),
     session_generation = session_generation + 1
@@ -127,6 +130,7 @@ type UpdateAgentOnRegisterParams struct {
 	Arch     *string
 	Tags     []string
 	Capacity int32
+	Engine   string
 }
 
 // Bumps the per-agent session_generation counter atomically with
@@ -149,6 +153,7 @@ func (q *Queries) UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRe
 		arg.Arch,
 		arg.Tags,
 		arg.Capacity,
+		arg.Engine,
 	)
 	var session_generation int64
 	err := row.Scan(&session_generation)

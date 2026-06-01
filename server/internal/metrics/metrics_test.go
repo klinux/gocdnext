@@ -41,7 +41,7 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 		"gocdnext_log_archive_jobs_total",
 		"gocdnext_retention_dropped_log_partitions_total",
 		"gocdnext_webhook_deliveries_total",
-		"go_goroutines",          // runtime collector wired
+		"go_goroutines",           // runtime collector wired
 		"process_resident_memory", // process collector wired
 	}
 	for _, name := range want {

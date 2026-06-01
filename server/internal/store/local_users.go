@@ -41,10 +41,10 @@ const (
 
 // Local-auth sentinels.
 var (
-	ErrLocalUserNotFound   = errors.New("store: local user not found")
+	ErrLocalUserNotFound     = errors.New("store: local user not found")
 	ErrLocalPasswordMismatch = errors.New("store: local password mismatch")
-	ErrPasswordPolicy      = errors.New("store: password does not meet policy")
-	ErrLocalUserExists     = errors.New("store: local user already exists")
+	ErrPasswordPolicy        = errors.New("store: password does not meet policy")
+	ErrLocalUserExists       = errors.New("store: local user already exists")
 )
 
 // CreateLocalUser is the strict-insert variant of

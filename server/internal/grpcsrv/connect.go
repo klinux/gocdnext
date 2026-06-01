@@ -172,6 +172,17 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				continue
 			}
 			a.handleTestResultBatch(stream.Context(), log, sess, kind.TestResults)
+		case *gocdnextv1.AgentMessage_CleanupRunServicesResult:
+			// Revoked-session drop: a half-open stream from a
+			// register-fenced agent can keep emitting acks for
+			// runs the successor session has already taken over.
+			// Logging those would pollute the audit grep with
+			// phantom answers; mirrors the Log / TestResults
+			// policies above.
+			if sess.revoked.Load() {
+				continue
+			}
+			a.handleCleanupRunServicesResult(log, sess, kind.CleanupRunServicesResult)
 		default:
 			log.Warn("stream msg: unknown kind", "kind_type", kind)
 		}
@@ -365,6 +376,111 @@ func clampBytes(s string, max int) string {
 	return s[:max]
 }
 
+// handleCleanupRunServicesResult logs the agent's per-broadcast
+// ack for an earlier CleanupRunServices dispatch. Pure observability
+// surface — no DB write, no state change. The operator can grep
+// agent_uuid + run_id + deleted across the server log to audit
+// "did SOME agent in the targeted set actually delete pods for
+// this run, or did every dispatch land on a no-op agent?".
+//
+// This is BEST-EFFORT observability, NOT an audit grade. We don't
+// verify the agent was actually a target of the broadcast for
+// this run_id — a compromised/buggy agent can submit fake acks
+// and they will land in the log. The downstream defenses are:
+//
+//   - run_id is uuid-parsed + clamped (this function): a malformed
+//     id is dropped at Warn without flooding the audit view.
+//   - engine + error_message are clampBytes'd so an agent can't
+//     pump megabytes through the structured-log pipeline.
+//   - deleted < 0 is clamped to 0: a wraparound from int64→int32
+//     would otherwise be misclassified as "nothing to delete".
+//
+// Log levels by signal:
+//   - error_message non-empty → Warn (engine call failed; pods
+//     may still leak in the agent's namespace).
+//   - deleted > 0 → Info (positive confirmation a real deletion
+//     happened on this agent).
+//   - deleted == 0, no error → Debug (expected on Docker/Shell
+//     agents that received the broadcast through a filter gap,
+//     OR on a k8s agent whose namespace doesn't host this run's
+//     services — the broadcast hit a sibling who already cleaned).
+//
+// engine self-report vs session.Engine mismatch fires a Warn
+// tripwire: the proto comment markets this as the misconfiguration
+// signal ("a Docker agent's ack hitting this surface would signal
+// a filter regression upstream") so we actually surface it now.
+func (a *AgentService) handleCleanupRunServicesResult(log logger, sess *Session, r *gocdnextv1.CleanupRunServicesResult) {
+	rawRunID := r.GetRunId()
+	// Validate run_id BEFORE logging it verbatim. The raw string
+	// is clamped to 64 bytes for the validation-failure Warn so a
+	// 1 MiB payload can't dwarf real log lines on the way out.
+	runID, err := uuid.Parse(rawRunID)
+	if err != nil {
+		log.Warn("cleanup ack: bad run_id, dropping",
+			"agent_uuid", sess.AgentID,
+			"raw_run_id", clampBytes(rawRunID, cleanupAckRunIDMax),
+			"err", err)
+		return
+	}
+	// deleted is int32 on the wire; negative values would either
+	// come from a buggy agent (cast from int64 in agent code) or
+	// from a wire-protocol fuzzer. The proto says "deleted count"
+	// — negative is meaningless. Clamp to 0 so the switch below
+	// classifies it as "nothing to delete" with a Warn signal,
+	// not as a happy "deleted N items" event.
+	deleted := r.GetDeleted()
+	negativeDeleted := deleted < 0
+	if negativeDeleted {
+		deleted = 0
+	}
+	// engine + error_message are agent-supplied strings. Clamp to
+	// a sane ceiling so a buggy or malicious agent can't push
+	// megabytes through the structured-log pipeline.
+	engineName := clampBytes(r.GetEngine(), cleanupAckEngineMax)
+	errMsg := clampBytes(r.GetErrorMessage(), cleanupAckErrorMax)
+	// Engine tripwire: if the agent self-reports a different
+	// engine name than the one it registered with, that signals
+	// either an in-process Engine swap mid-stream OR a forged
+	// payload. Either way we want operator visibility.
+	if sess.Engine != "" && engineName != "" && engineName != sess.Engine {
+		log.Warn("cleanup ack: engine mismatch vs session register",
+			"agent_uuid", sess.AgentID, "run_id", runID,
+			"reported_engine", engineName, "session_engine", sess.Engine)
+	}
+	switch {
+	case errMsg != "":
+		log.Warn("cleanup ack: engine reported error",
+			"agent_uuid", sess.AgentID, "run_id", runID,
+			"deleted", deleted, "engine", engineName,
+			"err", errMsg)
+	case negativeDeleted:
+		log.Warn("cleanup ack: negative deleted count, clamped to 0",
+			"agent_uuid", sess.AgentID, "run_id", runID,
+			"raw_deleted", r.GetDeleted(), "engine", engineName)
+	case deleted > 0:
+		log.Info("cleanup ack",
+			"agent_uuid", sess.AgentID, "run_id", runID,
+			"deleted", deleted, "engine", engineName)
+	default:
+		log.Debug("cleanup ack: nothing to delete",
+			"agent_uuid", sess.AgentID, "run_id", runID, "engine", engineName)
+	}
+}
+
+// Ceilings for agent-supplied strings on CleanupRunServicesResult.
+// Engine names are short identifiers ("kubernetes", "docker"); 64
+// bytes is 4× the longest real one. Error messages can carry an
+// apiserver response blob — 4 KiB matches what we tolerate on test
+// failure fields and keeps a single line readable in operator log
+// scans without blowing the budget on a runaway agent. run_id is
+// a UUID (36 chars); 64 covers it with slack for the malformed-id
+// Warn payload.
+const (
+	cleanupAckRunIDMax  = 64
+	cleanupAckEngineMax = 64
+	cleanupAckErrorMax  = 4 * 1024
+)
+
 // handleJobResult flips the job terminal, cascades into stage + run, releases
 // the agent's session capacity, and nudges the scheduler to pick up the next
 // stage when the run keeps going. All errors surface as warnings — the stream
@@ -513,6 +629,42 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 
 	if comp.RunCompleted {
 		a.checksReporter.ReportRunCompleted(ctx, comp.RunID, comp.RunStatus)
+		// Run-scoped service teardown. Broadcast to EVERY agent
+		// that ran a job of this run — services come up on the
+		// agent that hosted the first job needing them, and that
+		// engine type may differ from later jobs' agents when the
+		// pipeline mixes `tags:` / `agent:` profiles. Targeting
+		// only the agent of the final job (an earlier design)
+		// silently leaked k8s pods when the final job happened to
+		// run on a Docker engine.
+		//
+		// Cleanup is idempotent per-engine: k8s does the label-
+		// selector delete (multi-agent races resolve via NotFound);
+		// docker/shell return (0, nil). Cheap to send to all.
+		//
+		// hasServices is a cheap pre-flight: pipelines without a
+		// `services:` block skip the dispatch entirely (no API
+		// list, no agent traffic).
+		// Cleanup decision + dispatch run in a goroutine with a
+		// fresh Background context so a stream drop right after
+		// the JobResult doesn't kill the cleanup work. Same logic
+		// the Cancel HTTP handler uses (actions.go) — post-commit
+		// side effects must outlive the originating request /
+		// stream lifecycle.
+		runID := comp.RunID
+		go func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			hasServices, hsErr := a.store.RunHasServices(cleanupCtx, runID)
+			if hsErr != nil {
+				log.Warn("cleanup run services: has-services check failed; dispatching anyway",
+					"run_id", runID, "err", hsErr)
+				hasServices = true // fail-open: better one extra List than leak
+			}
+			if hasServices {
+				a.dispatchRunServiceCleanup(cleanupCtx, log, runID)
+			}
+		}()
 	}
 
 	// Wake the scheduler so it dispatches the next stage without waiting for
@@ -547,6 +699,105 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 // flag and submits the job to the archiver when the result is true.
 // Always nil-safe — when WithLogArchiver wasn't called the function
 // short-circuits before any DB lookup.
+// dispatchRunServiceCleanup broadcasts CleanupRunServices to a wide
+// target set so the cleanup actually executes wherever the k8s
+// pods live:
+//
+//   - Agents that ran ANY job of this run (ListAgentsForRun) —
+//     the natural targets, since one of them brought up the pods.
+//     They may be offline by terminal time, though.
+//   - Plus every currently-connected agent (SessionStore.AllAgentIDs).
+//     Covers the case where the original creator disconnected
+//     and a different k8s agent of the cluster is online. Pod IPs
+//     are cluster-routable in k8s, so any agent's k8s engine sees
+//     the same pods via label selector.
+//
+// Set dedup'd before dispatch — Dispatch is cheap per-agent but
+// no need to send the same message twice to the same session.
+//
+// Idempotency: every engine's CleanupRunServices is a no-op on an
+// empty selector match. Agents that race the delete resolve via
+// k8s NotFound (treated as success). Docker/Shell agents return
+// (0, nil) — caveat: if NONE of the dispatched agents have a k8s
+// engine, the cleanup masquerades as success while pods leak. The
+// reaper-style fallback is documented as a known limitation; in
+// any practical k8s deployment at least one agent will be k8s.
+func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger, runID uuid.UUID) {
+	ranAgents, err := a.store.ListAgentsForRun(ctx, runID)
+	if err != nil {
+		log.Warn("cleanup run services: list agents failed; continuing with connected-agents only",
+			"run_id", runID, "err", err)
+	}
+	// Filter to k8s-capable agents — Docker/Shell engines no-op the
+	// cleanup, so broadcasting to them at scale wastes wire + log
+	// noise without doing useful work. Empty-engine agents (legacy
+	// pre-v0.4.35 builds) still pass the filter so a rolling upgrade
+	// window doesn't lose cleanup coverage.
+	connected := a.sessions.AllAgentIDs("kubernetes")
+
+	seen := make(map[uuid.UUID]struct{}, len(ranAgents)+len(connected))
+	targets := make([]uuid.UUID, 0, len(ranAgents)+len(connected))
+	for _, id := range ranAgents {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		targets = append(targets, id)
+	}
+	for _, id := range connected {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		targets = append(targets, id)
+	}
+	if len(targets) == 0 {
+		log.Warn("cleanup run services: no targets (no agents ran the run AND none connected); pods may leak",
+			"run_id", runID)
+		return
+	}
+
+	msg := &gocdnextv1.ServerMessage{
+		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
+			CleanupRunServices: &gocdnextv1.CleanupRunServices{
+				RunId: runID.String(),
+			},
+		},
+	}
+	var ok int
+	for _, id := range targets {
+		if err := a.sessions.Dispatch(id, msg); err != nil {
+			// ErrSessionBusy is operationally interesting — it
+			// means the agent's per-session send queue is full
+			// (16 slots). A burst of run-terminal events can
+			// generate enough cleanup broadcasts to fill it, and
+			// a Debug-level log makes this silent in production
+			// (Debug is OFF by default) — exactly when the
+			// operator most needs to know "your agent dropped
+			// the cleanup broadcast". ErrNoSession is benign
+			// (the targeted agent is just offline) and stays
+			// Debug to keep the noise floor low.
+			if errors.Is(err, ErrSessionBusy) {
+				log.Warn("cleanup run services: agent send queue saturated; pods may leak",
+					"run_id", runID, "agent_id", id, "err", err)
+			} else {
+				log.Debug("cleanup run services: dispatch to agent failed",
+					"run_id", runID, "agent_id", id, "err", err)
+			}
+			continue
+		}
+		ok++
+	}
+	log.Info("cleanup run services dispatched",
+		"run_id", runID,
+		"ran_count", len(ranAgents), "connected_count", len(connected),
+		"targets", len(targets), "dispatched", ok)
+	if ok == 0 {
+		log.Warn("cleanup run services: ALL dispatches failed; pods may leak until manual cleanup",
+			"run_id", runID, "targets", len(targets))
+	}
+}
+
 func (a *AgentService) maybeEnqueueArchive(ctx context.Context, log logger, jobRunID uuid.UUID) {
 	if a.logArchiver == nil {
 		return

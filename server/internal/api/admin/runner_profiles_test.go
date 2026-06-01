@@ -138,8 +138,8 @@ func TestRunnerProfiles_DeleteBlockedByActiveRun(t *testing.T) {
 	apply, err := s.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug: "demo",
 		Pipelines: []*domain.Pipeline{{
-			Name:   "p1",
-			Stages: []string{"build"},
+			Name:      "p1",
+			Stages:    []string{"build"},
 			Materials: []domain.Material{{Type: domain.MaterialManual, Fingerprint: "manual-1"}},
 			Jobs: []domain.Job{{
 				Name: "build", Stage: "build", Profile: "still-running",
@@ -184,8 +184,8 @@ func TestRunnerProfiles_DeleteBlockedWhenInUse(t *testing.T) {
 	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug: "demo",
 		Pipelines: []*domain.Pipeline{{
-			Name:   "p1",
-			Stages: []string{"build"},
+			Name:      "p1",
+			Stages:    []string{"build"},
 			Materials: []domain.Material{{Type: domain.MaterialManual, Fingerprint: "manual-1"}},
 			Jobs: []domain.Job{{
 				Name: "build", Stage: "build", Profile: "in-use",

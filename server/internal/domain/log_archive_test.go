@@ -9,11 +9,11 @@ import (
 func TestEffectiveLogArchive(t *testing.T) {
 	tt := []bool{true, false}
 	tests := []struct {
-		name        string
-		policy      domain.LogArchivePolicy
-		project     *bool // nil = no override
-		hasStore    bool
-		want        bool
+		name     string
+		policy   domain.LogArchivePolicy
+		project  *bool // nil = no override
+		hasStore bool
+		want     bool
 	}{
 		{name: "off-disables-everything", policy: domain.LogArchiveOff, hasStore: true, want: false},
 		{name: "off-ignores-project-on", policy: domain.LogArchiveOff, project: &tt[0], hasStore: true, want: false},

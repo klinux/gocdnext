@@ -1,5 +1,5 @@
 -- name: FindAgentByName :one
-SELECT id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation
+SELECT id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation, engine
 FROM agents
 WHERE name = $1
 LIMIT 1;
@@ -7,7 +7,7 @@ LIMIT 1;
 -- name: InsertAgent :one
 INSERT INTO agents (name, token_hash, version, os, arch, tags, capacity, status)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation;
+RETURNING id, name, token_hash, version, os, arch, tags, capacity, status, last_seen_at, registered_at, session_generation, engine;
 
 -- name: UpdateAgentOnRegister :one
 -- Bumps the per-agent session_generation counter atomically with
@@ -28,6 +28,7 @@ SET version            = $2,
     arch               = $4,
     tags               = $5,
     capacity           = $6,
+    engine             = $7,
     status             = 'online',
     last_seen_at       = NOW(),
     session_generation = session_generation + 1

@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"unicode"
 
-	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
 // runPlugin executes a plugin task — the container's own

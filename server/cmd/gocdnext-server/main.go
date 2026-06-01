@@ -20,8 +20,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for goose
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for goose
 	"github.com/pressly/goose/v3"
 	"google.golang.org/grpc"
 
@@ -35,15 +35,15 @@ import (
 	pluginsapi "github.com/gocdnext/gocdnext/server/internal/api/plugins"
 	projectsapi "github.com/gocdnext/gocdnext/server/internal/api/projects"
 	runsapi "github.com/gocdnext/gocdnext/server/internal/api/runs"
-	"github.com/gocdnext/gocdnext/server/internal/auth"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
+	"github.com/gocdnext/gocdnext/server/internal/auth"
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/config"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
-	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
@@ -94,10 +94,10 @@ func runMigrations(dsn string, log *slog.Logger) error {
 // rides the same JSON stream as the rest of boot output.
 type gooseSlog struct{ log *slog.Logger }
 
-func (g gooseSlog) Printf(format string, v ...any)    { g.log.Info(fmt.Sprintf(format, v...)) }
-func (g gooseSlog) Println(v ...any)                  { g.log.Info(fmt.Sprint(v...)) }
-func (g gooseSlog) Fatalf(format string, v ...any)    { g.log.Error(fmt.Sprintf(format, v...)) }
-func (g gooseSlog) Fatal(v ...any)                    { g.log.Error(fmt.Sprint(v...)) }
+func (g gooseSlog) Printf(format string, v ...any) { g.log.Info(fmt.Sprintf(format, v...)) }
+func (g gooseSlog) Println(v ...any)               { g.log.Info(fmt.Sprint(v...)) }
+func (g gooseSlog) Fatalf(format string, v ...any) { g.log.Error(fmt.Sprintf(format, v...)) }
+func (g gooseSlog) Fatal(v ...any)                 { g.log.Error(fmt.Sprint(v...)) }
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 var Version = "dev"
@@ -253,14 +253,14 @@ func main() {
 	// one instance means connection-pool churn stays low when both
 	// paths fire close together.
 	// MultiFetcher dispatches to GitHub / GitLab / Bitbucket by
-// scm.Provider, so the same instance covers every provider the
-// webhook + apply paths will ever see. Wires the store as the
-// CredentialResolver so org-level scm_credentials (set in
-// /settings/integrations) fill in when a per-project auth_ref
-// is empty. The local variable name stays "gitHubFetcher" to
-// minimise downstream churn; it's a MultiFetcher now but
-// backwards-compat at the call sites.
-gitHubFetcher := &configsync.MultiFetcher{
+	// scm.Provider, so the same instance covers every provider the
+	// webhook + apply paths will ever see. Wires the store as the
+	// CredentialResolver so org-level scm_credentials (set in
+	// /settings/integrations) fill in when a per-project auth_ref
+	// is empty. The local variable name stays "gitHubFetcher" to
+	// minimise downstream churn; it's a MultiFetcher now but
+	// backwards-compat at the call sites.
+	gitHubFetcher := &configsync.MultiFetcher{
 		Resolver:  st,
 		GitHubApp: vcsRegistry,
 		Logger:    logger,

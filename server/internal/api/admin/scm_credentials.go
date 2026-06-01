@@ -19,14 +19,14 @@ import (
 // "glpat-…abc1" without flashing the full token; the full
 // plaintext never leaves the server.
 type scmCredentialDTO struct {
-	ID              string `json:"id"`
-	Provider        string `json:"provider"`
-	Host            string `json:"host"`
-	APIBase         string `json:"api_base,omitempty"`
-	DisplayName     string `json:"display_name,omitempty"`
-	AuthRefPreview  string `json:"auth_ref_preview,omitempty"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	ID             string `json:"id"`
+	Provider       string `json:"provider"`
+	Host           string `json:"host"`
+	APIBase        string `json:"api_base,omitempty"`
+	DisplayName    string `json:"display_name,omitempty"`
+	AuthRefPreview string `json:"auth_ref_preview,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 type scmCredentialsResponse struct {

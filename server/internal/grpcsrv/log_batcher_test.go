@@ -25,10 +25,10 @@ type recordingSink struct {
 }
 
 type recordedBatch struct {
-	JobID    uuid.UUID
-	AgentID  uuid.UUID
-	Attempt  int32
-	Lines    []store.LogLine
+	JobID   uuid.UUID
+	AgentID uuid.UUID
+	Attempt int32
+	Lines   []store.LogLine
 }
 
 func (r *recordingSink) BulkInsertLogLinesForJob(

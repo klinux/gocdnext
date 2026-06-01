@@ -59,14 +59,14 @@ type BootstrapVCSIntegration struct {
 // ciphertext (the UI renders stored secrets as "••••" and only
 // sends fresh values when the admin types new ones).
 type UpsertVCSIntegrationInput struct {
-	Name           string
-	Kind           string
-	DisplayName    string
-	AppID          *int64
-	PrivateKeyPEM  []byte // plaintext; empty = preserve existing
-	WebhookSecret  string // plaintext; empty = preserve existing
-	APIBase        string
-	Enabled        bool
+	Name          string
+	Kind          string
+	DisplayName   string
+	AppID         *int64
+	PrivateKeyPEM []byte // plaintext; empty = preserve existing
+	WebhookSecret string // plaintext; empty = preserve existing
+	APIBase       string
+	Enabled       bool
 }
 
 // ListConfiguredVCSIntegrations is the admin-page feed.

@@ -89,8 +89,8 @@ func ParsePushEvent(body []byte) (*PushEvent, error) {
 		Push struct {
 			Changes []struct {
 				New *struct {
-					Type string `json:"type"` // "branch" | "tag"
-					Name string `json:"name"`
+					Type   string `json:"type"` // "branch" | "tag"
+					Name   string `json:"name"`
 					Target struct {
 						Hash    string `json:"hash"`
 						Message string `json:"message"`

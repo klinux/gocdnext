@@ -60,6 +60,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 //   - status (optional filter, any domain.RunStatus value)
 //   - cause (optional filter: webhook | pull_request | upstream | manual)
 //   - project (optional project slug filter)
+//
 // Response includes `total` alongside the slice so the UI can
 // render "N of M" without a second call.
 func (h *Handler) RunsGlobal(w http.ResponseWriter, r *http.Request) {

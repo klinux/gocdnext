@@ -21,6 +21,8 @@ type Agent struct {
 	LastSeenAt        pgtype.Timestamptz
 	RegisteredAt      pgtype.Timestamptz
 	SessionGeneration int64
+	// Announced execution engine — kubernetes/docker/shell. Empty = unknown / legacy. Set on every Register; filters CleanupRunServices target set to k8s-capable agents.
+	Engine string
 }
 
 type ApiToken struct {
@@ -267,6 +269,8 @@ type Run struct {
 	CreatedAt   pgtype.Timestamptz
 	// Operator-visible reason a queued run is not advancing. Format key:detail. Cleared when the run leaves queued.
 	QueueReason *string
+	// Snapshot of pipeline.definition->Services non-emptiness at run create. Drives CleanupRunServices dispatch; immutable post-insert.
+	HasServices bool
 }
 
 type RunnerProfile struct {

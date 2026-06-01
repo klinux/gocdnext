@@ -257,15 +257,15 @@ func TestCatalog_Validate_EmptyWithOnAllOptionalSpec(t *testing.T) {
 
 func TestShortNameForLookup(t *testing.T) {
 	cases := map[string]string{
-		"node":                            "node",
-		"gocdnext/node":                   "node",
-		"gocdnext/node@v1":                "node",
-		"gocdnext/node:v1":                "node",
-		"gocdnext/node@sha256:abc":        "node",
-		"ghcr.io/acme/foo@v1":             "foo",
-		"ghcr.io/acme/foo@sha256:abc":     "foo",
-		"registry.io:5000/acme/foo@v1":    "foo",
-		"registry.io:5000/acme/foo:v1":    "foo",
+		"node":                         "node",
+		"gocdnext/node":                "node",
+		"gocdnext/node@v1":             "node",
+		"gocdnext/node:v1":             "node",
+		"gocdnext/node@sha256:abc":     "node",
+		"ghcr.io/acme/foo@v1":          "foo",
+		"ghcr.io/acme/foo@sha256:abc":  "foo",
+		"registry.io:5000/acme/foo@v1": "foo",
+		"registry.io:5000/acme/foo:v1": "foo",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

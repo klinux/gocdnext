@@ -18,10 +18,20 @@ FROM runs
 WHERE pipeline_id = $1;
 
 -- name: InsertRun :one
+-- has_services is a snapshot of `pipeline.Services` non-emptiness
+-- (migration 00036). Stamped here so the run-terminal cleanup
+-- cascade can decide whether to broadcast CleanupRunServices
+-- without re-reading the (possibly-drifted) current pipeline
+-- definition. The Go layer (store.insertRunSkeleton) computes the
+-- value from the SAME `domain.Pipeline` it just used to materialise
+-- stages + jobs — without this, a concurrent ApplyProject between
+-- the Go decode and a re-read inside SQL could give us mismatched
+-- snapshots under READ COMMITTED.
 INSERT INTO runs (
-    pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by
+    pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
+    has_services
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6
+    $1, $2, $3, $4, 'queued', $5, $6, $7
 )
 RETURNING id, pipeline_id, counter, cause, status, created_at;
 

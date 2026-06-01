@@ -37,9 +37,9 @@ func inline(name, body string) entry {
 func TestParseRepoURL(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		in            string
-		owner, repo   string
-		expectErr     bool
+		in          string
+		owner, repo string
+		expectErr   bool
 	}{
 		{"https://github.com/org/repo", "org", "repo", false},
 		{"https://github.com/org/repo.git", "org", "repo", false},

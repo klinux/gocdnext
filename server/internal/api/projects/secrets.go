@@ -216,4 +216,3 @@ func (h *Handler) ensureSecretsConfigured(w http.ResponseWriter) bool {
 	}
 	return true
 }
-

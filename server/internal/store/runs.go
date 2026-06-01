@@ -140,6 +140,12 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		return RunCreated{}, fmt.Errorf("store: create run: counter: %w", err)
 	}
 
+	// has_services is computed from the SAME def we just decoded —
+	// not re-read inside the SQL — so an ApplyProject racing this
+	// tx can't make the snapshot disagree with the stages/jobs we
+	// materialise below. Without this care, READ COMMITTED would
+	// let two SELECTs against pipelines.definition return different
+	// values within the same store call.
 	runRow, err := q.InsertRun(ctx, db.InsertRunParams{
 		PipelineID:  pipelineRow.ID,
 		Counter:     counter,
@@ -147,6 +153,7 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		CauseDetail: in.CauseDetail,
 		Revisions:   in.Revisions,
 		TriggeredBy: nullableString(in.TriggeredBy),
+		HasServices: len(def.Services) > 0,
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)

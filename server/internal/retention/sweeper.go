@@ -345,7 +345,7 @@ type SweepStats struct {
 	// pushed back into the archiver queue. OrphansDeleted = jobs
 	// whose URI was stamped but log_lines rows were still around;
 	// the rows have been dropped on this tick.
-	ArchivesReSubmitted int
+	ArchivesReSubmitted   int
 	ArchiveOrphansDeleted int
 
 	// Cache sweep (piggybacks on the same tick — no separate

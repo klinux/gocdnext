@@ -130,6 +130,7 @@ func normalizeGitURL(raw string) string {
 //   - "serial": at most one run executes at a time. Additional
 //     runs stay queued until the current one reaches a terminal
 //     status, then the next queued one dispatches.
+//
 // Empty string parses as parallel so existing pipelines that
 // never declared the field behave exactly as they did before.
 const (
@@ -138,14 +139,14 @@ const (
 )
 
 type Pipeline struct {
-	ID          string
-	ProjectID   string
-	Name        string
-	Materials   []Material
-	Stages      []string
-	Jobs        []Job
-	Variables   map[string]string
-	Template    string
+	ID        string
+	ProjectID string
+	Name      string
+	Materials []Material
+	Stages    []string
+	Jobs      []Job
+	Variables map[string]string
+	Template  string
 	// Concurrency controls whether multiple runs of this pipeline
 	// can execute side by side. See the constants above.
 	Concurrency string
@@ -371,12 +372,12 @@ func (r ResourceSpec) IsZero() bool {
 }
 
 type Job struct {
-	Name      string
-	Stage     string
-	Image     string
+	Name  string
+	Stage string
+	Image string
 	// Profile names a runner_profiles row resolved at apply time.
 	// Empty = "any agent, any defaults" (legacy behaviour).
-	Profile   string
+	Profile string
 	// Resources is the user-declared compute envelope. Profile
 	// defaults fill the empty fields; profile.max caps non-empty
 	// fields; values surviving validation flow into the runtime
@@ -446,7 +447,7 @@ type Job struct {
 // dev/demo pipelines). `Description` is surfaced in the UI as
 // the prompt the approver sees before clicking Approve/Reject.
 type ApprovalSpec struct {
-	Approvers   []string
+	Approvers []string
 	// ApproverGroups are group names (not ids) whose members can
 	// approve the gate in addition to the individual Approvers
 	// list. Names (not ids) so renames propagate cleanly without
