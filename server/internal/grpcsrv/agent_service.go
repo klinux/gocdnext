@@ -369,13 +369,19 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 //  2. Validate (run_id, job_id) pair — belongs to a real run; agent who
 //     owns the session also owns the job (checked via agent_id on the
 //     job_run row).
-//  3. For each path, generate a UUID storage_key, insert a pending row,
-//     sign a PUT URL.
-//
-// Partial failure: if path N fails, paths 0..N-1 leave pending rows in
-// the DB. The sweeper will reclaim them after their TTL (or a future
-// `pending_older_than(1h)` sweep) — don't unwind here; the agent can
-// retry idempotently by asking for a fresh ticket per path.
+//  3. Dedupe paths by canonical form (NormalizeArtifactPath — trims
+//     trailing slashes) so a YAML that lists `dist` and `dist/`
+//     doesn't try to plant two rows that would collide on the
+//     partial unique index (migration 00035).
+//  4. Insert every pending row in ONE transaction via
+//     InsertPendingArtifactsBatch — partial-loop failures roll back
+//     cleanly instead of leaking orphan pending rows the operator
+//     would see in the UI as ghost uploads.
+//  5. Sign PUT URLs OUTSIDE the transaction (no need to hold a tx
+//     open across an HTTP round-trip to S3/GCS). If signing fails,
+//     the pending rows for the batch leak until the sweeper's
+//     pending-TTL branch reaps them — bounded by the same grace
+//     window as the existing 'deleting' sweep.
 func (a *AgentService) RequestArtifactUpload(ctx context.Context, req *gocdnextv1.RequestArtifactUploadRequest) (*gocdnextv1.RequestArtifactUploadResponse, error) {
 	if a.artifactStore == nil {
 		return nil, status.Error(codes.Unimplemented, "artifact backend not configured")
@@ -423,37 +429,64 @@ func (a *AgentService) RequestArtifactUpload(ctx context.Context, req *gocdnextv
 	}
 
 	expiresAt := time.Now().Add(a.artifactDefaultRetention)
-	tickets := make([]*gocdnextv1.ArtifactUploadTicket, 0, len(req.GetPaths()))
+
+	// Dedupe paths by canonical form, preserving the FIRST occurrence's
+	// declared shape so the ticket round-trips the operator's typing
+	// back to the agent untouched. Two-pass loop because we want
+	// `dist/` to win over a later `dist` (insertion order) AND we
+	// want to refuse empty paths as a hard error rather than silently
+	// dropping them on dedupe.
+	seen := make(map[string]struct{}, len(req.GetPaths()))
+	dedupedPaths := make([]string, 0, len(req.GetPaths()))
 	for _, p := range req.GetPaths() {
 		if p == "" {
 			return nil, status.Error(codes.InvalidArgument, "empty path in paths[]")
 		}
-		storageKey := "run/" + runID.String() + "/job/" + jobRunID.String() + "/" + uuid.NewString()
-		if _, err := a.store.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		canon := store.NormalizeArtifactPath(p)
+		if _, dup := seen[canon]; dup {
+			continue
+		}
+		seen[canon] = struct{}{}
+		dedupedPaths = append(dedupedPaths, p)
+	}
+
+	// Build the batch + remember storage keys so the post-tx loop
+	// below can sign URLs against the same keys we just persisted.
+	ins := make([]store.InsertPendingArtifact, len(dedupedPaths))
+	storageKeys := make([]string, len(dedupedPaths))
+	for i, p := range dedupedPaths {
+		storageKeys[i] = "run/" + runID.String() + "/job/" + jobRunID.String() + "/" + uuid.NewString()
+		ins[i] = store.InsertPendingArtifact{
 			RunID:      runID,
 			JobRunID:   jobRunID,
 			PipelineID: pipelineID,
 			ProjectID:  projectID,
 			Path:       p,
-			StorageKey: storageKey,
+			StorageKey: storageKeys[i],
 			ExpiresAt:  &expiresAt,
-		}); err != nil {
-			a.log.Error("artifact upload: insert pending failed", "path", p, "err", err)
-			return nil, status.Error(codes.Internal, "persist artifact")
 		}
-		signed, err := a.artifactStore.SignedPutURL(ctx, storageKey, a.artifactPutURLTTL)
+	}
+	if _, err := a.store.InsertPendingArtifactsBatch(ctx, ins); err != nil {
+		a.log.Error("artifact upload: batch insert failed", "err", err)
+		return nil, status.Error(codes.Internal, "persist artifacts")
+	}
+
+	tickets := make([]*gocdnextv1.ArtifactUploadTicket, 0, len(dedupedPaths))
+	for i, p := range dedupedPaths {
+		signed, err := a.artifactStore.SignedPutURL(ctx, storageKeys[i], a.artifactPutURLTTL)
 		if err != nil {
 			a.log.Error("artifact upload: sign put failed", "path", p, "err", err)
 			return nil, status.Error(codes.Internal, "sign url")
 		}
 		tickets = append(tickets, &gocdnextv1.ArtifactUploadTicket{
 			Path:       p,
-			StorageKey: storageKey,
+			StorageKey: storageKeys[i],
 			PutUrl:     signed.URL,
 			ExpiresAt:  timestamppb.New(signed.ExpiresAt),
 		})
 	}
 	a.log.Info("artifact upload tickets issued",
-		"session", sess.ID, "run_id", runID, "job_id", jobRunID, "count", len(tickets))
+		"session", sess.ID, "run_id", runID, "job_id", jobRunID,
+		"requested", len(req.GetPaths()), "deduped", len(tickets))
 	return &gocdnextv1.RequestArtifactUploadResponse{Tickets: tickets}, nil
 }

@@ -37,26 +37,57 @@ func NewArtifactUploader(client gocdnextv1.AgentServiceClient, sessionID string,
 	return &ArtifactUploader{client: client, sessionID: sessionID, http: httpClient}
 }
 
+// canonicalPath strips trailing slashes so `dist` and `dist/`
+// collapse to the same key for the agent-side dedupe. Mirrors the
+// server's store.NormalizeArtifactPath — kept inline (4 lines)
+// instead of importing the server module from the agent.
+func canonicalPath(p string) string {
+	for len(p) > 1 && p[len(p)-1] == '/' {
+		p = p[:len(p)-1]
+	}
+	return p
+}
+
 // Upload implements runner.ArtifactUploader.
+//
+// Paths are deduped by canonical form BEFORE the RPC so the server's
+// own dedupe (added with the partial-unique-index in migration 00035)
+// receives a stable count and returns exactly len(unique) tickets.
+// Without this, a YAML that listed `dist` and `dist/` would land
+// here as 2 paths, the server would return 1 ticket, and the
+// `len(tickets) != len(paths)` check below would refuse the whole
+// upload — silently failing a job for a duplicate-path operator
+// typo. First-occurrence shape wins (matches server) so the
+// returned ArtifactRef.Path round-trips the YAML's exact text.
 func (u *ArtifactUploader) Upload(ctx context.Context, workDir, runID, jobID string, paths []string) ([]*gocdnextv1.ArtifactRef, error) {
 	if len(paths) == 0 {
 		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(paths))
+	unique := make([]string, 0, len(paths))
+	for _, p := range paths {
+		canon := canonicalPath(p)
+		if _, dup := seen[canon]; dup {
+			continue
+		}
+		seen[canon] = struct{}{}
+		unique = append(unique, p)
 	}
 
 	resp, err := u.client.RequestArtifactUpload(ctx, &gocdnextv1.RequestArtifactUploadRequest{
 		SessionId: u.sessionID,
 		RunId:     runID,
 		JobId:     jobID,
-		Paths:     paths,
+		Paths:     unique,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("request upload: %w", err)
 	}
-	if got := len(resp.GetTickets()); got != len(paths) {
-		return nil, fmt.Errorf("server returned %d tickets for %d paths", got, len(paths))
+	if got := len(resp.GetTickets()); got != len(unique) {
+		return nil, fmt.Errorf("server returned %d tickets for %d paths", got, len(unique))
 	}
 
-	refs := make([]*gocdnextv1.ArtifactRef, 0, len(paths))
+	refs := make([]*gocdnextv1.ArtifactRef, 0, len(unique))
 	for _, tkt := range resp.GetTickets() {
 		ref, err := u.uploadOne(ctx, workDir, tkt)
 		if err != nil {

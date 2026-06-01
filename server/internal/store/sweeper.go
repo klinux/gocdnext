@@ -276,6 +276,18 @@ func (s *Store) requeueStaleJob(
 	if err := q.DeleteTestResultsByJobRun(ctx, row.ID); err != nil {
 		return fmt.Errorf("delete test results: %w", err)
 	}
+	// Artifacts get the same treatment, but as a soft-delete so the
+	// sweeper can clean up the underlying storage objects on its next
+	// pass (issue #3 — without this, a reaper requeue left the prior
+	// attempt's artifacts as 'ready', producing duplicate rows for
+	// the same path the moment the new attempt re-uploaded, AND
+	// pointing downstream consumers at storage about to be swept).
+	// Partial-unique-index in migration 00035 makes the new attempt's
+	// insert fail if this retire is missed, so the constraint catches
+	// the bug at the schema layer too.
+	if err := q.RetireArtifactsByJobRun(ctx, row.ID); err != nil {
+		return fmt.Errorf("retire artifacts: %w", err)
+	}
 	if notify {
 		if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", RunQueuedChannel, fromPgUUID(row.RunID).String()); err != nil {
 			return fmt.Errorf("notify: %w", err)

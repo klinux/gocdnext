@@ -1058,6 +1058,352 @@ func TestReclaim_WipesTestResults(t *testing.T) {
 	}
 }
 
+// TestReclaim_RetiresArtifacts is the round-1 issue-#3 regression
+// test. Before the fix, requeueStaleJob deleted log_lines and
+// test_results but left ready artifacts intact — so a job that
+// completed once, got reclaimed by the reaper/fence, and ran
+// again would end up with TWO ready rows for the same path. The
+// downstream consumer's ListReadyArtifactsByRunAndJob would then
+// see both (or, in the lookup-race window between the two attempts,
+// see the stale ready row pointing at a storage object about to
+// be swept). Mirrors TestReclaim_WipesTestResults exactly — same
+// reclaim path, different table.
+func TestReclaim_RetiresArtifacts(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, runID := seedRunningAgentJob(t, pool)
+
+	// Look up pipeline + project ids — InsertPendingArtifact needs them.
+	var pipelineID, projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT r.pipeline_id, p.project_id
+		   FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+		  WHERE r.id = $1`, runID,
+	).Scan(&pipelineID, &projectID); err != nil {
+		t.Fatalf("lookup ids: %v", err)
+	}
+
+	// Seed two artifacts on the running attempt — simulate the prior
+	// upload that issue #3 says should be retired on reclaim.
+	expires := time.Now().Add(24 * time.Hour)
+	for _, p := range []string{"dist/", "logs/coverage.xml"} {
+		if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+			RunID:      runID,
+			JobRunID:   jobID,
+			PipelineID: pipelineID,
+			ProjectID:  projectID,
+			Path:       p,
+			StorageKey: uuid.NewString(),
+			ExpiresAt:  &expires,
+		}); err != nil {
+			t.Fatalf("seed artifact %q: %v", p, err)
+		}
+	}
+
+	// Reap via agent-offline path.
+	_, _ = pool.Exec(ctx, `UPDATE agents SET status='offline' WHERE id=$1`, agentID)
+	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if len(got) != 1 || got[0].Action != store.ReclaimActionRequeued {
+		t.Fatalf("expected 1 requeue, got %+v", got)
+	}
+
+	// All prior artifacts must be soft-deleted (deleted_at set,
+	// status flipped to 'deleting') so the new attempt can re-upload
+	// the same paths without the partial-unique-index (migration
+	// 00035) rejecting it, AND so ListReadyArtifactsByRunAndJob
+	// no longer surfaces the stale rows to a downstream consumer.
+	var active int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM artifacts WHERE job_run_id=$1 AND deleted_at IS NULL`, jobID,
+	).Scan(&active)
+	if active != 0 {
+		t.Fatalf("active artifacts after reclaim = %d, want 0 (all should be retired)", active)
+	}
+
+	var deleting int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM artifacts WHERE job_run_id=$1 AND status='deleting' AND deleted_at IS NOT NULL`, jobID,
+	).Scan(&deleting)
+	if deleting != 2 {
+		t.Fatalf("retired artifacts = %d, want 2", deleting)
+	}
+}
+
+// TestArtifact_PathNormalization — `dist/` and `dist` collapse to
+// the same canonical form on insert AND on lookup, so producer and
+// consumer YAMLs can legitimately disagree on the trailing slash.
+// Without normalization, the user's repro path (`packages/types/src/generated/`
+// in both places) would match by luck, but any divergence — common
+// when one job is hand-edited — would 0-row at dispatch time and
+// surface the misleading "no ready artefacts" error.
+func TestArtifact_PathNormalization(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+	var pipelineID, projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT r.pipeline_id, p.project_id
+		   FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+		  WHERE r.id = $1`, runID,
+	).Scan(&pipelineID, &projectID); err != nil {
+		t.Fatalf("lookup ids: %v", err)
+	}
+
+	// Insert with trailing slash; mark ready so the lookup can see it.
+	key := uuid.NewString()
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID:      runID,
+		JobRunID:   jobID,
+		PipelineID: pipelineID,
+		ProjectID:  projectID,
+		Path:       "dist/",
+		StorageKey: key,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := s.MarkArtifactReady(ctx, key, 100, "deadbeef"); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
+
+	// Stored canonical form is without the trailing slash.
+	var stored string
+	_ = pool.QueryRow(ctx,
+		`SELECT path FROM artifacts WHERE storage_key=$1`, key,
+	).Scan(&stored)
+	if stored != "dist" {
+		t.Fatalf("stored path = %q, want %q", stored, "dist")
+	}
+
+	// Look up with the trailing slash → finds it (consumer wrote it that way).
+	got, err := s.ListReadyArtifactsByRunAndJob(ctx, runID, "compile", []string{"dist/"})
+	if err != nil {
+		t.Fatalf("lookup slash: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("lookup with trailing slash got %d, want 1", len(got))
+	}
+
+	// Look up without the slash → also finds it (consumer wrote a different way).
+	got, err = s.ListReadyArtifactsByRunAndJob(ctx, runID, "compile", []string{"dist"})
+	if err != nil {
+		t.Fatalf("lookup no slash: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("lookup without trailing slash got %d, want 1", len(got))
+	}
+}
+
+// TestArtifact_PartialUniqueIndex_BlocksDuplicateActive locks in the
+// migration 00035 invariant — two active rows for the same
+// (job_run_id, path) are NOT allowed. The retire path soft-deletes
+// (sets deleted_at) so subsequent inserts on retry are fine, but a
+// raw double-insert without retirement must fail loudly so a future
+// regression in requeueStaleJob/RerunJob doesn't silently produce
+// the duplicate-row bug again.
+func TestArtifact_PartialUniqueIndex_BlocksDuplicateActive(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+	var pipelineID, projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT r.pipeline_id, p.project_id
+		   FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+		  WHERE r.id = $1`, runID,
+	).Scan(&pipelineID, &projectID); err != nil {
+		t.Fatalf("lookup ids: %v", err)
+	}
+
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID:      runID,
+		JobRunID:   jobID,
+		PipelineID: pipelineID,
+		ProjectID:  projectID,
+		Path:       "dist",
+		StorageKey: uuid.NewString(),
+	}); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	// Second insert with the same (job_run_id, path) — must fail.
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID:      runID,
+		JobRunID:   jobID,
+		PipelineID: pipelineID,
+		ProjectID:  projectID,
+		Path:       "dist",
+		StorageKey: uuid.NewString(),
+	}); err == nil {
+		t.Fatal("expected unique-index violation on duplicate active row, got nil")
+	}
+}
+
+// TestRerunJob_RetiresArtifacts — the manual-rerun path needs to
+// retire the prior attempt's artifacts the same way the reaper's
+// requeue does, so a rerun doesn't run into the partial-unique-
+// index on its re-upload.
+//
+// RerunJob is normally exercised through the HTTP handler tests in
+// api/runs, but those don't seed artifacts. Driving it directly
+// here keeps the store-level invariant under regression coverage
+// without dragging an HTTP harness into the store package.
+func TestRerunJob_RetiresArtifacts(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+
+	// Flip the run to terminal first — RerunJob refuses queued/
+	// running rows. Marking the job 'success' is enough for the
+	// stage cascade to land but the easier route is to flip jobs
+	// directly through the DB.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='success', finished_at=NOW() WHERE id=$1`, jobID,
+	); err != nil {
+		t.Fatalf("flip terminal: %v", err)
+	}
+
+	var pipelineID, projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT r.pipeline_id, p.project_id
+		   FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+		  WHERE r.id = $1`, runID,
+	).Scan(&pipelineID, &projectID); err != nil {
+		t.Fatalf("lookup ids: %v", err)
+	}
+
+	// Seed prior-attempt artifacts so the rerun's retire has something
+	// to act on.
+	expires := time.Now().Add(24 * time.Hour)
+	for _, p := range []string{"dist", "logs/coverage.xml"} {
+		if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+			RunID: runID, JobRunID: jobID,
+			PipelineID: pipelineID, ProjectID: projectID,
+			Path: p, StorageKey: uuid.NewString(), ExpiresAt: &expires,
+		}); err != nil {
+			t.Fatalf("seed artifact %q: %v", p, err)
+		}
+	}
+
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{JobRunID: jobID, TriggeredBy: "user:test"}); err != nil {
+		t.Fatalf("RerunJob: %v", err)
+	}
+
+	var active int
+	_ = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM artifacts WHERE job_run_id=$1 AND deleted_at IS NULL`, jobID,
+	).Scan(&active)
+	if active != 0 {
+		t.Fatalf("active artifacts after rerun = %d, want 0", active)
+	}
+}
+
+// TestRetireArtifactsByJobRun_ClearsPinned — pinned artifacts that
+// get retired (because the owning attempt died) must have pinned_at
+// cleared, otherwise the sweeper's pinned-skip guard would leave
+// the storage object orphan forever.
+func TestRetireArtifactsByJobRun_ClearsPinned(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+	var pipelineID, projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT r.pipeline_id, p.project_id
+		   FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+		  WHERE r.id = $1`, runID,
+	).Scan(&pipelineID, &projectID); err != nil {
+		t.Fatalf("lookup ids: %v", err)
+	}
+
+	// Seed a pinned artifact, then retire.
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID: runID, JobRunID: jobID,
+		PipelineID: pipelineID, ProjectID: projectID,
+		Path: "dist", StorageKey: uuid.NewString(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE artifacts SET pinned_at=NOW() WHERE job_run_id=$1`, jobID,
+	); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	if err := s.RetireArtifactsByJobRun(ctx, jobID); err != nil {
+		t.Fatalf("RetireArtifactsByJobRun: %v", err)
+	}
+
+	var pinned *time.Time
+	_ = pool.QueryRow(ctx,
+		`SELECT pinned_at FROM artifacts WHERE job_run_id=$1`, jobID,
+	).Scan(&pinned)
+	if pinned != nil {
+		t.Fatalf("pinned_at = %v, want NULL (retire must clear pinning)", *pinned)
+	}
+}
+
+// TestClaimArtifactsForSweep_ReapsStalePending — the new sweep
+// branch must claim pending rows older than the grace window. Guards
+// the orphan that the migration-00035 unique index would otherwise
+// turn into a permanent "can't re-upload this path" footgun.
+func TestClaimArtifactsForSweep_ReapsStalePending(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+	var pipelineID, projectID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT r.pipeline_id, p.project_id
+		   FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+		  WHERE r.id = $1`, runID,
+	).Scan(&pipelineID, &projectID); err != nil {
+		t.Fatalf("lookup ids: %v", err)
+	}
+
+	if _, err := s.InsertPendingArtifact(ctx, store.InsertPendingArtifact{
+		RunID: runID, JobRunID: jobID,
+		PipelineID: pipelineID, ProjectID: projectID,
+		Path: "dist", StorageKey: uuid.NewString(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Backdate created_at past the grace window.
+	if _, err := pool.Exec(ctx,
+		`UPDATE artifacts SET created_at = NOW() - INTERVAL '2 hours'
+		  WHERE job_run_id=$1`, jobID,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// Grace 60min; the row is 2h old → must be claimed.
+	claimed, err := s.ClaimArtifactsForSweep(ctx, 10, 60)
+	if err != nil {
+		t.Fatalf("ClaimArtifactsForSweep: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimed = %d, want 1 (stale pending must be reaped)", len(claimed))
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx,
+		`SELECT status FROM artifacts WHERE job_run_id=$1`, jobID,
+	).Scan(&status)
+	if status != "deleting" {
+		t.Fatalf("status = %q, want deleting", status)
+	}
+}
+
 func TestMarkAgentSeen_UpdatesLastSeenAt(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

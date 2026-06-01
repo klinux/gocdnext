@@ -24,8 +24,11 @@ WHERE id IN (
           OR
           (status = 'deleting'
               AND deleted_at < NOW() - make_interval(mins => $2::int))
+          OR
+          (status = 'pending'
+              AND created_at < NOW() - make_interval(mins => $2::int))
       )
-    ORDER BY COALESCE(expires_at, deleted_at)
+    ORDER BY COALESCE(expires_at, deleted_at, created_at)
     LIMIT $1
     FOR UPDATE SKIP LOCKED
 )
@@ -47,12 +50,22 @@ type ClaimArtifactsForSweepRow struct {
 // returns their storage keys so the sweeper can call Store.Delete and
 // then remove the DB row.
 //
-// Two populations get claimed:
+// Three populations get claimed:
 //  1. Freshly-expired rows: status='ready' AND expires_at < now() AND
 //     not pinned. Standard TTL sweep.
 //  2. Rows left in 'deleting' for longer than the grace window — the
 //     previous sweeper crashed between "marked deleting" and "storage
 //     delete + row removed". We pick those up and retry idempotently.
+//  3. Orphan pending rows older than the grace window — RequestArtifactUpload
+//     inserted a pending row, but the agent never confirmed (gRPC drop
+//     after server commit + before client got the ticket, SignedPutURL
+//     error mid-loop, agent process died between PUT and JobResult, or
+//     a duplicate path in the request that fell out of the dedupe).
+//     Without this branch, the partial-unique-index 00035 would refuse
+//     future inserts on the same (job_run_id, path) FOREVER. The grace
+//     window doubles as "wait long enough for a legitimate upload to
+//     finish" — the typical PUT completes well under a minute, so the
+//     sweeper's default (e.g. 30 min) leaves a comfortable margin.
 //
 // FOR UPDATE SKIP LOCKED makes this safe to run from multiple
 // schedulers/sweepers at once; each gets a disjoint batch.
@@ -708,4 +721,50 @@ func (q *Queries) RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64,
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const retireArtifactsByJobRun = `-- name: RetireArtifactsByJobRun :exec
+UPDATE artifacts
+SET status = 'deleting',
+    deleted_at = NOW(),
+    expires_at = NOW(),
+    -- Clear pinned_at: a pinned row that's retired (its job run died
+    -- or was reclaimed) shouldn't survive the sweep, but the
+    -- sweeper's pinned_at IS NULL guard would otherwise leave the
+    -- storage object orphan. Retire-time clear means the operator
+    -- can re-pin the new attempt's artifact if they still care;
+    -- the dead attempt's artifact is meaningless to preserve.
+    pinned_at = NULL
+WHERE job_run_id = $1 AND deleted_at IS NULL
+`
+
+// Soft-deletes every still-active artifact row attributed to a
+// job_run_id so a retry / reclaim / rerun can re-upload the same
+// paths without colliding with the prior attempt's rows. Called
+// from sweeper.requeueStaleJob and store.RerunJob in the same
+// transaction that bumps job_runs.attempt — same semantics as the
+// DeleteLogLinesByJob / DeleteTestResultsByJobRun calls already
+// there (issue #3).
+//
+// Flips status to 'deleting' so the sweeper picks the rows up via
+// its existing "stale 'deleting' rows" branch and removes the
+// storage objects too — without this, the orphaned S3/GCS object
+// has no DB row to GC it through and leaks until the bucket
+// lifecycle policy (if any) kicks in.
+//
+// deleted_at = NOW makes the row invisible to ListReadyArtifactsByRunAndJobName
+// (filters by deleted_at IS NULL), so the downstream's lookup sees
+// ONLY the new attempt's still-uploading rows — the moment the
+// new attempt's MarkArtifactReady commits, the downstream can
+// dispatch correctly. Without this, the lookup would see the old
+// ready row pointing at a soon-to-be-swept storage object and
+// happily hand the consumer a signed URL that 404s.
+//
+// expires_at = NOW shortens the sweeper's grace window for these
+// specific rows — they're not ordinary TTL expiries, the
+// predecessor attempt is over, no reason to wait the configured
+// retention before deleting.
+func (q *Queries) RetireArtifactsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, retireArtifactsByJobRun, jobRunID)
+	return err
 }
