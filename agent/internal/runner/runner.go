@@ -213,6 +213,22 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	}
 	defer servicesPhase.cleanup()
 
+	// Expand `{{ hash "..." }}` templates on cache keys BEFORE
+	// fetchCaches reads them. Workspace is materialised (checkout
+	// + artifact downloads already ran), so glob+sha256 resolves
+	// against the real tree. Plain literal keys (no `{{`) take
+	// the no-op fast path — see expandCacheKeys.
+	//
+	// Fail-loud: a parse error (server-agent skew) or zero-match
+	// glob aborts the job. A silent "couldn't expand the key" would
+	// let two distinct lockfiles land on the same cache key — the
+	// exact regression the feature is shipping to prevent.
+	if err := r.expandCacheKeys(ctx, scriptWorkDir, a, &seq); err != nil {
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
+			"cache key expansion: "+err.Error())
+		return
+	}
+
 	// Cache fetch happens AFTER services come up (so a cache-hit
 	// doesn't block on a broken postgres sidecar) but BEFORE tasks
 	// run — the whole point of the cache is to pre-populate the

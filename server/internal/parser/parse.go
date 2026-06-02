@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/gocdnext/gocdnext/proto/cachekey"
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
 
@@ -483,6 +484,18 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		}
 		if len(c.Paths) == 0 {
 			return domain.Job{}, fmt.Errorf("job %q: cache entry %q has empty `paths` — nothing to cache", name, c.Key)
+		}
+		// Cache key may carry `{{ hash "..." }}` templates; validate
+		// syntax here so bad config (typo in function name, missing
+		// closing brace, path traversal in arg) fails the apply
+		// rather than dispatching jobs that'd error at agent
+		// expansion time. The parsed template is discarded server-
+		// side; the agent re-parses and expands at runtime when the
+		// workspace is materialised. Plain literals (no `{{`) round-
+		// trip unchanged, keeping backwards-compat with pre-v0.4.37
+		// cache keys.
+		if _, err := cachekey.Parse(c.Key); err != nil {
+			return domain.Job{}, fmt.Errorf("job %q: cache entry %q: %w", name, c.Key, err)
 		}
 		j.Cache = append(j.Cache, domain.CacheSpec{
 			Key:   c.Key,

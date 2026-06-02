@@ -6,6 +6,113 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.37 — 2026-06-02
+
+Cache key templating with `{{ hash "..." }}` ([issue #5](https://github.com/klinux/gocdnext/issues/5))
+and an operational audit script for stuck cyclic-needs runs
+([issue #6](https://github.com/klinux/gocdnext/issues/6)).
+
+### Cache key templating
+
+Before this release, `cache.key` was a literal string. Invalidating
+a node_modules cache on lockfile change required either a constant
+key (relying on `pnpm install --frozen-lockfile` to absorb drift —
+fragile) or editing the YAML on every dep bump. GitHub Actions,
+CircleCI, Drone, Bitbucket Pipelines all expose `{{ hashFiles }}`
+templates; this lands the same shape with a closed grammar.
+
+Syntax:
+
+```yaml
+caches:
+  - key: pnpm-nm-{{ hash "pnpm-lock.yaml" }}
+    paths: [node_modules, apps/*/node_modules, packages/*/node_modules]
+
+  - key: docker-{{ hash "Dockerfile" }}-{{ hash "go.sum" }}
+    paths: [/var/cache/docker]
+```
+
+Function whitelist (v1): `hash "<literal path-or-glob>"` returning
+12 hex chars. `env`, `git.rev`, `format`, etc. are intentionally
+deferred — each new function expands the audit surface and we want
+the grammar to grow under PR review, not by accident.
+
+Security posture (per CLAUDE.md):
+
+- **Single-pass**: function output is hex `[0-9a-f]{12}`, which
+  cannot match template syntax — chain expansion is structurally
+  impossible.
+- **Args are literal-only**: parser rejects non-quoted arguments,
+  variable references, and nested `{{ }}`. No template engine
+  inside template arguments.
+- **Bounded parsing**: max 1024-char raw template, max 5 tokens,
+  max 255-char arg, max 100-file glob expansion, 16 MiB
+  per-file + 64 MiB total cap on `hash()` byte intake. Regex
+  pre-compiled with quantifiers bounded by input cap.
+- **Path traversal blocked**: `..` and absolute paths rejected at
+  parse time so the agent's resolver never sees them.
+- **Symlinks rejected**: agent's hash resolver `lstat`s each
+  match and refuses non-regular files. A repo can't point a
+  declared lockfile at `/etc/passwd` and have the agent fold
+  its content into a cache key digest.
+- **Charset enforced at PARSE time for TOKENIZED keys only**:
+  when a key contains `{{ ... }}`, every literal chunk must
+  match `[a-zA-Z0-9-_.]`. Zero-token (legacy) keys remain opaque
+  — `pnpm-store-${CI_COMMIT_BRANCH}`, paths with `/`, dot-style
+  versions all keep working as before. Storage hashes the raw
+  key via SHA-256, so legacy chars never reach storage paths;
+  the strict charset is a NEW contract opted into by writing a
+  template. Mixing shell-substitution with templates
+  (`pnpm-${X}-{{ hash "y" }}`) is rejected — pick one model.
+- **Cancel propagation**: `expandCacheKeys` threads `ctx` into
+  the resolver; `CancelJob` aborts a mid-hash read at the next
+  64 KiB chunk boundary instead of blocking until EOF.
+
+Server/agent split:
+
+- **`proto/cachekey`**: shared parser package (both sides import).
+  Compiles the template once, exposes `Parse` + `Expand`.
+- **Server**: `parser.toJob` validates every `cache.key` at apply
+  time. Bad config fails the project apply, not the run dispatch.
+- **Agent**: `runner.expandCacheKeys` runs AFTER checkout +
+  artifact downloads, BEFORE `fetchCaches`. Reads workspace files,
+  glob-expands and hashes deterministically (sorted match order,
+  content + relative-path folded into sha256), stamps the
+  expanded key onto the proto in place.
+
+Backwards-compat: keys with no `{{` tokens take the no-op fast
+path — zero behaviour change for every pre-v0.4.37 key, including
+documented forms like `pnpm-store-${CI_COMMIT_BRANCH}`,
+`docker-images-${CI_COMMIT_SHA}`, paths with `/`, etc. The strict
+parse-time charset is a NEW rule operators opt into by writing a
+`{{ ... }}` template; existing pipelines upgrade with no edits.
+
+### Operational audit script
+
+`scripts/audits/stuck_runs_cyclic_needs.sql` ships a one-shot
+query operators can run to detect runs in `queued`/`running > 1h` because
+of a `needs:` cycle baked into the snapshot BEFORE v0.4.36's
+parser-side cycle detection. Tier 1 catches 2-cycles cheaply (the
+common case); Tier 2 (commented-out recursive CTE) handles N-cycle
+when the cheap query is empty but runs remain stuck. Read-only;
+fixes go through the normal `CancelRun` path.
+
+### Tests
+
+- `proto/cachekey/parser_test.go`: 31 cases covering happy path,
+  every limit, every malformed-template class, path-traversal
+  rejection, expansion determinism, charset enforcement on
+  tokenized keys, legacy-literal passthrough, and the
+  shell-substitution-vs-template-mix rejection.
+- `agent/internal/runner/cachekey_expand_test.go`: 13 cases for
+  the workspace resolver — determinism, content-sensitivity,
+  rename-detection, glob ordering, zero-match + over-limit
+  rejections, ctx cancel propagation, per-file byte cap,
+  symlink rejection (leaf-in-workspace AND directory-chain
+  escape both via single-file and glob patterns), plus a
+  sha256 recipe pin so a future refactor of the digest
+  construction fails loud.
+
 ## v0.4.36 — 2026-06-02
 
 Scheduler honours job-level `needs:` so same-stage jobs declaring
