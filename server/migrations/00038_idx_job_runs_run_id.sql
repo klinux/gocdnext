@@ -1,7 +1,28 @@
 -- +goose NO TRANSACTION
 -- +goose Up
--- +goose StatementBegin
 
+-- +goose StatementBegin
+-- Defensive cleanup BEFORE the CREATE: if a prior apply of this
+-- migration crashed mid-CONCURRENTLY (network hiccup, OOM,
+-- statement_timeout, etc.), Postgres leaves the index in an
+-- INVALID state — physically present but unusable by the planner.
+-- A naive `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on the next
+-- apply would match the invalid index BY NAME, skip creation, and
+-- goose would mark this migration as successfully applied while
+-- the index stays unusable. Every dispatch tick then falls back
+-- to seq scan and the operator has no signal anything went wrong.
+--
+-- Dropping first is safe in steady state (migration never re-runs
+-- post-success — goose's schema_migrations table tracks completion)
+-- and corrective on retry. `IF EXISTS` makes the DROP idempotent
+-- on first apply where there's nothing to remove. CONCURRENTLY
+-- on the DROP matches the CREATE's locking discipline — a
+-- valid live index would otherwise drop under ACCESS EXCLUSIVE,
+-- which is exactly the write-blocking pattern we're avoiding.
+DROP INDEX CONCURRENTLY IF EXISTS idx_job_runs_run_id;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
 -- The dispatch tick reads job_runs by run_id every time it considers
 -- a queued run (drainQueued loop + per-completion NOTIFY). Without an
 -- index on (run_id, ...) the planner falls back to a seq scan of
@@ -39,16 +60,9 @@
 -- here because the operator runs it once at deploy. The
 -- NO TRANSACTION directive at the top of this file is mandatory
 -- — CONCURRENTLY can't run inside a transaction block.
---
--- IF NOT EXISTS handles the rerun case: if a previous attempt
--- failed mid-build (CONCURRENTLY leaves the index in an INVALID
--- state on failure), a follow-up apply skips creation — operator
--- must REINDEX or DROP+recreate manually before the migration
--- can complete cleanly.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_job_runs_run_id
     ON job_runs (run_id, name, matrix_key NULLS FIRST)
     INCLUDE (status);
-
 -- +goose StatementEnd
 
 -- +goose Down
