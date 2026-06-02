@@ -6,6 +6,107 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.36 — 2026-06-02
+
+Scheduler honours job-level `needs:` so same-stage jobs declaring
+inter-job dependencies dispatch in order. The bug surfaced on the
+cora-pulse dogfood pipeline: `build` declaring
+`needs: [eslint, typecheck, unit, types-generate]` would dispatch
+in parallel with its upstreams, hit `no ready artefacts from job
+"types-generate"` during `resolveArtifactDeps`, and get marked
+`failed` permanently. The SQL comment at scheduler.sql:87 had
+flagged "scheduler does needs-satisfaction checking in Go" as a
+TODO since v0.x; it was never implemented.
+
+5 commits, 5 review rounds. Final shape:
+
+### Dispatch-time gate
+
+- New lean SQL projection `ListJobStatusForRun (name, matrix_key,
+  status)` loaded ONCE per dispatch tick. Folded into a name-keyed
+  map; the gate consults it per candidate.
+- `needsSatisfied()` returns `Ok / UpstreamTerminal / Detail`.
+  Matrix fanouts require ALL children green. Short-circuit on the
+  first blocker so the operator sees the most relevant signal.
+- Gate runs BEFORE agent / secrets / artifact lookups so a
+  blocked job doesn't consume a session slot.
+- Non-terminal upstream (queued / running / awaiting_approval):
+  leave queued; next NOTIFY-driven tick re-evaluates with fresh
+  status. Terminal non-success: mark downstream `failed` via
+  `FailJobWithReason` (see below).
+
+### Silent-green closure
+
+A `needs` snapshot drift (older parser, schema change, manual DB
+poke) could otherwise produce a runtime needs-unmet → downstream
+`skipped` → stage / run cascade ignores `skipped` (only counts
+`failed`) → run finalizes as `success` despite a job that never
+ran. Renamed `SkipJobRunWithReason` → `FailJobRunWithReason`,
+setting `status='failed'` so the cascade counts it. The `error`
+column carries `"needs unmet: <upstream>: <status>"` for audit.
+Notification-trigger skips (`SkipJobRun`) stay `skipped` — there
+the "by design, never going to run" semantic differs from
+needs-cascade.
+
+### Parser validation
+
+`validateNeeds` rejects three classes at apply time so the
+scheduler doesn't have to defend at dispatch:
+
+- Unknown name (`needs: [ghost]`) — would silently skip downstream
+  and finalize run green; closed at parse.
+- Self-reference (`needs: [self]`) — pointless self-wait.
+- Forward-stage reference — would deadlock (later stage never
+  starts because earlier stage never closes).
+
+`validateNoCycles` adds DFS three-color cycle detection for
+same-stage 2-cycle, 3-cycle, and larger cycles that
+forward-stage rejection misses. Error message traces the cycle
+path deterministically (alphabetical visit order for stable
+output across CI reruns).
+
+### Wake-on-completion
+
+`NotifyRunQueued` now fires on every non-terminal job completion
+(was: only when stage closes). Same-stage `needs:` siblings used
+to wait up to the periodic 15s tick because the stage stayed
+open while the gated downstream was queued. NOTIFY is
+microseconds; the dispatch handler is a no-op when there's no
+eligible work.
+
+### Performance
+
+Migration 00038 adds covering index
+`job_runs (run_id, name, matrix_key NULLS FIRST) INCLUDE (status)`.
+Without it every dispatch tick paid a seq scan over cumulative
+history. Built CONCURRENTLY with `-- +goose NO TRANSACTION` so
+the migration doesn't block agent writes during deploy.
+Idempotent on retry: `DROP INDEX CONCURRENTLY IF EXISTS` runs
+before the CREATE so a prior partial failure (leaving the index
+INVALID) is cleaned up before rebuild — `CREATE … IF NOT EXISTS`
+alone matches by name, not state, and would silently leave the
+unusable index in place.
+
+### Defense-in-depth
+
+- `clampNeedsField` (128 bytes per field) applied to
+  `describeBlocker` AND the missing-dep / no-rows paths in
+  `needsSatisfied` + `summarizeNeeds`. Parser doesn't bound job
+  names today; a 1 MiB YAML name shouldn't blow up
+  job_runs.error or structured logs.
+- Integration test `TestDispatchRun_NeedsGate_FailsRunOnGhostUpstream`
+  bypasses the parser by writing `needs: ['ghost-job']` directly
+  into a job_runs row, then proves the cascade STILL closes the
+  silent-green path. Locks the defense in test code.
+
+### Known limitation
+
+Snapshots persisted before this release with cyclic `needs:` (no
+parser-side validation at apply time then) can still hang at
+runtime. Tracking issue filed for an operational health-check
+query. Not a blocker on the path forward — the parser now rejects
+new occurrences and the runtime gate handles non-cyclic cases.
+
 ## v0.4.35 — 2026-06-01
 
 Run-scoped Kubernetes services (one pod per run vs per-job leak),
