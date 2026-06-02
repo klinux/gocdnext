@@ -1353,11 +1353,14 @@ drainPrep:
 	}
 }
 
-// TestDispatchRun_NeedsGate_SkipsWhenUpstreamFailed proves the
+// TestDispatchRun_NeedsGate_FailsWhenUpstreamFailed proves the
 // cascade path: when an upstream lands in terminal-failed, the
-// dependent must be skipped (not failed, not stuck queued forever)
-// so the stage can close and the run can terminate.
-func TestDispatchRun_NeedsGate_SkipsWhenUpstreamFailed(t *testing.T) {
+// dependent must be FAILED (not skipped, not stuck queued forever)
+// so the stage cascade counts it toward run failure and the run
+// terminates as failed. Was previously asserting status='skipped';
+// changed to 'failed' as part of the silent-green closure — see
+// FailJobWithReason / failJobNeedsUnmet.
+func TestDispatchRun_NeedsGate_FailsWhenUpstreamFailed(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	sessions := grpcsrv.NewSessionStore()
@@ -1391,8 +1394,8 @@ drainPrep:
 		t.Fatalf("fail prep: %v", err)
 	}
 
-	// Tick 2: gate should cascade — dependent is skipped, NOT
-	// dispatched, with an error message naming the upstream.
+	// Tick 2: gate cascades — dependent is FAILED (not skipped,
+	// not dispatched), with an error naming the upstream.
 	sched.DispatchRun(ctx, runID)
 
 	// No assignment should be sent — assert by waiting briefly then
@@ -1413,8 +1416,8 @@ drainPrep:
 	).Scan(&status, &errMsg); err != nil {
 		t.Fatalf("read dependent: %v", err)
 	}
-	if status != "skipped" {
-		t.Fatalf("dependent status = %q, want skipped (cascade)", status)
+	if status != "failed" {
+		t.Fatalf("dependent status = %q, want failed (cascade)", status)
 	}
 	if errMsg == nil || !strings.Contains(*errMsg, "needs unmet") {
 		t.Errorf("dependent error = %v, want containing 'needs unmet'", errMsg)
@@ -1423,10 +1426,106 @@ drainPrep:
 		t.Errorf("dependent error = %q, want naming the failed upstream 'prep'", *errMsg)
 	}
 
-	// Run + stage should NOT be stuck — both terminal after the cascade.
+	// Run must finalize as `failed` (not `success`): two paths
+	// could reach this — prep was failed (already counted toward
+	// the aggregate) OR dependent was failed via the cascade.
+	// Either way the run can't be silent-green.
 	var runStatus string
 	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, runID).Scan(&runStatus)
-	if runStatus == "queued" || runStatus == "running" {
-		t.Errorf("run status = %q, want terminal (stage must close even when dependents skipped)", runStatus)
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed", runStatus)
+	}
+}
+
+// TestDispatchRun_NeedsGate_FailsRunOnGhostUpstream is the
+// silent-green guard for the snapshot-drift scenario. The parser
+// rejects `needs: [ghost]` at apply time (see TestValidateNeeds
+// in the parser package), but a snapshot drift — older parser
+// accepted it, schema changed, manual DB poke — could still
+// produce a runtime needs-pointing-at-nothing. This test bypasses
+// the parser by writing a bad `needs:` value DIRECTLY into the
+// job_runs row, then proves the dispatch gate STILL closes the
+// silent-green path: dependent is failed (not skipped), stage
+// fails, run fails. Without this defense, the run would finalize
+// as success — confusing fanout, `on: success` notifications,
+// webhook listeners, and the operator's UI.
+func TestDispatchRun_NeedsGate_FailsRunOnGhostUpstream(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	// Seed a normal run with prep + dependent (dependent originally
+	// needs: [prep]), then OVERWRITE dependent's needs to reference
+	// a job that doesn't exist in this run. Simulates the snapshot
+	// drift the parser-validation alone can't catch post-apply.
+	runID, prepJobID, dependentJobID := seedSameStageNeeds(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET needs = $1 WHERE id = $2`,
+		[]string{"ghost-job"}, dependentJobID,
+	); err != nil {
+		t.Fatalf("poke ghost needs: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "agent-1")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+
+	// First tick: prep dispatches (its needs are still empty).
+	// dependent's needs={ghost-job} → terminal-not-in-run →
+	// dependent gets failed immediately by the gate. Note both
+	// happen in the same tick: the gate runs BEFORE the agent
+	// lookup, so even though dependent is iterated alongside prep,
+	// the gate routes it to failJobNeedsUnmet without consuming an
+	// agent slot.
+	sched.DispatchRun(ctx, runID)
+	// Drain prep's assignment.
+drainPrep:
+	for {
+		select {
+		case <-sess.Out():
+		case <-time.After(100 * time.Millisecond):
+			break drainPrep
+		}
+	}
+
+	// dependent must be failed with the ghost reason.
+	var status string
+	var errMsg *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, error FROM job_runs WHERE id=$1`, dependentJobID,
+	).Scan(&status, &errMsg); err != nil {
+		t.Fatalf("read dependent: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("dependent status = %q, want failed (ghost upstream MUST be a failure, not silent-green)", status)
+	}
+	if errMsg == nil || !strings.Contains(*errMsg, "not in this run") {
+		t.Errorf("dependent error = %v, want containing 'not in this run'", errMsg)
+	}
+	if errMsg != nil && !strings.Contains(*errMsg, "ghost-job") {
+		t.Errorf("dependent error = %q, want naming 'ghost-job'", *errMsg)
+	}
+
+	// Complete prep successfully so the run can finalize.
+	if _, _, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        prepJobID,
+		Status:          string(domain.StatusSuccess),
+		ExitCode:        0,
+		ExpectedAgentID: agentID,
+		ExpectedAttempt: 0,
+	}); err != nil {
+		t.Fatalf("succeed prep: %v", err)
+	}
+
+	// CRITICAL: run must NOT finalize as success despite prep
+	// succeeding. dependent was failed via the ghost gate, and
+	// the aggregate counts it. The whole point of this test is
+	// that "ghost needs" can never produce silent-green.
+	var runStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, runID).Scan(&runStatus)
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed (ghost needs must count toward run failure — silent-green is the bug we're guarding)", runStatus)
 	}
 }

@@ -469,27 +469,37 @@ func (s *Store) SkipNotificationJob(ctx context.Context, jobRunID uuid.UUID) (Jo
 	return comp, true, nil
 }
 
-// SkipJobWithReason marks a still-queued job as 'skipped' with a
-// human-readable reason on the `error` column AND cascades into the
-// stage/run terminal logic. Used by the scheduler's needs-
-// satisfaction gate when an upstream is in a non-success terminal
-// state — the downstream becomes unrunnable, so we skip it and
-// surface why so the operator sees the chain rather than a stuck
-// run with mysteriously-queued jobs.
+// FailJobWithReason marks a still-queued job as 'failed' (NOT
+// 'skipped') with a human-readable reason on the `error` column,
+// then cascades into stage/run terminal logic. Used by the
+// scheduler's needs-satisfaction gate when an upstream is in a
+// non-success terminal state — the downstream can never run, so
+// we count it as a failure for aggregation purposes AND surface
+// the chain in the error column so operators see why.
+//
+// Why `failed` and not `skipped`: GetStageProgress and
+// GetRunUserStageOutcome only count `status='failed'` toward the
+// run-failed aggregate. A 'skipped' downstream from needs-cascade
+// would leak through as run = success despite a job that
+// EXPECTED to run never running — confusing operator, fanout, and
+// `on: success` notifications. Notification trigger skips
+// (SkipJobRun) stay as 'skipped' because there the semantic is
+// "by design, never going to run" — different from needs-cascade
+// where the operator wrote `needs: [X]` expecting X to succeed.
 //
 // Returns ok=false (no error) when the row wasn't in 'queued' —
 // another scheduler tick raced us OR a user manually canceled the
-// run between our list and our skip. Caller logs at Debug and
-// moves on, same as SkipNotificationJob's contract.
-func (s *Store) SkipJobWithReason(ctx context.Context, jobRunID uuid.UUID, reason string) (JobCompletion, bool, error) {
+// run between our list and our fail. Caller logs at Debug and
+// moves on, same shape as SkipNotificationJob's contract.
+func (s *Store) FailJobWithReason(ctx context.Context, jobRunID uuid.UUID, reason string) (JobCompletion, bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return JobCompletion{}, false, fmt.Errorf("store: skip job with reason: begin: %w", err)
+		return JobCompletion{}, false, fmt.Errorf("store: fail job with reason: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
 
-	row, err := q.SkipJobRunWithReason(ctx, db.SkipJobRunWithReasonParams{
+	row, err := q.FailJobRunWithReason(ctx, db.FailJobRunWithReasonParams{
 		ID:    pgUUID(jobRunID),
 		Error: nullableString(reason),
 	})
@@ -497,7 +507,7 @@ func (s *Store) SkipJobWithReason(ctx context.Context, jobRunID uuid.UUID, reaso
 		if errors.Is(err, pgx.ErrNoRows) {
 			return JobCompletion{}, false, nil
 		}
-		return JobCompletion{}, false, fmt.Errorf("store: skip job with reason: %w", err)
+		return JobCompletion{}, false, fmt.Errorf("store: fail job with reason: %w", err)
 	}
 
 	comp := JobCompletion{
@@ -510,7 +520,7 @@ func (s *Store) SkipJobWithReason(ctx context.Context, jobRunID uuid.UUID, reaso
 		return JobCompletion{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return JobCompletion{}, false, fmt.Errorf("store: skip job with reason: commit: %w", err)
+		return JobCompletion{}, false, fmt.Errorf("store: fail job with reason: commit: %w", err)
 	}
 	return comp, true, nil
 }

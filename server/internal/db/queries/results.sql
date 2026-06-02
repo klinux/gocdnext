@@ -156,16 +156,30 @@ SET status = 'skipped', finished_at = COALESCE(finished_at, NOW())
 WHERE id = $1 AND status = 'queued'
 RETURNING id, run_id, stage_run_id, name;
 
--- name: SkipJobRunWithReason :one
--- Same as SkipJobRun but stamps the `error` column with a human-
--- readable reason. Used by the scheduler's needs-satisfaction
--- gate when an upstream is in a non-success terminal state
--- (failed/canceled/skipped): the downstream job becomes
--- unrunnable, so we skip it AND surface why (e.g.
--- "needs unmet: types-generate: failed") on the job's row.
--- Operator sees the chain via the run page's job error column.
+-- name: FailJobRunWithReason :one
+-- Marks a still-queued job as `failed` (NOT `skipped`) when the
+-- scheduler's needs-satisfaction gate determines it can never
+-- run: an upstream is in a non-success terminal state (failed /
+-- canceled / skipped / missing-from-run). `failed` is the right
+-- semantic for the cascade: GetStageProgress / GetRunUserStageOutcome
+-- only count `failed` toward stage + run failure aggregates, and
+-- a job we EXPECTED to run that didn't IS a failure from the
+-- operator's perspective (different from a notification skip,
+-- which is "by design").
+--
+-- The `error` column carries the human-readable reason
+-- ("needs unmet: types-generate: failed") so the UI / API
+-- distinguishes a true agent-side failure from a needs-cascade
+-- failure. Operator grep is the audit surface.
+--
+-- Was `SkipJobRunWithReason` setting status='skipped'; renamed
+-- + status changed to plug a silent-green hole: a snapshot
+-- drift (parser allowed it then, schema changed, manual DB
+-- poke) where `needs:` references a non-existent job would
+-- otherwise let the run finalize as success despite a job that
+-- never ran.
 UPDATE job_runs
-SET status = 'skipped',
+SET status = 'failed',
     finished_at = COALESCE(finished_at, NOW()),
     error = $2
 WHERE id = $1 AND status = 'queued'

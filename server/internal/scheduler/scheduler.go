@@ -418,9 +418,19 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// trip just to be re-queued. Synth notification jobs have
 		// empty `needs` (not parseable from YAML for them), so
 		// `needsSatisfied(nil, _)` returns Ok=true trivially.
+		//
+		// Branches on the verdict:
+		//   - UpstreamTerminal=true: fail the downstream with the
+		//     reason (failJobNeedsUnmet); status='failed' so the
+		//     cascade counts it toward run failure — silent-green
+		//     is closed even if a snapshot drift bypassed parser
+		//     validation.
+		//   - UpstreamTerminal=false: leave queued; the always-
+		//     notify in connect.go fires on every job completion
+		//     so the next tick re-evaluates with fresh status map.
 		if check := needsSatisfied(job.Needs, statusMap); !check.Ok {
 			if check.UpstreamTerminal {
-				s.skipJobNeedsUnmet(ctx, job, check.Detail)
+				s.failJobNeedsUnmet(ctx, job, check.Detail)
 			} else {
 				s.log.Info("scheduler: needs not yet satisfied, leaving queued",
 					"run_id", runID, "job_id", job.ID, "job_name", job.Name,
@@ -709,30 +719,41 @@ func (s *Scheduler) resolveDepRunID(ctx context.Context, run store.RunForDispatc
 // fail), this NULL-expected guard makes our fail no-op via ErrNoRows
 // — which is the correct outcome, since a job that's been picked up
 // by a live agent should not be failed by the dispatch path.
-// skipJobNeedsUnmet marks a still-queued job as `skipped` (not
-// `failed`) when one of its declared upstreams reached a non-success
-// terminal state (failed / canceled / skipped / missing). The
-// human-readable reason lands on the job's `error` column so the
-// operator can grep the chain back to the root failure. The
-// cascadeAfterJobCompletion baked into SkipJobWithReason closes the
-// stage + run terminal logic — without that cascade, the stage
-// would hang on the skipped job forever and the run would never
-// terminate.
+// failJobNeedsUnmet marks a still-queued job as `failed` when one
+// of its declared upstreams reached a non-success terminal state
+// (failed / canceled / skipped / missing). The human-readable
+// reason lands on the job's `error` column so the operator can
+// grep the chain back to the root cause. The
+// cascadeAfterJobCompletion baked into FailJobWithReason closes
+// the stage + run terminal logic — without that cascade, the
+// stage would hang on the queued job forever.
 //
-// Why skipped vs failed: "failed" means the JOB tried and broke;
-// "skipped" means the job was never attempted on purpose. Marking
-// this failed would pollute the run-failure-counter and trigger
-// `on: failure` notifications for what's really a cascade
-// consequence. Mirrors how SkipNotificationJob handles the
-// "trigger didn't match" case.
-func (s *Scheduler) skipJobNeedsUnmet(ctx context.Context, job store.DispatchableJob, detail string) {
+// Why `failed` (not `skipped`): GetStageProgress and
+// GetRunUserStageOutcome only count `status='failed'` toward the
+// run-failed aggregate. A `skipped` downstream from needs-cascade
+// would leak through as run = success despite a job that
+// EXPECTED to run never running — confusing operator, fanout,
+// and `on: success` notifications. The `error` column carries
+// the chain so UI / API can distinguish a true agent-side
+// failure from a needs-cascade failure. Notification trigger
+// skips (SkipNotificationJob) stay `skipped` because there the
+// semantic is "by design, never going to run" — different from
+// needs-cascade where the operator wrote `needs: [X]` expecting
+// X to succeed.
+//
+// Defense-in-depth: even though d78c8f5's parser validation
+// rejects unknown / forward / self `needs:` at apply time, a
+// snapshot drift (older parser, schema change, manual DB poke)
+// could still produce a runtime needs-unmet. This path catches
+// that case so the run can never finalize as silent-success.
+func (s *Scheduler) failJobNeedsUnmet(ctx context.Context, job store.DispatchableJob, detail string) {
 	msg := "needs unmet: " + detail
-	if _, _, err := s.store.SkipJobWithReason(ctx, job.ID, msg); err != nil {
-		s.log.Warn("scheduler: skip job needs-unmet",
+	if _, _, err := s.store.FailJobWithReason(ctx, job.ID, msg); err != nil {
+		s.log.Warn("scheduler: fail job needs-unmet",
 			"job_id", job.ID, "job_name", job.Name, "err", err)
 		return
 	}
-	s.log.Warn("scheduler: job skipped — needs unmet (upstream non-success)",
+	s.log.Warn("scheduler: job failed — needs unmet (upstream non-success)",
 		"run_id", job.RunID, "job_id", job.ID, "job_name", job.Name, "reason", msg)
 }
 
