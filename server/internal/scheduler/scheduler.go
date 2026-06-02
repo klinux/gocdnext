@@ -342,6 +342,24 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		return
 	}
 
+	// Snapshot of every job_run in this run, keyed by name. The
+	// needs-satisfaction gate below consults this once per candidate
+	// to decide whether all upstreams are terminally green. Loaded
+	// ONCE per tick (not per candidate) so a stage with N dependent
+	// jobs costs 1 query rather than N — see buildJobStatusMap.
+	//
+	// Stale-by-a-tick is fine: a job whose upstream completes mid-
+	// tick will hit the gate on the next NOTIFY-driven tick (the
+	// CompleteJob cascade fires job_completed, the scheduler's
+	// drainQueued loop picks it up). Worst case is one tick of
+	// latency — same shape as the existing serial-busy retry path.
+	statusList, err := s.store.ListJobStatusForRun(ctx, runID)
+	if err != nil {
+		s.log.Warn("scheduler: list job status", "run_id", runID, "err", err)
+		return
+	}
+	statusMap := buildJobStatusMap(statusList)
+
 	// Cache the user-stage outcome so we don't re-query it for
 	// every synth notification job in the same tick. nil = not
 	// queried yet; lookup is lazy + at-most-once per tick.
@@ -384,6 +402,32 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 				}
 				continue
 			}
+		}
+
+		// needs-satisfaction gate: a job that declares `needs:` cannot
+		// dispatch until every named upstream has reached terminal-
+		// succeeded. Before this gate existed, jobs in the same stage
+		// declaring inter-job needs would dispatch concurrently — the
+		// downstream's `resolveArtifactDeps` would then fail because
+		// the upstream hadn't produced artefacts yet, and the
+		// downstream would be marked `failed` permanently (issue
+		// reproduced on cora-pulse: `build` needing `types-generate`).
+		//
+		// Gate runs BEFORE the agent / secrets / artifact lookups so
+		// a blocked job doesn't consume a session slot or DB round-
+		// trip just to be re-queued. Synth notification jobs have
+		// empty `needs` (not parseable from YAML for them), so
+		// `needsSatisfied(nil, _)` returns Ok=true trivially.
+		if check := needsSatisfied(job.Needs, statusMap); !check.Ok {
+			if check.UpstreamTerminal {
+				s.skipJobNeedsUnmet(ctx, job, check.Detail)
+			} else {
+				s.log.Info("scheduler: needs not yet satisfied, leaving queued",
+					"run_id", runID, "job_id", job.ID, "job_name", job.Name,
+					"waiting_on", check.Detail,
+					"blockers", summarizeNeeds(job.Needs, statusMap))
+			}
+			continue
 		}
 
 		requiredTags, tagsErr := JobTagsFromDefinition(run.Definition, job.Name)
@@ -665,6 +709,33 @@ func (s *Scheduler) resolveDepRunID(ctx context.Context, run store.RunForDispatc
 // fail), this NULL-expected guard makes our fail no-op via ErrNoRows
 // — which is the correct outcome, since a job that's been picked up
 // by a live agent should not be failed by the dispatch path.
+// skipJobNeedsUnmet marks a still-queued job as `skipped` (not
+// `failed`) when one of its declared upstreams reached a non-success
+// terminal state (failed / canceled / skipped / missing). The
+// human-readable reason lands on the job's `error` column so the
+// operator can grep the chain back to the root failure. The
+// cascadeAfterJobCompletion baked into SkipJobWithReason closes the
+// stage + run terminal logic — without that cascade, the stage
+// would hang on the skipped job forever and the run would never
+// terminate.
+//
+// Why skipped vs failed: "failed" means the JOB tried and broke;
+// "skipped" means the job was never attempted on purpose. Marking
+// this failed would pollute the run-failure-counter and trigger
+// `on: failure` notifications for what's really a cascade
+// consequence. Mirrors how SkipNotificationJob handles the
+// "trigger didn't match" case.
+func (s *Scheduler) skipJobNeedsUnmet(ctx context.Context, job store.DispatchableJob, detail string) {
+	msg := "needs unmet: " + detail
+	if _, _, err := s.store.SkipJobWithReason(ctx, job.ID, msg); err != nil {
+		s.log.Warn("scheduler: skip job needs-unmet",
+			"job_id", job.ID, "job_name", job.Name, "err", err)
+		return
+	}
+	s.log.Warn("scheduler: job skipped — needs unmet (upstream non-success)",
+		"run_id", job.RunID, "job_id", job.ID, "job_name", job.Name, "reason", msg)
+}
+
 func (s *Scheduler) failJobWithError(ctx context.Context, job store.DispatchableJob, errMsg string) {
 	if _, _, err := s.store.CompleteJob(ctx, store.CompleteJobInput{
 		JobRunID:        job.ID,

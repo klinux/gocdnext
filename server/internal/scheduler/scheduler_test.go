@@ -1156,3 +1156,277 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 		t.Fatalf("queue_reason = %q after dispatch, want NULL (cleared)", *reason)
 	}
 }
+
+// seedSameStageNeeds creates a pipeline with TWO jobs in the SAME
+// stage where the second declares `needs: [first]`. Mirrors the
+// cora-pulse repro: `build needs: [types-generate]` in the same
+// stage. Returns the run id + job_run ids for the two jobs so the
+// caller can drive CompleteJob between dispatch ticks.
+func seedSameStageNeeds(t *testing.T, pool *pgxpool.Pool) (runID, prepJobID, dependentJobID uuid.UUID) {
+	t.Helper()
+	s := store.New(pool)
+	ctx := context.Background()
+
+	fp := domain.GitFingerprint("https://github.com/org/needs", "main")
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "needs", Name: "Needs Demo",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "ci",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/needs", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{Name: "prep", Stage: "build", Image: "golang:1.23", Tasks: []domain.Task{{Script: "make prep"}}},
+				{Name: "dependent", Stage: "build", Image: "golang:1.23", Tasks: []domain.Task{{Script: "make build"}}, Needs: []string{"prep"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applyRes.Pipelines[0].PipelineID
+
+	var matID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&matID); err != nil {
+		t.Fatalf("mat lookup: %v", err)
+	}
+
+	runRes, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:  pipelineID,
+		MaterialID:  matID,
+		Revision:    "abc0123456789abc0123456789abc0123456789a",
+		Branch:      "main",
+		Provider:    "github",
+		Delivery:    "test-needs",
+		TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	runID = runRes.RunID
+
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM job_runs WHERE run_id=$1 AND name='prep'`, runID,
+	).Scan(&prepJobID); err != nil {
+		t.Fatalf("prep job lookup: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM job_runs WHERE run_id=$1 AND name='dependent'`, runID,
+	).Scan(&dependentJobID); err != nil {
+		t.Fatalf("dependent job lookup: %v", err)
+	}
+	return runID, prepJobID, dependentJobID
+}
+
+// TestDispatchRun_NeedsGate_WaitsForSameStageUpstream is the
+// REGRESSION GUARD for the cora-pulse repro: jobs in the same stage
+// that declare `needs:` must NOT both dispatch concurrently. Before
+// the gate, `dependent` would dispatch alongside `prep`, fail
+// `resolveArtifactDeps` (upstream hadn't produced), and be marked
+// `failed` permanently. With the gate, only `prep` dispatches;
+// `dependent` stays queued, error column empty.
+func TestDispatchRun_NeedsGate_WaitsForSameStageUpstream(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	runID, prepJobID, dependentJobID := seedSameStageNeeds(t, pool)
+	// 2 capacity so the test isn't accidentally gated by agent
+	// availability — we want to prove the NEEDS gate held back the
+	// dependent, not the agent gate.
+	agentID := seedAgentRow(t, pool, "agent-1")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+
+	sched.DispatchRun(ctx, runID)
+
+	// Drain assignments — there must be exactly 1 (prep), not 2.
+	count := 0
+	names := []string{}
+drain:
+	for {
+		select {
+		case msg, ok := <-sess.Out():
+			if !ok {
+				break drain
+			}
+			if a := msg.GetAssign(); a != nil {
+				count++
+				names = append(names, a.Name)
+			}
+		case <-time.After(200 * time.Millisecond):
+			break drain
+		}
+	}
+	if count != 1 {
+		t.Fatalf("dispatched %d assignments %v, want 1 (only prep — needs gate must hold dependent)",
+			count, names)
+	}
+	if names[0] != "prep" {
+		t.Fatalf("dispatched %q, want prep", names[0])
+	}
+
+	// dependent must stay queued, error column NULL (not skipped, not failed).
+	var status string
+	var errMsg *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, error FROM job_runs WHERE id=$1`, dependentJobID,
+	).Scan(&status, &errMsg); err != nil {
+		t.Fatalf("read dependent: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("dependent status = %q, want queued", status)
+	}
+	if errMsg != nil && *errMsg != "" {
+		t.Errorf("dependent error = %q, want empty (gate should NOT stamp an error on healthy wait)", *errMsg)
+	}
+
+	// prep is now running (its assignment landed).
+	var prepStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, prepJobID).Scan(&prepStatus)
+	if prepStatus != "running" {
+		t.Errorf("prep status = %q, want running", prepStatus)
+	}
+}
+
+// TestDispatchRun_NeedsGate_DispatchesAfterUpstreamSucceeds proves
+// the gate releases when the upstream lands in terminal-success.
+// Models the dispatch tick that fires on `job_completed` NOTIFY.
+func TestDispatchRun_NeedsGate_DispatchesAfterUpstreamSucceeds(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	runID, prepJobID, dependentJobID := seedSameStageNeeds(t, pool)
+	agentID := seedAgentRow(t, pool, "agent-1")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+
+	// Tick 1: prep dispatches, dependent stays queued.
+	sched.DispatchRun(ctx, runID)
+	// Drain the prep assignment so the channel doesn't back up.
+drainPrep:
+	for {
+		select {
+		case <-sess.Out():
+		case <-time.After(100 * time.Millisecond):
+			break drainPrep
+		}
+	}
+
+	// Simulate prep completing successfully — same path the agent's
+	// JobResult would drive via grpcsrv.handleJobResult.
+	if _, _, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        prepJobID,
+		Status:          string(domain.StatusSuccess),
+		ExitCode:        0,
+		ExpectedAgentID: agentID,
+		ExpectedAttempt: 0,
+	}); err != nil {
+		t.Fatalf("complete prep: %v", err)
+	}
+
+	// Tick 2: dependent should now dispatch.
+	sched.DispatchRun(ctx, runID)
+
+	select {
+	case msg := <-sess.Out():
+		a := msg.GetAssign()
+		if a == nil {
+			t.Fatalf("expected JobAssignment, got %+v", msg)
+		}
+		if a.Name != "dependent" {
+			t.Fatalf("dispatched %q, want dependent", a.Name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("dependent never dispatched after prep succeeded")
+	}
+
+	var depStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, dependentJobID).Scan(&depStatus)
+	if depStatus != "running" {
+		t.Errorf("dependent status = %q, want running", depStatus)
+	}
+}
+
+// TestDispatchRun_NeedsGate_SkipsWhenUpstreamFailed proves the
+// cascade path: when an upstream lands in terminal-failed, the
+// dependent must be skipped (not failed, not stuck queued forever)
+// so the stage can close and the run can terminate.
+func TestDispatchRun_NeedsGate_SkipsWhenUpstreamFailed(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	runID, prepJobID, dependentJobID := seedSameStageNeeds(t, pool)
+	agentID := seedAgentRow(t, pool, "agent-1")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+
+	// Tick 1: prep dispatches.
+	sched.DispatchRun(ctx, runID)
+drainPrep:
+	for {
+		select {
+		case <-sess.Out():
+		case <-time.After(100 * time.Millisecond):
+			break drainPrep
+		}
+	}
+
+	// prep fails.
+	if _, _, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        prepJobID,
+		Status:          string(domain.StatusFailed),
+		ExitCode:        1,
+		ErrorMsg:        "boom",
+		ExpectedAgentID: agentID,
+		ExpectedAttempt: 0,
+	}); err != nil {
+		t.Fatalf("fail prep: %v", err)
+	}
+
+	// Tick 2: gate should cascade — dependent is skipped, NOT
+	// dispatched, with an error message naming the upstream.
+	sched.DispatchRun(ctx, runID)
+
+	// No assignment should be sent — assert by waiting briefly then
+	// checking the channel is empty.
+	select {
+	case msg := <-sess.Out():
+		if a := msg.GetAssign(); a != nil {
+			t.Fatalf("unexpected assignment dispatched: %q", a.Name)
+		}
+	case <-time.After(150 * time.Millisecond):
+		// good — nothing dispatched
+	}
+
+	var status string
+	var errMsg *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, error FROM job_runs WHERE id=$1`, dependentJobID,
+	).Scan(&status, &errMsg); err != nil {
+		t.Fatalf("read dependent: %v", err)
+	}
+	if status != "skipped" {
+		t.Fatalf("dependent status = %q, want skipped (cascade)", status)
+	}
+	if errMsg == nil || !strings.Contains(*errMsg, "needs unmet") {
+		t.Errorf("dependent error = %v, want containing 'needs unmet'", errMsg)
+	}
+	if errMsg != nil && !strings.Contains(*errMsg, "prep") {
+		t.Errorf("dependent error = %q, want naming the failed upstream 'prep'", *errMsg)
+	}
+
+	// Run + stage should NOT be stuck — both terminal after the cascade.
+	var runStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, runID).Scan(&runStatus)
+	if runStatus == "queued" || runStatus == "running" {
+		t.Errorf("run status = %q, want terminal (stage must close even when dependents skipped)", runStatus)
+	}
+}

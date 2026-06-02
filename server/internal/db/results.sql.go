@@ -457,6 +457,46 @@ func (q *Queries) SkipJobRun(ctx context.Context, id pgtype.UUID) (SkipJobRunRow
 	return i, err
 }
 
+const skipJobRunWithReason = `-- name: SkipJobRunWithReason :one
+UPDATE job_runs
+SET status = 'skipped',
+    finished_at = COALESCE(finished_at, NOW()),
+    error = $2
+WHERE id = $1 AND status = 'queued'
+RETURNING id, run_id, stage_run_id, name
+`
+
+type SkipJobRunWithReasonParams struct {
+	ID    pgtype.UUID
+	Error *string
+}
+
+type SkipJobRunWithReasonRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	Name       string
+}
+
+// Same as SkipJobRun but stamps the `error` column with a human-
+// readable reason. Used by the scheduler's needs-satisfaction
+// gate when an upstream is in a non-success terminal state
+// (failed/canceled/skipped): the downstream job becomes
+// unrunnable, so we skip it AND surface why (e.g.
+// "needs unmet: types-generate: failed") on the job's row.
+// Operator sees the chain via the run page's job error column.
+func (q *Queries) SkipJobRunWithReason(ctx context.Context, arg SkipJobRunWithReasonParams) (SkipJobRunWithReasonRow, error) {
+	row := q.db.QueryRow(ctx, skipJobRunWithReason, arg.ID, arg.Error)
+	var i SkipJobRunWithReasonRow
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StageRunID,
+		&i.Name,
+	)
+	return i, err
+}
+
 const updateProjectArchiveFlagBySlug = `-- name: UpdateProjectArchiveFlagBySlug :exec
 UPDATE projects
 SET log_archive_enabled = $2

@@ -251,6 +251,50 @@ func (q *Queries) ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]Li
 	return items, nil
 }
 
+const listJobStatusForRun = `-- name: ListJobStatusForRun :many
+SELECT name, matrix_key, status
+FROM job_runs
+WHERE run_id = $1
+ORDER BY name, matrix_key NULLS FIRST
+`
+
+type ListJobStatusForRunRow struct {
+	Name      string
+	MatrixKey *string
+	Status    string
+}
+
+// Lean projection (name + matrix_key + status) used by the scheduler's
+// needs-satisfaction gate. Loaded ONCE per dispatch tick and consulted
+// per-candidate to decide "all upstreams green?". A row-per-(name,
+// matrix_key) layout means matrix fanouts surface as multiple rows
+// under the same name, which the gate folds into "all matrix children
+// must succeed" — see scheduler/needs.go for the semantic.
+//
+// Ordering matches ListJobRunsByRun so the per-name slices the
+// scheduler builds are deterministic across runs (matrix combos
+// iterate in insert order, which sorted by matrix_key at row creation
+// per store/runs.go).
+func (q *Queries) ListJobStatusForRun(ctx context.Context, runID pgtype.UUID) ([]ListJobStatusForRunRow, error) {
+	rows, err := q.db.Query(ctx, listJobStatusForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobStatusForRunRow{}
+	for rows.Next() {
+		var i ListJobStatusForRunRow
+		if err := rows.Scan(&i.Name, &i.MatrixKey, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStageRunsByRun = `-- name: ListStageRunsByRun :many
 SELECT id, run_id, name, ordinal, status
 FROM stage_runs
