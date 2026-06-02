@@ -56,9 +56,11 @@ type JobStatusMap map[string][]JobStatusRow
 //     (triggered by the upstream's CompleteJob NOTIFY).
 //   - true → an upstream is in a non-success terminal state
 //     (failed/canceled/skipped, or is missing from the run
-//     entirely — which is a parse-time bug that survived to
-//     dispatch). The downstream must be skipped now so the stage
-//     can close, otherwise the run hangs forever.
+//     entirely — normally caught by parser validation, but a
+//     snapshot drift could let it through). The downstream is
+//     failed via failJobNeedsUnmet → FailJobWithReason; the
+//     cascade then counts it as a stage/run failure so the run
+//     can never finalize as silent-success.
 //
 // Detail is the human-readable "waiting on X: running" or
 // "X: failed" string the scheduler stamps onto the job row's

@@ -153,6 +153,60 @@ func (q *Queries) CompleteStageRun(ctx context.Context, arg CompleteStageRunPara
 	return err
 }
 
+const failJobRunWithReason = `-- name: FailJobRunWithReason :one
+UPDATE job_runs
+SET status = 'failed',
+    finished_at = COALESCE(finished_at, NOW()),
+    error = $2
+WHERE id = $1 AND status = 'queued'
+RETURNING id, run_id, stage_run_id, name
+`
+
+type FailJobRunWithReasonParams struct {
+	ID    pgtype.UUID
+	Error *string
+}
+
+type FailJobRunWithReasonRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	Name       string
+}
+
+// Marks a still-queued job as `failed` (NOT `skipped`) when the
+// scheduler's needs-satisfaction gate determines it can never
+// run: an upstream is in a non-success terminal state (failed /
+// canceled / skipped / missing-from-run). `failed` is the right
+// semantic for the cascade: GetStageProgress / GetRunUserStageOutcome
+// only count `failed` toward stage + run failure aggregates, and
+// a job we EXPECTED to run that didn't IS a failure from the
+// operator's perspective (different from a notification skip,
+// which is "by design").
+//
+// The `error` column carries the human-readable reason
+// ("needs unmet: types-generate: failed") so the UI / API
+// distinguishes a true agent-side failure from a needs-cascade
+// failure. Operator grep is the audit surface.
+//
+// Was `SkipJobRunWithReason` setting status='skipped'; renamed
+// + status changed to plug a silent-green hole: a snapshot
+// drift (parser allowed it then, schema changed, manual DB
+// poke) where `needs:` references a non-existent job would
+// otherwise let the run finalize as success despite a job that
+// never ran.
+func (q *Queries) FailJobRunWithReason(ctx context.Context, arg FailJobRunWithReasonParams) (FailJobRunWithReasonRow, error) {
+	row := q.db.QueryRow(ctx, failJobRunWithReason, arg.ID, arg.Error)
+	var i FailJobRunWithReasonRow
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StageRunID,
+		&i.Name,
+	)
+	return i, err
+}
+
 const getJobLogArchive = `-- name: GetJobLogArchive :one
 SELECT logs_archive_uri, logs_archived_at
 FROM job_runs WHERE id = $1
@@ -448,46 +502,6 @@ type SkipJobRunRow struct {
 func (q *Queries) SkipJobRun(ctx context.Context, id pgtype.UUID) (SkipJobRunRow, error) {
 	row := q.db.QueryRow(ctx, skipJobRun, id)
 	var i SkipJobRunRow
-	err := row.Scan(
-		&i.ID,
-		&i.RunID,
-		&i.StageRunID,
-		&i.Name,
-	)
-	return i, err
-}
-
-const skipJobRunWithReason = `-- name: SkipJobRunWithReason :one
-UPDATE job_runs
-SET status = 'skipped',
-    finished_at = COALESCE(finished_at, NOW()),
-    error = $2
-WHERE id = $1 AND status = 'queued'
-RETURNING id, run_id, stage_run_id, name
-`
-
-type SkipJobRunWithReasonParams struct {
-	ID    pgtype.UUID
-	Error *string
-}
-
-type SkipJobRunWithReasonRow struct {
-	ID         pgtype.UUID
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-}
-
-// Same as SkipJobRun but stamps the `error` column with a human-
-// readable reason. Used by the scheduler's needs-satisfaction
-// gate when an upstream is in a non-success terminal state
-// (failed/canceled/skipped): the downstream job becomes
-// unrunnable, so we skip it AND surface why (e.g.
-// "needs unmet: types-generate: failed") on the job's row.
-// Operator sees the chain via the run page's job error column.
-func (q *Queries) SkipJobRunWithReason(ctx context.Context, arg SkipJobRunWithReasonParams) (SkipJobRunWithReasonRow, error) {
-	row := q.db.QueryRow(ctx, skipJobRunWithReason, arg.ID, arg.Error)
-	var i SkipJobRunWithReasonRow
 	err := row.Scan(
 		&i.ID,
 		&i.RunID,
