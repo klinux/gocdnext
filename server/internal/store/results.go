@@ -469,6 +469,83 @@ func (s *Store) SkipNotificationJob(ctx context.Context, jobRunID uuid.UUID) (Jo
 	return comp, true, nil
 }
 
+// SkipJobWithReason marks a still-queued job as 'skipped' with a
+// human-readable reason on the `error` column AND cascades into the
+// stage/run terminal logic. Used by the scheduler's needs-
+// satisfaction gate when an upstream is in a non-success terminal
+// state — the downstream becomes unrunnable, so we skip it and
+// surface why so the operator sees the chain rather than a stuck
+// run with mysteriously-queued jobs.
+//
+// Returns ok=false (no error) when the row wasn't in 'queued' —
+// another scheduler tick raced us OR a user manually canceled the
+// run between our list and our skip. Caller logs at Debug and
+// moves on, same as SkipNotificationJob's contract.
+func (s *Store) SkipJobWithReason(ctx context.Context, jobRunID uuid.UUID, reason string) (JobCompletion, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return JobCompletion{}, false, fmt.Errorf("store: skip job with reason: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	row, err := q.SkipJobRunWithReason(ctx, db.SkipJobRunWithReasonParams{
+		ID:    pgUUID(jobRunID),
+		Error: nullableString(reason),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return JobCompletion{}, false, nil
+		}
+		return JobCompletion{}, false, fmt.Errorf("store: skip job with reason: %w", err)
+	}
+
+	comp := JobCompletion{
+		JobRunID:   fromPgUUID(row.ID),
+		RunID:      fromPgUUID(row.RunID),
+		StageRunID: fromPgUUID(row.StageRunID),
+		JobName:    row.Name,
+	}
+	if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+		return JobCompletion{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return JobCompletion{}, false, fmt.Errorf("store: skip job with reason: commit: %w", err)
+	}
+	return comp, true, nil
+}
+
+// ListJobStatusForRun returns the (name, matrix_key, status) tuple
+// for every job_run in the given run. Used by the scheduler's
+// dispatch tick to build a fast lookup map for needs-satisfaction
+// checking — one round-trip, all the data needed to gate every
+// candidate's `needs:` list. Stable order (name, matrix_key) so
+// the per-name slices the scheduler builds are deterministic.
+func (s *Store) ListJobStatusForRun(ctx context.Context, runID uuid.UUID) ([]JobStatusForRun, error) {
+	rows, err := s.q.ListJobStatusForRun(ctx, pgUUID(runID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list job status: %w", err)
+	}
+	out := make([]JobStatusForRun, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, JobStatusForRun{
+			Name:      r.Name,
+			MatrixKey: stringValue(r.MatrixKey),
+			Status:    r.Status,
+		})
+	}
+	return out, nil
+}
+
+// JobStatusForRun is the lean shape returned by ListJobStatusForRun.
+// Mirrors the scheduler's needs-check input row; kept in the store
+// package so callers don't need to import db types.
+type JobStatusForRun struct {
+	Name      string
+	MatrixKey string
+	Status    string
+}
+
 // NotifyRunQueued emits `run_queued` so the scheduler wakes up for the given
 // run. Used after a stage completes successfully to advance to the next one
 // without waiting for the periodic tick.

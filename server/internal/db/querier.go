@@ -574,6 +574,18 @@ type Querier interface {
 	// these per pipeline would mean N queries. This single scan
 	// covers the card set.
 	ListJobRunsForRuns(ctx context.Context, dollar_1 []pgtype.UUID) ([]ListJobRunsForRunsRow, error)
+	// Lean projection (name + matrix_key + status) used by the scheduler's
+	// needs-satisfaction gate. Loaded ONCE per dispatch tick and consulted
+	// per-candidate to decide "all upstreams green?". A row-per-(name,
+	// matrix_key) layout means matrix fanouts surface as multiple rows
+	// under the same name, which the gate folds into "all matrix children
+	// must succeed" — see scheduler/needs.go for the semantic.
+	//
+	// Ordering matches ListJobRunsByRun so the per-name slices the
+	// scheduler builds are deterministic across runs (matrix combos
+	// iterate in insert order, which sorted by matrix_key at row creation
+	// per store/runs.go).
+	ListJobStatusForRun(ctx context.Context, runID pgtype.UUID) ([]ListJobStatusForRunRow, error)
 	// Recent jobs dispatched to this agent. Joined all the way up to
 	// the project so the table can link to the owning run/project
 	// without per-row lookups. LIMIT is caller-supplied to avoid
@@ -901,6 +913,14 @@ type Querier interface {
 	// skipped is the right semantic (the job was never attempted on
 	// purpose) vs. canceled (user/system stopped it).
 	SkipJobRun(ctx context.Context, id pgtype.UUID) (SkipJobRunRow, error)
+	// Same as SkipJobRun but stamps the `error` column with a human-
+	// readable reason. Used by the scheduler's needs-satisfaction
+	// gate when an upstream is in a non-success terminal state
+	// (failed/canceled/skipped): the downstream job becomes
+	// unrunnable, so we skip it AND surface why (e.g.
+	// "needs unmet: types-generate: failed") on the job's row.
+	// Operator sees the chain via the run page's job error column.
+	SkipJobRunWithReason(ctx context.Context, arg SkipJobRunWithReasonParams) (SkipJobRunWithReasonRow, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)

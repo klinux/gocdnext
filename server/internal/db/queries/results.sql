@@ -156,6 +156,21 @@ SET status = 'skipped', finished_at = COALESCE(finished_at, NOW())
 WHERE id = $1 AND status = 'queued'
 RETURNING id, run_id, stage_run_id, name;
 
+-- name: SkipJobRunWithReason :one
+-- Same as SkipJobRun but stamps the `error` column with a human-
+-- readable reason. Used by the scheduler's needs-satisfaction
+-- gate when an upstream is in a non-success terminal state
+-- (failed/canceled/skipped): the downstream job becomes
+-- unrunnable, so we skip it AND surface why (e.g.
+-- "needs unmet: types-generate: failed") on the job's row.
+-- Operator sees the chain via the run page's job error column.
+UPDATE job_runs
+SET status = 'skipped',
+    finished_at = COALESCE(finished_at, NOW()),
+    error = $2
+WHERE id = $1 AND status = 'queued'
+RETURNING id, run_id, stage_run_id, name;
+
 -- name: GetRunUserStageOutcome :one
 -- Aggregate job outcomes across USER stages only (everything except
 -- the synthetic _notifications). The cascade uses this to decide the
