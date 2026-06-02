@@ -173,7 +173,82 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		p.Jobs = append(p.Jobs, j)
 	}
 
+	// Cross-validate `needs:` references AFTER all jobs are
+	// resolved — needs to know the full (name → stage_ordinal)
+	// mapping, which only exists post-loop. See validateNeeds for
+	// the three rejection classes (unknown name, self-reference,
+	// forward-stage reference).
+	if err := validateNeeds(p.Jobs, f.Stages); err != nil {
+		return nil, err
+	}
+
 	return p, nil
+}
+
+// validateNeeds checks every job's `needs:` list against the set of
+// jobs in the same pipeline. Rejects three classes of bug at apply
+// time so the scheduler doesn't have to defend against them at
+// dispatch:
+//
+//   - Unknown name: needs references a job that doesn't exist. The
+//     scheduler's gate (server/internal/scheduler/needs.go) would
+//     treat this as "terminal not-in-run" and silently SKIP the
+//     downstream with `error="needs unmet: ghost: not in this run"`.
+//     Stage/run cascade only counts `failed` (not `skipped`) toward
+//     run failure (see results.sql GetStageProgress / GetRunProgress),
+//     so a typo here would let the run finalize GREEN even though a
+//     job was effectively unrunnable. Rejecting at apply means the
+//     operator sees the typo before any run starts.
+//
+//   - Self-reference: `needs: [self]`. Same shape as "unknown" at
+//     runtime (the job's own status drives the gate into a self-
+//     wait), but a clearer error at apply.
+//
+//   - Forward-stage reference: a job in an earlier stage needs a
+//     job in a later stage. The scheduler dispatches stages in
+//     ordinal order; the later-stage job never starts until the
+//     earlier stage closes, but the earlier-stage job can't close
+//     because the gate is waiting on the later-stage job to
+//     reach success. Hard deadlock — Kleber's pipeline would hang.
+//     Same-stage and earlier-stage references are fine (the latter
+//     is redundant given the stage gate but harmless).
+func validateNeeds(jobs []domain.Job, stages []string) error {
+	stageOrdinal := make(map[string]int, len(stages))
+	for i, s := range stages {
+		stageOrdinal[s] = i
+	}
+	byName := make(map[string]domain.Job, len(jobs))
+	for _, j := range jobs {
+		byName[j.Name] = j
+	}
+	for _, j := range jobs {
+		myOrd, hasStage := stageOrdinal[j.Stage]
+		for _, dep := range j.Needs {
+			if dep == j.Name {
+				return fmt.Errorf("job %q: `needs:` contains itself", j.Name)
+			}
+			target, exists := byName[dep]
+			if !exists {
+				return fmt.Errorf("job %q: `needs:` references unknown job %q (no job by that name in this pipeline)", j.Name, dep)
+			}
+			// If either job's stage isn't declared, the earlier
+			// stage-check already rejected it; skip the ordinal
+			// comparison to keep the error message focused on the
+			// undeclared stage instead of compounding two errors.
+			if !hasStage {
+				continue
+			}
+			targetOrd, ok := stageOrdinal[target.Stage]
+			if !ok {
+				continue
+			}
+			if targetOrd > myOrd {
+				return fmt.Errorf("job %q (stage %q, ordinal %d): `needs:` references %q in later stage %q (ordinal %d) — forward references would deadlock the dispatcher",
+					j.Name, j.Stage, myOrd, dep, target.Stage, targetOrd)
+			}
+		}
+	}
+	return nil
 }
 
 func toMaterial(m MaterialSpec) (domain.Material, error) {
