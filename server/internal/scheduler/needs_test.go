@@ -279,6 +279,63 @@ func TestSummarizeNeeds(t *testing.T) {
 	}
 }
 
+// TestNeedsSatisfied_ClampsMissingAndNoRowsDetail covers the LOW/SEC
+// path the steady-state clamp doesn't reach: the missing-dep and
+// no-rows branches in needsSatisfied build the Detail string
+// directly (not through describeBlocker), so they need their own
+// clamp. The integration test for ghost upstream exercises the
+// missing path; this unit test pins the clamp behaviour
+// independently of any DB.
+func TestNeedsSatisfied_ClampsMissingAndNoRowsDetail(t *testing.T) {
+	t.Parallel()
+
+	hugeName := strings.Repeat("a", 1024)
+
+	t.Run("missing dep", func(t *testing.T) {
+		t.Parallel()
+		got := needsSatisfied([]string{hugeName}, JobStatusMap{})
+		if got.Ok {
+			t.Fatalf("expected not satisfied for missing dep")
+		}
+		// "name: not in this run" — name clamped to 128 + 18 chars
+		// suffix = 146 chars max.
+		if len(got.Detail) > 160 {
+			t.Errorf("Detail len = %d, want clamped (~146); leak from missing-dep path",
+				len(got.Detail))
+		}
+	})
+
+	t.Run("no_rows defensive", func(t *testing.T) {
+		t.Parallel()
+		got := needsSatisfied([]string{hugeName}, JobStatusMap{hugeName: nil})
+		if got.Ok {
+			t.Fatalf("expected not satisfied for empty rows")
+		}
+		// "name: no job_run rows" — clamped to ~150 max.
+		if len(got.Detail) > 160 {
+			t.Errorf("Detail len = %d, want clamped; leak from no-rows path",
+				len(got.Detail))
+		}
+	})
+}
+
+// TestSummarizeNeeds_ClampsMissingNameInSummary verifies the
+// missing-dep formatting in summarizeNeeds clamps the name. Without
+// this, a pipeline with one absurdly-named ghost dep could blow up
+// the structured-log "blockers" field per dispatch tick.
+func TestSummarizeNeeds_ClampsMissingNameInSummary(t *testing.T) {
+	t.Parallel()
+
+	hugeName := strings.Repeat("z", 1024)
+	got := summarizeNeeds([]string{hugeName}, JobStatusMap{})
+	// One blocker "name:missing" — name clamped to 128, plus 8
+	// chars (":missing") = 136 chars max.
+	if len(got) > 150 {
+		t.Errorf("summary len = %d, want clamped; leak from missing-name path",
+			len(got))
+	}
+}
+
 // TestDescribeBlocker_ClampsRunawayName is the LOW/SEC guard: the
 // parser doesn't bound job names today, so a pathologically long
 // YAML name would otherwise flow verbatim into the job_runs.error

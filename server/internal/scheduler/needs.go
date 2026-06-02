@@ -107,10 +107,18 @@ func needsSatisfied(needs []string, status JobStatusMap) NeedsCheck {
 	for _, name := range needs {
 		rows, found := status[name]
 		if !found {
+			// Clamp the name BEFORE it flows into the Detail string:
+			// describeBlocker clamps in the steady-state path, but
+			// the missing-dep + no-rows paths build the string here
+			// directly and would otherwise leak an unbounded YAML
+			// name into the job_runs.error column and structured log.
+			// Parser rejects unknown names at apply, but the ghost
+			// integration test (snapshot drift / manual DB poke)
+			// exercises this branch — defense-in-depth.
 			return NeedsCheck{
 				Ok:               false,
 				UpstreamTerminal: true,
-				Detail:           fmt.Sprintf("%s: not in this run", name),
+				Detail:           fmt.Sprintf("%s: not in this run", clampNeedsField(name)),
 			}
 		}
 		if len(rows) == 0 {
@@ -120,7 +128,7 @@ func needsSatisfied(needs []string, status JobStatusMap) NeedsCheck {
 			return NeedsCheck{
 				Ok:               false,
 				UpstreamTerminal: true,
-				Detail:           fmt.Sprintf("%s: no job_run rows", name),
+				Detail:           fmt.Sprintf("%s: no job_run rows", clampNeedsField(name)),
 			}
 		}
 		for _, r := range rows {
@@ -194,7 +202,10 @@ func summarizeNeeds(needs []string, status JobStatusMap) string {
 	for _, name := range needs {
 		rows, found := status[name]
 		if !found {
-			parts = append(parts, name+":missing")
+			// Same clamp as needsSatisfied — a YAML with pathological
+			// names shouldn't blow up the log line even before the
+			// per-field 240-byte cap below kicks in.
+			parts = append(parts, clampNeedsField(name)+":missing")
 			continue
 		}
 		// Pick the first non-succeeded row to represent this name in
