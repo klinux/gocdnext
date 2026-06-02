@@ -149,11 +149,36 @@ func needsSatisfied(needs []string, status JobStatusMap) NeedsCheck {
 // fanout, include the specific matrix_key so the operator knows
 // which combo is blocking: "types-generate[node-20]: running".
 // For a non-matrix job, drop the bracket noise.
+//
+// Inputs are clamped per maxNeedsField — defense-in-depth against
+// a YAML with pathologically long job names or matrix keys flowing
+// into the job_runs.error column and the structured log line.
+// The parser doesn't bound job names today (and probably never
+// will: legitimate uses include scoped @org/path-shaped names),
+// so the clamp lives at the leaf-formatter where the bound is
+// load-bearing.
 func describeBlocker(name string, r JobStatusRow) string {
+	n := clampNeedsField(name)
+	s := clampNeedsField(r.Status)
 	if r.MatrixKey == "" {
-		return fmt.Sprintf("%s: %s", name, r.Status)
+		return fmt.Sprintf("%s: %s", n, s)
 	}
-	return fmt.Sprintf("%s[%s]: %s", name, r.MatrixKey, r.Status)
+	return fmt.Sprintf("%s[%s]: %s", n, clampNeedsField(r.MatrixKey), s)
+}
+
+// maxNeedsField is the per-field ceiling used by describeBlocker.
+// Sized generously enough for any legitimate name (npm scoped
+// names ~70 chars; matrix combos at most a few dozen) but bounded
+// enough that a YAML carrying a 1 MiB string can't blow up the
+// stored error column or log line. Mirrors the
+// cleanupAckErrorMax / clampBytes pattern in the grpcsrv ack path.
+const maxNeedsField = 128
+
+func clampNeedsField(s string) string {
+	if len(s) <= maxNeedsField {
+		return s
+	}
+	return s[:maxNeedsField]
 }
 
 // summarizeNeeds is a logger-friendly summary of the entire needs

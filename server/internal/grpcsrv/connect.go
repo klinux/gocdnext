@@ -667,10 +667,18 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 		}()
 	}
 
-	// Wake the scheduler so it dispatches the next stage without waiting for
-	// the periodic tick. Harmless if the run is already terminal (the handler
-	// just finds no dispatchable jobs).
-	if comp.StageCompleted && !comp.RunCompleted {
+	// Wake the scheduler on EVERY non-terminal-run completion, not
+	// only when the stage finished. Same-stage `needs:` siblings
+	// would otherwise wait up to one periodic tick (15s) because the
+	// stage stays open while the gated downstream is still queued —
+	// the stage-completed signal never fires until the downstream
+	// also lands, but the downstream can't dispatch without a tick.
+	// NOTIFY is cheap (microseconds), the dispatch handler is a
+	// no-op when there's no eligible work, and the periodic tick
+	// continues to serve as a backstop. Trading one wasted-tick log
+	// line per intra-stage completion for ~15s of latency removal
+	// is a clear win.
+	if !comp.RunCompleted {
 		if err := a.store.NotifyRunQueued(ctx, comp.RunID); err != nil {
 			log.Warn("agent result: notify run_queued", "err", err)
 		}

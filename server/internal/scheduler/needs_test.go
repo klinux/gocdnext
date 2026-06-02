@@ -279,6 +279,32 @@ func TestSummarizeNeeds(t *testing.T) {
 	}
 }
 
+// TestDescribeBlocker_ClampsRunawayName is the LOW/SEC guard: the
+// parser doesn't bound job names today, so a pathologically long
+// YAML name would otherwise flow verbatim into the job_runs.error
+// column AND every structured log line. Mirrors the
+// clampBytes pattern from the grpcsrv cleanup-ack handler.
+func TestDescribeBlocker_ClampsRunawayName(t *testing.T) {
+	t.Parallel()
+
+	hugeName := strings.Repeat("a", 1024)
+	hugeMatrix := strings.Repeat("m", 1024)
+	hugeStatus := strings.Repeat("s", 1024)
+
+	got := describeBlocker(hugeName, JobStatusRow{MatrixKey: hugeMatrix, Status: hugeStatus})
+
+	// Format is "name[matrix]: status" — three clamped fields plus
+	// 4 fixed bytes ("[", "]", ":", " "). At most 3*128 + 4 = 388.
+	if len(got) > 388 {
+		t.Errorf("describeBlocker output len = %d, want ≤388 (runaway fields not clamped)", len(got))
+	}
+	// Sanity: the first 128 'a's of the name must be present (clamp
+	// shouldn't drop the start of the string).
+	if !strings.HasPrefix(got, strings.Repeat("a", 128)) {
+		t.Errorf("describeBlocker output didn't preserve the clamped prefix")
+	}
+}
+
 // Regression: the summary line must not blow up the structured log
 // entry. 100 blocked deps with long names would otherwise produce a
 // multi-KB log line per tick.
