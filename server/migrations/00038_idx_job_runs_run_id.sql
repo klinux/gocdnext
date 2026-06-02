@@ -1,3 +1,4 @@
+-- +goose NO TRANSACTION
 -- +goose Up
 -- +goose StatementBegin
 
@@ -26,7 +27,25 @@
 -- Estimated cost: ~32 bytes per row + tree overhead. On 1M
 -- job_runs ≈ 32MB index. Acceptable for the perf gain on every
 -- dispatch tick.
-CREATE INDEX IF NOT EXISTS idx_job_runs_run_id
+--
+-- CONCURRENTLY is required here: this migration runs against
+-- live clusters with active job_runs writes (agents reporting
+-- results, scheduler dispatch). A normal CREATE INDEX takes an
+-- ACCESS EXCLUSIVE lock for the entire build — even tens of
+-- seconds of write-block on a hot table would back up agent
+-- writes long enough to trip session timeouts. CONCURRENTLY
+-- builds in two passes without blocking writes; trade-off is
+-- ~2x build time vs the locked path, which we don't care about
+-- here because the operator runs it once at deploy. The
+-- NO TRANSACTION directive at the top of this file is mandatory
+-- — CONCURRENTLY can't run inside a transaction block.
+--
+-- IF NOT EXISTS handles the rerun case: if a previous attempt
+-- failed mid-build (CONCURRENTLY leaves the index in an INVALID
+-- state on failure), a follow-up apply skips creation — operator
+-- must REINDEX or DROP+recreate manually before the migration
+-- can complete cleanly.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_job_runs_run_id
     ON job_runs (run_id, name, matrix_key NULLS FIRST)
     INCLUDE (status);
 
@@ -34,5 +53,5 @@ CREATE INDEX IF NOT EXISTS idx_job_runs_run_id
 
 -- +goose Down
 -- +goose StatementBegin
-DROP INDEX IF EXISTS idx_job_runs_run_id;
+DROP INDEX CONCURRENTLY IF EXISTS idx_job_runs_run_id;
 -- +goose StatementEnd

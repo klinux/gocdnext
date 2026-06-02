@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -177,12 +178,110 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 	// resolved — needs to know the full (name → stage_ordinal)
 	// mapping, which only exists post-loop. See validateNeeds for
 	// the three rejection classes (unknown name, self-reference,
-	// forward-stage reference).
+	// forward-stage reference) and validateNoCycles for the
+	// runtime-deadlock guard.
 	if err := validateNeeds(p.Jobs, f.Stages); err != nil {
+		return nil, err
+	}
+	if err := validateNoCycles(p.Jobs); err != nil {
 		return nil, err
 	}
 
 	return p, nil
+}
+
+// validateNoCycles detects cycles in the `needs:` graph via DFS
+// with three-color marking (classic algorithm). A cycle would
+// otherwise deadlock the scheduler at runtime: every job in the
+// cycle waits on another that's also waiting, all stay queued
+// indefinitely, and nothing makes progress.
+//
+// Why this isn't covered by validateNeeds:
+//   - forward-stage rejection only catches cycles that cross stages
+//     in the wrong direction. Same-stage cycles (`a needs b`,
+//     `b needs a` both in `build`) pass that check.
+//   - self-reference rejection catches the 1-node cycle (`a needs a`).
+//     But 2-cycle, 3-cycle, ... are not.
+//
+// Algorithm:
+//   - white (unvisited) = 0
+//   - gray (in current DFS stack) = 1
+//   - black (fully explored) = 2
+//     Hitting a gray node means we found a back-edge → cycle. The
+//     stack at that moment is the cycle path; we slice from the
+//     first occurrence of the revisited node to get a clean trace.
+//
+// Iteration order: caller may pass jobs in map-iteration order
+// (non-deterministic). DFS visits jobs alphabetically so the
+// error message is stable across runs — important when a
+// pipeline fails apply in CI and the operator compares error
+// strings across attempts.
+func validateNoCycles(jobs []domain.Job) error {
+	needs := make(map[string][]string, len(jobs))
+	names := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		needs[j.Name] = j.Needs
+		names = append(names, j.Name)
+	}
+	sort.Strings(names)
+
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(jobs))
+	var stack []string
+
+	var visit func(name string) error
+	visit = func(name string) error {
+		switch color[name] {
+		case black:
+			return nil
+		case gray:
+			// Back-edge → cycle. Slice the stack from where the
+			// revisited name first appears so the trace is just
+			// the cycle, not the whole DFS path leading to it.
+			start := 0
+			for i, n := range stack {
+				if n == name {
+					start = i
+					break
+				}
+			}
+			cycle := append([]string(nil), stack[start:]...)
+			cycle = append(cycle, name)
+			return fmt.Errorf("`needs:` cycle detected — jobs would deadlock at dispatch: %s", strings.Join(cycle, " → "))
+		}
+		color[name] = gray
+		stack = append(stack, name)
+		// Sort the dep list too so the error message is
+		// deterministic when multiple cycles exist.
+		deps := append([]string(nil), needs[name]...)
+		sort.Strings(deps)
+		for _, dep := range deps {
+			if _, exists := needs[dep]; !exists {
+				// Unknown name — already rejected by validateNeeds;
+				// skip the recursion to avoid a nil-map traversal.
+				// In the post-validateNeeds happy path this branch
+				// never fires.
+				continue
+			}
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		stack = stack[:len(stack)-1]
+		color[name] = black
+		return nil
+	}
+
+	for _, name := range names {
+		if err := visit(name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateNeeds checks every job's `needs:` list against the set of
