@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
-## Unreleased — v0.5.0 candidate
+## v0.5.0 — 2026-06-04
 
 ### `agent.workspace.accessMode`: workspace isolation per job
 
