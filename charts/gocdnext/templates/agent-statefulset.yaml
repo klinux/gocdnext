@@ -77,6 +77,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # accessMode picks the workspace strategy:
+            #   ReadWriteOnce (default, v0.5+): each job pod owns
+            #     an ephemeral PVC via volume.ephemeral. Agent does
+            #     NOT mount a workspace PVC — prep runs inside each
+            #     job pod's init container.
+            #   ReadWriteMany (legacy, pre-v0.5): per-replica PVC
+            #     from the StatefulSet's VCT is mounted by the
+            #     agent AND all spawned job pods. Requires an RWX
+            #     storage class (Filestore, NFS).
+            {{- if eq .Values.agent.workspace.accessMode "ReadWriteMany" }}
+            - name: GOCDNEXT_K8S_WORKSPACE_MODE
+              value: "shared"
             # Per-replica workspace PVC: the StatefulSet's VCT names
             # the claim `workspace-<podname>` (e.g. workspace-agent-0).
             # The agent reads this env to mount the right claim into
@@ -84,9 +96,7 @@ spec:
             #
             # Order matters: kubelet only expands $(VAR) against env
             # entries DEFINED EARLIER in the list — forward refs stay
-            # literal. POD_NAME (fieldRef) must come first, then
-            # WORKSPACE_PVC_NAME which interpolates it, then the
-            # public GOCDNEXT_K8S_WORKSPACE_PVC the agent reads.
+            # literal.
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -97,6 +107,27 @@ spec:
               value: $(WORKSPACE_PVC_NAME)
             - name: GOCDNEXT_K8S_WORKSPACE_PATH
               value: {{ .Values.agent.workspace.mountPath | quote }}
+            {{- else }}
+            - name: GOCDNEXT_K8S_WORKSPACE_MODE
+              value: "isolated"
+            - name: GOCDNEXT_K8S_WORKSPACE_PATH
+              value: {{ .Values.agent.workspace.mountPath | quote }}
+            - name: GOCDNEXT_K8S_WORKSPACE_SIZE
+              value: {{ .Values.agent.workspace.size | quote }}
+            {{- with .Values.agent.workspace.storageClass }}
+            - name: GOCDNEXT_K8S_WORKSPACE_STORAGE_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            # Init container in each job pod re-uses the agent
+            # image (the `gocdnext-agent prep` subcommand is part
+            # of the same binary).
+            - name: GOCDNEXT_K8S_AGENT_IMAGE
+              value: {{ include "gocdnext.image" (dict "root" . "imageRef" .Values.agent.image) | quote }}
+            {{- with .Values.agent.workspace.housekeeperImage }}
+            - name: GOCDNEXT_K8S_HOUSEKEEPER_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
               value: {{ .Values.agent.defaultJobImage | quote }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_SUCCESS
@@ -106,28 +137,22 @@ spec:
             - name: GOCDNEXT_K8S_FORCE_IMAGE_PULL_ALWAYS
               value: {{ .Values.agent.forceImagePullAlways | default false | quote }}
             {{- with .Values.agent.workspace.rootOverride }}
-            # Override only — the agent infers WorkspaceRoot from
-            # GOCDNEXT_K8S_WORKSPACE_PATH automatically when
-            # GOCDNEXT_AGENT_ENGINE=kubernetes. Set
-            # agent.workspace.rootOverride when the PVC is mounted at
-            # a non-default path that doesn't match the K8s engine
-            # mount the job pods receive.
             - name: GOCDNEXT_WORKSPACE_ROOT
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
-          {{- if eq .Values.agent.engine "kubernetes" }}
+          {{- if and (eq .Values.agent.engine "kubernetes") (eq .Values.agent.workspace.accessMode "ReadWriteMany") }}
           volumeMounts:
             - name: workspace
               mountPath: {{ .Values.agent.workspace.mountPath }}
           {{- end }}
           resources: {{- toYaml .Values.agent.resources | nindent 12 }}
-  {{- if eq .Values.agent.engine "kubernetes" }}
+  {{- if and (eq .Values.agent.engine "kubernetes") (eq .Values.agent.workspace.accessMode "ReadWriteMany") }}
   volumeClaimTemplates:
     - metadata:
         name: workspace
       spec:
-        accessModes: [{{ .Values.agent.workspace.accessMode | quote }}]
+        accessModes: [ReadWriteMany]
         {{- with .Values.agent.workspace.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}

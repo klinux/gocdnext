@@ -6,6 +6,149 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## Unreleased — v0.5.0 candidate
+
+### `agent.workspace.accessMode`: workspace isolation per job
+
+The Kubernetes runtime now picks the workspace strategy from
+`agent.workspace.accessMode`. The new default is `ReadWriteOnce`
+(GHA-style isolation); the previous shared model is opt-in via
+`ReadWriteMany`.
+
+```yaml
+# values.yaml
+agent:
+  workspace:
+    accessMode: ReadWriteOnce    # NEW default; was the de-facto pre-v0.5
+    storageClass: pd-ssd
+    size: 20Gi
+```
+
+**ReadWriteOnce — isolated mode (new default):**
+
+- Each job pod owns an **ephemeral PVC** via `volume.ephemeral`.
+  Storage class + size from the values above; PVC dies with the
+  pod.
+- An **init container "prep"** runs `gocdnext-agent prep` inside
+  the job pod, materialising the workspace (clone, artifact
+  download) against the pod's PVC.
+- The main "task" container runs the user's script/plugin.
+- A "housekeeper" sidecar stays alive after the task terminates;
+  the agent execs `tar -czf - <path>` inside it to stream
+  artefacts to signed PUT URLs.
+- Works with any CSI driver — `pd-ssd`, `local-ssd`, anything
+  RWO-capable.
+
+Why: the previous shared-PVC model required RWX storage
+(Filestore/NFS) which is syscall-bound for typical artefact
+patterns (pnpm `node_modules` symlink farms). On a real workload
+(cora-pulse pipeline) 83% of job time was spent untarring 60MB
+of `node_modules` over NFS. Isolated mode lets operators pick a
+fast block storage class.
+
+**ReadWriteMany — shared mode (legacy, opt-in):**
+
+Pre-v0.5 behaviour preserved unchanged. A single per-replica PVC
+from the StatefulSet's VCT is mounted by the agent AND every job
+pod it spawns. Required for caches and multi-task jobs (see
+limitations below).
+
+**v0.5.0 limitations in isolated mode (follow-up issues):**
+
+- **Multi-task jobs not supported.** Pods are 1-per-job, not
+  1-per-task, so we'd need init-container chaining + exit-code
+  wrapping per task — deferred. Multi-task jobs in isolated mode
+  fail fast with a clear error pointing to `accessMode:
+  ReadWriteMany`.
+- **Pipeline services not supported.** A job declaring `services:`
+  (postgres/redis/etc.) is load-bearing — silently dropping the
+  declarations would break the job. Fails fast with a clear error;
+  use `accessMode: ReadWriteMany` for those jobs.
+- **Caches are skipped.** Init container has no gRPC session to
+  call `RequestCacheGet`. Job runs without pre-populated cache;
+  next cold build is slower. Switch to `ReadWriteMany` if you
+  rely on caches.
+- **test_reports skipped.** JUnit collection runs on the agent's
+  local fs in shared mode; in isolated mode the XMLs live in the
+  pod's ephemeral PVC and there's no exec-side parser yet. The
+  Tests tab will be empty; the job itself still succeeds/fails on
+  the task exit code. Warn on declaration; switch to
+  `ReadWriteMany` for per-case reporting.
+
+**Defence-in-depth notes for isolated mode:**
+
+- Task containers run with
+  `automountServiceAccountToken: false` so the agent's SA token
+  is unreachable from inside user code (defends against a future
+  permissive-RBAC regression).
+- The assignment Secret is explicitly deleted by the runner once
+  prep terminates — the payload doesn't outlive its consumption
+  window even when the Pod is kept for debugging
+  (`CleanupOnFailure: false`).
+- Init-startup is bounded by `StartupTimeout`: a stuck PVC bind /
+  image pull / unschedulable Pod fails the job rather than
+  pinning it in "running".
+- The agent's exec'd `tar` uses `--` before the artifact path so
+  paths starting with `-` aren't reinterpreted as flags.
+
+**Migration:** existing deployments that worked on RWX **must**
+explicitly set `agent.workspace.accessMode: ReadWriteMany` to
+keep that behaviour. New deployments default to `ReadWriteOnce`.
+
+### RBAC additions
+
+The agent's Role now grants `pods/exec` (create, get) and
+`secrets` (**create, patch, delete** — *not* `get`) verbs:
+
+- `pods/exec` is load-bearing in isolated mode: the agent
+  exec's `tar` inside the housekeeper sidecar to stream
+  artefacts out to signed PUT URLs.
+- `secrets` lets the agent create a per-job assignment
+  Secret (serialised `JobAssignment` mounted into the prep
+  init container) and patch its `ownerReference` back to
+  the Pod. The absence of `get` is deliberate — the agent
+  only Create/Patch/Delete'es secrets it owns and never
+  needs to read another secret's content. Withholding `get`
+  keeps the agent SA from being a generic
+  secret-exfiltration vector if the binary is later
+  compromised.
+
+Both are scoped to the agent's release namespace.
+
+### New `gocdnext-agent prep` subcommand
+
+The agent binary gains a `prep` subcommand for use as the init
+container entrypoint in isolated mode:
+
+```sh
+gocdnext-agent prep \
+  --assignment=/etc/gocdnext/assignment.pb \
+  --workspace=/workspace
+```
+
+Reads a `JobAssignment` protobuf blob (mounted via Secret),
+runs checkout + artifact download against the given workspace,
+logs progress to stdout. Operators shouldn't need to invoke it
+manually — the engine wires the init container automatically
+when `accessMode: ReadWriteOnce`.
+
+### Helm values: new agent.workspace.* fields
+
+- `agent.workspace.accessMode`: `ReadWriteOnce` (default) or
+  `ReadWriteMany`.
+- `agent.workspace.housekeeperImage`: override the sidecar
+  image used in isolated mode (default `alpine:3.19`, must
+  have `sh` + `tar` — busybox-derived works).
+- `agent.workspace.rootOverride`: rarely needed — force a
+  different `GOCDNEXT_WORKSPACE_ROOT` on the agent process.
+
+### Agent env additions
+
+`GOCDNEXT_K8S_WORKSPACE_MODE`, `GOCDNEXT_K8S_WORKSPACE_STORAGE_CLASS`,
+`GOCDNEXT_K8S_WORKSPACE_SIZE`, `GOCDNEXT_K8S_AGENT_IMAGE`,
+`GOCDNEXT_K8S_HOUSEKEEPER_IMAGE` — all wired by the chart, no
+operator action needed in standard deploys.
+
 ## v0.4.39 — 2026-06-04
 
 Two plugin changes — node v2 rewrite (breaking) and a new

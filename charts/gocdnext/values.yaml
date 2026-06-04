@@ -73,15 +73,61 @@ agent:
   workspace:
     storageClass: ""        # "" = cluster default
     size: 20Gi
-    # Per-replica PVC via the StatefulSet's volumeClaimTemplates.
-    # ReadWriteOnce works on every CSI driver; the old shared
-    # ReadWriteMany model is gone — each agent now owns its own
-    # workspace, no cross-pod write contention.
+    # accessMode picks the workspace strategy. Two operating modes:
+    #
+    #   ReadWriteOnce (default, v0.5+, GHA-style isolation):
+    #     Each job pod owns an ephemeral PVC via volume.ephemeral
+    #     using `storageClass` + `size` above. The agent process
+    #     does NOT mount a workspace PVC; prep (clone, artifact
+    #     download) runs in an init container inside each job pod.
+    #     Steps within a single job share the workspace via the
+    #     pod's volume mount; jobs do NOT share workspace.
+    #     Works with any CSI driver — pd-ssd, local-ssd, etc.
+    #
+    #     Limitations in v0.5.0 (see CHANGELOG for follow-up issues):
+    #       - Multi-task jobs not supported (single task per job).
+    #       - Caches are skipped (no gRPC session in the init
+    #         container yet). Use literal vs templated keys + jobs
+    #         re-resolve cold; switch to ReadWriteMany if you need
+    #         caches.
+    #
+    #   ReadWriteMany (legacy, pre-v0.5 behaviour):
+    #     A single per-replica PVC from the StatefulSet's VCT is
+    #     mounted by the agent AND every job pod it spawns. The
+    #     agent does prep on its local filesystem (= the mounted
+    #     volume); jobs see the same bytes. Requires an RWX storage
+    #     class (Filestore, NFS, CephFS). Caches + multi-task jobs
+    #     fully supported.
     accessMode: ReadWriteOnce
     mountPath: /workspace
+    # housekeeperImage overrides the sidecar image used in isolated
+    # mode (default alpine:3.19 — must have `sh` + `tar`). The
+    # housekeeper container stays alive after the task terminates so
+    # the agent can `kubectl exec`-equivalent in to tar artefacts.
+    housekeeperImage: ""
+    # rootOverride forces a different workspace root path on the
+    # agent (rarely needed). Empty falls through to the engine's
+    # mount path / /tmp default.
+    rootOverride: ""
   defaultJobImage: alpine:3.19
   jobCleanup:
     onSuccess: true
+    # onFailure default of `false` keeps a failed job's Pod around
+    # so operators can `kubectl logs`/`kubectl describe` it.
+    #
+    # Operational cost in `accessMode: ReadWriteOnce` (isolated)
+    # mode: each retained failed Pod also retains its housekeeper
+    # sidecar (~10m CPU/16Mi RAM idle) AND its ephemeral PVC
+    # (`agent.workspace.size`, 20Gi by default). A run of N
+    # consecutive failures piles up N×20Gi of unreleased storage
+    # until manual `kubectl delete pods -l
+    # gocdnext.io/run-id=...`. Operators running auto-retry
+    # workloads should consider `onFailure: true` and rely on
+    # streamed logs (already captured via the agent) for post-
+    # mortem.
+    #
+    # `ReadWriteMany` (shared) mode doesn't carry the per-job
+    # PVC cost since jobs share the agent's PVC.
     onFailure: false
   # forceImagePullAlways overrides the per-tag heuristic the agent
   # applies when picking ImagePullPolicy for job containers. Default

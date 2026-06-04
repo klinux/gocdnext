@@ -89,24 +89,73 @@ func extractImageTag(image string) string {
 	return ""
 }
 
-// KubernetesConfig configures the K8s engine. Deployment pattern:
-// the agent itself runs in-cluster with an emptyDir OR PVC at
-// WorkspaceMountPath, and each job Pod it creates mounts the same
-// volume. The agent prepares the workspace on its local filesystem
-// (which IS the mounted volume), then creates a Pod whose main
-// container's workingDir is that same path.
+// WorkspaceMode selects how the job's filesystem is provisioned.
 //
-// ReadWriteMany PVC lets the agent and job Pods sit on different
-// nodes. ReadWriteOnce works too but pins both to the same node via
-// nodeAffinity (operator's responsibility).
+//   - WorkspaceModeShared: the agent itself runs in-cluster with a
+//     PVC at WorkspaceMountPath, and each job Pod it creates mounts
+//     the SAME PVC. The agent prepares the workspace on its local
+//     filesystem (which IS the mounted volume), then creates a Pod
+//     whose main container's workingDir is that same path. Requires
+//     RWX storage class so the agent and job pods can co-mount.
+//     Pre-v0.5.0 behaviour; preserved for backward compatibility.
+//
+//   - WorkspaceModeIsolated: each job Pod owns an ephemeral PVC
+//     provisioned via volume.ephemeral. The Pod has an init
+//     container ("prep") that runs `gocdnext-agent prep` inside the
+//     pod — clones materials, downloads upstream artefacts, fetches
+//     caches — then the main "task" container runs the user's
+//     command, plus a "housekeeper" sidecar the agent execs into for
+//     post-task work (artifact upload, cache store). PVC dies with
+//     the pod. Works with any storage class (RWO is fine since each
+//     pod has its own PVC). Default new mode.
+type WorkspaceMode string
+
+const (
+	WorkspaceModeShared   WorkspaceMode = "shared"
+	WorkspaceModeIsolated WorkspaceMode = "isolated"
+)
+
+// KubernetesConfig configures the K8s engine. See WorkspaceMode for
+// how the workspace volume is wired in each mode.
 type KubernetesConfig struct {
 	Namespace          string
 	KubeconfigPath     string // empty = in-cluster
-	WorkspacePVCName   string // empty = emptyDir (same-Pod only)
+	WorkspacePVCName   string // shared mode: PVC the agent + jobs co-mount. Ignored in isolated mode.
 	WorkspaceMountPath string // default "/workspace"
 	DefaultImage       string // fallback when ScriptSpec.Image is empty
 	ImagePullSecrets   []string
 	NodeSelector       map[string]string
+
+	// WorkspaceMode picks shared (legacy) vs isolated (per-job
+	// ephemeral PVC). Empty defaults to WorkspaceModeShared so
+	// existing deployments keep working.
+	WorkspaceMode WorkspaceMode
+
+	// WorkspaceStorageClass names the storage class used for the
+	// per-job ephemeral PVC in isolated mode. Empty means "cluster
+	// default". Operator picks pd-ssd / local-ssd / etc. depending
+	// on what their cluster offers and how much they care about
+	// pod-startup time vs throughput. Ignored in shared mode.
+	WorkspaceStorageClass string
+
+	// WorkspaceSize is the requested size of the per-job ephemeral
+	// PVC in isolated mode (a k8s resource.Quantity literal like
+	// "20Gi"). Empty defaults to "20Gi". Ignored in shared mode.
+	WorkspaceSize string
+
+	// HousekeeperImage is the small image used for the "housekeeper"
+	// sidecar in isolated mode — the container the agent execs into
+	// after the task terminates to tar workspace files + stream them
+	// to signed upload URLs. Needs `tar` + `sh` available. Default
+	// "alpine:3.19".
+	HousekeeperImage string
+
+	// AgentImage is the image used for the "prep" init container in
+	// isolated mode — must be the same gocdnext-agent binary the
+	// agent itself runs so `gocdnext-agent prep` is on PATH. Empty
+	// defaults to a sentinel that fails BuildPodSpec loudly: operator
+	// must configure this via the Helm chart.
+	AgentImage string
 
 	// DinDImage is the image used for the Docker-in-Docker sidecar
 	// when a job sets `docker: true`. Default "docker:24-dind".
@@ -144,9 +193,11 @@ type KubernetesConfig struct {
 // configured namespace. Thread-safe — RunScript has no shared
 // mutable state.
 type Kubernetes struct {
-	client  kubernetes.Interface
-	cfg     KubernetesConfig
-	nowName func() string // replaceable in tests
+	client   kubernetes.Interface
+	restCfg  *rest.Config // nil in fake-client paths; required for exec
+	executor PodExecutor  // injected; defaults to NewSPDYExecutor when restCfg is set
+	cfg      KubernetesConfig
+	nowName  func() string // replaceable in tests
 }
 
 // NewKubernetes constructs the engine. Returns an error when
@@ -164,11 +215,17 @@ func NewKubernetes(cfg KubernetesConfig) (*Kubernetes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine: kubernetes: build client: %w", err)
 	}
-	return NewKubernetesWithClient(client, cfg), nil
+	k := NewKubernetesWithClient(client, cfg)
+	k.restCfg = restCfg
+	k.executor = NewSPDYExecutor(client, restCfg, cfg.Namespace)
+	return k, nil
 }
 
 // NewKubernetesWithClient is the test seam: supply a (possibly fake)
-// clientset directly.
+// clientset directly. Tests that need exec inject a fake PodExecutor
+// via SetExecutor; the default executor is nil so a test that exercises
+// isolated-mode exec without injecting fails loudly instead of dialling
+// a real cluster.
 func NewKubernetesWithClient(client kubernetes.Interface, cfg KubernetesConfig) *Kubernetes {
 	applyKubernetesDefaults(&cfg)
 	return &Kubernetes{
@@ -177,6 +234,20 @@ func NewKubernetesWithClient(client kubernetes.Interface, cfg KubernetesConfig) 
 		nowName: defaultPodName,
 	}
 }
+
+// SetExecutor injects a PodExecutor — test seam for isolated-mode
+// exec flows. Production code uses the SPDY executor wired in
+// NewKubernetes.
+func (k *Kubernetes) SetExecutor(e PodExecutor) { k.executor = e }
+
+// Executor returns the configured PodExecutor (or nil if none was
+// injected — fake-client paths default to nil).
+func (k *Kubernetes) Executor() PodExecutor { return k.executor }
+
+// Config returns a copy of the engine's config — read-only access
+// for the runner to decide between shared and isolated dispatch
+// without re-reading env vars.
+func (k *Kubernetes) Config() KubernetesConfig { return k.cfg }
 
 func applyKubernetesDefaults(cfg *KubernetesConfig) {
 	if cfg.WorkspaceMountPath == "" {
@@ -187,6 +258,15 @@ func applyKubernetesDefaults(cfg *KubernetesConfig) {
 	}
 	if cfg.DinDImage == "" {
 		cfg.DinDImage = "docker:24-dind"
+	}
+	if cfg.HousekeeperImage == "" {
+		cfg.HousekeeperImage = "alpine:3.19"
+	}
+	if cfg.WorkspaceMode == "" {
+		cfg.WorkspaceMode = WorkspaceModeShared
+	}
+	if cfg.WorkspaceSize == "" {
+		cfg.WorkspaceSize = "20Gi"
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = time.Second

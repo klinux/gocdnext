@@ -23,6 +23,40 @@ rules:
   - apiGroups: [""]
     resources: [pods/status]
     verbs: [get]
+  # pods/exec is load-bearing in isolated workspace mode: the agent
+  # exec's `tar -czf -` inside the job pod's housekeeper sidecar to
+  # stream artefacts out to signed PUT URLs. Without this verb the
+  # post-task upload fails with a 403 from the API server. Shared
+  # mode doesn't strictly need it today, but keeping it on the
+  # default Role means `accessMode` can be flipped at runtime
+  # without an RBAC re-deploy.
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create, get]
+  # Secrets: agent creates a per-job assignment Secret in isolated
+  # mode (carries the serialised JobAssignment for the prep init
+  # container) and patches its OwnerReference back to the Pod for
+  # automatic GC. NOTE the absence of `get`/`list`/`watch`:
+  # the engine only ever Create/Patch/Delete'es the secrets it
+  # owns and never needs to read another secret's content.
+  # Withholding `get` keeps the agent SA from being a generic
+  # secret-exfiltration vector if the binary is later compromised.
+  #
+  # Residual risk: `patch` + `delete` apply to ANY Secret in the
+  # release namespace, not just the agent's own. Kubernetes RBAC
+  # doesn't support resourceName glob matching, so we can't scope
+  # this to "secrets prefixed with gocdnext-job-". Recommended
+  # operational mitigation: deploy the chart into a NAMESPACE
+  # DEDICATED to the agent (no other workload's secrets share the
+  # blast radius). Multi-tenant clusters should give each agent
+  # release its own namespace; the chart's defaults already
+  # encourage this via per-release naming.
+  #
+  # Shared mode doesn't touch Secrets — the Role carries the
+  # verbs anyway so mode flips work without RBAC churn.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
