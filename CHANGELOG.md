@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.38 — 2026-06-04
+
+Patch release fixing one bug in the `python` plugin.
+
+### `python` plugin: rewrite_venv_shebangs now catches uv exec-wrapper
+
+`uv sync` generates two flavours of entry-point script in `.venv/bin`:
+
+1. **Classic shebang** — `#!/path/to/.venv/bin/python` on line 1.
+2. **Exec-wrapper trick** — `#!/bin/sh` on line 1 (generic) with
+   `'''exec' "/path/to/.venv/bin/python3" "$0" "$@"` on line 2.
+
+The plugin's `rewrite_venv_shebangs` only touched line 1, so an
+artifact-restored venv with the line-2 wrapper survived the plugin's
+cross-job rewrite logically but still pointed at the install job's
+dead workspace path at runtime. Result: `uv run mypy app/` produced
+`.venv/bin/mypy: 2: exec: /workspace/<install-uuid>/.../python3: not found`
+even with `no-install: true` set.
+
+Fix: discover the OLD venv root by reading
+`export VIRTUAL_ENV=...` out of `.venv/bin/activate` (every manager
+writes it verbatim at create time), then `sed -i 's|old|new|g'`
+globally across every regular file under `.venv/bin/` AND across
+the activate variants themselves. Catches both shebang flavours
+plus any other absolute reference the wrappers carry. Idempotent,
+manager-agnostic.
+
+Bumps plugin image `ghcr.io/klinux/gocdnext-plugin-python:v1` to
+include the fix — operators on `v1` get the fix on next pull;
+those pinning a specific tag need to bump to `:v0.4.38`.
+
 ## v0.4.37 — 2026-06-02
 
 Cache key templating with `{{ hash "..." }}` ([issue #5](https://github.com/klinux/gocdnext/issues/5))

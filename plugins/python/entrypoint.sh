@@ -52,22 +52,33 @@ cd "${WORKING_DIR}"
 
 # rewrite_venv_shebangs makes a .venv that arrived via artefact
 # usable in this job. Python entry-point scripts (.venv/bin/ruff,
-# /mypy, /alembic, …) carry a shebang like
-#   `#!/workspace/<install-job-uuid>/.../.venv/bin/python`
-# which is exactly what pip/uv wrote at install time — pointing at
-# the upstream job's workspace. When the consumer job's kernel
-# tries to exec the script, that interpreter path is gone and
-# exec() returns ENOENT — surfaces as the opaque
-#   `Failed to spawn: ruff / No such file or directory`.
-# `uv venv --relocatable` (tried in v0.4.29) only makes the
-# activate script portable, NOT the entry-point shebangs.
+# /mypy, /alembic, …) carry references to the install-job's
+# workspace path baked in at install time:
 #
-# Fix: rewrite the first line of each .venv/bin/* script to point
-# at THIS job's `$PWD/.venv/bin/python` so the entry-points spawn
-# correctly. Idempotent — if the shebang already matches our path,
-# sed substitutes a line with the same content. The venv's own
-# `python` lives as a SYMLINK (not a script) so we only touch
-# regular files. Fast: a typical venv has ~30 entry-point scripts.
+#  1. Classic shebang on line 1:
+#       `#!/workspace/<old-uuid>/.../.venv/bin/python`
+#  2. uv's "exec wrapper" trick on line 2:
+#       `#!/bin/sh`
+#       `'''exec' "/workspace/<old-uuid>/.../.venv/bin/python3" "$0" "$@"`
+#
+# A line-1-only shebang rewrite (pre-v0.4.38) caught (1) but
+# missed (2), so `uv run mypy app/` would fail with
+#   `.venv/bin/mypy: 2: exec: /old/path/python3: not found`
+# even after the plugin claimed to have rewritten the venv.
+#
+# Fix: discover the OLD venv root by reading
+# `export VIRTUAL_ENV=...` out of the activate script (every
+# manager writes it verbatim at create time — uv, poetry,
+# python -m venv all match), then `sed -i 's|old|new|g'` across
+# every regular file under .venv/bin. That catches both forms +
+# any other absolute reference the wrappers carry. Idempotent —
+# the substitution is a no-op when old == new (or when an old
+# rewrite already happened). Also rewrite the activate scripts
+# themselves so a downstream `source .venv/bin/activate`
+# (uncommon but legal) doesn't re-export the dead path.
+# `uv venv --relocatable` (tried in v0.4.29) only makes activate
+# portable; the entry-point bodies still carry the absolute path.
+# Fast: a typical venv has ~30 scripts, each a few KiB.
 # activate_venv replaces `source .venv/bin/activate` so we don't
 # inherit the install-time hardcoded paths from the upstream
 # activate script. uv (and python -m venv) write activate with
@@ -95,21 +106,76 @@ activate_venv() {
 
 rewrite_venv_shebangs() {
     [ -d .venv/bin ] || return 0
-    local venv_python="$(pwd)/.venv/bin/python"
-    [ -e "$venv_python" ] || return 0
-    local f
+    local new_venv="$(pwd)/.venv"
+    local new_python="${new_venv}/bin/python"
+    [ -e "$new_python" ] || return 0
+
+    # Discover the OLD venv root from the activate script. Every
+    # manager (uv / poetry / `python -m venv`) writes
+    # `export VIRTUAL_ENV=/path/to/.venv` at the same place; we
+    # extract that path and use it as the search prefix for the
+    # global rewrite below. When activate is missing (a manager
+    # we don't know about, or a stripped venv), we fall back to
+    # line-1 shebang rewrite only — better than nothing, and
+    # covers the classic-shebang case which is the dominant one
+    # on pip/poetry venvs.
+    local old_venv=""
+    if [ -f .venv/bin/activate ]; then
+        old_venv="$(awk -F= '
+            /^[[:space:]]*export[[:space:]]+VIRTUAL_ENV[[:space:]]*=/ {
+                sub(/^[[:space:]]*"/, "", $2);
+                sub(/"[[:space:]]*$/, "", $2);
+                print $2;
+                exit
+            }' .venv/bin/activate)"
+    fi
+
+    local f line
     for f in .venv/bin/*; do
         [ -f "$f" ] || continue
-        # Only touch scripts that start with a python shebang. The
-        # `IFS= read` form gives us the first line without slurping
-        # binaries; on a non-text file the read fails and we skip.
+        # Only touch text files with a shebang. `IFS= read` fails
+        # on binaries with NULs in the first line, which skips them.
         IFS= read -r line < "$f" 2>/dev/null || continue
         case "$line" in
-            "#!"*python*)
-                sed -i "1c\\#!$venv_python" "$f"
+            "#!"*)
+                # Line 1: rewrite a python-pointing shebang to our
+                # interpreter directly. Catches the classic case
+                # (`#!/old/.venv/bin/python`) without needing
+                # old_venv to be known.
+                case "$line" in
+                    *python*)
+                        sed -i "1c\\#!$new_python" "$f"
+                        ;;
+                esac
+                # Anywhere in the file: substitute the old venv
+                # root with the current one. Catches uv's line-2
+                # `'''exec' "/old/.venv/bin/python3"` wrapper plus
+                # any other absolute reference (e.g. paths in
+                # __pycache__ comments). Skipped when old == new
+                # (idempotent) or when we couldn't read activate.
+                if [ -n "$old_venv" ] && [ "$old_venv" != "$new_venv" ]; then
+                    # `|` as the sed delimiter so the / in paths
+                    # doesn't need escaping. UUIDs + workspace
+                    # paths are alphanumeric + - + /, all safe.
+                    sed -i "s|${old_venv}|${new_venv}|g" "$f"
+                fi
                 ;;
         esac
     done
+
+    # Rewrite the activate variants themselves so a downstream
+    # `source .venv/bin/activate` doesn't re-export the dead path
+    # and shadow our manual activate_venv() call. Each variant
+    # uses the same VIRTUAL_ENV= idiom in its shell syntax; a
+    # global path substitution covers all of them.
+    if [ -n "$old_venv" ] && [ "$old_venv" != "$new_venv" ]; then
+        for f in .venv/bin/activate .venv/bin/activate.csh \
+                 .venv/bin/activate.fish .venv/bin/activate.ps1 \
+                 .venv/bin/Activate.ps1 .venv/bin/activate.bat; do
+            [ -f "$f" ] || continue
+            sed -i "s|${old_venv}|${new_venv}|g" "$f"
+        done
+    fi
 }
 
 # Point every package manager's cache dir at a relative-to-PWD
