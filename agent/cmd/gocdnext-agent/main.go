@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,14 +13,41 @@ import (
 	"strings"
 	"syscall"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	"github.com/gocdnext/gocdnext/agent/internal/rpc"
+	"github.com/gocdnext/gocdnext/agent/internal/runner"
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
 var Version = "dev"
 
 func main() {
+	// Subcommand dispatch. Kept hand-rolled (no cobra) because the
+	// surface is small: version + prep. Anything else falls through
+	// to the historical "no subcommand" agent main loop.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-v":
+			fmt.Println(Version)
+			return
+		case "prep":
+			// Init container entrypoint: deserialise the JobAssignment
+			// mounted into the pod, run workspace materialisation
+			// (clone + artifact download), exit. K8s gates the main
+			// containers on this exit code — non-zero = pod fails.
+			if err := runPrep(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "prep:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+	// Defence in depth: a flag like `--version=true` would slip past
+	// the os.Args[1] switch above. Keep the historical loop so the
+	// long-form keeps working.
 	for _, a := range os.Args[1:] {
 		if a == "--version" || a == "-v" || a == "version" {
 			fmt.Println(Version)
@@ -104,12 +132,18 @@ func loadConfig() (rpc.Config, error) {
 //  1. GOCDNEXT_WORKSPACE_ROOT explicit override → use as-is. Reserved
 //     for operators who mount the PVC at a non-default path or want
 //     /tmp behaviour for a particular reason.
-//  2. engine == "kubernetes" → GOCDNEXT_K8S_WORKSPACE_PATH (the PVC
-//     mount point job pods receive). REQUIRED in this mode; an
-//     empty value is a misconfig the operator should hear about at
-//     boot, not as a `lstat` failure inside a buildx plugin three
-//     minutes into the first real job.
-//  3. shell / docker / unset → empty, runner falls back to its
+//  2. engine == "kubernetes" + workspace mode == "shared" →
+//     GOCDNEXT_K8S_WORKSPACE_PATH (the PVC mount point job pods
+//     receive). REQUIRED in this mode; an empty value is a misconfig
+//     the operator should hear about at boot, not as a `lstat`
+//     failure inside a buildx plugin three minutes into the first
+//     real job.
+//  3. engine == "kubernetes" + workspace mode == "isolated" → empty;
+//     the agent never writes to a workspace dir in isolated mode
+//     (prep runs inside each job pod's init container against the
+//     pod's own ephemeral PVC). Runner falls back to /tmp default for
+//     bookkeeping only.
+//  4. shell / docker / unset → empty, runner falls back to its
 //     `/tmp/gocdnext-workspace/` default. Shell tasks run on the
 //     agent's own fs; docker tasks share the host fs through the
 //     docker socket. Either way `/tmp` is fine.
@@ -124,12 +158,20 @@ func resolveWorkspaceRoot() (string, error) {
 	if engine != "kubernetes" {
 		return "", nil
 	}
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_MODE")))
+	if mode == "isolated" {
+		// Isolated mode: agent doesn't materialise the workspace
+		// itself; init container does it inside each job pod. No
+		// path requirement; fall through to /tmp default.
+		return "", nil
+	}
 	mount := strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_PATH"))
 	if mount == "" {
 		return "", fmt.Errorf(
-			"GOCDNEXT_AGENT_ENGINE=kubernetes requires GOCDNEXT_K8S_WORKSPACE_PATH " +
-				"to be set so the agent + spawned job pods share the same PVC view; " +
-				"the chart wires it to agent.workspace.mountPath")
+			"GOCDNEXT_AGENT_ENGINE=kubernetes with GOCDNEXT_K8S_WORKSPACE_MODE=shared " +
+				"requires GOCDNEXT_K8S_WORKSPACE_PATH to be set so the agent + spawned " +
+				"job pods share the same PVC view; the chart wires it to " +
+				"agent.workspace.mountPath")
 	}
 	return mount, nil
 }
@@ -180,6 +222,29 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 			WorkspacePVCName:   os.Getenv("GOCDNEXT_K8S_WORKSPACE_PVC"),
 			WorkspaceMountPath: os.Getenv("GOCDNEXT_K8S_WORKSPACE_PATH"),
 			DefaultImage:       os.Getenv("GOCDNEXT_K8S_DEFAULT_IMAGE"),
+			AgentImage:         os.Getenv("GOCDNEXT_K8S_AGENT_IMAGE"),
+			HousekeeperImage:   os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_IMAGE"),
+		}
+		mode := strings.ToLower(strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_MODE")))
+		switch mode {
+		case "", "shared":
+			cfg.WorkspaceMode = engine.WorkspaceModeShared
+		case "isolated":
+			cfg.WorkspaceMode = engine.WorkspaceModeIsolated
+		default:
+			return nil, fmt.Errorf("GOCDNEXT_K8S_WORKSPACE_MODE=%q not supported (use shared or isolated)", mode)
+		}
+		if cfg.WorkspaceMode == engine.WorkspaceModeIsolated {
+			cfg.WorkspaceStorageClass = strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_STORAGE_CLASS"))
+			if v := strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_SIZE")); v != "" {
+				cfg.WorkspaceSize = v
+			}
+			if cfg.AgentImage == "" {
+				return nil, fmt.Errorf(
+					"GOCDNEXT_K8S_WORKSPACE_MODE=isolated requires GOCDNEXT_K8S_AGENT_IMAGE " +
+						"so the init container can run `gocdnext-agent prep` " +
+						"(the chart wires it to agent.image.repository:agent.image.tag)")
+			}
 		}
 		if raw := os.Getenv("GOCDNEXT_K8S_IMAGE_PULL_SECRETS"); raw != "" {
 			for _, s := range strings.Split(raw, ",") {
@@ -198,6 +263,7 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 		}
 		logger.Info("agent engine: kubernetes",
 			"namespace", cfg.Namespace,
+			"workspace_mode", cfg.WorkspaceMode,
 			"workspace_pvc", cfg.WorkspacePVCName,
 			"default_image", cfg.DefaultImage)
 		return eng, nil
@@ -209,3 +275,39 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 // versionString returns a static version string until we wire ldflags at build
 // time. Keeping it here lets us bump once instead of hunting the literal.
 func versionString() string { return "0.1.0-dev" }
+
+// runPrep is the entrypoint for `gocdnext-agent prep`, executed
+// inside the "prep" init container of an isolated-mode job pod.
+// Reads a JobAssignment protobuf blob from --assignment, materialises
+// the workspace at --workspace (clone + artifact download), logs
+// progress to stdout (k8s log collection picks it up). Returns
+// non-nil error on any failure — main converts to non-zero exit so
+// k8s reports the init container as failed.
+func runPrep(args []string) error {
+	fs := flag.NewFlagSet("prep", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	assignmentPath := fs.String("assignment", "/etc/gocdnext/assignment.pb",
+		"path to the serialised JobAssignment protobuf (mounted via Secret in isolated mode)")
+	workspaceDir := fs.String("workspace", "/workspace",
+		"directory where the workspace is materialised (must be the mount point of the pod's ephemeral PVC)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(*assignmentPath)
+	if err != nil {
+		return fmt.Errorf("read assignment %s: %w", *assignmentPath, err)
+	}
+	var a gocdnextv1.JobAssignment
+	if err := proto.Unmarshal(data, &a); err != nil {
+		return fmt.Errorf("unmarshal assignment: %w", err)
+	}
+
+	// Propagate SIGINT/SIGTERM into the prep context so a pod
+	// deletion (kubelet sends TERM, then KILL after grace) cleanly
+	// aborts the in-flight git clone instead of leaving a half-tree.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	return runner.Prep(ctx, &a, *workspaceDir, os.Stdout)
+}

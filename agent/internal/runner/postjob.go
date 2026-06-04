@@ -1,0 +1,122 @@
+// Package runner — postjob.go owns the post-task work for an
+// isolated-mode job. Once the task container has terminated, the
+// agent process (not the pod) drives:
+//
+//   - Required + optional artifact uploads via the existing
+//     gRPC RequestArtifactUpload dance plus a tar streamed from
+//     the housekeeper sidecar via PodExecutor.
+//
+// Cache store is intentionally skipped in v0.5.0 isolated mode —
+// same reason as cache fetch (no gRPC session inside the pod).
+// Documented limitation; runner emits a single log line when a job
+// declared caches so the operator knows what didn't happen.
+package runner
+
+import (
+	"context"
+	"fmt"
+	"sync/atomic"
+
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+)
+
+// IsolatedUploader is the post-task upload contract for isolated
+// mode: tar files from inside a job pod (via exec) and stream
+// them to a signed PUT URL. Mirrors the shared-mode
+// ArtifactUploader interface — same gRPC dance for tickets, the
+// transport is what changes.
+//
+// Kept as a separate interface from ArtifactUploader so existing
+// test mocks that only need Upload don't have to grow a new
+// method. The concrete rpc.ArtifactUploader implements both.
+type IsolatedUploader interface {
+	UploadFromPod(
+		ctx context.Context,
+		exec engine.PodExecutor,
+		podName, containerName, podWorkDir string,
+		runID, jobID string,
+		paths []string,
+	) ([]*gocdnextv1.ArtifactRef, error)
+}
+
+// PostJobConfig packs the inputs PostJob needs without forcing
+// the caller to thread a long parameter list.
+type PostJobConfig struct {
+	Executor      engine.PodExecutor
+	Uploader      IsolatedUploader
+	PodName       string
+	HousekeeperCt string // typically "housekeeper"
+	PodWorkDir    string // mount path inside the pod, typically /workspace
+}
+
+// PostJob runs the post-task phase for an isolated-mode job and
+// returns the artefact refs that were successfully uploaded plus
+// the first error from a REQUIRED path upload (optional path
+// failures log but don't surface). Caches are emitted as a warn
+// line if declared (no-op in v0.5.0 isolated mode).
+//
+// Caller responsibility: ensure the pod is still alive (task
+// container terminated, housekeeper still running) before calling.
+// PodExecutor will return an error if the housekeeper container
+// has already exited.
+func (r *Runner) PostJob(
+	ctx context.Context,
+	cfg PostJobConfig,
+	a *gocdnextv1.JobAssignment,
+	seq *atomic.Int64,
+) ([]*gocdnextv1.ArtifactRef, error) {
+	if cfg.Uploader == nil {
+		// No uploader wired → no-op (matches shared-mode behaviour
+		// when Config.Uploader is nil — job succeeds with no refs).
+		return nil, nil
+	}
+
+	var refs []*gocdnextv1.ArtifactRef
+
+	if required := a.GetArtifactPaths(); len(required) > 0 {
+		got, err := cfg.Uploader.UploadFromPod(
+			ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
+			a.GetRunId(), a.GetJobId(), required)
+		refs = append(refs, got...)
+		for _, ref := range got {
+			r.emitLog(a, seq, "stdout", fmt.Sprintf(
+				"artifact uploaded: %s (%d bytes, sha256 %s)",
+				ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+		}
+		if err != nil {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf("artifact upload failed: %v", err))
+			r.cfg.Logger.Warn("runner: required artifact upload failed (isolated)",
+				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+			return refs, err
+		}
+	}
+
+	if optional := a.GetOptionalArtifactPaths(); len(optional) > 0 {
+		got, err := cfg.Uploader.UploadFromPod(
+			ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
+			a.GetRunId(), a.GetJobId(), optional)
+		if err != nil {
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"optional artifact upload failed (continuing): %v", err))
+			r.cfg.Logger.Warn("runner: optional artifact upload failed (isolated)",
+				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+		} else {
+			for _, ref := range got {
+				r.emitLog(a, seq, "stdout", fmt.Sprintf(
+					"optional artifact uploaded: %s (%d bytes, sha256 %s)",
+					ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+			}
+			refs = append(refs, got...)
+		}
+	}
+
+	if len(a.GetCaches()) > 0 {
+		r.emitLog(a, seq, "stderr", fmt.Sprintf(
+			"cache: %d entry(ies) declared but cache store is not yet "+
+				"supported in workspace isolated mode; next run will rebuild",
+			len(a.GetCaches())))
+	}
+
+	return refs, nil
+}

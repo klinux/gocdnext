@@ -37,6 +37,14 @@ type Config struct {
 	// but no refs are attached to JobResult.
 	Uploader ArtifactUploader
 
+	// IsolatedUploader is the isolated-mode counterpart of
+	// Uploader: tars files from inside the job pod's housekeeper
+	// sidecar via PodExecutor and PUTs to the signed URL.
+	// Concrete impl is rpc.ArtifactUploader (same struct
+	// implements both interfaces).  Nil means "no-op" in
+	// isolated mode — required artifacts get a 0-length result.
+	IsolatedUploader IsolatedUploader
+
 	// Cache handles pipeline cache fetch/store when a job declares
 	// `cache: [{key, paths}]`. Nil means "no-op" — the job runs
 	// without any pre-populated cache dir and never uploads one.
@@ -124,7 +132,18 @@ func (r *Runner) deregisterInflight(jobID string) {
 // Execute runs the assignment to completion: checkout each material, run
 // each script task until one fails, emit a JobResult. Never panics on task
 // failure — exit != 0 and checkout errors both resolve to RUN_STATUS_FAILED.
+//
+// Mode dispatch: when the engine is a Kubernetes engine configured for
+// WorkspaceModeIsolated, the agent never touches the workspace — control
+// flows through executeIsolated which spins up a Pod with an init container
+// for prep, a task container for the user command, and a housekeeper
+// sidecar the agent execs into for post-task work. Shared mode (default
+// for backward compatibility) keeps the historical per-task RunScript loop.
 func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
+	if k, ok := r.cfg.Engine.(*engine.Kubernetes); ok && k.Config().WorkspaceMode == engine.WorkspaceModeIsolated {
+		r.executeIsolated(ctx, a, k)
+		return
+	}
 	// Derive a cancelable context scoped to this one job and register
 	// it so the gRPC side can `Cancel(jobID)` mid-run. Deferred
 	// deregister ensures a late Cancel after the job finished is a
