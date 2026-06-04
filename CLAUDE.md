@@ -1,88 +1,88 @@
-# gocdnext — Guia de Desenvolvimento
+# gocdnext — Development Guide
 
-Regras de engenharia para este repositório. Válido para todo código que entrar em `server/`, `agent/`, `cli/`, `plugins/`, `web/`, `proto/`.
+Engineering rules for this repository. Applies to any code landing in `server/`, `agent/`, `cli/`, `plugins/`, `web/`, `proto/`.
 
-Decisões arquiteturais já fechadas (stack, layout `.gocdnext/`, LISTEN/NOTIFY, sqlc, gRPC bidi, plugin-container) vivem em `docs/` e não são rediscutidas sem razão técnica nova.
+Architectural decisions already settled (stack, `.gocdnext/` layout, LISTEN/NOTIFY, sqlc, gRPC bidi, plugin-container) live in `docs/` and are not relitigated without a new technical reason.
 
-## Regras não-negociáveis
+## Non-negotiable rules
 
-- **TDD sempre.** Teste vermelho → código mínimo → verde → refactor. Nenhum PR sem teste novo ou teste cobrindo o caminho alterado.
-- **~400 linhas por arquivo.** Passou disso, quebrar. Vale para `.go`, `.ts`, `.tsx`, `.sql`. Testes podem exceder se for um único suite coeso.
-- **shadcn para UI.** Todo componente visual no `web/` sai de shadcn/ui. Não escrever Button, Dialog, Input próprios quando o equivalente shadcn existe. Customização via `className` e variantes.
+- **TDD always.** Red test → minimal code → green → refactor. No PR without a new test or one covering the changed path.
+- **~400 lines per file.** Past that, split. Applies to `.go`, `.ts`, `.tsx`, `.sql`. Tests may exceed when the suite is a single cohesive whole.
+- **shadcn for UI.** Every visual component in `web/` comes from shadcn/ui. Don't roll your own Button, Dialog, Input when the shadcn equivalent exists. Customise via `className` and variants.
 
-## Postura de implementação (dev sênior)
+## Implementation posture (senior dev)
 
-Todo PR — incluindo hotfix — passa por essas lentes. "Funciona no teste feliz" não é critério de done.
+Every PR — hotfixes included — passes through these lenses. "Happy-path passes" is not a definition of done.
 
-- **Corner cases primeiro.** Antes de escrever a função, listar: input vazio, input nil, valor muito grande, duplicatas, unicode/case, race com outra goroutine, ctx cancelado mid-call, dependência ausente. Cada item vira teste ou comentário explicando por que é impossível.
-- **Segurança não é opcional.**
-  - Substituição/template: nunca leva input do usuário direto pra shell, SQL, exec, log, mensagem de erro sem sanitizar. Erros sobre referências não resolvidas citam o **nome** da referência, nunca o **valor** de outra coisa.
-  - Secrets: valor resolvido vai pra `LogMasks` no mesmo passo em que é injetado em env/settings. Quem esquece de adicionar à mask vaza no log.
-  - Substituição é **single-pass**. Sem expandir resultado de uma substituição (impede recursão `${{ X }}` → `${{ Y }}` → loop e leak via chain).
-  - Limites de parsing (regex, recursão YAML, depth de JSON) explícitos. Sem `\w+` sem limite, sem unmarshal de blob sem `MaxBytes`.
-  - Comparações de credencial usam `subtle.ConstantTimeCompare`. HMAC e tokens nunca com `==`.
-- **Performance medida, não adivinhada.**
-  - Regex compilada uma vez no `init`, não por chamada.
-  - Allocations dentro de loops quentes (scheduler dispatch, log streaming, webhook hot path) minimizadas — `make([]T, 0, n)` quando `n` é conhecido.
-  - Hot path mexido = `go test -bench` antes/depois. Diff de allocs no PR description.
-  - Query nova com JOIN ou subquery = `EXPLAIN ANALYZE` na migração, ou comentário justificando "OK em < N rows".
-- **Falhas barulhentas, não silenciosas.** Erro engolido com `_ = ...` precisa de um comentário explicando por que é OK. Default é propagar + log estruturado.
-- **Defesa em profundidade.** Mesma validação no servidor e no agente (não confiar que upstream sanitizou). Mesmo invariante checado no parse, no apply, e no dispatch.
+- **Corner cases first.** Before writing the function, list: empty input, nil input, oversized value, duplicates, unicode/case, races with other goroutines, ctx canceled mid-call, missing dependency. Each item becomes a test or a comment explaining why it can't happen.
+- **Security is not optional.**
+  - Substitution/templating: never pass user input straight to shell, SQL, exec, log, or error message without sanitising. Errors about unresolved references cite the reference **name**, never the **value** of something else.
+  - Secrets: the resolved value goes into `LogMasks` in the same step it's injected into env/settings. Forgetting to add it to the mask leaks it to the log.
+  - Substitution is **single-pass**. No expanding the result of one substitution (prevents recursive `${{ X }}` → `${{ Y }}` loops and leak-via-chain).
+  - Parsing limits (regex, YAML recursion, JSON depth) are explicit. No `\w+` without a bound, no unmarshalling a blob without `MaxBytes`.
+  - Credential comparisons use `subtle.ConstantTimeCompare`. HMAC and tokens never with `==`.
+- **Performance measured, not guessed.**
+  - Regex compiled once in `init`, not per call.
+  - Allocations in hot loops (scheduler dispatch, log streaming, webhook hot path) minimised — `make([]T, 0, n)` when `n` is known.
+  - Touched a hot path? Run `go test -bench` before/after. Put the allocs diff in the PR description.
+  - New query with a JOIN or subquery: `EXPLAIN ANALYZE` in the migration, or a comment justifying "OK at < N rows".
+- **Failures loud, not silent.** A swallowed error (`_ = ...`) needs a comment explaining why it's fine. Default is propagate + structured log.
+- **Defence in depth.** Same validation on server and agent (don't trust upstream sanitisation). Same invariant checked at parse, apply, and dispatch.
 
 ## Go (server, agent, cli, plugins)
 
-- **Lint**: `golangci-lint` com `.golangci.yml` na raiz. Presets ativos: `errcheck`, `govet`, `staticcheck`, `gosec`, `revive`, `gocyclo`, `ineffassign`, `unused`. CI falha no primeiro warning.
-- **Race detector obrigatório**: `go test -race ./...` no CI. Não desativar localmente.
-- **Context sempre 1º argumento** em função que faz I/O, chama gRPC, ou toca banco. `context.Background()` só em `main` e testes.
-- **Erros embrulhados com `%w`**: `fmt.Errorf("parse pipeline %s: %w", name, err)`. Assertion com `errors.Is` / `errors.As`.
-- **Logging estruturado** com `slog`. Nada de `fmt.Println`, `log.Printf` em código de produção. Campos consistentes: `pipeline`, `job`, `agent_id`, `run_id`.
-- **Table-driven tests** como padrão:
+- **Lint**: `golangci-lint` with `.golangci.yml` at the root. Active presets: `errcheck`, `govet`, `staticcheck`, `gosec`, `revive`, `gocyclo`, `ineffassign`, `unused`. CI fails on the first warning.
+- **Race detector mandatory**: `go test -race ./...` in CI. Don't disable locally.
+- **Context is always the first argument** for any function that does I/O, calls gRPC, or touches the database. `context.Background()` only in `main` and tests.
+- **Errors wrapped with `%w`**: `fmt.Errorf("parse pipeline %s: %w", name, err)`. Assert with `errors.Is` / `errors.As`.
+- **Structured logging** with `slog`. No `fmt.Println` or `log.Printf` in production code. Consistent fields: `pipeline`, `job`, `agent_id`, `run_id`.
+- **Table-driven tests** as the default:
   ```go
   tests := []struct{ name string; in X; want Y }{...}
   for _, tt := range tests { t.Run(tt.name, func(t *testing.T) {...}) }
   ```
-- **Integração com Postgres usa `testcontainers-go`**, nunca mock. Se o teste precisa de DB, sobe container real.
-- **Nomes de pacote**: lowercase único, sem underscore, sem plural. `pipeline`, não `pipelines` ou `pipeline_parser`.
-- **sqlc gera em `internal/db/`**. Código gerado nunca editado à mão.
+- **Postgres integration uses `testcontainers-go`**, never mocks. If a test needs the DB, it spins up a real container.
+- **Package names**: lowercase, single word, no underscore, no plural. `pipeline`, not `pipelines` or `pipeline_parser`.
+- **sqlc generates into `internal/db/`**. Generated code is never edited by hand.
 
 ## Frontend (web/)
 
-Regras específicas do frontend (Next.js 15, RSC, Server Actions, shadcn, Tailwind, Zod, Biome, testes) estão em [web/CLAUDE.md](web/CLAUDE.md). Claude Code carrega hierarquicamente — ao trabalhar em `web/`, ambos os arquivos valem.
+Frontend-specific rules (Next.js 15, RSC, Server Actions, shadcn, Tailwind, Zod, Biome, testing) live in [web/CLAUDE.md](web/CLAUDE.md). Claude Code loads hierarchically — when working in `web/`, both files apply.
 
-## Proto / contratos gRPC
+## Proto / gRPC contracts
 
-- **`buf`** gerencia proto. `buf.yaml` + `buf.gen.yaml` na raiz.
-- **Lint no CI**: `buf lint` e `buf breaking --against '.git#branch=main'`. Breaking change exige bump de versão do pacote (`v1` → `v2`).
-- **Código gerado nunca editado.** Regenerar com `buf generate`. Saída em `proto/gen/go` e `proto/gen/ts`.
-- **Contratos vivem em `proto/gocdnext/v1/`**. Novo serviço = novo arquivo.
+- **`buf`** manages proto. `buf.yaml` + `buf.gen.yaml` at the root.
+- **Lint in CI**: `buf lint` and `buf breaking --against '.git#branch=main'`. A breaking change forces a package version bump (`v1` → `v2`).
+- **Generated code is never edited.** Regenerate with `buf generate`. Output in `proto/gen/go` and `proto/gen/ts`.
+- **Contracts live in `proto/gocdnext/v1/`.** New service = new file.
 
-## Git, commits e CI
+## Git, commits, and CI
 
-- **Conventional Commits** obrigatório: `feat(scope):`, `fix(scope):`, `chore:`, `docs:`, `test:`, `refactor:`. Scope opcional mas recomendado.
-- **Pre-commit hook** via lefthook. Roda: `gofmt`, `golangci-lint run --fast`, `buf lint`, `tsc --noEmit`, testes rápidos afetados.
-- **PR pequeno e focado.** Um PR = uma feature/fix. Refactor grande em PR separado do feature.
-- **CI GitHub Actions**: lint → build → testes unitários → testes de integração (com containers) → testes e2e (quando existirem).
-- **Migrations**: goose, forward-only. Não criar `.down.sql` que rode em produção. Rollback = nova migration corretiva.
-- **Secrets**: `.env.example` commitado, `.env` no `.gitignore`. Nenhuma credencial em YAML de pipeline, Dockerfile ou código.
+- **Conventional Commits** mandatory: `feat(scope):`, `fix(scope):`, `chore:`, `docs:`, `test:`, `refactor:`. Scope optional but recommended.
+- **Pre-commit hook** via lefthook. Runs: `gofmt`, `golangci-lint run --fast`, `buf lint`, `tsc --noEmit`, affected fast tests.
+- **PRs small and focused.** One PR = one feature/fix. A large refactor lives in a PR separate from the feature.
+- **CI GitHub Actions**: lint → build → unit tests → integration tests (with containers) → e2e tests (when they exist).
+- **Migrations**: goose, forward-only. Don't create a `.down.sql` that runs in production. Rollback = a corrective new migration.
+- **Secrets**: `.env.example` committed, `.env` in `.gitignore`. No credentials in pipeline YAML, Dockerfile, or code.
 
-## Dependências
+## Dependencies
 
-- **Renovate/Dependabot** atualiza deps semanalmente. Humano revisa e merge.
-- **Dep nova exige justificativa no PR**: "por que não dá com stdlib ou com o que já tem?". Evitar sprawl de libs.
-- **Fixar versão major** em `go.mod` e `package.json`. Minor/patch livres para atualizar.
+- **Renovate/Dependabot** bumps deps weekly. A human reviews and merges.
+- **A new dep needs justification in the PR**: "why not stdlib or what we already have?". Avoid library sprawl.
+- **Pin major versions** in `go.mod` and `package.json`. Minor/patch may float.
 
-## Observabilidade (desde Fase 1)
+## Observability (since Phase 1)
 
-- **OpenTelemetry traces** no server e agent desde o primeiro endpoint/stream. Retrofitar depois é caro.
-  - Spans nomeados: `pipeline.parse`, `job.schedule`, `agent.stream.recv`, `webhook.receive`.
-  - Propagação via contexto gRPC e HTTP headers.
-- **Métricas Prometheus** em `/metrics`:
+- **OpenTelemetry traces** on server and agent from the very first endpoint/stream. Retrofitting later is expensive.
+  - Named spans: `pipeline.parse`, `job.schedule`, `agent.stream.recv`, `webhook.receive`.
+  - Propagation via gRPC context and HTTP headers.
+- **Prometheus metrics** at `/metrics`:
   - Jobs: `gocdnext_jobs_scheduled_total`, `gocdnext_jobs_running`, `gocdnext_job_duration_seconds`.
-  - Fila: `gocdnext_queue_depth{stage}`.
-  - gRPC: latência, RPS, erros por método.
-- **Logs correlacionados** com trace_id e span_id via `slog` handler OTel-aware.
+  - Queue: `gocdnext_queue_depth{stage}`.
+  - gRPC: latency, RPS, error rate per method.
+- **Correlated logs** with `trace_id` and `span_id` via an OTel-aware `slog` handler.
 
-## Convenções de diretórios
+## Directory conventions
 
 ```
 server/
@@ -91,7 +91,7 @@ server/
     api/      # HTTP handlers + Server Actions-facing
     grpc/     # gRPC services
     db/       # sqlc generated
-    domain/   # tipos de negócio puros
+    domain/   # pure business types
     pipeline/ # parser, validator, scheduler
   migrations/ # goose
 
@@ -114,13 +114,13 @@ proto/gocdnext/v1/
 plugins/<name>/
 ```
 
-- `internal/` é privado ao módulo. Nada de import cruzado entre `internal/` de módulos diferentes — usar proto ou pacote público.
+- `internal/` is module-private. No cross-imports between `internal/` of different modules — use proto or a public package.
 
-## Antes de abrir PR
+## Before opening a PR
 
-- Testes verdes localmente, com race detector.
-- Lint limpo (`make lint`).
-- `buf lint` e `buf breaking` ok.
-- Sem `TODO` órfão (se ficar, linkar issue).
-- Sem arquivo > 400 linhas (teste aceito).
-- Commit message no padrão Conventional Commits.
+- Tests green locally, with the race detector.
+- Lint clean (`make lint`).
+- `buf lint` and `buf breaking` clean.
+- No orphan `TODO` (if it stays, link an issue).
+- No file > 400 lines (test files accepted).
+- Commit message follows Conventional Commits.
