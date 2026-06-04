@@ -62,6 +62,33 @@ inputs:
       operator can identify the credential without leaving the
       key in plaintext in the build log stream. "0" disables
       masking (DANGEROUS — prints the secret); "100" fully masks.
+  allowlist-paths:
+    required: false
+    description: >
+      Comma- or whitespace-separated list of directory / path
+      substrings to allowlist. Each entry becomes a `.*<path>.*`
+      regex under `[allowlist].paths` in a runtime gitleaks
+      config — substring match, so `docs/` covers `docs/`,
+      `services/web/docs/`, etc. Useful to skip known-safe
+      directories (docs with example tokens, test fixtures with
+      fake creds) WITHOUT committing a `.gitleaks.toml` to the
+      repo.
+      Composition: combines with `config:` via gitleaks'
+      `[extend].path` chain — the operator's config rules stay
+      active, our allowlist paths are additive. Without `config:`,
+      the plugin synthesizes a runtime config that explicitly
+      keeps `[extend].useDefault = true` so the built-in
+      gitleaks ruleset isn't accidentally disabled.
+      Validation: charset restricted to `[a-zA-Z0-9/_.-]`. `..`
+      and absolute paths rejected at parse time. Regex meta-
+      chars not supported here — use a real `.gitleaks.toml`
+      via `config:` for those.
+      SAFETY NOTE: every path you allowlist is a place secrets
+      can hide undetected. Real-world incidents include "fake"
+      API keys in README examples that turned out to be live,
+      and staging credentials in test fixtures that became the
+      attack vector. Prefer narrow targets (`tests/fixtures/`)
+      over broad ones (`tests/`); review the list periodically.
 
 # Suppressing false positives
 #
@@ -124,3 +151,17 @@ examples:
       uses: gocdnext/gitleaks@v1
       with:
         config: .gitleaks.toml
+
+  - name: skip docs + tests via inline allowlist
+    description: >
+      One-liner alternative to checking a `.gitleaks.toml` into
+      the repo. Plugin synthesises a runtime config that extends
+      gitleaks' built-in ruleset and adds the operator's paths
+      to `[allowlist].paths`. Equivalent to maintaining the TOML
+      manually, just keyed to the pipeline YAML instead of a
+      tracked repo file. Combines with `config:` if both are set
+      — runtime config chains the operator's via `[extend].path`.
+    yaml: |
+      uses: gocdnext/gitleaks@v1
+      with:
+        allowlist-paths: docs/, tests/, __tests__/fixtures/

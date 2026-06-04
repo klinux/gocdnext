@@ -38,38 +38,41 @@ jobs:
   install:
     stage: build
     cache:
-      - key: pnpm-store-${CI_COMMIT_BRANCH}
+      - key: pnpm-store-{{ hash "web/pnpm-lock.yaml" }}
         paths:
           - web/.pnpm-store
           - web/node_modules
-    uses: gocdnext/node@v1
+    uses: gocdnext/node@v2
     with:
       working-dir: web
-      command: install --frozen-lockfile
+      # install: true (default) → plugin runs
+      # `pnpm install --frozen-lockfile` itself.
 
   build:
     stage: build
     needs: [install]
-    cache:
-      - key: pnpm-store-${CI_COMMIT_BRANCH}
-        paths: [web/.pnpm-store, web/node_modules]
-    uses: gocdnext/node@v1
+    needs_artifacts:
+      - from_job: install
+        paths: [web/node_modules]
+    uses: gocdnext/node@v2
     with:
       working-dir: web
-      command: run build
+      install: false
+      command: pnpm run build
     artifacts:
       paths: [web/.next, web/out]
 
   typecheck:
     stage: test
     needs: [install]
-    cache:
-      - key: pnpm-store-${CI_COMMIT_BRANCH}
-        paths: [web/.pnpm-store, web/node_modules]
-    uses: gocdnext/node@v1
+    needs_artifacts:
+      - from_job: install
+        paths: [web/node_modules]
+    uses: gocdnext/node@v2
     with:
       working-dir: web
-      command: exec tsc --noEmit
+      install: false
+      command: pnpm exec tsc --noEmit
 
   e2e:
     stage: test

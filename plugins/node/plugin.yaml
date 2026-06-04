@@ -2,51 +2,203 @@
 # validate `with:` inputs before a run ever dispatches. The plugin
 # image still reads the same PLUGIN_* env vars at runtime; this
 # file is metadata, not code.
+#
+# v2 BREAKING CHANGES vs v1:
+#   - `command:` is now a SHELL command (run via bash -lc), no longer
+#     auto-prefixed with `pnpm`. Operators upgrading from v1 must
+#     prepend `pnpm`/`npm`/`yarn` themselves where they meant to
+#     invoke the package manager, OR drop the install-style command
+#     altogether and rely on the new `install:` flag.
+#   - New `install:` flag (default true) does dependency install
+#     automatically, separated from `command:`. v1 conflated the two.
+#   - Multi-manager: pnpm | npm | yarn (v3+) | none, auto-detected
+#     from lockfile.
+#   - Yarn v1 is REJECTED with a clear error — maintenance-only
+#     upstream, not worth the test matrix. Operators on v1 either
+#     migrate to v3+ or use `manager: none`.
+#
+# See CHANGELOG entry for v0.4.39 for the side-by-side migration.
 name: node
 category: build
 description: >
-  Run pnpm commands with corepack + pnpm bootstrap. Handles
-  `install`, `test`, `build`, `exec <cmd>` — whatever pnpm
-  understands, passed through word-split.
+  Node.js install + run. Auto-detects pnpm / npm / yarn (v3+) from
+  lockfile, sets up corepack + workspace-local store, runs dependency
+  install (skippable), then executes the user's shell command. Mirrors
+  the python plugin's contract — install knob + shell-eval command.
 
 inputs:
   command:
-    required: true
-    description: pnpm subcommand + args, word-split. Example "install --frozen-lockfile".
+    required: false
+    default: ""
+    description: >
+      Shell command to run AFTER install. Executed via `bash -lc` so
+      `&&`, pipes, redirects, and env expansion work. NOT prefixed with
+      a package manager — you write `pnpm test`, `npm run build`, etc.
+      Empty string + install:true = install-only job (artifact uploader
+      / cache warmer pattern). Empty + install:false is rejected at
+      runtime — that's a silent no-op job.
   working-dir:
     required: false
     default: "."
-    description: Directory under the workspace to cd into before running pnpm.
+    description: >
+      Directory under the workspace to cd into before running the
+      install + command. Monorepos with a sub-app set this.
+  manager:
+    required: false
+    default: auto
+    description: >
+      Package manager to use: `pnpm` | `npm` | `yarn` | `none` | `auto`.
+      `auto` detects from lockfile (priority: pnpm-lock.yaml >
+      yarn.lock > package-lock.json). `none` skips install + setup
+      entirely — useful for jobs that run plain `node script.js` or
+      pre-built tooling without touching the package manager. Yarn v1
+      is rejected with a migration message; use `none` + script if
+      you're stuck on it.
+  install:
+    required: false
+    default: "true"
+    description: >
+      Run the manager's frozen install step before `command:`. Set
+      `false` for downstream jobs that consume a `node_modules/`
+      artifact via needs_artifacts — install would otherwise
+      re-resolve the lockfile and undo the artifact restore. Mirrors
+      the python plugin's `no-install` knob (inverted polarity for
+      consistency with the rest of the plugin's bool flags).
+  frozen:
+    required: false
+    default: "true"
+    description: >
+      Use the manager's frozen-lockfile mode. Per-manager translation:
+        - pnpm → `--frozen-lockfile`
+        - npm  → `npm ci` (vs `npm install`)
+        - yarn v3+ → `--immutable`
+      Set `false` to allow the manager to update the lockfile during
+      install. Almost always you want `true` in CI — a drifted
+      lockfile should fail the build, not silently get rewritten.
+  prod:
+    required: false
+    default: "false"
+    description: >
+      Skip development dependencies for production builds. Per-manager:
+        - pnpm → `--prod`
+        - npm  → `--omit=dev`
+        - yarn v3+ → `yarn workspaces focus --all --production`
+          (NOT `yarn install --production` — Yarn deprecated that
+          flag in v2 and silently maps it to focus anyway. The
+          plugin calls focus directly so the operator sees the
+          actual command in the log.)
+      Combine with `install: true` for a slim install before producing
+      a production artifact. Tests/lints want `prod: false` (default)
+      because they typically depend on dev tooling (vitest, eslint).
+      Yarn caveat: `workspaces focus` belongs to the
+      `@yarnpkg/plugin-workspace-tools` plugin, which Yarn 4 bundles
+      by default but Yarn 3 requires opting into via
+      `yarn plugin import workspace-tools` (writes an entry to
+      `.yarnrc.yml` + `.yarn/plugins/`). Plugin preflights the
+      command's availability and surfaces a remediation message
+      with the import command + upgrade-to-Yarn-4 alternative when
+      missing — the operator gets an actionable error instead of
+      yarn's opaque "Couldn't find a script named focus".
 
 examples:
-  - name: install deps
-    description: Frozen-lockfile install in the web/ subdir.
-    yaml: |
-      uses: gocdnext/node@v1
-      with:
-        working-dir: web
-        command: install --frozen-lockfile
-
-  - name: typecheck
-    description: Type-check via pnpm exec.
-    yaml: |
-      uses: gocdnext/node@v1
-      with:
-        working-dir: web
-        command: exec tsc --noEmit
-
-  - name: cached install
+  - name: install-only job + downstream lints via artifact
     description: >
-      Tar + restore pnpm's content-addressable store across runs.
-      Plugin redirects the store to .pnpm-store/ inside the
-      workspace so the `cache:` block captures it. Keyed on the
-      lockfile hash — different lockfile = fresh cache, no stale
-      packages slipping through.
+      The canonical pattern for monorepos: ONE install job tars
+      node_modules + uploads it, downstream lint/test jobs restore
+      via needs_artifacts and skip their own install. Faster than
+      every job running its own pnpm install, but the artifact
+      transfer cost can dominate on slow storage backends — see the
+      next example for the cache-only variant.
     yaml: |
-      cache:
-        - key: pnpm-store-${CI_COMMIT_BRANCH}
-          paths: [.pnpm-store]
-      uses: gocdnext/node@v1
-      with:
-        working-dir: web
-        command: install --frozen-lockfile
+      install:
+        stage: install
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        cache:
+          - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
+            paths: [.pnpm-store]
+        with:
+          # install: true (default), command: "" (default) →
+          # install-only run.
+          working-dir: .
+        artifacts:
+          paths: [node_modules]
+
+      lint:
+        stage: lint
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        needs: [install]
+        needs_artifacts:
+          - from_job: install
+            paths: [node_modules]
+        with:
+          install: false          # reuse artifact, skip re-resolve
+          command: pnpm --filter @corapulse/web lint
+
+  - name: cache-only per-job install (no artifact transfer)
+    description: >
+      Each job runs its own pnpm install against a shared
+      content-addressable store. `pnpm install --frozen-lockfile`
+      with a warm store materialises node_modules in seconds via
+      symlinks — cheaper than tarring + transferring the entire
+      tree across an NFS-backed PV. Best fit when the artifact
+      backend (storage class, network, ...) is the bottleneck.
+      The hash-keyed cache invalidates on lockfile changes
+      automatically.
+    yaml: |
+      lint:
+        stage: lint
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        cache:
+          - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
+            paths: [.pnpm-store]
+        with:
+          # install: true + frozen: true (defaults) → pnpm install
+          # --frozen-lockfile happens automatically before command.
+          command: pnpm --filter @corapulse/web lint
+
+  - name: shell-chained command (codegen + build)
+    description: >
+      `command:` is shell-evaluated via `bash -lc`, so `&&`, pipes,
+      redirects, and env expansion all work. Replaces v1's "two
+      separate jobs to chain commands" pattern.
+    yaml: |
+      build:
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        cache:
+          - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
+            paths: [.pnpm-store]
+        with:
+          command: |
+            pnpm --filter @corapulse/types generate &&
+            pnpm --filter @corapulse/web build
+        artifacts:
+          paths: [apps/web/dist]
+
+  - name: production install for container build
+    description: >
+      `prod: true` skips dev dependencies — the resulting
+      node_modules is smaller and ready to copy into a production
+      image layer. Lint/test jobs in the same pipeline keep the
+      default `prod: false` because they need vitest / eslint /
+      tsc which are devDependencies.
+    yaml: |
+      docker-build:
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        with:
+          prod: true
+          command: pnpm --filter @corapulse/web build
+
+  - name: npm with package-lock.json
+    description: >
+      Auto-detection picks npm when only package-lock.json is
+      present. `frozen: true` (default) maps to `npm ci`, which is
+      the frozen-by-design variant of npm install — there's no
+      separate flag on npm.
+    yaml: |
+      lint:
+        uses: ghcr.io/klinux/gocdnext-plugin-node@v2
+        cache:
+          - key: npm-cache-{{ hash "package-lock.json" }}
+            paths: [.npm-cache]
+        with:
+          command: npm run lint

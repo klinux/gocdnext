@@ -37,43 +37,47 @@ stages: [install, lint, test, build]
 jobs:
   deps:
     stage: install
-    uses: gocdnext/node@v1
+    uses: gocdnext/node@v2
     with:
       working-dir: web
-      command: install --frozen-lockfile
+      # install: true (default) + command: "" (default) →
+      # install-only job. Plugin runs `pnpm install --frozen-lockfile`
+      # automatically.
     cache:
-      - key: pnpm-store-${CI_COMMIT_BRANCH}
+      - key: pnpm-store-{{ hash "web/pnpm-lock.yaml" }}
         paths: [web/.pnpm-store]
     artifacts:
       paths: ["web/node_modules/"]
 
   typecheck:
     stage: lint
-    uses: gocdnext/node@v1
+    uses: gocdnext/node@v2
     needs: [deps]
     needs_artifacts:
       - from_job: deps
         paths: ["web/node_modules/"]
     with:
       working-dir: web
-      command: exec tsc --noEmit
+      install: false         # reuse the artifact, skip resolve
+      command: pnpm exec tsc --noEmit
 
   unit:
     stage: test
-    uses: gocdnext/node@v1
+    uses: gocdnext/node@v2
     needs: [deps]
     needs_artifacts:
       - from_job: deps
         paths: ["web/node_modules/"]
     with:
       working-dir: web
-      command: test --run
+      install: false
+      command: pnpm test --run
     test_reports:
       paths: ["web/junit.xml"]
 
   bundle:
     stage: build
-    uses: gocdnext/node@v1
+    uses: gocdnext/node@v2
     needs: [typecheck, unit]
     needs_artifacts:
       - from_job: deps
@@ -83,7 +87,8 @@ jobs:
       NEXT_PUBLIC_API_URL: http://localhost:8153
     with:
       working-dir: web
-      command: build
+      install: false
+      command: pnpm build
     artifacts:
       paths:
         - "web/.next/standalone/"
@@ -104,11 +109,24 @@ This pattern (install once, reuse) cuts a 4-job pipeline from
 "install × 4" to "install × 1 + restore × 3". On a typical Next.js
 project that's ~30 seconds saved per warm run.
 
-### `--frozen-lockfile`
+### `install: true` (default) + `frozen: true` (default)
 
-Without it, pnpm will UPDATE the lockfile if it disagrees with the
-manifest. CI should never silently rewrite the lockfile — the
-flag turns a drift into a failed install, which is what you want.
+The v2 plugin handles dependency install automatically. With both
+defaults on, the deps job's only `with:` line is `working-dir:` —
+the plugin runs `pnpm install --frozen-lockfile` itself. Without
+`frozen: true`, pnpm would UPDATE the lockfile if it disagreed with
+the manifest; CI should never silently rewrite the lockfile, so
+the flag turns a drift into a failed install. Set `frozen: false`
+explicitly only when you intentionally want lockfile auto-fix
+(rare in CI).
+
+### `install: false` on downstream jobs
+
+Lint / test / build jobs restore `node_modules/` via
+`needs_artifacts:` from the upstream install. They DON'T re-run
+the install — `install: false` skips it. Without that flag the
+plugin would run a fresh `pnpm install --frozen-lockfile`,
+re-resolving the lockfile and undoing the artifact restore.
 
 ### `pnpm-store` cache lives in the workspace
 
@@ -122,7 +140,7 @@ plugin's corepack shim resolves it at runtime so two projects
 with different pnpm versions can run on the same agent without
 conflict.
 
-### `exec tsc --noEmit`
+### `pnpm exec tsc --noEmit`
 
 `tsc --noEmit` is the type-only check. Running it as a separate
 job from `unit` lets the run-detail UI show a clear "type errors"
@@ -143,13 +161,14 @@ include-style globs.
 ```yaml
 unit:
   stage: test
-  uses: gocdnext/node@v1
+  uses: gocdnext/node@v2
   needs: [deps]
   needs_artifacts:
     - from_job: deps
       paths: ["node_modules/"]
   with:
-    command: exec vitest run --coverage
+    install: false
+    command: pnpm exec vitest run --coverage
   test_reports:
     paths: ["junit.xml"]
   artifacts:

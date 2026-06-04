@@ -6,6 +6,122 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.4.39 — 2026-06-04
+
+Two plugin changes — node v2 rewrite (breaking) and a new
+gitleaks `allowlist-paths:` input (additive).
+
+### `plugin-gitleaks`: `allowlist-paths:` input
+
+New input for inline path-substring allowlisting without
+committing a `.gitleaks.toml` to the repo. Comma- or
+whitespace-separated list — each entry becomes a `.*<path>.*`
+regex under `[allowlist].paths` in a runtime gitleaks config
+the plugin synthesises and passes via `--config`.
+
+```yaml
+uses: gocdnext/gitleaks@v1
+with:
+  allowlist-paths: docs/, tests/, __tests__/fixtures/
+```
+
+Behaviour:
+
+- **Combines with `config:`**: if the operator already supplies
+  a `.gitleaks.toml`, the runtime config chains via
+  `[extend].path` — operator's rules + allowlists stay active,
+  ours append.
+- **Default ruleset preserved**: without an operator `config:`,
+  the runtime explicitly sets `[extend].useDefault = true` so
+  the built-in gitleaks ruleset isn't accidentally disabled.
+- **Validation**: charset restricted to `[a-zA-Z0-9/_.-]`,
+  `..` and absolute paths rejected at parse time. Bad input
+  exits 2 BEFORE gitleaks runs (no silent skip).
+- **Composition note**: the plugin treats each path as a
+  literal substring match (regex meta in input is rejected).
+  Operators wanting real regex use `config: .gitleaks.toml`
+  with its native `[allowlist]` block — same TOML works
+  locally via `gitleaks detect --config`.
+
+Safety reminder in the plugin manifest: every allowlisted
+path is a place secrets can hide undetected. Prefer narrow
+targets (`tests/fixtures/`) over broad ones (`tests/`);
+review the list periodically. The feature is opt-in by
+design — gitleaks defaults remain "scan everything".
+
+### **BREAKING: `plugin-node` v2 rewrite.** Mirrors the python plugin's
+contract — `install:` knob + shell-eval `command:` — to fix three
+gaps in v1: no shell encoding (`&&`/pipes), no install/run
+separation, single-manager-only (pnpm).
+
+### New input schema
+
+| Input | v1 | v2 default | Notes |
+|---|---|---|---|
+| `command` | required, prefixed with `pnpm`, word-split | optional, **shell-eval via `bash -lc`**, NOT prefixed | `&&`, pipes, redirects, env expansion all work |
+| `install` | implicit (operator runs `command: install --frozen-lockfile`) | **`true`** (auto pnpm install before command) | `false` for downstream jobs consuming artifact |
+| `manager` | implicit (pnpm only) | `auto` (detects from lockfile) | `pnpm` / `npm` / `yarn` (v3+) / `none` |
+| `frozen` | implicit | `true` | maps to `--frozen-lockfile` / `npm ci` / `--immutable` per manager |
+| `prod` | not available | `false` | skip dev deps for production builds |
+| `working-dir` | unchanged | `.` | same as v1 |
+
+### Migration
+
+| v1 YAML | v2 YAML |
+|---|---|
+| `command: install --frozen-lockfile` | (drop — defaults install:true frozen:true do this) |
+| `command: --filter @web lint` | `command: pnpm --filter @web lint` |
+| `command: exec tsc --noEmit` | `install: false` + `command: pnpm exec tsc --noEmit` (downstream of an install job) |
+| `command: test --run` | `command: pnpm test --run` |
+
+### Why breaking instead of v2 paralelo
+
+Greenfield: zero external users of plugin-node@v1 outside cora-pulse +
+gocdnext's own ci-web. The maintenance cost of two parallel images
+(documented, tested, rebuilt on every release) outweighs the migration
+cost (one PR per consuming pipeline).
+
+The `:v1` rolling tag now points at the new v2 image — operators on
+`@v1` get the breaking change on next pull. Pin to `:0.4.38` if you
+need v1 behaviour until you finish migrating.
+
+### Yarn v1 explicitly rejected
+
+Yarn classic (v1) has been maintenance-only since 2022 and uses a
+different install-flag dialect from v3+. Supporting both doubled the
+test matrix for ~zero modern users. Pipelines pointing at a `yarn.lock`
+without `.yarnrc.yml` (v1 signal) get a clear error with three options:
+upgrade to yarn v3+, switch to pnpm/npm, or use `manager: none` and
+invoke yarn directly via `command:`.
+
+### Multi-manager auto-detection
+
+Priority: `pnpm-lock.yaml` > `yarn.lock` (with `.yarnrc.yml` ⇒ v3+,
+without ⇒ v1 rejected) > `package-lock.json`. Override via
+`manager: pnpm|npm|yarn|none`. `none` skips install + setup entirely
+for jobs that run plain `node script.js` or use pre-built tooling.
+
+### Cache paths per manager
+
+Plugin redirects each manager's store/cache to a workspace-relative
+path so the platform's `cache:` block can tar it:
+
+| Manager | Cache path |
+|---|---|
+| pnpm | `.pnpm-store/` |
+| npm | `.npm-cache/` |
+| yarn v3+ | `.yarn/cache/` (default) |
+
+### Dockerfile
+
+Added `bash` to the runtime image (alpine ships `ash` only;
+`bash -lc` is required for shell-eval of `command:`).
+
+### Dogfood
+
+`.gocdnext/ci-web.yaml` migrated to v2 contract as the reference
+example: one install job + three `install: false` downstream jobs.
+
 ## v0.4.38 — 2026-06-04
 
 Patch release fixing one bug in the `python` plugin.

@@ -1,22 +1,18 @@
-# gocdnext/node — pnpm-first Node.js plugin for gocdnext pipelines.
+# gocdnext/node v2 — Node.js install + run runner. See plugin.yaml
+# for the full input contract; entrypoint.sh implements it.
 #
-# Contract (see plugins/node/README.md for the full rundown):
-#   PLUGIN_COMMAND      (required)  — pnpm subcommand + args, word-split.
-#                                     Examples: "install --frozen-lockfile",
-#                                     "test --run", "exec tsc --noEmit".
-#   PLUGIN_WORKING_DIR  (optional)  — path relative to /workspace; entrypoint
-#                                     cd's here before running pnpm. Defaults
-#                                     to /workspace (repo root).
-#
-# The image bundles corepack-enabled node + a shim that resolves pnpm at
-# runtime from the repo's `packageManager` field, so the same image serves
-# any project without rebuilding per-version.
+# v2 vs v1: now supports multi-manager (pnpm/npm/yarn v3+/none),
+# install knob (skippable for artifact-restore jobs), shell-eval
+# command (bash -lc — `&&`, pipes, redirects all work).
 FROM node:22-alpine
 
-# git is handy for pnpm resolving git-hosted deps; ca-certificates keeps
-# the corepack-managed pnpm download (on first run) trusting the
-# upstream registry.
-RUN apk add --no-cache git ca-certificates
+# bash is required at runtime (entrypoint uses `bash -lc` to shell-eval
+# the operator's command). alpine's default sh (ash) doesn't handle the
+# array idioms in entrypoint.sh; node:22-alpine doesn't include bash
+# by default. git is handy for managers resolving git-hosted deps.
+# ca-certificates keeps the corepack-managed binary download (on first
+# run) trusting upstream registries.
+RUN apk add --no-cache bash git ca-certificates
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-node
 RUN chmod +x /usr/local/bin/gocdnext-node
