@@ -5,11 +5,11 @@
 //   - Required + optional artifact uploads via the existing
 //     gRPC RequestArtifactUpload dance plus a tar streamed from
 //     the housekeeper sidecar via PodExecutor.
-//
-// Cache store is intentionally skipped in v0.5.0 isolated mode —
-// same reason as cache fetch (no gRPC session inside the pod).
-// Documented limitation; runner emits a single log line when a job
-// declared caches so the operator knows what didn't happen.
+//   - Cache store for literal keys: RequestCachePut → exec tar
+//     inside the housekeeper → PUT → MarkCacheReady, mirroring
+//     the artifact upload pattern. Templated keys are still
+//     skipped (workspace-side hashing required at expand time;
+//     the agent doesn't see the runtime key).
 package runner
 
 import (
