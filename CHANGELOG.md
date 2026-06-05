@@ -6,6 +6,64 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.7 — 2026-06-05
+
+### Fix — cache store refreshes the row to empty when nothing to cache; defangs leading-`-` paths
+
+Two follow-ups to v0.5.6's `StoreFromPod` rewrite:
+
+1. **All-paths-missing was poisoning the cache row.** v0.5.6's
+   shell wrapper exited 0 with empty stdout when no declared
+   path existed (cold start, conditional output). The agent
+   then PUT a 0-byte blob and called `MarkCacheReady` with the
+   sha of nothing. Downstream `Fetch` saw `Found=true`,
+   downloaded 0 bytes, and `DownloadAndUntar`'s
+   `gzip.NewReader` errored — every subsequent run with the
+   same key failed cache restore until manual eviction.
+
+2. **`tar -T` reopened the leading-`-` foothold.** v0.5.5's
+   raw tar used `-- <path>` to defuse paths starting with `-`.
+   The v0.5.6 rewrite read paths from `tar -T <file>`, where
+   some tar implementations (and `[ -e "$p" ]` itself) may
+   misread a `-prefixed` entry as a flag.
+
+Fix: rewrite `StoreFromPod` to do TWO execs:
+
+- **Probe** (`sh -c <probe-script>`): list existing paths
+  with a `case "$p" in -*) p="./$p" ;;` rewrite so the
+  defanged form (`./-dist`) reaches both `[ -e ]` and
+  downstream tar. One round-trip per cache entry, output
+  parsed agent-side.
+- **Tar** (only if probe returned ≥1 survivor):
+  `sh -c <tar-script>` over the filtered list, then PUT +
+  `MarkCacheReady` as before.
+
+When the probe returns NOTHING, `StoreFromPod` doesn't skip
+the RPC — it uploads a valid-empty `tar.gz` (built agent-side
+via `runner.TarGzPaths("", nil)` so the empty/non-empty paths
+share the exact encoding). The cache row gets a fresh empty
+ready blob, mirroring shared-mode behaviour: a previous run's
+populated ready blob is REPLACED rather than preserved. This
+is the round-7 follow-up to the earlier "skip RPC" approach,
+which would have left a stale (and possibly large) row alive
+on the cache backend whenever a job stopped producing the
+cached path.
+
+Test additions in `agent/internal/rpc/cache_test.go`:
+- `TestStoreFromPod_HappyPath_TwoExecsAndFullRPC` — argv
+  shape for probe + tar, full RPC sequence, missing path
+  filtered between execs.
+- `TestStoreFromPod_AllPathsMissing_UploadsValidEmptyTarGz` —
+  asserts ONE exec (probe only), `RequestCachePut` + PUT +
+  `MarkCacheReady` all fire with a non-empty Content-Length,
+  and the ready row's `size_bytes` matches the PUT body.
+- `TestStoreFromPod_DefangsLeadingDashPath` — tar argv must
+  carry `./-dist`, never raw `-dist`.
+
+`recordingExecutor` extended to drive per-call stdout/err
+payloads so the two-exec dance is testable without a real
+cluster.
+
 ## v0.5.6 — 2026-06-05
 
 ### Fix — `StoreFromPod` skips missing paths instead of failing the cache
