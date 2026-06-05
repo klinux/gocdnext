@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.3 — 2026-06-04
+
+### Fix — artifact upload tar uses scriptWorkDir, not PVC mount root
+
+Companion to v0.5.2's mount-path split: `PostJob`'s
+`PodWorkDir` was still wired to `cfg.WorkspaceMountPath` (the
+PVC root, `/workspace`). Artifact + cache paths in pipeline
+YAML are relative to the SCRIPT working dir (= scriptWorkDir,
+post-`target_dir` resolution), matching shared mode's
+`uploader.Upload(ctx, scriptWorkDir, …)` contract. Using the
+mount root made the agent exec `tar -czf - -C /workspace --
+packages/types/src/generated/` which failed exit 1 because the
+real path was `/workspace/src/<hash>/packages/types/src/generated/`.
+
+Fix: pass `scriptWorkDir` as `PodWorkDir`. Same value that
+already drives the task container's `WorkingDir`.
+
 ## v0.5.2 — 2026-06-04
 
 ### Fix — separate workspace mount path from task WorkingDir in isolated pods
