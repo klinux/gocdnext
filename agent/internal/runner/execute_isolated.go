@@ -82,21 +82,24 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	task := a.GetTasks()[0]
 
-	// v0.5.0 limitation: pipeline services not supported in
-	// isolated mode. Unlike caches/test_reports (acceleration /
-	// observability — job still works without), services are
-	// load-bearing: a job declaring a postgres service WILL
-	// silently break if we just drop the declaration. Fail-fast
-	// with a clear pointer to the workaround.
-	if len(a.GetServices()) > 0 {
-		msg := fmt.Sprintf(
-			"isolated workspace mode does not yet support pipeline services "+
-				"(got %d declared). Switch to agent.workspace.accessMode=ReadWriteMany "+
-				"for jobs that need DB/Redis/etc. sidecars.", len(a.GetServices()))
+	// Pipeline services: brought up as standalone Pods by the
+	// engine (EnsureServices), independent of the job's
+	// workspace. Their HostAliases get wired into the task pod's
+	// /etc/hosts via PodSpec.HostAliases so a `postgres:5432`-style
+	// lookup resolves to the service Pod's IP — same plumbing as
+	// shared mode. Lifecycle is run-scoped: the server's
+	// CleanupRunServices broadcast tears them down on run-terminal,
+	// so the cleanup returned here is intentionally a noop (calling
+	// it per-job would kill services other jobs in the same run
+	// still depend on).
+	servicesPhase, svcErr := r.startServices(ctx, a, &seq)
+	if svcErr != nil {
+		msg := "services: " + svcErr.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
 		return
 	}
+	defer servicesPhase.cleanup()
 
 	// test_reports require scanning JUnit XML on the agent's
 	// filesystem; in isolated mode the reports live in the pod's
@@ -133,17 +136,15 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// runner.go::runPlugin, kept here so isolated mode doesn't
 	// loop through engine.RunScript (which is per-task).
 	spec := engine.IsolatedJobSpec{
-		RunID:     a.GetRunId(),
-		JobID:     a.GetJobId(),
-		WorkDir:   scriptWorkDir,
-		Env:       a.GetEnv(),
-		Docker:    a.GetDocker(),
-		Resources: assignmentResources(a),
-		Profile:   a.GetProfile(),
-		AgentTags: append([]string(nil), r.cfg.AgentTags...),
-		// HostAliases would be wired here once services are
-		// supported in isolated mode; today services aren't tied
-		// in (separate issue tracking).
+		RunID:       a.GetRunId(),
+		JobID:       a.GetJobId(),
+		WorkDir:     scriptWorkDir,
+		Env:         a.GetEnv(),
+		Docker:      a.GetDocker(),
+		Resources:   assignmentResources(a),
+		Profile:     a.GetProfile(),
+		AgentTags:   append([]string(nil), r.cfg.AgentTags...),
+		HostAliases: servicesPhase.hostAliases,
 	}
 
 	if plugin := task.GetPlugin(); plugin != nil {
