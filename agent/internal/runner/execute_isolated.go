@@ -326,12 +326,19 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 
 	// Task succeeded — run post-task work via housekeeper exec.
+	// PodWorkDir is the SCRIPT working dir, not the PVC mount
+	// root: artifact + cache paths in the YAML are relative to
+	// where the user's task ran (= scriptWorkDir, post-target_dir
+	// resolution), matching shared mode's uploader contract
+	// (runner.go::uploadArtifacts passes scriptWorkDir). Using the
+	// mount root drops the target_dir prefix and breaks tar in
+	// the housekeeper.
 	refs, postErr := r.PostJob(ctx, PostJobConfig{
 		Executor:      exec,
 		Uploader:      r.cfg.IsolatedUploader,
 		PodName:       podName,
 		HousekeeperCt: "housekeeper",
-		PodWorkDir:    cfg.WorkspaceMountPath,
+		PodWorkDir:    scriptWorkDir,
 	}, a, &seq)
 	if postErr != nil {
 		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
