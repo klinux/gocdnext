@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -106,7 +108,19 @@ func (c *CacheClient) ResolveGet(ctx context.Context, runID, jobID, key string) 
 // tar source is inside the job pod's housekeeper sidecar
 // (streamed via PodExecutor + a local temp file to derive
 // Content-Length) instead of the agent's local workDir. Same
-// gRPC RequestCachePut → PUT → MarkCacheReady dance.
+// gRPC RequestCachePut → PUT → MarkCacheReady dance, except a
+// pre-flight probe inside the pod is run first to filter out
+// missing paths the way shared-mode TarGzPaths does.
+//
+// If the probe shows that NO declared path actually exists
+// (cold start, conditionally-generated output that wasn't
+// produced this run, …), the entire RPC sequence is skipped —
+// RequestCachePut + MarkCacheReady on a 0-byte PUT would poison
+// the cache key (downstream Fetch would gzip-parse-fail). This
+// differs from shared mode, which still uploads a ~23-byte valid
+// empty tar.gz; the isolated path errs on the side of "don't
+// touch the row" because empty-ready entries are operationally
+// noisier than no entry at all.
 //
 // Best-effort like Store: callers log on error and continue.
 func (c *CacheClient) StoreFromPod(
@@ -123,6 +137,25 @@ func (c *CacheClient) StoreFromPod(
 		return errors.New("cache: nil executor")
 	}
 
+	// 1. Probe — list existing paths (defanged for leading-dash)
+	//    INSIDE the pod. Single round-trip per cache entry.
+	existing, err := c.probeCachePaths(ctx, exec, podName, containerName, podWorkDir, entry.GetPaths())
+	if err != nil {
+		return fmt.Errorf("probe paths: %w", err)
+	}
+	if len(existing) == 0 {
+		// Mirror shared-mode semantics: TarGzPaths(workDir, nil)
+		// produces a valid empty tar.gz (~23 bytes), which Store
+		// then PUTs and marks ready. The cache row gets a fresh
+		// empty blob, NOT preserved as whatever older entry was
+		// there. Skipping the whole RPC sequence (as v0.5.6 did)
+		// would silently keep a stale ready blob from an earlier
+		// run when the job DID produce the path — a divergence
+		// from shared mode that surprises operators.
+		return c.storeEmptyCacheBlob(ctx, runID, jobID, entry.GetKey())
+	}
+
+	// 2. RPC + tar + PUT + ready — only when there's content.
 	put, err := c.client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
 		SessionId: c.sessionID,
 		RunId:     runID,
@@ -143,26 +176,17 @@ func (c *CacheClient) StoreFromPod(
 	hasher := sha256.New()
 	mw := io.MultiWriter(tmp, hasher)
 
-	// Wrap tar in a shell that filters out missing paths before
-	// invocation — mirrors the shared-mode TarGzPaths semantics
-	// (artifacts.go::TarGzPaths skips ENOENT silently). Without
-	// this, ANY single missing path causes `tar` to exit non-zero
-	// and the whole cache fails to upload, even for jobs whose
-	// other declared paths exist and contain valid build state.
-	//
-	// Filtering happens inside the pod via /bin/sh + tar -T <file>:
-	// each existing path goes into a tmp file (one per line, safe
-	// for paths with spaces), then tar reads the list. Empty list
-	// (all paths missing — cold start case) exits 0 producing an
-	// empty gzip stream; we accept the resulting ~30-byte tarball
-	// as a no-op store rather than entangle exec exit codes with
-	// the PUT pipeline.
-	const tarScript = `cd "$1" || exit 1; shift; tmp=$(mktemp) || exit 1; ` +
-		`trap "rm -f $tmp" EXIT; ` +
-		`for p in "$@"; do [ -e "$p" ] && printf '%s\n' "$p" >> "$tmp"; done; ` +
-		`[ -s "$tmp" ] || exit 0; ` +
+	// Tar the already-filtered list. The paths reach the shell
+	// as positional args; the wrapper writes them to a tempfile
+	// (preserves spaces) and feeds `tar -T <file>`. Paths
+	// starting with `-` were defanged to `./-foo` by the probe,
+	// so tar can't read them as options. No need to re-filter
+	// existence — probe already did it.
+	const tarScript = `cd "$1" || exit 1; shift; ` +
+		`tmp=$(mktemp) || exit 1; trap "rm -f $tmp" EXIT; ` +
+		`for p in "$@"; do printf '%s\n' "$p" >> "$tmp"; done; ` +
 		`exec tar -czf - -T "$tmp"`
-	cmd := append([]string{"sh", "-c", tarScript, "_", podWorkDir}, entry.GetPaths()...)
+	cmd := append([]string{"sh", "-c", tarScript, "_", podWorkDir}, existing...)
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("exec tar %q: %w", entry.GetKey(), err)
@@ -208,6 +232,95 @@ func (c *CacheClient) StoreFromPod(
 		return fmt.Errorf("mark cache ready: %w", err)
 	}
 	return nil
+}
+
+// storeEmptyCacheBlob uploads a valid-but-empty tar.gz under
+// the given key. Used in the "all paths missing" branch so the
+// cache row gets refreshed rather than left pointing at stale
+// content from a previous run — same behaviour as shared mode's
+// TarGzPaths, which writes a header + EOF marker (~23 bytes)
+// when no paths exist.
+//
+// runner.TarGzPaths is reused for the encoding so any sha/size
+// drift between the empty and non-empty paths stays impossible.
+func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key string) error {
+	var buf bytes.Buffer
+	sha, size, err := runner.TarGzPaths("", nil, &buf)
+	if err != nil {
+		return fmt.Errorf("empty tar: %w", err)
+	}
+
+	put, err := c.client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
+		SessionId: c.sessionID,
+		RunId:     runID,
+		JobId:     jobID,
+		Key:       key,
+	})
+	if err != nil {
+		return fmt.Errorf("request cache put: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, put.GetPutUrl(), bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		return fmt.Errorf("build PUT: %w", err)
+	}
+	req.ContentLength = size
+	req.Header.Set("Content-Type", "application/gzip")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("http PUT: %w", err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("PUT returned %s", resp.Status)
+	}
+
+	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
+		SessionId:     c.sessionID,
+		CacheId:       put.GetCacheId(),
+		SizeBytes:     size,
+		ContentSha256: sha,
+	}); err != nil {
+		return fmt.Errorf("mark cache ready: %w", err)
+	}
+	return nil
+}
+
+// probeCachePaths runs a quick `[ -e ]` test inside the pod for
+// every declared path and returns the survivors. Paths beginning
+// with `-` are prefixed with `./` (defang) so neither the
+// existence test NOR the eventual tar invocation can misread
+// them as options on the platforms whose `[`/`tar` implementations
+// flirt with that ambiguity.
+//
+// Single exec per cache entry; trades one ~100ms round-trip for
+// the ability to skip the whole RequestCachePut + PUT +
+// MarkCacheReady sequence when nothing exists.
+func (c *CacheClient) probeCachePaths(
+	ctx context.Context,
+	exec engine.PodExecutor,
+	podName, containerName, podWorkDir string,
+	paths []string,
+) ([]string, error) {
+	const probeScript = `cd "$1" || exit 1; shift; ` +
+		`for p in "$@"; do ` +
+		`  case "$p" in -*) p="./$p" ;; esac; ` +
+		`  [ -e "$p" ] && printf '%s\n' "$p"; ` +
+		`done`
+	cmd := append([]string{"sh", "-c", probeScript, "_", podWorkDir}, paths...)
+	var out bytes.Buffer
+	if err := exec.Exec(ctx, podName, containerName, cmd, nil, &out, io.Discard); err != nil {
+		return nil, err
+	}
+	lines := strings.Split(out.String(), "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
+			result = append(result, line)
+		}
+	}
+	return result, nil
 }
 
 // Store implements runner.CacheClient.Store.

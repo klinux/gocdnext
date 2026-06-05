@@ -134,11 +134,11 @@ func TestPrep_CacheHitDownloads(t *testing.T) {
 		RunId: "r", JobId: "j",
 		Caches: []*gocdnextv1.CacheEntry{
 			{
-				Key:          "node-modules-abc",
-				Paths:        []string{"node_modules"},
-				FetchUrl:     srv.URL,
-				FetchSha256:  sha,
-				FetchFound:   true,
+				Key:         "node-modules-abc",
+				Paths:       []string{"node_modules"},
+				FetchUrl:    srv.URL,
+				FetchSha256: sha,
+				FetchFound:  true,
 			},
 		},
 	}
