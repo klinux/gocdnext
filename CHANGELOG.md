@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.4 — 2026-06-04
+
+### Feature — pipeline services now work in isolated mode
+
+v0.5.0–v0.5.3 fail-fasted on any job declaring `services:` in
+isolated mode, on the assumption services were load-bearing
+enough to deserve explicit refusal. The assumption was wrong:
+services run as STANDALONE pods via `Engine.EnsureServices` and
+don't share any workspace with the job pod. The only
+integration point is the task pod's `HostAliases`, which gets
+the service name → service Pod IP mapping — same plumbing as
+shared mode.
+
+`executeIsolated` now calls `startServices`, plumbs
+`servicesPhase.hostAliases` into `IsolatedJobSpec.HostAliases`,
+and defers `servicesPhase.cleanup` (a noop — services are
+run-scoped, torn down by the server's `CleanupRunServices`
+broadcast on run-terminal).
+
+Operators on v0.5.0–v0.5.3 with `services:` jobs were forced to
+flip back to `accessMode: ReadWriteMany`; that workaround is no
+longer needed.
+
+The dedicated rejection test
+(`TestExecute_Isolated_RejectsServices`) is removed since the
+rejection it asserted no longer exists.
+
 ## v0.5.3 — 2026-06-04
 
 ### Fix — artifact upload tar uses scriptWorkDir, not PVC mount root
