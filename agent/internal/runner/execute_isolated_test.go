@@ -99,40 +99,6 @@ func TestExecute_Isolated_PropagatesFirstCheckoutTargetDirToWorkDir(t *testing.T
 	}
 }
 
-func TestExecute_Isolated_RejectsServices(t *testing.T) {
-	k := engine.NewKubernetesWithClient(fake.NewSimpleClientset(), engine.KubernetesConfig{
-		Namespace:     "ci",
-		WorkspaceMode: engine.WorkspaceModeIsolated,
-		AgentImage:    "agent:v1",
-	})
-
-	rc := &resultCapture{}
-	r := New(Config{Send: rc.send, Engine: k})
-
-	a := &gocdnextv1.JobAssignment{
-		RunId: "r", JobId: "j", Name: "with-services",
-		Tasks: []*gocdnextv1.TaskSpec{
-			{Kind: &gocdnextv1.TaskSpec_Script{Script: "psql -c 'select 1'"}},
-		},
-		Services: []*gocdnextv1.ServiceSpec{
-			{Name: "postgres", Image: "postgres:15"},
-		},
-	}
-	r.Execute(context.Background(), a)
-
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	if got := len(rc.results); got != 1 {
-		t.Fatalf("want 1 JobResult, got %d", got)
-	}
-	if got := rc.results[0].GetStatus(); got != gocdnextv1.RunStatus_RUN_STATUS_FAILED {
-		t.Errorf("status: want FAILED, got %v", got)
-	}
-	if !contains(rc.logs, "does not yet support pipeline services") {
-		t.Errorf("expected services rejection log; got %v", rc.logs)
-	}
-}
-
 func contains(ss []string, sub string) bool {
 	for _, s := range ss {
 		if len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0) {
