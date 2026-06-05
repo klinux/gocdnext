@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.1 — 2026-06-04
+
+### Fix — propagate `target_dir` to the task container's WorkingDir in isolated mode
+
+v0.5.0 isolated mode hardcoded the task container's `WorkingDir`
+to `WorkspaceMountPath` (`/workspace`), but the prep init
+container cloned the primary material into
+`/workspace/<target_dir>/`. The task started at `/workspace/`,
+saw an empty directory, and exited 2 (plugins like `node`
+report "no lockfile found"; bare scripts fail their first `cd`
+or file read).
+
+Fix: derive the task `WorkDir` from the first checkout's
+`target_dir` exactly like shared mode does
+(`runner.Execute` lines 167–177). Empty / unset `target_dir`
+still falls through to `WorkspaceMountPath`, so jobs without a
+material work unchanged.
+
+Regression test added in
+`agent/internal/runner/execute_isolated_test.go` —
+`TestExecute_Isolated_PropagatesFirstCheckoutTargetDirToWorkDir`.
+
 ## v0.5.0 — 2026-06-04
 
 ### `agent.workspace.accessMode`: workspace isolation per job
