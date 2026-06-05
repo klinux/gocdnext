@@ -137,6 +137,73 @@ func TestBuildIsolatedJobPodSpec_StructureScript(t *testing.T) {
 	}
 }
 
+func TestBuildIsolatedJobPodSpec_MountPathStaysAtRoot_WhenWorkDirIsSubdir(t *testing.T) {
+	// Regression for v0.5.1 → v0.5.2: when executeIsolated sets
+	// spec.WorkDir to /workspace/src/<hash> (the first checkout's
+	// target_dir), the workspace volume must STILL mount at the
+	// PVC root (/workspace). v0.5.1 used workDir for both the
+	// mount path and the task WorkingDir, so the PVC ended up
+	// mounted at /workspace/src/<hash>, prep cloned to
+	// /workspace/src/<hash>/src/<hash>, and the task at
+	// /workspace/src/<hash> saw an empty directory.
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r",
+		JobID:                "j",
+		Image:                "node:20",
+		Script:               "pnpm test",
+		WorkDir:              "/workspace/src/abc12345",
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	// Every workspace mount on every container must be the PVC
+	// root, NOT the task subdir.
+	for _, c := range pod.Spec.InitContainers {
+		for _, vm := range c.VolumeMounts {
+			if vm.Name == "workspace" && vm.MountPath != "/workspace" {
+				t.Errorf("init container %q mounts workspace at %q; want /workspace",
+					c.Name, vm.MountPath)
+			}
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		for _, vm := range c.VolumeMounts {
+			if vm.Name == "workspace" && vm.MountPath != "/workspace" {
+				t.Errorf("container %q mounts workspace at %q; want /workspace",
+					c.Name, vm.MountPath)
+			}
+		}
+	}
+
+	// prep's --workspace must also be the root, NOT the task
+	// subdir — Prep joins target_dir against it internally.
+	prep := pod.Spec.InitContainers[0]
+	wantArg := "--workspace=/workspace"
+	found := false
+	for _, a := range prep.Command {
+		if a == wantArg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("prep command missing %q; got %v", wantArg, prep.Command)
+	}
+
+	// Task container WorkingDir must be the deep path so plugins
+	// land where prep cloned the primary material.
+	task := findContainer(pod.Spec.Containers, "task")
+	if task == nil {
+		t.Fatal("no task container")
+	}
+	if got, want := task.WorkingDir, "/workspace/src/abc12345"; got != want {
+		t.Errorf("task WorkingDir: want %q, got %q", want, got)
+	}
+}
+
 func TestBuildIsolatedJobPodSpec_Plugin(t *testing.T) {
 	k := newIsolatedTestEngine(t)
 	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{

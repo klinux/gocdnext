@@ -95,9 +95,20 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 	if image == "" {
 		image = k.cfg.DefaultImage
 	}
+	// mountPath is ALWAYS the PVC root — the agent's --workspace
+	// arg, the volume mount on every container, and the housekeeper's
+	// WorkingDir all anchor here. workDir is the task container's
+	// CWD which MAY dive into a subdir (the first checkout's
+	// target_dir, derived agent-side by executeIsolated). Mixing
+	// the two — as v0.5.0 did when spec.WorkDir was just an alias
+	// of WorkspaceMountPath, and v0.5.1 broke when spec.WorkDir
+	// started carrying the target_dir suffix — moves the mount
+	// point and double-joins target_dir inside prep, leaving the
+	// task with an empty workspace.
+	mountPath := k.cfg.WorkspaceMountPath
 	workDir := spec.WorkDir
 	if workDir == "" {
-		workDir = k.cfg.WorkspaceMountPath
+		workDir = mountPath
 	}
 
 	env := make([]corev1.EnvVar, 0, len(spec.Env)+2)
@@ -156,7 +167,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 
 	workspaceMount := corev1.VolumeMount{
 		Name:      "workspace",
-		MountPath: workDir,
+		MountPath: mountPath,
 	}
 	assignmentMount := corev1.VolumeMount{
 		Name:      "assignment",
@@ -172,12 +183,18 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 		Name:            "prep",
 		Image:           k.cfg.AgentImage,
 		ImagePullPolicy: imagePullPolicyFor(k.cfg.AgentImage),
+		// --workspace MUST be the mount root: Prep itself derives
+		// scriptWorkDir from the assignment's first checkout
+		// target_dir and joins under this base. Passing the
+		// already-joined workDir here would cause prep to clone
+		// to /workspace/<target>/<target> and leave /workspace/<target>
+		// (= task WorkingDir) empty.
 		Command: []string{
 			"gocdnext-agent", "prep",
 			"--assignment=/etc/gocdnext/" + AssignmentSecretKey,
-			"--workspace=" + workDir,
+			"--workspace=" + mountPath,
 		},
-		WorkingDir:   workDir,
+		WorkingDir:   mountPath,
 		VolumeMounts: []corev1.VolumeMount{workspaceMount, assignmentMount},
 	}
 	if k.cfg.ForceImagePullAlways {
