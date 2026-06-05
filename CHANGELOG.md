@@ -6,6 +6,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.2 — 2026-06-04
+
+### Fix — separate workspace mount path from task WorkingDir in isolated pods
+
+v0.5.1 propagated the first checkout's `target_dir` into
+`IsolatedJobSpec.WorkDir` so the task container's `WorkingDir`
+matched where prep cloned. BuildIsolatedJobPodSpec then used the
+SAME `workDir` value for:
+
+- the workspace volume's `MountPath` on every container
+- the prep init container's `--workspace` arg
+- every container's `WorkingDir`
+
+That collapsed two distinct paths (PVC root vs task CWD) into
+one. With `target_dir: src/<hash>`:
+
+- PVC mounted at `/workspace/src/<hash>` instead of `/workspace`
+- Prep ran `Checkout(ctx, "/workspace/src/<hash>", co, ...)`,
+  which joins `target_dir` → cloned to
+  `/workspace/src/<hash>/src/<hash>`
+- Task started at `/workspace/src/<hash>` → empty directory →
+  plugin reported "no lockfile found", exit 2
+
+Fix: introduce `mountPath` (= `cfg.WorkspaceMountPath`, always
+the PVC root) and keep it separate from `workDir`. mountPath
+goes on every `volumeMount`, on prep's `--workspace`, and on
+prep/housekeeper `WorkingDir`. workDir goes only on the task
+container's `WorkingDir`.
+
+Regression test added in
+`agent/internal/engine/kubernetes_isolated_test.go` —
+`TestBuildIsolatedJobPodSpec_MountPathStaysAtRoot_WhenWorkDirIsSubdir`.
+
 ## v0.5.1 — 2026-06-04
 
 ### Fix — propagate `target_dir` to the task container's WorkingDir in isolated mode
