@@ -65,6 +65,40 @@ func TestExecute_Isolated_RejectsMultiTaskJob(t *testing.T) {
 	}
 }
 
+func TestExecute_Isolated_PropagatesFirstCheckoutTargetDirToWorkDir(t *testing.T) {
+	// Regression for v0.5.0 → v0.5.1: in isolated mode the task
+	// container's WorkingDir was hardcoded to WorkspaceMountPath
+	// (e.g. /workspace), while prep cloned the primary material
+	// into /workspace/<target_dir>. The plugin then ran at
+	// /workspace, saw no lockfile, and exited 2. Drive a
+	// best-effort end-to-end: any IsolatedJobSpec we build for an
+	// assignment whose first checkout has a non-empty target_dir
+	// MUST set WorkDir = workspaceMountPath + target_dir.
+	//
+	// We can't easily run the full executeIsolated against the
+	// fake clientset (Pod state polling), so the assertion targets
+	// the path-derivation logic via a stripped-down helper exposed
+	// for tests below.
+	got := resolveIsolatedScriptWorkDir("/workspace", []*gocdnextv1.MaterialCheckout{
+		{Url: "https://example/git", TargetDir: "src/main"},
+	})
+	if want := "/workspace/src/main"; got != want {
+		t.Errorf("workdir for target_dir=src/main: want %q, got %q", want, got)
+	}
+
+	got = resolveIsolatedScriptWorkDir("/workspace", nil)
+	if want := "/workspace"; got != want {
+		t.Errorf("workdir for no checkouts: want %q, got %q", want, got)
+	}
+
+	got = resolveIsolatedScriptWorkDir("/workspace", []*gocdnextv1.MaterialCheckout{
+		{Url: "https://example/git", TargetDir: ""},
+	})
+	if want := "/workspace"; got != want {
+		t.Errorf("workdir for empty target_dir: want %q, got %q", want, got)
+	}
+}
+
 func TestExecute_Isolated_RejectsServices(t *testing.T) {
 	k := engine.NewKubernetesWithClient(fake.NewSimpleClientset(), engine.KubernetesConfig{
 		Namespace:     "ci",

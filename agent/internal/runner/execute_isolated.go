@@ -15,6 +15,8 @@ package runner
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +26,22 @@ import (
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
+
+// resolveIsolatedScriptWorkDir picks the task container's
+// WorkingDir from the primary material's target_dir, matching
+// shared mode's "follow the first checkout into its target_dir"
+// behaviour. Returns mountPath when no checkouts are declared OR
+// when the first checkout has no target_dir. Exposed for tests.
+func resolveIsolatedScriptWorkDir(mountPath string, checkouts []*gocdnextv1.MaterialCheckout) string {
+	if len(checkouts) == 0 {
+		return mountPath
+	}
+	td := strings.TrimSpace(checkouts[0].GetTargetDir())
+	if td == "" {
+		return mountPath
+	}
+	return filepath.Join(mountPath, td)
+}
 
 // assignmentSecretCleanupTimeout caps how long we wait when
 // deleting the assignment Secret outside the job's own context.
@@ -102,6 +120,14 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		return
 	}
 
+	// Mirror runner.Execute's "follow the first checkout into its
+	// target_dir" rule so the task container's WorkingDir matches
+	// where prep cloned the primary material. Without this
+	// propagation, prep clones to /workspace/<target_dir>/ but the
+	// task container starts at /workspace/, the plugin sees no
+	// lockfile, and exits 2.
+	scriptWorkDir := resolveIsolatedScriptWorkDir(cfg.WorkspaceMountPath, a.GetCheckouts())
+
 	// Resolve the engine.IsolatedJobSpec — same shape as the
 	// shared-mode ScriptSpec resolution in runner.go::runScript +
 	// runner.go::runPlugin, kept here so isolated mode doesn't
@@ -109,7 +135,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	spec := engine.IsolatedJobSpec{
 		RunID:     a.GetRunId(),
 		JobID:     a.GetJobId(),
-		WorkDir:   cfg.WorkspaceMountPath,
+		WorkDir:   scriptWorkDir,
 		Env:       a.GetEnv(),
 		Docker:    a.GetDocker(),
 		Resources: assignmentResources(a),
