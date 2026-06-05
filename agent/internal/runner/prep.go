@@ -37,12 +37,10 @@ func containsTemplate(key string) bool { return strings.Contains(key, "{{") }
 //   - Clone each declared material.
 //   - Download each declared upstream artifact (pre-signed URLs
 //     embedded in the JobAssignment by the agent at dispatch).
-//
-// Caches are intentionally skipped in this phase for v0.5.0 isolated
-// mode — the init container has no gRPC session, so it can't call
-// RequestCacheGet. Pre-signing literal cache URLs at dispatch is
-// supported in shared mode and is being tracked as a follow-up for
-// isolated mode. A warning is logged so the operator notices.
+//   - Download each LITERAL-KEY cache entry whose ticket the
+//     agent pre-resolved at dispatch (CacheEntry.fetch_url set).
+//     Templated keys (`{{ hash "..." }}`) need workspace-side
+//     hashing and are skipped with a warning.
 //
 // logWriter receives one plain-text line per progress event. K8s log
 // collection prepends timestamps + container name when the operator

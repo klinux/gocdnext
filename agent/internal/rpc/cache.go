@@ -143,10 +143,26 @@ func (c *CacheClient) StoreFromPod(
 	hasher := sha256.New()
 	mw := io.MultiWriter(tmp, hasher)
 
-	// tar -czf - -C <podWorkDir> -- <path1> <path2> ... The
-	// `--` separator avoids paths starting with `-` being read as
-	// flags (same defence as the artifact path tar).
-	cmd := append([]string{"tar", "-czf", "-", "-C", podWorkDir, "--"}, entry.GetPaths()...)
+	// Wrap tar in a shell that filters out missing paths before
+	// invocation — mirrors the shared-mode TarGzPaths semantics
+	// (artifacts.go::TarGzPaths skips ENOENT silently). Without
+	// this, ANY single missing path causes `tar` to exit non-zero
+	// and the whole cache fails to upload, even for jobs whose
+	// other declared paths exist and contain valid build state.
+	//
+	// Filtering happens inside the pod via /bin/sh + tar -T <file>:
+	// each existing path goes into a tmp file (one per line, safe
+	// for paths with spaces), then tar reads the list. Empty list
+	// (all paths missing — cold start case) exits 0 producing an
+	// empty gzip stream; we accept the resulting ~30-byte tarball
+	// as a no-op store rather than entangle exec exit codes with
+	// the PUT pipeline.
+	const tarScript = `cd "$1" || exit 1; shift; tmp=$(mktemp) || exit 1; ` +
+		`trap "rm -f $tmp" EXIT; ` +
+		`for p in "$@"; do [ -e "$p" ] && printf '%s\n' "$p" >> "$tmp"; done; ` +
+		`[ -s "$tmp" ] || exit 0; ` +
+		`exec tar -czf - -T "$tmp"`
+	cmd := append([]string{"sh", "-c", tarScript, "_", podWorkDir}, entry.GetPaths()...)
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("exec tar %q: %w", entry.GetKey(), err)
