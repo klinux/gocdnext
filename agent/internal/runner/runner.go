@@ -52,6 +52,11 @@ type Config struct {
 	// correctness.
 	Cache CacheClient
 
+	// IsolatedCache is the isolated-mode counterpart of Cache.
+	// Concrete impl is rpc.CacheClient (same struct implements
+	// both). Nil → cache no-op in isolated mode.
+	IsolatedCache IsolatedCacheClient
+
 	// Engine executes each script task. Nil defaults to engine.Shell
 	// — the pre-F3 behaviour (`sh -c` on the agent host). K8s-native
 	// deployments set engine.Kubernetes.

@@ -372,6 +372,16 @@ message ResourceRequirements {
 message CacheEntry {
   string key               = 1;
   repeated string paths    = 2;
+  // Pre-signed cache GET URL + sha + found flag. Populated by the
+  // AGENT (not the server) at dispatch time when the job runs in
+  // isolated workspace mode AND the cache key is literal (no
+  // `{{ hash }}` token). Init container reads these to fetch via
+  // HTTP without a gRPC session. Empty in shared mode (agent does
+  // the round-trip on-demand) and for templated keys in isolated
+  // mode (warning emitted; cache skipped).
+  string fetch_url         = 3;
+  string fetch_sha256      = 4;
+  bool   fetch_found       = 5;
 }
 
 // ServiceSpec is the wire shape for a pipeline-level service. The

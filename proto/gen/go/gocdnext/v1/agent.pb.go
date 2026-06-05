@@ -2045,9 +2045,19 @@ func (x *ResourceRequirements) GetMemoryLimit() string {
 // the domain-layer name stays `CacheSpec` where the overlap
 // doesn't matter.
 type CacheEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Paths         []string               `protobuf:"bytes,2,rep,name=paths,proto3" json:"paths,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Paths []string               `protobuf:"bytes,2,rep,name=paths,proto3" json:"paths,omitempty"`
+	// Pre-signed cache GET URL + sha + found flag. Populated by the
+	// AGENT (not the server) at dispatch time when the job runs in
+	// isolated workspace mode AND the cache key is literal (no
+	// `{{ hash }}` token). Init container reads these to fetch via
+	// HTTP without a gRPC session. Empty in shared mode (agent does
+	// the round-trip on-demand) and for templated keys in isolated
+	// mode (warning emitted; cache skipped).
+	FetchUrl      string `protobuf:"bytes,3,opt,name=fetch_url,json=fetchUrl,proto3" json:"fetch_url,omitempty"`
+	FetchSha256   string `protobuf:"bytes,4,opt,name=fetch_sha256,json=fetchSha256,proto3" json:"fetch_sha256,omitempty"`
+	FetchFound    bool   `protobuf:"varint,5,opt,name=fetch_found,json=fetchFound,proto3" json:"fetch_found,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2094,6 +2104,27 @@ func (x *CacheEntry) GetPaths() []string {
 		return x.Paths
 	}
 	return nil
+}
+
+func (x *CacheEntry) GetFetchUrl() string {
+	if x != nil {
+		return x.FetchUrl
+	}
+	return ""
+}
+
+func (x *CacheEntry) GetFetchSha256() string {
+	if x != nil {
+		return x.FetchSha256
+	}
+	return ""
+}
+
+func (x *CacheEntry) GetFetchFound() bool {
+	if x != nil {
+		return x.FetchFound
+	}
+	return false
 }
 
 // ServiceSpec is the wire shape for a pipeline-level service. The
@@ -2740,11 +2771,15 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"cpuRequest\x12\x1b\n" +
 	"\tcpu_limit\x18\x02 \x01(\tR\bcpuLimit\x12%\n" +
 	"\x0ememory_request\x18\x03 \x01(\tR\rmemoryRequest\x12!\n" +
-	"\fmemory_limit\x18\x04 \x01(\tR\vmemoryLimit\"4\n" +
+	"\fmemory_limit\x18\x04 \x01(\tR\vmemoryLimit\"\x95\x01\n" +
 	"\n" +
 	"CacheEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05paths\x18\x02 \x03(\tR\x05paths\"\xbe\x01\n" +
+	"\x05paths\x18\x02 \x03(\tR\x05paths\x12\x1b\n" +
+	"\tfetch_url\x18\x03 \x01(\tR\bfetchUrl\x12!\n" +
+	"\ffetch_sha256\x18\x04 \x01(\tR\vfetchSha256\x12\x1f\n" +
+	"\vfetch_found\x18\x05 \x01(\bR\n" +
+	"fetchFound\"\xbe\x01\n" +
 	"\vServiceSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05image\x18\x02 \x01(\tR\x05image\x123\n" +

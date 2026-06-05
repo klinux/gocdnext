@@ -290,8 +290,9 @@ func (c *Client) Run(ctx context.Context) error {
 //
 // The concrete *ArtifactUploader satisfies both runner.ArtifactUploader
 // (shared mode) and runner.IsolatedUploader (isolated mode), so the same
-// pointer is plumbed into both slots.
-func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader *ArtifactUploader, cache runner.CacheClient) *runner.Runner {
+// pointer is plumbed into both slots. The concrete *CacheClient mirrors
+// the pattern for the cache interfaces.
+func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader *ArtifactUploader, cache *CacheClient) *runner.Runner {
 	return runner.New(runner.Config{
 		WorkspaceRoot:    c.cfg.WorkspaceRoot,
 		Logger:           c.log,
@@ -299,12 +300,13 @@ func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader *Arti
 		Uploader:         uploader,
 		IsolatedUploader: uploader,
 		Cache:            cache,
+		IsolatedCache:    cache,
 		Engine:           c.cfg.Engine,
 		AgentTags:        append([]string(nil), c.cfg.Tags...),
 	})
 }
 
-func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader *ArtifactUploader, cache runner.CacheClient) error {
+func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader *ArtifactUploader, cache *CacheClient) error {
 	// Single-writer invariant for gRPC ClientStream: sendLoop is the only
 	// goroutine that calls stream.Send / CloseSend. Heartbeats (ticker) and
 	// runner-produced messages (logs, results) both flow through `outbound`

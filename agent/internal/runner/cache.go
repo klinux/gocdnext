@@ -9,8 +9,25 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
+
+// IsolatedCacheClient is the isolated-mode counterpart of
+// CacheClient. In isolated mode the init container has no gRPC
+// session, so the agent pre-resolves cache GET URLs at dispatch
+// time (ResolveGet) and embeds them in CacheEntry.fetch_url so
+// the init container can HTTP-GET directly. Cache store goes via
+// PodExecutor (StoreFromPod) — tar inside the housekeeper, PUT to
+// signed URL, then MarkCacheReady from the agent's session.
+//
+// Templated keys (`{{ hash "..." }}`) need workspace files to
+// expand, which only exist inside the pod, so they stay skipped
+// in isolated mode until job-scoped session tokens land.
+type IsolatedCacheClient interface {
+	ResolveGet(ctx context.Context, runID, jobID, key string) (url, sha string, found bool, err error)
+	StoreFromPod(ctx context.Context, exec engine.PodExecutor, podName, container, podWorkDir, runID, jobID string, entry *gocdnextv1.CacheEntry) error
+}
 
 // CacheClient is how the runner talks to the server-side cache
 // machinery. Kept behind an interface so runner tests can inject
