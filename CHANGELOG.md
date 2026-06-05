@@ -6,6 +6,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.5 — 2026-06-05
+
+### Feature — literal-key cache fetch + store in isolated mode
+
+v0.5.0–v0.5.4 made `cache:` a no-op in isolated mode with a
+warning, on the assumption that an in-pod gRPC session was the
+only way to call `RequestCacheGet`/`Put`. Wrong: the agent
+already holds the session and can pre-resolve at dispatch,
+identical to the way it pre-signs `artifact_downloads`.
+
+How it works now:
+
+1. `CacheEntry` proto gains three additive fields: `fetch_url`,
+   `fetch_sha256`, `fetch_found`. Empty on the wire from
+   server → agent; the agent stamps them at dispatch.
+2. Before pod creation, `executeIsolated` walks
+   `a.GetCaches()`, calls
+   `IsolatedCache.ResolveGet(runID, jobID, key)` for each
+   literal key, and writes the ticket back into the proto.
+   Templated keys (`{{ hash "..." }}`) are left empty.
+3. `proto.Marshal(a)` serialises the populated assignment;
+   the Secret carries it.
+4. Init container's `Prep` iterates caches: literal hit →
+   HTTP GET on `fetch_url` + untar over `scriptWorkDir`;
+   literal miss → silent; templated → explicit warning.
+5. After task success, `PostJob` calls
+   `IsolatedCache.StoreFromPod` per literal key: exec
+   `tar -czf - -C scriptWorkDir -- <paths…>` inside the
+   housekeeper, stream through a temp file (S3/GCS need
+   Content-Length), PUT to the signed URL from
+   `RequestCachePut`, then `MarkCacheReady`.
+
+Templated keys remain skipped in v0.5.5 — the in-pod hashing
+needs a workspace, and we don't yet have a way to ship the
+signed URL back into the init container. Trivy + similar
+literal-keyed caches (the user-visible motivation: 95 MiB
+`trivy-db` re-downloaded every run) now restore on the first
+hit.
+
+Test additions in
+`agent/internal/runner/prep_test.go`:
+- `TestPrep_CacheHitDownloads` — happy-path fetch via httptest
+- `TestPrep_LogsTemplatedKeyLimitation` — warning preserved
+  for `{{ }}` keys
+- `TestPrep_CacheMissIsSilent` — replaces the old
+  "warn on every cache" test; cold miss is normal
+
 ## v0.5.4 — 2026-06-04
 
 ### Feature — pipeline services now work in isolated mode
