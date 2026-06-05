@@ -6,6 +6,48 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.5.6 — 2026-06-05
+
+### Fix — `StoreFromPod` skips missing paths instead of failing the cache
+
+v0.5.5 issued `tar -czf - -C <workdir> -- <path1> <path2> …`
+inside the housekeeper. If ANY declared path was missing (cold
+start, conditionally-generated output, partial build), tar
+exited non-zero and the whole cache failed to upload. Cache
+fetches kept working but the store side never populated, so
+the next run still got a miss — the worst-case feedback loop
+(operator thinks cache is working because restore is silent
+on miss, but it's never being written).
+
+Fix: wrap tar in an in-pod shell script that filters out
+missing paths first, writes the surviving list to a tempfile,
+then `exec tar -czf - -T <tmpfile>`. Mirrors the shared-mode
+`TarGzPaths` semantics (skip ENOENT silently). Paths with
+spaces survive because `tar -T file` reads one entry per line.
+
+If ALL paths are missing (e.g. cold start with no build
+output to cache), the script exits 0 with empty output; the
+downstream PUT uploads the gzip-empty-tar envelope (~30 bytes)
+and `MarkCacheReady` flips the row. Effectively a no-op
+store. Mirrors shared-mode behaviour where TarGzPaths returns
+an empty archive.
+
+Test additions in `agent/internal/rpc/cache_test.go`:
+- `TestStoreFromPod_FiltersMissingPaths` — asserts the cmd
+  argv shape uses `sh -c <script>` with `[ -e "$p" ]` filter
+  and `tar -czf - -T <file>`, plus the full RPC sequence
+  (RequestCachePut → exec → PUT → MarkCacheReady).
+- `TestStoreFromPod_EmptyPathsRejected` /
+  `TestStoreFromPod_NilExecutorRejected` — input guards.
+- `TestResolveGet_FoundReturnsTicket` /
+  `TestResolveGet_NotFoundIsNoError` /
+  `TestResolveGet_NotFoundCodeIsNoError` — ticket round-trip
+  + NotFound normalisation.
+
+Stale comments in `postjob.go` and `prep.go` that still
+described caches as "no-op in isolated mode" updated to
+reflect the v0.5.5 behaviour.
+
 ## v0.5.5 — 2026-06-05
 
 ### Feature — literal-key cache fetch + store in isolated mode
