@@ -15,6 +15,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
@@ -45,6 +46,7 @@ type IsolatedUploader interface {
 type PostJobConfig struct {
 	Executor      engine.PodExecutor
 	Uploader      IsolatedUploader
+	Cache         IsolatedCacheClient // nil → cache store no-op
 	PodName       string
 	HousekeeperCt string // typically "housekeeper"
 	PodWorkDir    string // mount path inside the pod, typically /workspace
@@ -111,11 +113,39 @@ func (r *Runner) PostJob(
 		}
 	}
 
-	if len(a.GetCaches()) > 0 {
-		r.emitLog(a, seq, "stderr", fmt.Sprintf(
-			"cache: %d entry(ies) declared but cache store is not yet "+
-				"supported in workspace isolated mode; next run will rebuild",
-			len(a.GetCaches())))
+	if cfg.Cache != nil {
+		for _, entry := range a.GetCaches() {
+			if entry.GetKey() == "" {
+				continue
+			}
+			if strings.Contains(entry.GetKey(), "{{") {
+				// Templated key — agent couldn't pre-expand,
+				// the runtime key is unknown here. Skip with
+				// a warning; matches the prep-side warning so
+				// the operator sees a consistent message at
+				// both ends.
+				r.emitLog(a, seq, "stderr", fmt.Sprintf(
+					"cache %q: templated key not yet supported in "+
+						"isolated mode; store skipped", entry.GetKey()))
+				continue
+			}
+			if len(entry.GetPaths()) == 0 {
+				continue
+			}
+			if err := cfg.Cache.StoreFromPod(ctx, cfg.Executor,
+				cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
+				a.GetRunId(), a.GetJobId(), entry); err != nil {
+				// Best-effort: log and continue. The build
+				// succeeded; the next run will simply rebuild
+				// instead of restoring.
+				r.emitLog(a, seq, "stderr", fmt.Sprintf(
+					"cache %q: store failed (%v) — next run will rebuild",
+					entry.GetKey(), err))
+				continue
+			}
+			r.emitLog(a, seq, "stdout", fmt.Sprintf(
+				"cache %q: stored", entry.GetKey()))
+		}
 	}
 
 	return refs, nil

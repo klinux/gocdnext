@@ -172,6 +172,37 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		}
 	}
 
+	// Pre-resolve literal cache keys via the agent's gRPC session
+	// and stamp the signed GET URLs onto each CacheEntry so the
+	// init container can fetch via HTTP without a session of its
+	// own. Templated keys (`{{ hash "..." }}`) need workspace
+	// files to expand and are left unresolved — Prep skips them
+	// with a warning. Failures here log + continue: cache is
+	// acceleration, not correctness.
+	if r.cfg.IsolatedCache != nil {
+		for _, entry := range a.GetCaches() {
+			if entry.GetKey() == "" {
+				continue
+			}
+			if containsTemplate(entry.GetKey()) {
+				continue
+			}
+			url, sha, found, rerr := r.cfg.IsolatedCache.ResolveGet(ctx,
+				a.GetRunId(), a.GetJobId(), entry.GetKey())
+			if rerr != nil {
+				r.cfg.Logger.Warn("runner: cache pre-resolve failed",
+					"err", rerr, "key", entry.GetKey(),
+					"run_id", a.GetRunId(), "job_id", a.GetJobId())
+				continue
+			}
+			entry.FetchFound = found
+			if found {
+				entry.FetchUrl = url
+				entry.FetchSha256 = sha
+			}
+		}
+	}
+
 	// Serialise the JobAssignment so the init container can do
 	// checkout + artifact-download from inside the pod.
 	assignmentBytes, err := proto.Marshal(a)
@@ -337,6 +368,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	refs, postErr := r.PostJob(ctx, PostJobConfig{
 		Executor:      exec,
 		Uploader:      r.cfg.IsolatedUploader,
+		Cache:         r.cfg.IsolatedCache,
 		PodName:       podName,
 		HousekeeperCt: "housekeeper",
 		PodWorkDir:    scriptWorkDir,

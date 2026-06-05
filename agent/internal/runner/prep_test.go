@@ -70,20 +70,84 @@ func TestPrep_EmptyWorkspaceDir(t *testing.T) {
 	}
 }
 
-func TestPrep_LogsCacheLimitation(t *testing.T) {
+func TestPrep_CacheMissIsSilent(t *testing.T) {
+	// Literal-key cache miss (fetch_found=false) is the normal
+	// cold-start case. Prep should NOT spam a warning for it —
+	// only templated keys (not yet supported) deserve the
+	// warning.
 	tmp := t.TempDir()
 	a := &gocdnextv1.JobAssignment{
 		RunId: "r", JobId: "j",
 		Caches: []*gocdnextv1.CacheEntry{
-			{Key: "pnpm-store-abc", Paths: []string{".pnpm-store"}},
+			{
+				Key:        "pnpm-store-abc",
+				Paths:      []string{".pnpm-store"},
+				FetchFound: false,
+			},
 		},
 	}
 	var logs bytes.Buffer
 	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
 		t.Fatalf("prep: %v", err)
 	}
-	if !strings.Contains(logs.String(), "caches are not yet supported") {
-		t.Errorf("expected cache limitation warning, got: %s", logs.String())
+	if strings.Contains(logs.String(), "warning") {
+		t.Errorf("expected no warning on cold-start miss; got: %s", logs.String())
+	}
+}
+
+func TestPrep_LogsTemplatedKeyLimitation(t *testing.T) {
+	// Templated cache keys are skipped in isolated mode (no
+	// workspace-side hashing yet) with an explicit warning so
+	// the operator understands why their pnpm-store-{{ hash ...
+	// }} cache isn't restoring.
+	tmp := t.TempDir()
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r", JobId: "j",
+		Caches: []*gocdnextv1.CacheEntry{
+			{
+				Key:        `pnpm-store-{{ hash "pnpm-lock.yaml" }}`,
+				Paths:      []string{".pnpm-store"},
+				FetchFound: false,
+			},
+		},
+	}
+	var logs bytes.Buffer
+	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+	if !strings.Contains(logs.String(), "templated keys aren't yet supported") {
+		t.Errorf("expected templated-key warning, got: %s", logs.String())
+	}
+}
+
+func TestPrep_CacheHitDownloads(t *testing.T) {
+	tarPayload, sha := buildTarPayload(t, map[string]string{
+		"node_modules/foo.txt": "cached",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(tarPayload)
+	}))
+	defer srv.Close()
+
+	tmp := t.TempDir()
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r", JobId: "j",
+		Caches: []*gocdnextv1.CacheEntry{
+			{
+				Key:          "node-modules-abc",
+				Paths:        []string{"node_modules"},
+				FetchUrl:     srv.URL,
+				FetchSha256:  sha,
+				FetchFound:   true,
+			},
+		},
+	}
+	var logs bytes.Buffer
+	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+	if !strings.Contains(logs.String(), "restored") {
+		t.Errorf("expected cache restored log, got: %s", logs.String())
 	}
 }
 

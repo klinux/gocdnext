@@ -20,11 +20,18 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
+
+// containsTemplate is a cheap probe for `{{ }}` tokens in a
+// cache key. Used to distinguish "literal key, cache miss" from
+// "templated key, not yet supported in isolated mode" without
+// requiring the full cachekey.Parse round-trip.
+func containsTemplate(key string) bool { return strings.Contains(key, "{{") }
 
 // Prep runs the workspace materialisation phase of a job:
 //   - Clone each declared material.
@@ -82,14 +89,41 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 		}
 	}
 
-	if len(a.GetCaches()) > 0 {
-		prepLog(logWriter,
-			"prep: warning — %d cache entry(ies) declared but caches are not yet "+
-				"supported in workspace isolated mode (init container has no gRPC "+
-				"session). Job will run without pre-populated cache; first cold "+
-				"build will be slower. Switch to workspace.accessMode=ReadWriteMany "+
-				"if you need caches, or follow the isolated-mode cache support issue.",
-			len(a.GetCaches()))
+	// Cache fetch: the agent pre-resolves literal cache keys at
+	// dispatch (executeIsolated::ResolveGet) and populates
+	// fetch_url/fetch_sha256/fetch_found on each CacheEntry. The
+	// init container doesn't talk to the server here — it just
+	// downloads + untars over scriptWorkDir. Templated keys
+	// (`{{ hash "..." }}`) stay skipped because workspace files
+	// only exist HERE, not at the agent at dispatch time.
+	for _, entry := range a.GetCaches() {
+		if entry.GetKey() == "" {
+			continue
+		}
+		if !entry.GetFetchFound() {
+			// Either a literal-key cache miss (normal cold start)
+			// or a templated key we couldn't pre-resolve. Stay
+			// silent on miss; warn loudly on the latter so the
+			// operator sees why.
+			if entry.GetFetchUrl() == "" && containsTemplate(entry.GetKey()) {
+				prepLog(logWriter,
+					"prep: warning — cache key %q has `{{ }}` tokens; "+
+						"templated keys aren't yet supported in workspace "+
+						"isolated mode (workspace-side hashing required, but "+
+						"the init container has no gRPC session to call "+
+						"RequestCacheGet). Cache skipped.",
+					entry.GetKey())
+			}
+			continue
+		}
+		if err := DownloadAndUntar(ctx, nil, entry.GetFetchUrl(), scriptWorkDir, entry.GetFetchSha256()); err != nil {
+			// Cache is acceleration, never correctness: log + carry on.
+			prepLog(logWriter, "prep: cache %q: fetch failed (%v) — continuing without",
+				entry.GetKey(), err)
+			continue
+		}
+		prepLog(logWriter, "prep: cache %q: restored %d path(s)",
+			entry.GetKey(), len(entry.GetPaths()))
 	}
 
 	prepLog(logWriter, "prep: workspace ready at %s", workspaceDir)
