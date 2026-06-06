@@ -16,6 +16,15 @@ inputs:
     required: false
     default: "."
     description: Directory under the workspace to cd into before running go.
+  cgo:
+    required: false
+    description: >
+      Override CGO toggle. Empty (default) leaves the toolchain
+      default alone — alpine base ships gcc + musl-dev so
+      CGO_ENABLED=1 unless GOOS forces it off. Set "false" for
+      portable cross-compile or static release binaries. Set
+      "true" to fail loud if the base image ever drops gcc
+      (defensive — race-detector tests need cgo).
 
 examples:
   - name: test with race detector
@@ -39,14 +48,53 @@ examples:
       Tar + restore the module + build caches across runs. Plugin
       redirects $GOMODCACHE and $GOCACHE to .go-mod/ and
       .go-cache/ inside the workspace so the `cache:` block
-      captures both. Incremental compilation + cached test
-      results shave most of the cold-start from subsequent runs.
+      captures both. Key is hash-of-go.sum so dependency bumps
+      invalidate automatically — different branches sharing the
+      same go.sum share the cache safely (contents are content-
+      addressable, multi-version safe). Note: don't pass
+      `-count=1` unless you want to bypass the test cache — go
+      memoises pass/fail per test binary, and `-count=1` defeats
+      that memo.
     yaml: |
       cache:
-        - key: go-${CI_COMMIT_BRANCH}
+        - key: go-{{ hash "go.sum" }}
           paths:
             - .go-mod
             - .go-cache
       uses: ghcr.io/klinux/gocdnext-plugin-go@v1
       with:
         command: test -race ./...
+
+  - name: static binary for distroless / scratch
+    description: >
+      `cgo: "false"` + CGO_ENABLED=0 path gives a fully static
+      binary you can drop into `gcr.io/distroless/static` or
+      scratch. Trade-off: no race detector (needs cgo), no DNS
+      via libc resolver (Go uses its own pure-Go resolver).
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-go@v1
+      with:
+        command: build -trimpath -ldflags="-s -w" -o dist/app ./cmd/app
+        cgo: "false"
+      variables:
+        GOOS: linux
+        GOARCH: amd64
+
+  - name: testcontainers-go (integration tests with sibling containers)
+    description: >
+      `docker: true` mounts the agent's docker.sock + wires
+      `host.docker.internal` so testcontainers-go can spin up
+      sibling containers (postgres, redis, localstack, …). The
+      plugin auto-exports `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`
+      and `TESTCONTAINERS_HOST_OVERRIDE` ONLY when the socket is
+      really present — in the Kubernetes DinD path
+      (DOCKER_HOST=tcp://localhost:2375) Testcontainers-Go
+      auto-detects via DOCKER_HOST without explicit overrides.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-go@v1
+      docker: true
+      cache:
+        - key: go-{{ hash "go.sum" }}
+          paths: [.go-mod, .go-cache]
+      with:
+        command: test -race -tags=integration ./...
