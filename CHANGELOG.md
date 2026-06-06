@@ -6,6 +6,61 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.6.0 — 2026-06-05
+
+### Feature — pipeline services tracked in the UI (closes issue #7)
+
+Run-scoped service Pods (shipped in v0.4.35) used to be a server
+blind spot: the agent created/destroyed them, the server only
+heard about it at run-terminal via `CleanupRunServicesResult`,
+the UI never saw the rows at all. A service crashing at start
+manifested as "every test job times out with connection refused"
+and the operator chased the wrong root cause.
+
+v0.6.0 wires the full chain:
+
+- New `service_runs` table (migration 00039), keyed on
+  `(run_id, name)`. Tracks `starting`, `ready`, `stopped`, `failed`
+  with per-state timestamps so the UI can render the readiness
+  window AND the total uptime.
+- New `ServiceLifecycle` proto on `AgentMessage` (field 7), emitted
+  by the Kubernetes engine at three transition points:
+  - `starting` after `Pod Create` succeeds (skipped for sibling
+    reuse so `started_at` anchors to the FIRST agent).
+  - `ready` when `waitForPodIP` succeeds.
+  - `failed` if `waitForPodIP` errors (image pull backoff,
+    startup timeout).
+  - `stopped` emitted by `CleanupRunServices` per successful
+    delete (NotFound from a sibling-race doesn't emit, otherwise
+    `stopped_at` would clobber across agents).
+- New server handler `handleServiceLifecycle` in `grpcsrv/connect.go`
+  that validates + clamps agent-supplied strings (image, pod_name,
+  error) and `UpsertServiceRun` into the store. Status enum is
+  validated against the closed `starting|ready|stopped|failed`
+  set; unknown values drop with a warn.
+- New API endpoint `GET /api/v1/runs/{id}/services` returning the
+  alphabetically-ordered list as `ServiceResponse[]`.
+- New "Services" tab on the run-detail page in `web/`, polling
+  every 3s while the run is live. Each row shows name + image +
+  status pill (`ready`=success, `starting`=running, `stopped`=neutral,
+  `failed`=destructive), `started`/`ready` relative-times, and a
+  duration that flips between "ready window" (live) and "total
+  uptime" (stopped).
+
+The `Engine.EnsureServices` and `Engine.CleanupRunServices`
+interfaces gained an `onLifecycle func(ServiceLifecycleEvent)`
+trailing parameter. Shell + Docker engines accept it as a no-op
+(neither hosts services today). All existing tests / stubs
+updated to the new signature.
+
+Store tests cover the COALESCE-preservation contract:
+re-issued `ready` doesn't reset `ready_at`, an out-of-order
+`starting` after `ready` doesn't clobber `ready_at` either.
+
+**Bonus — service Pod logs** are still a follow-up; the issue's
+"why did postgres die?" log viewer needs its own log-line
+partition shape and is tracked separately.
+
 ## v0.5.7 — 2026-06-05
 
 ### Fix — cache store refreshes the row to empty when nothing to cache; defangs leading-`-` paths
