@@ -1,0 +1,353 @@
+name: sonar
+category: quality
+description: >
+  Analyze a project with SonarQube (self-hosted) or SonarCloud
+  (SaaS). Bundles three scanner front-ends in one image — Maven
+  (`mvn sonar:sonar`), Gradle (`gradle sonar`), and the
+  language-agnostic Scanner CLI (`sonar-scanner`) for JS/TS,
+  Python, Go, C/C++, etc. Mode is auto-detected from the project
+  layout, or set explicitly via `mode:`. Auth via the job's
+  `secrets:` list — the scanner reads `SONAR_TOKEN` from env so
+  the token never appears in `ps auxww` or job logs.
+
+  SonarCloud is the default host (`https://sonarcloud.io`).
+  Point `host-url:` at your SonarQube base URL for the self-
+  hosted case. SonarQube Community Edition does NOT support
+  branch / pull-request analysis — those properties are
+  rejected by the server. Use Developer Edition+ or SonarCloud
+  when you need PR decoration.
+
+inputs:
+  token:
+    required: false
+    description: >
+      Sonar auth token. Generated at *User → My Account →
+      Security* (SonarCloud) or *Administration → Security →
+      Users* (SonarQube). Populate via the job's `secrets:`
+      list — the plugin exports it as `SONAR_TOKEN` env so the
+      scanner picks it up without landing on the CLI argv.
+      `required: false` because the agent already injects the
+      named secret as `SONAR_TOKEN` env when you list
+      `secrets: [SONAR_TOKEN]` on the job, and the plugin
+      accepts the env directly. The runtime fails fast with a
+      clear message when NEITHER `token:` nor `SONAR_TOKEN`
+      env is present.
+  host-url:
+    required: false
+    default: https://sonarcloud.io
+    description: >
+      Sonar server base URL. `https://sonarcloud.io` for
+      SonarCloud (default); for SonarQube self-hosted set to
+      your install (`https://sonar.example.com`).
+  organization:
+    required: false
+    description: >
+      SonarCloud organization key (`my-org`). REQUIRED when
+      host-url points at SonarCloud — the plugin fails fast
+      with a clear error otherwise. Ignored on SonarQube.
+  project-key:
+    required: true
+    description: >
+      sonar.projectKey — uniquely identifies the project on the
+      Sonar server. SonarCloud convention: `<org>_<repo>`.
+      SonarQube convention: any unique slug (`my-app`).
+  project-name:
+    required: false
+    description: >
+      sonar.projectName — display name on the Sonar dashboard.
+      Defaults to `project-key`.
+  project-version:
+    required: false
+    description: >
+      sonar.projectVersion — surfaces on the dashboard +
+      attached to each new issue. Defaults to
+      `${CI_COMMIT_SHORT_SHA}` so every analysis carries a
+      stable audit trail back to the commit.
+  mode:
+    required: false
+    default: auto
+    description: >
+      `auto` | `maven` | `gradle` | `scanner-cli`. `auto`
+      detects from project layout (pom.xml → maven,
+      build.gradle{,.kts} → gradle, else scanner-cli). Override
+      when you want to force the scanner-cli path on a JVM
+      project (rare).
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into before running
+      the scanner. Monorepos with the project root deeper than
+      the repo root set this.
+  sources:
+    required: false
+    description: >
+      sonar.sources — comma-separated source dirs. Defaults to
+      auto-detect: maven/gradle modes read the project model;
+      scanner-cli mode defaults to `.` (current directory).
+  tests:
+    required: false
+    description: >
+      sonar.tests — comma-separated test dirs. Same auto-detect
+      defaults as `sources`.
+  branch:
+    required: false
+    description: >
+      sonar.branch.name — sets the branch this analysis writes
+      to. Skip on SonarQube Community Edition (branch analysis
+      is a paid feature; the server rejects the property).
+      Empty = main-branch analysis. PR mode (see
+      `pull-request-key`) takes precedence.
+  pull-request-key:
+    required: false
+    description: >
+      sonar.pullrequest.key — PR/MR id from the SCM provider
+      (GitHub PR number, GitLab MR iid, Bitbucket PR id). When
+      set, the scanner switches to PR-decoration mode and
+      `branch:` is ignored.
+  pull-request-branch:
+    required: false
+    description: >
+      sonar.pullrequest.branch — source branch of the PR.
+      Required for PR mode (the GitHub/GitLab integration
+      decorates the PR with the analysis result).
+  pull-request-base:
+    required: false
+    description: >
+      sonar.pullrequest.base — target branch of the PR
+      (typically `main` or `develop`).
+  wait-for-quality-gate:
+    required: false
+    default: "false"
+    description: >
+      `true` → pass `-Dsonar.qualitygate.wait=true`; the
+      scanner polls the server until the Quality Gate has been
+      evaluated and exits non-zero if the gate fails. Use this
+      to block a PR pipeline on gate failure. Trade-off: adds
+      1-3 minutes of wait per scan. `false` (default) = scan
+      and go; gate evaluation happens server-side and surfaces
+      on the dashboard but doesn't fail the CI job.
+  quality-gate-timeout:
+    required: false
+    default: "300"
+    description: >
+      Seconds to wait for the gate when `wait-for-quality-gate`
+      is `true`. Default 300 (5 minutes). Long-running gates on
+      large projects may need a higher value.
+  extra-props:
+    required: false
+    description: >
+      Newline-separated `-Dsonar.X=Y` pairs forwarded verbatim
+      to the scanner — ONE property per line (values may
+      contain whitespace; `-Dsonar.projectDescription=my app`
+      reaches the scanner as a single argv). Blank lines and
+      `#`-prefixed comments are ignored. Use for niche
+      properties not covered by dedicated inputs — coverage
+      report paths, exclusions, language-specific settings.
+      Auth-bearing properties (`sonar.token`, `sonar.login`,
+      `sonar.password`) are REJECTED at runtime, case-
+      insensitive — route auth via `secrets:` + `token:`.
+
+examples:
+  - name: SonarCloud + Maven (recommended JVM path)
+    description: >
+      Most common path: SonarCloud + a Maven project. The plugin
+      auto-detects `mode: maven` from `pom.xml`, redirects the
+      local Maven repo to `.m2-repo/` so the platform's `cache:`
+      block can tar it across runs, and the scanner cache lands
+      at `.sonar-cache/` (also captured). `sonar:sonar` reads
+      Surefire/JaCoCo report paths from the pom — pre-run your
+      tests in a previous job; this one only analyses.
+    yaml: |
+      sonar-scan:
+        stage: quality
+        secrets: [SONAR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+        needs: [test]
+        needs_artifacts:
+          - from_job: test
+            paths: [target/site/jacoco/jacoco.xml, target/surefire-reports/]
+        cache:
+          - key: sonar-{{ hash "**/pom.xml" }}
+            paths: [.sonar-cache, .m2-repo]
+        with:
+          host-url: https://sonarcloud.io
+          organization: my-org
+          project-key: my-org_my-app
+          project-name: My App
+          token: ${{ SONAR_TOKEN }}
+
+  - name: SonarCloud + Gradle
+    description: >
+      Requires the project's `build.gradle{,.kts}` to apply the
+      `org.sonarqube` plugin. The plugin invokes the `sonar` task
+      (renamed in plugin v3.0+, 2022). Projects pinned to older
+      versions of `org.sonarqube` still on the legacy `sonarqube`
+      task name need to bump the plugin — there's no per-job
+      task-name override input today.
+    yaml: |
+      sonar-scan:
+        stage: quality
+        secrets: [SONAR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+        needs: [test]
+        cache:
+          - key: sonar-{{ hash "**/*.gradle*" }}
+            paths: [.sonar-cache, .gradle-home/caches, .gradle-home/wrapper]
+        with:
+          host-url: https://sonarcloud.io
+          organization: my-org
+          project-key: my-org_my-app
+          token: ${{ SONAR_TOKEN }}
+
+  - name: SonarQube self-hosted + Scanner CLI (JS/TS, Python, Go)
+    description: >
+      Non-JVM project against a self-hosted SonarQube. The
+      Scanner CLI handles 30+ languages out of the box; pass
+      coverage report paths via `extra-props:` because the
+      property name is language-specific. Examples:
+      - JS/TS: `sonar.javascript.lcov.reportPaths=coverage/lcov.info`
+      - Go:    `sonar.go.coverage.reportPaths=cover.out`
+      - Python: `sonar.python.coverage.reportPaths=coverage.xml`
+    yaml: |
+      sonar-scan:
+        stage: quality
+        secrets: [SONAR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+        needs: [test]
+        needs_artifacts:
+          - from_job: test
+            paths: [coverage/lcov.info]
+        cache:
+          - key: sonar-cli
+            paths: [.sonar-cache]
+        with:
+          host-url: https://sonar.example.com
+          project-key: my-app
+          project-version: ${CI_COMMIT_SHORT_SHA}
+          mode: scanner-cli
+          sources: src
+          tests: test
+          token: ${{ SONAR_TOKEN }}
+          extra-props: |
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.sourceEncoding=UTF-8
+
+  - name: PR decoration
+    description: >
+      When the run is for a PR/MR, set the three pullrequest-*
+      inputs. The scanner switches to PR-incremental mode (only
+      analyses changed files vs the base branch) and SonarCloud/
+      SonarQube Developer+ posts a comment on the PR with the
+      result. `wait-for-quality-gate: "true"` makes the job fail
+      when the gate fails so the PR is blocked.
+
+      IMPORTANT — gocdnext does not yet inject PR metadata as CI
+      variables. The values below are hard-coded for clarity;
+      in practice operators thread the PR number through a
+      pipeline `variables:` block + webhook integration, or
+      trigger this pipeline manually with the PR number on hand.
+      Watch the roadmap for a `CI_PULL_REQUEST_*` variable set.
+    yaml: |
+      sonar-pr:
+        stage: quality
+        secrets: [SONAR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+        variables:
+          PR_NUMBER: "1234"          # provide via your trigger flow
+          PR_SOURCE_BRANCH: feature/new-thing
+        with:
+          host-url: https://sonarcloud.io
+          organization: my-org
+          project-key: my-org_my-app
+          pull-request-key: ${PR_NUMBER}
+          pull-request-branch: ${PR_SOURCE_BRANCH}
+          pull-request-base: main
+          wait-for-quality-gate: "true"
+          quality-gate-timeout: "600"
+
+  - name: Quality Gate as a CI blocker
+    description: >
+      Main-branch scan that blocks the pipeline on gate failure.
+      Pair with notification fan-out so the team is paged when
+      main breaks the gate. The scanner polls the server until
+      the gate verdict is in — typical wait is 30s-2min for
+      small projects, longer for monorepos.
+    yaml: |
+      sonar-main:
+        stage: quality
+        secrets: [SONAR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+        cache:
+          - key: sonar-{{ hash "**/pom.xml" }}
+            paths: [.sonar-cache, .m2-repo]
+        with:
+          host-url: https://sonarcloud.io
+          organization: my-org
+          project-key: my-org_my-app
+          token: ${{ SONAR_TOKEN }}
+          wait-for-quality-gate: "true"
+          quality-gate-timeout: "600"
+
+  - name: Monorepo with multiple Sonar projects
+    description: >
+      Each sub-project gets its own Sonar project (SonarCloud
+      charges per-project, so flat per-app keys instead of one
+      umbrella project keeps team scoping clean). The platform
+      doesn't substitute `${{ MATRIX_VAR }}` inside `cache.key`
+      or other workspace-relative paths today, so the recipe
+      here uses one explicit job per app rather than
+      `parallel.matrix:`. The cache dirs `.m2-repo`/
+      `.sonar-cache` capture the workspace-rooted absolute
+      paths the entrypoint creates — they're shared across
+      every per-app scan in the same run, which is exactly
+      what you want.
+    yaml: |
+      stages: [quality]
+
+      jobs:
+        sonar-api:
+          stage: quality
+          secrets: [SONAR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+          cache:
+            - key: sonar-api-{{ hash "apps/api/pom.xml" }}
+              paths: [.sonar-cache, .m2-repo]
+          with:
+            host-url: https://sonarcloud.io
+            organization: my-org
+            project-key: my-org_api
+            project-name: api
+            working-dir: apps/api
+
+        sonar-web:
+          stage: quality
+          secrets: [SONAR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+          cache:
+            - key: sonar-web-{{ hash "apps/web/package-lock.json" }}
+              paths: [.sonar-cache]
+          with:
+            host-url: https://sonarcloud.io
+            organization: my-org
+            project-key: my-org_web
+            project-name: web
+            mode: scanner-cli
+            working-dir: apps/web
+
+        sonar-worker:
+          stage: quality
+          secrets: [SONAR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
+          cache:
+            - key: sonar-worker-{{ hash "apps/worker/go.sum" }}
+              paths: [.sonar-cache]
+          with:
+            host-url: https://sonarcloud.io
+            organization: my-org
+            project-key: my-org_worker
+            project-name: worker
+            mode: scanner-cli
+            working-dir: apps/worker
+            extra-props: |
+              -Dsonar.go.coverage.reportPaths=cover.out
