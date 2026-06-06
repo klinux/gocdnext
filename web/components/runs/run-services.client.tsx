@@ -15,8 +15,6 @@ import { isTerminalStatus } from "@/lib/status";
 import type { StatusTone } from "@/lib/status";
 import type { RunService } from "@/types/api";
 
-const POLL_MS = 3_000;
-
 type Props = {
   runId: string;
   runStatus: string;
@@ -38,11 +36,14 @@ export async function fetchServices(
   return (await res.json()) as RunService[];
 }
 
-export function RunServices({ runId, runStatus, apiBaseURL }: Props) {
+// PipelineCanvas (always mounted on the run-detail page) owns the
+// polling for this query key. This tab just subscribes to the
+// shared cache so opening it doesn't kick off a second interval
+// chasing the same endpoint.
+export function RunServices({ runId, runStatus: _runStatus, apiBaseURL }: Props) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["run-services", runId],
     queryFn: () => fetchServices(apiBaseURL, runId),
-    refetchInterval: isTerminalStatus(runStatus) ? false : POLL_MS,
     refetchOnWindowFocus: true,
     staleTime: 30_000,
   });

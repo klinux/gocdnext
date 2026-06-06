@@ -89,19 +89,22 @@ export function PipelineCanvas({ stages, runId, runStatus, apiBaseURL }: Props) 
 
 // aggregateServicesStatus picks the worst-case status across all
 // service nodes so the connector between Setup and stage 1
-// reflects the actual readiness of the prerequisite group. Order:
-// failed > starting > stopped > ready (the last is the only
-// "green" state). Mirrors how stages aggregate jobs upstream.
+// reflects the actual readiness of the prerequisite group.
+// Precedence: failed > starting > everything-else (success).
+//
+// `stopped` is intentionally folded into success here, not into
+// `skipped`. A clean run ends with the cleanup broadcast firing
+// `stopped` on every service, so treating stopped as "dimmed"
+// would paint a successful Setup as broken AFTER the run
+// terminated. The Services tab uses the same "stopped = neutral
+// done" semantic via StatusPill; this matches it.
 function aggregateServicesStatus(services: RunService[]): string {
   let hasStarting = false;
-  let hasStopped = false;
   for (const svc of services) {
     if (svc.status === "failed") return "failed";
     if (svc.status === "starting") hasStarting = true;
-    if (svc.status === "stopped") hasStopped = true;
   }
   if (hasStarting) return "running";
-  if (hasStopped) return "skipped";
   return "success";
 }
 
@@ -150,7 +153,10 @@ function ServicesColumn({ services }: { services: RunService[] }) {
 // services + jobs + stages with no extra theme entries:
 //   ready    → success
 //   starting → running
-//   stopped  → skipped (dimmed, visually parked)
+//   stopped  → success (cleanup-on-terminal is the happy path;
+//              v0.6.1 still surfaces a true failure via the
+//              sticky `failed` status, so this fold can't hide
+//              a service that actually died)
 //   failed   → failed
 function servicePillStatus(s: RunService["status"]): string {
   switch (s) {
@@ -159,7 +165,7 @@ function servicePillStatus(s: RunService["status"]): string {
     case "starting":
       return "running";
     case "stopped":
-      return "skipped";
+      return "success";
     case "failed":
       return "failed";
     default:
