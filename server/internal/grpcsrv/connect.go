@@ -517,6 +517,45 @@ func (a *AgentService) handleServiceLifecycle(ctx context.Context, log logger, s
 			"status", clampBytes(status, serviceLifecycleStatusMax))
 		return
 	}
+
+	// Ownership gate: for `starting`/`ready`/`failed`, the agent
+	// MUST own at least one job_run of this run — those events
+	// are emitted by the creator of the service pod, which is
+	// always a job-owning agent in the EnsureServices path. For
+	// `stopped`, cleanup is broadcast to k8s-capable agents that
+	// may never have owned a job, so the stricter check would
+	// over-reject the only path that actually delivers the
+	// stopped_at signal. Fall back to a cheap "run exists"
+	// probe on the broadcast path — enough to defang random-UUID
+	// spray without locking out legitimate cleanup-only agents.
+	switch status {
+	case "stopped":
+		exists, exErr := a.store.RunExists(ctx, runID)
+		if exErr != nil {
+			log.Warn("service lifecycle: run exists check failed",
+				"agent_uuid", sess.AgentID, "run_id", runID, "err", exErr)
+			return
+		}
+		if !exists {
+			log.Warn("service lifecycle: stopped for unknown run, dropping",
+				"agent_uuid", sess.AgentID, "run_id", runID, "name", name)
+			return
+		}
+	default:
+		owned, ownErr := a.store.AgentOwnedJobInRun(ctx, runID, sess.AgentID)
+		if ownErr != nil {
+			log.Warn("service lifecycle: ownership check failed",
+				"agent_uuid", sess.AgentID, "run_id", runID, "err", ownErr)
+			return
+		}
+		if !owned {
+			log.Warn("service lifecycle: agent doesn't own a job of run, dropping",
+				"agent_uuid", sess.AgentID, "run_id", runID,
+				"name", name, "status", status)
+			return
+		}
+	}
+
 	at := evt.GetAt().AsTime()
 	if at.IsZero() {
 		at = time.Now().UTC()

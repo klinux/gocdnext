@@ -50,6 +50,24 @@ func (s *Store) UpsertServiceRun(ctx context.Context, in ServiceRunInput) (db.Se
 	return row, nil
 }
 
+// AgentOwnedJobInRun is the ServiceLifecycle ingest gate:
+// returns true when the calling agent has (now or ever) a
+// job_run under this run. False when run_id doesn't exist OR
+// the agent never participated. Used by the grpcsrv handler to
+// drop spoofed events from agents authorised against the
+// cluster but unrelated to the named run.
+func (s *Store) AgentOwnedJobInRun(ctx context.Context, runID, agentID uuid.UUID) (bool, error) {
+	owned, err := s.q.AgentOwnedJobInRun(ctx, db.AgentOwnedJobInRunParams{
+		RunID:   pgtype.UUID{Bytes: runID, Valid: true},
+		AgentID: pgtype.UUID{Bytes: agentID, Valid: true},
+	})
+	if err != nil {
+		return false, fmt.Errorf("agent owned job in run (run=%s agent=%s): %w",
+			runID, agentID, err)
+	}
+	return owned, nil
+}
+
 // ListServiceRunsByRunID powers GET /api/runs/{id}/services.
 // Stable alphabetical order by name — see the SQL comment for
 // why declaration order isn't preserved here.
