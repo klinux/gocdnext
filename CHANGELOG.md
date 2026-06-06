@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.6.3 — 2026-06-05
+
+### Fix — `stopped` services no longer paint Setup as broken; consolidate services polling
+
+Two follow-ups on v0.6.2's pipeline-canvas integration:
+
+**`stopped` is the happy-path cleanup, not a dim/skipped state.**
+v0.6.2 mapped `stopped` to the `skipped` tone in both
+`aggregateServicesStatus` and `servicePillStatus`. The
+run-terminal cleanup broadcast fires `stopped` on EVERY
+successful run, so as soon as the run finished the Setup
+column + connector flipped to the dimmed "skipped" look —
+visually claiming a prereq was broken on every clean run.
+The Services tab already used `neutral` for stopped, so the
+two views disagreed.
+
+Fix:
+- `aggregateServicesStatus` reduced to `failed > starting >
+  success`. `stopped` folds into success.
+- `servicePillStatus` maps `stopped → success` (cleanup-on-
+  terminal is the happy path). v0.6.1's sticky-failed in the
+  store keeps a true failure visible even after the cleanup
+  pass, so this fold can't hide a real broken service.
+
+**`["run-services", runId]` polling consolidated to one
+observer.** v0.6.2 had three concurrent `refetchInterval`s:
+the canvas (always mounted), the tab-strip badge counter, and
+the Services tab content. React Query's shared cache dedupes
+the fetch but each observer still kept its own interval
+timer. `PipelineCanvas` is now the single polling source; the
+badge query and the Services tab subscribe to the cache
+without `refetchInterval`. Reduces the number of running
+intervals from 3 → 1 per visited run-detail page.
+
 ## v0.6.2 — 2026-06-05
 
 ### UX — services as inline nodes in the pipeline graph (Woodpecker-style)
