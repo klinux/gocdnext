@@ -6,6 +6,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.6.2 — 2026-06-05
+
+### UX — services as inline nodes in the pipeline graph (Woodpecker-style)
+
+Issue #7's first cut buried services in a dedicated Services
+tab on the run-detail page. The operator's mental model is
+"services are prerequisites that have to be up BEFORE the
+pipeline can run" — and Woodpecker's UI already trained that
+intuition by rendering services as graph nodes alongside
+stages. v0.6.2 aligns gocdnext with that shape.
+
+- `PipelineCanvas` now renders a virtual "Setup" column as the
+  FIRST column when the run declares services. Each service is
+  a node (same pill style as job nodes) with the status glyph,
+  name, and live duration.
+- Status mapping shares the existing TONE palette so the same
+  colour vocabulary covers services + jobs + stages:
+  `ready → success`, `starting → running`, `stopped → skipped`,
+  `failed → failed`.
+- Click on a service node opens a popover with image, pod name,
+  per-state timestamps (`started`/`ready`/`stopped`), and the
+  full error message when status is `failed`.
+- A connector chevron joins the Setup column to stage 1; its
+  colour follows the worst service status so a failed prereq is
+  visible at a glance, not just inside the popover.
+- The "Services" tab stays as the detail/tabular view — both
+  reads share the same react-query cache via the
+  `["run-services", runId]` key.
+
+The Services tab list, the new graph nodes, and the popover all
+poll on the same 3-second cadence while the run is live.
+
+### Project header — drop duplicate breadcrumb
+
+`/projects/<slug>` had a `Projects > <slug>` breadcrumb sitting
+right above the project's own name + description. The breadcrumb
+echoed information already visible 12 pixels below it and added
+no navigation value (the breadcrumb's only target was `/`, which
+the global side nav already covers). Removed.
+
 ## v0.6.1 — 2026-06-05
 
 ### Fixes — v0.6.0 ServiceLifecycle integrity follow-up
