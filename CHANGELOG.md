@@ -6,6 +6,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.6.4 — 2026-06-06
+
+### Feature — services compact view on the project page pipeline cards
+
+The project page's `PipelineCard` now renders a compact "services"
+box as the first item in its stage strip (left of stage 1) when
+the latest run declared services. One circle per service, status
+colour from the shared TONE palette (`ready/stopped → success`,
+`starting → running`, `failed → failed`), tooltip with name +
+image + status + error when failed. Mirrors the Setup column on
+the run-detail page so the operator's eye reads the same
+vocabulary on both surfaces — except the card-sized version
+trades the popover for a tooltip to fit the density.
+
+### Backend — `RunSummary.has_services` exposed end-to-end
+
+`runs.has_services` (migration 00036's snapshot of
+`pipeline.Services` non-emptiness at run-create time) was
+already in the DB but didn't reach the API. v0.6.4 selects it in
+the four queries that source `RunSummary`:
+
+- `LatestRunPerPipelineByProjectSlug` (project page latest run +
+  VSM nodes)
+- `ListRunsByProjectSlug` (project page recent runs list)
+- `GetRunWithPipeline` (run detail page)
+- `ListRunsGlobal` (dashboard + `/runs` page global timeline)
+
+…and stamps it into every `RunSummary{}` constructor in
+`store/reads.go`, `store/dashboard.go`, and `store/vsm.go`. The
+OpenAPI spec marks `has_services` as required on `RunSummary`
+with a comment explaining the snapshot semantics.
+
+### Perf — services fetch on project page gated, not blanket
+
+Without v0.6.4 the project page issued one
+`GET /api/v1/runs/:id/services` per pipeline card every 5 s
+while any run was live, even for pipelines that never declared
+services. With `has_services` in the read model, `PipelineCard`
+runs `useQuery({ enabled: !!run && run.has_services })`, so
+pipelines without services contribute zero requests and zero
+polling intervals.
+
+### A11y — `ServiceCircle` on the card is a real button
+
+The compact service node on the project card now renders as
+`<button type="button">` with `aria-label="Service <name>:
+<status>"`, a `title` fallback, and `focus-visible:ring`. Screen
+readers announce role + label; keyboard users can Tab onto it;
+the inner status glyphs (Loader2/X/Check) get `aria-hidden` so
+the row doesn't read twice.
+
 ## v0.6.3 — 2026-06-05
 
 ### Fix — `stopped` services no longer paint Setup as broken; consolidate services polling
