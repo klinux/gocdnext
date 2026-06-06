@@ -162,8 +162,12 @@ func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, run
 			"--network", network,
 			"--network-alias", svc.Name,
 		}
-		for _, kv := range envPairsSorted(svc.Env) {
-			args = append(args, "-e", kv)
+		// Reference env values by NAME on argv (`-e KEY`) and
+		// propagate the actual values via cmd.Env. Service env
+		// often carries credentials (POSTGRES_PASSWORD, etc.); the
+		// previous `-e KEY=VAL` form leaked them to `ps auxww`.
+		for _, key := range envKeysSorted(svc.Env) {
+			args = append(args, "-e", key)
 		}
 		args = append(args, svc.Image)
 		args = append(args, svc.Command...)
@@ -171,7 +175,9 @@ func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, run
 		if log != nil {
 			log("stdout", fmt.Sprintf("$ starting service %s (%s)", svc.Name, svc.Image))
 		}
-		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		svcCmd := exec.CommandContext(ctx, "docker", args...)
+		svcCmd.Env = append(os.Environ(), envPairsForCmd(svc.Env)...)
+		out, err := svcCmd.CombinedOutput()
 		if err != nil {
 			cleanup()
 			return noop, fmt.Errorf("docker engine: start service %s: %w (docker said: %s)",
@@ -241,6 +247,14 @@ func (d *Docker) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 	// manually so we can `docker kill` the container before the CLI
 	// process dies, not after.
 	cmd := exec.Command("docker", args...)
+	// Container env values live in the agent's child-process env so
+	// `docker run -e KEY` (name-only on argv) inherits them without
+	// the values ever appearing in `ps auxww`. buildArgs sets the
+	// argv references; envPairsForCmd populates the matching pairs
+	// here. The DOCKER_HOST + TESTCONTAINERS_* literals buildArgs
+	// emits for `docker: true` aren't secrets — they ride on argv
+	// as `-e KEY=VAL` directly and don't need the propagation path.
+	cmd.Env = append(os.Environ(), envPairsForCmd(spec.Env)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -331,8 +345,21 @@ func (d *Docker) buildArgs(image string, spec ScriptSpec, cidFile string) []stri
 		args = append(args, "-w", "/workspace")
 	}
 
-	for _, kv := range envPairsSorted(spec.Env) {
-		args = append(args, "-e", kv)
+	// Pass env values via the agent's child-process env (cmd.Env in
+	// RunScript) and reference them on the docker argv by NAME ONLY
+	// (`-e KEY`, no `=VAL`). docker propagates the value from its
+	// own env into the container. This keeps secret-bearing values
+	// (PEM-encoded keys, registry tokens, generic `secrets:` env)
+	// off `ps auxww` — the previous `-e KEY=VAL` form put them in
+	// the docker CLI's argv where any process on the host could
+	// read them. Multi-line values (PEM) round-trip cleanly because
+	// env vars don't have the line-based parsing limits of
+	// docker's `--env-file`.
+	//
+	// envKeysSorted gives deterministic argv ordering; the actual
+	// value-population happens in RunScript via cmd.Env.
+	for _, key := range envKeysSorted(spec.Env) {
+		args = append(args, "-e", key)
 	}
 
 	if spec.Network != "" {
@@ -406,25 +433,40 @@ func (d *Docker) buildArgs(image string, spec ScriptSpec, cidFile string) []stri
 	return args
 }
 
-// envPairsSorted flattens an env map into KEY=VAL strings in a
-// deterministic order so two consecutive runs with the same map
-// hit Docker with byte-identical args. Helps debug repros + log
-// diffs; Docker itself doesn't care about order.
-func envPairsSorted(env map[string]string) []string {
+// envKeysSorted returns env variable NAMES sorted lexicographically.
+// Used to build `-e KEY` (name-only) argv entries — the value lives
+// in the docker CLI's own process env via RunScript's cmd.Env so
+// secret-bearing values never touch the host's process list.
+// Insert-sort is fine for the small (<50) typical set.
+func envKeysSorted(env map[string]string) []string {
 	if len(env) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(env))
-	for k, v := range env {
-		out = append(out, k+"="+v)
+	for k := range env {
+		out = append(out, k)
 	}
-	// Small set (<50 typical), sort.Strings overkill — a linear
-	// insert-sort beats allocation of a sort.Interface wrapper and
-	// the order only matters for argv stability.
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && strings.Compare(out[j-1], out[j]) > 0; j-- {
 			out[j-1], out[j] = out[j], out[j-1]
 		}
+	}
+	return out
+}
+
+// envPairsForCmd flattens an env map into KEY=VAL strings the
+// same way os/exec expects in cmd.Env. Sorted in the same order
+// envKeysSorted produces so argv layout and process-env layout
+// align across runs. Used by RunScript to set the docker CLI's
+// own process env; the container then inherits each value via
+// `docker run -e KEY` references.
+func envPairsForCmd(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(env))
+	for _, k := range envKeysSorted(env) {
+		out = append(out, k+"="+env[k])
 	}
 	return out
 }

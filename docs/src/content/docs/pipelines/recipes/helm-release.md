@@ -150,12 +150,20 @@ sign-chart:
   stage: publish
   uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
   needs: [publish-oci]
-  secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
+  secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GHCR_USERNAME, GHCR_TOKEN]
   with:
+    # `key-content:` accepts the inline PEM from secrets; the
+    # plugin writes it to a 0600 tempfile internally and a
+    # `trap` wipes it on exit. The `key:` input is a FILE PATH
+    # and the plugin refuses PEM-like values via a guard. No
+    # `docker: true` — cosign signs via registry API.
     image: ghcr.io/klinux/charts/myapp:${CI_BRANCH}
     action: sign
-    key: ${{ COSIGN_PRIVATE_KEY }}
+    key-content: ${{ COSIGN_PRIVATE_KEY }}
     key-password: ${{ COSIGN_PASSWORD }}
+    registry: ghcr.io
+    username: ${{ GHCR_USERNAME }}
+    password: ${{ GHCR_TOKEN }}
 ```
 
 ### Auto-bump appVersion from a sibling pipeline

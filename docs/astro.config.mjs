@@ -89,6 +89,7 @@ export default defineConfig({
             { label: "Approval gates", link: "/concepts/approvals/" },
             { label: "Services lifecycle", link: "/concepts/services/" },
             { label: "Kubernetes runtime", link: "/concepts/kubernetes-runtime/" },
+            { label: "Trunk-based release flow", link: "/concepts/trunk-based-release/" },
             { label: "Value Stream Map (VSM)", link: "/concepts/vsm/" },
             { label: "Architecture deep-dive", link: "/concepts/architecture/" },
           ],
