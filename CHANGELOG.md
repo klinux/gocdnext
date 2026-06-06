@@ -6,6 +6,189 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.7.0 — 2026-06-06
+
+### Feature — gocdnext/sonar plugin (single image, SQ + SonarCloud)
+
+New plugin covers Sonar's three scanner front-ends in one image:
+`mvn sonar:sonar`, `gradle sonar`, and the language-agnostic
+Scanner CLI for JS/TS, Python, Go, etc. Mode auto-detected from
+project layout (pom.xml / build.gradle{,.kts} / neither) or
+overridden via `mode:`. SonarCloud is the default host; point
+`host-url:` at the install for self-hosted.
+
+Security: token never lands on argv (`SONAR_TOKEN` env). The
+`extra-props:` input is parsed line-by-line so values with
+whitespace stay one argv, and auth-bearing properties
+(`sonar.token`, `sonar.login`, `sonar.password`) are rejected at
+runtime case-insensitively. Supply-chain: SHA256 of
+sonar-scanner-cli 6.2.1.4610 and gradle 8.10 binaries pinned in
+the Dockerfile (verified on every build, fetched from the
+official .sha256 files at SonarSource + gradle.org).
+
+Performance: `SONAR_USER_HOME`, `MAVEN_LOCAL_REPO`,
+`GRADLE_USER_HOME` default to absolute `/workspace/*` paths so
+`cache: paths: [.m2-repo]` etc. align regardless of working-dir
+(no silent monorepo cache miss). Quality-Gate wait opt-in
+(`wait-for-quality-gate: "true"`) blocks the PR pipeline until
+the gate verdict — default off because the wait adds 1-3 min.
+
+### Feature — go/maven/gradle plugins: cache + testcontainers + safer bool inputs
+
+JVM- and Go-toolchain plugins gained perf knobs aimed at the
+common "why is CI so slow" answers + tighter input validation.
+
+go:
+- `cgo:` toggle (`true`/`false`) exposes `CGO_ENABLED` without
+  having to set `variables:`.
+- Cache example now `{{ hash "go.sum" }}`-keyed instead of the
+  broken `${CI_COMMIT_BRANCH}` literal (shell-style vars don't
+  expand in cache keys — that's documented now too).
+
+maven:
+- New `maven-opts:`, `parallel:` (`-T <val>`), `build-cache:`
+  inputs. `--batch-mode --no-transfer-progress` always-on (kills
+  the "Downloading…" wall on cold runs).
+- Cache example re-keyed on `{{ hash "**/pom.xml" }}` so a
+  dependency bump in ANY module of a reactor invalidates.
+- Build Cache Extension toggle (`-Dmaven.build.cache.enabled`)
+  for projects on Apache Maven 3.9+ with the extension
+  registered.
+
+gradle:
+- New `build-cache:`, `parallel:`, `configuration-cache:`,
+  `args:` inputs. All three cache toggles are TRI-STATE: unset
+  passes NO flag (respects the project's `org.gradle.*` in
+  gradle.properties); `"true"` forces `--build-cache` etc;
+  `"false"` forces the `--no-*` flag. Avoids silently overriding
+  projects that opted in via gradle.properties.
+- Cache example keyed on `**/*.gradle*` + wrapper props; a
+  second variant adds `gradle/libs.versions.toml` for version-
+  catalog projects.
+
+Testcontainers (all three): plugin auto-exports
+`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` +
+`TESTCONTAINERS_HOST_OVERRIDE` ONLY when `/var/run/docker.sock`
+is actually mounted into the task container. Doesn't trigger on
+`DOCKER_HOST`: the Kubernetes engine path uses DinD with
+`DOCKER_HOST=tcp://localhost:2375` and no socket — explicit
+overrides would point at a non-existent path; Testcontainers'
+own resolver handles DinD via DOCKER_HOST. Docker engine path
+keeps working.
+
+Bool input validation: new POSIX-safe `parse_bool` helper
+accepts `true|false|1|0|yes|no|on|off` case-insensitive, `exit 2`
+with a clear error on anything else. Wired through every bool
+input across go/maven/gradle/sonar. Call sites use
+capture-then-test (`val=$(parse_bool ...) || exit $?`) so a
+subshell `exit 2` from parse_bool propagates to the parent
+script instead of being swallowed by `$(...)`. Smoke: typos
+like `cgo: flase` now abort with rc=2 and never run the
+toolchain.
+
+### Fix — plugin `uses:` references pointed at non-existent Docker Hub paths
+
+Plugin catalog + every example + recipe documented
+`uses: gocdnext/<name>@v1`, which `ResolvePluginRef` translates
+to a Docker image `gocdnext/<name>:v1` at docker.io — an image
+that doesn't exist. Published images live under
+`ghcr.io/klinux/gocdnext-plugin-<name>:vN`. Replaced every
+reference (docs + recipes + plugin.yaml examples +
+.gocdnext/ test pipelines) with the canonical pullable form
+`ghcr.io/klinux/gocdnext-plugin-<name>@vN`. 58 files touched
+mechanically.
+
+### Fix — plugin catalog page anchors
+
+The generator at `docs/scripts/gen-plugin-catalog.mjs` rendered
+each plugin heading as `## name {#name}` (Pandoc-style explicit
+anchor). Starlight doesn't honor that syntax — its slugifier
+turns the entire heading text `name {#name}` into
+`id="name-name"`, so every "At a glance" link 404'd in-page.
+Switched to plain `## name` and let Starlight's auto-slugifier
+produce `id="name"` from heading text. Verified the rendered
+HTML: `id="ansible"`, `id="buildx"`, `id="trivy"`, etc. all
+resolve.
+
+### Docs — comprehensive rewrite to match shipped behavior
+
+Two adversarial audit passes turned up wide drift between the
+docs site and the actual code/UI/parser surface. Catch-up pass:
+
+YAML reference: `when.branch` is SINGULAR (the parser rejects
+`branches:`/`paths:`/`tag_name:`); `approval:` uses
+`approver_groups` + `required` (not `groups`/`quorum`);
+`artifacts.optional` + `test_reports` are bare `[]string` (no
+`paths: {}` wrapper); `parallel.matrix` is list-of-objects;
+notifications `on:` accepts `canceled` (single l); substitution
+grammar is identifier-only — dotted `${{ secrets.X }}` is
+rejected; services are pipeline-level only.
+
+All 12 recipes rewritten: `branches → branch`,
+`${{ secrets.X }} → ${{ X }}`, plugin `with:` keys re-aligned
+against `plugins/*/plugin.yaml`, 12/12 now parser-clean.
+
+Install/reference docs: helm/upgrade version pinned to 0.6.4
+across the board, v0.5.0 BREAKING DEFAULT callout for workspace
+accessMode flip, env-vars gained the
+`GOCDNEXT_K8S_WORKSPACE_*` set, auth.md callback URLs corrected
+(`/auth/callback/X` not `/api/v1/auth/oauth/X/callback`),
+webhooks.md paths corrected (`/api/webhooks/X` not
+`/api/v1/webhook/X`), api-tokens.md page is `/account` (not
+`/settings/api-tokens`), cli.md rewritten to the 5 real
+subcommands (removed 8 fictional ones), api.md endpoint
+corrections (`/job_runs/{id}/rerun|approve|reject` not
+`/runs/{id}/jobs/{jobID}/...`).
+
+Concept docs: materials.md correctly documents `cause:
+schedule` (not `cron`); cache.md rewritten with accurate
+template grammar (only `{{ hash "glob" }}` expands — `${VAR}`
+stays literal in cache keys); architecture.md +
+runner_profile_env_secrets aren't a separate table, they're
+JSONB columns on `runner_profiles` (migration 00030).
+
+New concept pages: `concepts/kubernetes-runtime.md` (shared vs
+isolated, init+task+housekeeper pod model, RBAC) and
+`concepts/services.md` (sidecar lifecycle, sticky-failed
+semantics, Setup column + project-card representation).
+
+Plugin reference fixes: node v2 full rewrite (install/manager/
+frozen/prod inputs, shell-eval command, yarn v1 rejection);
+gitleaks gained allowlist-paths + verbose + redact; trivy
+gained skip-db-update + cached DB example; golangci-lint +
+terraform gained cached examples.
+
+### Chore — scrub internal customer references from public repo
+
+Replaced `cora`, `corabank`, `corapulse`, `img.cora.tools` with
+generic placeholders (`registry.example.com`, `@app/web`,
+`acme-org`, `monorepo-app`, `gocdnext.example.com`) across
+tests, source comments, plugin examples, and CHANGELOG prose.
+No behavior change; the affected tests stayed green
+(`TestSubstituteRefs`,
+`TestBuildAssignment_SubstitutesPluginSettings`,
+`TestGitHubWebhook_PushFansOutToEveryPipeline`).
+
+### Migration notes
+
+- Operators using `uses: gocdnext/<name>@v1` in apply'd
+  pipelines need to switch to
+  `uses: ghcr.io/klinux/gocdnext-plugin-<name>@v1`. The catalog
+  short-name lookup still validates inputs, but the runtime
+  image pull always tried docker.io/gocdnext/X and failed —
+  meaning these pipelines were already broken at runtime; the
+  fix just makes the form match what actually works.
+- Gradle plugin's `build-cache:` / `parallel:` /
+  `configuration-cache:` inputs are now TRI-STATE. Previous
+  behavior (when these inputs existed in the v0.7.0 dev cycle
+  only) was bi-state with default false; legacy `@v1`
+  consumers were unaffected because the inputs were new. No
+  external behavior change for projects that didn't set them.
+- Maven plugin's `--no-transfer-progress` is now always-on —
+  if you were grepping the log for "Downloading…" lines you
+  won't find them anymore. Replace with surefire-reports
+  parsing or the test_reports/Tests tab.
+
 ## v0.6.4 — 2026-06-06
 
 ### Feature — services compact view on the project page pipeline cards
