@@ -54,7 +54,7 @@ examples:
       jobs:
         sync-prod:
           stage: deploy
-          uses: gocdnext/argocd@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
           with:
             server: https://argocd.corp
             auth_token: ${{ ARGOCD_TOKEN }}
@@ -71,7 +71,7 @@ examples:
       jobs:
         sync-prod:
           stage: deploy
-          uses: gocdnext/argocd@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
           with:
             server: https://argocd.corp
             auth_token: ${{ ARGOCD_TOKEN }}
@@ -81,7 +81,7 @@ examples:
         wait-healthy:
           stage: deploy
           needs: [sync-prod]
-          uses: gocdnext/argocd@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
           with:
             server: https://argocd.corp
             auth_token: ${{ ARGOCD_TOKEN }}
@@ -98,7 +98,7 @@ examples:
       jobs:
         deploy:
           stage: deploy
-          uses: gocdnext/argocd@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
           with:
             server: https://argocd.corp
             auth_token: ${{ ARGOCD_TOKEN }}
@@ -124,7 +124,7 @@ examples:
         rollback:
           stage: rollback
           needs: [approve-rollback]
-          uses: gocdnext/argocd@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
           with:
             server: https://argocd.corp
             auth_token: ${{ ARGOCD_TOKEN }}

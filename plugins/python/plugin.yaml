@@ -70,7 +70,7 @@ examples:
       Library project using poetry.lock. Auto-detected; no extra
       config needed.
     yaml: |
-      uses: gocdnext/python@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-python@v1
       with:
         command: pytest -q
 
@@ -79,7 +79,7 @@ examples:
       App with pyproject.toml but no uv.lock yet. `uv sync`
       resolves on the fly.
     yaml: |
-      uses: gocdnext/python@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-python@v1
       with:
         command: pytest -q --maxfail=1
 
@@ -90,7 +90,7 @@ examples:
     yaml: |
       secrets:
         - PYPI_TOKEN
-      uses: gocdnext/python@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-python@v1
       with:
         command: |
           python -m build && \
@@ -106,7 +106,7 @@ examples:
       cache:
         - key: py-${CI_COMMIT_BRANCH}
           paths: [.cache]
-      uses: gocdnext/python@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-python@v1
       with:
         command: pytest -q
 
@@ -123,7 +123,7 @@ examples:
     yaml: |
       jobs:
         - name: install
-          uses: gocdnext/python@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-python@v1
           with:
             command: "true"      # nothing to run, the install IS the job
             all-extras: true     # sync ruff, mypy, pytest, ...
@@ -133,7 +133,7 @@ examples:
           needs_artifacts:
             - from_job: install
               paths: [.venv/]
-          uses: gocdnext/python@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-python@v1
           with:
             command: ruff check .
             no-install: true     # reuse the artifact venv as-is
@@ -142,7 +142,7 @@ examples:
           needs_artifacts:
             - from_job: install
               paths: [.venv/]
-          uses: gocdnext/python@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-python@v1
           with:
             command: pytest -q
             no-install: true
@@ -153,7 +153,7 @@ examples:
       handy when `[project.optional-dependencies]` declares a
       heavy `gpu` group nobody wants in CI.
     yaml: |
-      uses: gocdnext/python@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-python@v1
       with:
         command: "true"
         extras: dev, test    # uv → --extra dev --extra test

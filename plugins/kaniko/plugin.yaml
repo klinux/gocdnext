@@ -67,7 +67,7 @@ examples:
       secrets:
         - GHCR_USERNAME
         - GHCR_TOKEN
-      uses: gocdnext/kaniko@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kaniko@v1
       with:
         image: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
         username: ${{ GHCR_USERNAME }}
@@ -82,7 +82,7 @@ examples:
       secrets:
         - GHCR_USERNAME
         - GHCR_TOKEN
-      uses: gocdnext/kaniko@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kaniko@v1
       with:
         image: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
         cache: "true"

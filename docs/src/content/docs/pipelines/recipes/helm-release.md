@@ -38,13 +38,13 @@ stages: [lint]
 jobs:
   lint:
     stage: lint
-    uses: gocdnext/helm@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
     with:
       command: lint charts/myapp
 
   template:
     stage: lint
-    uses: gocdnext/helm@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
     with:
       command: template myapp charts/myapp --debug
 ```
@@ -67,7 +67,7 @@ stages: [package, publish]
 jobs:
   package:
     stage: package
-    uses: gocdnext/helm@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
     with:
       # Stamp version + appVersion from the tag (CI_BRANCH carries
       # the tag ref on a tag push). The plugin's `command:` is
@@ -78,7 +78,7 @@ jobs:
 
   publish-oci:
     stage: publish
-    uses: gocdnext/helm-push@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-helm-push@v1
     needs: [package]
     needs_artifacts:
       - from_job: package
@@ -148,7 +148,7 @@ verify with `cosign verify`.
 ```yaml
 sign-chart:
   stage: publish
-  uses: gocdnext/cosign@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
   needs: [publish-oci]
   secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
   with:

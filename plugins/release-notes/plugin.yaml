@@ -42,7 +42,7 @@ examples:
       Build notes from the prior tag to HEAD, then hand the file
       to gocdnext/github-release as the body.
     yaml: |
-      uses: gocdnext/release-notes@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-release-notes@v1
       with:
         output: RELEASE_NOTES.md
         heading: "## ${RELEASE_TAG}"
@@ -52,7 +52,7 @@ examples:
       Grouped by commit type. Pairs well with a `tag:` step that
       used the same ${RELEASE_TAG} env var upstream.
     yaml: |
-      uses: gocdnext/release-notes@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-release-notes@v1
       with:
         format: conventional
         from: ${PREVIOUS_TAG}

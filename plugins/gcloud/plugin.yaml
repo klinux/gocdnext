@@ -40,7 +40,7 @@ examples:
     yaml: |
       secrets:
         - GCP_SA_JSON
-      uses: gocdnext/gcloud@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gcloud@v1
       with:
         command: run deploy my-svc --image gcr.io/myproj/app:${CI_COMMIT_SHORT_SHA} --region us-east1 --platform managed
         project: myproj
@@ -53,7 +53,7 @@ examples:
     yaml: |
       secrets:
         - GCP_SA_JSON
-      uses: gocdnext/gcloud@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gcloud@v1
       with:
         command: builds submit --tag us-east1-docker.pkg.dev/myproj/app/server:${CI_COMMIT_SHORT_SHA}
         project: myproj

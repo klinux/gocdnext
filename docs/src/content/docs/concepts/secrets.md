@@ -36,7 +36,7 @@ name.
 jobs:
   deploy:
     secrets: [SSH_DEPLOY_KEY, SLACK_WEBHOOK]
-    uses: gocdnext/ssh@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
     with:
       key: ${{ SSH_DEPLOY_KEY }}
 ```

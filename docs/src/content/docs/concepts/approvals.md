@@ -127,7 +127,7 @@ before the gate, or hook a webhook from outside:
 ```yaml
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ PROD_SLACK_WEBHOOK }}
       channel: "#prod-deploys"

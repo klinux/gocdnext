@@ -35,14 +35,14 @@ stages: [lint, test, build]
 jobs:
   vet:
     stage: lint
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     with:
       working-dir: server
       command: vet ./...
 
   unit:
     stage: test
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     needs: [vet]
     docker: true                    # testcontainers-go needs the host docker.sock
     with:
@@ -56,7 +56,7 @@ jobs:
 
   compile:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     needs: [unit]
     with:
       working-dir: server
@@ -107,7 +107,7 @@ stages: [lint]
 jobs:
   golangci:
     stage: lint
-    uses: gocdnext/golangci-lint@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-golangci-lint@v1
     cache:
       - key: golangci-${CI_COMMIT_BRANCH}
         paths: [.go-mod, .go-cache, .golangci-cache]
@@ -116,7 +116,7 @@ jobs:
 
   buf:
     stage: lint
-    uses: gocdnext/buf@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-buf@v1
     with:
       working-dir: proto
       command: lint

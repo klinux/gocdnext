@@ -68,7 +68,7 @@ examples:
       secrets:
         - SMTP_USER
         - SMTP_PASSWORD
-      uses: gocdnext/email@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-email@v1
       with:
         host: smtp.sendgrid.net
         port: "587"
@@ -91,7 +91,7 @@ examples:
       secrets:
         - SMTP_USER
         - SMTP_PASSWORD
-      uses: gocdnext/email@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-email@v1
       with:
         host: smtp.sendgrid.net
         username: ${{ SMTP_USER }}

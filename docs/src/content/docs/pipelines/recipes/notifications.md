@@ -22,7 +22,7 @@ jobs:
 
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#ci-alerts"
@@ -50,7 +50,7 @@ title/message split — fold both into one Slack-mrkdwn block.
 
 ```yaml
 - on: failure
-  uses: gocdnext/slack@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
   with:
     webhook: ${{ SLACK_WEBHOOK }}    # Incoming webhook URL
     channel: "#ci-alerts"            # overrides webhook default
@@ -72,7 +72,7 @@ matches Discord's flavour (bold, code, mentions).
 
 ```yaml
 - on: failure
-  uses: gocdnext/discord@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-discord@v1
   with:
     webhook: ${{ DISCORD_WEBHOOK }}
     content: |
@@ -92,7 +92,7 @@ Teams accepts `title:` + `message:` (and an optional
 
 ```yaml
 - on: failure
-  uses: gocdnext/teams@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-teams@v1
   with:
     webhook: ${{ TEAMS_WEBHOOK }}
     title: "${CI_PIPELINE} failed"
@@ -113,7 +113,7 @@ with explicit headers, no inference.
 
 ```yaml
 - on: failure
-  uses: gocdnext/email@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-email@v1
   with:
     host: smtp.sendgrid.net
     port: "587"
@@ -141,7 +141,7 @@ The room is identified by `room-id:` (id `!abc:server` or alias
 
 ```yaml
 - on: failure
-  uses: gocdnext/matrix@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-matrix@v1
   with:
     homeserver: https://chat.mycorp.com
     token: ${{ MATRIX_TOKEN }}
@@ -182,7 +182,7 @@ for the complete list the platform injects.
 ```yaml
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#ci-alerts"
@@ -203,13 +203,13 @@ when:
   branch: [main]
 notifications:
   - on: success
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#deploys"
     secrets: [SLACK_WEBHOOK]
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#alerts-prod"
@@ -221,7 +221,7 @@ when:
   event: [push]
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#alerts-dev"
@@ -239,20 +239,20 @@ parallel. A typical "production" project ends up with:
 ```yaml
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#ci-alerts"
     secrets: [SLACK_WEBHOOK]
   - on: failure
-    uses: gocdnext/teams@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-teams@v1
     with:
       webhook: ${{ TEAMS_WEBHOOK }}
       title: "${CI_PIPELINE} failed"
       message: "Run #${CI_RUN_COUNTER}, commit ${CI_COMMIT_SHA}."
     secrets: [TEAMS_WEBHOOK]
   - on: failure
-    uses: gocdnext/email@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-email@v1
     with:
       host: smtp.sendgrid.net
       port: "587"

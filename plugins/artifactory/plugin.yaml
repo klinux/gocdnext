@@ -74,7 +74,7 @@ examples:
     yaml: |
       secrets:
         - ARTIFACTORY_TOKEN
-      uses: gocdnext/artifactory@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-artifactory@v1
       with:
         action: download
         url: https://mycorp.jfrog.io
@@ -92,7 +92,7 @@ examples:
     yaml: |
       secrets:
         - ARTIFACTORY_TOKEN
-      uses: gocdnext/artifactory@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-artifactory@v1
       with:
         action: upload
         url: https://mycorp.jfrog.io

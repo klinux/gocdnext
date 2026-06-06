@@ -20,11 +20,17 @@
 # See CHANGELOG entry for v0.4.39 for the side-by-side migration.
 name: node
 category: build
+image_tag: v2
 description: >
-  Node.js install + run. Auto-detects pnpm / npm / yarn (v3+) from
-  lockfile, sets up corepack + workspace-local store, runs dependency
-  install (skippable), then executes the user's shell command. Mirrors
-  the python plugin's contract — install knob + shell-eval command.
+  Node.js install + run with multi-manager support (pnpm, npm,
+  yarn v3+). Auto-detects the manager from the lockfile, sets up
+  corepack + workspace-local store, runs frozen-lockfile install
+  (skippable), then executes the user's shell command via
+  `bash -lc`. **v2 BREAKING vs v1:** `command:` is a shell command
+  (not a pnpm subcommand) and is no longer auto-prefixed; new
+  `install:` flag (default true) separates install from `command:`;
+  yarn v1 is rejected with a migration message (use v3+ or set
+  `manager: none`).
 
 inputs:
   command:

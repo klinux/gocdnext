@@ -71,7 +71,7 @@ examples:
     yaml: |
       secrets:
         - GITHUB_TOKEN
-      uses: gocdnext/github-release@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-github-release@v1
       with:
         tag: ${CI_GIT_TAG}
         token: ${{ GITHUB_TOKEN }}
@@ -84,7 +84,7 @@ examples:
     yaml: |
       secrets:
         - GITHUB_TOKEN
-      uses: gocdnext/github-release@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-github-release@v1
       with:
         tag: ${CI_GIT_TAG}
         title: ${CI_GIT_TAG}

@@ -32,7 +32,7 @@ examples:
       Agent runs in-cluster; no kubeconfig needed — SA RBAC
       decides what the apply touches.
     yaml: |
-      uses: gocdnext/kubectl@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kubectl@v1
       with:
         command: apply -f k8s/
         namespace: prod
@@ -44,7 +44,7 @@ examples:
     yaml: |
       secrets:
         - PROD_KUBECONFIG_B64
-      uses: gocdnext/kubectl@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kubectl@v1
       with:
         kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
         command: rollout status deploy/api -n prod

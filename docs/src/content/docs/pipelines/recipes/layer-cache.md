@@ -100,7 +100,7 @@ jobs:
     agent:
       profile: fast-builds   # ← inherits env + secrets
     docker: true
-    uses: gocdnext/buildx@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
     with:
       image: ghcr.io/org/app
       tags: latest
@@ -136,7 +136,7 @@ and writing the spec verbatim:
 ```yaml
 build:
   stage: build
-  uses: gocdnext/buildx@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
   secrets: [AZURE_STORAGE_KEY]
   with:
     image: ghcr.io/org/app
@@ -176,7 +176,7 @@ extra creds:
 ```yaml
 build:
   stage: build
-  uses: gocdnext/buildx@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
   with:
     image: ghcr.io/org/app
     cache: registry   # writes ghcr.io/org/app:buildcache

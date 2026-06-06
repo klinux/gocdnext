@@ -25,7 +25,7 @@ examples:
   - name: lint a single module
     description: Lint the server module with the default 5m timeout.
     yaml: |
-      uses: gocdnext/golangci-lint@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-golangci-lint@v1
       with:
         working-dir: server
 
@@ -35,6 +35,27 @@ examples:
       runs them serially in the same container — cheaper than three
       separate jobs when the lint is fast.
     yaml: |
-      uses: gocdnext/golangci-lint@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-golangci-lint@v1
       with:
         args: ./server/... ./agent/... ./cli/...
+
+  - name: cached analyzer + Go module cache
+    description: >
+      golangci-lint compiles every package + runs every analyzer on
+      a cold cache — the first run on a fresh container takes 5–10
+      minutes for a typical project. The plugin redirects
+      GOMODCACHE, GOCACHE, and GOLANGCI_LINT_CACHE to workspace-
+      local directories so the platform's `cache:` block can tar
+      all three. Warm runs drop to seconds. Hash-keyed on go.sum so
+      a dependency bump invalidates automatically; different
+      branches sharing the same go.sum share the cache safely
+      because the contents are content-addressable.
+    yaml: |
+      golangci:
+        stage: lint
+        uses: ghcr.io/klinux/gocdnext-plugin-golangci-lint@v1
+        cache:
+          - key: golangci-{{ hash "go.sum" }}
+            paths: [.go-mod, .go-cache, .golangci-cache]
+        with:
+          args: ./...

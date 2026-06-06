@@ -38,7 +38,7 @@ stages: [test, package]
 jobs:
   test:
     stage: test
-    uses: gocdnext/maven@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
     with:
       command: -B -ntp test
     cache:
@@ -52,7 +52,7 @@ jobs:
 
   package:
     stage: package
-    uses: gocdnext/maven@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
     needs: [test]
     with:
       # -DskipTests because tests already ran in the test stage and
@@ -110,7 +110,7 @@ present, no-op if missing".
 ```yaml
 test:
   stage: test
-  uses: gocdnext/maven@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
   with:
     command: -B -ntp -Pcoverage verify
   cache:
@@ -123,7 +123,7 @@ test:
 
 upload-coverage:
   stage: test
-  uses: gocdnext/codecov@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
   needs: [test]
   needs_artifacts:
     - from_job: test
@@ -140,7 +140,7 @@ upload-coverage:
 ```yaml
 test:
   stage: test
-  uses: gocdnext/maven@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
   with:
     command: -B -ntp -T 1C test
   ...
@@ -156,7 +156,7 @@ forks JVMs per module, which most of the time is fine.
 ```yaml
 deploy:
   stage: package
-  uses: gocdnext/maven@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
   needs: [package]
   with:
     command: -B -ntp -DskipTests -s settings.xml deploy

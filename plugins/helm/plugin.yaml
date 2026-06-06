@@ -42,7 +42,7 @@ examples:
     yaml: |
       secrets:
         - PROD_KUBECONFIG_B64
-      uses: gocdnext/helm@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
       with:
         kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
         working-dir: deploy/chart
@@ -53,7 +53,7 @@ examples:
     yaml: |
       secrets:
         - PROD_KUBECONFIG_B64
-      uses: gocdnext/helm@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
       with:
         kubeconfig: ${{ PROD_KUBECONFIG_B64 }}
         working-dir: deploy/chart

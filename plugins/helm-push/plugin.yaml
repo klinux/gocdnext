@@ -52,7 +52,7 @@ examples:
       secrets:
         - GHCR_USERNAME
         - GHCR_TOKEN
-      uses: gocdnext/helm-push@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-helm-push@v1
       with:
         chart-dir: charts/app
         version: ${CI_COMMIT_SHORT_SHA}
@@ -68,7 +68,7 @@ examples:
       secrets:
         - NEXUS_USERNAME
         - NEXUS_PASSWORD
-      uses: gocdnext/helm-push@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-helm-push@v1
       with:
         chart-dir: charts/app
         version: 1.4.${CI_RUN_COUNTER}

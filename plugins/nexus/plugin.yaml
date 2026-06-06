@@ -76,7 +76,7 @@ examples:
       secrets:
         - NEXUS_USERNAME
         - NEXUS_PASSWORD
-      uses: gocdnext/nexus@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-nexus@v1
       with:
         action: download
         url: https://nexus.corp
@@ -97,7 +97,7 @@ examples:
       secrets:
         - NEXUS_USERNAME
         - NEXUS_PASSWORD
-      uses: gocdnext/nexus@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-nexus@v1
       with:
         action: upload
         url: https://nexus.corp

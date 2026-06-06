@@ -61,7 +61,7 @@ examples:
   - name: test
     description: Standard CI step — compile + run tests.
     yaml: |
-      uses: gocdnext/maven@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
       with:
         command: verify
 
@@ -74,7 +74,7 @@ examples:
       secrets:
         - NEXUS_USERNAME
         - NEXUS_PASSWORD
-      uses: gocdnext/maven@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
       with:
         command: deploy -Pprod -DskipTests
         nexus-username: ${{ NEXUS_USERNAME }}
@@ -92,6 +92,6 @@ examples:
       cache:
         - key: m2-${CI_COMMIT_BRANCH}
           paths: [.m2-repo]
-      uses: gocdnext/maven@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
       with:
         command: verify

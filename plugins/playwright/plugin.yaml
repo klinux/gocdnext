@@ -67,7 +67,7 @@ examples:
       + artifacts are the gocdnext conventions that surface the
       JUnit + HTML outputs for the Tests tab and artifact viewer.
     yaml: |
-      uses: gocdnext/playwright@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-playwright@v1
       with:
         working-dir: web
         project: chromium
@@ -88,7 +88,7 @@ examples:
       parallel:
         matrix:
           - SHARD_INDEX: ["1", "2", "3", "4"]
-      uses: gocdnext/playwright@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-playwright@v1
       with:
         working-dir: web
         project: chromium
@@ -105,7 +105,7 @@ examples:
       cache:
         - key: pnpm-store-${CI_COMMIT_BRANCH}
           paths: [web/.pnpm-store, web/node_modules]
-      uses: gocdnext/playwright@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-playwright@v1
       with:
         working-dir: web
         install-deps: "false"

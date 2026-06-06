@@ -65,7 +65,7 @@ examples:
   - name: scan built image
     description: Scan the image just built by gocdnext/docker.
     yaml: |
-      uses: gocdnext/trivy@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
       with:
         scan-type: image
         target: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
@@ -76,7 +76,7 @@ examples:
       Scan the workspace tree but don't fail the build —
       attach the JSON report as optional artifact.
     yaml: |
-      uses: gocdnext/trivy@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
       with:
         scan-type: fs
         format: json
@@ -84,3 +84,25 @@ examples:
         exit-code: "0"
       artifacts:
         optional: [trivy-report.json]
+
+  - name: cached vulnerability DB
+    description: >
+      Trivy downloads its CVE database (~50 MB) at scan start and
+      re-validates freshness on a 24h policy. Persist `.cache/trivy`
+      across runs to skip the download on warm runs; pair with
+      `skip-db-update: "true"` on air-gapped agents. The cache key
+      is constant (`trivy-db`) because the database itself is the
+      artefact, not anything project-derived — all projects in the
+      same agent fleet share the warm DB.
+    yaml: |
+      trivy-fs:
+        stage: scan
+        uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
+        cache:
+          - key: trivy-db
+            paths: [.cache/trivy]
+        with:
+          scan-type: fs
+          target: .
+          severity: HIGH,CRITICAL
+          skip-db-update: "false"

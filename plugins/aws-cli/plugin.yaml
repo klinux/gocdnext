@@ -37,7 +37,7 @@ examples:
       secrets:
         - AWS_ACCESS_KEY_ID
         - AWS_SECRET_ACCESS_KEY
-      uses: gocdnext/aws-cli@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-aws-cli@v1
       with:
         command: s3 sync dist/ s3://mycorp-releases/app/${CI_COMMIT_SHORT_SHA}/
         region: us-east-1
@@ -53,7 +53,7 @@ examples:
       secrets:
         - AWS_ACCESS_KEY_ID
         - AWS_SECRET_ACCESS_KEY
-      uses: gocdnext/aws-cli@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-aws-cli@v1
       with:
         command: ssm get-parameter --name /prod/db/url --with-decryption --query Parameter.Value --output text
         region: us-east-1

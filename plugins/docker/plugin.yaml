@@ -61,7 +61,7 @@ examples:
         - GHCR_USERNAME
         - GHCR_TOKEN
       docker: true        # job-level flag; agent exposes a daemon
-      uses: gocdnext/docker@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-docker@v1
       with:
         image: ghcr.io/org/app
         tags: "latest, ${CI_COMMIT_SHORT_SHA}"
@@ -72,7 +72,7 @@ examples:
     description: Build-only to validate Dockerfile on pull requests.
     yaml: |
       docker: true
-      uses: gocdnext/docker@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-docker@v1
       with:
         image: ghcr.io/org/app
         tags: pr-${CI_PR_NUMBER}

@@ -48,7 +48,7 @@ examples:
     yaml: |
       secrets:
         - CODECOV_TOKEN
-      uses: gocdnext/codecov@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
       with:
         file: cover.out
         flags: unit
@@ -61,7 +61,7 @@ examples:
     yaml: |
       secrets:
         - CODECOV_TOKEN
-      uses: gocdnext/codecov@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
       with:
         file: coverage/integration.lcov
         flags: integration

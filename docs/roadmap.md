@@ -214,7 +214,7 @@ Entradas da decisão:
   - 💡 **GCP Secret Manager** (Application Default Credentials).
   - 💡 **Azure Key Vault** (last, menor base de usuários interna).
 - 💡 **Package Material** — Nexus/Artifactory como material de 1ª
-  classe (hoje só existe via `gocdnext/nexus@v1` task-step,
+  classe (hoje só existe via `ghcr.io/klinux/gocdnext-plugin-nexus@v1` task-step,
   upload/download dentro do job). Complementa o plugin: a
   plataforma polla o repo, detecta versão nova, cria
   modification, dispara pipeline — mesmo pattern que o GoCD's
@@ -258,7 +258,7 @@ Notas de design:
   dentro do job), não material. Package Material como 1ª classe
   está abaixo em Medium.
 - `artifact-keeper` não ganhou plugin dedicado — ele fala Maven2
-  nativo, `gocdnext/nexus@v1` cobre a maioria dos casos. Adicionar
+  nativo, `ghcr.io/klinux/gocdnext-plugin-nexus@v1` cobre a maioria dos casos. Adicionar
   depois se alguém bater no mismatch de endpoint.
 
 ### Próxima onda (quando alguém pedir)
