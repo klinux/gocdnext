@@ -88,7 +88,7 @@ Local iteration loop:
 docker build -t gocdnext-plugin-myplugin:dev plugins/myplugin
 # Edit plugins/myplugin/plugin.yaml so the catalog picks up your
 # inputs schema. The server reloads the catalog on restart only —
-# `make dev-restart-server` after a manifest edit.
+# `make stop && make dev` after a manifest edit.
 ```
 
 To exercise the plugin in a real pipeline locally, push your dev
@@ -104,8 +104,11 @@ uses: gocdnext-plugin-myplugin:dev
 ```bash
 make test                # full suite, race detector on, includes containers
 make lint                # golangci-lint on every module + buf lint
-make web-build           # next.js production build
 ```
+
+`make build` produces production-ready Go binaries; the web build
+runs as part of `cd web && pnpm build` (Next.js production
+build).
 
 Database integration tests use testcontainers-go — they spin up a
 fresh Postgres per test binary. First invocation pulls the postgres
@@ -114,6 +117,7 @@ image (~200 MB); subsequent runs reuse it.
 ## Cleaning up
 
 ```bash
-make dev-down            # stop + drop the postgres-dev container
+make stop                # stop the dev stack (server + agent + web)
+make db-down             # tear down the dev Postgres container
 docker volume prune      # if you want to wipe the dev DB volume
 ```

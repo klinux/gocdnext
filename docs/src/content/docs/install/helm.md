@@ -21,7 +21,7 @@ deployments point at an external Postgres via `database.url`.
 
 ```bash
 helm install gocdnext oci://ghcr.io/klinux/charts/gocdnext \
-  --version 0.2.0 \
+  --version 0.6.4 \
   --namespace gocdnext --create-namespace \
   --set devDatabase.enabled=true \
   --set server.publicBase=http://gocdnext.local
@@ -47,7 +47,7 @@ kubectl -n gocdnext create secret generic gocdnext-db \
   --from-literal=DATABASE_URL='postgres://user:pass@db.internal:5432/gocdnext?sslmode=require'
 
 helm upgrade --install gocdnext oci://ghcr.io/klinux/charts/gocdnext \
-  --version 0.2.0 \
+  --version 0.6.4 \
   --namespace gocdnext \
   --set database.existingSecret=gocdnext-db \
   --set server.publicBase=https://ci.example.com
@@ -87,6 +87,34 @@ artifacts:
   projectQuotaBytes: "107374182400"      # 100 GiB
 ```
 
+The backend can also be configured at runtime by an admin via
+*Settings → Storage* — values picked there are persisted in the
+`platform_settings` table and take precedence over the Helm values
+on next server boot. Useful for migrating filesystem → s3 without a
+redeploy. Helm values still set the initial state.
+
+### Kubernetes workspace (when `agent.engine=kubernetes`)
+
+```yaml
+agent:
+  engine: kubernetes
+  workspace:
+    # ReadWriteOnce (default since v0.5.0): each job pod gets its own
+    #   ephemeral PVC provisioned via volume.ephemeral. Works with any
+    #   storage class — pd-ssd, local-ssd, anything RWO. Each job is
+    #   isolated; jobs do NOT share a workspace.
+    # ReadWriteMany (legacy): the agent StatefulSet owns one PVC that
+    #   every job pod mounts. Requires an RWX storage class (NFS,
+    #   Filestore). Pre-v0.5.0 behaviour, kept for upgrades that can't
+    #   migrate yet.
+    accessMode: ReadWriteOnce
+    storageClassName: ""                 # empty = cluster default
+    size: 20Gi
+```
+
+The trade-off — and how the pod is composed in each mode — is in
+[Kubernetes runtime](/gocdnext/docs/concepts/kubernetes-runtime/).
+
 ### Logs
 
 ```yaml
@@ -118,14 +146,15 @@ extra configuration.
 
 ```bash
 helm upgrade gocdnext oci://ghcr.io/klinux/charts/gocdnext \
-  --version 0.2.0 \
+  --version 0.6.4 \
   --namespace gocdnext \
   --reuse-values
 ```
 
-Migrations run automatically on server startup via goose. The 0.2.0
-release adds `00027_log_lines_partition` and `00028_log_archive`, both
-backward-compatible.
+Migrations run goose-forward automatically on server startup. The
+full upgrade runbook (with the v0.5.0 workspace-default break and
+how to keep the legacy `ReadWriteMany` behaviour) is in
+[Upgrade runbook](/gocdnext/docs/install/upgrade/).
 
 ## Uninstall
 

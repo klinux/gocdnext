@@ -25,7 +25,7 @@ auth:
 ```
 
 `adminEmails` is one-shot — once a user exists, role changes happen
-through the *Settings → Users* admin UI, not via this list.
+through the *Admin → Users* (`/admin/users`) admin UI, not via this list.
 `allowedDomains` is checked on every login.
 
 ## GitHub
@@ -41,7 +41,7 @@ In GitHub: *Settings → Developer settings → OAuth Apps → New OAuth App*.
 |---|---|
 | Application name | gocdnext |
 | Homepage URL | `https://ci.example.com/` |
-| Authorization callback URL | `https://ci.example.com/api/v1/auth/oauth/github/callback` |
+| Authorization callback URL | `https://ci.example.com/auth/callback/github` |
 
 Save → note the **Client ID** + generate a **Client secret**.
 
@@ -100,7 +100,7 @@ Credentials → OAuth client ID*.
 | Field | Value |
 |---|---|
 | Application type | Web application |
-| Authorized redirect URI | `https://ci.example.com/api/v1/auth/oauth/google/callback` |
+| Authorized redirect URI | `https://ci.example.com/auth/callback/google` |
 
 Save → note the **Client ID** + **Client secret**.
 
@@ -139,7 +139,7 @@ In Keycloak admin: *Realms → <your realm> → Clients → Create*.
 | Client ID | `gocdnext` |
 | Client Protocol | `openid-connect` |
 | Access Type | `confidential` |
-| Valid Redirect URIs | `https://ci.example.com/api/v1/auth/oauth/keycloak/callback` |
+| Valid Redirect URIs | `https://ci.example.com/auth/callback/keycloak` |
 
 Save → grab **Credentials → Secret**.
 
@@ -170,7 +170,7 @@ Okta, Azure AD, Authentik, Ory Hydra — all fit here.
 ### 1. Configure on the IdP side
 
 Whatever the provider's UI is: create an OIDC application, add
-the callback URL `https://ci.example.com/api/v1/auth/oauth/oidc/callback`,
+the callback URL `https://ci.example.com/auth/callback/oidc`,
 note the client ID + secret + issuer URL.
 
 The issuer URL is whatever the provider tells you to use for
@@ -220,7 +220,7 @@ users — that's a deliberate audit-trail choice.
 
 - First user with an `adminEmails` match becomes admin
   automatically.
-- Other users land as viewers; promote via *Settings → Users → Edit*.
+- Other users land as viewers; promote via *Admin → Users → Edit role*.
 - Sessions are HMAC-signed cookies, 24h TTL by default.
   `GOCDNEXT_SECRET_KEY` (also wired via the chart) signs them —
   rotate it to invalidate every active session.

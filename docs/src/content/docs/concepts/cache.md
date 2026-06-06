@@ -16,7 +16,7 @@ jobs:
   install:
     image: node:22
     cache:
-      - key: pnpm-store-${CI_COMMIT_BRANCH}
+      - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
         paths:
           - .pnpm-store
           - node_modules
@@ -26,46 +26,59 @@ jobs:
 
 Two parts:
 
-- `key:` — a templated string. Two runs that resolve to the same
-  key share the cache.
-- `paths:` — directories OR files to tar. Glob patterns supported.
+- `key:` — the cache name. Two runs with the same resolved key
+  share the cache entry.
+- `paths:` — directories OR files to tar. Glob patterns
+  supported.
 
 ## Key templating
 
-The string is expanded at dispatch time:
+There is **one** template token in the cache key grammar:
 
-| Variable | Expands to |
+| Token | Expansion |
 |---|---|
-| `${CI_COMMIT_BRANCH}` | branch name (sanitised, slashes → `-`) |
-| `${CI_COMMIT_SHORT_SHA}` | first 8 chars of the SHA |
-| `${CI_PIPELINE_NAME}` | pipeline name |
-| `${CI_PROJECT_SLUG}` | project slug |
-| `${CI_JOB_NAME}` | the current job's name |
-| `${CI_RUN_COUNTER}` | run number for this pipeline |
+| `{{ hash "<glob>" }}` | hex digest of the sorted files matching the glob (workspace-relative). |
 
-Common patterns:
+The agent's cache resolver expands `{{ hash }}` tokens before
+fetching/storing — content-keyed caches "just work":
 
 ```yaml
-# Per-branch (recommended for most caches): main and feature
-# branches keep separate buckets, no cross-poisoning.
-key: pnpm-${CI_COMMIT_BRANCH}
-
-# Per-job, per-branch (when different jobs need different cache
-# contents from the same install).
-key: ${CI_JOB_NAME}-${CI_COMMIT_BRANCH}
-
-# Lockfile-keyed (when you want every lockfile change to start
-# clean — costly but airtight reproducibility):
-key: pnpm-${HASH:pnpm-lock.yaml}    # hash-of-file syntax (planned)
-
-# Per-pipeline (when one cache works across all jobs):
-key: shared-${CI_PIPELINE_NAME}-${CI_COMMIT_BRANCH}
+cache:
+  - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
+    paths: [.pnpm-store]
 ```
 
-`${HASH:path}` for content-keyed caches isn't shipped yet — for
-now, when lockfile semantics matter, restart the cache by bumping
-the suffix manually (`pnpm-store-v2`, `pnpm-store-v3`). The retention
-sweeper drops orphaned entries automatically.
+Bump the lockfile → digest changes → new cache bucket. Older
+buckets age out via the retention sweeper.
+
+The glob is workspace-relative with no `..` traversal. A glob
+that matches zero files aborts the job rather than silently
+producing an empty hash. Limits: ≤ 100 files matched, ≤ 16 MiB
+per file, ≤ 64 MiB total — set generously to make the audit
+trail predictable.
+
+### Shell-style `${VAR}` is NOT expanded in cache keys
+
+Cache keys are passed to the storage backend verbatim. The
+agent does not run shell-style variable expansion on them
+(`${CI_BRANCH}`, `${CI_PIPELINE_NAME}`, etc. stay as **literal
+text**). So this:
+
+```yaml
+key: pnpm-store-${CI_BRANCH}
+```
+
+becomes the literal storage key `pnpm-store-${CI_BRANCH}` — every
+branch shares the same bucket. That's fine for most caches (pnpm
+store, Go mod cache, Maven .m2) because the contents are
+content-addressable and multi-version-safe; cohabitation is the
+whole design.
+
+When you genuinely need per-branch isolation, use a different
+constant per pipeline (`ci-server-cache`, `ci-web-cache`) or use
+`{{ hash }}` against a file that changes per branch (rare). For
+the common "invalidate on lockfile change" case, hash-keyed is
+the right tool.
 
 ## What to cache (by toolchain)
 
@@ -73,7 +86,7 @@ sweeper drops orphaned entries automatically.
 
 ```yaml
 cache:
-  - key: pnpm-${CI_COMMIT_BRANCH}
+  - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
     paths: [.pnpm-store, node_modules]
 ```
 
@@ -85,7 +98,7 @@ also caches the resolved tree so install is just a verify pass.
 
 ```yaml
 cache:
-  - key: go-${CI_COMMIT_BRANCH}
+  - key: go-{{ hash "go.sum" }}
     paths: [.go-mod, .go-cache]
 ```
 
@@ -98,7 +111,7 @@ builds + memoised test results).
 
 ```yaml
 cache:
-  - key: maven-${CI_COMMIT_BRANCH}
+  - key: maven-{{ hash "pom.xml" }}
     paths: [.m2]
 ```
 
@@ -109,7 +122,7 @@ typical 200-dep project lands at 200-500 MB.
 
 ```yaml
 cache:
-  - key: gradle-${CI_COMMIT_BRANCH}
+  - key: gradle-{{ hash "**/build.gradle.kts" }}
     paths: [.gradle-user-home, .gradle-cache]
 ```
 
@@ -121,42 +134,56 @@ task-output memo). Cache both for full warmth.
 
 ```yaml
 cache:
-  - key: uv-${CI_COMMIT_BRANCH}
-    paths: [.uv-cache, .venv]
+  - key: uv-{{ hash "uv.lock" }}
+    paths: [.cache, .venv]
 ```
 
-uv writes its package cache to `.uv-cache` when run from
-`/workspace` (default). The resolved venv at `.venv/` should also
-travel — restoring it skips the resolver.
+uv writes its package cache to `.cache/uv/` when run from
+`/workspace`. The resolved venv at `.venv/` should also travel —
+restoring it skips the resolver.
 
 ### Python (Poetry)
 
 ```yaml
 cache:
-  - key: poetry-${CI_COMMIT_BRANCH}
-    paths: [.cache/pypoetry, .venv]
+  - key: poetry-{{ hash "poetry.lock" }}
+    paths: [.cache, .venv]
 ```
 
 Plugin sets `POETRY_VIRTUALENVS_IN_PROJECT=1` so `.venv` is local
 and `POETRY_CACHE_DIR=/workspace/.cache/pypoetry` so the wheel
 cache is in the workspace.
 
-### Docker buildx
+### trivy (security DB)
 
 ```yaml
-# buildx caches go through buildx's own cache backends, not the
-# platform's `cache:` block. Use cache_from / cache_to in the
-# plugin's inputs:
+cache:
+  - key: trivy-db
+    paths: [.cache/trivy]
+```
+
+Trivy's vulnerability DB is the cached artefact, not anything
+project-derived — use a constant key so all projects share the
+warm DB. Pair with `skip-db-update: "true"` on air-gapped agents.
+
+### Docker buildx
+
+buildx layer caches go through buildx's own cache backends, not
+the platform's `cache:` block. Use the plugin's `cache:`/
+`cache-from:`/`cache-to:` inputs:
+
+```yaml
 build:
   uses: gocdnext/buildx@v1
   with:
-    cache_from: type=gha,scope=myapp
-    cache_to: type=gha,scope=myapp,mode=max
+    cache-from: type=gha,scope=myapp
+    cache-to: type=gha,scope=myapp,mode=max
 ```
 
-The `cache:` block is for filesystem dirs; buildx's layer cache is
-content-addressable in the registry, which the platform doesn't
-mediate.
+The platform's `cache:` block is for filesystem dirs; buildx's
+layer cache is content-addressable in the registry, which the
+platform doesn't mediate. See the [layer-cache recipe](/gocdnext/docs/pipelines/recipes/layer-cache/)
+for the runner-profile pattern.
 
 ## Eviction
 
@@ -174,33 +201,34 @@ hit on every push survive forever; abandoned project caches age
 out within a month.
 
 `last_accessed_at` is updated whenever a job restores from the
-cache, so an active project on `feature/foo` keeps that branch's
-cache warm even if main hasn't touched it in weeks.
+cache, so an active project on a feature branch keeps that
+hash-key's cache warm even if main hasn't touched it in weeks.
+
+Operators can also purge caches manually via *Project → Caches*
+in the dashboard.
 
 ## Pre-warming + invalidation
 
-### Pre-warm a feature branch
+### Pre-warm
 
-When you create a feature branch, the first run on it hits a
-cold cache (no entry under `pnpm-feature-foo`). To pre-warm,
-manually trigger a run on the new branch — subsequent runs hit
-the warmed cache.
+When you bump a lockfile, the first run with the new hash key
+hits a cold cache. That's expected — the cost amortises over
+subsequent runs against the same hash.
 
-For long-lived feature branches with frequent CI, this matters
-less than you'd think; the cache warms within 1-2 runs.
+For projects with very long install times, pre-warm by triggering
+a *Run latest* on the new lockfile state ahead of merging the
+bump PR.
 
 ### Invalidate when something changes the resolution
 
-When you bump a Node major version, the lockfile changes, the
-resolved tree changes, but `pnpm-${CI_COMMIT_BRANCH}` still
-points at the old cache → install fails or behaves weirdly.
-Force-invalidate by bumping the key:
+`{{ hash "lockfile" }}` invalidates automatically. For caches
+keyed on a constant string, force-invalidate by bumping the key:
 
 ```yaml
-key: pnpm-v2-${CI_COMMIT_BRANCH}    # was pnpm-${CI_COMMIT_BRANCH}
+key: pnpm-store-v2     # was pnpm-store
 ```
 
-The retention sweeper drops the old `pnpm-*` entries on its
+The retention sweeper drops the old `pnpm-store` entries on its
 quota pass.
 
 ## Common pitfalls
@@ -217,8 +245,8 @@ quota pass.
   The cache restore pass treats CRC failures as "miss" and
   proceeds to a cold install. The corrupt entry stays around
   until quota / TTL evicts it. Symptom: random "missing
-  dependency" errors that go away on rerun.
-- **Sharing cache across pipelines**: caches are scoped per
-  project, not per pipeline. If pipeline A and pipeline B in
-  the same project both have `key: pnpm-main`, they share the
-  cache. Use `${CI_PIPELINE_NAME}` in the key to scope tighter.
+  dependency" errors that disappear on the next run — clear
+  the cache via the dashboard if you suspect this.
+- **Shell-style vars in `key:`**: `${CI_BRANCH}` (and friends)
+  stay LITERAL in cache keys — they don't expand. Use `{{ hash }}`
+  for content-keyed caches; use constant strings otherwise.

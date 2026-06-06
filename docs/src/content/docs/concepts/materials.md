@@ -14,7 +14,7 @@ fires the trigger. Four kinds:
 | `git` (explicit) | Webhook OR poll on a sibling repo | Need a second checkout |
 | `upstream` | Another pipeline's stage hits success | Fanout across pipelines |
 | `cron` | Schedule from project settings | Nightly builds |
-| `manual` | Operator clicks "Run latest" or `gocdnext run` | Promotions, hotfixes, one-offs |
+| `manual` | Operator clicks *Run latest* in the dashboard | Promotions, hotfixes, one-offs |
 
 ## Implicit project material
 
@@ -24,14 +24,20 @@ pipeline in the project gets an implicit `git` material pointing
 at it — no YAML needed. Webhooks on the SCM source create runs;
 the run's working tree is the repo at the pushed SHA.
 
-You can override the implicit material's branch/path-filter via
-the pipeline's `when:`:
+You can scope which branches trigger the pipeline via the
+pipeline-level `when:`:
 
 ```yaml
 when:
-  branches: [main]              # only main triggers
-  paths: ["server/**"]          # only when server/ changed
+  event: [push]
+  branch: [main]                # singular `branch:` — list of names
 ```
+
+The parser accepts `event:` and `branch:` here (and `branch:` is
+**singular** — `branches:` is rejected). Path-based filtering
+inside `when:` isn't wired today. To scope by sub-tree, use one
+pipeline per concern (e.g. `ci-server.yaml`, `ci-web.yaml`); each
+pipeline's job-level work bounds itself via hash-keyed caches.
 
 ## Explicit git material
 
@@ -43,14 +49,16 @@ materials:
   - git:
       url: https://github.com/myorg/shared-libs
       branch: main
-      path: vendor/shared-libs
-      poll_interval: 5m         # optional
+      on: [push]              # which SCM events react
+      poll_interval: 5m       # optional polling fallback
+      auto_register_webhook: true
+      secret_ref: SHARED_REPO_TOKEN
 ```
 
-The shared-libs repo gets cloned into `vendor/shared-libs/` of
-the run's workspace. Webhooks on the shared-libs repo also
-trigger this pipeline (assuming the SCM source is registered
-on gocdnext) — useful when the lib is the actual change driver.
+The shared-libs repo gets cloned into a deterministic per-material
+subdirectory under the workspace — the agent threads it into the
+task container automatically. There is no `path:` field on `git:`
+materials; the destination is derived from the material id.
 
 `poll_interval:` is the polling fallback for SCM sources where
 webhook delivery is unreliable (corporate firewalls, self-hosted
@@ -127,26 +135,19 @@ Branch:   main
 Active:   yes
 ```
 
-When the cron fires, a run is created with `cause: cron`. The
-pipeline's YAML doesn't need to reference cron at all — but you
-might want to gate jobs to only run for cron causes:
+When the cron fires, a run is created with `cause: schedule` (the
+domain-canonical name — `domain.CauseSchedule`). The pipeline's
+YAML doesn't need to reference cron at all.
 
-```yaml
-jobs:
-  full-regression:
-    when:
-      event: [cron]
-    image: ...
-    script: [...]
-```
-
-`event: [cron]` makes the job fire only on cron-caused runs,
-skipped on push.
+The parser also accepts a `cron:` material entry at the pipeline
+level with a `expression:` sub-key, mirroring the upstream shape.
+Operators normally use the UI because it lets non-engineers manage
+the schedule without re-applying a pipeline.
 
 ## Manual material
 
 For pipelines that should ONLY fire from the *Run latest* button
-or `gocdnext run`:
+in the dashboard:
 
 ```yaml
 when:
@@ -173,13 +174,31 @@ jobs:
   build:
     image: alpine
     script:
-      - echo "Building from $CI_COMMIT_SHORT_SHA on $CI_COMMIT_BRANCH"
-      - echo "Upstream materials:"
-      - env | grep ^CI_MATERIAL_
+      - echo "Building from $CI_COMMIT_SHORT_SHA on $CI_BRANCH"
 ```
 
-`CI_MATERIAL_<name>_REVISION` and `CI_MATERIAL_<name>_BRANCH`
-are exposed for every material in the snapshot.
+The agent injects `CI_BRANCH`, `CI_COMMIT_SHA`, and
+`CI_COMMIT_SHORT_SHA` from the **primary** material's revision
+(the first one in sorted order — today's runs only bind one git
+material, so this is unambiguous). Multi-material revision-export
+is a follow-up; for now use the primary material's coordinates
+for build-time stamps.
+
+## Build cause
+
+The `cause` field on a run records what kicked it off. Accepted
+values (`domain.BuildCause`):
+
+| Value | Source |
+|---|---|
+| `webhook` | SCM push event |
+| `upstream` | Upstream material's stage succeeded |
+| `schedule` | Project cron fired |
+| `manual` | Dashboard *Run latest* button |
+| `poll` | Poll-fallback discovered a new SHA |
+
+`schedule` is the canonical name (NOT `cron`). If you're filtering
+runs in SQL by cause, use the values above.
 
 ## Common pitfalls
 
@@ -197,4 +216,7 @@ are exposed for every material in the snapshot.
   run which jobs.
 - **Branch deletion**: when a branch is deleted, an upstream
   material referencing it stops firing. Always include
-  `branches: [main]` or similar on production-relevant pipelines.
+  `branch: [main]` or similar on production-relevant pipelines.
+- **`branches:` plural in `when:`**: a common typo. The parser
+  only accepts singular `branch:`; the plural form fails at
+  apply with an unknown-field error.

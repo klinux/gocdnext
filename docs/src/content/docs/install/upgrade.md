@@ -3,7 +3,7 @@ title: Upgrade runbook
 description: Move between gocdnext versions safely — what to back up, how migrations land, and how to roll back when something goes sideways.
 ---
 
-gocdnext follows semver loosely: minor bumps (`0.1.x → 0.2.0`)
+gocdnext follows semver loosely: minor bumps (`0.5.x → 0.6.0`)
 land database migrations + new features but stay backward-
 compatible at the YAML/API surface. Every release tag has notes
 flagging breaking changes specifically.
@@ -11,6 +11,27 @@ flagging breaking changes specifically.
 This page walks the canonical Helm upgrade. Adapt for your own
 deployment automation (Argo CD, Flux, Pulumi, …) — the steps don't
 change, only how `helm upgrade` is invoked.
+
+:::caution[v0.5.0 BREAKING DEFAULT — Kubernetes workspace]
+The `agent.workspace.accessMode` default flipped from `ReadWriteMany`
+to `ReadWriteOnce`. Every job pod now gets its own ephemeral PVC
+(see [Kubernetes runtime](/gocdnext/docs/concepts/kubernetes-runtime/)).
+
+If you were on v0.4.x with `agent.engine: kubernetes` and an RWX
+storage class (Filestore, NFS), you have two choices:
+
+1. **Keep legacy** — pin `agent.workspace.accessMode: ReadWriteMany`
+   in your values file BEFORE running `helm upgrade`. Behaviour is
+   identical to v0.4.x.
+2. **Migrate to isolated** — set
+   `agent.workspace.storageClassName: <a-RWO-class>` (e.g. `pd-ssd`,
+   `local-ssd`, `gp3`). Drop NFS/Filestore. Faster, simpler, but
+   jobs no longer share a workspace between each other.
+
+If you run `helm upgrade` without setting either, the default
+flips and `volume.ephemeral` will try to provision against the
+cluster's default storage class, which may or may not be RWO.
+:::
 
 ## Before you upgrade
 
@@ -61,7 +82,7 @@ matters is small.
 
 ```bash
 helm upgrade gocdnext oci://ghcr.io/klinux/charts/gocdnext \
-  --version 0.2.0 \
+  --version 0.6.4 \
   --namespace gocdnext \
   --reuse-values
 ```
@@ -87,8 +108,8 @@ What this does:
 Migrations run **forward-only** (no `.down.sql` in production —
 the project doctrine). Each release:
 
-- Lists new migration numbers in the release notes (e.g. `00027`,
-  `00028`).
+- Lists new migration numbers in the release notes (e.g. `00036`,
+  `00039`).
 - Migrations are idempotent at goose's level — `goose up` is safe
   to re-run.
 - Migrations are designed to be backward-compatible with the
@@ -125,9 +146,11 @@ kubectl -n gocdnext logs deployment/gocdnext-server --tail=200
 Boot logs from the new server show every migration that ran:
 
 ```
-goose: applied 00027_log_lines_partition.sql in 38ms
-goose: applied 00028_log_archive.sql in 1ms
-goose: successfully migrated database to version: 28
+goose: applied 00036_runs_has_services.sql in 12ms
+goose: applied 00037_agents_engine.sql in 4ms
+goose: applied 00038_idx_job_runs_run_id.sql in 41ms
+goose: applied 00039_service_runs.sql in 22ms
+goose: successfully migrated database to version: 39
 ```
 
 If you see fewer migrations than the release notes mentioned, the

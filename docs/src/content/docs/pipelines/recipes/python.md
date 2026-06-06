@@ -4,10 +4,11 @@ description: Python project recipes — install, lint, test, package — coverin
 ---
 
 The [`gocdnext/python`](/gocdnext/docs/reference/plugins/#python)
-plugin ships an image with the interpreter + the standard packaging
-tools. The plugin works the same way regardless of which dependency
-manager you use; the difference is in `command:` and which cache
-paths the platform preserves.
+plugin auto-detects the manager (priority: poetry.lock → uv.lock →
+requirements.txt → pyproject.toml), runs a frozen install, then
+executes the user's shell `command:`. Per-manager cache
+directories all land under `.cache/` so a single cache entry
+covers all three.
 
 ## Layout assumed
 
@@ -21,32 +22,34 @@ repo/
 ```
 
 This recipe shows three variants of the same shape — pick the
-one that matches your project.
+one that matches your project. The plugin handles install
+automatically based on lockfile detection; you write the shell
+command that runs against the resolved environment.
 
 ## Recipe — uv (recommended for new projects)
 
 [`uv`](https://github.com/astral-sh/uv) is the fastest Python
-installer (Rust, parallel resolution, drop-in replacement for
-pip + pip-tools + venv). The dependency cache survives in
-`/workspace/.uv-cache`.
+installer. With `uv.lock` present, the plugin auto-selects uv
+and runs `uv sync --frozen` before `command:`.
 
 ```yaml title=".gocdnext/ci.yaml"
 name: ci
 when:
   event: [push, pull_request]
-stages: [lint, test]
+stages: [deps, lint, test]
 
 jobs:
   install:
-    stage: lint
+    stage: deps
     uses: gocdnext/python@v1
     with:
-      command: -m uv sync --frozen
+      command: "true"          # install-only — plugin handles uv sync --frozen
+      all-extras: "true"       # bring in dev/test extras for downstream jobs
     cache:
-      - key: uv-${CI_COMMIT_BRANCH}
-        paths: [.uv-cache, .venv]
+      - key: uv-{{ hash "uv.lock" }}
+        paths: [.cache, .venv]
     artifacts:
-      paths: [".venv/"]
+      paths: [.venv, uv.lock]
 
   ruff:
     stage: lint
@@ -54,9 +57,10 @@ jobs:
     needs: [install]
     needs_artifacts:
       - from_job: install
-        paths: [".venv/"]
+        paths: [.venv, uv.lock]
     with:
-      command: -m uv run ruff check src tests
+      no-install: "true"       # reuse artifact venv as-is
+      command: ruff check src tests
 
   mypy:
     stage: lint
@@ -64,9 +68,10 @@ jobs:
     needs: [install]
     needs_artifacts:
       - from_job: install
-        paths: [".venv/"]
+        paths: [.venv, uv.lock]
     with:
-      command: -m uv run mypy src
+      no-install: "true"
+      command: mypy src
 
   pytest:
     stage: test
@@ -74,71 +79,91 @@ jobs:
     needs: [install]
     needs_artifacts:
       - from_job: install
-        paths: [".venv/"]
+        paths: [.venv, uv.lock]
     with:
-      command: -m uv run pytest --junit-xml=junit.xml --cov=src --cov-report=xml
+      no-install: "true"
+      command: pytest --junit-xml=junit.xml --cov=src --cov-report=xml
     test_reports:
-      paths: [junit.xml]
+      - junit.xml
     artifacts:
       paths: [coverage.xml]
 ```
 
-`uv sync --frozen` reads `uv.lock` and refuses to update — same
-posture as `pnpm install --frozen-lockfile`. A drifted lockfile
-fails the install, which is what you want in CI.
+Plugin auto-selects uv because `uv.lock` is present.
+`all-extras: "true"` translates to `uv sync --all-extras` so the
+single install resolves dev tooling once; downstream jobs use
+`no-install: "true"` to skip re-resolve.
 
 ## Recipe — Poetry
 
 ```yaml
-install:
-  stage: lint
-  uses: gocdnext/python@v1
-  with:
-    command: -m poetry install --no-interaction --no-ansi
-  cache:
-    - key: poetry-${CI_COMMIT_BRANCH}
-      paths: [.cache/pypoetry, .venv]
-  artifacts:
-    paths: [".venv/"]
+jobs:
+  install:
+    stage: deps
+    uses: gocdnext/python@v1
+    with:
+      command: "true"
+      extras: "dev, test"      # poetry: --extras "dev test"
+    cache:
+      - key: poetry-{{ hash "poetry.lock" }}
+        paths: [.cache, .venv]
+    artifacts:
+      paths: [.venv]
 
-pytest:
-  stage: test
-  uses: gocdnext/python@v1
-  needs: [install]
-  needs_artifacts:
-    - from_job: install
-      paths: [".venv/"]
-  with:
-    command: -m poetry run pytest --junit-xml=junit.xml
-  test_reports:
-    paths: [junit.xml]
+  pytest:
+    stage: test
+    uses: gocdnext/python@v1
+    needs: [install]
+    needs_artifacts:
+      - from_job: install
+        paths: [.venv]
+    with:
+      no-install: "true"
+      command: pytest --junit-xml=junit.xml
+    test_reports:
+      - junit.xml
 ```
 
-`POETRY_VIRTUALENVS_IN_PROJECT=1` (set by the plugin) puts
-`.venv/` in the workspace so it travels via the artefacts pass.
-`POETRY_CACHE_DIR=/workspace/.cache/pypoetry` ditto for the
-package archive cache.
+Plugin sets `POETRY_VIRTUALENVS_IN_PROJECT=1` so `.venv/` lands
+in the workspace where artefacts can pick it up.
+`POETRY_CACHE_DIR=/workspace/.cache/pypoetry` redirects the
+download cache too.
 
 ## Recipe — pip + requirements.txt
 
 ```yaml
-install:
-  stage: lint
-  uses: gocdnext/python@v1
-  with:
-    command: -m pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
-  cache:
-    - key: pip-${CI_COMMIT_BRANCH}
-      paths: [.pip-cache]
-  artifacts:
-    paths: [".local/lib/python*/site-packages/"]
+jobs:
+  install:
+    stage: deps
+    uses: gocdnext/python@v1
+    with:
+      manager: pip
+      requirements: requirements-dev.txt   # combined dev + runtime list
+      command: "true"
+    cache:
+      - key: pip-{{ hash "requirements-dev.txt" }}
+        paths: [.cache]
+    artifacts:
+      paths: [.venv]
+
+  pytest:
+    stage: test
+    uses: gocdnext/python@v1
+    needs: [install]
+    needs_artifacts:
+      - from_job: install
+        paths: [.venv]
+    with:
+      no-install: "true"
+      command: pytest --junit-xml=junit.xml
+    test_reports:
+      - junit.xml
 ```
 
-Plain pip on requirements.txt is the simplest setup but the slowest
-to warm — there's no lockfile equivalent, so resolution runs every
-install. Pin everything (no `>=` in `requirements.txt`) to avoid
-surprise upgrades on a CI machine that happens to resolve
-differently.
+Plain pip on `requirements.txt` is the simplest setup but the
+slowest to warm — there's no native lockfile, so the plugin pins
+the requirements file via `--no-deps --no-build-isolation` and
+relies on it being fully pinned upstream.
 
 ## Variations
 
@@ -159,68 +184,91 @@ upload-coverage:
     - CODECOV_TOKEN
 ```
 
-### Build a wheel and publish
+### Build a wheel and publish on tag
+
+Per-job `when:` isn't enforced today. The clean separation is one
+pipeline that always builds + uploads the wheel as an artefact,
+and a **separate publish pipeline** triggered only on tag.
+
+`.gocdnext/ci.yaml`:
 
 ```yaml
 package:
   stage: build
   uses: gocdnext/python@v1
+  needs: [install]
+  needs_artifacts:
+    - from_job: install
+      paths: [.venv]
   with:
-    command: -m build
+    no-install: "true"
+    command: python -m build
   artifacts:
     paths: ["dist/*.whl", "dist/*.tar.gz"]
-
-publish:
-  stage: build
-  uses: gocdnext/python@v1
-  needs: [package]
-  needs_artifacts:
-    - from_job: package
-      paths: ["dist/"]
-  when:
-    event: [tag]
-  with:
-    command: -m twine upload --non-interactive dist/*
-  secrets:
-    - TWINE_USERNAME
-    - TWINE_PASSWORD     # often the literal "__token__" + a PyPI API token
 ```
 
-The `when.event: [tag]` gate means publish only fires on push of
-a `vX.Y.Z` tag — push to a branch creates the wheel artefact but
-doesn't ship it.
+`.gocdnext/release.yaml`:
+
+```yaml
+name: release
+when:
+  event: [tag]
+stages: [publish]
+jobs:
+  twine-upload:
+    stage: publish
+    uses: gocdnext/python@v1
+    with:
+      no-install: "true"
+      command: |
+        python -m twine upload --non-interactive dist/*
+    secrets:
+      - TWINE_USERNAME
+      - TWINE_PASSWORD       # often "__token__" + a PyPI API token
+```
+
+The tag trigger on the release pipeline fires only on `vX.Y.Z`
+push; the main `ci` pipeline still produces the wheel on every
+push for parity with non-release runs.
 
 ### Multiple Python versions (matrix)
+
+The python plugin's image is locked to one interpreter, so a
+matrix across versions can't just vary a `with:` input —
+matrix-testing across versions means bypassing the plugin and
+calling pip/uv directly inside `python:3.X-slim`:
 
 ```yaml
 pytest:
   stage: test
-  uses: gocdnext/python@v1
-  needs: [install]
-  matrix:
-    python_version: ["3.10", "3.11", "3.12", "3.13"]
-  with:
-    image: python:${{ matrix.python_version }}-slim
-    command: -m pytest
+  image: python:${{ PY_VERSION }}-slim
+  parallel:
+    matrix:
+      - PY_VERSION: ["3.11", "3.12", "3.13"]
+  script:
+    - pip install --root-user-action=ignore -e ".[test]"
+    - pytest --junit-xml=junit.xml
+  test_reports:
+    - junit.xml
 ```
 
-The matrix expands to 4 parallel jobs; each runs in its own
-container with the appropriate interpreter. Cache keys can
-include `${{ matrix.python_version }}` so each cell warms its
-own bucket.
+`parallel.matrix:` is the **list of objects** shape — each entry
+maps a name to a list of values. `${{ PY_VERSION }}` substitution
+expands per cell.
 
 ## Common pitfalls
 
-- **System Python vs venv**: gocdnext's `python` plugin defaults
-  to running inside `.venv/` when one exists — same posture as
-  every package manager. If you skip the install step and try
-  `python -m pytest`, the system interpreter has no project
-  dependencies. Always run through `uv run` / `poetry run` or
-  the venv's `python`.
+- **System Python vs venv**: gocdnext's `python` plugin sets up
+  the manager's expected venv. If you skip the install step and
+  run plain `python -m pytest`, the system interpreter has no
+  project dependencies. Always go through `pytest` (the venv
+  shim) or `python -m pytest` from a job that has `no-install:
+  "false"` (the default).
 - **Pip cache vs wheel cache**: `--no-cache-dir` on pip disables
-  the WHEEL cache (good for reproducibility) but the platform's
+  the wheel cache (good for reproducibility) but the platform's
   `cache:` block still preserves the install state via
   `site-packages`. The two are independent.
 - **Coverage XML path**: pytest-cov writes to `coverage.xml` by
   default but only when `--cov-report=xml` is set. Without it,
-  the file doesn't exist and `optional:` artefacts fire silent.
+  the file doesn't exist and `optional:` artefacts silently
+  no-op.

@@ -65,12 +65,27 @@ One Go binary per agent host. Maintains a long-lived gRPC stream
 to the server (single-writer Send invariant; Send + CloseSend
 share the same goroutine). On `JobAssignment`:
 
-1. Clones the materials.
+1. Resolves materials + signs short-lived URLs for artefact
+   downloads and cache fetches.
 2. Starts the plugin container (Docker engine OR Kubernetes
    engine, depending on the agent's `GOCDNEXT_AGENT_ENGINE`).
 3. Streams stdout/stderr lines back as `LogLine` messages,
    bulk-batched (100 lines / 200 ms).
-4. Reports `JobResult` on terminal status.
+4. Streams `ServiceLifecycle` events for any declared sidecars.
+5. Reports `JobResult` on terminal status.
+
+Where material cloning happens depends on the runtime:
+
+- **Docker engine** — the agent process clones, then mounts the
+  workspace into the task container.
+- **Kubernetes engine, shared mode** — the agent process clones,
+  then mounts the shared PVC.
+- **Kubernetes engine, isolated mode** (default since v0.5.0) — the
+  agent serialises the `JobAssignment` (with signed URLs) into a
+  Secret and re-execs itself inside the pod as the `prep` init
+  container, which does the clone + artefact download + cache fetch
+  against the pod's ephemeral PVC. See
+  [Kubernetes runtime](/gocdnext/docs/concepts/kubernetes-runtime/).
 
 Agents register at boot via `Register` RPC, get a session token,
 hold the stream open. The server's `SessionStore` manages capacity
@@ -92,13 +107,27 @@ HTTP API. You can run N replicas behind a load balancer.
 Everything else is a cache or a transient. Postgres holds:
 
 - `projects`, `pipelines`, `materials` — pipeline definitions.
-- `runs`, `stage_runs`, `job_runs` — run state.
+- `runs`, `stage_runs`, `job_runs` — run state. `runs.has_services`
+  is snapshotted at run-create time so list endpoints can skip the
+  service-detail query when there are none.
+- `service_runs` — one row per declared service per run; lifecycle
+  state machine for sidecars (`starting → ready → stopped`, or
+  `failed`). Sticky-failed enforced at the SQL upsert.
 - `log_lines` — log stream (RANGE-partitioned by month).
 - `artifacts`, `caches` — backend metadata (the bytes are in
-  the artefact backend).
+  the artefact backend). `artifacts` has a partial unique index
+  enforcing one canonical row per `(job_run_id, path)` after
+  retire-on-retry.
 - `secrets` (when `backend=db`) — AES-256-GCM-encrypted values.
-- `agents`, `runner_profiles` — agent fleet state.
-- `users`, `groups`, `audit_events` — RBAC + audit.
+- `agents`, `runner_profiles` — agent fleet state. `runner_profiles`
+  carries `env` + `secrets` JSONB columns (added by migration
+  `00030`) holding per-profile plaintext env vars and encrypted
+  secret values — used for things like registry creds and layer-
+  cache bucket auth.
+- `users`, `groups`, `group_members`, `audit_events` — RBAC,
+  approver groups, and audit log.
+- `platform_settings` — UI-mutable runtime config (storage backend,
+  retention, layer-cache shorthand defaults).
 
 `pg_notify` + `LISTEN` is what wakes the scheduler; the channels
 are `run_queued` (new run created) and `run_done` (terminal flip).

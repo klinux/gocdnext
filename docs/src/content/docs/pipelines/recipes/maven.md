@@ -45,10 +45,10 @@ jobs:
       - key: maven-${CI_COMMIT_BRANCH}
         paths: [.m2]
     test_reports:
-      paths: ["target/surefire-reports/*.xml"]
+      - "target/surefire-reports/*.xml"
     artifacts:
       optional:
-        paths: ["target/site/jacoco/jacoco.xml"]
+        - "target/site/jacoco/jacoco.xml"
 
   package:
     stage: package
@@ -117,7 +117,7 @@ test:
     - key: maven-${CI_COMMIT_BRANCH}
       paths: [.m2]
   test_reports:
-    paths: ["target/**/surefire-reports/*.xml"]
+    - "target/**/surefire-reports/*.xml"
   artifacts:
     paths: ["target/site/jacoco/jacoco.xml"]
 

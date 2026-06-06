@@ -9,7 +9,7 @@ re-fetch).
 
 | State | Where | Lose-it impact | Backup priority |
 |---|---|---|---|
-| Postgres | `gocdnext-postgres-dev-0` (dev) or external | Everything: pipelines, runs, secrets, audit, RBAC | **Critical** |
+| Postgres | `gocdnext-postgres-0` (dev) or external | Everything: pipelines, runs, secrets, audit, RBAC | **Critical** |
 | Artefact backend | filesystem PVC, S3, GCS | Per-run binaries + log archives | **High** |
 | Plugin images | GHCR or your registry | Re-buildable from the source repo | Low |
 
@@ -25,7 +25,7 @@ Works for any Postgres setup — bundled `postgres-dev` or external.
 
 ```bash
 # Bundled postgres-dev:
-kubectl -n gocdnext exec gocdnext-postgres-dev-0 -- \
+kubectl -n gocdnext exec gocdnext-postgres-0 -- \
   pg_dump -U gocdnext -F c -d gocdnext > gocdnext-$(date +%Y%m%d).dump
 
 # External Postgres (run from anywhere with network access):
@@ -89,7 +89,7 @@ Use whatever your platform offers for PVC snapshots:
   spec:
     volumeSnapshotClassName: csi-snapshot
     source:
-      persistentVolumeClaimName: gocdnext-server-artifacts
+      persistentVolumeClaimName: gocdnext-artifacts   # set via artifacts.existingClaim in values.yaml
   ```
 
 - **Velero** with the corresponding restic / Kopia / file-system

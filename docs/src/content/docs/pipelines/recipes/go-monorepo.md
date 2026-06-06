@@ -129,17 +129,13 @@ package + run every analyzer); from there it's incremental.
 
 ## Triggering on relevant changes only
 
+Path-based filtering inside `when:` isn't supported today — the
+parser only consumes `event:` and `branch:` at pipeline level.
+
 If the monorepo also has a `web/` (TypeScript) and you don't want a
-JS edit to fire the Go pipelines, use `when.paths`:
-
-```yaml
-when:
-  event: [push, pull_request]
-  paths:
-    - "server/**"
-    - "go.work"
-    - ".gocdnext/ci-server.yaml"
-```
-
-This is parsed as include-list; runs are skipped when none of the
-push's changed files match.
+JS edit to fire the Go pipelines, the idiomatic split is **one
+pipeline per concern** (e.g. `ci-server.yaml`, `ci-web.yaml`) and
+let the implicit project material's `when.event: [push, pull_request]`
+fire all of them. Path scoping then comes from job-level `working-dir`
++ caches keyed on the relevant lockfile via `{{ hash "go.work" }}`
+— jobs that don't touch the path are fast no-ops, not skipped.

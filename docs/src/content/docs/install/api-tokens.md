@@ -7,7 +7,7 @@ gocdnext exposes its REST API through two parallel identity flows:
 
 - **Per-user API tokens** — minted by an authenticated user, scoped
   to that user's role. Use for the CLI on a developer laptop or
-  short-lived scripts. Issued at `/settings/api-tokens` in the
+  short-lived scripts. Issued at `/account` in the
   dashboard.
 - **Service accounts** — machine identities that don't belong to
   any one user. Independent role; survive when the creator leaves.
@@ -24,7 +24,7 @@ checks the header before falling back to the session cookie path.
 ### Create
 
 1. Sign in to the dashboard.
-2. *Settings → API tokens → New token*.
+2. *Account → API tokens → New token* (page lives at `/account`).
 3. Pick a name (purpose-tagged works best — `laptop`, `ci-script`).
 4. Optionally set an expiry.
 5. **Copy the plaintext immediately** — it's shown once. The
@@ -33,18 +33,18 @@ checks the header before falling back to the session cookie path.
 
 ### Use
 
-```bash
-export GOCDNEXT_TOKEN=gnk_...
-gocdnext apply --slug myapp .
+The token authenticates direct REST calls today. The bundled
+`gocdnext` CLI doesn't yet read this token (no Bearer plumbing
+shipped). Use `curl` or any HTTP client until the CLI grows it:
 
-# OR direct REST:
+```bash
 curl -H "Authorization: Bearer gnk_..." \
   https://ci.example.com/api/v1/projects
 ```
 
 ### Revoke
 
-*Settings → API tokens → Trash icon next to the token*. Effective
+*Account → API tokens → Trash icon next to the token*. Effective
 immediately — every subsequent request with that token gets 401.
 
 Tokens carry your role at the time of authentication. If your role
@@ -55,8 +55,8 @@ rotation needed.
 
 ### When to use
 
-- CI orchestrating gocdnext (Argo, Tekton, Jenkins, GitHub
-  Actions calling `gocdnext run`).
+- CI orchestrating gocdnext from outside (Argo, Tekton, Jenkins,
+  GitHub Actions calling `/api/v1/pipelines/<id>/trigger`).
 - Deploy bots that don't have a human identity.
 - Synthetic monitoring that polls `/healthz` from outside the
   cluster.
@@ -123,7 +123,7 @@ operators reading the trail later.
 
 | Form | Example | Where it comes from |
 |---|---|---|
-| User | `gnk_abcd1234...` | `/settings/api-tokens` |
+| User | `gnk_abcd1234...` | `/account` |
 | SA   | `gnk_sa_efgh5678...` | `/admin/service-accounts` |
 
 The `gnk_` / `gnk_sa_` prefix lets log scanners + secret scrapers
@@ -150,9 +150,10 @@ never run production this way.
 
 ## Common pitfalls
 
-- **Pasting the token into shell history**: use `read -s` +
-  `gocdnext secret set --project myapp X=-` (with `-` reading
-  from stdin) to avoid leaving the token in `~/.bash_history`.
+- **Pasting the token into shell history**: pipe via stdin —
+  `echo "$TOKEN" | gocdnext secret set --slug myapp NAME` or
+  `gocdnext secret set --slug myapp NAME --from-file ./token.txt`
+  — so the value never appears in `~/.bash_history` or `ps auxww`.
 - **Mixing user + SA tokens in one workflow**: a user token tied
   to a maintainer who then leaves the company breaks every
   pipeline that referenced it. Use SA tokens for anything

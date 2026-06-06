@@ -49,12 +49,11 @@ jobs:
           - .gradle-user-home
           - .gradle-cache
     test_reports:
-      paths: ["**/build/test-results/test/*.xml"]
+      - "**/build/test-results/test/*.xml"
     artifacts:
       optional:
-        paths:
-          - "**/build/reports/jacoco/test/jacocoTestReport.xml"
-          - "**/build/reports/tests/test/index.html"
+        - "**/build/reports/jacoco/test/jacocoTestReport.xml"
+        - "**/build/reports/tests/test/index.html"
 
   assemble:
     stage: build

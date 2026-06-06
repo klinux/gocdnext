@@ -133,7 +133,12 @@ the chart's `agent:` values block.
 | `GOCDNEXT_DOCKER_EXTRA_ARGS` | empty | Extra args appended to every `docker run` (`--init`, etc.) |
 | `GOCDNEXT_K8S_NAMESPACE` | empty | (engine=kubernetes) Namespace where job Pods spawn |
 | `GOCDNEXT_K8S_KUBECONFIG` | empty | Path to kubeconfig; empty = in-cluster service account |
-| `GOCDNEXT_K8S_WORKSPACE_PVC` | empty | PVC name; empty = emptyDir |
+| `GOCDNEXT_K8S_WORKSPACE_MODE` | `isolated` | `isolated` (per-job ephemeral PVC, default since v0.5.0) or `shared` (legacy RWM PVC owned by the agent StatefulSet). See [Kubernetes runtime](/gocdnext/docs/concepts/kubernetes-runtime/). |
+| `GOCDNEXT_K8S_WORKSPACE_PATH` | empty | (mode=shared) Mount path the agent + spawned job pods agree on. Required when mode=shared; ignored in isolated. |
+| `GOCDNEXT_K8S_WORKSPACE_PVC` | empty | (mode=shared) PVC name the agent + jobs share. Set by the chart to the StatefulSet's volumeClaimTemplate. |
+| `GOCDNEXT_K8S_WORKSPACE_STORAGE_CLASS` | empty | (mode=isolated) Storage class for the per-job ephemeral PVC. Empty = cluster default. |
+| `GOCDNEXT_K8S_WORKSPACE_SIZE` | `20Gi` | (mode=isolated) Resource request for the ephemeral PVC. |
+| `GOCDNEXT_K8S_AGENT_IMAGE` | empty | (mode=isolated, required) The agent image reference used by the `prep` init container — it re-execs itself inside the pod to clone materials. Wire to the same image you deploy the agent from. |
 
 ## Observability
 
