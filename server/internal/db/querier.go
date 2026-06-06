@@ -15,6 +15,16 @@ type Querier interface {
 	// an error, so the UI's "add if not present" flow doesn't need
 	// a pre-check query.
 	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
+	// Ownership probe for ServiceLifecycle ingest. Returns true when
+	// the calling agent has (now OR ever) a job_run under this run —
+	// the natural binding for "this agent is part of the run, so
+	// whatever it says about service lifecycle is credible".
+	//
+	// Used as the gate on `starting`/`ready`/`failed`. For `stopped`,
+	// the handler additionally accepts any agent because cleanup is
+	// BROADCAST to k8s-capable agents that may never have owned a
+	// job (the whole point of the broadcast model).
+	AgentOwnedJobInRun(ctx context.Context, arg AgentOwnedJobInRunParams) (bool, error)
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
 	//

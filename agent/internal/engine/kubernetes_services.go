@@ -199,32 +199,35 @@ func (k *Kubernetes) EnsureServices(
 			ip, err := k.waitForPodIP(waitCtx, podName)
 			if err != nil {
 				errCh <- fmt.Errorf("service %q: %w", svc.Name, err)
-				// Only the creator owns the `failed` event — the
-				// reuser would race on the same row, and either
-				// "this agent failed to observe ready" OR "the
-				// pod never came up" map to the same observable
-				// state for the server.
-				if created[svc.Name] {
-					emit(ServiceLifecycleEvent{
-						Name:    svc.Name,
-						Image:   svc.Image,
-						PodName: podName,
-						Status:  "failed",
-						Error:   err.Error(),
-					})
-				}
-				waitCancel()
-				return
-			}
-			aliases[i] = HostAlias{IP: ip, Hostnames: []string{svc.Name}}
-			if created[svc.Name] {
+				// Reuser AND creator emit `failed` here — the row's
+				// COALESCE-preserving upsert in the server makes
+				// concurrent writes idempotent (first observed
+				// timestamps stick), so gating only the creator
+				// (the v0.6.0 shape) would silently drop the
+				// signal when the creator agent disconnected
+				// before its wait returned.
 				emit(ServiceLifecycleEvent{
 					Name:    svc.Name,
 					Image:   svc.Image,
 					PodName: podName,
-					Status:  "ready",
+					Status:  "failed",
+					Error:   err.Error(),
 				})
+				waitCancel()
+				return
 			}
+			aliases[i] = HostAlias{IP: ip, Hostnames: []string{svc.Name}}
+			// Same reason as failed above: both creator and reuser
+			// emit `ready` so the row's ready_at lands even when
+			// the creator's stream dies mid-wait. The contract
+			// docstring on engine.Engine.EnsureServices already
+			// promised this; v0.6.0 didn't deliver.
+			emit(ServiceLifecycleEvent{
+				Name:    svc.Name,
+				Image:   svc.Image,
+				PodName: podName,
+				Status:  "ready",
+			})
 		}()
 	}
 	wg.Wait()

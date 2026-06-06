@@ -100,6 +100,43 @@ func TestUpsertServiceRun_StartingThenReadyThenStopped(t *testing.T) {
 	}
 }
 
+func TestUpsertServiceRun_FailedIsSticky_StoppedDoesNotOverwrite(t *testing.T) {
+	// Round-7 follow-up: the cleanup broadcast fires `stopped`
+	// on every run, including the failed ones. Without the
+	// status guard in the SQL, the UI would show "stopped" and
+	// hide the actual root cause for jobs whose service died
+	// at startup.
+	s, runID := seedRunForServices(t)
+	ctx := context.Background()
+
+	tFail := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	tStop := tFail.Add(5 * time.Second)
+
+	if _, err := s.UpsertServiceRun(ctx, store.ServiceRunInput{
+		RunID: runID, Name: "postgres", Image: "postgres:16",
+		Status: "failed", At: tFail,
+		Error: "ImagePullBackOff",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	row, err := s.UpsertServiceRun(ctx, store.ServiceRunInput{
+		RunID: runID, Name: "postgres", Image: "postgres:16",
+		Status: "stopped", At: tStop,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: stopped MUST NOT overwrite failed; got %q", row.Status)
+	}
+	// The error context that originally explained the failure must
+	// survive too — that's what shows up in the UI's tooltip.
+	if row.Error != "ImagePullBackOff" {
+		t.Errorf("error context lost; got %q", row.Error)
+	}
+}
+
 func TestUpsertServiceRun_IdempotentSameStatus(t *testing.T) {
 	// A re-issued ready (after a stream reconnect on the agent)
 	// must NOT reset the first-observed ready_at.
@@ -157,6 +194,52 @@ func TestUpsertServiceRun_FailedCarriesError(t *testing.T) {
 	}
 	if !row.StoppedAt.Valid {
 		t.Errorf("failed must stamp stopped_at as the terminal marker")
+	}
+}
+
+func TestAgentOwnedJobInRun_TrueWhenAgentRanAJob(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	pipelineID, materialID := seedApprovalPipeline(t, pool, "ownership", []string{"a@example.com"})
+	runID, gateJobID := triggerApprovalRun(t, pool, pipelineID, materialID)
+
+	// Assign an agent to the gate job's job_run so the
+	// (run_id, agent_id) tuple exists in the table.
+	agentID := uuid.New()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_runs SET agent_id = $1 WHERE id = $2`, agentID, gateJobID); err != nil {
+		t.Fatalf("seed agent_id: %v", err)
+	}
+
+	owned, err := s.AgentOwnedJobInRun(context.Background(), runID, agentID)
+	if err != nil {
+		t.Fatalf("owned: %v", err)
+	}
+	if !owned {
+		t.Errorf("agent should be reported as owner; got false")
+	}
+
+	// A different agent must NOT pass.
+	otherAgent := uuid.New()
+	owned, err = s.AgentOwnedJobInRun(context.Background(), runID, otherAgent)
+	if err != nil {
+		t.Fatalf("owned (other): %v", err)
+	}
+	if owned {
+		t.Errorf("unrelated agent should NOT pass ownership; got true")
+	}
+}
+
+func TestAgentOwnedJobInRun_FalseForMissingRun(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	// run_id that doesn't exist — must report false, not error.
+	owned, err := s.AgentOwnedJobInRun(context.Background(), uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatalf("owned: %v", err)
+	}
+	if owned {
+		t.Errorf("missing run must report owned=false; got true")
 	}
 }
 
