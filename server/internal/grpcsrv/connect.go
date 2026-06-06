@@ -183,6 +183,15 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				continue
 			}
 			a.handleCleanupRunServicesResult(log, sess, kind.CleanupRunServicesResult)
+		case *gocdnextv1.AgentMessage_ServiceLifecycle:
+			// Revoked-session drop: same shape as Log / TestResults.
+			// A late `stopped` from a fenced agent would clobber the
+			// successor's `ready` state on the same (run_id, name)
+			// key.
+			if sess.revoked.Load() {
+				continue
+			}
+			a.handleServiceLifecycle(stream.Context(), log, sess, kind.ServiceLifecycle)
 		default:
 			log.Warn("stream msg: unknown kind", "kind_type", kind)
 		}
@@ -466,6 +475,83 @@ func (a *AgentService) handleCleanupRunServicesResult(log logger, sess *Session,
 			"agent_uuid", sess.AgentID, "run_id", runID, "engine", engineName)
 	}
 }
+
+// handleServiceLifecycle persists a service-pod state transition
+// emitted by the agent's k8s engine into `service_runs`. The
+// table is keyed by (run_id, name) so retries / multi-agent
+// races are idempotent: same status arriving twice no-ops; a
+// later status (ready → stopped) overwrites the earlier one.
+//
+// Validation: run_id is parsed (server source of truth); image,
+// pod_name, error are agent-supplied strings and get clamped to
+// sane ceilings so a buggy/malicious agent can't push megabytes
+// into log_lines via the structured-log pipeline OR into the
+// row itself. Status is enum-validated against the closed set
+// the agent code emits; anything else is dropped with a warn.
+//
+// The `at` timestamp is the agent's wall clock. Clock skew is
+// possible but observability-only — the UI shows "duration",
+// not absolute timestamps for SLA, so a few seconds of drift
+// is fine.
+func (a *AgentService) handleServiceLifecycle(ctx context.Context, log logger, sess *Session, evt *gocdnextv1.ServiceLifecycle) {
+	runID, err := uuid.Parse(evt.GetRunId())
+	if err != nil {
+		log.Warn("service lifecycle: bad run_id, dropping",
+			"agent_uuid", sess.AgentID,
+			"raw_run_id", clampBytes(evt.GetRunId(), cleanupAckRunIDMax),
+			"err", err)
+		return
+	}
+	name := clampBytes(evt.GetName(), serviceLifecycleNameMax)
+	if name == "" {
+		log.Warn("service lifecycle: empty name, dropping",
+			"agent_uuid", sess.AgentID, "run_id", runID)
+		return
+	}
+	status := evt.GetStatus()
+	switch status {
+	case "starting", "ready", "stopped", "failed":
+	default:
+		log.Warn("service lifecycle: unknown status, dropping",
+			"agent_uuid", sess.AgentID, "run_id", runID, "name", name,
+			"status", clampBytes(status, serviceLifecycleStatusMax))
+		return
+	}
+	at := evt.GetAt().AsTime()
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	if _, err := a.store.UpsertServiceRun(ctx, store.ServiceRunInput{
+		RunID:   runID,
+		Name:    name,
+		Image:   clampBytes(evt.GetImage(), serviceLifecycleImageMax),
+		PodName: clampBytes(evt.GetPodName(), serviceLifecyclePodNameMax),
+		Status:  status,
+		At:      at,
+		Error:   clampBytes(evt.GetError(), serviceLifecycleErrorMax),
+	}); err != nil {
+		log.Warn("service lifecycle: upsert failed",
+			"agent_uuid", sess.AgentID, "run_id", runID, "name", name,
+			"status", status, "err", err)
+		return
+	}
+	log.Debug("service lifecycle",
+		"agent_uuid", sess.AgentID, "run_id", runID,
+		"name", name, "status", status)
+}
+
+// Ceilings for agent-supplied strings on ServiceLifecycle.
+// Service name is DNS-1123 (32 char max enforced by the agent's
+// own validator), image refs in practice cap below 256, pod
+// names are k8s-bound to 253, error mirrors the cleanup ack's
+// 4 KiB budget.
+const (
+	serviceLifecycleNameMax    = 64
+	serviceLifecycleImageMax   = 512
+	serviceLifecyclePodNameMax = 256
+	serviceLifecycleStatusMax  = 32
+	serviceLifecycleErrorMax   = 4 * 1024
+)
 
 // Ceilings for agent-supplied strings on CleanupRunServicesResult.
 // Engine names are short identifiers ("kubernetes", "docker"); 64

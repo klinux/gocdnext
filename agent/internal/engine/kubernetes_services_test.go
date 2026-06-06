@@ -37,7 +37,7 @@ func assignPodIPAsync(t *testing.T, cli *fake.Clientset, ns, name, ip string, af
 
 func TestEnsureServices_NoopWhenEmpty(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
-	wireup, err := k.EnsureServices(context.Background(), nil, "run-1", "job-1", nil)
+	wireup, err := k.EnsureServices(context.Background(), nil, "run-1", "job-1", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestEnsureServices_RejectsEmptyRunID(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		"", "job-1", nil)
+		"", "job-1", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "non-empty runID") {
 		t.Fatalf("expected non-empty runID error, got %v", err)
 	}
@@ -78,7 +78,7 @@ func TestEnsureServices_RejectsBadServiceName(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := k.EnsureServices(context.Background(),
 				[]engine.ServiceSpec{{Name: name, Image: "postgres:16"}},
-				"run-1", "job-1", nil)
+				"run-1", "job-1", nil, nil)
 			if err == nil {
 				t.Fatalf("expected error for name %q", name)
 			}
@@ -94,7 +94,7 @@ func TestEnsureServices_RejectsDuplicateServiceName(t *testing.T) {
 	_, err := k.EnsureServices(context.Background(), []engine.ServiceSpec{
 		{Name: "postgres", Image: "postgres:16"},
 		{Name: "postgres", Image: "postgres:15"},
-	}, "run-1", "job-1", nil)
+	}, "run-1", "job-1", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "declared twice") {
 		t.Fatalf("expected duplicate-name error, got %v", err)
 	}
@@ -104,7 +104,7 @@ func TestEnsureServices_RejectsEmptyImage(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: ""}},
-		"run-1", "job-1", nil)
+		"run-1", "job-1", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "empty image") {
 		t.Fatalf("expected empty-image error, got %v", err)
 	}
@@ -140,7 +140,7 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 			{Name: "postgres", Image: "postgres:16", Env: map[string]string{"POSTGRES_PASSWORD": "x"}},
 			{Name: "redis", Image: "redis:7"},
 		},
-		"runxyz12abcd", "jobxyz12abcd", log)
+		"runxyz12abcd", "jobxyz12abcd", log, nil)
 	if err != nil {
 		t.Fatalf("EnsureServices: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 	// Now exercise the run-terminal teardown: CleanupRunServices does
 	// the label-selector delete by runID. This is the path the server
 	// fires via the CleanupRunServices ServerMessage on run terminal.
-	deleted, err := k.CleanupRunServices(context.Background(), "runxyz12abcd")
+	deleted, err := k.CleanupRunServices(context.Background(), "runxyz12abcd", nil)
 	if err != nil {
 		t.Fatalf("CleanupRunServices: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestEnsureServices_CommandLandsInArgsNotCommand(t *testing.T) {
 				Command: []string{"-c", "fsync=off"},
 			},
 		},
-		"runwithcmd1", "jobwithcmd1", nil)
+		"runwithcmd1", "jobwithcmd1", nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureServices: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestEnsureServices_CleanupIsNoop(t *testing.T) {
 
 	wireup, err := k.EnsureServices(context.Background(), []engine.ServiceSpec{
 		{Name: "postgres", Image: "postgres:16"},
-	}, "runnoopclean", "jobnoopclean", nil)
+	}, "runnoopclean", "jobnoopclean", nil, nil)
 	if err != nil {
 		t.Fatalf("EnsureServices: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestEnsureServices_TimeoutLeavesPodForRunCleanup(t *testing.T) {
 	// NEVER assign a podIP — forces waitForPodIP to time out.
 	_, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		"runstuck00001", "jobstuck00001", nil)
+		"runstuck00001", "jobstuck00001", nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -354,7 +354,7 @@ func TestEnsureServices_TimeoutLeavesPodForRunCleanup(t *testing.T) {
 		t.Fatalf("pod count after timeout = %d, want 1 (left for run-terminal sweep)", len(pods.Items))
 	}
 
-	deleted, err := k.CleanupRunServices(context.Background(), "runstuck00001")
+	deleted, err := k.CleanupRunServices(context.Background(), "runstuck00001", nil)
 	if err != nil {
 		t.Fatalf("CleanupRunServices: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestEnsureServices_RefusesUnlabelledExistingPod(t *testing.T) {
 
 	_, err = k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		runID, "jobalien", nil)
+		runID, "jobalien", nil, nil)
 	if err == nil {
 		t.Fatal("expected error refusing to reuse unlabelled pod")
 	}
@@ -451,7 +451,7 @@ func TestCleanupRunServices_RequiresFullLabelTuple(t *testing.T) {
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "x", Image: "alpine"}}},
 	}, metav1.CreateOptions{})
 
-	deleted, err := k.CleanupRunServices(context.Background(), runID)
+	deleted, err := k.CleanupRunServices(context.Background(), runID, nil)
 	if err != nil {
 		t.Fatalf("CleanupRunServices: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestEnsureServices_AlreadyExistsReusesPod(t *testing.T) {
 	// Job 1 creates the pod.
 	w1, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		runID, "jobone", nil)
+		runID, "jobone", nil, nil)
 	if err != nil {
 		t.Fatalf("first EnsureServices: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestEnsureServices_AlreadyExistsReusesPod(t *testing.T) {
 	// recovers via Get + waitForPodIP.
 	w2, err := k.EnsureServices(context.Background(),
 		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
-		runID, "jobtwo", nil)
+		runID, "jobtwo", nil, nil)
 	if err != nil {
 		t.Fatalf("second EnsureServices (should reuse): %v", err)
 	}

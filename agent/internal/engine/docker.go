@@ -113,11 +113,12 @@ var dockerServiceNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 // by listing+removing containers labelled with the runID; for now
 // returning (0, nil) keeps the Engine contract satisfied without
 // pretending we did anything.
-func (d *Docker) CleanupRunServices(_ context.Context, _ string) (int, error) {
+func (d *Docker) CleanupRunServices(_ context.Context, _ string, _ func(ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }
 
-func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string)) (ServicesWireup, error) {
+func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string), onLifecycle func(ServiceLifecycleEvent)) (ServicesWireup, error) {
+	_ = onLifecycle // docker stays per-job; lifecycle tracking ports along with the run-scoped rewrite
 	_ = runID // see docstring; docker engine stays per-job for now
 	noop := ServicesWireup{Cleanup: func() {}}
 	if len(services) == 0 {

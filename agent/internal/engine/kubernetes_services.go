@@ -79,6 +79,7 @@ func (k *Kubernetes) EnsureServices(
 	services []ServiceSpec,
 	runID, jobID string,
 	log func(stream, text string),
+	onLifecycle func(ServiceLifecycleEvent),
 ) (ServicesWireup, error) {
 	noop := ServicesWireup{Cleanup: func() {}}
 	if len(services) == 0 {
@@ -86,6 +87,12 @@ func (k *Kubernetes) EnsureServices(
 	}
 	if runID == "" {
 		return noop, errors.New("kubernetes engine: EnsureServices needs a non-empty runID for run-scoped pod naming")
+	}
+	emit := func(evt ServiceLifecycleEvent) {
+		if onLifecycle == nil {
+			return
+		}
+		onLifecycle(evt)
 	}
 
 	runShort := shortDockerID(runID)
@@ -117,6 +124,11 @@ func (k *Kubernetes) EnsureServices(
 	// dispatchRunServiceCleanup in connect.go.
 	cleanup := func() {}
 
+	// Track whether this agent CREATED a pod vs reused a sibling's.
+	// Emitting `starting` for the creator + skipping for the reuser
+	// keeps the server-side row's started_at anchored to the FIRST
+	// agent's create, not whichever sibling happened to call last.
+	created := make(map[string]bool, len(services))
 	for _, svc := range services {
 		name := prefix + svc.Name
 		pod := k.buildServicePod(name, svc, runID, jobID)
@@ -128,6 +140,13 @@ func (k *Kubernetes) EnsureServices(
 		case err == nil:
 			// We created it. waitForPodIP below will block on its
 			// status; nothing else to do here.
+			created[svc.Name] = true
+			emit(ServiceLifecycleEvent{
+				Name:    svc.Name,
+				Image:   svc.Image,
+				PodName: name,
+				Status:  "starting",
+			})
 		case kerrors.IsAlreadyExists(err):
 			// Another job of THIS run got here first — ideally.
 			// Before trusting reuse, Get the existing pod and
@@ -180,10 +199,32 @@ func (k *Kubernetes) EnsureServices(
 			ip, err := k.waitForPodIP(waitCtx, podName)
 			if err != nil {
 				errCh <- fmt.Errorf("service %q: %w", svc.Name, err)
+				// Only the creator owns the `failed` event — the
+				// reuser would race on the same row, and either
+				// "this agent failed to observe ready" OR "the
+				// pod never came up" map to the same observable
+				// state for the server.
+				if created[svc.Name] {
+					emit(ServiceLifecycleEvent{
+						Name:    svc.Name,
+						Image:   svc.Image,
+						PodName: podName,
+						Status:  "failed",
+						Error:   err.Error(),
+					})
+				}
 				waitCancel()
 				return
 			}
 			aliases[i] = HostAlias{IP: ip, Hostnames: []string{svc.Name}}
+			if created[svc.Name] {
+				emit(ServiceLifecycleEvent{
+					Name:    svc.Name,
+					Image:   svc.Image,
+					PodName: podName,
+					Status:  "ready",
+				})
+			}
 		}()
 	}
 	wg.Wait()
@@ -340,7 +381,7 @@ func assertOurServicePod(pod *corev1.Pod, runID, svcName string) error {
 // Returns the count of pods that actually went away (delete
 // succeeded OR was NotFound). Combined with the error, the
 // caller can distinguish "all good" from "partial failure".
-func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string) (int, error) {
+func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, onLifecycle func(ServiceLifecycleEvent)) (int, error) {
 	v, ok := sanitizeLabelValue(runID)
 	if !ok || v == "" {
 		return 0, fmt.Errorf("kubernetes engine: invalid runID %q for label selector", runID)
@@ -366,7 +407,23 @@ func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string) (int,
 			GracePeriodSeconds: &gp,
 		})
 		switch {
-		case delErr == nil, kerrors.IsNotFound(delErr):
+		case delErr == nil:
+			deleted++
+			// Only emit `stopped` for OUR successful delete —
+			// NotFound (race with sibling agent) doesn't emit so
+			// the stopped_at timestamp isn't multiply-claimed
+			// across agents.
+			if onLifecycle != nil {
+				svcName := pod.GetLabels()["gocdnext.io/service"]
+				if svcName != "" {
+					onLifecycle(ServiceLifecycleEvent{
+						Name:    svcName,
+						PodName: pod.Name,
+						Status:  "stopped",
+					})
+				}
+			}
+		case kerrors.IsNotFound(delErr):
 			deleted++
 		default:
 			errs = append(errs, fmt.Errorf("delete %s: %w", pod.Name, delErr))

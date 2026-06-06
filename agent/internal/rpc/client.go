@@ -800,6 +800,35 @@ func (c *Client) processCleanupBounded(parent context.Context, runID string, tim
 	c.runCleanup(ctx, runID)
 }
 
+// serviceLifecycleAck returns an emitter that translates an
+// engine.ServiceLifecycleEvent into a ServiceLifecycle proto and
+// pushes it through the cleanup-worker's outbound bridge (same
+// drop-on-full semantics as sendCleanupAck — service lifecycle
+// rows are observability, the cleanup itself already happened
+// before this fires). Used by runCleanup so `stopped` events
+// flow up to the server's service_runs table.
+func (c *Client) serviceLifecycleAck(runID string) func(engine.ServiceLifecycleEvent) {
+	return func(evt engine.ServiceLifecycleEvent) {
+		send := c.cleanupAckSend.Load()
+		if send == nil {
+			return
+		}
+		(*send)(&gocdnextv1.AgentMessage{
+			Kind: &gocdnextv1.AgentMessage_ServiceLifecycle{
+				ServiceLifecycle: &gocdnextv1.ServiceLifecycle{
+					RunId:   runID,
+					Name:    evt.Name,
+					Image:   evt.Image,
+					PodName: evt.PodName,
+					Status:  evt.Status,
+					Error:   evt.Error,
+					At:      timestamppb.New(time.Now().UTC()),
+				},
+			},
+		})
+	}
+}
+
 // runCleanup is the engine-level call shared between the steady-
 // state worker and the shutdown drain. Both paths share the
 // remove-from-pending step so coalescing stays consistent. After
@@ -822,7 +851,7 @@ func (c *Client) runCleanup(ctx context.Context, runID string) {
 		// ack either — there's no result to report.
 		return
 	}
-	deleted, err := c.cfg.Engine.CleanupRunServices(ctx, runID)
+	deleted, err := c.cfg.Engine.CleanupRunServices(ctx, runID, c.serviceLifecycleAck(runID))
 	if err != nil {
 		c.log.Warn("cleanup run services failed", "run_id", runID, "err", err)
 		c.sendCleanupAck(runID, deleted, err)

@@ -98,6 +98,22 @@ type Resources struct {
 // the resources mapping when true.
 func (r Resources) IsZero() bool { return r == Resources{} }
 
+// ServiceLifecycleEvent is the engine-agnostic shape an engine
+// emits as service pods transition state. The runner forwards
+// these to the server as proto ServiceLifecycle messages so the
+// UI can render a service node with status + duration alongside
+// the job graph. Status values: starting (Pod create issued),
+// ready (Pod reached Running / podIP assigned), stopped (Pod
+// deleted), failed (Pod never reached Running within startup
+// timeout, image pull backoff, etc.).
+type ServiceLifecycleEvent struct {
+	Name    string
+	Image   string
+	PodName string
+	Status  string
+	Error   string
+}
+
 // ServicesWireup is what an engine returns from EnsureServices so
 // the runner can plumb the result back into the task's ScriptSpec.
 // Different engines populate different fields — docker uses Network
@@ -138,6 +154,13 @@ type Engine interface {
 	// gocdnext.io/job=...` still works to trace which job FIRST brought
 	// the service up) but does NOT factor into naming.
 	//
+	// onLifecycle, when non-nil, receives one event per service-pod
+	// state transition: starting (Pod create issued), ready (Pod
+	// reached Running / podIP assigned), failed (Pod never started
+	// in time). Reused-from-sibling pods emit `ready` immediately
+	// (the work already happened). The runner forwards these to the
+	// server as proto ServiceLifecycle messages.
+	//
 	// The returned Cleanup is now a NO-OP: per-job teardown would kill
 	// services other jobs in the same run still depend on. Service
 	// lifecycle is run-scoped, driven solely by the server's
@@ -148,7 +171,7 @@ type Engine interface {
 	//
 	// Engines that don't implement services return an error when
 	// len(services) > 0.
-	EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string)) (ServicesWireup, error)
+	EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string), onLifecycle func(ServiceLifecycleEvent)) (ServicesWireup, error)
 
 	// CleanupRunServices tears down every service pod/container
 	// labelled with the given runID. Driven by the server's
@@ -162,6 +185,13 @@ type Engine interface {
 	// partial deletes are aggregated and returned alongside the
 	// count.
 	//
+	// onLifecycle, when non-nil, receives one `stopped` event per
+	// successfully deleted service pod so the server can stamp the
+	// stopped_at timestamp on the corresponding service_runs row.
+	// NotFound deletes (raced by sibling agents) don't emit — only
+	// THIS agent's confirmed deletions, otherwise the timestamp
+	// races between agents.
+	//
 	// Engines that don't host services (Shell, Docker today) return
 	// (0, nil). The server now filters the broadcast at SQL layer
 	// (agents.engine='kubernetes' or legacy '') AND at the
@@ -169,5 +199,5 @@ type Engine interface {
 	// agents shouldn't normally receive this message. The
 	// defensive no-op stays in place to cover legacy/unknown
 	// engines during a rolling upgrade.
-	CleanupRunServices(ctx context.Context, runID string) (int, error)
+	CleanupRunServices(ctx context.Context, runID string, onLifecycle func(ServiceLifecycleEvent)) (int, error)
 }

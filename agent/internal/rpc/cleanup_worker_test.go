@@ -50,10 +50,10 @@ func (e *blockableEngine) Name() string { return "kubernetes" }
 func (e *blockableEngine) RunScript(context.Context, engine.ScriptSpec) (int, error) {
 	return 0, nil
 }
-func (e *blockableEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string)) (engine.ServicesWireup, error) {
+func (e *blockableEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
 	return engine.ServicesWireup{Cleanup: func() {}}, nil
 }
-func (e *blockableEngine) CleanupRunServices(ctx context.Context, runID string) (int, error) {
+func (e *blockableEngine) CleanupRunServices(ctx context.Context, runID string, _ func(engine.ServiceLifecycleEvent)) (int, error) {
 	dl, ok := ctx.Deadline()
 	errAtEntry := ctx.Err()
 	start := time.Now()

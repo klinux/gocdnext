@@ -7,15 +7,17 @@ import { useQuery } from "@tanstack/react-query";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts, fetchArtifacts } from "@/components/runs/run-artifacts.client";
+import { RunServices, fetchServices } from "@/components/runs/run-services.client";
 import { RunTests, fetchTests } from "@/components/runs/run-tests.client";
 import { isTerminalStatus } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
 
-const TAB_VALUES = ["jobs", "tests", "artifacts"] as const;
+const TAB_VALUES = ["jobs", "tests", "artifacts", "services"] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 const TESTS_POLL_MS = 5_000;
 const ARTIFACTS_POLL_MS = 5_000;
+const SERVICES_POLL_MS = 3_000;
 
 type Props = {
   runId: string;
@@ -70,12 +72,19 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
     refetchInterval: isTerminalStatus(run.status) ? false : ARTIFACTS_POLL_MS,
     staleTime: 60_000,
   });
+  const servicesQuery = useQuery({
+    queryKey: ["run-services", runId],
+    queryFn: () => fetchServices(apiBaseURL, runId),
+    refetchInterval: isTerminalStatus(run.status) ? false : SERVICES_POLL_MS,
+    staleTime: 30_000,
+  });
 
   const testCount = (testsQuery.data?.summaries ?? []).reduce(
     (acc, s) => acc + s.total,
     0,
   );
   const artifactCount = artifactsQuery.data?.length ?? 0;
+  const serviceCount = servicesQuery.data?.length ?? 0;
 
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(parseTab(v))}>
@@ -94,6 +103,14 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
           {artifactCount > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
               {artifactCount}
+            </span>
+          ) : null}
+        </TabsTrigger>
+        <TabsTrigger value="services">
+          Services
+          {serviceCount > 0 ? (
+            <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+              {serviceCount}
             </span>
           ) : null}
         </TabsTrigger>
@@ -124,6 +141,14 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
 
       <TabsContent value="artifacts" className="mt-4">
         <RunArtifacts
+          runId={runId}
+          runStatus={run.status}
+          apiBaseURL={apiBaseURL}
+        />
+      </TabsContent>
+
+      <TabsContent value="services" className="mt-4">
+        <RunServices
           runId={runId}
           runStatus={run.status}
           apiBaseURL={apiBaseURL}

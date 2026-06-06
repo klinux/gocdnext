@@ -241,9 +241,9 @@ func (f fakeEngine) Name() string { return string(f) }
 func (fakeEngine) RunScript(context.Context, engine.ScriptSpec) (int, error) {
 	return 0, nil
 }
-func (fakeEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string)) (engine.ServicesWireup, error) {
+func (fakeEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
 	return engine.ServicesWireup{Cleanup: func() {}}, nil
 }
-func (fakeEngine) CleanupRunServices(context.Context, string) (int, error) {
+func (fakeEngine) CleanupRunServices(context.Context, string, func(engine.ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }

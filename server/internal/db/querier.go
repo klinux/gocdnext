@@ -713,6 +713,10 @@ type Querier interface {
 	// Newest first. Disabled SAs included; the UI dims them so admins
 	// see the full picture without filtering.
 	ListServiceAccounts(ctx context.Context) ([]ServiceAccount, error)
+	// API: GET /api/runs/{id}/services. Sort by name for a stable
+	// UI ordering — the YAML's declaration order isn't preserved in
+	// the upsert path so alphabetical is the only stable choice.
+	ListServiceRunsByRunID(ctx context.Context, runID pgtype.UUID) ([]ServiceRun, error)
 	ListStageRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunRow, error)
 	ListStageRunsByRunOrdered(ctx context.Context, runID pgtype.UUID) ([]ListStageRunsByRunOrderedRow, error)
 	// Batch-loads stage_runs for every run whose id is in the input
@@ -1068,6 +1072,20 @@ type Querier interface {
 	// where project_id IS NOT NULL). The global twin lives in
 	// UpsertGlobalSecret below.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
+	// Upsert the service tracking row for a (run_id, name) tuple.
+	// Idempotent: re-issuing the same status is a no-op besides
+	// updating started_at/ready_at/stopped_at as appropriate.
+	//
+	// Status transition shape:
+	//   starting → ready → stopped
+	//          ↘ failed   ↗ stopped
+	// We don't enforce the order in SQL — the agent is the source of
+	// truth, and a malformed sequence (e.g. `ready` arriving before
+	// `starting` after a stream reconnect) is harmless: the row ends
+	// up with both timestamps set, the UI renders the later state.
+	// Guarding ready_at and stopped_at with COALESCE means an idempotent
+	// re-send of `ready` doesn't reset the first-observed timestamp.
+	UpsertServiceRun(ctx context.Context, arg UpsertServiceRunParams) (ServiceRun, error)
 	// Either inserts a fresh row (new login) or bumps the profile
 	// fields we pull from the IdP every time. Role is intentionally
 	// NOT overwritten on conflict — it's admin-assigned and must not
