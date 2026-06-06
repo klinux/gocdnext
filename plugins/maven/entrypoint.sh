@@ -5,6 +5,26 @@
 
 set -euo pipefail
 
+# parse_bool — strict bool normaliser; typos fail loud. Accepted:
+# true|1|yes|on, false|0|no|off, case-insensitive. Empty = default.
+parse_bool() {
+    local name="$1"
+    local val="$2"
+    local default="$3"
+    if [ -z "$val" ]; then
+        printf '%s' "$default"
+        return 0
+    fi
+    case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on)   printf 'true' ;;
+        false|0|no|off)  printf 'false' ;;
+        *)
+            echo "gocdnext/maven: $name accepts true|false|1|0|yes|no|on|off (got '$val')" >&2
+            exit 2
+            ;;
+    esac
+}
+
 if [ -z "${PLUGIN_COMMAND:-}" ]; then
     echo "gocdnext/maven: PLUGIN_COMMAND is required" >&2
     echo "  examples:" >&2
@@ -30,6 +50,44 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 export MAVEN_LOCAL_REPO="${MAVEN_LOCAL_REPO:-.m2-repo}"
 mkdir -p "${MAVEN_LOCAL_REPO}"
 local_repo_arg=("-Dmaven.repo.local=${MAVEN_LOCAL_REPO}")
+
+# MAVEN_OPTS controls Maven's JVM args — heap size, GC, network
+# tuning. The most-requested knob is `-Xmx` for big multi-module
+# reactors. Default base image leaves it at JDK default (~256MB),
+# which dies fast on a hundred-module build.
+if [ -n "${PLUGIN_MAVEN_OPTS:-}" ]; then
+    export MAVEN_OPTS="${PLUGIN_MAVEN_OPTS}"
+fi
+
+# Parallel build flag. "1C" = one thread per CPU core (Maven's
+# autodetection); explicit numbers (e.g. "4") cap thread count.
+# Most modern multi-module reactors are configured to tolerate
+# parallel builds; legacy reactors that share state across modules
+# may need to stay serial.
+parallel_args=()
+if [ -n "${PLUGIN_PARALLEL:-}" ]; then
+    parallel_args+=("-T" "${PLUGIN_PARALLEL}")
+fi
+
+# Maven Build Cache Extension (opt-in). When enabled, Maven skips
+# rebuilding modules whose inputs are unchanged (Gradle-style task
+# memo). Configure the extension once in the project's
+# .mvn/extensions.xml and gate it from CI with this flag — when
+# `false` the entrypoint passes -Dmaven.build.cache.enabled=false
+# so the extension stays inert for `deploy` runs (where you want
+# a fresh build). Empty = leave the extension's own default in
+# place (typically on when registered).
+build_cache_args=()
+if [ -n "${PLUGIN_BUILD_CACHE:-}" ]; then
+    # Capture first; `$(parse_bool ...)`'s exit lives in a
+    # subshell so a typo would otherwise silently fall through.
+    bc_val=$(parse_bool build-cache "${PLUGIN_BUILD_CACHE}" "") || exit $?
+    if [ "$bc_val" = "true" ]; then
+        build_cache_args+=("-Dmaven.build.cache.enabled=true")
+    else
+        build_cache_args+=("-Dmaven.build.cache.enabled=false")
+    fi
+fi
 
 settings_arg=()
 if [ -n "${PLUGIN_SETTINGS:-}" ]; then
@@ -66,6 +124,25 @@ EOF
     settings_arg+=("--settings" "/tmp/gocdnext-maven-settings.xml")
 fi
 
-echo "==> mvn ${PLUGIN_COMMAND} (repo.local=${MAVEN_LOCAL_REPO})"
+# Testcontainers auto-config — ONLY when /var/run/docker.sock is
+# mounted (docker engine path). Don't trigger on DOCKER_HOST: K8s
+# `docker: true` runs DinD with DOCKER_HOST=tcp://localhost:2375
+# and NO socket — explicit overrides would point at a non-existent
+# path; Testcontainers' resolver handles DinD natively via
+# DOCKER_HOST.
+if [ -S /var/run/docker.sock ]; then
+    export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE="${TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE:-/var/run/docker.sock}"
+    export TESTCONTAINERS_HOST_OVERRIDE="${TESTCONTAINERS_HOST_OVERRIDE:-host.docker.internal}"
+fi
+
+echo "==> mvn ${PLUGIN_COMMAND} (repo.local=${MAVEN_LOCAL_REPO}${PLUGIN_PARALLEL:+, parallel=${PLUGIN_PARALLEL}}${PLUGIN_BUILD_CACHE:+, build-cache=${PLUGIN_BUILD_CACHE}})"
+# `--no-transfer-progress` kills the "Downloading (12 KB of 25 MB)"
+# spam from cold runs that dumps tens of thousands of log lines.
+# Standard CI hygiene; pairs with --batch-mode.
 # shellcheck disable=SC2086
-exec mvn --batch-mode "${local_repo_arg[@]}" "${settings_arg[@]}" ${PLUGIN_COMMAND}
+exec mvn --batch-mode --no-transfer-progress \
+    "${local_repo_arg[@]}" \
+    "${parallel_args[@]}" \
+    "${build_cache_args[@]}" \
+    "${settings_arg[@]}" \
+    ${PLUGIN_COMMAND}

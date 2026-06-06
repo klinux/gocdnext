@@ -56,14 +56,70 @@ inputs:
     description: >
       Server id for the release repository. Must match the id in
       the pom's distributionManagement.repository.
+  maven-opts:
+    required: false
+    description: >
+      Extra JVM args exported as MAVEN_OPTS. Most-requested knob
+      is `-Xmx` for big multi-module reactors — default JDK heap
+      (~256 MB) OOMs hundred-module builds fast. Example:
+      `-Xmx4g -XX:+UseG1GC`.
+  parallel:
+    required: false
+    description: >
+      Pass `-T <value>` for parallel module builds. "1C" = one
+      thread per CPU core (Maven autodetection); explicit numbers
+      (e.g. "4") cap the count. Empty = serial (Maven default).
+      Use only when the reactor tolerates parallel builds —
+      legacy projects sharing state across modules need to stay
+      serial.
+  build-cache:
+    required: false
+    description: >
+      Toggle the Apache Maven Build Cache Extension (when the
+      project's `.mvn/extensions.xml` registers it). "true" passes
+      `-Dmaven.build.cache.enabled=true`; "false" disables it for
+      this run (recommended on `deploy` runs to avoid publishing
+      a cache-hit artefact). Empty leaves the extension's own
+      default in place.
 
 examples:
   - name: test
-    description: Standard CI step — compile + run tests.
+    description: >
+      Standard CI step — compile + run tests. The plugin always
+      passes `--batch-mode --no-transfer-progress` so the log
+      stays clean (no "Downloading…" spam).
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
       with:
         command: verify
+
+  - name: parallel reactor with big heap
+    description: >
+      Multi-module reactor with `-T 1C` (one thread per core) and
+      4 GB heap. Drops a typical 10-module Spring Boot build by
+      ~40% on a 4-vCPU agent vs serial. Only safe when the
+      reactor's modules don't share mutable state.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
+      with:
+        command: verify
+        parallel: "1C"
+        maven-opts: "-Xmx4g -XX:+UseG1GC"
+
+  - name: Maven Build Cache Extension
+    description: >
+      Apache Maven Build Cache Extension memoises module
+      build outputs against input hashes — Gradle-style task
+      cache. Register the extension in the project's
+      `.mvn/extensions.xml`, then gate it from CI: `true` for
+      every-PR runs (huge win on monorepos), `false` for the
+      release/deploy run so the artefact gets a fresh build.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
+      with:
+        command: verify
+        build-cache: "true"
+        parallel: "1C"
 
   - name: deploy to Nexus
     description: >
@@ -81,17 +137,40 @@ examples:
         nexus-password: ${{ NEXUS_PASSWORD }}
         snapshot-repo-id: acme-snapshots
         release-repo-id: acme-releases
+        build-cache: "false"        # release run: fresh build
 
   - name: cached build
     description: >
       Tar + restore the local ~/.m2 repo across runs. The plugin
-      redirects -Dmaven.repo.local to .m2-repo/ inside the
-      workspace so the platform's `cache:` block can tar it;
-      huge win once the dependency graph is stable.
+      redirects `-Dmaven.repo.local` to `.m2-repo/` inside the
+      workspace so the platform's `cache:` block captures it.
+      Hash-keyed on every `pom.xml` in the reactor (`**/pom.xml`)
+      so a dependency bump in ANY module invalidates the cache,
+      not just the root. Different branches sharing the same poms
+      share the cache (multi-version safe).
     yaml: |
       cache:
-        - key: m2-${CI_COMMIT_BRANCH}
+        - key: m2-{{ hash "**/pom.xml" }}
           paths: [.m2-repo]
       uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
       with:
         command: verify
+
+  - name: testcontainers integration tests
+    description: >
+      `docker: true` mounts the agent's docker.sock + wires
+      `host.docker.internal`. The plugin auto-exports
+      `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` and
+      `TESTCONTAINERS_HOST_OVERRIDE` ONLY when the socket is
+      really present — in the Kubernetes DinD path
+      (DOCKER_HOST=tcp://localhost:2375) Testcontainers
+      auto-detects via DOCKER_HOST without explicit overrides.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
+      docker: true
+      cache:
+        - key: m2-{{ hash "**/pom.xml" }}
+          paths: [.m2-repo]
+      with:
+        command: verify -Pintegration
+        parallel: "1C"

@@ -6,7 +6,10 @@ description: >
   best-practice path since the wrapper pins the exact version);
   falls back to the bundled `gradle` 8.10 otherwise. Daemon off
   by default — CI containers are ephemeral so the daemon rarely
-  earns its keep.
+  earns its keep. `--build-cache` / `--parallel` are OPT-IN
+  (default off) so legacy projects don't break silently; flip
+  them on per-pipeline once you've verified the reactor is
+  parallel-safe.
 
 inputs:
   command:
@@ -25,44 +28,190 @@ inputs:
     required: false
     description: >
       Extra JVM args exported as GRADLE_OPTS. Useful for
-      "-Xmx4g" on big builds.
+      "-Xmx4g" on big builds. Default JDK heap (~256 MB) is
+      undersized for any non-trivial multi-module project.
   daemon:
     required: false
     default: "false"
     description: >
       Set to "true" to run with --daemon instead of --no-daemon.
       Only worthwhile when the runner caches $GRADLE_USER_HOME
-      across runs.
+      across runs AND the job stays on the same agent — in
+      isolated workspace mode (default v0.5.0+), each job is a
+      fresh pod so the daemon never gets to see a second
+      invocation.
+  build-cache:
+    required: false
+    description: >
+      Tri-state. Unset (default) passes NO flag, so the project's
+      `org.gradle.caching` property in gradle.properties decides
+      — important because the plugin shouldn't silently override
+      a project that already opted in. "true" forces
+      `--build-cache`; "false" forces `--no-build-cache` (useful
+      on the release/deploy run when you want a fresh build).
+      Pair with capturing `.gradle-home/caches/build-cache-1/`
+      in the platform's `cache:` block.
+  parallel:
+    required: false
+    description: >
+      Tri-state. Unset (default) passes NO flag, respecting the
+      project's `org.gradle.parallel` in gradle.properties.
+      "true" forces `--parallel`; "false" forces `--no-parallel`.
+      Modern multi-module Gradle builds (8.x+) are almost always
+      parallel-safe — use the flag to override the project's
+      property when you want CI to differ from local builds.
+  configuration-cache:
+    required: false
+    description: >
+      Tri-state. Unset (default) respects the project's
+      `org.gradle.configuration-cache` property. "true" forces
+      `--configuration-cache`; "false" forces
+      `--no-configuration-cache`. Memoises the configuration
+      phase (build.gradle.kts parse + task graph) across runs;
+      breaks on legacy plugins that haven't migrated, so adopt
+      incrementally.
+  args:
+    required: false
+    description: >
+      Generic extra args appended after `command:`. Use for one-
+      off flags that don't deserve a dedicated knob —
+      `--info`, `--stacktrace`, `-Pfoo=bar`, etc.
 
 examples:
   - name: test
-    description: Run the test task via the project's wrapper.
+    description: >
+      Run the test task via the project's wrapper. No opt-in
+      perf flags — minimal safe shape for a first run.
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
       with:
         command: test
 
+  - name: parallel + build-cache (recommended for modern reactors)
+    description: >
+      Multi-module Gradle 8.x build with the two perf flags
+      flipped on. Verify your reactor is parallel-safe before
+      shipping this — typically true for builds that don't mutate
+      shared state across modules.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+      with:
+        command: build
+        build-cache: "true"
+        parallel: "true"
+
   - name: publish with big heap
-    description: Publish a release, bumping Gradle's JVM heap.
+    description: >
+      Publish a release with a 4 GB heap. Build-cache stays off
+      so the published artefact is a fresh build, not a
+      potentially-stale cache hit.
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
       with:
         command: publish -Prelease=true
         gradle-opts: "-Xmx4g"
 
+  - name: configuration-cache opt-in
+    description: >
+      Enable `--configuration-cache` for faster startup on
+      builds whose plugins all support it. Pair with the local
+      build-cache for fully memoised warm runs.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+      with:
+        command: check
+        build-cache: "true"
+        parallel: "true"
+        configuration-cache: "true"
+
   - name: cached build
     description: >
-      Tar + restore ~/.gradle/caches + wrapper JARs across runs.
-      The plugin points $GRADLE_USER_HOME at .gradle-home/ inside
-      the workspace so the platform's `cache:` block can tar it;
-      the `daemon: "true"` payoff grows with a warm cache.
+      Tar + restore the dep cache, wrapper JARs, AND the local
+      build-cache across runs. Compact key hashes every Gradle
+      build script (Groovy + KTS, any depth) + the wrapper
+      props so a Gradle version bump invalidates the cache.
+      EXTEND the key with more `{{ hash "..." }}` tokens for
+      files whose changes should also invalidate — typical
+      additions: `gradle.properties` (workers, JVM args,
+      plugin flags), `gradle/libs.versions.toml` (version
+      catalog), `**/gradle-wrapper.properties` (per-subproject
+      wrappers). Drop tokens for files your project doesn't
+      have — a token whose glob matches zero files aborts the
+      job.
+      `.gradle-home/caches/build-cache-1/` is where
+      `--build-cache` writes task-output memo — capture it
+      explicitly so warm runs hit it.
     yaml: |
       cache:
-        - key: gradle-${CI_COMMIT_BRANCH}
+        - key: gradle-{{ hash "**/*.gradle*" }}-{{ hash "gradle/wrapper/gradle-wrapper.properties" }}
           paths:
             - .gradle-home/caches
             - .gradle-home/wrapper
+            - .gradle-home/notifications
       uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
       with:
-        command: test
-        daemon: "true"
+        command: build
+        build-cache: "true"
+        parallel: "true"
+
+  - name: cached build with version catalog
+    description: >
+      Same shape as above, with `gradle/libs.versions.toml`
+      added to the key — recommended for projects using the
+      Gradle version catalog so a catalog edit invalidates the
+      cache. Use this variant when your repo actually carries
+      `gradle/libs.versions.toml`; omit the token for projects
+      without it (the hash function aborts on zero matches).
+    yaml: |
+      cache:
+        - key: gradle-{{ hash "**/*.gradle*" }}-{{ hash "gradle/libs.versions.toml" }}-{{ hash "gradle/wrapper/gradle-wrapper.properties" }}
+          paths:
+            - .gradle-home/caches
+            - .gradle-home/wrapper
+            - .gradle-home/notifications
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+      with:
+        command: build
+        build-cache: "true"
+        parallel: "true"
+
+  - name: testcontainers integration tests
+    description: >
+      `docker: true` mounts the agent's docker.sock + wires
+      `host.docker.internal`. The plugin auto-exports
+      `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` and
+      `TESTCONTAINERS_HOST_OVERRIDE` ONLY when the socket is
+      really present — in the Kubernetes DinD path
+      (DOCKER_HOST=tcp://localhost:2375) Testcontainers
+      auto-detects via DOCKER_HOST without explicit overrides.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+      docker: true
+      cache:
+        - key: gradle-{{ hash "**/*.gradle*" }}-{{ hash "gradle/wrapper/gradle-wrapper.properties" }}
+          paths: [.gradle-home/caches, .gradle-home/wrapper]
+      with:
+        command: integrationTest
+        gradle-opts: "-Xmx4g"
+        build-cache: "true"
+        parallel: "true"
+
+  - name: Android release bundle
+    description: >
+      Android library/app bundle pattern — needs a sizeable heap
+      and benefits from the build cache. Signing creds come from
+      `secrets:` so the keystore base64 stays out of the log.
+    yaml: |
+      secrets: [ANDROID_KEYSTORE_BASE64, ANDROID_KEY_PASSWORD]
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+      cache:
+        - key: gradle-{{ hash "**/*.gradle*" }}-{{ hash "gradle/wrapper/gradle-wrapper.properties" }}
+          paths: [.gradle-home/caches, .gradle-home/wrapper]
+      with:
+        command: bundleRelease
+        gradle-opts: "-Xmx6g"
+        build-cache: "true"
+      artifacts:
+        paths:
+          - "app/build/outputs/bundle/release/*.aab"
+          - "app/build/outputs/mapping/release/mapping.txt"
