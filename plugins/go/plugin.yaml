@@ -21,14 +21,14 @@ examples:
   - name: test with race detector
     description: Run the full test suite with -race (typical CI step).
     yaml: |
-      uses: gocdnext/go@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-go@v1
       with:
         command: test -race ./...
 
   - name: build + coverage
     description: Build then run coverage, attaching the report as artifact.
     yaml: |
-      uses: gocdnext/go@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-go@v1
       with:
         command: test -cover -coverprofile=cover.out ./...
       artifacts:
@@ -47,6 +47,6 @@ examples:
           paths:
             - .go-mod
             - .go-cache
-      uses: gocdnext/go@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-go@v1
       with:
         command: test -race ./...

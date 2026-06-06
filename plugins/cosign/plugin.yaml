@@ -73,7 +73,7 @@ examples:
       secrets:
         - GHCR_USERNAME
         - GHCR_TOKEN
-      uses: gocdnext/cosign@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
       with:
         image: ghcr.io/org/app@sha256:${IMAGE_SHA}
         username: ${{ GHCR_USERNAME }}
@@ -88,7 +88,7 @@ examples:
     yaml: |
       secrets:
         - COSIGN_PASSWORD
-      uses: gocdnext/cosign@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
       with:
         image: ghcr.io/org/app@sha256:${IMAGE_SHA}
         key: cosign.key
@@ -98,7 +98,7 @@ examples:
     description: >
       Attach an SPDX SBOM as an attestation on the image.
     yaml: |
-      uses: gocdnext/cosign@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
       with:
         image: ghcr.io/org/app@sha256:${IMAGE_SHA}
         action: attest

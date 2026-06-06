@@ -21,7 +21,7 @@ stages: [scan]
 jobs:
   gitleaks:
     stage: scan
-    uses: gocdnext/gitleaks@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-gitleaks@v1
     with:
       # Default ruleset catches the common patterns (AWS keys, GCP
       # service-account JSON, GitHub PATs, Slack webhooks, …).
@@ -34,7 +34,7 @@ jobs:
 
   trivy-fs:
     stage: scan
-    uses: gocdnext/trivy@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
     with:
       scan-type: fs
       target: .
@@ -44,7 +44,7 @@ jobs:
 
   trivy-config:
     stage: scan
-    uses: gocdnext/trivy@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
     with:
       scan-type: config
       target: ./k8s
@@ -102,7 +102,7 @@ For audit-only runs (no blocking, just visibility), set
 ```yaml
 trivy-fs:
   stage: scan
-  uses: gocdnext/trivy@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
   with:
     scan-type: fs
     target: .
@@ -126,7 +126,7 @@ specific rules.
 ```yaml
 gitleaks:
   stage: scan
-  uses: gocdnext/gitleaks@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-gitleaks@v1
   with:
     scan-mode: dir
     allowlist-paths: "docs/, test/fixtures/, examples/"
@@ -138,7 +138,7 @@ gitleaks:
 ```yaml
 sbom:
   stage: scan
-  uses: gocdnext/trivy@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
   with:
     scan-type: fs
     target: .
@@ -161,7 +161,7 @@ runs that should be fully offline (air-gapped agents).
 ```yaml
 trivy-fs:
   stage: scan
-  uses: gocdnext/trivy@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
   cache:
     - key: trivy-db
       paths: [.cache/trivy]
@@ -181,7 +181,7 @@ dotted `${{ secrets.X }}` is rejected.
 ```yaml
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SECURITY_SLACK_WEBHOOK }}
       channel: "#security-alerts"

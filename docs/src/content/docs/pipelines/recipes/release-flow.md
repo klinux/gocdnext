@@ -33,7 +33,7 @@ stages: [build, package, publish]
 jobs:
   build-linux-amd64:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     variables:
       GOOS: linux
       GOARCH: amd64
@@ -44,7 +44,7 @@ jobs:
 
   build-linux-arm64:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     variables:
       GOOS: linux
       GOARCH: arm64
@@ -55,7 +55,7 @@ jobs:
 
   build-darwin-arm64:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     variables:
       GOOS: darwin
       GOARCH: arm64
@@ -82,7 +82,7 @@ jobs:
 
   notes:
     stage: package
-    uses: gocdnext/release-notes@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-release-notes@v1
     with:
       # Default `from:` walks back to the nearest prior tag via
       # `git describe --tags --abbrev=0`; first-release repos fall
@@ -96,7 +96,7 @@ jobs:
 
   publish:
     stage: publish
-    uses: gocdnext/github-release@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-github-release@v1
     needs: [checksums, notes]
     needs_artifacts:
       - from_job: build-linux-amd64
@@ -140,7 +140,7 @@ or use `parallel.matrix:` (the list-of-objects shape):
 ```yaml
 build:
   stage: build
-  uses: gocdnext/go@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-go@v1
   parallel:
     matrix:
       - GOOS: [linux, darwin]
@@ -245,7 +245,7 @@ publish manually:
 
 ```yaml
 publish:
-  uses: gocdnext/github-release@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-github-release@v1
   secrets: [GH_RELEASE_TOKEN]
   with:
     tag: ${CI_BRANCH}
@@ -262,7 +262,7 @@ manually published. Useful for orgs with mandatory release sign-off.
 sign:
   stage: package
   needs: [build-linux-amd64, build-linux-arm64, build-darwin-arm64]
-  uses: gocdnext/cosign@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
   needs_artifacts:
     - from_job: build-linux-amd64
       paths: [dist/]

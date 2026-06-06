@@ -40,7 +40,7 @@ stages: [test, build]
 jobs:
   check:
     stage: test
-    uses: gocdnext/gradle@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
     with:
       command: check --no-daemon --build-cache
     cache:
@@ -57,7 +57,7 @@ jobs:
 
   assemble:
     stage: build
-    uses: gocdnext/gradle@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
     needs: [check]
     with:
       command: assemble --no-daemon --build-cache -x test
@@ -117,7 +117,7 @@ job by half.
 ```yaml
 bundle:
   stage: build
-  uses: gocdnext/gradle@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
   needs: [check]
   with:
     command: bundleRelease --no-daemon --build-cache
@@ -143,7 +143,7 @@ base64 string in logs.
 ```yaml
 check:
   stage: test
-  uses: gocdnext/gradle@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
   with:
     command: check --no-daemon --build-cache --parallel
   ...

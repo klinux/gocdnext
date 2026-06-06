@@ -42,7 +42,7 @@ jobs:
         paths:
           - web/.pnpm-store
           - web/node_modules
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     with:
       working-dir: web
       # install: true (default) → plugin runs
@@ -54,7 +54,7 @@ jobs:
     needs_artifacts:
       - from_job: install
         paths: [web/node_modules]
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     with:
       working-dir: web
       install: false
@@ -68,7 +68,7 @@ jobs:
     needs_artifacts:
       - from_job: install
         paths: [web/node_modules]
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     with:
       working-dir: web
       install: false
@@ -83,7 +83,7 @@ jobs:
     cache:
       - key: pnpm-store-${CI_COMMIT_BRANCH}
         paths: [web/.pnpm-store, web/node_modules]
-    uses: gocdnext/playwright@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-playwright@v1
     with:
       working-dir: web
       project: chromium
@@ -121,13 +121,13 @@ jobs:
 
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#eng"
     secrets: [SLACK_WEBHOOK]
   - on: success
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#releases"
@@ -163,7 +163,7 @@ jobs:
     cache:
       - key: go-${CI_COMMIT_BRANCH}
         paths: [.go-mod, .go-cache]
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     with:
       command: test -race -cover -coverprofile=cover.out ./...
     test_reports:
@@ -178,7 +178,7 @@ jobs:
       - from_job: test
         paths: [cover.out]
     secrets: [CODECOV_TOKEN]
-    uses: gocdnext/codecov@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
     with:
       file: cover.out
       flags: unit
@@ -189,7 +189,7 @@ jobs:
     cache:
       - key: go-${CI_COMMIT_BRANCH}
         paths: [.go-mod, .go-cache]
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     with:
       command: vet ./...
 
@@ -200,7 +200,7 @@ jobs:
     secrets:
       - GHCR_USERNAME
       - GHCR_TOKEN
-    uses: gocdnext/buildx@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
     with:
       image: ghcr.io/org/my-service
       tags: "${CI_COMMIT_SHORT_SHA}, latest"
@@ -211,7 +211,7 @@ jobs:
   scan:
     stage: build
     needs: [image]
-    uses: gocdnext/trivy@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
     with:
       image: ghcr.io/org/my-service:${CI_COMMIT_SHORT_SHA}
       severity: HIGH,CRITICAL
@@ -227,7 +227,7 @@ jobs:
     stage: deploy
     needs: [approve-prod]
     secrets: [KUBECONFIG_PROD]
-    uses: gocdnext/kubectl@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-kubectl@v1
     with:
       kubeconfig: ${{ KUBECONFIG_PROD }}
       command: |
@@ -238,7 +238,7 @@ jobs:
 
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#oncall"
@@ -276,7 +276,7 @@ jobs:
     cache:
       - key: py-${CI_COMMIT_BRANCH}-${PYVER}
         paths: [.cache]
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       command: pytest -q --junitxml=junit.xml --cov --cov-report=xml
     test_reports:
@@ -286,7 +286,7 @@ jobs:
     stage: test
     needs: [test]
     secrets: [CODECOV_TOKEN]
-    uses: gocdnext/codecov@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
     with:
       file: coverage.xml
       flags: unit
@@ -298,7 +298,7 @@ jobs:
     cache:
       - key: py-${CI_COMMIT_BRANCH}-3.12
         paths: [.cache]
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       command: poetry build
     artifacts:
@@ -307,7 +307,7 @@ jobs:
   changelog:
     stage: build
     needs: [test]
-    uses: gocdnext/release-notes@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-release-notes@v1
     with:
       format: conventional
       output: CHANGELOG.md
@@ -328,7 +328,7 @@ jobs:
       - from_job: build
         paths: [dist/]
     secrets: [PYPI_TOKEN]
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       command: |
         poetry publish --username __token__ --password ${PYPI_TOKEN} --no-interaction
@@ -337,7 +337,7 @@ jobs:
     stage: publish
     needs: [pypi]
     secrets: [RELEASE_TOKEN]
-    uses: gocdnext/tag@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-tag@v1
     with:
       name: v${RELEASE_VERSION}
       message: "Release v${RELEASE_VERSION}"
@@ -346,7 +346,7 @@ jobs:
 
 notifications:
   - on: success
-    uses: gocdnext/email@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-email@v1
     with:
       host: smtp.sendgrid.net
       port: "587"
@@ -361,7 +361,7 @@ notifications:
         Run: ${CI_RUN_URL}
     secrets: [SMTP_USER, SMTP_PASSWORD]
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#eng"

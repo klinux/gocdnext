@@ -42,7 +42,7 @@ examples:
     yaml: |
       secrets:
         - DISCORD_WEBHOOK
-      uses: gocdnext/discord@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-discord@v1
       with:
         webhook: ${{ DISCORD_WEBHOOK }}
 
@@ -53,7 +53,7 @@ examples:
     yaml: |
       secrets:
         - DISCORD_WEBHOOK
-      uses: gocdnext/discord@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-discord@v1
       with:
         webhook: ${{ DISCORD_WEBHOOK }}
         username: "release-bot"

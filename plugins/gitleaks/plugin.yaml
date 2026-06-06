@@ -126,14 +126,14 @@ examples:
   - name: block PR on leak
     description: Default mode — scan the working tree, fail on any leak.
     yaml: |
-      uses: gocdnext/gitleaks@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gitleaks@v1
 
   - name: advisory scan with report
     description: >
       Don't fail the build; attach the JSON report so operators
       can review findings without blocking merges.
     yaml: |
-      uses: gocdnext/gitleaks@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gitleaks@v1
       with:
         format: json
         report: gitleaks-report.json
@@ -148,7 +148,7 @@ examples:
       lives in the repo so a local `gitleaks detect --config
       .gitleaks.toml` matches CI behaviour exactly.
     yaml: |
-      uses: gocdnext/gitleaks@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gitleaks@v1
       with:
         config: .gitleaks.toml
 
@@ -162,6 +162,6 @@ examples:
       tracked repo file. Combines with `config:` if both are set
       — runtime config chains the operator's via `[extend].path`.
     yaml: |
-      uses: gocdnext/gitleaks@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gitleaks@v1
       with:
         allowlist-paths: docs/, tests/, __tests__/fixtures/

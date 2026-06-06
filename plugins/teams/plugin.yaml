@@ -46,7 +46,7 @@ examples:
       when: failure
       secrets:
         - TEAMS_WEBHOOK
-      uses: gocdnext/teams@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-teams@v1
       with:
         webhook: ${{ TEAMS_WEBHOOK }}
         title: "[PROD] ${CI_PIPELINE_NAME} #${CI_RUN_COUNTER} failed"
@@ -62,7 +62,7 @@ examples:
     yaml: |
       secrets:
         - TEAMS_WEBHOOK
-      uses: gocdnext/teams@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-teams@v1
       with:
         webhook: ${{ TEAMS_WEBHOOK }}
         payload-file: notifications/adaptive-card.json

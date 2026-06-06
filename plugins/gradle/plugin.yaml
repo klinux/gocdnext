@@ -38,14 +38,14 @@ examples:
   - name: test
     description: Run the test task via the project's wrapper.
     yaml: |
-      uses: gocdnext/gradle@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
       with:
         command: test
 
   - name: publish with big heap
     description: Publish a release, bumping Gradle's JVM heap.
     yaml: |
-      uses: gocdnext/gradle@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
       with:
         command: publish -Prelease=true
         gradle-opts: "-Xmx4g"
@@ -62,7 +62,7 @@ examples:
           paths:
             - .gradle-home/caches
             - .gradle-home/wrapper
-      uses: gocdnext/gradle@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
       with:
         command: test
         daemon: "true"

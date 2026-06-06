@@ -174,7 +174,7 @@ the platform's `cache:` block. Use the plugin's `cache:`/
 
 ```yaml
 build:
-  uses: gocdnext/buildx@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
   with:
     cache-from: type=gha,scope=myapp
     cache-to: type=gha,scope=myapp,mode=max

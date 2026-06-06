@@ -89,7 +89,7 @@ examples:
       Build artefact + restart systemd service. Key + known_hosts
       come from project secrets; the run output stays mask-clean.
     yaml: |
-      uses: gocdnext/ssh@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
       with:
         host: api.example.com
         user: deploy
@@ -106,7 +106,7 @@ examples:
       No upload — just connect and run. Useful for migrations on a
       dedicated DB host or restart-after-config-push.
     yaml: |
-      uses: gocdnext/ssh@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
       with:
         host: db.example.com
         user: ops
@@ -121,7 +121,7 @@ examples:
       reload happens via inotify on the remote, so no script is
       needed.
     yaml: |
-      uses: gocdnext/ssh@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
       with:
         host: assets.example.com
         user: assets

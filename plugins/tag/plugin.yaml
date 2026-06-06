@@ -55,7 +55,7 @@ examples:
     yaml: |
       secrets:
         - RELEASE_TOKEN
-      uses: gocdnext/tag@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-tag@v1
       with:
         name: ${RELEASE_TAG}
         message: "Release ${RELEASE_TAG} (${CI_COMMIT_SHORT_SHA})"
@@ -69,7 +69,7 @@ examples:
     yaml: |
       secrets:
         - RELEASE_TOKEN
-      uses: gocdnext/tag@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-tag@v1
       with:
         name: latest
         force: "true"

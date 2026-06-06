@@ -56,7 +56,7 @@ examples:
         - GHCR_USERNAME
         - GHCR_TOKEN
       docker: true
-      uses: gocdnext/docker-push@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-docker-push@v1
       with:
         source: app:build-${CI_RUN_ID}
         target: ghcr.io/org/app
@@ -75,7 +75,7 @@ examples:
         - PROD_PUSH_USERNAME
         - PROD_PUSH_TOKEN
       docker: true
-      uses: gocdnext/docker-push@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-docker-push@v1
       with:
         source: staging.corp/app@sha256:${STAGING_DIGEST}
         target: prod.corp/app

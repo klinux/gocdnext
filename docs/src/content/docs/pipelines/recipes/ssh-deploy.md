@@ -51,7 +51,7 @@ stages: [build, ship]
 jobs:
   binary:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     with:
       command: build -o dist/api-server ./cmd/api
     artifacts:
@@ -59,7 +59,7 @@ jobs:
 
   deploy:
     stage: ship
-    uses: gocdnext/ssh@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
     needs: [binary]
     needs_artifacts:
       - from_job: binary
@@ -105,7 +105,7 @@ stages: [run]
 jobs:
   run:
     stage: run
-    uses: gocdnext/ssh@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
     secrets: [SSH_OPS_KEY, DB_KNOWN_HOSTS]
     with:
       host: db.example.com
@@ -131,7 +131,7 @@ referenced as `${{ NAME }}` (identifier only).
 ```yaml
 deploy:
   stage: ship
-  uses: gocdnext/ssh@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
   parallel:
     matrix:
       - HOST:
@@ -163,6 +163,6 @@ cell does.
   for legacy hosts but each pipeline run prints `WARN` reminders.
 - Rotate the deploy key + `known_hosts` together. The known-hosts
   fingerprint changes when the host's host-keys are regenerated.
-- Pin the plugin version (`gocdnext/ssh@v1`, not `gocdnext/ssh@latest`)
+- Pin the plugin version (`ghcr.io/klinux/gocdnext-plugin-ssh@v1`, not `gocdnext/ssh@latest`)
   so a plugin breaking change can't sneak into a deploy without
   showing up in a PR.

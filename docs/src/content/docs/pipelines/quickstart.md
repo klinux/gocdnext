@@ -21,13 +21,13 @@ stages: [test, build]
 jobs:
   unit:
     stage: test
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     with:
       command: test -race ./...
 
   compile:
     stage: build
-    uses: gocdnext/go@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1
     needs: [unit]
     with:
       command: build -o bin/app ./cmd/app

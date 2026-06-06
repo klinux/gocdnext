@@ -38,7 +38,7 @@ concurrency: parallel       # "parallel" (default) or "serial"
 
 notifications:              # post-run hooks; see "Notifications"
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with: { ... }
 
 jobs:                       # map; keys are job names
@@ -158,7 +158,7 @@ jobs:
     image: alpine:3.20         # OR `uses:` (mutually exclusive)
     script:                    # shell lines; requires `image:`
       - go test ./...
-    uses: gocdnext/go@v1       # plugin reference; mutually exclusive
+    uses: ghcr.io/klinux/gocdnext-plugin-go@v1       # plugin reference; mutually exclusive
     with:                      # inputs passed as PLUGIN_* env to the image
       command: test ./...
     needs: [other-job]         # ordering inside the same stage
@@ -376,7 +376,7 @@ concept-level walkthrough.
 jobs:
   deploy:
     secrets: [SSH_DEPLOY_KEY, SSH_KNOWN_HOSTS]
-    uses: gocdnext/ssh@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-ssh@v1
     with:
       key: ${{ SSH_DEPLOY_KEY }}
       known_hosts: ${{ SSH_KNOWN_HOSTS }}
@@ -464,13 +464,13 @@ deeper walk-through.
 ```yaml
 notifications:
   - on: failure
-    uses: gocdnext/slack@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
     with:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#ci-alerts"
     secrets: [SLACK_WEBHOOK]
   - on: success
-    uses: gocdnext/discord@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-discord@v1
     with: { ... }
 ```
 

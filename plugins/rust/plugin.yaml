@@ -37,7 +37,7 @@ examples:
   - name: test workspace
     description: Run tests across a cargo workspace.
     yaml: |
-      uses: gocdnext/rust@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-rust@v1
       with:
         command: test --workspace
 
@@ -45,7 +45,7 @@ examples:
     description: >
       Clippy failing the build on any warning. Classic CI shape.
     yaml: |
-      uses: gocdnext/rust@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-rust@v1
       with:
         command: clippy --all-targets -- -D warnings
 
@@ -56,7 +56,7 @@ examples:
     yaml: |
       secrets:
         - CARGO_REGISTRY_TOKEN
-      uses: gocdnext/rust@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-rust@v1
       with:
         command: publish --token ${{ CARGO_REGISTRY_TOKEN }}
 
@@ -74,6 +74,6 @@ examples:
           paths:
             - .cargo-home
             - target
-      uses: gocdnext/rust@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-rust@v1
       with:
         command: test --workspace

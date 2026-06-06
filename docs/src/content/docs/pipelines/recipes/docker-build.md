@@ -25,7 +25,7 @@ stages: [build, scan, sign, publish]
 jobs:
   build:
     stage: build
-    uses: gocdnext/buildx@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
     docker: true                      # mount the host docker.sock
     secrets: [GHCR_USERNAME, GHCR_TOKEN]
     with:
@@ -45,7 +45,7 @@ jobs:
 
   trivy-scan:
     stage: scan
-    uses: gocdnext/trivy@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
     docker: true
     needs: [build]
     with:
@@ -57,7 +57,7 @@ jobs:
 
   cosign-sign:
     stage: sign
-    uses: gocdnext/cosign@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
     docker: true
     needs: [trivy-scan]
     secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
@@ -69,7 +69,7 @@ jobs:
 
   push:
     stage: publish
-    uses: gocdnext/docker-push@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-docker-push@v1
     docker: true
     needs: [cosign-sign]
     secrets: [GHCR_USERNAME, GHCR_TOKEN]
@@ -121,7 +121,7 @@ Sigstore Fulcio:
 ```yaml
 cosign-sign:
   stage: sign
-  uses: gocdnext/cosign@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
   needs: [trivy-scan]
   with:
     image: ghcr.io/klinux/myapp:${CI_COMMIT_SHORT_SHA}
@@ -144,7 +144,7 @@ use the `docker-push` plugin after kaniko.
 ```yaml
 build:
   stage: build
-  uses: gocdnext/kaniko@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-kaniko@v1
   secrets: [GHCR_USERNAME, GHCR_TOKEN]
   with:
     image: ghcr.io/klinux/myapp:${CI_COMMIT_SHORT_SHA}
@@ -175,7 +175,7 @@ stages: [push]
 jobs:
   push:
     stage: push
-    uses: gocdnext/docker-push@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-docker-push@v1
     docker: true
     secrets: [GHCR_USERNAME, GHCR_TOKEN]
     with:

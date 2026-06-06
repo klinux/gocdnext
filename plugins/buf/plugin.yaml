@@ -22,7 +22,7 @@ examples:
   - name: lint protos
     description: Lint contracts under proto/.
     yaml: |
-      uses: gocdnext/buf@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buf@v1
       with:
         working-dir: proto
         command: lint
@@ -32,6 +32,6 @@ examples:
       Fail the build if proto changes break consumers on main.
       Runs from the repo root so `.git` is reachable.
     yaml: |
-      uses: gocdnext/buf@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buf@v1
       with:
         command: breaking --against .git#branch=main

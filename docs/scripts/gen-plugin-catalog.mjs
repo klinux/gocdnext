@@ -93,12 +93,21 @@ function renderExamples(examples) {
 }
 
 function renderPlugin(p) {
-  let s = `## ${p.name} {#${p.name}}\n\n`;
+  // Plain `## name` — Starlight's auto-slugifier produces id="name"
+  // from the heading text, which is what the in-page "At a glance"
+  // anchors link to (`(#name)`). The Pandoc `{#anchor}` syntax is
+  // NOT a markdown standard; Starlight's renderer treats it as
+  // literal text and the slugifier returns id="name-name", which
+  // breaks every anchor link.
+  let s = `## ${p.name}\n\n`;
   if (p.category) {
     s += `_${p.category}_ — `;
   }
   s += `${escapeMd(p.description)}\n\n`;
-  s += `Image: \`ghcr.io/klinux/gocdnext-plugin-${p.dir}:v1\`\n\n`;
+  // Plugin image tag defaults to v1; override per-plugin via the
+  // manifest's `image_tag:` field (used by node@v2 today).
+  const tag = (p.image_tag || "v1").trim();
+  s += `Image: \`ghcr.io/klinux/gocdnext-plugin-${p.dir}:${tag}\`\n\n`;
   s += "**Inputs**\n\n";
   s += renderInputsTable(p.inputs);
   s += renderExamples(p.examples);

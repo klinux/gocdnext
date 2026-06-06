@@ -51,7 +51,7 @@ examples:
     yaml: |
       secrets:
         - COVERALLS_TOKEN
-      uses: gocdnext/coveralls@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-coveralls@v1
       with:
         token: ${{ COVERALLS_TOKEN }}
 
@@ -63,7 +63,7 @@ examples:
       # slice 1
       secrets:
         - COVERALLS_TOKEN
-      uses: gocdnext/coveralls@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-coveralls@v1
       with:
         file: coverage/unit.lcov
         parallel: "true"

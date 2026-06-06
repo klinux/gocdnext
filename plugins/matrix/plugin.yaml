@@ -52,7 +52,7 @@ examples:
       when: failure
       secrets:
         - MATRIX_TOKEN
-      uses: gocdnext/matrix@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-matrix@v1
       with:
         homeserver: https://chat.mycorp.com
         token: ${{ MATRIX_TOKEN }}
@@ -70,7 +70,7 @@ examples:
       when: success
       secrets:
         - MATRIX_TOKEN
-      uses: gocdnext/matrix@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-matrix@v1
       with:
         homeserver: https://matrix.org
         token: ${{ MATRIX_TOKEN }}

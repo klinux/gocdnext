@@ -41,7 +41,7 @@ stages: [deps, lint, test]
 jobs:
   install:
     stage: deps
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       command: "true"          # install-only — plugin handles uv sync --frozen
       all-extras: "true"       # bring in dev/test extras for downstream jobs
@@ -53,7 +53,7 @@ jobs:
 
   ruff:
     stage: lint
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     needs: [install]
     needs_artifacts:
       - from_job: install
@@ -64,7 +64,7 @@ jobs:
 
   mypy:
     stage: lint
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     needs: [install]
     needs_artifacts:
       - from_job: install
@@ -75,7 +75,7 @@ jobs:
 
   pytest:
     stage: test
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     needs: [install]
     needs_artifacts:
       - from_job: install
@@ -100,7 +100,7 @@ single install resolves dev tooling once; downstream jobs use
 jobs:
   install:
     stage: deps
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       command: "true"
       extras: "dev, test"      # poetry: --extras "dev test"
@@ -112,7 +112,7 @@ jobs:
 
   pytest:
     stage: test
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     needs: [install]
     needs_artifacts:
       - from_job: install
@@ -135,7 +135,7 @@ download cache too.
 jobs:
   install:
     stage: deps
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       manager: pip
       requirements: requirements-dev.txt   # combined dev + runtime list
@@ -148,7 +148,7 @@ jobs:
 
   pytest:
     stage: test
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     needs: [install]
     needs_artifacts:
       - from_job: install
@@ -172,7 +172,7 @@ relies on it being fully pinned upstream.
 ```yaml
 upload-coverage:
   stage: test
-  uses: gocdnext/codecov@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
   needs: [pytest]
   needs_artifacts:
     - from_job: pytest
@@ -195,7 +195,7 @@ and a **separate publish pipeline** triggered only on tag.
 ```yaml
 package:
   stage: build
-  uses: gocdnext/python@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-python@v1
   needs: [install]
   needs_artifacts:
     - from_job: install
@@ -217,7 +217,7 @@ stages: [publish]
 jobs:
   twine-upload:
     stage: publish
-    uses: gocdnext/python@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-python@v1
     with:
       no-install: "true"
       command: |

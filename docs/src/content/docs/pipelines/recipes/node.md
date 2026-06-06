@@ -36,7 +36,7 @@ stages: [install, lint, test, build]
 jobs:
   deps:
     stage: install
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     with:
       working-dir: web
       # install: true (default) + command: "" (default) →
@@ -50,7 +50,7 @@ jobs:
 
   typecheck:
     stage: lint
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -62,7 +62,7 @@ jobs:
 
   unit:
     stage: test
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     needs: [deps]
     needs_artifacts:
       - from_job: deps
@@ -76,7 +76,7 @@ jobs:
 
   bundle:
     stage: build
-    uses: gocdnext/node@v2
+    uses: ghcr.io/klinux/gocdnext-plugin-node@v2
     needs: [typecheck, unit]
     needs_artifacts:
       - from_job: deps
@@ -163,7 +163,7 @@ unaffected pipelines complete in seconds.
 ```yaml
 unit:
   stage: test
-  uses: gocdnext/node@v2
+  uses: ghcr.io/klinux/gocdnext-plugin-node@v2
   needs: [deps]
   needs_artifacts:
     - from_job: deps
@@ -178,7 +178,7 @@ unit:
 
 upload-coverage:
   stage: test
-  uses: gocdnext/codecov@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-codecov@v1
   needs: [unit]
   needs_artifacts:
     - from_job: unit
@@ -205,7 +205,7 @@ services:
 jobs:
   lighthouse:
     stage: test
-    uses: gocdnext/lighthouse-ci@v1
+    uses: ghcr.io/klinux/gocdnext-plugin-lighthouse-ci@v1
     needs: [bundle]
     needs_artifacts:
       - from_job: bundle
@@ -222,7 +222,7 @@ jobs:
 ```yaml
 e2e:
   stage: test
-  uses: gocdnext/playwright@v1
+  uses: ghcr.io/klinux/gocdnext-plugin-playwright@v1
   needs: [bundle]
   needs_artifacts:
     - from_job: bundle

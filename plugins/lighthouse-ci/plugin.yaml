@@ -58,7 +58,7 @@ examples:
       Hit a preview URL three times, upload to Google's public
       storage, and fail the build if any assertion breaches.
     yaml: |
-      uses: gocdnext/lighthouse-ci@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-lighthouse-ci@v1
       with:
         urls: https://preview-${CI_RUN_COUNTER}.myapp.dev
 
@@ -70,7 +70,7 @@ examples:
     yaml: |
       secrets:
         - LHCI_BUILD_TOKEN
-      uses: gocdnext/lighthouse-ci@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-lighthouse-ci@v1
       with:
         config: .lighthouserc.json
         upload-target: lhci

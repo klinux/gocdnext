@@ -109,7 +109,7 @@ examples:
         - GHCR_USERNAME
         - GHCR_TOKEN
       docker: true
-      uses: gocdnext/buildx@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
       with:
         image: ghcr.io/org/app
         tags: "latest, v${CI_COMMIT_SHORT_SHA}"
@@ -123,7 +123,7 @@ examples:
       PR, without writing to the registry.
     yaml: |
       docker: true
-      uses: gocdnext/buildx@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
       with:
         image: ghcr.io/org/app
         tags: pr-${CI_PR_NUMBER}
@@ -139,7 +139,7 @@ examples:
       agent:
         profile: fast-builds
       docker: true
-      uses: gocdnext/buildx@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
       with:
         image: ghcr.io/org/app
         tags: latest
@@ -156,7 +156,7 @@ examples:
         - GHCR_USERNAME
         - GHCR_TOKEN
       docker: true
-      uses: gocdnext/buildx@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
       with:
         image: ghcr.io/org/app
         tags: latest
@@ -177,7 +177,7 @@ examples:
         - AWS_ACCESS_KEY_ID
         - AWS_SECRET_ACCESS_KEY
       docker: true
-      uses: gocdnext/buildx@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
       with:
         image: ghcr.io/org/app
         tags: latest

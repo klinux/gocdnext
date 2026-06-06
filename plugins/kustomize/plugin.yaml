@@ -58,7 +58,7 @@ examples:
       Kubeconfig comes from a project secret; namespace pinned
       so manifests without ns inherit it.
     yaml: |
-      uses: gocdnext/kustomize@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
       with:
         path: deploy/overlays/prod
         kubeconfig: ${{ KUBECONFIG_PROD }}
@@ -75,7 +75,7 @@ examples:
       jobs:
         diff-prod:
           stage: review
-          uses: gocdnext/kustomize@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
           with:
             path: deploy/overlays/prod
             action: diff
@@ -91,7 +91,7 @@ examples:
         apply-prod:
           stage: deploy
           needs: [approve-prod]
-          uses: gocdnext/kustomize@v1
+          uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
           with:
             path: deploy/overlays/prod
             kubeconfig: ${{ KUBECONFIG_PROD }}
@@ -106,7 +106,7 @@ examples:
       via a `commonLabels:` block so additions/removals stay in
       sync.
     yaml: |
-      uses: gocdnext/kustomize@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
       with:
         path: deploy/overlays/staging
         kubeconfig: ${{ KUBECONFIG_STAGING }}
@@ -120,7 +120,7 @@ examples:
       itself — for review pipelines that publish the manifests
       as an artifact rather than applying them.
     yaml: |
-      uses: gocdnext/kustomize@v1
+      uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
       with:
         path: deploy/overlays/prod
         action: build
