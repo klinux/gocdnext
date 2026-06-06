@@ -130,7 +130,7 @@ ORDER BY pl.name;
 
 -- name: ListRunsByProjectSlug :many
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
-       r.counter, r.cause, r.status, r.queue_reason,
+       r.counter, r.cause, r.status, r.queue_reason, r.has_services,
        r.created_at, r.started_at, r.finished_at, r.triggered_by
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -176,9 +176,16 @@ ORDER BY run_id, ordinal;
 -- DISTINCT ON picks the most recent run per pipeline. Pipelines with
 -- no runs yet are absent from the result; the handler merges with
 -- ListPipelinesByProjectSlug to produce node entries.
+--
+-- has_services comes from the snapshot stamped at run-create time
+-- (migration 00036) — lets the project page client skip the
+-- /api/v1/runs/:id/services fetch entirely on pipelines whose
+-- latest run never declared a `services:` block. Without it the
+-- project page issues one polling fetch per card.
 SELECT DISTINCT ON (r.pipeline_id)
   r.pipeline_id, r.id, r.counter, r.cause, r.status,
-  r.created_at, r.started_at, r.finished_at, r.triggered_by
+  r.created_at, r.started_at, r.finished_at, r.triggered_by,
+  r.has_services
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p  ON p.id  = pl.project_id
@@ -193,6 +200,7 @@ ORDER BY r.pipeline_id, r.created_at DESC;
 -- notifications?" lookup.
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason, r.revisions,
+       r.has_services,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
        pl.definition AS pipeline_definition
 FROM runs r

@@ -10,6 +10,7 @@ import {
   Loader2,
   Minus,
   RotateCcw,
+  Server,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -36,10 +37,16 @@ import type {
   MergedJob,
   StageColumn,
 } from "@/components/pipelines/pipeline-card-helpers";
+import type { RunService } from "@/types/api";
 
 type Props = {
   columns: StageColumn[];
   runId?: string;
+  // services for the latest run, optional — when present a
+  // compact "services" box renders as the FIRST item in the
+  // strip (mirrors the Setup column on the run-detail
+  // PipelineCanvas, just sized to the card).
+  services?: RunService[];
 };
 
 // PipelineStageStrip lays out a pipeline run as: stage name on top
@@ -49,8 +56,9 @@ type Props = {
 // pipelines (drawn solid by the DAG overlay above). Borrows the
 // project-card pill so the same circle vocabulary applies on every
 // surface that shows pipeline jobs.
-export function PipelineStageStrip({ columns, runId }: Props) {
-  if (columns.length === 0) {
+export function PipelineStageStrip({ columns, runId, services }: Props) {
+  const hasServices = (services?.length ?? 0) > 0;
+  if (columns.length === 0 && !hasServices) {
     return (
       <p className="px-3 py-2 text-xs text-muted-foreground">
         No stages defined yet.
@@ -59,6 +67,12 @@ export function PipelineStageStrip({ columns, runId }: Props) {
   }
   return (
     <div className="flex flex-wrap items-stretch gap-x-1 gap-y-2 px-3 py-2">
+      {hasServices ? (
+        <>
+          <ServicesGroup services={services!} />
+          {columns.length > 0 ? <DashedSeparator /> : null}
+        </>
+      ) : null}
       {columns.map((col, i) => {
         const isLast = i === columns.length - 1;
         return (
@@ -71,6 +85,126 @@ export function PipelineStageStrip({ columns, runId }: Props) {
     </div>
   );
 }
+
+// servicePillTone collapses the engine's enum into the shared
+// StatusTone vocabulary so the same job-circle palette covers
+// services. `stopped` is the cleanup-on-terminal path and folds
+// into success — v0.6.1's sticky-failed at the store keeps real
+// failures visible after cleanup so the fold can't hide a true
+// crash. Mirrors the run-detail PipelineCanvas mapping.
+function servicePillTone(s: RunService["status"]): StatusTone {
+  switch (s) {
+    case "ready":
+      return "success";
+    case "starting":
+      return "running";
+    case "stopped":
+      return "success";
+    case "failed":
+      return "failed";
+    default:
+      return "neutral";
+  }
+}
+
+// ServicesGroup is the per-card analogue of the run-detail's
+// Setup column: one circle per service, status colour, hover
+// tooltip with name + image + state. Hugs the stage strip's
+// visual grammar (same box style, same circle row) so the
+// operator's eye reads "services BEFORE stages" without needing
+// a label legend. The header label "services" reuses the
+// uppercase-tiny style of stage names.
+function ServicesGroup({ services }: { services: RunService[] }) {
+  return (
+    <div className="relative flex shrink-0 flex-col items-start gap-1 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1.5">
+      <h4 className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        <Server className="size-3" aria-hidden />
+        services
+      </h4>
+      <div className="flex flex-wrap items-center gap-1">
+        {services.map((svc) => (
+          <ServiceCircle key={svc.id} service={svc} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ServiceCircle({ service }: { service: RunService }) {
+  const tone = servicePillTone(service.status);
+  const className = serviceCircleToneClasses[tone];
+  // ARIA: services on the card carry information the operator
+  // can't infer from neighbouring text (job circles are paired
+  // with the job name; service circles aren't). Render as a real
+  // <button> so screen readers announce role + label, keyboard
+  // users can Tab onto it, and the tooltip is dismissible.
+  const ariaLabel = `Service ${service.name}: ${service.status}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={ariaLabel}
+            title={ariaLabel}
+            className={cn(
+              "inline-flex size-4 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1",
+              className,
+            )}
+          />
+        }
+      >
+        {service.status === "starting" ? (
+          <Loader2
+            aria-hidden
+            className="size-2.5 animate-spin text-sky-600 dark:text-sky-400"
+          />
+        ) : service.status === "failed" ? (
+          <X
+            aria-hidden
+            className="size-2.5 text-red-600 dark:text-red-400"
+          />
+        ) : (
+          <Check
+            aria-hidden
+            className="size-2.5 text-emerald-600 dark:text-emerald-400"
+          />
+        )}
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <p className="font-mono text-xs font-semibold">{service.name}</p>
+        <p className="break-all text-[10px] text-muted-foreground">
+          {service.image}
+        </p>
+        <p className="mt-0.5 text-[10px] uppercase tracking-wide">
+          {service.status}
+        </p>
+        {service.error ? (
+          <p className="mt-1 break-words text-[10px] text-red-500">
+            {service.error}
+          </p>
+        ) : null}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+// Per-tone container classes for the service circle. Kept here
+// (not pulled from a shared map) because the existing
+// pipelineCircleToneClasses object is private to StageGroup and
+// adding a `neutral` row to it would conflict with the
+// "no-status-was-set" fallback that map already uses.
+const serviceCircleToneClasses: Record<StatusTone, string> = {
+  success: "border-emerald-500/40 bg-emerald-500/10",
+  failed: "border-red-500/40 bg-red-500/10",
+  running: "border-sky-500/40 bg-sky-500/10",
+  queued: "border-amber-500/40 bg-amber-500/10",
+  warning: "border-amber-500/40 bg-amber-500/10",
+  awaiting: "border-amber-500/40 bg-amber-500/10",
+  canceled: "border-muted-foreground/30 bg-muted/40",
+  skipped: "border-muted-foreground/30 bg-muted/40",
+  neutral: "border-border bg-background",
+};
 
 function StageGroup({ column, runId }: { column: StageColumn; runId?: string }) {
   const rate =

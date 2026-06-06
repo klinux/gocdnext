@@ -210,6 +210,13 @@ type RunSummary struct {
 	Counter      int64     `json:"counter"`
 	Cause        string    `json:"cause"`
 	Status       string    `json:"status"`
+	// HasServices comes from `runs.has_services` (migration 00036),
+	// a snapshot of `pipeline.Services` non-emptiness stamped at
+	// run-create time. Exposed so the project page can gate the
+	// per-card services fetch on pipelines that actually declare
+	// any — without it, every card polls the services endpoint
+	// even for pipelines that never use them.
+	HasServices bool `json:"has_services"`
 	// QueueReason is the operator-visible explanation for a queued
 	// run that hasn't advanced. Today only the scheduler's serial-
 	// concurrency gate stamps this (format: "serial-busy:<run-id>"),
@@ -606,6 +613,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Counter:      lr.Counter,
 			Cause:        lr.Cause,
 			Status:       lr.Status,
+			HasServices:  lr.HasServices,
 			CreatedAt:    lr.CreatedAt.Time,
 			StartedAt:    pgTimePtr(lr.StartedAt),
 			FinishedAt:   pgTimePtr(lr.FinishedAt),
@@ -686,6 +694,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Counter:      r.Counter,
 			Cause:        r.Cause,
 			Status:       r.Status,
+			HasServices:  r.HasServices,
 			QueueReason:  stringValue(r.QueueReason),
 			CreatedAt:    r.CreatedAt.Time,
 			StartedAt:    pgTimePtr(r.StartedAt),
@@ -826,6 +835,7 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 			Counter:      run.Counter,
 			Cause:        run.Cause,
 			Status:       run.Status,
+			HasServices:  run.HasServices,
 			QueueReason:  stringValue(run.QueueReason),
 			CreatedAt:    run.CreatedAt.Time,
 			StartedAt:    pgTimePtr(run.StartedAt),

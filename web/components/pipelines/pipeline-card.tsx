@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
@@ -22,6 +23,8 @@ import {
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
 import { PipelineStageStrip } from "@/components/pipelines/pipeline-stage-strip";
 import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-sheet.client";
+import { fetchServices } from "@/components/runs/run-services.client";
+import { isTerminalStatus } from "@/lib/status";
 import {
   buildColumns,
   pickBottleneck,
@@ -85,6 +88,33 @@ export function PipelineCard({
   const bottleneck = useMemo(() => pickBottleneck(columns), [columns]);
   const metrics = pipeline.metrics;
   const [overviewOpen, setOverviewOpen] = useState(false);
+
+  // Fetch services for the latest run so the stage strip can render
+  // a compact "services" box alongside the stages — same shared
+  // cache key (["run-services", runId]) as the run-detail
+  // PipelineCanvas, so opening the run from this card hits the
+  // cache instantly. Empty string for apiBaseURL keeps the
+  // request relative (same-origin) — matches the
+  // pipeline-overview-sheet pattern. Polling cadence matches the
+  // card-level refresh: aggressive while the run is live, off
+  // when it's terminal.
+  //
+  // GATED on run.has_services (server-stamped at run-create time
+  // via migration 00036) so pipelines whose latest run never
+  // declared a `services:` block don't kick off an empty fetch
+  // PER CARD. Project pages with N pipelines without services
+  // used to trigger N concurrent /services requests + N polling
+  // intervals; now they're zero.
+  const runStatus = run?.status ?? "";
+  const isLive = run != null && !isTerminalStatus(runStatus);
+  const servicesQuery = useQuery({
+    queryKey: ["run-services", run?.id ?? ""],
+    queryFn: () => (run ? fetchServices("", run.id) : Promise.resolve([])),
+    enabled: !!run && run.has_services,
+    refetchInterval: isLive ? 5_000 : false,
+    staleTime: 30_000,
+  });
+  const services = servicesQuery.data ?? [];
 
   const commitSubject = meta?.message ? truncate(firstLine(meta.message), 30) : null;
   const shortSha = meta?.revision ? meta.revision.slice(0, 7) : null;
@@ -197,7 +227,11 @@ export function PipelineCard({
         </header>
 
         <div className="flex flex-1 flex-col">
-          <PipelineStageStrip columns={columns} runId={run?.id} />
+          <PipelineStageStrip
+            columns={columns}
+            runId={run?.id}
+            services={services}
+          />
         </div>
 
         {metrics || upstreams.length > 0 || downstreams.length > 0 ? (

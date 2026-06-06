@@ -507,6 +507,12 @@ type Querier interface {
 	// DISTINCT ON picks the most recent run per pipeline. Pipelines with
 	// no runs yet are absent from the result; the handler merges with
 	// ListPipelinesByProjectSlug to produce node entries.
+	//
+	// has_services comes from the snapshot stamped at run-create time
+	// (migration 00036) — lets the project page client skip the
+	// /api/v1/runs/:id/services fetch entirely on pipelines whose
+	// latest run never declared a `services:` block. Without it the
+	// project page issues one polling fetch per card.
 	LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error)
 	ListAPITokensByServiceAccount(ctx context.Context, serviceAccountID pgtype.UUID) ([]ListAPITokensByServiceAccountRow, error)
 	// Tokens this user owns, newest first. Used by /settings/api-tokens.
