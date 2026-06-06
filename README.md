@@ -5,7 +5,8 @@
 > container), and **GitLab CI** (stages, rules, needs, matrix, extends).
 > Written in Go. UI in Next.js. Container-native. Webhook-first.
 
-Status: **alpha / internal use**. Not open to public yet.
+Status: **active development** — v0.x, minor bumps may carry breaking
+changes until 1.0. Public repo, shipping monthly.
 
 📚 **Docs**: <https://klinux.github.io/gocdnext/docs/>
 
@@ -25,9 +26,19 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
 - **Upstream material** — `pipeline B` waits for `pipeline A.stage X` to pass
   *with the same commit SHA*, with automatic fanout across N downstreams.
 - **Value Stream Map (VSM)** — visualize the graph of pipelines + materials.
-- **Webhook-first**, polling only as fallback.
-- **Auto-register webhook on GitHub / GitLab / Bitbucket** when you create a
-  git material.
+- **Webhook-first**, polling only as fallback. **Auto-register webhook** on
+  GitHub / GitLab / Bitbucket when you create a git material.
+- **Plugin catalog** — 40+ reference plugins (build/test/scan/sign/deploy/
+  notify), each shipped as a versioned container image with a typed input
+  contract.
+- **Kubernetes-native runtime** — pod-per-job execution with runner profiles
+  (K1–K4), or classic Docker on the agent host.
+- **Pipeline services** — sidecar containers (postgres, redis, etc.)
+  declared in YAML and rendered as nodes in the pipeline graph.
+- **RBAC + audit log** — admin/maintainer/viewer hierarchy, every mutation
+  recorded in `audit_events`.
+- **Approval gates** — gate stages on approver groups with quorum, with full
+  audit trail.
 
 ## Screenshots
 
@@ -66,14 +77,14 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
 
 ```
 server/      Go control plane: HTTP API, gRPC for agents, scheduler, webhooks
-agent/       Go agent: pulls jobs, runs containers, streams logs back
-cli/         gocdnext CLI: validate, run-local
-web/         Next.js 15 UI
-proto/       gRPC / protobuf contracts
-plugins/     Reference plugins (slack, docker, …)
-charts/      Helm chart (server + agents)
-examples/    Sample .gocdnext.yaml files
-docs/        Architecture & pipeline spec
+agent/       Go agent: pulls jobs, runs containers (docker or k8s), streams logs
+cli/         gocdnext CLI: validate, apply, admin
+web/         Next.js 15 UI (App Router, RSC, Server Actions, shadcn)
+proto/       gRPC / protobuf contracts (managed by buf)
+plugins/     Reference plugins — 40+ images (build/test/scan/sign/deploy/notify)
+charts/      Helm chart (server + agents, single-host Ingress / Gateway API)
+examples/    Sample .gocdnext/ pipeline files
+docs/        Starlight docs site (concepts, recipes, reference, operate guide)
 ```
 
 ## Cloud dev (Codespaces / Gitpod)
@@ -102,22 +113,29 @@ port map, cost budgets, and troubleshooting.
 
 ## Quick start (dev)
 
+The fast path uses `make dev` to bring everything up with hot reload —
+postgres + minio + server + agent + web, behind a single foreground
+process. Ctrl+C tears it all down.
+
 ```bash
-# 1. start postgres + minio
-make up
+# 1. one-shot env scaffold (.env + tools — air, goose, sqlc, buf)
+make env-setup
 
-# 2. apply migrations
-export GOCDNEXT_DATABASE_URL='postgres://gocdnext:gocdnext@localhost:5432/gocdnext?sslmode=disable'
-make migrate-up
+# 2. bring up the full stack with hot reload
+make dev
+```
 
-# 3. build everything
-make build
+That's it. The UI lands on <http://localhost:3000>, the API on `:8153`,
+the agent connects via gRPC on `:8154`.
 
-# 4. run server + agent (dev mode)
+If you want the pieces separately (e.g. to attach a debugger):
+
+```bash
+make db-up                   # postgres + minio only
+make migrate-up              # apply migrations
+make build                   # compile server + agent + cli
 ./bin/gocdnext-server &
 GOCDNEXT_SERVER_ADDR=localhost:8154 GOCDNEXT_AGENT_TOKEN=dev-token ./bin/gocdnext-agent &
-
-# 5. validate all pipelines in a repo's .gocdnext/ folder
 ./bin/gocdnext validate examples/simple
 ```
 
@@ -174,7 +192,7 @@ your tooling prefers.
 ```bash
 helm repo add gocdnext https://klinux.github.io/gocdnext
 helm repo update
-helm install gocd gocdnext/gocdnext --version 0.1.0 \
+helm install gocd gocdnext/gocdnext --version 0.8.0 \
   --set devDatabase.enabled=true \
   --set agent.tokenSecret.value="$(openssl rand -hex 32)" \
   --set webhookToken.value="$(openssl rand -hex 32)" \
@@ -185,10 +203,13 @@ helm install gocd gocdnext/gocdnext --version 0.1.0 \
 **OCI** (Helm 3.8+):
 
 ```bash
-helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.1.0 \
+helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.8.0 \
   --set devDatabase.enabled=true \
   ...
 ```
+
+Check the [latest release](https://github.com/klinux/gocdnext/releases)
+for the current `vX.Y.Z` — both registries publish on every tag.
 
 The container images (`ghcr.io/klinux/gocdnext-{server,agent,web}`) are
 multi-arch (amd64 + arm64) and tagged `latest` on every push to `main`,
@@ -212,15 +233,38 @@ See [docs/architecture.md](docs/architecture.md) for the design. TL;DR:
                            └────────────┘
 ```
 
-## Roadmap (high-level)
+## What's shipped (v0.8.0)
 
-| Phase | Weeks | Delivers |
-|-------|-------|----------|
-| 0 — Foundation     | 1–2  | Scaffold, proto, migrations, docker-compose  |
-| 1 — MVP pipeline   | 3–6  | Webhook GitHub, parse YAML, run 1-stage job  |
-| 2 — Diferencial    | 7–10 | Upstream material, fanout, VSM, PR native    |
-| 3 — Validação      | 11–14| Rodar 3–5 pipelines reais internos           |
-| Gate               | —    | Decidir: abrir / continuar interno / pivotar |
+- **Pipeline core** — `.gocdnext/` folder, stage/job/needs/matrix, materials
+  (git + upstream), webhook-first ingest with polling fallback.
+- **Plugin runtime** — versioned container plugins, typed `plugin.yaml`
+  contracts, secret-aware env propagation (NAME-only on argv).
+- **Plugin catalog** — 40+ reference plugins covering build (node/go/maven/
+  gradle/python/rust), container (buildx/kaniko/docker-push/cosign/trivy),
+  cloud (aws/gcloud/kubectl/helm/kustomize/argocd/terraform), quality
+  (sonar/codecov/coveralls/lighthouse-ci/gitleaks/golangci-lint), and
+  notify (slack/discord/teams/email/matrix).
+- **Runtimes** — Docker on the agent host **or** Kubernetes pod-per-job
+  with runner profiles (K1–K4).
+- **Artifact + cache** — pluggable storage backends (configurable from
+  `/settings/storage`), TTL + per-project + global quotas, container
+  layer cache with buildx `cache: bucket` shorthand.
+- **Approval gates** — approver groups + quorum, audit trail.
+- **RBAC + audit** — admin/maintainer/viewer, `audit_events` table,
+  `/settings/users` and `/settings/audit` UI.
+- **Operability** — VSM, single-host Ingress / Gateway API in the Helm
+  chart, OpenTelemetry traces, Prometheus `/metrics`, `slog` with
+  `trace_id`/`span_id` correlation.
+
+## What's open
+
+- **Pipeline deployment primitive** — Argo-style helm/kustomize/manifests
+  with env history + rollback (concept doc in
+  [docs/concepts/trunk-based-release/](https://klinux.github.io/gocdnext/docs/concepts/trunk-based-release/)).
+- **Per-project agent scope / lock** — deferred from the k8s runtime
+  rollout.
+- **`isolation: per-stage`** — share workspace across jobs in the same
+  stage (Woodpecker model).
 
 ## License
 
