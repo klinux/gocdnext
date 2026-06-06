@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.6.1 — 2026-06-05
+
+### Fixes — v0.6.0 ServiceLifecycle integrity follow-up
+
+Three semantic gaps caught in the v0.6.0 post-review:
+
+1. **`stopped` could overwrite `failed`.** v0.6.0's
+   `UpsertServiceRun` unconditionally wrote `EXCLUDED.status`, so
+   the cleanup broadcast's `stopped` event (which fires on EVERY
+   run — successful or not) erased the failure status of a
+   service that had blown up. The UI then showed "stopped" and
+   the operator chased the wrong root cause.
+
+   Fix: SQL guard `status = CASE WHEN service_runs.status =
+   'failed' THEN service_runs.status ELSE EXCLUDED.status END`.
+   Once failed, the row stays failed. `started_at`/`ready_at`/
+   `stopped_at` keep their COALESCE behaviour so timestamps
+   still accrue, but the visible status stays honest.
+
+2. **No ownership check on `ServiceLifecycle`.** Any
+   authenticated agent could write any `run_id`'s service
+   lifecycle. Worst-case: a bug/compromise on one agent
+   poisoning the Services tab of another tenant's run.
+
+   Fix: new `AgentOwnedJobInRun` query +
+   handler-side gate. For `starting`/`ready`/`failed` events,
+   the agent must own at least one `job_run` of the run.
+   `stopped` falls back to a cheap `RunExists` check because
+   cleanup is broadcast to k8s-capable agents that may
+   legitimately never have owned a job — but at least the
+   `run_id` must be a real row, defanging random-UUID spray.
+
+3. **Reuse-from-sibling pods didn't emit `ready`/`failed`.**
+   The v0.6.0 engine gated both events on
+   `if created[svc.Name]`, but the contract docstring on
+   `Engine.EnsureServices` already promised the reuser would
+   emit. When the original creator's stream died mid-wait,
+   the row stayed with `status=starting` forever.
+
+   Fix: drop the `created` gate around `ready`/`failed`.
+   Concurrent writes from the creator + reuser are safe
+   because the server's COALESCE-preserving upsert keeps the
+   first-observed timestamps. `starting` stays creator-only
+   because the reuser literally didn't issue Create.
+
+Test additions:
+- `TestUpsertServiceRun_FailedIsSticky_StoppedDoesNotOverwrite`
+- `TestAgentOwnedJobInRun_TrueWhenAgentRanAJob`
+- `TestAgentOwnedJobInRun_FalseForMissingRun`
+
 ## v0.6.0 — 2026-06-05
 
 ### Feature — pipeline services tracked in the UI (closes issue #7)
