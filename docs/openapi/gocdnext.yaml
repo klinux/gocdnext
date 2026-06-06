@@ -1191,7 +1191,7 @@ components:
 
     RunSummary:
       type: object
-      required: [id, status, pipeline_name, project_slug, project_name]
+      required: [id, status, pipeline_name, project_slug, project_name, has_services]
       properties:
         id: { type: string, format: uuid }
         counter: { type: integer, format: int64 }
@@ -1203,6 +1203,12 @@ components:
         project_id: { type: string, format: uuid }
         project_slug: { type: string }
         project_name: { type: string }
+        # Snapshot of `pipeline.services` non-emptiness stamped at
+        # run-create time (server migration 00036). Clients gate
+        # per-run /api/v1/runs/{id}/services fetches on this flag
+        # so cards/timelines listing pipelines that never declared
+        # services don't trigger an empty round-trip each.
+        has_services: { type: boolean }
         git_ref: { type: string, nullable: true }
         commit_sha: { type: string, nullable: true }
         triggered_by: { type: string, nullable: true }
