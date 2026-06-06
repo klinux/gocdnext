@@ -314,7 +314,12 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
       {upstream ? <UpstreamBanner upstream={upstream} /> : null}
       {pullRequest ? <PullRequestBanner pr={pullRequest} /> : null}
 
-      <PipelineCanvas stages={mergedData.stages} />
+      <PipelineCanvas
+        stages={mergedData.stages}
+        runId={runId}
+        runStatus={mergedData.status}
+        apiBaseURL={apiBaseURL}
+      />
 
       <RunTabs runId={runId} run={mergedData} apiBaseURL={apiBaseURL} />
     </section>

@@ -8,31 +8,69 @@ import {
   CircleDashed,
   Loader2,
   MinusCircle,
+  Server,
   XCircle,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import type { ComponentType } from "react";
 
 import { cn } from "@/lib/utils";
 import { LiveDuration } from "@/components/shared/live-duration";
-import type { JobDetail, StageDetail } from "@/types/api";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { fetchServices } from "@/components/runs/run-services.client";
+import { isTerminalStatus } from "@/lib/status";
+import type { JobDetail, RunService, StageDetail } from "@/types/api";
 
 type Props = {
   stages: StageDetail[];
+  runId: string;
+  runStatus: string;
+  apiBaseURL: string;
 };
+
+const SERVICES_POLL_MS = 3_000;
 
 // PipelineCanvas is the "pipeline view" at the top of a run's
 // detail page: stages as columns left-to-right, jobs as pills
 // inside, chevron connectors between. Clicking a job scrolls the
 // matching JobCard (rendered below via StageSection) into view —
 // avoids a second log viewer that would lag the primary one.
+//
+// When the run has services declared, a virtual "Setup" column is
+// rendered as the FIRST column (before stage 1) with one node per
+// service. Anchoring services to the start of the graph matches
+// their run-scoped lifetime (they come up before stage 1 even
+// dispatches) and mirrors Woodpecker's pipeline view, which the
+// operator already builds intuition around.
 
-export function PipelineCanvas({ stages }: Props) {
-  if (stages.length === 0) {
+export function PipelineCanvas({ stages, runId, runStatus, apiBaseURL }: Props) {
+  // Share the cache with RunTabs's services query so opening the
+  // tab after the canvas mounts reads from cache instantly.
+  const servicesQuery = useQuery({
+    queryKey: ["run-services", runId],
+    queryFn: () => fetchServices(apiBaseURL, runId),
+    refetchInterval: isTerminalStatus(runStatus) ? false : SERVICES_POLL_MS,
+    staleTime: 30_000,
+  });
+  const services = servicesQuery.data ?? [];
+
+  if (stages.length === 0 && services.length === 0) {
     return null;
   }
   return (
     <section aria-label="Pipeline" className="-mx-2 overflow-x-auto px-2 pb-2">
       <ol className="flex min-w-full items-stretch gap-2">
+        {services.length > 0 ? (
+          <li className="flex items-stretch">
+            <ServicesColumn services={services} />
+            {stages.length > 0 ? (
+              <Connector
+                previousStatus={aggregateServicesStatus(services)}
+                nextStatus={stages[0]!.status}
+              />
+            ) : null}
+          </li>
+        ) : null}
         {stages.map((stage, i) => (
           <li key={stage.id} className="flex items-stretch">
             <StageColumn stage={stage} />
@@ -47,6 +85,177 @@ export function PipelineCanvas({ stages }: Props) {
       </ol>
     </section>
   );
+}
+
+// aggregateServicesStatus picks the worst-case status across all
+// service nodes so the connector between Setup and stage 1
+// reflects the actual readiness of the prerequisite group. Order:
+// failed > starting > stopped > ready (the last is the only
+// "green" state). Mirrors how stages aggregate jobs upstream.
+function aggregateServicesStatus(services: RunService[]): string {
+  let hasStarting = false;
+  let hasStopped = false;
+  for (const svc of services) {
+    if (svc.status === "failed") return "failed";
+    if (svc.status === "starting") hasStarting = true;
+    if (svc.status === "stopped") hasStopped = true;
+  }
+  if (hasStarting) return "running";
+  if (hasStopped) return "skipped";
+  return "success";
+}
+
+// --- services column (virtual "setup" stage) ---
+
+function ServicesColumn({ services }: { services: RunService[] }) {
+  const aggregate = aggregateServicesStatus(services);
+  const tone = statusTone(aggregate);
+  return (
+    <div
+      className={cn(
+        "flex min-w-[220px] max-w-[260px] flex-col rounded-lg border bg-card",
+        tone.border,
+      )}
+      data-status={aggregate}
+      data-kind="services"
+    >
+      <header
+        className={cn(
+          "flex items-center gap-2 border-b px-3 py-2 text-xs font-medium",
+          tone.header,
+        )}
+      >
+        <Server className="size-3.5" aria-hidden />
+        <span className="truncate">
+          <span className="text-[10px] text-muted-foreground/80 mr-1">
+            setup
+          </span>
+          services
+        </span>
+        <span className="ml-auto rounded-full bg-background/60 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          {services.length}
+        </span>
+      </header>
+      <div className="flex flex-col gap-1.5 p-2">
+        {services.map((svc) => (
+          <ServicePill key={svc.id} service={svc} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// servicePillStatus maps the engine's service-side enum into the
+// shared status tone vocabulary so the same TONE palette covers
+// services + jobs + stages with no extra theme entries:
+//   ready    → success
+//   starting → running
+//   stopped  → skipped (dimmed, visually parked)
+//   failed   → failed
+function servicePillStatus(s: RunService["status"]): string {
+  switch (s) {
+    case "ready":
+      return "success";
+    case "starting":
+      return "running";
+    case "stopped":
+      return "skipped";
+    case "failed":
+      return "failed";
+    default:
+      return "waiting";
+  }
+}
+
+function ServicePill({ service }: { service: RunService }) {
+  const status = servicePillStatus(service.status);
+  const tone = statusTone(status);
+  return (
+    <Popover>
+      <PopoverTrigger
+        className={cn(
+          "group flex items-center gap-1.5 rounded-md border px-2 py-1 text-left text-xs transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+          tone.pillBorder,
+          tone.pillBg,
+        )}
+        title={service.error || undefined}
+      >
+        <StatusGlyph status={status} className={cn("size-3.5", tone.glyph)} />
+        <span className={cn("flex-1 truncate font-mono", tone.text)}>
+          {service.name}
+        </span>
+        <LiveDuration
+          startedAt={service.started_at ?? null}
+          finishedAt={service.stopped_at ?? service.ready_at ?? null}
+          className="font-mono text-[10px] text-muted-foreground/80"
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        className="w-80 text-xs"
+      >
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <StatusGlyph status={status} className={cn("size-4", tone.glyph)} />
+            <p className="font-mono text-sm font-semibold">{service.name}</p>
+            <span
+              className={cn(
+                "ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                tone.pillBg,
+                tone.text,
+              )}
+            >
+              {service.status}
+            </span>
+          </div>
+          <p className="break-all font-mono text-[11px] text-muted-foreground">
+            {service.image}
+          </p>
+          {service.pod_name ? (
+            <p className="break-all font-mono text-[10px] text-muted-foreground/80">
+              pod: {service.pod_name}
+            </p>
+          ) : null}
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-muted-foreground">started</dt>
+            <dd className="font-mono">
+              {fmtTs(service.started_at) ?? "—"}
+            </dd>
+            <dt className="text-muted-foreground">ready</dt>
+            <dd className="font-mono">
+              {fmtTs(service.ready_at) ?? "—"}
+            </dd>
+            <dt className="text-muted-foreground">stopped</dt>
+            <dd className="font-mono">
+              {fmtTs(service.stopped_at) ?? "—"}
+            </dd>
+          </dl>
+          {service.error ? (
+            <p
+              className={cn(
+                "rounded-md border px-2 py-1.5 font-mono text-[11px] break-words",
+                "border-status-failed/40 bg-status-failed-bg text-status-failed-fg",
+              )}
+            >
+              {service.error}
+            </p>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function fmtTs(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 // --- column ---

@@ -1,7 +1,5 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
 
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu.client";
 import { ProjectTabs } from "@/components/projects/project-tabs.client";
@@ -42,14 +40,7 @@ export default async function ProjectLayout({
   return (
     <section className="space-y-6">
       <header>
-        <nav aria-label="Breadcrumb" className="text-xs text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
-            Projects
-          </Link>
-          <ChevronRight className="mx-1 inline h-3 w-3" aria-hidden />
-          <span>{detail.project.slug}</span>
-        </nav>
-        <div className="mt-1 flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-2xl font-semibold tracking-tight">
               {detail.project.name}
