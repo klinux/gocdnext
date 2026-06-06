@@ -90,6 +90,12 @@ export type RunSummary = {
   counter: number;
   cause: string;
   status: string;
+  // Snapshot of `pipeline.Services` non-emptiness stamped at
+  // run-create time (server migration 00036). The project page
+  // gates the per-card services fetch on this — without it, every
+  // pipeline card polls /api/v1/runs/:id/services even when the
+  // pipeline never declared a `services:` block.
+  has_services: boolean;
   created_at: string;
   started_at?: string;
   finished_at?: string;
