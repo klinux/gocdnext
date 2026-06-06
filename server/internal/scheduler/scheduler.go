@@ -411,7 +411,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// downstream's `resolveArtifactDeps` would then fail because
 		// the upstream hadn't produced artefacts yet, and the
 		// downstream would be marked `failed` permanently (issue
-		// reproduced on cora-pulse: `build` needing `types-generate`).
+		// (`build` needing `types-generate` in the same stage).
 		//
 		// Gate runs BEFORE the agent / secrets / artifact lookups so
 		// a blocked job doesn't consume a session slot or DB round-

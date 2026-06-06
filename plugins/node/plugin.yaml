@@ -132,7 +132,7 @@ examples:
             paths: [node_modules]
         with:
           install: false          # reuse artifact, skip re-resolve
-          command: pnpm --filter @corapulse/web lint
+          command: pnpm --filter @app/web lint
 
   - name: cache-only per-job install (no artifact transfer)
     description: >
@@ -154,7 +154,7 @@ examples:
         with:
           # install: true + frozen: true (defaults) → pnpm install
           # --frozen-lockfile happens automatically before command.
-          command: pnpm --filter @corapulse/web lint
+          command: pnpm --filter @app/web lint
 
   - name: shell-chained command (codegen + build)
     description: >
@@ -169,8 +169,8 @@ examples:
             paths: [.pnpm-store]
         with:
           command: |
-            pnpm --filter @corapulse/types generate &&
-            pnpm --filter @corapulse/web build
+            pnpm --filter @app/types generate &&
+            pnpm --filter @app/web build
         artifacts:
           paths: [apps/web/dist]
 
@@ -186,7 +186,7 @@ examples:
         uses: ghcr.io/klinux/gocdnext-plugin-node@v2
         with:
           prod: true
-          command: pnpm --filter @corapulse/web build
+          command: pnpm --filter @app/web build
 
   - name: npm with package-lock.json
     description: >

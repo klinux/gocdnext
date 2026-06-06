@@ -13,7 +13,7 @@ func TestSubstituteRefs(t *testing.T) {
 		"EMPTY":           "",
 	}
 	vars := map[string]string{
-		"REGISTRY": "img.cora.tools",
+		"REGISTRY": "registry.example.com",
 		"TAG":      "latest",
 		"TOKEN":    "var-wins-when-secret-also-present", // covers precedence below
 	}
@@ -43,7 +43,7 @@ func TestSubstituteRefs(t *testing.T) {
 		{
 			name:    "two refs in one value",
 			in:      "${{ REGISTRY }}/app:${{ TAG }}",
-			wantOut: "img.cora.tools/app:latest",
+			wantOut: "registry.example.com/app:latest",
 		},
 		{
 			name:    "literal text around ref",
@@ -183,7 +183,7 @@ func TestSubstituteRefsMap_PreservesKeysAndCarriesKeyContext(t *testing.T) {
 	in := map[string]string{
 		"username": "${{ DOCKER_USERNAME }}",
 		"password": "${{ MISSING_PASS }}",
-		"image":    "img.cora.tools/app",
+		"image":    "registry.example.com/app",
 	}
 	secrets := map[string]string{"DOCKER_USERNAME": "deploybot"}
 

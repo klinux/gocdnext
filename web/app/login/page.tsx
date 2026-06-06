@@ -30,7 +30,7 @@ export default async function LoginPage({ searchParams }: Props) {
   // The /auth/login/<provider> endpoint lives on the SAME host the
   // browser is currently on (the ingress fronts both the web pod
   // and the gocdnext-server pod). A relative href makes the browser
-  // hit the public-facing hostname (e.g. gocdnext.cora.tools)
+  // hit the public-facing hostname (e.g. gocdnext.example.com)
   // instead of env.GOCDNEXT_API_URL — that env points at the
   // in-cluster service (gocdnext-gocdnext-server:8153) used by SSR
   // fetches inside the web pod, and prefixing the href with it

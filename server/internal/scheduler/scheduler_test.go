@@ -617,7 +617,7 @@ func slicesEqual(a, b []string) bool {
 func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
 	def := domain.Pipeline{
 		Stages:    []string{"publish"},
-		Variables: map[string]string{"REGISTRY": "img.cora.tools"},
+		Variables: map[string]string{"REGISTRY": "registry.example.com"},
 		Jobs: []domain.Job{{
 			Name:    "buildx",
 			Stage:   "publish",
@@ -626,7 +626,7 @@ func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
 				Plugin: &domain.PluginStep{
 					Image: "ghcr.io/klinux/gocdnext-plugin-buildx:v1",
 					Settings: map[string]string{
-						"image":    "${{ REGISTRY }}/cora-pulse",
+						"image":    "${{ REGISTRY }}/monorepo-app",
 						"username": "${{ DOCKER_USERNAME }}",
 						"password": "${{ DOCKER_PASSWORD }}",
 					},
@@ -654,7 +654,7 @@ func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
 		t.Fatalf("expected plugin task")
 	}
 	wantSettings := map[string]string{
-		"image":    "img.cora.tools/cora-pulse",
+		"image":    "registry.example.com/monorepo-app",
 		"username": "deploybot",
 		"password": "hunter2",
 	}
@@ -734,7 +734,7 @@ func TestBuildAssignment_SubstitutesCIVarsAndShellRefs(t *testing.T) {
 				Plugin: &domain.PluginStep{
 					Image: "ghcr.io/klinux/gocdnext-plugin-buildx:v1",
 					Settings: map[string]string{
-						"image":    "img.cora.tools/app",
+						"image":    "registry.example.com/app",
 						"username": "${{ DOCKER_USERNAME }}",
 						"tags":     "1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}-gocdnext",
 						"branch":   "${CI_BRANCH}",
@@ -764,7 +764,7 @@ func TestBuildAssignment_SubstitutesCIVarsAndShellRefs(t *testing.T) {
 	}
 	plug := got.Tasks[0].GetPlugin()
 	want := map[string]string{
-		"image":    "img.cora.tools/app",
+		"image":    "registry.example.com/app",
 		"username": "deploybot",
 		"tags":     "1.42.f5b5f8a6-gocdnext",
 		"branch":   "gocdnext-tests",
@@ -806,7 +806,7 @@ func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "compile", Image: "alpine"}
 	gitCfg, _ := json.Marshal(domain.GitMaterial{
-		URL:    "https://github.com/corabank/private-repo",
+		URL:    "https://github.com/acme-org/private-repo",
 		Branch: "main",
 	})
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
@@ -819,7 +819,7 @@ func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
 	if len(got.Checkouts) != 1 {
 		t.Fatalf("checkouts = %+v", got.Checkouts)
 	}
-	wantURL := "https://x-access-token:ghs_fake_install_token@github.com/corabank/private-repo"
+	wantURL := "https://x-access-token:ghs_fake_install_token@github.com/acme-org/private-repo"
 	if got.Checkouts[0].Url != wantURL {
 		t.Errorf("checkout url = %q, want %q", got.Checkouts[0].Url, wantURL)
 	}
@@ -1159,7 +1159,7 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 
 // seedSameStageNeeds creates a pipeline with TWO jobs in the SAME
 // stage where the second declares `needs: [first]`. Mirrors the
-// cora-pulse repro: `build needs: [types-generate]` in the same
+// Same-stage needs regression: `build needs: [types-generate]` in the same
 // stage. Returns the run id + job_run ids for the two jobs so the
 // caller can drive CompleteJob between dispatch ticks.
 func seedSameStageNeeds(t *testing.T, pool *pgxpool.Pool) (runID, prepJobID, dependentJobID uuid.UUID) {
@@ -1221,7 +1221,7 @@ func seedSameStageNeeds(t *testing.T, pool *pgxpool.Pool) (runID, prepJobID, dep
 }
 
 // TestDispatchRun_NeedsGate_WaitsForSameStageUpstream is the
-// REGRESSION GUARD for the cora-pulse repro: jobs in the same stage
+// REGRESSION GUARD for same-stage ordering: jobs in the same stage
 // that declare `needs:` must NOT both dispatch concurrently. Before
 // the gate, `dependent` would dispatch alongside `prep`, fail
 // `resolveArtifactDeps` (upstream hadn't produced), and be marked

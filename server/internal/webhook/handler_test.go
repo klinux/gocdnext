@@ -154,11 +154,11 @@ func TestGitHubWebhook_PushTriggersRun(t *testing.T) {
 }
 
 // TestGitHubWebhook_PushFansOutToEveryPipeline is the v0.4.20
-// regression cover. The real-world report: project cora-pulse has
-// 4 pipelines that share the same git material fingerprint
-// (same repo + branch). Pre-fix only ONE ran per push because
-// FindMaterialByFingerprint was `:one LIMIT 1`. Post-fix, every
-// pipeline gets a run.
+// regression cover. The real-world report: a multi-pipeline
+// project shares the same git material fingerprint
+// (same repo + branch) across all its pipelines. Pre-fix only ONE
+// ran per push because FindMaterialByFingerprint was `:one LIMIT 1`.
+// Post-fix, every pipeline gets a run.
 func TestGitHubWebhook_PushFansOutToEveryPipeline(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
@@ -167,8 +167,8 @@ func TestGitHubWebhook_PushFansOutToEveryPipeline(t *testing.T) {
 
 	// seedMaterial registers the project+pipeline+scm_source with
 	// the first call. Add two more pipelines + matching materials
-	// sharing the same fingerprint to simulate the cora-pulse shape
-	// (ci-core, ci-web, security all on push to main).
+	// sharing the same fingerprint to simulate the multi-pipeline
+	// shape (ci-core, ci-web, security all on push to main).
 	fp := store.FingerprintFor("https://github.com/gocdnext/gocdnext.git", "main")
 	_ = seedMaterial(t, pool, fp)
 

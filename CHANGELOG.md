@@ -518,7 +518,7 @@ agent:
 Why: the previous shared-PVC model required RWX storage
 (Filestore/NFS) which is syscall-bound for typical artefact
 patterns (pnpm `node_modules` symlink farms). On a real workload
-(cora-pulse pipeline) 83% of job time was spent untarring 60MB
+(production Node monorepo) 83% of job time was spent untarring 60MB
 of `node_modules` over NFS. Isolated mode lets operators pick a
 fast block storage class.
 
@@ -695,8 +695,9 @@ separation, single-manager-only (pnpm).
 
 ### Why breaking instead of v2 paralelo
 
-Greenfield: zero external users of plugin-node@v1 outside cora-pulse +
-gocdnext's own ci-web. The maintenance cost of two parallel images
+Greenfield: zero external users of plugin-node@v1 outside the
+internal dogfood pipelines (gocdnext's own ci-web + one production
+consumer). The maintenance cost of two parallel images
 (documented, tested, rebuilt on every release) outweighs the migration
 cost (one PR per consuming pipeline).
 
@@ -882,8 +883,8 @@ fixes go through the normal `CancelRun` path.
 ## v0.4.36 — 2026-06-02
 
 Scheduler honours job-level `needs:` so same-stage jobs declaring
-inter-job dependencies dispatch in order. The bug surfaced on the
-cora-pulse dogfood pipeline: `build` declaring
+inter-job dependencies dispatch in order. The bug surfaced on a
+real dogfood pipeline: `build` declaring
 `needs: [eslint, typecheck, unit, types-generate]` would dispatch
 in parallel with its upstreams, hit `no ready artefacts from job
 "types-generate"` during `resolveArtifactDeps`, and get marked
@@ -1396,7 +1397,7 @@ that close every overtaking-race we could find:
   When the consumer job extracted the .venv via artifact, kernel
   exec of those scripts ENOENT'd on the now-stale interpreter
   path. `uv sync` only re-installed packages whose source changed
-  (the editable corapulse-core), so it didn't regenerate the
+  (the editable workspace package), so it didn't regenerate the
   scripts. The previous fix's `uv venv --relocatable` was also a
   no-op on the consumer side because `.venv` already existed (from
   artifact extract), so the `[ ! -d .venv ]` guard skipped it.
@@ -1539,7 +1540,7 @@ that close every overtaking-race we could find:
   with a relative `/auth/login/<provider>` href in both
   `app/login/page.tsx` and the sidebar; the ingress already fronts
   both the web pod and the gocdnext-server pod under the public
-  hostname (e.g. gocdnext.cora.tools), so the browser hits the
+  hostname (e.g. gocdnext.example.com), so the browser hits the
   right path on the right host without any env wiring. Dropped
   the now-unused `loginBase` prop from `AppSidebar` /
   `SidebarUserMenu` and the debug-only "via <provider> · <url>"
