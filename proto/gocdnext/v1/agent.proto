@@ -70,7 +70,33 @@ message AgentMessage {
     JobResult                 result                       = 4;
     TestResultBatch           test_results                 = 5;
     CleanupRunServicesResult  cleanup_run_services_result  = 6;
+    ServiceLifecycle          service_lifecycle            = 7;
   }
+}
+
+// ServiceLifecycle reports the agent-observable state transitions
+// of a pipeline-level service Pod: starting (Pod create issued),
+// ready (Pod phase=Running), stopped (Pod deleted), or failed
+// (Pod never reached Running within the agent's StartupTimeout).
+//
+// The server upserts these into `service_runs` (keyed by
+// run_id+name) so the UI can render services as nodes alongside
+// jobs with the right status + duration. Idempotent on the wire:
+// re-sending the same status is a no-op, lets the agent retry
+// freely after a stream reconnect without bookkeeping its own
+// delivery state.
+//
+// `error` is populated only when status=failed. `pod_name` lets
+// the server / UI correlate to the actual Pod log stream (a
+// future "service logs" follow-up consumes it).
+message ServiceLifecycle {
+  string                    run_id     = 1;
+  string                    name       = 2;   // service name from YAML
+  string                    image      = 3;
+  string                    pod_name   = 4;
+  string                    status     = 5;   // starting|ready|stopped|failed
+  string                    error      = 6;
+  google.protobuf.Timestamp at         = 7;
 }
 
 // CleanupRunServicesResult is the per-agent ack for a server-issued

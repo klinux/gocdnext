@@ -38,6 +38,7 @@ func (s *stubEngine) EnsureServices(
 	services []engine.ServiceSpec,
 	runID, jobID string,
 	_ func(string, string),
+	_ func(engine.ServiceLifecycleEvent),
 ) (engine.ServicesWireup, error) {
 	s.ensureCalls++
 	s.ensureSawSpecs = append([]engine.ServiceSpec(nil), services...)
@@ -57,7 +58,7 @@ func (s *stubEngine) EnsureServices(
 	return s.wireup, nil
 }
 
-func (s *stubEngine) CleanupRunServices(context.Context, string) (int, error) {
+func (s *stubEngine) CleanupRunServices(context.Context, string, func(engine.ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }
 

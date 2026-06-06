@@ -340,6 +340,19 @@ type ServiceAccount struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type ServiceRun struct {
+	ID        pgtype.UUID
+	RunID     pgtype.UUID
+	Name      string
+	Image     string
+	PodName   string
+	Status    string
+	StartedAt pgtype.Timestamptz
+	ReadyAt   pgtype.Timestamptz
+	StoppedAt pgtype.Timestamptz
+	Error     string
+}
+
 type StageRun struct {
 	ID         pgtype.UUID
 	RunID      pgtype.UUID

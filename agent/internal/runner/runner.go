@@ -103,12 +103,40 @@ func New(cfg Config) *Runner {
 // call concurrently with Execute from the gRPC message dispatch loop.
 // CleanupRunServices is the runner-side entry point for the
 // server's CleanupRunServices RPC (handled in rpc/client.go).
-// Delegates straight to the engine — the runner adds no logic of
-// its own here, but keeping the indirection means future signals
-// (metrics, audit log line, etc.) can be added without changing
-// the rpc/client.go call site.
+// Delegates to the engine and translates emitted lifecycle
+// events into ServiceLifecycle messages on the outbound gRPC
+// channel so the server can stamp stopped_at on the
+// service_runs row.
 func (r *Runner) CleanupRunServices(ctx context.Context, runID string) (int, error) {
-	return r.cfg.Engine.CleanupRunServices(ctx, runID)
+	emit := r.serviceLifecycleEmitter(runID)
+	return r.cfg.Engine.CleanupRunServices(ctx, runID, emit)
+}
+
+// serviceLifecycleEmitter returns a callback that translates
+// engine.ServiceLifecycleEvent into a ServiceLifecycle proto
+// message and pushes it through cfg.Send (the outbound gRPC
+// channel). nil Send → noop. Returns a fresh closure per call
+// so a future per-run filter (e.g. dedup) can be added without
+// rewriting both EnsureServices and CleanupRunServices callers.
+func (r *Runner) serviceLifecycleEmitter(runID string) func(engine.ServiceLifecycleEvent) {
+	if r.cfg.Send == nil {
+		return func(engine.ServiceLifecycleEvent) {}
+	}
+	return func(evt engine.ServiceLifecycleEvent) {
+		r.cfg.Send(&gocdnextv1.AgentMessage{
+			Kind: &gocdnextv1.AgentMessage_ServiceLifecycle{
+				ServiceLifecycle: &gocdnextv1.ServiceLifecycle{
+					RunId:   runID,
+					Name:    evt.Name,
+					Image:   evt.Image,
+					PodName: evt.PodName,
+					Status:  evt.Status,
+					Error:   evt.Error,
+					At:      timestamppb.New(time.Now().UTC()),
+				},
+			},
+		})
+	}
 }
 
 func (r *Runner) Cancel(jobID string) bool {

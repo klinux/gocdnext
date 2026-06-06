@@ -632,3 +632,20 @@ export type RunArtifact = {
   download_url?: string;
   download_url_expires_at?: string;
 };
+
+// RunService is one row per pipeline-level service tracked in
+// service_runs. Status follows the agent emission order:
+// starting → ready → stopped, with `failed` as the terminal
+// branch when the pod never reached Running. Empty array on
+// the wire for runs without services.
+export type RunService = {
+  id: string;
+  name: string;
+  image: string;
+  pod_name?: string;
+  status: "starting" | "ready" | "stopped" | "failed";
+  started_at?: string;
+  ready_at?: string;
+  stopped_at?: string;
+  error?: string;
+};
