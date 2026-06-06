@@ -43,3 +43,30 @@
  * Starlight renders the logo as <img>, and CSS `color` doesn't
  * cross the image boundary into the rendered SVG.
  */
+
+/*
+ * Content column width + centering on wide screens.
+ *
+ * Starlight's default (props.css) is --sl-content-width: 45rem (~720px).
+ * On a 1920px monitor with both sidebar AND right-side TOC visible,
+ * TwoColumnContent.astro:48 sets `--sl-content-margin-inline: auto 0`
+ * which pushes the content rightward against the TOC. The result is
+ * a heavy ~285px left gap (sidebar → text) and a tight ~110px right
+ * gap (text → TOC) — visually lopsided and the body feels compressed.
+ *
+ * Two changes:
+ * 1. Widen --sl-content-width from 45rem to 52rem so prose breathes
+ *    on wide screens (still inside the 75–90 char/line readability
+ *    band at our font-size).
+ * 2. Re-center content within the main pane (margin-inline: auto)
+ *    when sidebar + TOC are both visible. The L/R gutters balance.
+ */
+:root {
+  --sl-content-width: 52rem;
+}
+
+@media (min-width: 72rem) {
+  [data-has-sidebar][data-has-toc] .main-pane {
+    --sl-content-margin-inline: auto;
+  }
+}
