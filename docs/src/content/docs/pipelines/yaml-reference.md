@@ -3,21 +3,20 @@ title: YAML reference
 description: Every key the pipeline parser accepts, what it means, and where to use it.
 ---
 
-`.gocdnext/<name>.yaml` is parsed by the server's pipeline parser.
-This page catalogs every accepted key with its shape, default,
-and a short example. Keys not on this list are rejected at apply
-time — typos surface as errors instead of being silently ignored.
+`.gocdnext/<name>.yaml` is parsed by the server's pipeline parser
+with strict-unknown-fields mode (`KnownFields(true)`). This page
+catalogs every accepted key with its shape, default, and a short
+example. Any key not on this list is rejected at apply time — typos
+surface as errors instead of being silently ignored.
 
 ## Top-level
 
 ```yaml
-name: ci                    # string, required, unique per project
-description: "..."          # string, optional, surfaced in the UI
+name: ci                    # string; defaults to filename without ext
 
-when:                       # trigger gates; see "Triggers" below
+when:                       # pipeline-level trigger gate; see "Triggers"
   event: [push, pull_request]
-  branches: [main]
-  paths: ["src/**"]
+  branch: [main]            # singular — branch:, not branches:
 
 stages: [lint, test, build] # ordered list; each stage waits for the
                             # previous to fully succeed
@@ -28,12 +27,14 @@ materials:                  # extra checkouts beyond the implicit one;
       stage: test
       status: success
 
-services:                   # sidecar containers, run alongside every
-  - name: postgres          # job; see "Services" below
-    image: postgres:16
+services:                   # pipeline-wide sidecar containers; all jobs
+  - name: postgres          # in the run can reach them by name; see
+    image: postgres:16      # "Services" below
 
 variables:                  # env vars merged into every job
   GOCACHE: /workspace/.go-cache
+
+concurrency: parallel       # "parallel" (default) or "serial"
 
 notifications:              # post-run hooks; see "Notifications"
   - on: failure
@@ -45,33 +46,39 @@ jobs:                       # map; keys are job names
     ...
 ```
 
+There is no top-level `description:` key. Surface descriptions on
+the project / pipeline UI come from the project record, not the
+pipeline YAML.
+
 ## Triggers (`when:`)
 
-Controls which webhooks materialise into runs.
+Controls which SCM events materialise into runs at the pipeline
+level. The parser accepts:
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `event` | `[]string` | `[push]` | `push`, `pull_request`, `tag`, `manual`, `cron`, `upstream` |
-| `branches` | `[]string` | all | match by exact name or `glob:*` |
-| `paths` | `[]string` | all | glob — run only when the push touches a matching path |
-| `tag_name` | string | — | regex applied to tag name (`event: [tag]`) |
+| `branch` | `[]string` | all | Singular `branch:` (the YAML key). List of branch names; substring/exact match per scheduler config. Empty = any branch. |
 
 ```yaml
 when:
   event: [push, pull_request]
-  branches: [main, "release/**"]
-  paths: ["server/**", "go.work"]
+  branch: [main, develop]
 ```
 
-`event: [manual]` makes the pipeline runnable only via the *Run latest*
-button or `gocdnext run <pipeline>`. `event: [cron]` is set
-automatically when the project has a cron schedule pointing at
-this pipeline.
+`event: [manual]` makes the pipeline runnable only via *Run latest*
+in the UI or `gocdnext run <pipeline>`. `event: [cron]` is set
+automatically by the project's cron schedule.
+
+The parser also accepts `when.status:` syntactically, but it's
+reserved — not consumed at pipeline level today. Path-based
+filtering and tag-name regexes aren't wired; use one pipeline per
+trigger shape if you need either.
 
 ## Materials
 
-Extra checkouts beyond the implicit project material. Each entry
-is one of `git`, `upstream`, `cron`, or `manual`.
+Extra checkouts beyond the implicit project material. Each entry is
+one of `git`, `upstream`, `cron`, or `manual`.
 
 ### `git` — additional repository
 
@@ -80,12 +87,16 @@ materials:
   - git:
       url: https://github.com/org/shared-libs
       branch: main
-      path: ./vendor/shared-libs
-      poll_interval: 5m       # optional polling fallback
+      on: [push]               # which events to react to
+      poll_interval: 5m        # optional polling fallback
+      auto_register_webhook: true
+      secret_ref: SHARED_REPO_TOKEN
 ```
 
-Cloned into `path:` relative to the workspace root. Useful for
-downstream jobs that need a sibling repo's source.
+Cloned into a deterministic per-material subdirectory under
+`/workspace`. The agent threads the directory into the task
+container's working directory automatically — pipelines don't pick
+the path.
 
 ### `upstream` — depend on another pipeline
 
@@ -97,22 +108,32 @@ materials:
       status: success
 ```
 
-When `ci-server.test` finishes successfully, the platform creates
-a downstream run **with the same revision** in the same project.
-This is gocdnext's fanout primitive — it's how monorepos chain
-pipelines. The downstream's `cause` is `upstream`; the dashboard
-shows a banner linking back to the trigger run.
+When `ci-server.test` finishes successfully, the platform creates a
+downstream run **with the same revision** in the same project. This
+is gocdnext's fanout primitive — it's how monorepos chain pipelines.
+The downstream's `cause` is `upstream`; the dashboard shows a
+banner linking back to the trigger run.
 
 ### `cron` — scheduled trigger
 
-Cron schedules are configured per-project in *Settings → Crons*,
-not in YAML. The parser side is automatic — when a cron fires
-that points at this pipeline, the run's `cause` is `cron`.
+```yaml
+materials:
+  - cron:
+      expression: "0 7 * * 1-5"   # weekdays at 07:00 server-local
+```
+
+The cron expression is parsed by the same library used for
+project-level crons. The run's `cause` is `cron`.
 
 ### `manual` — only via UI/CLI
 
-Equivalent to `when.event: [manual]`. Runs created via the
-*Run latest* button or `gocdnext run`.
+```yaml
+materials:
+  - manual: true
+```
+
+Equivalent to `when.event: [manual]` at pipeline level. Runs are
+created only via *Run latest* or `gocdnext run`.
 
 ## Stages
 
@@ -122,26 +143,30 @@ stages: [lint, test, build, deploy]
 
 Ordered list. Stage *N+1* dispatches when every job in stage *N*
 hits a terminal status:
+
 - All `success` → next stage runs.
 - Any `failed` → run is marked failed; stages past N are skipped.
 - Any `awaiting_approval` → run holds at the boundary until
-  approved (see Approval gates).
+  approved (see [Approval gates](#approval-gates)).
 
 ## Jobs
 
 ```yaml
 jobs:
   <name>:
-    stage: <stage-name>      # required, must be in `stages:`
-    image: alpine:3.20       # OR `uses:` (mutually exclusive)
-    uses: gocdnext/go@v1
-    with: { command: test ./... }
-    needs: [other-job]       # ordering inside the same stage
+    stage: <stage-name>        # required, must be in `stages:`
+    image: alpine:3.20         # OR `uses:` (mutually exclusive)
+    script:                    # shell lines; requires `image:`
+      - go test ./...
+    uses: gocdnext/go@v1       # plugin reference; mutually exclusive
+    with:                      # inputs passed as PLUGIN_* env to the image
+      command: test ./...
+    needs: [other-job]         # ordering inside the same stage
     needs_artifacts:
       - from_job: deps
-        paths: [node_modules/]
-    docker: true             # mounts host docker.sock
-    services: [postgres]     # references service name; see below
+        paths: [node_modules]
+        dest: ./
+    docker: true               # mounts docker socket / DinD sidecar
     variables:
       MY_VAR: hello
     secrets: [SLACK_TOKEN]
@@ -150,21 +175,30 @@ jobs:
         paths: [...]
     artifacts:
       paths: [...]
-      optional:
-        paths: [...]
-    test_reports:
-      paths: ["**/*.xml"]
-    matrix:
-      python_version: ["3.11", "3.12"]
-    approval:
-      groups: [release-approvers]
-      quorum: 2
+      optional: [...]
+      expire_in: 30d
+      when: on_success
+    test_reports: ["**/junit.xml"]
+    parallel:
+      matrix:
+        - GO_VERSION: ["1.24", "1.25"]
+          OS: [ubuntu, alpine]
+    rules:
+      - if: "$CI_COMMIT_BRANCH == main"
+        when: on_success
     timeout: 30m
+    retry: 2
+    tags: [linux, x86_64]
     agent:
       profile: gpu
       tags: [linux, x86_64]
-    when:                    # per-job gate, on top of pipeline-level
-      event: [tag]
+    resources:
+      requests: { cpu: "100m", memory: 256Mi }
+      limits:   { cpu: "2",    memory: 4Gi }
+    approval:
+      description: "Promote to prod"
+      approver_groups: [release-approvers]
+      required: 2
 ```
 
 Per-key:
@@ -172,24 +206,32 @@ Per-key:
 | Key | Type | Notes |
 |---|---|---|
 | `stage` | string | required |
-| `image` | string | container image; `script:` runs in `sh -c` |
-| `script` | `[]string` | shell lines; mutually exclusive with `uses:` |
-| `uses` | string | plugin reference: `gocdnext/<name>@v1` or `ghcr.io/...@v1` |
-| `with` | map | inputs passed as `PLUGIN_*` env to the image |
+| `image` | string | container image; mutually exclusive with `uses:` |
+| `script` | `[]string` | shell lines run inside `image:` |
+| `uses` | string | plugin reference: `gocdnext/<name>@v1` or `ghcr.io/...@v2` |
+| `with` | map | inputs passed as `PLUGIN_*` env to the plugin image |
 | `needs` | `[]string` | other jobs in the same stage that must finish first |
 | `needs_artifacts` | list | tar of upstream job's artefacts restored before run |
-| `docker` | bool | mount host docker.sock — for testcontainers, buildx, etc. |
-| `services` | `[]string` | sidecar containers (declared at pipeline level) |
+| `docker` | bool | mount docker socket / DinD — for testcontainers, buildx, etc. |
 | `variables` | map | env vars merged into the job's environment |
 | `secrets` | `[]string` | project/global secrets injected as env, masked in logs |
 | `cache` | list | tar paths between runs, keyed by template string |
-| `artifacts` | list | files to ship to the artefact backend (paths, optional, retention) |
-| `test_reports` | list | JUnit XML globs surfaced in the Tests tab |
-| `matrix` | map | expand the job into one cell per cartesian product |
-| `approval` | block | gate on human approval (groups + quorum) |
+| `artifacts` | block | files to ship to the artefact backend (see [Artifacts](#artifacts)) |
+| `test_reports` | `[]string` | JUnit XML globs surfaced in the Tests tab |
+| `parallel.matrix` | list | expand the job into one cell per cartesian product |
+| `parallel.count` | int | run N identical copies (no matrix) |
+| `rules` | list | parsed; not enforced at dispatch today |
 | `timeout` | duration | hard kill after — `30m`, `2h` |
-| `agent` | block | runner profile + tags |
-| `when` | block | per-job trigger gate (intersected with pipeline-level) |
+| `retry` | int | retry count on `failed` |
+| `tags` | `[]string` | extra constraints unioned with the agent profile |
+| `agent` | block | runner profile + extra tags |
+| `resources` | block | requests + limits, validated against the profile's max |
+| `approval` | block | manual gate (see [Approval gates](#approval-gates)) |
+
+`image` + `uses` are mutually exclusive — the parser rejects both
+on the same job. `approval:` is exclusive with `image`/`uses`/
+`script`/`artifacts` — an approval job parks the run, it doesn't
+execute anything.
 
 ## Cache
 
@@ -199,13 +241,25 @@ cache:
     paths: [.pnpm-store, node_modules]
 ```
 
-`key` is a template — variables expanded:
+`key:` is a template — variables expanded:
 
 | Variable | Expands to |
 |---|---|
 | `${CI_COMMIT_BRANCH}` | branch name (sanitised) |
 | `${CI_PIPELINE_NAME}` | pipeline name |
 | `${CI_PROJECT_SLUG}` | project slug |
+| `{{ hash "<glob>" }}` | hex digest of the sorted files matching the glob (workspace-relative) |
+
+`{{ hash "<glob>" }}` is the closed grammar for content-keyed
+caches. Single-pass evaluation — the result is not re-expanded —
+and the glob is workspace-relative with no `..` traversal. Useful
+for lockfile-keyed caches:
+
+```yaml
+cache:
+  - key: pnpm-store-{{ hash "pnpm-lock.yaml" }}
+    paths: [.pnpm-store]
+```
 
 Different branches with the same key share the cache; same branch
 with different keys keeps separate buckets. A typical pattern is
@@ -219,45 +273,61 @@ artifacts:
   paths:
     - dist/myapp
     - "build/reports/**/*.html"
-  retention: 30d           # optional; falls back to global default
   optional:
-    paths:
-      - "**/coverage.xml"  # only published if present
+    - "**/coverage.xml"          # publish if present, no-op if missing
+  expire_in: 30d                 # optional; global default otherwise
+  when: on_success               # on_success | on_failure | always
 ```
 
-`paths:` is required — the job fails if a listed path doesn't exist.
-`optional.paths:` is "publish if present, no-op if missing" —
-useful for coverage reports that conditional jobs may or may not
-generate.
+`paths:` is required to exist — the job fails if a listed path is
+missing. `optional:` (a bare list of paths) is "publish if present,
+no-op if missing" — useful for coverage reports that conditional
+jobs may or may not generate. A path that appears in both `paths:`
+and `optional:` is treated as required (required wins).
+
+`expire_in:` is a duration (`24h`, `30d`); empty falls back to the
+global retention default set by the operator. `when:` decides
+whether the upload runs at all: `on_success` (default), `on_failure`
+(only when the job failed — useful for crash dumps), or `always`.
 
 ## Test reports
 
 ```yaml
 test_reports:
-  paths: ["**/junit.xml"]
+  - "**/junit.xml"
+  - "build/test-results/**/*.xml"
 ```
 
-JUnit XML files matched by the glob are parsed at job completion
-and populate the run's *Tests* tab — per-case status, duration,
-failure message + stack trace.
+`test_reports:` is a **bare list** of globs (not a `{paths: [...]}`
+block). The matched files are parsed as JUnit/xUnit XML at job
+completion and populate the run's *Tests* tab — per-case status,
+duration, failure message + stack trace.
 
-## Matrix
+## Parallel / matrix
 
 ```yaml
 jobs:
   test:
-    matrix:
-      go_version: ["1.23", "1.24", "1.25"]
-      os: [ubuntu, alpine]
-    image: golang:${{ matrix.go_version }}-${{ matrix.os }}
+    parallel:
+      matrix:
+        - GO_VERSION: ["1.24", "1.25"]
+          OS: [ubuntu, alpine]
+    image: golang:${{ GO_VERSION }}-${{ OS }}
     script:
       - go test ./...
 ```
 
-Cartesian expansion — 3 × 2 = 6 jobs. `${{ matrix.X }}` is
-substituted in any string field. Failure of one cell does NOT
-stop sibling cells; the run aggregates `success` only when every
-cell succeeds.
+`parallel.matrix:` is a **list of objects**, each object mapping
+variable names to value lists. The cartesian product across all
+keys in all entries is expanded into one job per cell. Above: 2 × 2
+= 4 jobs. The matrix variable names become available as
+`${{ NAME }}` substitutions anywhere in the job spec.
+
+Use `parallel.count: N` instead of `matrix:` to run N identical
+copies without per-cell substitution.
+
+Failure of one cell does NOT stop sibling cells; the run aggregates
+`success` only when every cell succeeds.
 
 ## Services
 
@@ -273,15 +343,32 @@ jobs:
   integration:
     stage: test
     image: golang:1.25-alpine
-    services: [postgres]    # by name
     script:
       - psql -h postgres -U postgres -c 'select 1'
 ```
 
-Each declared service spins up alongside every job that lists it
-in `services:` (by name). The service's `name:` becomes the DNS
-alias inside the job's network. Services share the run; they're
-torn down when the run finishes.
+`services:` is pipeline-level. Every declared service spins up
+alongside the run and is reachable from every job by its `name:`
+as a DNS alias. There is no per-job opt-in — declare a service only
+if you want it available run-wide.
+
+`name:` defaults to the image's short name when omitted (`image:
+postgres:16` ⇒ `postgres`). `image:` is required.
+
+### Lifecycle
+
+The control plane tracks one `service_run` row per service per run
+with these states:
+
+| Status | Meaning |
+|---|---|
+| `starting` | Container/Pod created; waiting for the ready signal |
+| `ready` | Docker: container running. K8s: Pod `phase=Running`. |
+| `failed` | Crashed before ready — the run is marked failed. |
+| `stopped` | Cleanly torn down at run end (happy-path terminal). |
+
+See [Services lifecycle](/gocdnext/docs/concepts/services/) for the
+concept-level walkthrough.
 
 ## Secrets
 
@@ -291,8 +378,8 @@ jobs:
     secrets: [SSH_DEPLOY_KEY, SSH_KNOWN_HOSTS]
     uses: gocdnext/ssh@v1
     with:
-      key: ${{ secrets.SSH_DEPLOY_KEY }}
-      known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+      key: ${{ SSH_DEPLOY_KEY }}
+      known_hosts: ${{ SSH_KNOWN_HOSTS }}
 ```
 
 Secrets are AES-256-GCM-encrypted at rest. Listed names are
@@ -300,6 +387,50 @@ resolved at dispatch time from the project's secret store
 (*Project → Secrets*), injected as env vars, and masked in
 streamed log lines. Global secrets fall through when a project
 secret with the same name doesn't exist.
+
+### Substitution grammar
+
+The reference grammar inside `with:`, `variables:`, and other
+template fields is intentionally tight:
+
+- `${{ NAME }}` — hard reference. Resolved at dispatch against
+  secrets first, then `variables`. **Identifier only** — dotted
+  forms (`${{ secrets.X }}`, `${{ matrix.GO_VERSION.0 }}`),
+  function calls, and operators are rejected with "unsupported
+  reference expression". Unresolved references fail the dispatch
+  with the reference **name** (never the value of something else),
+  so secret values can't leak via error message.
+- `${VAR}` — soft, shell-style. Passed through to the container
+  and expanded by the shell at runtime. Use this for env vars the
+  agent or runtime injects (`${CI_COMMIT_BRANCH}`, etc.).
+
+Substitution is single-pass: the result of one reference is never
+re-expanded, so a chain like `${{ A }}` → `${{ B }}` does not
+recurse.
+
+### CI built-ins
+
+The agent injects these into every job's environment:
+
+| Name | Value |
+|---|---|
+| `CI` | `true` |
+| `GOCDNEXT` | `true` |
+| `CI_BRANCH` | branch the run is on |
+| `CI_COMMIT_BRANCH` | alias for `CI_BRANCH` |
+| `CI_COMMIT_SHA` | full revision SHA |
+| `CI_COMMIT_SHORT_SHA` | 8-char prefix of the SHA |
+| `CI_RUN_COUNTER` | monotonically-increasing per-pipeline run number |
+| `CI_RUN_ID` | UUID of the run |
+| `CI_PIPELINE_ID` | UUID of the pipeline |
+| `CI_PIPELINE_NAME` | pipeline name |
+| `CI_PROJECT_ID` | UUID of the project |
+| `CI_PROJECT_SLUG` | project slug |
+| `CI_JOB_NAME` | job name |
+
+These are also available as `${{ NAME }}` references and
+`${NAME}` shell-style env vars (the latter expanded by the shell
+inside the container).
 
 ## Approval gates
 
@@ -309,16 +440,24 @@ jobs:
     stage: deploy
     approval:
       description: "Promote build to production"
-      groups: [release-approvers]
-      quorum: 2
-    image: alpine
-    script: ["echo promoting"]
+      approver_groups: [release-approvers]
+      required: 2
 ```
 
-Job sits at `awaiting_approval` until the configured number of
-distinct members of the listed groups click *Approve* in the
-dashboard. Quorum 1 = single-approver gate; 2+ enforces multi-
-party review.
+| Key | Type | Notes |
+|---|---|---|
+| `description` | string | shown in the approval modal |
+| `approvers` | `[]string` | explicit list of usernames; empty = "any authenticated user" |
+| `approver_groups` | `[]string` | gate on group membership; union with `approvers` |
+| `required` | int | quorum (default `1`) — distinct allowed approvers needed before the gate passes |
+
+Approval jobs park at `awaiting_approval` until the quorum is met.
+A reject from any allowed user fails the gate immediately. The
+parser rejects mixing `approval:` with `image:`, `uses:`, `script:`,
+or `artifacts:` — an approval job is a gate, not an executor.
+
+See [Approval gates](/gocdnext/docs/concepts/approvals/) for the
+deeper walk-through.
 
 ## Notifications
 
@@ -327,44 +466,52 @@ notifications:
   - on: failure
     uses: gocdnext/slack@v1
     with:
-      webhook: ${{ secrets.SLACK_WEBHOOK }}
+      webhook: ${{ SLACK_WEBHOOK }}
       channel: "#ci-alerts"
+    secrets: [SLACK_WEBHOOK]
   - on: success
     uses: gocdnext/discord@v1
     with: { ... }
 ```
 
-`on:` accepts `success`, `failure`, `cancelled`, `always`. The
-notification runs as a synthetic job after the main run terminates;
-its log appears in the run detail page like any other job.
-
-## Per-job `when:`
-
-```yaml
-jobs:
-  deploy:
-    when:
-      event: [push]
-      branches: [main]
-    ...
-```
-
-Intersected with the pipeline-level `when:`. Common pattern: most
-jobs run on every push, deploy job runs only on main.
+`on:` accepts `failure`, `success`, `always`, `canceled` (single
+'l' — the parser canonical form). The notification dispatches as a
+synthetic job after the main run terminates; its log appears in
+the run-detail page like any other job.
 
 ## Agent selection
 
 ```yaml
-agent:
-  tags: [linux, gpu]
-  profile: gpu-pool
+jobs:
+  build:
+    stage: build
+    tags: [linux]               # job-level extra constraint
+    agent:
+      profile: gpu-pool
+      tags: [linux, x86_64]
 ```
 
-`tags:` filters which agents can claim the job (set on the agent's
-`GOCDNEXT_AGENT_TAGS`). `profile:` references a runner profile
-(see *Settings → Runner profiles*) — admins define what infra each
-profile means (k8s nodeSelector, resources, etc.); pipelines pick
-by name.
+`tags:` (either job-level or under `agent:`) filter which agents
+can claim the job. `agent.profile:` references a runner profile
+(set in *Settings → Runner profiles*) — admins define what infra
+each profile means (k8s nodeSelector, resources, image overrides);
+pipelines pick by name. Profile tags + job tags + agent.tags are
+unioned at apply time.
+
+## Resources
+
+```yaml
+jobs:
+  big-test:
+    stage: test
+    resources:
+      requests: { cpu: "500m",  memory: 1Gi }
+      limits:   { cpu: "2",     memory: 4Gi }
+```
+
+Mirrors `corev1.ResourceRequirements`. Empty fields fall back to
+the resolved profile's defaults; non-empty fields are validated
+against the profile's `max_cpu` / `max_mem` at apply time.
 
 ## Timeout
 
@@ -375,5 +522,5 @@ jobs:
 ```
 
 Hard kill if the job hasn't reached terminal status within the
-window. Default is no timeout (jobs can run indefinitely). Use
-this to protect against wedged tests or infinite loops.
+window. Default is no timeout. Use this to protect against wedged
+tests or infinite loops.

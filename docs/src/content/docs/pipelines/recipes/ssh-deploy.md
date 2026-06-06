@@ -44,7 +44,7 @@ Both are AES-256-GCM-encrypted at rest and masked in run logs.
 name: cd
 when:
   event: [push]
-  branches: [main]                          # only deploy from main
+  branch: [main]                            # only deploy from main
 
 stages: [build, ship]
 
@@ -64,11 +64,12 @@ jobs:
     needs_artifacts:
       - from_job: binary
         paths: [dist/api-server]
+    secrets: [SSH_DEPLOY_KEY, SSH_KNOWN_HOSTS]
     with:
       host: api.example.com
       user: deploy
-      key: ${{ secrets.SSH_DEPLOY_KEY }}
-      known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+      key: ${{ SSH_DEPLOY_KEY }}
+      known_hosts: ${{ SSH_KNOWN_HOSTS }}
       upload: dist/api-server
       target: /opt/api/
       script: |
@@ -99,15 +100,18 @@ name: prod-migrate
 when:
   event: [manual]                           # only via "Run" button or CLI
 
+stages: [run]
+
 jobs:
   run:
-    image: alpine:3.20
+    stage: run
     uses: gocdnext/ssh@v1
+    secrets: [SSH_OPS_KEY, DB_KNOWN_HOSTS]
     with:
       host: db.example.com
       user: ops
-      key: ${{ secrets.SSH_OPS_KEY }}
-      known_hosts: ${{ secrets.DB_KNOWN_HOSTS }}
+      key: ${{ SSH_OPS_KEY }}
+      known_hosts: ${{ DB_KNOWN_HOSTS }}
       script: |
         /opt/migrate/run.sh --env=prod --dry-run=false
 ```
@@ -119,23 +123,27 @@ when the operation is destructive.
 
 ## Multiple hosts (fanout)
 
-For a small fleet, declare the hosts in `with.host` and let the
-matrix do the work — gocdnext's parser supports per-job matrix:
+For a small fleet, expand the host list via `parallel.matrix:` —
+each matrix entry maps a variable name to a list of values, and
+the cartesian product becomes one job per cell. Matrix vars are
+referenced as `${{ NAME }}` (identifier only).
 
 ```yaml
 deploy:
   stage: ship
   uses: gocdnext/ssh@v1
-  matrix:
-    host:
-      - api-1.example.com
-      - api-2.example.com
-      - api-3.example.com
+  parallel:
+    matrix:
+      - HOST:
+          - api-1.example.com
+          - api-2.example.com
+          - api-3.example.com
+  secrets: [SSH_DEPLOY_KEY, SSH_KNOWN_HOSTS_FLEET]
   with:
-    host: ${{ matrix.host }}
+    host: ${{ HOST }}
     user: deploy
-    key: ${{ secrets.SSH_DEPLOY_KEY }}
-    known_hosts: ${{ secrets.SSH_KNOWN_HOSTS_FLEET }}
+    key: ${{ SSH_DEPLOY_KEY }}
+    known_hosts: ${{ SSH_KNOWN_HOSTS_FLEET }}
     upload: dist/api-server
     target: /opt/api/
     script: |

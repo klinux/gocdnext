@@ -16,7 +16,7 @@ existing webhooks you want to reuse).
 Whatever provider, the webhook delivers events to:
 
 ```
-POST <PUBLIC_BASE>/api/v1/webhook/<provider>
+POST <PUBLIC_BASE>/api/webhooks/<provider>
 ```
 
 Where `<provider>` is `github`, `gitlab`, or `bitbucket`. The
@@ -27,6 +27,23 @@ a per-source secret — same shape every webhook integration uses.
 `GOCDNEXT_WEBHOOK_PUBLIC_URL` when behind a public tunnel +
 private dashboard). The chart's `webhookPublicURL` value sets
 the latter.
+
+### Fan-out to multiple pipelines
+
+A single push fans out to every pipeline whose materials match
+the push's `(repo, branch)` fingerprint. So a monorepo with
+`ci-server.yaml`, `ci-web.yaml`, and `security.yaml` all sharing
+the implicit project material gets **three** runs from one push,
+all dispatched concurrently. The webhook response body is:
+
+```
+HTTP/1.1 202 Accepted
+{ "runs": ["<uuid>", "<uuid>", "<uuid>"] }
+```
+
+(Pre-v0.4.20 it was a single run per push; if you have downstream
+tooling that expected one id, switch it to iterate the `runs`
+array.)
 
 ## GitHub
 
@@ -51,7 +68,7 @@ Per-repo: *Settings → Webhooks → Add webhook*.
 
 | Field | Value |
 |---|---|
-| Payload URL | `https://ci.example.com/api/v1/webhook/github` |
+| Payload URL | `https://ci.example.com/api/webhooks/github` |
 | Content type | `application/json` |
 | Secret | (any random string — copy to gocdnext below) |
 | SSL verification | Enable |
@@ -92,7 +109,7 @@ Per-project: *Settings → Webhooks*.
 
 | Field | Value |
 |---|---|
-| URL | `https://ci.example.com/api/v1/webhook/gitlab` |
+| URL | `https://ci.example.com/api/webhooks/gitlab` |
 | Secret token | (any random string) |
 | Events | Push events, Tag push events, Merge request events |
 | SSL verification | Enable |
@@ -126,7 +143,7 @@ Per-repo: *Repository settings → Webhooks → Add webhook*.
 | Field | Value |
 |---|---|
 | Title | gocdnext |
-| URL | `https://ci.example.com/api/v1/webhook/bitbucket` |
+| URL | `https://ci.example.com/api/webhooks/bitbucket` |
 | Active | ✓ |
 | Triggers | Repository push, Pull request created/updated, Tag created |
 
@@ -142,25 +159,16 @@ The platform validates it.
 
 ## Generic webhook (self-hosted Git, custom integrations)
 
-For Gitea, Forgejo, custom git hosting, or anything else that can
-do an HTTP POST on push:
+There is no generic webhook endpoint today. For Gitea / Forgejo
+and other self-hosted Git hosting, point the provider's webhook
+at the most-compatible of the three real endpoints (Gitea ↔
+`/api/webhooks/github` is the closest payload match) and accept
+that exotic providers may need a shim.
 
-```
-POST <PUBLIC_BASE>/api/v1/webhook/generic?token=<token>
-Content-Type: application/json
-
-{
-  "repo": "https://git.example.com/myorg/myapp",
-  "branch": "main",
-  "sha": "abc123def...",
-  "event": "push"
-}
-```
-
-`token` is `GOCDNEXT_WEBHOOK_TOKEN` (Helm: `webhookToken.value`).
-The body shape is gocdnext's normalised event format — your
-custom hook's outgoing payload should be transformed to this
-shape (a small middleware function, ~20 lines in any language).
+The pre-v0.4 `GOCDNEXT_WEBHOOK_TOKEN` env var that gated a
+generic endpoint is deprecated — the server warns on boot if it's
+set and ignores the value. Per-source secrets via the SCM-source
+admin flow replaced it.
 
 ## Verifying delivery
 
@@ -184,18 +192,22 @@ If the run doesn't appear:
   delivery IPs. Behind a corporate firewall? Open the relevant
   IP ranges or use a tunnel (smee.io, ngrok) for dev.
 
-## When `paths:` filters skip a run
+## When a push doesn't create a run
 
-A push that matches `when.paths:` filter results in **no run
-created**. The dashboard shows nothing, the webhook delivery
-log shows 200 OK (server received + processed correctly, just
-filtered out). To debug:
+A push that doesn't match any pipeline's `when:` filter (event +
+branch mismatch) results in **no run created** — the dashboard
+shows nothing, but the webhook delivery log shows 200 OK (server
+received and processed correctly, just nothing matched). To debug:
 
 - Set `GOCDNEXT_LOG_LEVEL=debug` temporarily — the server logs
   every filter decision.
-- Check the actual changed-files list in the webhook payload
-  against your `paths:` glob. The provider's *Recent
-  deliveries* shows the request body.
+- Check the project's pipelines: do their pipeline-level `when:`
+  blocks list the branch the push hit? Remember `branch:` is
+  singular (the parser rejects `branches:`).
+- Path-based filtering isn't supported in `when:` — if you split
+  pipelines per sub-tree to scope runs, that's the right model;
+  if you put `paths:` under `when:` expecting it to be honored,
+  it isn't.
 
 ## Auto-register caveats
 

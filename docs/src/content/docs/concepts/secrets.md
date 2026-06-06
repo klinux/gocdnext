@@ -13,17 +13,18 @@ into the job containers that ask for them.
 
 ### Project secrets
 
-Live under *Project → Secrets* in the dashboard. Visible only to
-operators with maintainer or admin role on that project. Used for
-project-specific credentials (this project's deploy key, this
-project's notification webhook).
+Live under *Project → Secrets* in the dashboard
+(`/projects/<slug>/secrets`). Visible only to operators with
+maintainer or admin role on that project. Used for project-
+specific credentials (this project's deploy key, this project's
+notification webhook).
 
 ### Global secrets
 
-Live under *Settings → Secrets* (admin-only). Accessible from
-**every** pipeline in **every** project. Used for org-wide
-credentials (the org's npm registry token, the org's CI Docker
-Hub account).
+Live under *Admin → Secrets* (`/admin/secrets`, admin-only).
+Accessible from **every** pipeline in **every** project. Used for
+org-wide credentials (the org's npm registry token, the org's CI
+Docker Hub account).
 
 Resolution order: project secret first, global fallback. A project
 can override a global secret by registering one with the same
@@ -37,7 +38,7 @@ jobs:
     secrets: [SSH_DEPLOY_KEY, SLACK_WEBHOOK]
     uses: gocdnext/ssh@v1
     with:
-      key: ${{ secrets.SSH_DEPLOY_KEY }}
+      key: ${{ SSH_DEPLOY_KEY }}
 ```
 
 Two halves:
@@ -46,11 +47,19 @@ Two halves:
    listed names get injected — opt-in, not opt-out. Keeps the
    blast radius of a leaked plugin small (it can't `env | grep`
    for every secret).
-2. `${{ secrets.NAME }}` in `with:` is the substitution syntax.
-   The platform replaces it at dispatch time with the resolved
-   value, after which the value is injected as the env var
-   `SSH_DEPLOY_KEY` AND any string field referencing
-   `${{ secrets.SSH_DEPLOY_KEY }}` is replaced.
+2. `${{ NAME }}` in `with:` is the substitution syntax. The
+   platform replaces it at dispatch time with the resolved value,
+   after which the value is also injected as the env var
+   `SSH_DEPLOY_KEY` for the container.
+
+The reference grammar is **identifier-only** — dotted forms like
+`${{ secrets.X }}`, `${{ matrix.Y }}`, function calls, and
+operators are rejected at dispatch with "unsupported reference
+expression". The parser keeps the surface small so it can fail
+loud on typos instead of silently producing empty strings.
+Resolution order is secrets first, then job/pipeline
+`variables`; a job-local override shadows a global secret with
+the same name.
 
 Plugins typically prefer the env var path — `gocdnext/ssh`'s
 entrypoint reads `PLUGIN_KEY` (from the `key:` input). The

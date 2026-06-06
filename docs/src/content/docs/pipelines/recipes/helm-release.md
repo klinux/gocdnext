@@ -1,12 +1,15 @@
 ---
 title: Helm chart release
-description: Lint, package, push a Helm chart to OCI + the gh-pages-style HTTP repo, with version stamping from a release tag.
+description: Lint, package, push a Helm chart to an OCI registry on tag pushes.
 ---
 
-This is the recipe gocdnext itself uses for `charts/gocdnext` —
-[`.github/workflows/release.yml`](https://github.com/klinux/gocdnext/blob/main/.github/workflows/release.yml).
-Lint on every push, package + publish only when a `v0.X.Y` tag
-fires.
+This is the recipe gocdnext itself uses for `charts/gocdnext`.
+Lint on every push, package + publish only when a tag fires.
+
+Per-job `when:` filtering isn't enforced today. The clean
+separation is **two pipeline files** — `.gocdnext/chart-lint.yaml`
+runs every push to validate the chart; `.gocdnext/chart-release.yaml`
+fires only on tag pushes and does the publish.
 
 ## Layout assumed
 
@@ -18,18 +21,19 @@ repo/
 │       ├── values.yaml
 │       └── templates/...
 └── .gocdnext/
-    └── chart.yaml
+    ├── chart-lint.yaml
+    └── chart-release.yaml
 ```
 
-## The pipeline
+## Lint pipeline (every push)
 
-```yaml title=".gocdnext/chart.yaml"
-name: chart
+```yaml title=".gocdnext/chart-lint.yaml"
+name: chart-lint
 
 when:
-  event: [push, pull_request, tag]
+  event: [push, pull_request]
 
-stages: [lint, package, publish]
+stages: [lint]
 
 jobs:
   lint:
@@ -43,20 +47,32 @@ jobs:
     uses: gocdnext/helm@v1
     with:
       command: template myapp charts/myapp --debug
+```
 
+`helm lint` catches schema errors; `helm template` actually
+renders and catches YAML / template-logic errors lint misses
+(unbalanced `if`, undefined `.Values.foo`, etc.). Running both
+catches more before the chart ever leaves the build host.
+
+## Release pipeline (tag only)
+
+```yaml title=".gocdnext/chart-release.yaml"
+name: chart-release
+
+when:
+  event: [tag]                    # tag pushes only
+
+stages: [package, publish]
+
+jobs:
   package:
     stage: package
     uses: gocdnext/helm@v1
-    needs: [lint, template]
     with:
-      # On a tag push, stamp version + appVersion from the tag.
-      # On a branch push, leave Chart.yaml's value alone (linted
-      # only, not published).
-      command: |
-        package charts/myapp
-        ${TAG_NAME:+--version "${TAG_NAME#v}"}
-        ${TAG_NAME:+--app-version "${TAG_NAME#v}"}
-        --destination dist/
+      # Stamp version + appVersion from the tag (CI_BRANCH carries
+      # the tag ref on a tag push). The plugin's `command:` is
+      # word-split — keep flag pairs on one line.
+      command: package charts/myapp --version ${CI_BRANCH} --app-version ${CI_BRANCH} --destination dist/
     artifacts:
       paths: ["dist/*.tgz"]
 
@@ -67,111 +83,86 @@ jobs:
     needs_artifacts:
       - from_job: package
         paths: ["dist/"]
-    when:
-      event: [tag]
+    secrets: [GHCR_USERNAME, GHCR_TOKEN]
     with:
-      package_glob: "dist/*.tgz"
-      registry: oci://ghcr.io/${OWNER}/charts
-    secrets:
-      - GHCR_TOKEN
-    variables:
-      OWNER: klinux
-
-  publish-http:
-    stage: publish
-    uses: gocdnext/helm-push@v1
-    needs: [package]
-    needs_artifacts:
-      - from_job: package
-        paths: ["dist/"]
-    when:
-      event: [tag]
-    with:
-      package_glob: "dist/*.tgz"
-      mode: gh-pages
-      pages_url: https://${OWNER}.github.io/${REPO}
-    secrets:
-      - GH_PAGES_TOKEN          # PAT with contents:write on the same repo
-    variables:
-      OWNER: klinux
-      REPO: myapp
+      chart-dir: charts/myapp
+      version: ${CI_BRANCH}
+      app-version: ${CI_BRANCH}
+      backend: oci
+      oci-repo: oci://ghcr.io/klinux/charts
+      username: ${{ GHCR_USERNAME }}
+      password: ${{ GHCR_TOKEN }}
 ```
 
 What's worth highlighting:
 
-### `lint` + `template` are parallel
+### `helm-push` backends
 
-`helm lint` catches schema errors; `helm template` actually renders
-the chart and catches YAML/template logic errors that lint misses
-(unbalanced `if`, undefined `.Values.foo`, etc.). Running both
-catches more before the chart ever leaves the build host.
+The plugin supports `oci` (default — GHCR, Docker Hub, ECR,
+GAR), `chartmuseum`, and `nexus`. The choice is one `backend:`
+input — same `helm package` step regardless, the publish flow
+swaps transport.
 
-### Tag-only publish
+GHCR: `backend: oci`, `oci-repo: oci://ghcr.io/<owner>/charts`.
+ChartMuseum: `backend: chartmuseum`, `repo-url:
+https://charts.internal/`. Nexus: `backend: nexus`, `repo-url:
+https://nexus.corp/repository/helm/`.
 
-`when.event: [tag]` on the publish jobs means branches build +
-package the chart (so PR pipelines verify the package step works)
-but don't ship a tarball anywhere. Tags trigger the actual push.
+The `gh-pages` HTTP-repo pattern (chart-releaser-style index
+merge) isn't supported by this plugin — use GitHub Actions for
+that publish path or migrate consumers to OCI.
 
-### Two destinations
+### Version from the tag
 
-OCI (`oci://ghcr.io/klinux/charts`) and HTTP (`gh-pages`-served
-`https://klinux.github.io/myapp/`) are both supported because
-operators have preferences. OCI is the modern path (single
-destination, `helm install oci://...` works directly); the HTTP
-repo is what `helm repo add` consumers expect. Publishing to both
-keeps everyone happy with one pipeline.
+The plugin doesn't strip a `v` prefix from `CI_BRANCH` on tag
+pushes — so a tag `v0.6.4` becomes the chart version `v0.6.4`.
+Most consumers tolerate that; if you require strict semver
+(`0.6.4`), strip the prefix yourself in a pre-step that rewrites
+`Chart.yaml` before the package job.
 
-### `${TAG_NAME#v}` strips the v prefix
+### Tag fires both pipelines
 
-Tag is `v0.2.0`; chart version expects `0.2.0`. Bash parameter
-expansion (`#v`) drops the leading `v`. The `${TAG_NAME:+...}`
-guard skips the flag entirely on non-tag pushes — `helm package`
-without `--version` uses what's in `Chart.yaml`.
+A `vX.Y.Z` push fires `chart-lint.yaml` (lint + template) AND
+`chart-release.yaml` (package + publish). The lint pipeline
+catches a broken render before the release pipeline pushes a
+broken artefact. If the lint pipeline fails, the release
+pipeline's package job still runs (they're independent
+pipelines) — guard the publish step on lint success via an
+`upstream:` material:
+
+```yaml
+materials:
+  - upstream:
+      pipeline: chart-lint
+      stage: lint
+      status: success
+```
 
 ## Variations
 
-### With chart-releaser pattern (gh-pages merge)
-
-The vanilla helm-push wipes the gh-pages branch's index. To
-preserve all prior versions, use the chart-releaser-style merge:
-
-```yaml
-publish-http:
-  uses: gocdnext/helm-push@v1
-  with:
-    package_glob: "dist/*.tgz"
-    mode: gh-pages
-    pages_url: https://klinux.github.io/myapp
-    merge_existing_index: true   # default in v1; explicit here for clarity
-```
-
-`merge_existing_index: true` fetches the current `index.yaml`
-from gh-pages, appends your new tarball, regenerates. Prior
-releases keep working.
-
 ### Sign the chart with cosign
+
+OCI charts can be signed the same way as OCI images. Consumers
+verify with `cosign verify`.
 
 ```yaml
 sign-chart:
   stage: publish
   uses: gocdnext/cosign@v1
   needs: [publish-oci]
-  when:
-    event: [tag]
+  secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
   with:
-    command: sign --yes ghcr.io/klinux/charts/myapp:${TAG_NAME#v}
-  variables:
-    COSIGN_EXPERIMENTAL: "1"
+    image: ghcr.io/klinux/charts/myapp:${CI_BRANCH}
+    action: sign
+    key: ${{ COSIGN_PRIVATE_KEY }}
+    key-password: ${{ COSIGN_PASSWORD }}
 ```
-
-OCI charts can be signed the same way as OCI images. Consumers
-verify with `cosign verify`.
 
 ### Auto-bump appVersion from a sibling pipeline
 
-If your image is built by a different pipeline (`release` above)
-and the chart's `appVersion` should match the pushed image tag,
-gate the chart job on the image's release as an `upstream`
+If your container image is built by a different pipeline (and
+the chart's `appVersion` should match the pushed image tag),
+gate the chart release on the image's release as an `upstream`
 material:
 
 ```yaml
@@ -182,24 +173,25 @@ materials:
       status: success
 ```
 
-The chart pipeline now waits for the image release to land. Useful
-when the image and chart live in the same repo but ship in
-separate cycles.
+The chart pipeline now waits for the image release to land.
+Useful when the image and chart live in the same repo but ship
+in separate cycles.
 
 ## Common pitfalls
 
-- **`helm push` to OCI requires login**: GHCR_TOKEN should be a
-  PAT with `write:packages`. The plugin's entrypoint runs `helm
-  registry login` with the secret before the push.
-- **gh-pages merge race**: the merge step does a
-  `git fetch && git rebase` against gh-pages. If two chart
-  releases race, the second is rejected. Add a `concurrency`
-  group at the workflow level to serialise — gocdnext's parser
-  doesn't support workflow-level concurrency yet, so for now
-  serialize with materials or a lock job.
-- **Chart.yaml stays at the in-repo version**: the package step
-  stamps the artefact's version from the tag, but `Chart.yaml`
-  in main stays at whatever was last committed. Convention is to
-  bump `Chart.yaml` to the next planned release in a chore
-  commit before tagging — the tag stamp re-stamps it on the
-  artefact regardless.
+- **`helm push` to OCI requires login**: `GHCR_TOKEN` should be a
+  PAT with `write:packages`. The plugin runs `helm registry
+  login` with the secret before the push.
+- **`Chart.yaml` stays at the in-repo version**: the package step
+  stamps the artefact's version from the tag via
+  `--version`/`--app-version`, but `Chart.yaml` in main stays at
+  whatever was last committed. Convention is to bump `Chart.yaml`
+  to the next planned release in a chore commit before tagging.
+- **`v`-prefix in OCI tags**: GHCR accepts `v0.6.4` as a chart
+  version tag, but some clients pin via plain SemVer
+  (`helm install --version 0.6.4`). Choose one convention for
+  the org and stick to it.
+- **gh-pages publish migration**: the chart-releaser-style HTTP
+  publish isn't supported by `gocdnext/helm-push`. Operators
+  migrating off that flow either move consumers to OCI or keep
+  publishing via GitHub Actions until OCI is universal.

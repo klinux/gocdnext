@@ -19,18 +19,22 @@ jobs:
     stage: deploy
     approval:
       description: "Promote build to production"
-    image: alpine
-    script: ["echo deploying"]
 ```
 
 When the run reaches this job, its status flips to
 `awaiting_approval`. The dashboard surfaces a banner with
 *Approve / Reject* buttons. The first authenticated user with
-the role to approve clicks → job dispatches → script runs.
+the role to approve clicks → the gate passes → the run continues
+to the next stage.
 
-Without `groups:` and `quorum:`, ANY authenticated user (admin,
-maintainer, or viewer) can approve. The audit trail records who
-clicked.
+Approval jobs are **gates, not executors** — the parser rejects
+mixing `approval:` with `image:`, `uses:`, `script:`, or
+`artifacts:` on the same job. The gate doesn't run a command;
+clicking *Approve* IS the action.
+
+Without `approvers:` or `approver_groups:` set, ANY authenticated
+user (admin, maintainer, or viewer) can approve. The audit trail
+records who clicked.
 
 ## Groups + quorum
 
@@ -47,10 +51,8 @@ jobs:
     stage: deploy
     approval:
       description: "Promote build to production"
-      groups: [release-approvers, security-leads]
-      quorum: 2
-    image: alpine
-    script: ["echo deploying"]
+      approver_groups: [release-approvers, security-leads]
+      required: 2
 ```
 
 Now the gate enforces:
@@ -60,8 +62,25 @@ Now the gate enforces:
 - Two **distinct** members must approve. Same person clicking
   twice doesn't satisfy quorum.
 
-`quorum: 1` is the default (single-approver, useful when
-groups: alone is enough).
+`required: 1` is the default (single-approver, useful when
+`approver_groups:` alone is enough).
+
+The YAML keys are `approver_groups:` and `required:` (the parser's
+canonical names). The dashboard surfaces them as "Groups" and
+"Quorum" in the approval modal — both spellings refer to the same
+field.
+
+You can also pin individual approvers without a group:
+
+```yaml
+approval:
+  description: "Sign-off needed"
+  approvers: [alice@example.com, bob@example.com]
+  required: 1
+```
+
+`approvers:` and `approver_groups:` union — anyone in either list
+counts toward the `required:` quorum.
 
 ## Setting up groups
 
@@ -99,26 +118,27 @@ state. To re-attempt, click *Run latest* on the pipeline.
 
 ## Notifications
 
-Pair approval gates with the [notifications](/gocdnext/docs/pipelines/recipes/notifications/)
-plugin so approvers get pinged when a gate is reached:
+Pair approval gates with a notification so approvers get pinged
+when a gate is reached. Notification triggers (`on:`) accept
+`failure`, `success`, `always`, `canceled` — there's no
+`awaiting_approval` trigger today. Use a no-op job placed right
+before the gate, or hook a webhook from outside:
 
 ```yaml
 notifications:
-  - on: awaiting_approval
+  - on: failure
     uses: gocdnext/slack@v1
     with:
-      webhook: ${{ secrets.PROD_SLACK_WEBHOOK }}
+      webhook: ${{ PROD_SLACK_WEBHOOK }}
       channel: "#prod-deploys"
-      title: "🟡 Approval needed: ${CI_PROJECT_SLUG}"
-      message: |
-        *Pipeline*: ${CI_PIPELINE_NAME}
-        *Branch*: ${CI_COMMIT_BRANCH}
-        *Approve at*: ${CI_RUN_URL}
+      template: |
+        :x: ${CI_PIPELINE_NAME} (${CI_COMMIT_BRANCH}) failed
+        ${CI_RUN_URL}
+    secrets: [PROD_SLACK_WEBHOOK]
 ```
 
-The `awaiting_approval` event fires the moment a job hits that
-status. Don't pair this with `on: success` notifications for the
-same channel — too chatty.
+If a gate-arrived notification matters, watch the issue tracker
+for the upcoming `on: awaiting_approval` trigger.
 
 ## Common patterns
 
@@ -130,18 +150,21 @@ name: cd
 stages: [build, staging, gate, prod]
 
 jobs:
-  build: { ... }
+  build:
+    stage: build
+    image: alpine
+    script: ["./build.sh"]
 
   deploy-staging:
     stage: staging
     needs: [build]
-    image: ...
+    image: alpine
     script: ["./deploy.sh staging"]
 
   smoke-staging:
     stage: staging
     needs: [deploy-staging]
-    image: ...
+    image: alpine
     script: ["./smoke.sh staging"]
 
   approve-prod:
@@ -149,15 +172,13 @@ jobs:
     needs: [smoke-staging]
     approval:
       description: "Smoke-tests passed on staging. Approve prod?"
-      groups: [release-approvers]
-      quorum: 1
-    image: alpine
-    script: ["echo approved"]
+      approver_groups: [release-approvers]
+      required: 1
 
   deploy-prod:
     stage: prod
     needs: [approve-prod]
-    image: ...
+    image: alpine
     script: ["./deploy.sh prod"]
 ```
 
@@ -171,16 +192,16 @@ jobs:
     stage: deploy-gate
     approval:
       description: "Deploy?"
-      groups: [release-approvers]
-      quorum: 1
+      approver_groups: [release-approvers]
+      required: 1
 
   approve-data-migration:
     stage: post-deploy-gate
-    needs: [deploy]
+    needs: [approve-deploy]
     approval:
       description: "Run the data migration?"
-      groups: [security-leads, dba]
-      quorum: 2
+      approver_groups: [security-leads, dba]
+      required: 2
 ```
 
 Two gates, two distinct approver groups. Useful for high-stakes
@@ -192,19 +213,18 @@ The `awaiting_approval` status can sit forever. To auto-cancel
 after a window:
 
 ```yaml
-approve-prod:
-  stage: gate
-  approval:
-    description: "Approve prod"
-    groups: [release-approvers]
-    quorum: 1
-  timeout: 24h
-  ...
+jobs:
+  approve-prod:
+    stage: gate
+    approval:
+      description: "Approve prod"
+      approver_groups: [release-approvers]
+      required: 1
+    timeout: 24h
 ```
 
-After 24h the job is killed (`failed` with a timeout reason),
-the run terminates. Pair with a notification so approvers know
-the window is closing.
+After 24h the job is killed (`failed` with a timeout reason); the
+run terminates.
 
 ## Audit trail
 
@@ -229,11 +249,10 @@ filtering by user, project, action.
   approving their own PR's deploy. The platform doesn't enforce
   separation; if you need it, set group memberships exclusive
   (developers ≠ approvers).
-- **`quorum > group size`**: setting quorum 3 but only 2 members
-  in the group means the gate can never satisfy. Apply-time
-  validation catches obvious cases (`quorum > len(union of
-  members)` of all listed groups), but membership changes
-  later can drop the count below the quorum mid-flight. Watch
+- **`required > group size`**: setting `required: 3` but only 2
+  members in the listed groups means the gate can never satisfy.
+  Apply-time validation catches obvious cases, but membership
+  changes later can drop the count below quorum mid-flight. Watch
   for stuck runs.
 - **Approver without dashboard access**: the *Approve* button
   lives in the run detail page. Approvers need at least viewer

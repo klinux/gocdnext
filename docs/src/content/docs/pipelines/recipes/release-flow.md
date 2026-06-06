@@ -11,10 +11,14 @@ A clean release flow does three things on a `vX.Y.Z` tag push:
 3. Upload the release artefacts (binaries, checksums) to the
    Release.
 
-Three plugins handle this end-to-end:
-[`gocdnext/tag`](/gocdnext/docs/reference/plugins/#tag),
+Two plugins handle this end-to-end:
 [`gocdnext/release-notes`](/gocdnext/docs/reference/plugins/#release-notes),
 [`gocdnext/github-release`](/gocdnext/docs/reference/plugins/#github-release).
+
+The pipeline-level `when:` filter accepts `event:` and `branch:`
+only — there's no `tag_name:` regex today. Gate on `event: [tag]`
+and trust the build only fires on tag pushes; finer regex
+filtering would need to happen inside a build job (rare).
 
 ## The pipeline
 
@@ -22,8 +26,7 @@ Three plugins handle this end-to-end:
 name: release
 
 when:
-  event: [tag]                    # only fires on a vX.Y.Z tag push
-  tag_name: '^v\d+\.\d+\.\d+$'    # strict: ignores -rc, -beta tags
+  event: [tag]                    # only fires on tag pushes
 
 stages: [build, package, publish]
 
@@ -31,39 +34,39 @@ jobs:
   build-linux-amd64:
     stage: build
     uses: gocdnext/go@v1
-    with:
-      command: build -ldflags "-X main.Version=${TAG_NAME}" -o dist/myapp-linux-amd64 ./cmd/myapp
     variables:
       GOOS: linux
       GOARCH: amd64
+    with:
+      command: build -ldflags "-X main.Version=${CI_BRANCH}" -o dist/myapp-linux-amd64 ./cmd/myapp
     artifacts:
       paths: [dist/myapp-linux-amd64]
 
   build-linux-arm64:
     stage: build
     uses: gocdnext/go@v1
-    with:
-      command: build -ldflags "-X main.Version=${TAG_NAME}" -o dist/myapp-linux-arm64 ./cmd/myapp
     variables:
       GOOS: linux
       GOARCH: arm64
+    with:
+      command: build -ldflags "-X main.Version=${CI_BRANCH}" -o dist/myapp-linux-arm64 ./cmd/myapp
     artifacts:
       paths: [dist/myapp-linux-arm64]
 
   build-darwin-arm64:
     stage: build
     uses: gocdnext/go@v1
-    with:
-      command: build -ldflags "-X main.Version=${TAG_NAME}" -o dist/myapp-darwin-arm64 ./cmd/myapp
     variables:
       GOOS: darwin
       GOARCH: arm64
+    with:
+      command: build -ldflags "-X main.Version=${CI_BRANCH}" -o dist/myapp-darwin-arm64 ./cmd/myapp
     artifacts:
       paths: [dist/myapp-darwin-arm64]
 
   checksums:
     stage: package
-    uses: gocdnext/go@v1
+    image: alpine:3.20
     needs: [build-linux-amd64, build-linux-arm64, build-darwin-arm64]
     needs_artifacts:
       - from_job: build-linux-amd64
@@ -72,7 +75,6 @@ jobs:
         paths: [dist/]
       - from_job: build-darwin-arm64
         paths: [dist/]
-    image: alpine:3.20
     script:
       - cd dist && sha256sum myapp-* > SHA256SUMS
     artifacts:
@@ -82,15 +84,15 @@ jobs:
     stage: package
     uses: gocdnext/release-notes@v1
     with:
-      # Range from the previous tag to the current one. The plugin
-      # walks `git log` and groups by Conventional Commit type:
-      #   feat:    → "Features"
-      #   fix:     → "Bug fixes"
-      #   chore:   → "Chores"
-      #   docs:    → "Documentation"
-      from_ref: previous_tag         # auto-resolved from the git tag list
-      to_ref: ${TAG_NAME}
+      # Default `from:` walks back to the nearest prior tag via
+      # `git describe --tags --abbrev=0`; first-release repos fall
+      # back to the root commit so the very first release still
+      # produces notes. `to:` defaults to HEAD.
       output: dist/notes.md
+      format: conventional
+      heading: "## ${CI_BRANCH}"
+    artifacts:
+      paths: [dist/notes.md]
 
   publish:
     stage: publish
@@ -107,37 +109,23 @@ jobs:
         paths: [dist/]
       - from_job: notes
         paths: [dist/]
+    secrets: [GH_RELEASE_TOKEN]      # PAT with contents:write
     with:
-      tag: ${TAG_NAME}
-      title: "myapp ${TAG_NAME}"
-      notes_file: dist/notes.md
-      attach: |
+      tag: ${CI_BRANCH}              # CI_BRANCH carries the ref the tag push hit
+      title: "myapp ${CI_BRANCH}"
+      token: ${{ GH_RELEASE_TOKEN }}
+      assets: |
         dist/myapp-linux-amd64
         dist/myapp-linux-arm64
         dist/myapp-darwin-arm64
         dist/SHA256SUMS
-    secrets:
-      - GH_RELEASE_TOKEN          # PAT with contents:write
+      # github-release `notes:` is inline body text. Read the
+      # release-notes file into it by composing — see the variation
+      # below for the alpine cat-into-env pattern.
+      generate-notes: "true"
 ```
 
 What's worth highlighting:
-
-### Strict `tag_name:` regex
-
-`^v\d+\.\d+\.\d+$` matches `v0.2.0`, `v1.0.0`. It rejects
-`v0.2.0-rc1`, `v0.2.0-beta`, etc. — those would fire the same
-release flow against a pre-release tag, which is rarely what you
-want. Pre-release flows usually need a different pipeline (skip
-the published step, or publish as a draft).
-
-For pre-release support, change the regex to
-`^v\d+\.\d+\.\d+(-rc\d+)?$` and gate downstream:
-
-```yaml
-publish:
-  when:
-    tag_name: '^v\d+\.\d+\.\d+$'      # strict gate at the publish step
-```
 
 ### Three parallel build jobs
 
@@ -146,32 +134,36 @@ agents are free. On a 3-agent pool, all three platforms compile
 in parallel; on a 1-agent pool they serialise. The pipeline shape
 doesn't change.
 
-For more platforms (Windows, freebsd, more arches), add more jobs.
-A matrix expansion is more compact:
+For more platforms (Windows, freebsd, more arches), add more jobs
+or use `parallel.matrix:` (the list-of-objects shape):
 
 ```yaml
 build:
   stage: build
   uses: gocdnext/go@v1
-  matrix:
-    target:
-      - { goos: linux, goarch: amd64 }
-      - { goos: linux, goarch: arm64 }
-      - { goos: darwin, goarch: arm64 }
-      - { goos: darwin, goarch: amd64 }
-      - { goos: windows, goarch: amd64 }
+  parallel:
+    matrix:
+      - GOOS: [linux, darwin]
+        GOARCH: [amd64, arm64]
+      - GOOS: [windows]
+        GOARCH: [amd64]
   variables:
-    GOOS: ${{ matrix.target.goos }}
-    GOARCH: ${{ matrix.target.goarch }}
+    GOOS: ${{ GOOS }}
+    GOARCH: ${{ GOARCH }}
   with:
-    command: build -ldflags "-X main.Version=${TAG_NAME}" -o dist/myapp-${{ matrix.target.goos }}-${{ matrix.target.goarch }} ./cmd/myapp
+    command: build -ldflags "-X main.Version=${CI_BRANCH}" -o dist/myapp-${{ GOOS }}-${{ GOARCH }} ./cmd/myapp
   artifacts:
     paths: [dist/]
 ```
 
+`parallel.matrix:` is a list of objects; each object maps a name
+to a list of values. The cartesian product across both keys in
+the first entry gives 4 cells, plus the second entry's 1 cell = 5
+build jobs total.
+
 ### Release notes from Conventional Commits
 
-The `release-notes` plugin groups commits by the type prefix:
+`format: conventional` groups commits by the type prefix:
 
 ```
 feat: add support for foo
@@ -186,24 +178,65 @@ Becomes:
 ## Features
 - add support for foo
 
-## Bug fixes
+## Bug Fixes
 - correct off-by-one in bar
 
-## Documentation
-- (api) document new endpoint
+## Chores
+- bump deps
+
+## Other
+- docs(api) document new endpoint
 ```
 
-The chore is filtered out by default. Custom mapping is configurable
-via `.release-notes.yaml` at the repo root.
+Unclassifiable commits land under "Other" so nothing gets
+dropped.
 
-### `from_ref: previous_tag`
+### `from:` auto-resolution
 
-The plugin auto-resolves to whatever the previous semver-shaped
-tag was. For the very first release (`v0.1.0` with no prior tag),
-it falls back to the initial commit — the notes capture the
-project's full history.
+The plugin's default `from:` is "the nearest prior tag" via `git
+describe --tags --abbrev=0`. On a never-tagged repo it falls
+back to the root commit so the very first release still produces
+notes.
 
 ## Variations
+
+### Feed release notes into the GitHub Release body
+
+`github-release.notes:` is inline body text. To pull the
+release-notes file in, render it through a shell job:
+
+```yaml
+publish:
+  stage: publish
+  image: alpine:3.20
+  needs: [checksums, notes]
+  needs_artifacts:
+    - from_job: build-linux-amd64
+      paths: [dist/]
+    - from_job: build-linux-arm64
+      paths: [dist/]
+    - from_job: build-darwin-arm64
+      paths: [dist/]
+    - from_job: checksums
+      paths: [dist/]
+    - from_job: notes
+      paths: [dist/]
+  secrets: [GH_RELEASE_TOKEN]
+  script:
+    - apk add --no-cache curl
+    - |
+      BODY=$(cat dist/notes.md)
+      curl -fSL -X POST -H "Authorization: token ${GH_RELEASE_TOKEN}" \
+        -H "Accept: application/vnd.github+json" \
+        https://api.github.com/repos/klinux/myapp/releases \
+        -d @- <<EOF
+      {"tag_name":"${CI_BRANCH}","name":"myapp ${CI_BRANCH}","body":$(jq -Rs . <<< "$BODY")}
+      EOF
+```
+
+This bypasses the `github-release` plugin's lack of a `notes-file:`
+input. Use it when you want the conventional-commits body
+verbatim in the Release page.
 
 ### Draft release for review
 
@@ -213,75 +246,59 @@ publish manually:
 ```yaml
 publish:
   uses: gocdnext/github-release@v1
+  secrets: [GH_RELEASE_TOKEN]
   with:
-    ...
-    draft: true
+    tag: ${CI_BRANCH}
+    token: ${{ GH_RELEASE_TOKEN }}
+    draft: "true"
 ```
 
 The release exists on GitHub but isn't visible to consumers until
 manually published. Useful for orgs with mandatory release sign-off.
 
-### Automated changelog commit
-
-After the release lands, you might want to commit the generated
-notes back to `CHANGELOG.md`:
-
-```yaml
-update-changelog:
-  stage: publish
-  needs: [publish]
-  image: alpine:3.20
-  script:
-    - apk add git
-    - git config user.email "ci@example.com"
-    - git config user.name "CI"
-    - cat dist/notes.md > CHANGELOG.md.new
-    - cat CHANGELOG.md >> CHANGELOG.md.new
-    - mv CHANGELOG.md.new CHANGELOG.md
-    - git checkout main
-    - git add CHANGELOG.md
-    - git commit -m "chore: changelog for ${TAG_NAME}"
-    - git push
-  secrets:
-    - GIT_PUSH_TOKEN
-```
-
-This needs the same PAT as the release publish — careful, it
-opens an automation surface. Many teams skip this step and just
-keep the changelog in the GitHub Release notes.
-
-### Sign release artefacts
+### Sign release artefacts (keyless)
 
 ```yaml
 sign:
   stage: package
   needs: [build-linux-amd64, build-linux-arm64, build-darwin-arm64]
   uses: gocdnext/cosign@v1
+  needs_artifacts:
+    - from_job: build-linux-amd64
+      paths: [dist/]
+    - from_job: build-linux-arm64
+      paths: [dist/]
+    - from_job: build-darwin-arm64
+      paths: [dist/]
   with:
-    command: sign-blob --yes --output-signature dist/myapp.sig dist/myapp-*
-  variables:
-    COSIGN_EXPERIMENTAL: "1"
+    # cosign's blob-signing path lives in `action: sign-blob` —
+    # confirm the version of the plugin shipping that action
+    # before relying on it. Image signing uses `action: sign` +
+    # `image:`.
+    image: dist/myapp-linux-amd64
+    action: sign
+    cert-identity: "https://github.com/klinux/myapp/.github/workflows/release.yaml@refs/heads/main"
+    cert-oidc-issuer: "https://token.actions.githubusercontent.com"
 ```
 
-Then attach `dist/myapp.sig` to the release. Consumers verify
+Then attach the resulting `.sig` to the release. Consumers verify
 with `cosign verify-blob`.
 
 ## Common pitfalls
 
-- **`-ldflags` quoting**: the `-X main.Version=${TAG_NAME}` flag
+- **`-ldflags` quoting**: the `-X main.Version=${CI_BRANCH}` flag
   is a single shell arg. The plugin's `command:` is word-split,
   so the entire flag must NOT contain spaces between `=` and the
   value. If you need spaces (`"version: 1.0"`), quote inline:
   `-ldflags '-X "main.Version=v 1.0"'`.
-- **Cross-compilation needs CGO=0**: `CGO_ENABLED=1` (the default
-  in some images) requires C toolchain for the target — fails
-  cross-compile. Set `CGO_ENABLED=0` in `variables:` unless you
-  actually need cgo.
+- **Cross-compilation needs `CGO_ENABLED=0`**: `CGO_ENABLED=1`
+  (the default in some images) requires a C toolchain for the
+  target — fails cross-compile. Set `CGO_ENABLED=0` in
+  `variables:` unless you actually need cgo.
 - **Tag must be pushed AFTER the commit**: gocdnext fires on tag
   push; if you tag before pushing the commit, the run lands on a
   SHA the public GitHub doesn't know about and the release notes
   step misbehaves. Push commit first, tag second.
 - **Reusing release tags**: don't. The `github-release` plugin
-  refuses to overwrite an existing release by default. Force-push
-  via `replace: true` is supported but discouraged — published
-  releases should be immutable.
+  refuses to overwrite an existing release by default. Published
+  releases should be immutable; bump the patch instead.

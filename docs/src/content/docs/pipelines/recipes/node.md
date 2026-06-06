@@ -30,7 +30,6 @@ name: ci-web
 
 when:
   event: [push, pull_request]
-  paths: ["web/**", "package.json", "pnpm-lock.yaml"]
 
 stages: [install, lint, test, build]
 
@@ -58,7 +57,7 @@ jobs:
         paths: ["web/node_modules/"]
     with:
       working-dir: web
-      install: false         # reuse the artifact, skip resolve
+      install: "false"         # reuse the artifact, skip resolve
       command: pnpm exec tsc --noEmit
 
   unit:
@@ -70,10 +69,10 @@ jobs:
         paths: ["web/node_modules/"]
     with:
       working-dir: web
-      install: false
+      install: "false"
       command: pnpm test --run
     test_reports:
-      paths: ["web/junit.xml"]
+      - "web/junit.xml"
 
   bundle:
     stage: build
@@ -87,7 +86,7 @@ jobs:
       NEXT_PUBLIC_API_URL: http://localhost:8153
     with:
       working-dir: web
-      install: false
+      install: "false"
       command: pnpm build
     artifacts:
       paths:
@@ -147,12 +146,15 @@ job from `unit` lets the run-detail UI show a clear "type errors"
 vs "test failures" split — easier to triage than a single
 combined job that fails for "some reason".
 
-### `paths:` filter on `when:`
+### Scoping triggers to a sub-tree
 
-The `paths:` pattern under `when:` skips the run when the push
-didn't touch the web directory. Without it, every backend-only PR
-would still spin up the web pipeline for nothing. Patterns are
-include-style globs.
+Path-based filtering inside `when:` isn't supported by the parser
+today — it accepts `event:` and `branch:` only. The idiomatic
+split for a polyrepo / monorepo is one pipeline per sub-tree
+(`ci-server.yaml`, `ci-web.yaml`, …) and let each pipeline's
+implicit project material trigger all of them on every push. The
+heavy install/build work is then bounded by hash-keyed caches, so
+unaffected pipelines complete in seconds.
 
 ## Variations
 
@@ -167,10 +169,10 @@ unit:
     - from_job: deps
       paths: ["node_modules/"]
   with:
-    install: false
+    install: "false"
     command: pnpm exec vitest run --coverage
   test_reports:
-    paths: ["junit.xml"]
+    - "junit.xml"
   artifacts:
     paths: ["coverage/"]
 
@@ -190,23 +192,29 @@ upload-coverage:
 
 ### Lighthouse CI for performance budgets
 
+Services are declared at pipeline level (so all jobs in the run
+can reach them). The lighthouse job hits `http://app:3000/` —
+`app` is the service `name:` as DNS alias.
+
 ```yaml
-lighthouse:
-  stage: test
-  uses: gocdnext/lighthouse-ci@v1
-  needs: [bundle]
-  needs_artifacts:
-    - from_job: bundle
-      paths: ["dist/"]
-  with:
-    urls: |
-      http://localhost:3000/
-      http://localhost:3000/pricing
-    number_of_runs: 3
-  services:
-    - name: app
-      image: nginx:alpine
-      # serve dist/ on port 3000 inside the agent network
+services:
+  - name: app
+    image: nginx:alpine
+    # serve the dist/ on port 80 — adapt to your real image
+
+jobs:
+  lighthouse:
+    stage: test
+    uses: gocdnext/lighthouse-ci@v1
+    needs: [bundle]
+    needs_artifacts:
+      - from_job: bundle
+        paths: ["dist/"]
+    with:
+      urls: |
+        http://app/
+        http://app/pricing
+      number-of-runs: "3"
 ```
 
 ### Playwright e2e
@@ -222,7 +230,7 @@ e2e:
   with:
     command: test --reporter=junit
   test_reports:
-    paths: ["playwright-junit.xml"]
+    - "playwright-junit.xml"
   artifacts:
     paths: ["playwright-report/"]
 ```
@@ -230,17 +238,14 @@ e2e:
 The Playwright plugin image ships Chromium, Firefox, and WebKit —
 tests of all three browsers in one job.
 
-### Monorepo — only the affected package
+### Monorepo — one pipeline per package
 
-```yaml
-when:
-  event: [push, pull_request]
-  paths: ["packages/web-app/**"]
-```
-
-For a Turborepo/Nx setup, `paths:` per-pipeline keeps backend-only
-PRs from spinning up the web pipeline. Pair this with one
-pipeline file per package so failures are scoped.
+Path filtering in `when:` isn't wired. For a Turborepo/Nx layout,
+land one pipeline file per package (`.gocdnext/ci-web-app.yaml`,
+`.gocdnext/ci-api-gateway.yaml`, …) so each pipeline's failures
+are scoped and its runs name themselves. Backend-only PRs still
+trigger every pipeline, but unaffected ones hit warm caches and
+finish in seconds.
 
 ## Common pitfalls
 

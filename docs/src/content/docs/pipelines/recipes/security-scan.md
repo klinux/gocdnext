@@ -23,59 +23,64 @@ jobs:
     stage: scan
     uses: gocdnext/gitleaks@v1
     with:
-      # Default config covers the common patterns (AWS keys, GCP
+      # Default ruleset catches the common patterns (AWS keys, GCP
       # service-account JSON, GitHub PATs, Slack webhooks, …).
-      # Add custom rules in .gitleaks.toml at the repo root.
-      args: detect --source . --redact --no-git --verbose
+      # Add custom rules via .gitleaks.toml + the `config:` input.
+      scan-mode: dir              # working tree only (fast); use "git" for full history
+      path: .
+      exit-code: "1"              # fail on any finding
+      verbose: "true"
+      redact: "75"                # mask 75% of each finding in the log
 
   trivy-fs:
     stage: scan
     uses: gocdnext/trivy@v1
     with:
-      scan_type: fs
+      scan-type: fs
       target: .
       severity: HIGH,CRITICAL
-      exit_code: 1
-      ignore_unfixed: true
-      # Skip vendored deps that ship their own CVE db (rare). Most
-      # repos don't need this.
-      skip_dirs: vendor,node_modules
+      exit-code: "1"
+      ignore-unfixed: "true"
 
   trivy-config:
     stage: scan
     uses: gocdnext/trivy@v1
     with:
-      scan_type: config
-      target: ./k8s ./terraform ./Dockerfile
+      scan-type: config
+      target: ./k8s
       severity: HIGH,CRITICAL
-      exit_code: 1
+      exit-code: "1"
 ```
 
 What's worth highlighting:
 
-### `gitleaks --no-git` for current state only
+### `scan-mode: dir` for current state only
 
-Without `--no-git`, gitleaks walks the entire git history. That's
-ideal when you suspect an old leak; for CI it's overkill — the
-current commit is what's about to ship. `--no-git` scans the
-working tree only, which is what `event: [push, pull_request]`
-should care about.
+The default `scan-mode: dir` scans the working tree — what's
+actually about to ship. `scan-mode: git` walks the full commit
+history and is useful for one-shot historical audits, but
+expensive on every push.
 
-For a one-shot historical audit: run `gitleaks detect --source .`
-locally + commit the cleanup. The CI job catches new leaks; the
-local sweep catches the old ones.
+For a historical sweep: run `gitleaks detect --source .` locally
+on the repo + commit the cleanup. The CI job catches new leaks;
+the local sweep catches the old ones.
 
 ### Three trivy scan types
 
-- `scan_type: fs` — scans `target:` (a directory) for vulnerable
-  dependencies in lockfiles (package-lock.json, go.sum, Gemfile.lock,
-  etc.). What you run on every push.
-- `scan_type: image` — scans a built container. Used in the
+- `scan-type: fs` — scans `target:` (a directory) for vulnerable
+  dependencies in lockfiles (package-lock.json, go.sum,
+  Gemfile.lock, etc.). What you run on every push.
+- `scan-type: image` — scans a built container. Used in the
   [Docker build recipe](/gocdnext/docs/pipelines/recipes/docker-build/).
   Needs `docker: true`.
-- `scan_type: config` — scans Kubernetes manifests, Dockerfiles,
+- `scan-type: config` — scans Kubernetes manifests, Dockerfiles,
   Terraform for misconfigurations (privileged: true, root user,
   hardcoded secrets, etc.). What you run on infra repos.
+
+Trivy doesn't accept multiple `target:` paths in one job — pass a
+single directory and trivy walks it. For separate sweeps over
+multiple trees (k8s + terraform + Dockerfiles), declare one job
+per target.
 
 ### `severity: HIGH,CRITICAL` is the right default
 
@@ -84,25 +89,25 @@ findings are false-positive-prone (CVE-in-a-test-dep, etc.).
 Start strict; lower the bar only when the team is ready to
 triage the volume.
 
-### `exit_code: 1` blocks the run
+### `exit-code: "1"` blocks the run
 
 Without it, trivy reports findings to the log but the job
-returns 0 (success). Default 1 fails the run on any matching
-severity, which is what you want — security findings should
-block merge.
+returns 0 (success). `"1"` (the default) fails the run on any
+matching severity, which is what you want — security findings
+should block merge.
 
 For audit-only runs (no blocking, just visibility), set
-`exit_code: 0` and surface the report as an artefact:
+`exit-code: "0"` and surface the report as an artefact:
 
 ```yaml
 trivy-fs:
   stage: scan
   uses: gocdnext/trivy@v1
   with:
-    scan_type: fs
+    scan-type: fs
     target: .
     severity: HIGH,CRITICAL,MEDIUM,LOW
-    exit_code: 0
+    exit-code: "0"
     output: trivy-report.json
     format: json
   artifacts:
@@ -111,6 +116,23 @@ trivy-fs:
 
 ## Variations
 
+### Allowlist docs + fixtures (gitleaks)
+
+Known-safe paths that legitimately ship example tokens get
+allowlisted at the plugin level rather than committing a
+`.gitleaks.toml`. Composes with `config:` if you have project-
+specific rules.
+
+```yaml
+gitleaks:
+  stage: scan
+  uses: gocdnext/gitleaks@v1
+  with:
+    scan-mode: dir
+    allowlist-paths: "docs/, test/fixtures/, examples/"
+    verbose: "false"             # keep the build log quiet on clean repos
+```
+
 ### SBOM generation (CycloneDX)
 
 ```yaml
@@ -118,11 +140,11 @@ sbom:
   stage: scan
   uses: gocdnext/trivy@v1
   with:
-    scan_type: fs
+    scan-type: fs
     target: .
     output: sbom.cdx.json
     format: cyclonedx
-    exit_code: 0
+    exit-code: "0"
   artifacts:
     paths: [sbom.cdx.json]
 ```
@@ -130,60 +152,55 @@ sbom:
 The CycloneDX SBOM lists every package with its version + license
 + CPE identifier. Compliance tooling consumes it directly.
 
-### Block PRs but warn on push
+### Persist trivy DB cache across runs
 
-Different `severity` thresholds per event:
+trivy downloads its vulnerability DB at start. Cache it to avoid
+re-downloading every run; pair with `skip-db-update: "true"` on
+runs that should be fully offline (air-gapped agents).
 
 ```yaml
-trivy-pr:
+trivy-fs:
   stage: scan
   uses: gocdnext/trivy@v1
-  when:
-    event: [pull_request]
+  cache:
+    - key: trivy-db
+      paths: [.cache/trivy]
   with:
-    scan_type: fs
-    severity: HIGH,CRITICAL
-    exit_code: 1               # block PRs
-
-trivy-push:
-  stage: scan
-  uses: gocdnext/trivy@v1
-  when:
-    event: [push]
-    branches: [main]
-  with:
-    scan_type: fs
-    severity: HIGH,CRITICAL
-    exit_code: 0               # main shouldn't ship without finding,
-                               # but if it does we want visibility,
-                               # not breakage
+    scan-type: fs
+    target: .
+    skip-db-update: "true"        # rely on the cached DB
 ```
 
 ### Notify on findings (Slack)
 
 Pair trivy with the [notifications recipe](/gocdnext/docs/pipelines/recipes/notifications/)
-to ping a Slack channel when a scan job fails:
+to ping a Slack channel when a scan job fails. Note the
+`secrets:` declaration and `${{ NAME }}` identifier-only ref —
+dotted `${{ secrets.X }}` is rejected.
 
 ```yaml
 notifications:
   - on: failure
     uses: gocdnext/slack@v1
     with:
-      webhook: ${{ secrets.SECURITY_SLACK_WEBHOOK }}
+      webhook: ${{ SECURITY_SLACK_WEBHOOK }}
       channel: "#security-alerts"
-      title: "🚨 ${CI_PROJECT_SLUG} — security scan failed"
+      template: ":rotating_light: Security scan failed on ${CI_PIPELINE} #${CI_RUN_COUNTER}"
+    secrets: [SECURITY_SLACK_WEBHOOK]
 ```
 
 ## Common pitfalls
 
 - **gitleaks false positives**: add to `.gitleaksignore` (commit
   hash + rule ID). The plugin respects the standard config.
-  Don't disable rules globally — pin per-finding.
+  Don't disable rules globally — pin per-finding. Allowlist
+  whole paths via the plugin's `allowlist-paths:` input when
+  the directory legitimately ships example creds.
 - **trivy DB updates**: the plugin downloads the vulnerability DB
-  on each run. First-time runs take ~30s; subsequent ones cache.
-  Add a `cache:` block on `.trivy-cache` if your runs are
-  frequent and the network is slow.
-- **`scan_type: config` on Helm output**: trivy can't read raw
+  on each run. First-time runs take ~30s; subsequent ones hit
+  the cache. Persist `.cache/trivy` across runs (see variation
+  above) on networks where the download cost matters.
+- **`scan-type: config` on Helm output**: trivy can't read raw
   Helm templates; they need to be `helm template`'d first. Add
   a render step that emits to `dist/manifests/` and point trivy
   at that.

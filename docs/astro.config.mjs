@@ -87,6 +87,8 @@ export default defineConfig({
             { label: "Secrets", link: "/concepts/secrets/" },
             { label: "Cache strategies", link: "/concepts/cache/" },
             { label: "Approval gates", link: "/concepts/approvals/" },
+            { label: "Services lifecycle", link: "/concepts/services/" },
+            { label: "Kubernetes runtime", link: "/concepts/kubernetes-runtime/" },
             { label: "Value Stream Map (VSM)", link: "/concepts/vsm/" },
             { label: "Architecture deep-dive", link: "/concepts/architecture/" },
           ],

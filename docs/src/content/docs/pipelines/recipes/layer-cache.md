@@ -89,17 +89,22 @@ to the profile env so the plugin emits the right `endpoint_url=`.
 ## 2. Use the cache in a pipeline
 
 ```yaml title=".gocdnext/pipeline.yaml"
+name: ci
+when:
+  event: [push]
+stages: [build]
+
 jobs:
   build:
+    stage: build
     agent:
       profile: fast-builds   # ← inherits env + secrets
     docker: true
-    tasks:
-      - uses: gocdnext/buildx@v1
-        with:
-          image: ghcr.io/org/app
-          tags: latest
-          cache: bucket       # ← reads GOCDNEXT_LAYER_CACHE_*
+    uses: gocdnext/buildx@v1
+    with:
+      image: ghcr.io/org/app
+      tags: latest
+      cache: bucket          # ← reads GOCDNEXT_LAYER_CACHE_*
 ```
 
 That's it. No `secrets:` list at the job level, no bucket coords in
@@ -129,12 +134,14 @@ Override the backend (Azure, GHA cache, etc.) by skipping `cache: bucket`
 and writing the spec verbatim:
 
 ```yaml
-- uses: gocdnext/buildx@v1
+build:
+  stage: build
+  uses: gocdnext/buildx@v1
+  secrets: [AZURE_STORAGE_KEY]
   with:
     image: ghcr.io/org/app
-    cache-to:   type=azblob,name=org-cache,account_url=https://<acct>.blob.core.windows.net
-    cache-from: type=azblob,name=org-cache,account_url=https://<acct>.blob.core.windows.net
-    secrets: [AZURE_STORAGE_KEY]
+    cache-to: "type=azblob,name=org-cache,account_url=https://<acct>.blob.core.windows.net"
+    cache-from: "type=azblob,name=org-cache,account_url=https://<acct>.blob.core.windows.net"
 ```
 
 ## Logs stay clean
@@ -167,7 +174,9 @@ the simplest cache option uses that same registry — no bucket, no
 extra creds:
 
 ```yaml
-- uses: gocdnext/buildx@v1
+build:
+  stage: build
+  uses: gocdnext/buildx@v1
   with:
     image: ghcr.io/org/app
     cache: registry   # writes ghcr.io/org/app:buildcache
