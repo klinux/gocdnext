@@ -17,7 +17,6 @@ type TabValue = (typeof TAB_VALUES)[number];
 
 const TESTS_POLL_MS = 5_000;
 const ARTIFACTS_POLL_MS = 5_000;
-const SERVICES_POLL_MS = 3_000;
 
 type Props = {
   runId: string;
@@ -72,10 +71,16 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
     refetchInterval: isTerminalStatus(run.status) ? false : ARTIFACTS_POLL_MS,
     staleTime: 60_000,
   });
+  // Subscribe-only — no own polling interval. PipelineCanvas
+  // ALWAYS mounts on the run-detail page (run-live.client.tsx)
+  // and drives the actual refetch cadence. This observer just
+  // reads from the shared ["run-services", runId] cache for the
+  // tab badge count. Avoids three concurrent refetchIntervals
+  // (canvas, badge here, services-tab content) all racing on the
+  // same fetch.
   const servicesQuery = useQuery({
     queryKey: ["run-services", runId],
     queryFn: () => fetchServices(apiBaseURL, runId),
-    refetchInterval: isTerminalStatus(run.status) ? false : SERVICES_POLL_MS,
     staleTime: 30_000,
   });
 
