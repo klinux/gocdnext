@@ -1159,7 +1159,7 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 
 // seedSameStageNeeds creates a pipeline with TWO jobs in the SAME
 // stage where the second declares `needs: [first]`. Mirrors the
-// monorepo-app repro: `build needs: [types-generate]` in the same
+// Same-stage needs regression: `build needs: [types-generate]` in the same
 // stage. Returns the run id + job_run ids for the two jobs so the
 // caller can drive CompleteJob between dispatch ticks.
 func seedSameStageNeeds(t *testing.T, pool *pgxpool.Pool) (runID, prepJobID, dependentJobID uuid.UUID) {
@@ -1221,7 +1221,7 @@ func seedSameStageNeeds(t *testing.T, pool *pgxpool.Pool) (runID, prepJobID, dep
 }
 
 // TestDispatchRun_NeedsGate_WaitsForSameStageUpstream is the
-// REGRESSION GUARD for the monorepo-app repro: jobs in the same stage
+// REGRESSION GUARD for same-stage ordering: jobs in the same stage
 // that declare `needs:` must NOT both dispatch concurrently. Before
 // the gate, `dependent` would dispatch alongside `prep`, fail
 // `resolveArtifactDeps` (upstream hadn't produced), and be marked
