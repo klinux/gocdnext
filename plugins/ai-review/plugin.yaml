@@ -1,0 +1,286 @@
+name: ai-review
+category: quality
+description: >
+  LLM-driven code review for PR pipelines. Sends the diff
+  between the PR head and its base ref to Claude (Anthropic) or
+  GPT (OpenAI), parses structured JSON findings, and optionally
+  posts them as a GitHub/GitLab PR comment. Trunk-based teams
+  use it as the "extra pair of eyes" stage in pr.yaml — in
+  combination with Sonar (static analysis) and Gitleaks
+  (secrets) it covers the dimensions tests + human review tend
+  to miss (subtle nil paths, security smells, perf cliffs).
+
+  Cost guardrails: diff is truncated at `max-diff-bytes` before
+  the API call so a 500 KB monorepo PR doesn't surprise the
+  team with a $10 bill. Audit trail: full request + response +
+  raw findings saved to `.ai-review/` for
+  `artifacts.optional: [.ai-review]`.
+
+  Auth never lands on argv: API keys are read from env
+  (ANTHROPIC_API_KEY / OPENAI_API_KEY), and SCM tokens
+  (GITHUB_TOKEN / GITLAB_TOKEN) are read from env via the
+  `secrets:` list.
+
+inputs:
+  provider:
+    required: true
+    description: >
+      `claude` (Anthropic API) or `openai` (OpenAI Chat
+      Completions). Picks the API endpoint + default model +
+      which API key env var is consulted.
+  model:
+    required: false
+    description: >
+      Model id override. Defaults per provider:
+      - claude → `claude-sonnet-4-6` (good speed/cost
+        balance for code review)
+      - openai → `gpt-4o-mini` (cheap default; upgrade to
+        `gpt-4o` for higher-quality reviews on large PRs)
+      Bumping the model up to Opus/GPT-4o multiplies token
+      cost by 5-15x; profile a sample PR before standardising.
+  base-ref:
+    required: false
+    default: origin/main
+    description: >
+      Git ref to diff against. Default `origin/main` matches the
+      trunk-based contract (PRs branch off main, review = diff
+      against main). The entrypoint runs `git fetch origin
+      --depth=200` first so a shallow agent clone resolves.
+  head-ref:
+    required: false
+    default: HEAD
+    description: >
+      Git ref the diff ends at. Default HEAD = the PR's head SHA
+      (which is what the agent already checked out on a PR run).
+  mode:
+    required: false
+    default: console
+    description: >
+      `console` (default) prints findings to stdout — useful in
+      pipelines that surface logs to the reviewer. `pr-comment`
+      additionally POSTs the findings as a Markdown comment on
+      the PR. `pr-comment` requires `pr-number:` + `repo:` +
+      `scm-provider:` + `GITHUB_TOKEN` / `GITLAB_TOKEN` env.
+  pr-number:
+    required: false
+    description: >
+      PR/MR id (GitHub PR number, GitLab MR iid). Required when
+      mode=pr-comment. IMPORTANT: gocdnext doesn't yet inject
+      this as a CI variable (see roadmap); operators thread it
+      via a pipeline `variables:` block or via webhook
+      integration. See the trunk-based-release concept doc for
+      the recipe.
+  repo:
+    required: false
+    description: >
+      Required when mode=pr-comment. GitHub: `owner/repo`.
+      GitLab: numeric project id or URL-encoded namespace path
+      (`my-group%2Fmy-project`).
+  scm-provider:
+    required: false
+    default: github
+    description: >
+      `github` (default) or `gitlab`. Picks the comment API
+      endpoint and which auth header to use (Bearer vs
+      PRIVATE-TOKEN).
+  system-prompt:
+    required: false
+    description: >
+      Override the default reviewer prompt. Empty (default) =
+      built-in prompt focused on correctness, security,
+      performance, maintainability. Override with project-
+      specific guidance (e.g. "this is a kernel module — focus
+      on memory safety"). The prompt MUST still ask for the
+      JSON array shape the entrypoint parses (severity/file/
+      line/title/description/suggestion).
+  temperature:
+    required: false
+    default: "0"
+    description: >
+      Sampling temperature passed to the OpenAI API. "0" =
+      deterministic — same diff → same findings. Higher values
+      produce more varied (less reliable) reviews. Claude API
+      doesn't take this parameter on the messages endpoint and
+      the entrypoint ignores it for provider=claude.
+  max-tokens:
+    required: false
+    default: "4096"
+    description: >
+      Cap on the model's output tokens. 4096 fits ~20-30
+      findings comfortably. Bump to 8192 on monorepo PRs with
+      many findings expected; over-sizing this just wastes
+      output budget on the same set of findings.
+  max-diff-bytes:
+    required: false
+    default: "50000"
+    description: >
+      COST GUARDRAIL. Diff is truncated at this many bytes
+      before the API call. Default 50000 (~12k input tokens)
+      covers ~99% of feature PRs and caps cost at a few cents
+      per review. Larger PRs are flagged as truncated in the
+      output. To raise: bump this AND your model's context
+      window; the model's pricing scales linearly with input.
+  diff-exclude:
+    required: false
+    description: >
+      Newline-separated `:(exclude)<pathspec>` git diff
+      patterns. Default skips
+      `vendor/`, `node_modules/`, `*.lock`, `*.sum`, `dist/`,
+      `build/` — the high-noise paths that dominate diffs
+      without contributing review value. Override (not append)
+      to scope the review tighter for niche cases.
+  severity-threshold:
+    required: false
+    default: warning
+    description: >
+      Filter findings below this severity from console output +
+      PR comment. `info` shows everything; `warning` (default)
+      surfaces warnings + errors; `error` shows only blocking
+      issues. Audit trail (`.ai-review/findings.json`) always
+      includes the full list regardless of threshold.
+  fail-on-error:
+    required: false
+    default: "false"
+    description: >
+      `true` makes the job exit non-zero when any error-severity
+      finding survives the threshold filter — gates PR merge via
+      the required-status-check mechanism. Default `false` =
+      advisory mode (reviewer reads the findings, decides
+      themselves). Adopt `true` once the team has calibrated
+      what "error" means for your codebase (false positives
+      become merge-blockers).
+
+examples:
+  - name: console review (Claude, advisory)
+    description: >
+      Simplest shape: model reads the diff vs origin/main, prints
+      findings to the job log. Reviewer reads the findings in
+      gocdnext's run-detail page. No PR comment, no fail-on-
+      error — a softer rollout while the team calibrates.
+    yaml: |
+      ai-review:
+        stage: review
+        secrets: [ANTHROPIC_API_KEY]
+        uses: ghcr.io/klinux/gocdnext-plugin-ai-review@v1
+        artifacts:
+          optional: [.ai-review]
+        with:
+          provider: claude
+
+  - name: PR comment with Claude (GitHub)
+    description: >
+      Posts findings as a PR comment. Requires pr-number +
+      repo + GITHUB_TOKEN. PR vars aren't injected as CI vars
+      today — thread the PR number via a pipeline `variables:`
+      block that the webhook integration populates, or
+      hardcode for manual reruns.
+    yaml: |
+      ai-review:
+        stage: review
+        secrets: [ANTHROPIC_API_KEY, GITHUB_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-ai-review@v1
+        artifacts:
+          optional: [.ai-review]
+        with:
+          provider: claude
+          mode: pr-comment
+          repo: my-org/my-app
+          pr-number: ${PR_NUMBER}      # operator-provided
+
+  - name: PR comment with OpenAI (gpt-4o for harder reviews)
+    description: >
+      Same shape against OpenAI's API, upgrading to gpt-4o
+      (more expensive, deeper reviews) for security-sensitive
+      repos. Use the `severity-threshold:` knob to surface only
+      meaningful findings.
+    yaml: |
+      ai-review:
+        stage: review
+        secrets: [OPENAI_API_KEY, GITHUB_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-ai-review@v1
+        artifacts:
+          optional: [.ai-review]
+        with:
+          provider: openai
+          model: gpt-4o
+          mode: pr-comment
+          repo: my-org/my-app
+          pr-number: ${PR_NUMBER}
+          severity-threshold: warning
+
+  - name: PR merge gate (fail on error-severity)
+    description: >
+      Hardest setting — any error-severity finding blocks the
+      PR via gocdnext's required-status-check integration.
+      Pair with a calibrated severity threshold; until the
+      team learns what the model flags as "error" this can
+      cause false-positive merge-blocks.
+    yaml: |
+      ai-review:
+        stage: review
+        secrets: [ANTHROPIC_API_KEY, GITHUB_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-ai-review@v1
+        artifacts:
+          optional: [.ai-review]
+        with:
+          provider: claude
+          mode: pr-comment
+          repo: my-org/my-app
+          pr-number: ${PR_NUMBER}
+          severity-threshold: error
+          fail-on-error: "true"
+
+  - name: project-specific prompt + larger context
+    description: >
+      Override the default reviewer prompt to focus on a
+      specific concern (here: a Go server). Bump max-diff-bytes
+      + max-tokens for a monorepo PR that legitimately needs
+      a longer context window — cost scales linearly with both
+      so use sparingly.
+    yaml: |
+      ai-review:
+        stage: review
+        secrets: [ANTHROPIC_API_KEY]
+        uses: ghcr.io/klinux/gocdnext-plugin-ai-review@v1
+        artifacts:
+          optional: [.ai-review]
+        with:
+          provider: claude
+          model: claude-opus-4-8
+          max-diff-bytes: "150000"
+          max-tokens: "8192"
+          system-prompt: |
+            You are a senior Go reviewer for a high-throughput
+            CI/CD server. Review the diff focusing on:
+            - goroutine lifecycle (leaks, races, missing
+              context cancellation propagation)
+            - SQL injection via pgx string concatenation
+            - Allocations in hot paths (scheduler dispatch,
+              log streaming, webhook ingest)
+            - Error wrapping with %w (never %v)
+            Output the JSON array shape: severity / file / line
+            / title / description / suggestion.
+
+  - name: tighter scope (only src/ + scanner code)
+    description: >
+      Override diff-exclude to ALSO skip docs + tests; useful
+      for a project where the review value is concentrated in
+      production code.
+    yaml: |
+      ai-review:
+        stage: review
+        secrets: [ANTHROPIC_API_KEY]
+        uses: ghcr.io/klinux/gocdnext-plugin-ai-review@v1
+        artifacts:
+          optional: [.ai-review]
+        with:
+          provider: claude
+          diff-exclude: |
+            :(exclude)**/vendor/**
+            :(exclude)**/node_modules/**
+            :(exclude)**/*.lock
+            :(exclude)**/*.sum
+            :(exclude)**/dist/**
+            :(exclude)**/build/**
+            :(exclude)docs/**
+            :(exclude)**/*_test.go

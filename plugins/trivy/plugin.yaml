@@ -54,6 +54,22 @@ inputs:
     default: table
     description: >
       Report format — table (human), json, sarif, or template.
+  username:
+    required: false
+    description: >
+      Registry username for `scan-type: image` against a private
+      registry (GHCR-private, ECR, GAR, internal Harbor, …). The
+      plugin promotes this to `TRIVY_USERNAME` env which trivy
+      reads natively. Populate via the job's `secrets:` list so
+      the value flows through the gocdnext masking layer + the
+      docker-engine env propagation (NAME-only on argv, value
+      via cmd.Env). Empty = anonymous pull (works on public
+      registries).
+  password:
+    required: false
+    description: >
+      Registry token/password. Same path as `username:`:
+      promoted to `TRIVY_PASSWORD` env. Populate via secrets:.
   output:
     required: false
     description: >
@@ -70,6 +86,24 @@ examples:
         scan-type: image
         target: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
         severity: HIGH,CRITICAL
+
+  - name: scan published image on a private registry
+    description: >
+      Pulls the image from a private registry for scanning.
+      The login buildx did in the build job doesn't carry across
+      job containers, so trivy needs its own creds — `username:`
+      and `password:` promote to `TRIVY_USERNAME` / `TRIVY_PASSWORD`
+      which trivy reads natively. Use this in scan-after-publish
+      pipelines where the build job already pushed.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
+      secrets: [GHCR_USERNAME, GHCR_TOKEN]
+      with:
+        scan-type: image
+        target: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
+        severity: HIGH,CRITICAL
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
 
   - name: advisory fs scan
     description: >

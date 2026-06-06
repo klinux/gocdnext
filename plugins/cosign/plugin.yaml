@@ -23,8 +23,21 @@ inputs:
   key:
     required: false
     description: >
-      Path (under the workspace) to a cosign.key. Empty = keyless
+      Path (under the workspace) to a cosign.key file. Mutually
+      exclusive with `key-content:`. Empty = keyless
       signing/verification (Fulcio + OIDC).
+  key-content:
+    required: false
+    description: >
+      Inline cosign private-key bytes (the value of cosign.key
+      itself). The entrypoint writes the content to a 0600
+      tempfile inside the plugin's container and wipes it on
+      exit via `trap`; the key never touches the artifact
+      backend. Mutually exclusive with `key:` (file path).
+      Typical use: `key-content: ${{ COSIGN_PRIVATE_KEY }}`
+      with `secrets: [COSIGN_PRIVATE_KEY]` on the job, which
+      keeps the bytes in the gocdnext log-mask layer the whole
+      way through.
   key-password:
     required: false
     description: >
@@ -93,6 +106,32 @@ examples:
         image: ghcr.io/org/app@sha256:${IMAGE_SHA}
         key: cosign.key
         key-password: ${{ COSIGN_PASSWORD }}
+
+  - name: inline key content (no artifact persistence)
+    description: >
+      Pass the key bytes inline via `secrets:` — the entrypoint
+      writes them to a 0600 tempfile and `trap`-cleans on exit.
+      The key never persists in the artifact backend; with the
+      v0.7.x Docker engine + cmd.Env env propagation, it also
+      never lands on the docker CLI argv. Registry creds are
+      required because `cosign sign` uploads the signature
+      manifest, which on a private registry needs auth.
+      Preferred shape for trunk-based release pipelines whose
+      runners scan-after-publish + sign in the same window.
+    yaml: |
+      secrets:
+        - COSIGN_PRIVATE_KEY
+        - COSIGN_PASSWORD
+        - GHCR_USERNAME
+        - GHCR_TOKEN
+      uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
+      with:
+        image: ghcr.io/org/app:v1.2.3
+        key-content: ${{ COSIGN_PRIVATE_KEY }}
+        key-password: ${{ COSIGN_PASSWORD }}
+        registry: ghcr.io
+        username: ${{ GHCR_USERNAME }}
+        password: ${{ GHCR_TOKEN }}
 
   - name: attest an SBOM
     description: >

@@ -6,6 +6,84 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.8.0 — 2026-06-06
+
+### Feature — gocdnext/ai-review plugin (Claude + OpenAI)
+
+New plugin runs an LLM-driven code review against the PR diff and
+(optionally) posts the verdict as a PR comment. Supports two
+providers out of the box: Anthropic (Claude) via
+`provider: claude` and OpenAI (gpt-4 family) via `provider:
+openai`. The cost guardrail is `max-diff-bytes:` (default 50000) —
+the diff is truncated to that ceiling before being sent to the
+LLM, so a PR with a 5MB lockfile churn doesn't blow up token
+spend.
+
+Security: no API keys land on argv. The plugin writes a curl
+`--config` file (mktemp 0600 + EXIT/INT/TERM trap cleanup) for
+the Authorization header, and the SCM PR-comment token follows
+the same pattern. `parse_bool` / `parse_int` / `parse_float_0_to_1`
+strictly validate user inputs; subshell exit codes propagate via
+`|| exit $?`. Output paths are `LC_ALL=C` bash-substring trimmed
+(no SIGPIPE on giant diffs).
+
+### Feature — cosign plugin: `key-content:` input
+
+The signing key can now be piped inline through `secrets:` +
+`with: { key-content: ${{ COSIGN_PRIVATE_KEY }} }`. The plugin
+writes the PEM bytes to a 0600 tempfile internally and a trap
+wipes it on every exit path (no `exec cosign` — child process so
+the trap actually fires). The legacy `key:` input remains FILE
+PATH only — a runtime guard rejects PEM-like content and inline
+multi-line values with a remediation hint pointing at
+`key-content:`. The displayed cosign command redacts the value
+after `--key`, `--key-password`, `--password`, `-p` regardless.
+This removes the only pattern that persisted the private key in
+the artifact backend.
+
+### Feature — trivy plugin: registry credentials
+
+`username:` / `password:` inputs promoted to `TRIVY_USERNAME` /
+`TRIVY_PASSWORD` env which trivy reads natively. Scan-after-
+publish pipelines on a private registry now have a clean path —
+the build job's `docker login` doesn't carry across job
+containers, so trivy needs its own creds. Values flow through
+the agent's env-propagation path (NAME-only on argv, value via
+cmd.Env), so they don't appear in `ps auxww`.
+
+### Security — agent docker engine: env values off argv
+
+The docker engine previously emitted `-e KEY=VAL` on docker run's
+argv. Secrets injected via the plugin contract (registry tokens,
+cosign passwords, API keys) were visible to anyone with `ps`
+access on the host. The engine now emits `-e KEY` (name-only) on
+argv and propagates the value through `cmd.Env` of the docker
+CLI invocation — docker reads the value from its own environment
+and forwards it into the container. Same fix applied to service
+containers via `kubernetes_services.go`. Regression tests in
+`docker_envleak_test.go` assert no secret value ever appears in
+the argv slice, including multi-line PEMs.
+
+### Concept doc — trunk-based release
+
+New `/concepts/trunk-based-release/` walks a 4-pipeline trunk
+model (pr.yaml → main.yaml → release.yaml → prod.yaml) with
+production-grade YAML for each stage. Covers approval gates,
+cosign signing via `key-content`, multi-arch + scan-after-publish
+trade-off, GIT_ASKPASS pattern for tagging without leaking the
+release token, and a manual-verification preflight on the prod
+deploy.
+
+### Docs — docker-build + helm-release recipes overhauled
+
+The Docker recipe was rewritten to match how production multi-
+arch + signed-image pipelines actually compose: build (push:true,
+multi-arch) → trivy-scan (registry API, no docker socket) →
+cosign-sign (registry API + key-content). The conceptually broken
+"single-arch scan-before-publish" variant was removed. The Helm
+recipe's sign-chart block now uses `key-content:` + registry
+creds + drops `docker: true` to match.
+
 ## v0.7.0 — 2026-06-06
 
 ### Feature — gocdnext/sonar plugin (single image, SQ + SonarCloud)

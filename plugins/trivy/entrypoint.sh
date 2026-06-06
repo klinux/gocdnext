@@ -10,6 +10,20 @@ EXIT_CODE="${PLUGIN_EXIT_CODE:-1}"
 IGNORE_UNFIXED="${PLUGIN_IGNORE_UNFIXED:-true}"
 FORMAT="${PLUGIN_FORMAT:-table}"
 
+# Registry auth for `scan-type: image` against a private registry.
+# Trivy reads TRIVY_USERNAME / TRIVY_PASSWORD directly from env;
+# we promote PLUGIN_USERNAME / PLUGIN_PASSWORD to those names so
+# operators get a consistent "pipe via secrets:" UX with every
+# other plugin in the catalog. Values come from the agent's
+# env-propagation path (post-v0.7.x: NAME-only on argv, value
+# inherited from cmd.Env), so they don't appear in `ps auxww`.
+if [ -n "${PLUGIN_USERNAME:-}" ]; then
+    export TRIVY_USERNAME="${PLUGIN_USERNAME}"
+fi
+if [ -n "${PLUGIN_PASSWORD:-}" ]; then
+    export TRIVY_PASSWORD="${PLUGIN_PASSWORD}"
+fi
+
 # Trivy ships its CVE DB out-of-band — ~50MB pulled from
 # ghcr.io/aquasecurity/trivy-db on every fresh scan. Pinning
 # TRIVY_CACHE_DIR to a PWD-relative path makes the cache survive

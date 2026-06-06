@@ -259,9 +259,8 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID 
 	env := make([]corev1.EnvVar, 0, len(svc.Env))
 	// Iterate the sorted key order so two identical specs produce
 	// byte-identical PodSpecs. Helps test assertions + log diffs.
-	for _, kv := range envPairsSorted(svc.Env) {
-		idx := strings.IndexByte(kv, '=')
-		env = append(env, corev1.EnvVar{Name: kv[:idx], Value: kv[idx+1:]})
+	for _, k := range envKeysSorted(svc.Env) {
+		env = append(env, corev1.EnvVar{Name: k, Value: svc.Env[k]})
 	}
 
 	policy := imagePullPolicyFor(svc.Image)
