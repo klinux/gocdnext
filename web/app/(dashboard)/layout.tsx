@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { Separator } from "@/components/ui/separator";
@@ -30,9 +30,20 @@ export default async function DashboardLayout({ children }: Props) {
 
   const user = auth.mode === "authenticated" ? auth.user : undefined;
 
+  // shadcn's <Sidebar> writes "sidebar_state" cookie on every toggle
+  // (components/ui/sidebar.tsx). Read it SSR-side so the rendered
+  // markup already matches the user's last choice — without this
+  // the layout always boots open and the client only "corrects" on
+  // hydration, which (a) flashes the wrong width and (b) only ever
+  // wrote, never read, the cookie. Default to open when no cookie
+  // yet (first visit).
+  const cookieStore = await cookies();
+  const sidebarCookie = cookieStore.get("sidebar_state")?.value;
+  const defaultSidebarOpen = sidebarCookie !== "false";
+
   return (
     <QueryClientProvider>
-      <SidebarProvider>
+      <SidebarProvider defaultOpen={defaultSidebarOpen}>
         <AppSidebar user={user} />
         <SidebarInset>
           <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
