@@ -1,0 +1,298 @@
+name: image-copy
+category: release
+description: >
+  Promote a container image (multi-arch manifest list preserved)
+  from one registry to another via registry-API copy primitives.
+  Three interchangeable backends: `crane` (default, smallest +
+  fastest), `skopeo` (broader OCI tooling),
+  `buildx-imagetools` (when the job already has `docker: true`).
+  None of the three transfer cosign signatures — re-sign by the
+  PROMOTED_DIGEST output instead.
+
+  Closes the multi-arch manifest-list gap that `gocdnext/docker-
+  push` has — `docker tag` + `docker push` from the agent's local
+  daemon loses the index for multi-platform images, so consumers
+  on other architectures fail to pull. image-copy uses the
+  registry's native cross-repository BLOB MOUNT (crane / skopeo)
+  or the buildkit manifest-list builder, both of which keep the
+  full manifest tree intact.
+
+  Always emits the promoted DIGEST to a workspace file so a
+  downstream cosign-sign job can anchor by digest rather than the
+  mutable tag — closing the "what got signed?" question.
+
+inputs:
+  source:
+    required: true
+    description: >
+      Source image ref. Either tag form
+      (`registry/repo:tag`) or digest pin
+      (`registry/repo@sha256:...`). Digest form is recommended
+      for promotion flows so a concurrent retag of staging
+      doesn't substitute the image between scan and promote.
+      Must include a real registry host (e.g.
+      `ghcr.io/org/app:tag`, not the Docker Hub shorthand
+      `org/app:tag`) — image-copy is a cross-registry tool
+      and refuses ambiguous refs.
+  target:
+    required: true
+    description: >
+      Target image ref, **tag form only**
+      (`registry/repo:tag`). Digest form is rejected — a
+      promotion has to write to a tag the registry can
+      actually create; you can't "tag" something at a
+      content digest. One destination per job; use
+      `extra-tags:` for additional tags pointing at the same
+      digest in the SAME target repo (`latest`, `v1`, `v1.2`).
+  extra-tags:
+    required: false
+    description: >
+      Newline-separated additional tags applied to the same
+      target repo after the primary copy. Each tag must match
+      the OCI tag spec: starts with `[A-Za-z0-9_]`, then
+      0-127 of `[A-Za-z0-9_.-]`. The plugin validates per-tag
+      and bails on the first bad one so a typo never lands a
+      half-promoted set. Crane retags via `crane tag` (cheap
+      — repoints, no blob transfer), skopeo via a second
+      `skopeo copy`, buildx-imagetools by passing all `--tag`
+      flags in one invocation.
+  backend:
+    required: false
+    default: crane
+    description: >
+      Which copy tool runs. `crane` (default) is single-binary
+      and multi-arch native. `skopeo` is the broader OCI Swiss-
+      army knife — picks an order of magnitude more output
+      formats and exposes `--multi-arch all` explicitly.
+      `buildx-imagetools` requires the job to declare
+      `docker: true` so the docker socket is mounted; pick
+      this when your build pipeline already needs the daemon.
+
+      NONE of the three backends transfer cosign signatures or
+      attestations today. Those live as SEPARATE registry
+      artifacts (`sha256-X.sig` tags discovered via the cosign
+      triangulation or the OCI `referrers` API). To preserve a
+      signed image across promotion, re-sign with cosign at the
+      target registry instead — anchored to the PROMOTED_DIGEST
+      this plugin writes to the output file so the signature
+      attests the exact bytes promoted. Native cosign-signature
+      preservation is roadmap (would add a `cosign-copy` backend
+      wrapping `cosign copy SRC DST`).
+  username:
+    required: false
+    description: >
+      Registry user for the TARGET. Sourced via `secrets:`. The
+      plugin writes credentials to a 0600 mktemp docker
+      config.json that crane/skopeo read via DOCKER_CONFIG /
+      --authfile — never on argv. The EXIT/INT/TERM trap wipes
+      the auth file on every exit path.
+  password:
+    required: false
+    description: >
+      Registry password / token for the TARGET. Sourced via
+      `secrets:`.
+  source-username:
+    required: false
+    description: >
+      Registry user for the SOURCE. Defaults to PLUGIN_USERNAME
+      ONLY when source + target share the same host (the
+      common single-registry promotion). On cross-registry
+      copies the target token is NOT shared with the source —
+      a missing source credential leaves the source anonymous
+      (legitimate for public mirrors) rather than silently
+      forwarding the target token to a stranger.
+  source-password:
+    required: false
+    description: >
+      Source password / token. Same defaulting rule as
+      source-username — only shared with target creds on
+      same-host promotion, never on cross-registry copies.
+  output:
+    required: false
+    default: ".gocdnext/image-copy.env"
+    description: >
+      Workspace-relative output file. Created with `mkdir -p`.
+      Shell-sourceable (PROMOTED_DIGEST=, SOURCE=, TARGET=,
+      BACKEND=). Path must be relative; absolute and `..`
+      segments are rejected so a typo can't write outside
+      the job workspace. Pair with `artifacts.paths:` to feed
+      the digest into a downstream cosign-sign job.
+
+examples:
+  - name: same-registry promote staging → release
+    description: >
+      Build pushes to a staging tag, trivy scans it, then
+      image-copy promotes to the release tag in the SAME
+      registry (common pattern for GHCR-only flows). One set
+      of credentials, no source-username needed.
+    yaml: |
+      jobs:
+        build:
+          stage: build
+          docker: true
+          secrets: [GHCR_USERNAME, GHCR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+          with:
+            image: ghcr.io/org/app
+            tags: staging-${CI_COMMIT_SHORT_SHA}
+            platforms: linux/amd64,linux/arm64
+            push: "true"
+            registry: ghcr.io
+            username: ${{ GHCR_USERNAME }}
+            password: ${{ GHCR_TOKEN }}
+
+        scan-staging:
+          stage: scan
+          needs: [build]
+          secrets: [GHCR_USERNAME, GHCR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
+          with:
+            scan-type: image
+            target: ghcr.io/org/app:staging-${CI_COMMIT_SHORT_SHA}
+            severity: HIGH,CRITICAL
+            exit-code: "1"
+            username: ${{ GHCR_USERNAME }}
+            password: ${{ GHCR_TOKEN }}
+
+        promote:
+          stage: promote
+          needs: [scan-staging]
+          secrets: [GHCR_USERNAME, GHCR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-image-copy@v1
+          with:
+            source: ghcr.io/org/app:staging-${CI_COMMIT_SHORT_SHA}
+            target: ghcr.io/org/app:${CI_TAG_NAME}
+            extra-tags: |
+              latest
+            username: ${{ GHCR_USERNAME }}
+            password: ${{ GHCR_TOKEN }}
+          artifacts:
+            paths: [".gocdnext/image-copy.env"]
+
+  - name: cross-registry (private staging → public prod)
+    description: >
+      Staging in a private internal registry, prod in GHCR.
+      Different credentials for each side. crane handles
+      cross-registry copy in one shot via cross-repo BLOB
+      MOUNT where the registries cooperate, or a re-upload
+      where they don't.
+    yaml: |
+      promote:
+        stage: promote
+        secrets: [STAGING_USER, STAGING_TOKEN, GHCR_USERNAME, GHCR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-image-copy@v1
+        with:
+          source: staging.internal:5000/org/app:rc-${CI_COMMIT_SHORT_SHA}
+          target: ghcr.io/org/app:${CI_TAG_NAME}
+          source-username: ${{ STAGING_USER }}
+          source-password: ${{ STAGING_TOKEN }}
+          username: ${{ GHCR_USERNAME }}
+          password: ${{ GHCR_TOKEN }}
+
+  - name: skopeo backend (explicit --multi-arch all)
+    description: >
+      Functionally equivalent to crane for the multi-arch copy
+      case; pick skopeo when your operator runbooks already
+      assume it, or you need one of skopeo's other output
+      formats (OCI archive, dir, etc.) in a follow-up step.
+      Same cosign caveat as crane — re-sign at the target.
+    yaml: |
+      promote:
+        stage: promote
+        secrets: [GHCR_USERNAME, GHCR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-image-copy@v1
+        with:
+          backend: skopeo
+          source: ghcr.io/org/app:staging-${CI_COMMIT_SHORT_SHA}
+          target: ghcr.io/org/app:${CI_TAG_NAME}
+          username: ${{ GHCR_USERNAME }}
+          password: ${{ GHCR_TOKEN }}
+
+  - name: digest-pinned promotion + cosign sign-by-digest
+    description: >
+      Source as `@sha256:...` (the scanned digest), promote,
+      then sign the PROMOTED digest by reading the output
+      file. Closes the "what got signed?" race entirely —
+      everything anchors on one digest from scan through
+      signature.
+
+      Note that gocdnext jobs are `uses: <plugin>` XOR
+      `image: <base>` + `script:` — never both. The cosign
+      sign-by-digest step here is shaped as an image+script
+      job (not a `gocdnext/cosign` plugin job) because the
+      digest is only known at runtime via the sourced env
+      file, and the cosign plugin's `image:` input is a
+      parse-time substitution. For pipelines where the
+      operator passes the digest at trigger time, the
+      `gocdnext/cosign` plugin form would work and is
+      cleaner; this shape is for the auto-promoted case.
+
+      The cosign step uses `alpine:3.20` + `apk add cosign`
+      (cosign 2.2.x is in alpine main since 3.19). Avoids the
+      official `gcr.io/projectsigstore/cosign` distroless image
+      (no shell, won't work with `script:`) and the cost of
+      downloading cosign from GitHub on every run.
+    yaml: |
+      jobs:
+        promote:
+          stage: promote
+          secrets: [GHCR_USERNAME, GHCR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-image-copy@v1
+          with:
+            source: ghcr.io/org/app@sha256:abc123…
+            target: ghcr.io/org/app:${CI_TAG_NAME}
+            username: ${{ GHCR_USERNAME }}
+            password: ${{ GHCR_TOKEN }}
+          artifacts:
+            paths: [".gocdnext/image-copy.env"]
+
+        cosign-sign:
+          stage: sign
+          needs: [promote]
+          needs_artifacts:
+            - from_job: promote
+              paths: [".gocdnext/image-copy.env"]
+          secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GHCR_USERNAME, GHCR_TOKEN]
+          image: alpine:3.20
+          script:
+            - apk add --no-cache cosign
+            - |
+              # `.` (POSIX-portable) sources the env file written
+              # by image-copy. PROMOTED_DIGEST + TARGET come from
+              # there.
+              . .gocdnext/image-copy.env
+              echo "Signing ${TARGET} at ${PROMOTED_DIGEST}"
+              # Authenticate so cosign can upload the signature
+              # manifest to the registry. --password-stdin keeps
+              # the token off argv.
+              echo "${GHCR_TOKEN}" | cosign login ghcr.io \
+                --username "${GHCR_USERNAME}" --password-stdin
+              # cosign reads COSIGN_PASSWORD + the key via env —
+              # nothing on argv, no PEM material in the script
+              # source. Anchor on @sha256:<digest> rather than
+              # the mutable tag so the signature attests the
+              # exact promoted bytes.
+              cosign sign --yes \
+                --key env://COSIGN_PRIVATE_KEY \
+                "ghcr.io/org/app@${PROMOTED_DIGEST}"
+
+  - name: buildx-imagetools backend (job already has docker:true)
+    description: >
+      When the build job already needs `docker: true`, reuse
+      that daemon rather than installing crane/skopeo in a
+      separate step. Multi-tag in one invocation.
+    yaml: |
+      promote:
+        stage: promote
+        docker: true
+        secrets: [GHCR_USERNAME, GHCR_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-image-copy@v1
+        with:
+          backend: buildx-imagetools
+          source: ghcr.io/org/app:staging-${CI_COMMIT_SHORT_SHA}
+          target: ghcr.io/org/app:${CI_TAG_NAME}
+          extra-tags: |
+            latest
+            v1
+          username: ${{ GHCR_USERNAME }}
+          password: ${{ GHCR_TOKEN }}
