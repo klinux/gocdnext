@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -323,7 +324,7 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 		"GH_TOKEN":          "ghp_abc123",
 		"REGISTRY_PASSWORD": "reg-pw-xyz",
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestBuildAssignment_MergesProfileEnvAndMasks(t *testing.T) {
 	}
 	profileMasks := []string{"AKIA"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profileEnv, profileMasks, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, profileEnv, profileMasks, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -420,7 +421,7 @@ func TestBuildAssignment_PropagatesProfileAndResources(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -451,7 +452,7 @@ func TestBuildAssignment_NoResourcesLeavesProtoNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -475,7 +476,7 @@ func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, nil, nil, nil); err == nil {
+	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, nil, nil, nil, nil); err == nil {
 		t.Fatalf("expected error when declared secret is unresolved")
 	}
 }
@@ -527,7 +528,7 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -585,7 +586,7 @@ func TestBuildAssignment_DedupesArtifactPathsCanonical(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -642,7 +643,7 @@ func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
 		"DOCKER_PASSWORD": "hunter2",
 	}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -703,7 +704,7 @@ func TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch(t *testing.T) {
 	job := store.DispatchableJob{ID: uuid.New(), Name: "buildx"}
 
 	_, err := scheduler.BuildAssignment(run, job, nil,
-		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, nil, nil, nil)
+		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unresolved ref")
 	}
@@ -714,6 +715,420 @@ func TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch(t *testing.T) {
 	// neighbouring `${{ DOCKER_USERNAME }}` ref).
 	if strings.Contains(err.Error(), "deploybot") {
 		t.Errorf("err leaked sibling secret value: %v", err)
+	}
+}
+
+// TestE2E_OutputsRoundTripFromBumpToPublish is the integration cover
+// for issue #10: a YAML pipeline declares `outputs:` on an upstream
+// job, the agent persists outputs on CompleteJob, and the downstream's
+// dispatch resolves `${{ needs.X.outputs.Y }}` to the persisted value.
+// Covers every layer end to end (parser → store → CompleteJob →
+// ListJobOutputsForRun → groupNeedsOutputs → substituteNeedsRefs →
+// JobAssignment env) so a future refactor that breaks any of them
+// fails this one test.
+func TestE2E_OutputsRoundTripFromBumpToPublish(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	// ApplyProject with a 2-job pipeline: `bump` declares
+	// outputs.next, `publish` references it in env via the
+	// `${{ needs.bump.outputs.next }}` syntax.
+	fp := domain.GitFingerprint("https://github.com/org/e2e-outputs", "main")
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "e2e-outputs", Name: "E2E Outputs",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "release",
+			Stages: []string{"tag", "publish"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/e2e-outputs", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{
+					Name: "bump", Stage: "tag", Image: "alpine:3.20",
+					Tasks:   []domain.Task{{Script: "echo NEXT=v1.2.3 > $GOCDNEXT_OUTPUT_FILE"}},
+					Outputs: map[string]string{"next": "NEXT"},
+				},
+				{
+					Name:      "publish", Stage: "publish", Image: "alpine:3.20",
+					Variables: map[string]string{"IMAGE_TAG": "${{ needs.bump.outputs.next }}"},
+					Tasks:     []domain.Task{{Script: "echo $IMAGE_TAG"}},
+					Needs:     []string{"bump"},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applyRes.Pipelines[0].PipelineID
+
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("mat lookup: %v", err)
+	}
+	runRes, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID,
+		Revision: "abc0123456789abc0123456789abc0123456789a", Branch: "main",
+		Provider: "github", Delivery: "test-outputs", TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	runID := runRes.RunID
+
+	// Dispatch tick 1: only `bump` is dispatchable (publish gated
+	// by needs). The dispatched JobAssignment must carry the
+	// `outputs:` declaration so the agent knows to filter the
+	// $GOCDNEXT_OUTPUT_FILE against `next` → `NEXT`.
+	agentID := seedAgentRow(t, pool, "e2e-agent")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	sched.DispatchRun(ctx, runID)
+
+	var bumpAssign struct {
+		jobID   uuid.UUID
+		outputs map[string]string
+	}
+	select {
+	case msg := <-sess.Out():
+		assign := msg.GetAssign()
+		if assign == nil || assign.GetName() != "bump" {
+			t.Fatalf("first dispatch = %+v, want bump JobAssignment", msg)
+		}
+		bumpAssign.jobID = uuid.MustParse(assign.GetJobId())
+		bumpAssign.outputs = assign.GetOutputs()
+	case <-time.After(2 * time.Second):
+		t.Fatal("no bump assignment delivered")
+	}
+	// Layer 6 contract — declarations land on the JobAssignment so
+	// the agent can filter+rekey the parsed output file.
+	if bumpAssign.outputs["next"] != "NEXT" {
+		t.Errorf("JobAssignment.Outputs = %v, want next: NEXT", bumpAssign.outputs)
+	}
+
+	// Simulate the agent: the plugin would write
+	// `NEXT=v1.2.3` to $GOCDNEXT_OUTPUT_FILE; the agent's
+	// parseOutputsFile rekeys to alias `next` → `v1.2.3` and
+	// ships it in JobResult.outputs. We invoke CompleteJob with
+	// that same alias-keyed map (what the gRPC handler would
+	// forward after validation).
+	if _, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        bumpAssign.jobID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: agentID,
+		ExpectedAttempt: 0,
+		Outputs:         map[string]string{"next": "v1.2.3"},
+	}); err != nil || !ok {
+		t.Fatalf("complete bump: ok=%v err=%v", ok, err)
+	}
+
+	// Dispatch tick 2: publish is now gated-satisfied. Its
+	// JobAssignment env must contain the resolved IMAGE_TAG.
+	sched.DispatchRun(ctx, runID)
+	select {
+	case msg := <-sess.Out():
+		assign := msg.GetAssign()
+		if assign == nil || assign.GetName() != "publish" {
+			t.Fatalf("second dispatch = %+v, want publish JobAssignment", msg)
+		}
+		got := assign.GetEnv()["IMAGE_TAG"]
+		if got != "v1.2.3" {
+			t.Errorf("publish.env[IMAGE_TAG] = %q, want v1.2.3 — outputs round-trip broken", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no publish assignment delivered after bump completed")
+	}
+}
+
+func TestGroupNeedsOutputs_SingleRowFolds(t *testing.T) {
+	// Non-matrix upstream → single row, matrix_key="", fold trivially.
+	rows := []store.JobOutputs{
+		{Name: "bump", MatrixKey: "", Status: "success", Outputs: map[string]string{"next": "v1.0.0"}},
+	}
+	got, err := scheduler.GroupNeedsOutputs(rows)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["bump"]["next"] != "v1.0.0" {
+		t.Errorf("got %v, want bump.next=v1.0.0", got)
+	}
+}
+
+func TestGroupNeedsOutputs_NonSuccessRowsAreDropped(t *testing.T) {
+	// A failed/canceled upstream's outputs are NOT promoted into
+	// the substitution table. The needsSatisfied gate already
+	// blocks the dispatch, but defence in depth — anything that
+	// somehow leaks past gate would still fail substitution with
+	// the clearer "did not produce" error.
+	rows := []store.JobOutputs{
+		{Name: "bump", MatrixKey: "", Status: "failed", Outputs: map[string]string{"next": "v1.0.0"}},
+	}
+	got, err := scheduler.GroupNeedsOutputs(rows)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := got["bump"]; ok {
+		t.Errorf("non-success row should not be folded into NeedsOutputs; got %v", got)
+	}
+}
+
+func TestGroupNeedsOutputs_MatrixAmbiguityRejected(t *testing.T) {
+	// Kleber's #6 invariant: > 1 row sharing a name = ambiguous
+	// matrix; refuse with LOUD error listing the matrix keys.
+	rows := []store.JobOutputs{
+		{Name: "build", MatrixKey: "linux-amd64", Status: "success", Outputs: map[string]string{"digest": "sha256:aaa"}},
+		{Name: "build", MatrixKey: "linux-arm64", Status: "success", Outputs: map[string]string{"digest": "sha256:bbb"}},
+	}
+	_, err := scheduler.GroupNeedsOutputs(rows)
+	if err == nil {
+		t.Fatal("expected matrix-ambiguity rejection")
+	}
+	// UX: message must cite the upstream name AND every matrix key
+	// so the operator immediately sees which instances exist.
+	for _, want := range []string{"build", "linux-amd64", "linux-arm64", "ambiguous"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+	// Roadmap hint should be there for the operator's next step.
+	if !strings.Contains(err.Error(), "explicit per-row selector") {
+		t.Errorf("error should mention the roadmap selector form, got: %v", err)
+	}
+}
+
+func TestGroupNeedsOutputs_EmptyMatrixKeyMappedToPlaceholder(t *testing.T) {
+	// Edge case: two non-matrix rows of the same name (data
+	// corruption or a buggy migration). Mode keys would both be
+	// ""; we render them as "<empty>" in the message so the
+	// operator can spot the duplicate clearly.
+	rows := []store.JobOutputs{
+		{Name: "dup", MatrixKey: "", Status: "success"},
+		{Name: "dup", MatrixKey: "", Status: "success"},
+	}
+	_, err := scheduler.GroupNeedsOutputs(rows)
+	if err == nil {
+		t.Fatal("expected duplicate-row rejection")
+	}
+	if !strings.Contains(err.Error(), "<empty>") {
+		t.Errorf("error should render empty matrix-key as <empty>, got: %v", err)
+	}
+}
+
+func TestBuildAssignment_ResolvesNeedsOutputsInEnv(t *testing.T) {
+	// End-to-end: an `${{ needs.bump.outputs.next }}` ref in a
+	// downstream's variables: resolves against the NeedsOutputs
+	// table the scheduler hands BuildAssignment. The pre-pass
+	// runs BEFORE the standard substituteRefs so the result is
+	// already plain text by the time secrets/CI vars get checked.
+	def := domain.Pipeline{
+		Jobs: []domain.Job{
+			{
+				Name:      "publish",
+				Variables: map[string]string{"IMAGE_TAG": "${{ needs.bump.outputs.next }}"},
+				Tasks:     []domain.Task{{Script: "echo $IMAGE_TAG"}},
+				Needs:     []string{"bump"},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
+
+	needsOutputs := scheduler.NeedsOutputs{
+		"bump": {"next": "v1.3.0"},
+	}
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, needsOutputs)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	if got.Env["IMAGE_TAG"] != "v1.3.0" {
+		t.Errorf("IMAGE_TAG = %q, want v1.3.0", got.Env["IMAGE_TAG"])
+	}
+}
+
+func TestBuildAssignment_ResolvesNeedsOutputsInPluginSettings(t *testing.T) {
+	// Same shape but the ref is inside a plugin `with:` setting —
+	// the per-plugin pre-pass must run too, otherwise plugin jobs
+	// would lose access to upstream outputs.
+	def := domain.Pipeline{
+		Jobs: []domain.Job{
+			{
+				Name:  "sign",
+				Needs: []string{"promote"},
+				Tasks: []domain.Task{{
+					Plugin: &domain.PluginStep{
+						Image: "ghcr.io/x/cosign:v1",
+						Settings: map[string]string{
+							"image": "ghcr.io/org/app@${{ needs.promote.outputs.digest }}",
+						},
+					},
+				}},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "sign", Needs: []string{"promote"}}
+
+	needsOutputs := scheduler.NeedsOutputs{
+		"promote": {"digest": "sha256:beef1234"},
+	}
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, needsOutputs)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	plug := got.Tasks[0].GetPlugin()
+	if got, want := plug.Settings["image"], "ghcr.io/org/app@sha256:beef1234"; got != want {
+		t.Errorf("plugin image = %q, want %q", got, want)
+	}
+}
+
+func TestBuildAssignment_NeedsOutputValuesEnterLogMasks(t *testing.T) {
+	// Findings round (Kleber): output values resolved via
+	// `${{ needs.X.outputs.Y }}` may unintentionally carry token-
+	// like data; the scheduler adds them to LogMasks for defence
+	// in depth. Length floor matches the runner's applyMasks
+	// (>= 4 there; we use >= 8 to dodge false positives on short
+	// version strings).
+	def := domain.Pipeline{
+		Jobs: []domain.Job{
+			{
+				Name:      "publish",
+				Variables: map[string]string{"TOKEN": "${{ needs.bump.outputs.token }}"},
+				Tasks:     []domain.Task{{Script: "echo $TOKEN"}},
+				Needs:     []string{"bump"},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
+
+	const longValue = "abcdef1234567890token"
+	needsOutputs := scheduler.NeedsOutputs{
+		"bump": {
+			"token": longValue,
+			"short": "v1",  // < 8 chars → must NOT enter masks
+		},
+	}
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, needsOutputs)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	foundLong := false
+	for _, m := range got.GetLogMasks() {
+		if m == longValue {
+			foundLong = true
+		}
+		if m == "v1" {
+			t.Errorf("short value 'v1' should NOT enter masks (false-positive risk)")
+		}
+	}
+	if !foundLong {
+		t.Errorf("long output value not added to LogMasks; resolved value would leak in downstream logs")
+	}
+}
+
+func TestBuildAssignment_NeedsRefErrorsWrapSentinel(t *testing.T) {
+	// Findings round (Kleber): missing needs refs MUST surface as
+	// ErrNeedsRefUnresolved so the scheduler distinguishes
+	// CONFIGURATION errors (terminalise the job) from transient
+	// build errors (log + continue). The wire-up: refs.go errors
+	// wrap the sentinel; scheduler matches `errors.Is`.
+	def := domain.Pipeline{
+		Jobs: []domain.Job{
+			{
+				Name:      "publish",
+				Variables: map[string]string{"TAG": "${{ needs.bump.outputs.missing }}"},
+				Tasks:     []domain.Task{{Script: "echo $TAG"}},
+				Needs:     []string{"bump"},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
+
+	needsOutputs := scheduler.NeedsOutputs{"bump": {"next": "v1.3.0"}}
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, needsOutputs)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, scheduler.ErrNeedsRefUnresolved) {
+		t.Errorf("error does not wrap ErrNeedsRefUnresolved (scheduler would loop-queue this job): %v", err)
+	}
+}
+
+func TestBuildAssignment_MissingNeedsOutputErrors(t *testing.T) {
+	// Operator referenced an alias the upstream didn't produce —
+	// substituteNeedsRefs errors LOUD with the UX message that
+	// cites the upstream + alias. Error must reach the caller
+	// intact so the scheduler can fail the job with a useful
+	// reason ("did not produce the named output").
+	def := domain.Pipeline{
+		Jobs: []domain.Job{
+			{
+				Name:      "publish",
+				Variables: map[string]string{"TAG": "${{ needs.bump.outputs.missing }}"},
+				Tasks:     []domain.Task{{Script: "echo $TAG"}},
+				Needs:     []string{"bump"},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
+
+	needsOutputs := scheduler.NeedsOutputs{
+		"bump": {"next": "v1.3.0"}, // declared `next`, NOT `missing`
+	}
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, needsOutputs)
+	if err == nil {
+		t.Fatal("expected error for missing alias")
+	}
+	// Kleber's UX invariant: message MUST cite the upstream + alias
+	// so the operator doesn't chase a confusing failure downstream.
+	if !strings.Contains(err.Error(), "needs.bump.outputs.missing") {
+		t.Errorf("error should cite needs.bump.outputs.missing, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "did not produce") {
+		t.Errorf("error should explain the missing-output case, got: %v", err)
+	}
+}
+
+func TestBuildAssignment_MissingUpstreamJobErrors(t *testing.T) {
+	// Operator referenced a job not in `needs:` — caught by the
+	// pre-pass with a clear "not in this job's needs:" message.
+	def := domain.Pipeline{
+		Jobs: []domain.Job{
+			{
+				Name:      "publish",
+				Variables: map[string]string{"TAG": "${{ needs.unknown.outputs.next }}"},
+				Tasks:     []domain.Task{{Script: "echo $TAG"}},
+				Needs:     []string{"bump"}, // doesn't list `unknown`
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
+
+	needsOutputs := scheduler.NeedsOutputs{
+		"bump": {"next": "v1.0.0"},
+	}
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, needsOutputs)
+	if err == nil {
+		t.Fatal("expected error for missing upstream job")
+	}
+	if !strings.Contains(err.Error(), "needs.unknown") {
+		t.Errorf("error should cite the offending ref, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "needs:") {
+		t.Errorf("error should explain the missing-needs case, got: %v", err)
 	}
 }
 
@@ -758,7 +1173,7 @@ func TestBuildAssignment_SubstitutesCIVarsAndShellRefs(t *testing.T) {
 
 	got, err := scheduler.BuildAssignment(run, job, nil,
 		map[string]string{"DOCKER_USERNAME": "deploybot"},
-		nil, nil, nil, nil)
+		nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -812,7 +1227,7 @@ func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
 	cloneTokens := map[string]string{materialID.String(): "ghs_fake_install_token"}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, cloneTokens)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, cloneTokens, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -850,7 +1265,7 @@ func TestBuildAssignment_NoTokenLeavesURLUntouched(t *testing.T) {
 	gitCfg, _ := json.Marshal(domain.GitMaterial{URL: "https://github.com/octocat/hello-world", Branch: "main"})
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -888,7 +1303,7 @@ func TestBuildAssignment_PropagatesPipelineServices(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "integration", Image: "golang:1.25"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -920,7 +1335,7 @@ func TestBuildAssignment_NoServicesWhenPipelineHasNone(t *testing.T) {
 		Revisions: json.RawMessage(`{}`),
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "compile"}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
