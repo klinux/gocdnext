@@ -74,6 +74,118 @@ func TestParse_Happy(t *testing.T) {
 	}
 }
 
+func TestParse_JobOutputs_AcceptsDeclaration(t *testing.T) {
+	// outputs: maps a YAML alias (lowercase, kebab-ish) to the
+	// plugin env-var name read from $GOCDNEXT_OUTPUT_FILE. Both
+	// charsets validated; the parsed shape lands on
+	// domain.Job.Outputs verbatim.
+	const y = `
+name: release
+stages: [bump]
+materials:
+  - manual: true
+jobs:
+  bump:
+    stage: bump
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      next: NEXT
+      kind: KIND
+      image-digest: PROMOTED_DIGEST
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	bump := findJob(t, p, "bump")
+	if got, want := len(bump.Outputs), 3; got != want {
+		t.Fatalf("outputs len = %d, want %d (%v)", got, want, bump.Outputs)
+	}
+	cases := map[string]string{
+		"next":         "NEXT",
+		"kind":         "KIND",
+		"image-digest": "PROMOTED_DIGEST",
+	}
+	for alias, want := range cases {
+		if got := bump.Outputs[alias]; got != want {
+			t.Errorf("outputs[%q] = %q, want %q", alias, got, want)
+		}
+	}
+}
+
+func TestParse_JobOutputs_RejectsBadShape(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "alias starts with uppercase",
+			yaml: outputsYAML("Next", "NEXT"),
+		},
+		{
+			name: "alias starts with digit",
+			yaml: outputsYAML("1next", "NEXT"),
+		},
+		{
+			name: "alias contains slash",
+			yaml: outputsYAML("next/x", "NEXT"),
+		},
+		{
+			name: "env-name starts with digit",
+			yaml: outputsYAML("next", "1NEXT"),
+		},
+		{
+			name: "env-name contains dash",
+			yaml: outputsYAML("next", "MY-VAR"),
+		},
+		{
+			name: "env-name empty",
+			yaml: outputsYAML("next", ""),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseNamed(strings.NewReader(tc.yaml), "p", "release")
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+		})
+	}
+}
+
+// outputsYAML builds a one-job pipeline whose outputs block carries
+// the given alias/env pair. The rest of the YAML is the smallest
+// shape Parse will accept so the validation failure is the only
+// reason a test case fails.
+func outputsYAML(alias, envName string) string {
+	return `
+name: release
+stages: [bump]
+materials:
+  - manual: true
+jobs:
+  bump:
+    stage: bump
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      ` + alias + `: ` + envName + `
+`
+}
+
+// findJob walks the parsed jobs slice for a name match — the
+// in-memory shape is ordered, not keyed, so this is the test-only
+// O(n) lookup helper.
+func findJob(t *testing.T, p *domain.Pipeline, name string) domain.Job {
+	t.Helper()
+	for _, j := range p.Jobs {
+		if j.Name == name {
+			return j
+		}
+	}
+	t.Fatalf("job %q not in parsed pipeline (jobs=%v)", name, p.Jobs)
+	return domain.Job{}
+}
+
 func TestParse_TriggerEvents_AcceptsTag(t *testing.T) {
 	// `event: [tag]` is a first-class trigger value alongside push +
 	// pull_request — pipelines auto-fire on any tag push for the

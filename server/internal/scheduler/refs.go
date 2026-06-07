@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -153,6 +154,156 @@ func substituteRefsMap(in map[string]string, sources ...map[string]string) (map[
 	out := make(map[string]string, len(in))
 	for k, v := range in {
 		resolved, err := substituteRefs(v, sources...)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", k, err)
+		}
+		out[k] = resolved
+	}
+	return out, nil
+}
+
+// needsRefPattern matches the dotted `needs.<job>.outputs.<alias>`
+// form INSIDE a `${{ ... }}` wrapper. Each segment is validated
+// separately so error messages can point at the bad piece:
+//
+//	${{ needs.bump.outputs.next }}                  ← parses
+//	${{ needs.image-copy.outputs.promoted-digest }} ← parses (kebab job + alias)
+//	${{ needs.bump.outputs }}                       ← rejected — missing alias
+//	${{ needs.bump.foo.next }}                      ← rejected — second segment must be `outputs`
+//
+// The job-name charset matches gocdnext's parser idiom for job
+// names (alphanumeric + dash + underscore, lower- or upper-case).
+// The alias charset mirrors the parser's outputAliasRE (lowercase-
+// leading, kebab/snake). Keeping them aligned means a body that
+// matches the regex is GUARANTEED to be a parser-acceptable
+// declaration shape — the only resolution failure left is
+// "upstream didn't produce this alias".
+var needsRefPattern = regexp.MustCompile(
+	`^needs\.([A-Za-z0-9_-]+)\.outputs\.([a-z][a-zA-Z0-9_-]*)$`,
+)
+
+// NeedsOutputs is the per-job-name table the scheduler hands the
+// substitution layer at dispatch. Outer key: upstream job NAME
+// (matches the YAML's `needs:` entry). Inner key: alias the
+// upstream job declared in its `outputs:` block. Value: the bytes
+// the upstream agent shipped in JobResult.outputs[envName].
+//
+// Built by the scheduler via store.ListJobOutputsForRun + the
+// upstream job's declared alias→envName mapping. A nil/empty table
+// passed to substituteNeedsRefs means "no needs to resolve" — the
+// function fast-paths through inputs that don't contain "needs."
+// anyway.
+//
+// **Matrix semantics** (the BUILDER must enforce, not this map):
+// a matrix job expands into N job_run rows that share the same
+// `name` but differ in `matrix_key`. The downstream substitution
+// path can't pick "the right one" — the operator's intent is
+// inherently ambiguous when N>1. The builder (scheduler.go) MUST:
+//
+//   - fold a single matrix_key='' row (non-matrix job, or matrix
+//     that didn't expand) into NeedsOutputs[name] as-is;
+//   - error LOUD when N>1 rows share a name, citing the matrix
+//     keys, BEFORE building the map. The downstream dispatch
+//     never sees an ambiguous reference because we refused to
+//     produce one. Explicit per-row selector
+//     (`${{ needs.X.matrix[key].outputs.Y }}`) is roadmap; for
+//     v1 the answer to "I have a matrix upstream" is "split the
+//     work into a non-matrix output job, OR open #10 follow-up".
+//
+// This contract keeps refs.go pure — the substitution layer only
+// has to handle the "name → outputs" lookup. All matrix policy
+// lives in the layer that has the data to enforce it.
+type NeedsOutputs map[string]map[string]string
+
+// ErrNeedsRefUnresolved is the sentinel returned (wrapped) when a
+// `${{ needs.X.outputs.Y }}` ref can't be resolved — either the
+// upstream job isn't in needs:, or it ran but didn't produce the
+// alias. The scheduler matches against this to terminalise the
+// downstream job (failJobWithError) instead of leaving it in a
+// queued retry loop: the configuration error won't fix itself on
+// the next tick, so failing loud surfaces the bad reference in
+// run logs with the alias name instead of an operator wondering
+// "why is this job stuck?".
+var ErrNeedsRefUnresolved = errors.New("needs reference unresolved")
+
+// substituteNeedsRefs replaces every `${{ needs.<job>.outputs.<alias> }}`
+// token in s with the resolved value from needs. Runs as a
+// PRE-PASS before substituteRefs so the remaining body is plain
+// identifiers — keeps the two resolution algorithms (structured
+// lookup vs flat env) cleanly separated.
+//
+// Errors when:
+//   - reference points at a job NOT in `needs` (the table is empty
+//     for that key — operator declared the ref without the
+//     dependency)
+//   - reference points at an alias the upstream didn't write (job
+//     ran but produced no value under that key)
+//   - upstream job is a matrix that expanded to >1 instance and
+//     its outputs differ (today's scope: ambiguous matrix → error;
+//     explicit per-row selector is roadmap)
+//
+// Single pass; a resolved value containing `${{ ... }}` lands in
+// the output verbatim (prevents trivially-constructed recursion).
+func substituteNeedsRefs(s string, needs NeedsOutputs) (string, error) {
+	if !strings.Contains(s, "${{") {
+		return s, nil
+	}
+	if !strings.Contains(s, "needs.") {
+		// Body might match a non-needs ref like `${{ SECRET }}` —
+		// pass through so the downstream substituteRefs handles
+		// it. Cheap substring check avoids re-running the regex.
+		return s, nil
+	}
+	var missingJob, missingOutput []string
+	out := refPattern.ReplaceAllStringFunc(s, func(match string) string {
+		body := refPattern.FindStringSubmatch(match)[1]
+		m := needsRefPattern.FindStringSubmatch(body)
+		if m == nil {
+			// Not a needs ref shape — leave for substituteRefs.
+			// (Could be `${{ SECRET }}`, or a malformed body that
+			// substituteRefs will reject with its own error.)
+			return match
+		}
+		jobName, alias := m[1], m[2]
+		outputs, ok := needs[jobName]
+		if !ok {
+			missingJob = append(missingJob, body)
+			return match
+		}
+		value, ok := outputs[alias]
+		if !ok {
+			missingOutput = append(missingOutput, body)
+			return match
+		}
+		return value
+	})
+	switch {
+	case len(missingJob) > 0:
+		return "", fmt.Errorf(
+			"%w: %s — the referenced job is not in this job's `needs:` list, "+
+				"or the upstream didn't run (every needs.X.outputs.Y requires X listed in `needs:`)",
+			ErrNeedsRefUnresolved,
+			strings.Join(dedupeSorted(missingJob), ", "))
+	case len(missingOutput) > 0:
+		return "", fmt.Errorf(
+			"%w: %s — the upstream job ran but did not produce the named output. "+
+				"Declare the alias under the upstream's `outputs:` block AND have its plugin write the value to $GOCDNEXT_OUTPUT_FILE",
+			ErrNeedsRefUnresolved,
+			strings.Join(dedupeSorted(missingOutput), ", "))
+	}
+	return out, nil
+}
+
+// substituteNeedsRefsMap is the map-valued lift of substituteNeedsRefs.
+// Same fresh-map contract as substituteRefsMap. Empty/nil input
+// passes through so callers can chain without guarding.
+func substituteNeedsRefsMap(in map[string]string, needs NeedsOutputs) (map[string]string, error) {
+	if len(in) == 0 {
+		return in, nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		resolved, err := substituteNeedsRefs(v, needs)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", k, err)
 		}
