@@ -155,6 +155,32 @@ message JobResult {
   int32     exit_code = 4;
   string    error    = 5;
   repeated ArtifactRef artifacts = 6;
+  // Structured key/value outputs the job produced (issue #10).
+  // Keys are the YAML `outputs:` ALIASES the operator declared,
+  // values are what the plugin wrote to the file referenced by
+  // the GOCDNEXT_OUTPUT_FILE env var (absolute path the engine
+  // chooses at RunScript time; host path for Shell, container
+  // path for Docker/K8s containerized).
+  //
+  // Empty map ONLY when the job declared no `outputs:` block.
+  // Declared outputs are a contract — if the job declared
+  // outputs: but the plugin didn't write each declared alias,
+  // the official agent FAILS the job before this message is
+  // sent, with a message that cites the missing alias.
+  //
+  // Soft-capped at 64KB total (sum of keys + values) on both the
+  // agent and server side to keep gRPC payloads and the persisted
+  // JSONB row reasonable. A misbehaving plugin that exceeds the
+  // cap fails the job loud, not silently truncated. Server-side
+  // validation also rejects non-UTF-8 values, aliases that fail
+  // the parser's regex, and > 64 entries.
+  //
+  // Custom agent implementations MUST: (1) honour the declared
+  // outputs as a contract (fail the job on missing); (2) write
+  // alias-keyed values here (not env-var-name-keyed — the agent
+  // is responsible for the rekey from $GOCDNEXT_OUTPUT_FILE's
+  // KEY=value lines to the YAML alias map).
+  map<string, string> outputs = 7;
 }
 
 message ArtifactRef {
@@ -376,6 +402,13 @@ message JobAssignment {
   // metrics can label the dispatch — the scheduler's tag-matching
   // already enforced the constraint upstream.
   string profile = 19;
+  // Outputs declared in the job's YAML `outputs:` block — map of
+  // alias → plugin env-var name written to GOCDNEXT_OUTPUT_FILE.
+  // The agent uses this to filter+rekey the parsed output file
+  // before shipping JobResult.outputs (alias → value). Empty map
+  // means the job declared no outputs; the agent skips reading
+  // GOCDNEXT_OUTPUT_FILE entirely on that path. See issue #10.
+  map<string, string> outputs = 20;
 }
 
 // ResourceRequirements mirrors the subset of corev1.ResourceList the

@@ -243,6 +243,68 @@ func (q *Queries) ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) (
 	return items, nil
 }
 
+const listJobOutputsForRun = `-- name: ListJobOutputsForRun :many
+SELECT name, matrix_key, status, outputs
+FROM job_runs
+WHERE run_id = $1
+  AND name = ANY($2::text[])
+`
+
+type ListJobOutputsForRunParams struct {
+	RunID pgtype.UUID
+	Names []string
+}
+
+type ListJobOutputsForRunRow struct {
+	Name      string
+	MatrixKey *string
+	Status    string
+	Outputs   []byte
+}
+
+// Reads (name, matrix_key, outputs) for every job_run in the given
+// run whose name appears in @names. Used by the scheduler during
+// dispatch to resolve `${{ needs.<job>.outputs.<key> }}` refs in a
+// downstream job's `with:` / `env:` / `script:` (issue #10).
+//
+// Outputs are NOT NULL DEFAULT '{}' on the column, so a job that
+// ran without writing outputs returns an empty map — the
+// substitution layer surfaces "key missing" as a hard error
+// (operator referenced a key the upstream never produced) rather
+// than silently substituting empty.
+//
+// Why scoped by run_id + name list (not just run_id): a typical
+// needs: list is 1–3 names, the run has 10–50 job_runs. Filtering
+// at SQL avoids dragging unrelated rows + their JSONB payloads
+// across the wire. matrix_key returns so a needs:[matrix-parent]
+// reference can still pick the right instance (today the
+// substitution path picks the matrix_key=” parent; sibling-
+// matrix-row refs are a follow-up).
+func (q *Queries) ListJobOutputsForRun(ctx context.Context, arg ListJobOutputsForRunParams) ([]ListJobOutputsForRunRow, error) {
+	rows, err := q.db.Query(ctx, listJobOutputsForRun, arg.RunID, arg.Names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobOutputsForRunRow{}
+	for rows.Next() {
+		var i ListJobOutputsForRunRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.MatrixKey,
+			&i.Status,
+			&i.Outputs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listQueuedRunIDs = `-- name: ListQueuedRunIDs :many
 SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at
 `

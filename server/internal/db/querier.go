@@ -107,6 +107,14 @@ type Querier interface {
 	// Returns stage/run ids so the caller can cascade. ErrNoRows when
 	// the predicate doesn't match — caller treats as "another path
 	// handled this row already" and drops the message silently.
+	// outputs is set on the SAME row update as status so a successful
+	// CompleteJob atomically publishes the structured k/v outputs the
+	// agent shipped (issue #10). Downstream jobs gated on this row's
+	// needs: read both columns in one query, so the substitution path
+	// sees the final state — no read-after-write race against
+	// dispatch. NULL caller param falls back to '{}' so the legacy
+	// non-output completion path stays a one-line change at the call
+	// site.
 	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
@@ -626,6 +634,25 @@ type Querier interface {
 	// settings page can render "SRE (4 members)" without a second
 	// query per group.
 	ListGroups(ctx context.Context) ([]ListGroupsRow, error)
+	// Reads (name, matrix_key, outputs) for every job_run in the given
+	// run whose name appears in @names. Used by the scheduler during
+	// dispatch to resolve `${{ needs.<job>.outputs.<key> }}` refs in a
+	// downstream job's `with:` / `env:` / `script:` (issue #10).
+	//
+	// Outputs are NOT NULL DEFAULT '{}' on the column, so a job that
+	// ran without writing outputs returns an empty map — the
+	// substitution layer surfaces "key missing" as a hard error
+	// (operator referenced a key the upstream never produced) rather
+	// than silently substituting empty.
+	//
+	// Why scoped by run_id + name list (not just run_id): a typical
+	// needs: list is 1–3 names, the run has 10–50 job_runs. Filtering
+	// at SQL avoids dragging unrelated rows + their JSONB payloads
+	// across the wire. matrix_key returns so a needs:[matrix-parent]
+	// reference can still pick the right instance (today the
+	// substitution path picks the matrix_key='' parent; sibling-
+	// matrix-row refs are a follow-up).
+	ListJobOutputsForRun(ctx context.Context, arg ListJobOutputsForRunParams) ([]ListJobOutputsForRunRow, error)
 	// Detail trail for the UI: every vote in chronological order.
 	ListJobRunApprovals(ctx context.Context, jobRunID pgtype.UUID) ([]ListJobRunApprovalsRow, error)
 	ListJobRunsByRun(ctx context.Context, runID pgtype.UUID) ([]ListJobRunsByRunRow, error)

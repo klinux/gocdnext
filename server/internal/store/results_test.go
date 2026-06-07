@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -179,6 +180,122 @@ func TestInsertLogLine_DedupeKeyIsTriple(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id = $1 AND seq = 7`, jobID).Scan(&count)
 	if count != 2 {
 		t.Fatalf("count = %d, want 2 (different `at` -> distinct rows)", count)
+	}
+}
+
+func TestCompleteJob_PersistsOutputsAtomically(t *testing.T) {
+	// Outputs (issue #10) land on the SAME UPDATE as the status
+	// flip — verifies the atomic guarantee downstream substitution
+	// depends on: by the time a needs:-gated downstream job is
+	// dispatchable, the upstream's outputs are already visible.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	_, _, _, jobCompileID, _ := seedRunningJob(t, pool)
+	outputs := map[string]string{
+		"next":         "v1.3.0",
+		"kind":         "minor",
+		"image-digest": "sha256:abc",
+	}
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        jobCompileID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: jobAgentID(t, pool, jobCompileID),
+		Outputs:         outputs,
+	})
+	if err != nil || !ok {
+		t.Fatalf("complete: ok=%v err=%v", ok, err)
+	}
+
+	// Read the column directly and confirm it round-trips.
+	var raw []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT outputs FROM job_runs WHERE id = $1`, jobCompileID,
+	).Scan(&raw); err != nil {
+		t.Fatalf("read outputs: %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode outputs JSONB: %v", err)
+	}
+	for k, want := range outputs {
+		if got[k] != want {
+			t.Errorf("outputs[%q] = %q, want %q", k, got[k], want)
+		}
+	}
+}
+
+func TestCompleteJob_NilOutputsLeavesEmptyJSONB(t *testing.T) {
+	// Most jobs don't declare outputs. Nil Outputs in the input
+	// must result in the column defaulting to '{}', not NULL —
+	// the scheduler's downstream lookup relies on `outputs->>key`
+	// being a clean miss, not a NULL-vs-key-missing distinction.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	_, _, _, jobCompileID, _ := seedRunningJob(t, pool)
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        jobCompileID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: jobAgentID(t, pool, jobCompileID),
+		Outputs:         nil,
+	})
+	if err != nil || !ok {
+		t.Fatalf("complete: ok=%v err=%v", ok, err)
+	}
+	var raw []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT outputs FROM job_runs WHERE id = $1`, jobCompileID,
+	).Scan(&raw); err != nil {
+		t.Fatalf("read outputs: %v", err)
+	}
+	if string(raw) != `{}` {
+		t.Errorf("expected empty object literal, got %q", string(raw))
+	}
+}
+
+func TestCompleteJob_StaleCASRejectsOutputs(t *testing.T) {
+	// CAS protection (Kleber's nit): if a stale result is rejected
+	// by the ExpectedAgentID/ExpectedAttempt predicate, outputs
+	// MUST NOT write either. They're in the same UPDATE — same
+	// predicate — so the protection comes for free, but we lock
+	// it down with a test so a future refactor that splits outputs
+	// into a separate UPDATE doesn't silently lose the guarantee.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	_, _, _, jobCompileID, _ := seedRunningJob(t, pool)
+
+	wrongAgent := uuid.New()
+	_, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID:        jobCompileID,
+		Status:          "success",
+		ExitCode:        0,
+		ExpectedAgentID: wrongAgent, // STALE — never assigned to this job
+		Outputs:         map[string]string{"next": "v1.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("CAS failure should return ok=false, not error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected CAS rejection (ok=false) on wrong agent")
+	}
+
+	// Outputs column must remain empty — the rejected UPDATE
+	// touched neither status nor outputs.
+	var raw []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT outputs FROM job_runs WHERE id = $1`, jobCompileID,
+	).Scan(&raw); err != nil {
+		t.Fatalf("read outputs: %v", err)
+	}
+	if string(raw) != `{}` {
+		t.Errorf("stale CAS leaked outputs into row: %q", string(raw))
 	}
 }
 

@@ -271,6 +271,66 @@ func (s *Store) MarkStageRunning(ctx context.Context, stageRunID uuid.UUID) erro
 	return nil
 }
 
+// JobOutputs is one upstream job's outputs as the scheduler sees
+// them at downstream-dispatch time. Status comes along so the
+// substitution layer can distinguish "ran, no output for that key"
+// (Status terminal, key missing → hard error: operator referenced
+// what wasn't produced) from "haven't run yet" (Status non-terminal
+// — the dispatch should be blocked by the `needs:` gate, so this
+// shouldn't surface in practice; defence in depth).
+type JobOutputs struct {
+	Name      string
+	MatrixKey string
+	Status    string
+	Outputs   map[string]string
+}
+
+// ListJobOutputsForRun returns the outputs of every job_run in `runID`
+// whose name appears in `names`. Used by the scheduler when building
+// a downstream job's JobAssignment to resolve
+// `${{ needs.<job>.outputs.<key> }}` references. See issue #10.
+//
+// Returns one entry per matrix instance for matrix jobs (matrix_key
+// distinguishes); the substitution layer picks matrix_key='' (the
+// parent) by default. Empty slice when no name matches — that's a
+// configuration error caught earlier by needs-validation but
+// surfaced again here as "no upstream outputs" so the substitution
+// error message points at the right job.
+func (s *Store) ListJobOutputsForRun(ctx context.Context, runID uuid.UUID, names []string) ([]JobOutputs, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	rows, err := s.q.ListJobOutputsForRun(ctx, db.ListJobOutputsForRunParams{
+		RunID: pgUUID(runID),
+		Names: names,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list job outputs: %w", err)
+	}
+	out := make([]JobOutputs, 0, len(rows))
+	for _, r := range rows {
+		decoded := map[string]string{}
+		if len(r.Outputs) > 0 {
+			// Outputs is JSONB the server itself marshalled on
+			// CompleteJob — a parse error here is data corruption
+			// or a decoder bug, never operator input. Fail loud:
+			// silently dropping a row would surface as
+			// "downstream sees a key missing" at a much later
+			// step, masking the actual storage/decoder problem.
+			if err := json.Unmarshal(r.Outputs, &decoded); err != nil {
+				return nil, fmt.Errorf("store: list job outputs: decode JSONB for job %q: %w", r.Name, err)
+			}
+		}
+		out = append(out, JobOutputs{
+			Name:      r.Name,
+			MatrixKey: stringValue(r.MatrixKey),
+			Status:    r.Status,
+			Outputs:   decoded,
+		})
+	}
+	return out, nil
+}
+
 // GetRunForDispatch loads the run + pipeline definition snapshot.
 func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForDispatch, error) {
 	row, err := s.q.GetRunForDispatch(ctx, pgUUID(runID))
