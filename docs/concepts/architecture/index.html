@@ -107,7 +107,7 @@ downloads and cache fetches.</li>
 engine, depending on the agent’s <code dir="auto">GOCDNEXT_AGENT_ENGINE</code>).</li>
 <li>Streams stdout/stderr lines back as <code dir="auto">LogLine</code> messages,
 bulk-batched (100 lines / 200 ms).</li>
-<li>Streams <code dir="auto">ServiceLifecycle</code> events for any declared sidecars.</li>
+<li>Streams <code dir="auto">ServiceLifecycle</code> events for any declared services.</li>
 <li>Reports <code dir="auto">JobResult</code> on terminal status.</li>
 </ol>
 <p>Where material cloning happens depends on the runtime:</p>
@@ -144,7 +144,7 @@ HTTP API. You can run N replicas behind a load balancer.</p>
 is snapshotted at run-create time so list endpoints can skip the
 service-detail query when there are none.</li>
 <li><code dir="auto">service_runs</code> — one row per declared service per run; lifecycle
-state machine for sidecars (<code dir="auto">starting → ready → stopped</code>, or
+state machine for services (<code dir="auto">starting → ready → stopped</code>, or
 <code dir="auto">failed</code>). Sticky-failed enforced at the SQL upsert.</li>
 <li><code dir="auto">log_lines</code> — log stream (RANGE-partitioned by month).</li>
 <li><code dir="auto">artifacts</code>, <code dir="auto">caches</code> — backend metadata (the bytes are in
