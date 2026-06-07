@@ -222,6 +222,12 @@ func (d *Docker) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 	}
 	if image == "" {
 		if d.fallback != nil {
+			// Fallback to Shell: don't translate GOCDNEXT_OUTPUT_FILE
+			// here — the Shell engine sets it from
+			// spec.OutputsHostPath, which is the right place for a
+			// host-execution path. If we hardcoded /workspace here
+			// the fallback would write to a path that doesn't exist
+			// on the host (the bug Kleber caught).
 			return d.fallback.RunScript(ctx, spec)
 		}
 		return -1, errors.New("docker engine: job has no image and no DefaultImage configured")
@@ -233,6 +239,15 @@ func (d *Docker) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 				"docker engine: docker: true requested but %s is not reachable: %w",
 				d.cfg.SocketPath, err)
 		}
+	}
+
+	// Outputs (issue #10): containerized path — workspace is
+	// bind-mounted to ContainerWorkspaceMount, so the script's
+	// view of the output file lives there. Only set when the
+	// runner asked for outputs; engines with no outputs request
+	// pass the env through verbatim.
+	if spec.OutputsHostPath != "" && spec.OutputsRelPath != "" {
+		spec.Env = withOutputsEnv(spec.Env, filepath.Join(ContainerWorkspaceMount, spec.OutputsRelPath))
 	}
 
 	// cidfile lets us recover the container id for a forced kill

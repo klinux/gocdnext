@@ -82,6 +82,31 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	task := a.GetTasks()[0]
 
+	// v0.11 limitation (issue #10 follow-up): structured job
+	// outputs require reading $GOCDNEXT_OUTPUT_FILE from inside
+	// the task container's filesystem AFTER tasks complete.
+	// Shared-workspace mode reads from the same volume the agent
+	// has mounted; isolated mode would need a housekeeper-exec +
+	// `cat` round-trip (same shape as artifact upload). Not yet
+	// implemented — fail loud so the downstream substitution
+	// doesn't silently see an empty outputs map.
+	//
+	// Operators with outputs needs stay on
+	// `agent.workspace.accessMode=ReadWriteMany` for now;
+	// follow-up issue tracks parity.
+	if len(a.GetOutputs()) > 0 {
+		msg := fmt.Sprintf(
+			"job declares outputs:%d but isolated workspace mode (accessMode=ReadWriteOnce) does not "+
+				"yet support reading $GOCDNEXT_OUTPUT_FILE from the pod filesystem. "+
+				"Switch the agent to accessMode=ReadWriteMany OR remove the outputs declaration "+
+				"and have downstream consume `.gocdnext/*.env` workspace files via artifacts:/needs_artifacts: "+
+				"(legacy compat path, still supported).",
+			len(a.GetOutputs()))
+		r.emitLog(a, &seq, "stderr", msg)
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
+		return
+	}
+
 	// Pipeline services: brought up as standalone Pods by the
 	// engine (EnsureServices), independent of the job's
 	// workspace. Their HostAliases get wired into the task pod's
