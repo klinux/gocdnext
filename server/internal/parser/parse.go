@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -512,6 +513,18 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		j.TestReports = append([]string(nil), jd.TestReports...)
 	}
 
+	if len(jd.Outputs) > 0 {
+		if err := validateOutputsDeclaration(name, jd.Outputs); err != nil {
+			return domain.Job{}, err
+		}
+		// Copy so a later mutation of the parsed YAML map can't
+		// reach the domain object.
+		j.Outputs = make(map[string]string, len(jd.Outputs))
+		for k, v := range jd.Outputs {
+			j.Outputs[k] = v
+		}
+	}
+
 	for _, na := range jd.NeedsArtifacts {
 		if na.FromJob == "" {
 			return domain.Job{}, fmt.Errorf("job %q: needs_artifacts entry missing from_job", name)
@@ -699,6 +712,52 @@ func validateGitMaterialEvents(on []string) error {
 	for _, e := range on {
 		if _, ok := gitMaterialEvents[e]; !ok {
 			return fmt.Errorf("unknown event %q in `on:` (accepted: push, pull_request, tag)", e)
+		}
+	}
+	return nil
+}
+
+// outputAliasRE is the allowed character set for an `outputs:` map
+// key (the YAML alias the operator types). Same shape as a shell
+// identifier so substitution refs `${{ needs.X.outputs.<alias> }}`
+// parse predictably and the alias can appear in a downstream env
+// var name without escaping. ^[a-z] forces lowercase-leading per
+// the gocdnext YAML convention.
+var outputAliasRE = regexp.MustCompile(`^[a-z][a-zA-Z0-9_-]*$`)
+
+// outputEnvRE is the allowed character set for the RIGHT-hand
+// value of an `outputs:` map entry — the plugin's env-var name
+// written to $GOCDNEXT_OUTPUT_FILE. Standard POSIX env-var-name
+// shape: starts with letter/underscore, then alphanumerics +
+// underscores. No lowercase requirement because the operator
+// might be mirroring a third-party plugin's naming convention
+// (NEXT, PROMOTED_DIGEST, etc.).
+var outputEnvRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateOutputsDeclaration enforces the alias / env-name shape +
+// a soft per-job limit so a misbehaving pipeline can't declare an
+// open-ended outputs blob. The 64KB cap on actual output VALUES
+// applies at agent + server layers; here we just bound the
+// declaration count (operator-facing) so a 10000-entry block
+// surfaces at apply rather than at dispatch.
+func validateOutputsDeclaration(jobName string, outputs map[string]string) error {
+	const maxOutputs = 64
+	if len(outputs) > maxOutputs {
+		return fmt.Errorf("job %q: outputs declares %d entries, cap is %d (open an issue if you legitimately need more)",
+			jobName, len(outputs), maxOutputs)
+	}
+	for alias, envName := range outputs {
+		if !outputAliasRE.MatchString(alias) {
+			return fmt.Errorf("job %q: outputs alias %q must match %s — typically lowercase + dashes (e.g. `next`, `image-digest`)",
+				jobName, alias, outputAliasRE.String())
+		}
+		if envName == "" {
+			return fmt.Errorf("job %q: outputs alias %q maps to an empty env-var name — must name the variable the plugin writes to $GOCDNEXT_OUTPUT_FILE",
+				jobName, alias)
+		}
+		if !outputEnvRE.MatchString(envName) {
+			return fmt.Errorf("job %q: outputs[%s] env-var name %q must match %s — POSIX env-var shape (e.g. NEXT, PROMOTED_DIGEST)",
+				jobName, alias, envName, outputEnvRE.String())
 		}
 	}
 	return nil

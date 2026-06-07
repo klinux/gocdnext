@@ -162,6 +162,21 @@ type JobDef struct {
 	// `script`, `uses`, `image`, or `artifacts` allowed alongside
 	// it; parser rejects the combination.
 	Approval *ApprovalDef `yaml:"approval,omitempty"`
+	// Outputs declares the structured k/v pairs this job promises
+	// to produce. Map is YAML-alias → plugin env-var name read
+	// from $GOCDNEXT_OUTPUT_FILE at job end (same shape as
+	// $GITHUB_OUTPUT). Downstream jobs reference any declared
+	// alias via `${{ needs.<this-job>.outputs.<alias> }}` resolved
+	// at dispatch. Empty/omitted = no outputs (the common case).
+	// See issue #10.
+	//
+	// Example:
+	//   bump:
+	//     uses: ghcr.io/.../gocdnext-plugin-semver-bump@v1
+	//     outputs:
+	//       next: NEXT      # alias `next` reads NEXT from $GOCDNEXT_OUTPUT_FILE
+	//       kind: KIND
+	Outputs map[string]string `yaml:"outputs,omitempty"`
 }
 
 // ApprovalDef is the YAML shape of a manual approval gate. Kept

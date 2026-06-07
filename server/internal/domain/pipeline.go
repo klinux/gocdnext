@@ -448,6 +448,14 @@ type Job struct {
 	// complete, parses as JUnit XML, and sends back as a
 	// TestResultBatch so the server can render a Tests tab.
 	TestReports []string
+	// Outputs declares the structured k/v this job promises to
+	// produce, as a map from YAML alias → plugin env-var name read
+	// from $GOCDNEXT_OUTPUT_FILE. Downstream jobs reference any
+	// alias via `${{ needs.<this-job>.outputs.<alias> }}`, resolved
+	// at dispatch against the persisted job_runs.outputs of the
+	// upstream. Empty / nil = the job doesn't promise any outputs.
+	// See issue #10.
+	Outputs map[string]string
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`
