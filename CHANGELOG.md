@@ -6,6 +6,106 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.12.0 — 2026-06-07
+
+Two features that close limitations the v0.11 cycle left open:
+**isolated workspace mode now supports structured outputs** (Cora's
+RWO deployment can finally use the feature), and a new
+**`gocdnext/check-pipeline-run@v1` plugin** replaces the inline
+`curl + jq` preflight in the trunk-based-release recipe.
+
+### Feature — outputs parity in workspace isolated mode
+
+The v0.11 cycle shipped `outputs:` + `${{ needs.X.outputs.Y }}`
+substitution end-to-end for **shared workspace mode only**. Jobs
+declaring `outputs:` against an agent in isolated mode
+(`accessMode=ReadWriteOnce`) were rejected loud at dispatch with
+"switch to ReadWriteMany or fall back to legacy `.gocdnext/*.env`".
+
+That gap is closed. The implementation reuses the housekeeper
+sidecar that artefact upload already runs inside:
+
+- **Prep init container** mkdir + touch `.gocdnext/outputs/<jobID>.env`
+  inside the pod's ephemeral PVC when `assignment.outputs` is
+  non-empty. Permissions are `0o777` on `.gocdnext` and
+  `.gocdnext/outputs`, `0o666` on the file, so distroless /
+  non-root plugin images can write regardless of pod-level
+  umask.
+- **Engine** injects `GOCDNEXT_OUTPUT_FILE` on the task container
+  via `IsolatedJobSpec.OutputsRelPath`. The path is anchored at
+  `workDir` (= scriptWorkDir), not the PVC mount root — a
+  checkout with `target_dir:` now writes and reads to the same
+  nested path.
+- **Agent** reads the file post-task via
+  `PodExecutor.Exec("cat -- <abs path>")` inside the housekeeper
+  sidecar, parses with the same 64KB cap + charset + dedupe
+  pipeline shared mode uses, and ships `JobResult.outputs`
+  exactly as before. A capped buffer (`outputsCapBytes+1`)
+  defends against a misbehaving plugin OOMing the agent.
+
+Fail-safe contract preserved: task failure short-circuits the
+read (no outputs on failed jobs), artifact upload runs first
+(operator sees the real root cause when both could fail), and
+parse errors fail the job loud with the alias + line number,
+never the value.
+
+### Feature — `gocdnext/check-pipeline-run@v1` plugin
+
+The trunk-based-release recipe's `prod.yaml` preflight job
+previously embedded `apk add git + git rev-parse + (manual cosign
+verify)` as inline shell. The new plugin replaces that with a
+typed contract:
+
+```yaml
+preflight:
+  stage: preflight
+  needs: [approve-prod]
+  secrets: [GOCDNEXT_API_TOKEN]
+  uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+  outputs:
+    run_url: RUN_URL
+  with:
+    api-url: https://gocdnext.example.com
+    api-token: ${{ GOCDNEXT_API_TOKEN }}
+    project: acme-org
+    pipeline: release
+    tag: ${TAG}
+    expected-status: success
+    max-age: 7d
+```
+
+Queries the gocdnext REST API and confirms a target pipeline
+produced a terminal-success run matching the operator's filter
+(tag XOR revision). Fails the gate loud (exit 1) when no match —
+the prod deploy chain stays red.
+
+Exit codes split error vs. config so the runbook knows where to
+look: `0` match, `1` no match (investigate upstream pipeline),
+`2` input validation, `3` API unreachable / auth / shape anomaly
+(investigate API/network). Optional `outputs:` ships the matched
+run URL so post-deploy notifications audit-link prod promotion
+back to the upstream release run that cleared the gate.
+
+Defensive bits: API token in `curl --config` tempfile (never on
+argv), token charset rejects whitespace/quote/backslash, tag
+charset is Git-refname-derived (not OCI), output file fields
+validated against UUID/int/hex/RFC3339 before being written
+shell-sourceable, `runs-limit` capped at 100 mirroring the
+server's `?runs=N` cap. 25-case smoke harness covers input
+validation, API error surfacing, anomalies, and happy paths.
+
+### Latent bug fixed — `target_dir` + outputs in shared K8s
+
+The `workDir`-vs-`mountPath` anchoring fix that isolated mode
+needed also applies to shared K8s mode (Docker bind-mount
+geometry hid it on Docker). Without this fix, a checkout with
+`target_dir: app` would write the outputs file at
+`/workspace/app/.gocdnext/outputs/<short>.env` while the env
+pointed the plugin at `/workspace/.gocdnext/outputs/<short>.env`,
+failing with "No such file or directory" before the parser ran.
+Fixed in lockstep so the producer / env / consumer all agree on
+the nested path.
+
 ## v0.11.0 — 2026-06-07
 
 The single feature of this release is **structured job outputs**
