@@ -6,6 +6,73 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.9.0 — 2026-06-07
+
+### Feature — `CI_CAUSE` + `CI_PULL_REQUEST_*` env vars (closes #9)
+
+The webhook handler has stamped PR metadata on `runs.cause_detail`
+since migration 00001 (pr_number, pr_title, pr_head_ref, pr_base_ref,
+pr_author, pr_url), but the data never reached the agent's job env.
+Pipelines wanting sonar PR decoration / ai-review PR comments had to
+thread the data through external trigger plumbing.
+
+This release runs the data the last mile. PR-triggered runs now see:
+
+| Var | Source |
+|---|---|
+| `CI_CAUSE` | `pull_request` (or `webhook`, `manual`, `upstream`, `schedule`, `poll`) |
+| `CI_PULL_REQUEST_KEY` | `pr_number` |
+| `CI_PULL_REQUEST_BRANCH` | `pr_head_ref` |
+| `CI_PULL_REQUEST_BASE` | `pr_base_ref` |
+| `CI_PULL_REQUEST_TITLE` | `pr_title` |
+| `CI_PULL_REQUEST_AUTHOR` | `pr_author` |
+| `CI_PULL_REQUEST_URL` | `pr_url` |
+
+`CI_CAUSE` ships on every run (when non-empty), enabling
+`if: "$CI_CAUSE == manual"` branching. Non-PR runs (push, manual,
+upstream, schedule, poll) skip `CI_PULL_REQUEST_*` silently.
+
+**Backward compat absolute**: no migration, no proto, no rename.
+Missing fields stay UNSET rather than empty so the substitution
+layer leaves `${CI_PULL_REQUEST_TITLE}` literal on the rare PR
+with no title — no `myapp:pr-` style tags. Legacy runs with empty
+cause / nil cause_detail / malformed JSON all degrade silently.
+
+**Catalog source-of-truth updated**: `plugins/sonar`, `ai-review`,
+`buildx`, `docker` examples switched to `${CI_PULL_REQUEST_KEY}` +
+`${CI_PULL_REQUEST_BRANCH}` + `${CI_PULL_REQUEST_BASE}`. The
+trunk-based-release concept doc drops its `variables:` workaround
+block; pipelines are now single-pass.
+
+### Fix — dashboard sidebar collapse persists across reloads
+
+shadcn's `<Sidebar>` had been writing the `sidebar_state` cookie on
+every toggle, but the dashboard layout never read it back SSR-side.
+Collapsed sidebars flashed open on every reload before client
+hydration corrected them (and after a hard refresh, didn't always
+correct). [`(dashboard)/layout.tsx`](web/app/(dashboard)/layout.tsx)
+now reads the cookie and threads it into `<SidebarProvider
+defaultOpen={...}>` so the rendered markup matches the user's last
+choice immediately.
+
+### Fix — docs content centering on wide screens
+
+Starlight's default layout (`TwoColumnContent.astro:48`) pushed the
+content panel rightward via `--sl-content-margin-inline: auto 0`
+when both sidebar and TOC were visible. On 1920+px monitors the
+result was a heavy left gap (~285px) and a tight right gap (~110px)
+— visually lopsided. `brand.css` now re-centers the panel and
+widens `--sl-content-width` from 45rem to 52rem so prose breathes
+without crowding the TOC.
+
+### Docs
+
+- README aligned with v0.8.0 reality (status, differentiators,
+  quick-start, Helm version, shipped/open replacing the phase-0
+  roadmap).
+- YAML reference gains `CI_CAUSE` row + dedicated pull-request
+  section listing the six new env vars.
+
 ## v0.8.0 — 2026-06-06
 
 ### Feature — gocdnext/ai-review plugin (Claude + OpenAI)
