@@ -31,6 +31,15 @@ const outputsCapBytes = 64 * 1024
 // a meaningful "scriptWorkDir/<this-path>").
 const outputsRelDir = ".gocdnext/outputs"
 
+// OutputsRelPath returns the workspace-relative path of the
+// outputs file for a given job. Both the agent (shared-mode
+// prepareOutputsFile, isolated-mode spec.OutputsRelPath) and the
+// prep init container (which mkdir + touches it) MUST use this
+// function so the writer and the reader agree on the path.
+func OutputsRelPath(jobID string) string {
+	return filepath.Join(outputsRelDir, shortJobID(jobID)+".env")
+}
+
 // outputsEnvName is re-exported from the engine package so the
 // agent runner + engines name the env var via ONE constant. The
 // engine package owns it because engines need it at RunScript
@@ -66,7 +75,7 @@ func prepareOutputsFile(scriptWorkDir, jobID string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir outputs dir: %w", err)
 	}
-	path := filepath.Join(dir, shortJobID(jobID)+".env")
+	path := filepath.Join(scriptWorkDir, OutputsRelPath(jobID))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create outputs file: %w", err)
@@ -136,8 +145,27 @@ func parseOutputsFile(hostPath string, declared map[string]string) (map[string]s
 	}
 	defer func() { _ = f.Close() }()
 
+	return parseOutputsReader(f, declared)
+}
+
+// parseOutputsReader is the same parse/filter/dedupe pipeline as
+// parseOutputsFile but takes an io.Reader. Isolated mode uses this
+// directly: the file lives inside the pod's PVC, we cat it via
+// PodExecutor exec into a capped buffer, then hand the buffer to
+// this function — no host-side filesystem touch.
+//
+// The reader MUST already be bounded by the caller; the function
+// enforces cap by checking line count progression (the buffered
+// scanner caps line length at 64KB which equals outputsCapBytes,
+// so any single line above that is rejected by bufio.ErrTooLong,
+// and any cumulative growth above outputsCapBytes is caught by
+// the caller-side LimitReader/cap buffer pair).
+func parseOutputsReader(r io.Reader, declared map[string]string) (map[string]string, error) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
 	parsed := make(map[string]string)
-	scanner := bufio.NewScanner(io.LimitReader(f, outputsCapBytes+1))
+	scanner := bufio.NewScanner(io.LimitReader(r, outputsCapBytes+1))
 	// 64KB max line — the scanner's default is 64KB; outputs file is
 	// itself capped at 64KB so this comfortably fits any single line.
 	buf := make([]byte, 0, 64*1024)

@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -296,15 +296,9 @@ func (*Kubernetes) Name() string { return "kubernetes" }
 // OnLine, and returns the container's exit code. See Engine for the
 // err contract.
 func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
-	// Outputs (issue #10): K8s mounts the workspace at
-	// ContainerWorkspaceMount, so the task container sees the
-	// output file there. Set BEFORE BuildPodSpec so the env var
-	// lands on the Pod spec via the normal env-construction
-	// path. The shared-mode RWM lives here; isolated RWO mode
-	// rejects outputs at the runner before reaching this engine.
-	if spec.OutputsHostPath != "" && spec.OutputsRelPath != "" {
-		spec.Env = withOutputsEnv(spec.Env, filepath.Join(ContainerWorkspaceMount, spec.OutputsRelPath))
-	}
+	// Outputs env injection happens inside BuildPodSpec so the
+	// Pod is testable end-to-end without driving the fake Create
+	// reactor. See BuildPodSpec for the workDir-anchored fix.
 	pod := k.BuildPodSpec(spec)
 
 	created, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -360,8 +354,24 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		workDir = k.cfg.WorkspaceMountPath
 	}
 
-	env := make([]corev1.EnvVar, 0, len(spec.Env)+1)
-	for k, v := range spec.Env {
+	// Outputs (issue #10): anchor GOCDNEXT_OUTPUT_FILE at workDir
+	// (= scriptWorkDir), NOT at the mount root. Shared K8s mounts
+	// the WHOLE PVC at ContainerWorkspaceMount, so a checkout with
+	// target_dir puts scriptWorkDir at <mount>/<target_dir>;
+	// prepareOutputsFile creates the file under THAT path. Joining
+	// the env with the mount root instead would point
+	// `> $GOCDNEXT_OUTPUT_FILE` at a sibling directory the agent
+	// never created (same bug shape that bit isolated mode and
+	// surfaced in review). Inject inline here so BuildPodSpec is
+	// the single source of truth and tests can assert env without
+	// going through the fake clientset's Create reactor.
+	specEnv := spec.Env
+	if spec.OutputsHostPath != "" && spec.OutputsRelPath != "" {
+		specEnv = withOutputsEnv(specEnv, path.Join(workDir, spec.OutputsRelPath))
+	}
+
+	env := make([]corev1.EnvVar, 0, len(specEnv)+1)
+	for k, v := range specEnv {
 		env = append(env, corev1.EnvVar{Name: k, Value: v})
 	}
 	if spec.Docker {

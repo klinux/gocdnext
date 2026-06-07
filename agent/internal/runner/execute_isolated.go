@@ -15,6 +15,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -82,29 +83,26 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	task := a.GetTasks()[0]
 
-	// v0.11 limitation (issue #10 follow-up): structured job
-	// outputs require reading $GOCDNEXT_OUTPUT_FILE from inside
-	// the task container's filesystem AFTER tasks complete.
-	// Shared-workspace mode reads from the same volume the agent
-	// has mounted; isolated mode would need a housekeeper-exec +
-	// `cat` round-trip (same shape as artifact upload). Not yet
-	// implemented — fail loud so the downstream substitution
-	// doesn't silently see an empty outputs map.
+	// Outputs (issue #10 isolated parity, since v0.12):
+	//   - agent computes outputsRel from job id (same convention as
+	//     shared mode's prepareOutputsFile)
+	//   - prep init container mkdir+touches the file inside the
+	//     pod's PVC (workspace-relative, world-writable so any
+	//     task USER can write to it)
+	//   - engine injects GOCDNEXT_OUTPUT_FILE pointing at the
+	//     absolute container-side path via spec.OutputsRelPath
+	//   - on task success, agent execs `cat -- <abs path>` inside
+	//     the housekeeper sidecar via PodExecutor and parses the
+	//     stream with parseOutputsReader (same cap/charset/dedupe
+	//     guarantees as shared mode)
+	//   - on task failure, outputs are NOT read — failed jobs ship
+	//     no outputs in JobResult, matching shared mode
 	//
-	// Operators with outputs needs stay on
-	// `agent.workspace.accessMode=ReadWriteMany` for now;
-	// follow-up issue tracks parity.
+	// Empty outputs map → entire path skipped; behaviour identical
+	// to v0.11 jobs that didn't declare outputs.
+	var outputsRel string
 	if len(a.GetOutputs()) > 0 {
-		msg := fmt.Sprintf(
-			"job declares outputs:%d but isolated workspace mode (accessMode=ReadWriteOnce) does not "+
-				"yet support reading $GOCDNEXT_OUTPUT_FILE from the pod filesystem. "+
-				"Switch the agent to accessMode=ReadWriteMany OR remove the outputs declaration "+
-				"and have downstream consume `.gocdnext/*.env` workspace files via artifacts:/needs_artifacts: "+
-				"(legacy compat path, still supported).",
-			len(a.GetOutputs()))
-		r.emitLog(a, &seq, "stderr", msg)
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		return
+		outputsRel = OutputsRelPath(a.GetJobId())
 	}
 
 	// Pipeline services: brought up as standalone Pods by the
@@ -161,15 +159,16 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// runner.go::runPlugin, kept here so isolated mode doesn't
 	// loop through engine.RunScript (which is per-task).
 	spec := engine.IsolatedJobSpec{
-		RunID:       a.GetRunId(),
-		JobID:       a.GetJobId(),
-		WorkDir:     scriptWorkDir,
-		Env:         a.GetEnv(),
-		Docker:      a.GetDocker(),
-		Resources:   assignmentResources(a),
-		Profile:     a.GetProfile(),
-		AgentTags:   append([]string(nil), r.cfg.AgentTags...),
-		HostAliases: servicesPhase.hostAliases,
+		RunID:          a.GetRunId(),
+		JobID:          a.GetJobId(),
+		WorkDir:        scriptWorkDir,
+		Env:            a.GetEnv(),
+		Docker:         a.GetDocker(),
+		Resources:      assignmentResources(a),
+		Profile:        a.GetProfile(),
+		AgentTags:      append([]string(nil), r.cfg.AgentTags...),
+		HostAliases:    servicesPhase.hostAliases,
+		OutputsRelPath: outputsRel,
 	}
 
 	if plugin := task.GetPlugin(); plugin != nil {
@@ -405,8 +404,50 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		return
 	}
 
-	log.Info("runner: execute (isolated) ok", "artifacts", len(refs))
-	r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs)
+	// Outputs (isolated parity): cat the file via the same
+	// housekeeper sidecar, against the SAME PVC mount path the
+	// engine injected as GOCDNEXT_OUTPUT_FILE. Done AFTER artifact
+	// upload because (a) artifacts can fail-loud and we'd lose the
+	// outputs map anyway, and (b) operators expect "outputs land
+	// when the job succeeds end-to-end" — failed artifact upload =
+	// failed job = no outputs propagation.
+	var producedOutputs map[string]string
+	if outputsRel != "" {
+		// Join under scriptWorkDir (NOT cfg.WorkspaceMountPath):
+		// when a checkout declared target_dir, scriptWorkDir is
+		// `<mount>/<target_dir>` and prep wrote the outputs file
+		// under that subdir. The engine's GOCDNEXT_OUTPUT_FILE
+		// uses the same anchor (see kubernetes_isolated.go),
+		// so producer and consumer agree on the path even when
+		// target_dir nests the workspace one level down.
+		//
+		// `path.Join` (not `filepath.Join`) — the value is
+		// consumed inside a Linux container regardless of the
+		// agent's host OS, matching the engine-side style.
+		containerOutputsPath := path.Join(scriptWorkDir, outputsRel)
+		got, err := ReadOutputsFromPod(ctx, exec, podName, "housekeeper", containerOutputsPath, a.GetOutputs())
+		if err != nil {
+			// Never log the file contents — values may be tokens
+			// or digests. The parser's error message names the
+			// offending KEY / line number, not values, per the
+			// hardening in [[roadmap_issue_10_outputs]].
+			r.cfg.Logger.Warn("runner: outputs parse failed (isolated)",
+				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+			r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
+				"outputs: "+err.Error(), refs, nil)
+			r.cleanupIsolatedPod(k, podName, false)
+			return
+		}
+		producedOutputs = got
+	}
+
+	outputKeys := make([]string, 0, len(producedOutputs))
+	for k := range producedOutputs {
+		outputKeys = append(outputKeys, k)
+	}
+	log.Info("runner: execute (isolated) ok",
+		"artifacts", len(refs), "output_keys", outputKeys)
+	r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs, producedOutputs)
 	r.cleanupIsolatedPod(k, podName, true)
 }
 

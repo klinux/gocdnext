@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"path"
 	"strconv"
 	"time"
 
@@ -64,6 +65,15 @@ type IsolatedJobSpec struct {
 	// caller, carrying the serialised JobAssignment. Mounted on the
 	// "prep" init container at /etc/gocdnext.
 	AssignmentSecretName string
+
+	// OutputsRelPath is the workspace-relative path of the
+	// structured-outputs file the task container should write to
+	// (set via GOCDNEXT_OUTPUT_FILE in the task env). Empty when
+	// the job did not declare outputs:; engine then skips the env
+	// injection. The path must be the same one prep mkdir+touch
+	// at workspace materialisation time, otherwise the plugin
+	// writes one place and post-task exec reads another.
+	OutputsRelPath string
 }
 
 // BuildIsolatedJobPodSpec materialises the multi-container Pod for
@@ -111,8 +121,33 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 		workDir = mountPath
 	}
 
-	env := make([]corev1.EnvVar, 0, len(spec.Env)+2)
-	for key, v := range spec.Env {
+	// Outputs (issue #10 isolated parity): inject
+	// GOCDNEXT_OUTPUT_FILE pointing at the workspace-relative path
+	// prep mkdir+touched.
+	//
+	// CRITICAL: join against `workDir` (= the task container's
+	// CWD), NOT `mountPath`. When a checkout has target_dir set,
+	// scriptWorkDir (= workDir here) becomes `<mountPath>/<target_dir>`
+	// and prep creates the outputs file under
+	// `<scriptWorkDir>/.gocdnext/outputs/X.env`. Joining with
+	// mountPath instead would point the plugin's
+	// `> $GOCDNEXT_OUTPUT_FILE` at a sibling directory that
+	// doesn't exist (prep never created it there), failing the
+	// task with `No such file or directory` BEFORE the parser
+	// ever runs.
+	//
+	// Path uses package `path` (not filepath) because the value is
+	// consumed inside a Linux container — `/` is the only correct
+	// separator regardless of the agent's host OS. Empty
+	// OutputsRelPath → no env injection, same shape as shared
+	// mode's `if spec.OutputsHostPath != "" {...}` guard.
+	specEnv := spec.Env
+	if spec.OutputsRelPath != "" {
+		specEnv = withOutputsEnv(specEnv, path.Join(workDir, spec.OutputsRelPath))
+	}
+
+	env := make([]corev1.EnvVar, 0, len(specEnv)+2)
+	for key, v := range specEnv {
 		env = append(env, corev1.EnvVar{Name: key, Value: v})
 	}
 	if spec.Docker {
