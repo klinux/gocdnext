@@ -30,7 +30,7 @@
 #                                       curl --config tempfile so it
 #                                       never lands on argv.
 #   PLUGIN_PROJECT          (required)  project slug to query
-#                                       (e.g. `monorepo-app`).
+#                                       (e.g. `acme-org`).
 #   PLUGIN_PIPELINE         (required)  pipeline name to match
 #                                       (e.g. `release`). Filtered
 #                                       inside the project's recent

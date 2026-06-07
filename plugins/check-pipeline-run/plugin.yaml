@@ -38,7 +38,7 @@ inputs:
   project:
     required: true
     description: >
-      Project slug to query (e.g. `monorepo-app`). The plugin reads
+      Project slug to query (e.g. `acme-org`). The plugin reads
       `GET /api/v1/projects/{slug}?runs=100` to scan recent runs.
   pipeline:
     required: true
