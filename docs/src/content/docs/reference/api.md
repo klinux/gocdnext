@@ -115,7 +115,7 @@ Re-fetch the list to refresh.
 
 ### `GET /api/v1/runs/{id}/services`
 
-Service-run rows for the run (sidecar lifecycle — `starting`,
+Service-run rows for the run (service lifecycle — `starting`,
 `ready`, `failed`, `stopped`).
 
 ### `POST /api/v1/runs/{id}/cancel`

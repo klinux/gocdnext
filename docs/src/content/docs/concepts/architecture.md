@@ -71,7 +71,7 @@ share the same goroutine). On `JobAssignment`:
    engine, depending on the agent's `GOCDNEXT_AGENT_ENGINE`).
 3. Streams stdout/stderr lines back as `LogLine` messages,
    bulk-batched (100 lines / 200 ms).
-4. Streams `ServiceLifecycle` events for any declared sidecars.
+4. Streams `ServiceLifecycle` events for any declared services.
 5. Reports `JobResult` on terminal status.
 
 Where material cloning happens depends on the runtime:
@@ -111,7 +111,7 @@ Everything else is a cache or a transient. Postgres holds:
   is snapshotted at run-create time so list endpoints can skip the
   service-detail query when there are none.
 - `service_runs` — one row per declared service per run; lifecycle
-  state machine for sidecars (`starting → ready → stopped`, or
+  state machine for services (`starting → ready → stopped`, or
   `failed`). Sticky-failed enforced at the SQL upsert.
 - `log_lines` — log stream (RANGE-partitioned by month).
 - `artifacts`, `caches` — backend metadata (the bytes are in

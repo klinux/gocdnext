@@ -27,7 +27,7 @@ materials:                  # extra checkouts beyond the implicit one;
       stage: test
       status: success
 
-services:                   # pipeline-wide sidecar containers; all jobs
+services:                   # pipeline-wide sibling service containers; all jobs
   - name: postgres          # in the run can reach them by name; see
     image: postgres:16      # "Services" below
 

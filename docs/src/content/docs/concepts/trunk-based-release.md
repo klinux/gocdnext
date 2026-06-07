@@ -916,5 +916,5 @@ shipped. The deliberate gaps:
 - [gocdnext/ai-review plugin](/gocdnext/docs/reference/plugins/#ai-review) — Claude + OpenAI code review.
 - [gocdnext/sonar plugin](/gocdnext/docs/reference/plugins/#sonar) — SonarQube + SonarCloud Quality Gate.
 - [Approval gates](/gocdnext/docs/concepts/approvals/) — `approver_groups` + `required` (quorum).
-- [Services lifecycle](/gocdnext/docs/concepts/services/) — sidecar containers for integration tests.
+- [Services lifecycle](/gocdnext/docs/concepts/services/) — sibling service containers (postgres, redis, …) for integration tests.
 - [Materials](/gocdnext/docs/concepts/materials/) — implicit project material + `when.event:` triggers.
