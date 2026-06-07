@@ -6,6 +6,131 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.10.0 — 2026-06-07
+
+The "release of one click" cut. Three features that together close
+the trunk-based-release recipe's biggest gap — operator-typed TAG
+variables, single-pipeline release+tag conflation, and multi-arch
+scan-after-publish trade-offs.
+
+### Feature — pipelines trigger on `event: [tag]` with `CI_TAG_*` env vars
+
+Tag pushes now route to pipelines that declare `when.event: [tag]`
+(or git materials with `on: [tag]`). The routing is URL-only —
+tags don't carry a base branch (a tag points at a SHA that may
+not be on any branch), so the URL+branch fingerprint used by the
+branch-push path can't fire. The new path matches by URL,
+filters by per-material Events list, and stamps `cause="tag"` +
+`cause_detail={tag_name, tag_message, tag_sha, tagger}` on the
+run.
+
+The scheduler emits three env vars from `cause_detail` for any
+run where `cause == "tag"`:
+
+| Var | Source | Notes |
+|---|---|---|
+| `CI_TAG_NAME` | `pr_head_ref` equivalent — the tag name | Always present on tag runs |
+| `CI_TAG_MESSAGE` | head commit message | Lightweight tags only; annotated tags omit |
+| `CI_TAG_AUTHOR` | head commit author | Same nil-tolerance |
+
+The git ref target SHA arrives via the existing `CI_COMMIT_SHA` —
+NOT a separate `CI_TAG_SHA`, deliberately, so operators don't
+misread it as an OCI image digest (which it isn't). For image
+refs in cosign-sign and similar, use `${CI_TAG_NAME}` (cosign
+resolves to the manifest digest at sign-time).
+
+Parser now validates `when.event:` and git material `on:` against
+the accepted enum — typos like `event: [tags]` (note the plural)
+or `on: [tagg]` fail at apply-time with a clear error instead of
+silently producing a pipeline that never fires.
+
+### Feature — `gocdnext/semver-bump@v1` plugin
+
+Auto-computes the next SemVer from Conventional Commits since the
+prior tag. Writes a shell-sourceable `.gocdnext/semver.env` that
+downstream `create-tag` jobs `source`. Combined with `event: [tag]`,
+the release flow becomes "click Run on release.yaml →
+semver-bump → create-tag → push; tag webhook auto-fires tag.yaml"
+with no operator-typed TAG anywhere.
+
+Bump rules: `feat!:` / `fix!:` (etc.) or `BREAKING CHANGE:` in
+body → major; `feat:` → minor; else → patch. Special kinds:
+`initial` (no prior tag, emits PLUGIN_INITIAL) and `none`
+(NEXT=CURRENT, downstream branches on KIND).
+
+Security hardening across two review rounds: prefix charset
+`[A-Za-z0-9._/-]*` (the value lands in the sourced output file,
+so shell injection via prefix was the original HIGH/SEC finding);
+output path rejects absolute and `..` traversal; pre-release
+validated `[A-Za-z0-9.-]+`; SIGPIPE in conventional-commits scan
+replaced with here-strings (`echo | grep -q` under `pipefail`
+silently misclassified a `feat:` with a large body as patch);
+`git describe --match '<prefix>[0-9]*'` filters non-SemVer tags
+sharing the prefix (`vfoo`, `vnext`, `vendor-*`).
+
+### Feature — `gocdnext/image-copy@v1` plugin
+
+Promotes multi-arch images between registries preserving the
+manifest list — what `gocdnext/docker-push` can't do because
+`docker tag` + `docker push` loses the index. Three
+interchangeable backends:
+
+- `crane` (default): single static binary, fast, multi-arch
+  native
+- `skopeo`: broader OCI tooling with `--multi-arch all` explicit
+- `buildx-imagetools`: when the job already declares `docker: true`
+
+Always emits `PROMOTED_DIGEST` to a workspace file so a
+downstream cosign-sign step can anchor by digest rather than the
+mutable tag, closing the "what got signed?" race. Missing digest
+fails the job loud (exit 3) — the digest is the central output
+of this plugin and silently emitting empty would push the failure
+downstream with a confusing error.
+
+Security hardening across four review rounds:
+
+- Authfile lives in mktemp 0600 dir; EXIT/INT/TERM trap wipes
+  on every exit path
+- Cross-registry creds: target token defaults to source ONLY on
+  same-host promotion; cross-host without explicit source creds
+  leaves the source anonymous (no silent token leak to a
+  stranger)
+- buildx branch exports `DOCKER_CONFIG=<tempdir>` before
+  `docker login`, so credentials land in the trap-cleaned tempdir,
+  not `$HOME/.docker/config.json`
+- Source/target refs charset-validated; Docker Hub shorthand
+  (`org/app:tag`) rejected — image-copy is cross-registry, refuses
+  ambiguous refs
+- Target enforced tag-form only (no `@digest`); primary tag and
+  every `extra-tags` entry matched against the OCI tag spec
+  `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`
+- `docker-cli` + `docker-cli-buildx` installed in the image so
+  the buildx-imagetools backend has its binaries (`docker: true`
+  on the job only mounts the daemon socket, not the CLI)
+
+None of the three backends transfer cosign signatures /
+attestations today (those live as separate registry artifacts via
+the cosign triangulation). Re-sign at the target on the emitted
+`PROMOTED_DIGEST` instead — same security property, immutable
+chain. Native cosign-signature preservation is roadmap (future
+`cosign-copy` backend wrapping `cosign copy SRC DST`).
+
+### Docs
+
+- New "Tag-push runs" section in YAML reference, listing
+  `CI_TAG_*` vars + the OCI-digest caveat
+- `trunk-based-release` recipe: model-mental update,
+  reworked "Why one pipeline vs. split release + tag.yaml"
+  section explaining the choice, new "Variant: split release +
+  tag.yaml" with the cleaner shape now possible
+- Limitations section marks `Tag-push event`,
+  `Semver bump as plugin`, and `Multi-arch scan-before-publish`
+  all as ✅ shipped
+
+### Plugin catalog
+
+44 plugins total (was 42 in v0.9.0).
+
 ## v0.9.0 — 2026-06-07
 
 ### Feature — `CI_CAUSE` + `CI_PULL_REQUEST_*` env vars (closes #9)
