@@ -33,8 +33,9 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
   contract.
 - **Kubernetes-native runtime** — pod-per-job execution with runner profiles
   (K1–K4), or classic Docker on the agent host.
-- **Pipeline services** — sidecar containers (postgres, redis, etc.)
-  declared in YAML and rendered as nodes in the pipeline graph.
+- **Pipeline services** — sibling service containers (postgres,
+  redis, etc.) declared in YAML, reachable by every job via DNS
+  alias, and rendered as nodes in the pipeline graph.
 - **RBAC + audit log** — admin/maintainer/viewer hierarchy, every mutation
   recorded in `audit_events`.
 - **Approval gates** — gate stages on approver groups with quorum, with full

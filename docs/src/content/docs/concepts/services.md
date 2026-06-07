@@ -1,13 +1,19 @@
 ---
 title: Services lifecycle
-description: Declare sidecar containers (databases, queues, mocks) alongside a run — what they look like, when they're ready, how the UI surfaces them.
+description: Declare sibling service containers (databases, queues, mocks) alongside a run — what they look like, when they're ready, how the UI surfaces them.
 ---
 
-A **service** is a sidecar container the platform brings up
-alongside a run so the run's jobs have something to talk to:
+A **service** is a sibling container or Pod the platform brings
+up alongside a run so the run's jobs have something to talk to:
 Postgres for integration tests, Redis for queues, LocalStack for
 AWS APIs, a mock HTTP server, anything that needs a network
 endpoint.
+
+Services are **not sidecars** — they don't live in the same Pod /
+container as the job. They're separate workloads on a shared
+network with DNS-name discovery. Closest mental model is the
+`services:` block in GitHub Actions and GitLab CI, or
+docker-compose without the YAML overhead.
 
 Services are declared at the pipeline level. Every service comes
 up at the start of the run and is reachable by every job in that
@@ -17,15 +23,30 @@ for the syntax.
 ## What gets created
 
 For each `services:` entry that's referenced by at least one job in
-a run, the agent creates:
+a run, the agent creates a separate workload and wires DNS:
 
-- **Docker engine**: a container on the run's bridge network, with
-  the service's `name:` as DNS alias.
-- **Kubernetes engine**: a Pod in the run's namespace with a `Service`
-  resource fronting it, alias = `name`.
+- **Docker engine**: a **standalone container** on a job-scoped
+  bridge network (`gocdnext-<jobShort>`). The container is started
+  with `--network-alias <svc-name>`, so the task container — which
+  joins the same network — resolves `postgres:5432` via docker's
+  embedded DNS. Per-job today; the run-scoped reuse model is k8s-
+  only.
+- **Kubernetes engine**: a **separate Pod** in the agent's
+  namespace, named `gocdnext-svc-<runShort>-<svc-name>`. The job
+  Pod is created with `spec.hostAliases: [{ip: <svc-pod-IP>,
+  hostnames: [<svc-name>]}]` so `getent hosts postgres` inside the
+  task container returns the service Pod's IP. **No Kubernetes
+  `Service` resource is created** — `kubectl get svc` won't show
+  anything. Service Pods are run-scoped and shared by every job
+  of the run (the first job creates them; siblings adopt by name +
+  label match).
 
-The job's environment gets the alias as a hostname — `psql -h postgres`
-works from anywhere in the job script.
+The job's environment ends up with the alias as a hostname —
+`psql -h postgres` works from anywhere in the job script — but
+the wiring is different per engine. Don't expect a `kubectl get
+svc` workflow to surface the Postgres endpoint; check `kubectl
+get pods -l app.kubernetes.io/component=service,gocdnext.io/run-id=<id>`
+instead.
 
 ## Lifecycle states
 
@@ -90,9 +111,9 @@ the failure attribution clear.
 
 ## Limits
 
-- One sidecar per service entry. To run e.g. a Postgres + a Redis,
-  declare both at the pipeline level and list both in the job's
-  `services:` array.
+- One container/Pod per service entry. To run e.g. a Postgres + a
+  Redis, declare both at the pipeline level and list both in the
+  job's `services:` array.
 - Services don't see the workspace volume — they're standalone
   containers with their own root filesystem. Pass configuration via
   `env:` or `command:`.
