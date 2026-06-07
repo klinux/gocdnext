@@ -45,6 +45,7 @@ func BuildAssignment(
 	profileEnv map[string]string,
 	profileMasks []string,
 	cloneTokens map[string]string,
+	needsOutputs NeedsOutputs,
 ) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
@@ -139,6 +140,30 @@ func BuildAssignment(
 		}
 	}
 
+	// Outputs (issue #10): values resolved from upstream
+	// `${{ needs.X.outputs.Y }}` refs flow into env/plugin
+	// settings AND become candidates for log lines. Treat them
+	// as POTENTIALLY-SENSITIVE by default — promotion plugins
+	// emit digests (low risk) but operators can put short-lived
+	// tokens / signed URLs / etc. in outputs and downstream
+	// shouldn't echo them in plain text.
+	//
+	// Defence in depth: append every output VALUE that's long
+	// enough to survive the runner's len(m) < 4 floor (see
+	// applyMasks in agent/runner.go) so a short version string
+	// doesn't cause false-positive replacements across log
+	// lines. The doc tells operators that outputs aren't a
+	// secret channel and they should use `secrets:` for real
+	// tokens — this masking is the safety net, not the
+	// recommended path.
+	for _, group := range needsOutputs {
+		for _, v := range group {
+			if len(v) >= 8 {
+				masks = append(masks, v)
+			}
+		}
+	}
+
 	// CI_* built-ins (CI_BRANCH, CI_COMMIT_SHORT_SHA, CI_RUN_COUNTER, …)
 	// land in env BEFORE substitution so a pipeline variable like
 	// `IMAGE_TAG: 1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}` resolves
@@ -147,6 +172,18 @@ func BuildAssignment(
 	ciVars := buildCIVars(run, job.Name)
 	for k, v := range ciVars {
 		env[k] = v
+	}
+
+	// Pre-pass: resolve `${{ needs.<job>.outputs.<alias> }}` refs
+	// BEFORE the standard substituteRefs pass. Separation rationale
+	// + matrix-ambiguity contract live in refs.go::NeedsOutputs
+	// doc; here we just thread the pre-built table through. Nil
+	// NeedsOutputs short-circuits the pre-pass for jobs with no
+	// needs (the common case).
+	if needsResolved, err := substituteNeedsRefsMap(env, needsOutputs); err != nil {
+		return nil, fmt.Errorf("scheduler: needs refs in env for job %s: %w", job.Name, err)
+	} else {
+		env = needsResolved
 	}
 
 	// Resolve `${{ NAME }}` refs in env values against secrets +
@@ -178,7 +215,12 @@ func BuildAssignment(
 				Kind: &gocdnextv1.TaskSpec_Script{Script: tk.Script},
 			})
 		case tk.Plugin != nil:
-			settings, err := substituteRefsMap(tk.Plugin.Settings, secrets, env)
+			// Pre-pass on plugin settings too — same contract as env.
+			pluginSettings, err := substituteNeedsRefsMap(tk.Plugin.Settings, needsOutputs)
+			if err != nil {
+				return nil, fmt.Errorf("scheduler: needs refs in plugin %q settings: %w", tk.Plugin.Image, err)
+			}
+			settings, err := substituteRefsMap(pluginSettings, secrets, env)
 			if err != nil {
 				return nil, fmt.Errorf("scheduler: plugin %q settings: %w", tk.Plugin.Image, err)
 			}
@@ -271,7 +313,22 @@ func BuildAssignment(
 		TestReports:           append([]string(nil), jobDef.TestReports...),
 		Resources:             resourceRequirements(jobDef.Resources),
 		Profile:               jobDef.Profile,
+		Outputs:               copyStringMap(jobDef.Outputs),
 	}, nil
+}
+
+// copyStringMap returns a fresh copy of the input — nil-tolerant.
+// Used for the JobAssignment.Outputs field so a later mutation of
+// the parsed-pipeline cache doesn't leak into in-flight assignments.
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // resourceRequirements maps the resolved domain ResourceSpec to its

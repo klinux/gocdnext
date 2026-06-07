@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -478,8 +479,38 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// just like before.
 		cloneTokens := s.resolveCloneTokens(ctx, materials)
 
-		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profileEnv, profileMasks, cloneTokens)
+		// Build the NeedsOutputs table for this candidate (issue
+		// #10). Scoped to job.Needs — typical 1-3 names — so the
+		// query is cheap even on runs with 50+ jobs. Runs AFTER
+		// the gate so `needsSatisfied` guarantees all upstream
+		// rows are terminal-success: outputs were written in the
+		// same UPDATE that flipped status, so the read here sees
+		// a consistent snapshot. Empty needs → skip the query
+		// entirely (most jobs).
+		//
+		// Matrix-ambiguity enforced in buildNeedsOutputs: if any
+		// referenced name expanded to >1 row, the candidate is
+		// failed with a clear "ambiguous matrix" error citing the
+		// matrix keys, BEFORE BuildAssignment ever sees the data.
+		needsOutputs, nErr := s.buildNeedsOutputs(ctx, runID, job)
+		if nErr != nil {
+			s.failJobWithError(ctx, job, fmt.Sprintf("needs outputs: %v", nErr))
+			continue
+		}
+
+		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profileEnv, profileMasks, cloneTokens, needsOutputs)
 		if err != nil {
+			// Unresolved needs refs (issue #10) are CONFIGURATION
+			// errors — the next tick will see the exact same
+			// state and produce the exact same error. Without
+			// this branch the job sits queued forever and the
+			// operator chases a "why isn't this dispatching"
+			// mystery. Terminalise with the original error message
+			// so the run-log surfaces which ref + which alias.
+			if errors.Is(err, ErrNeedsRefUnresolved) {
+				s.failJobWithError(ctx, job, fmt.Sprintf("needs outputs: %v", err))
+				continue
+			}
 			s.log.Warn("scheduler: build assignment", "job_id", job.ID, "err", err)
 			continue
 		}
@@ -755,6 +786,72 @@ func (s *Scheduler) failJobNeedsUnmet(ctx context.Context, job store.Dispatchabl
 	}
 	s.log.Warn("scheduler: job failed — needs unmet (upstream non-success)",
 		"run_id", job.RunID, "job_id", job.ID, "job_name", job.Name, "reason", msg)
+}
+
+// buildNeedsOutputs assembles the NeedsOutputs table for a downstream
+// job's `${{ needs.X.outputs.Y }}` substitution (issue #10). Scoped
+// to job.Needs so the query is cheap; runs AFTER the gate so all
+// upstream rows are terminal-success.
+//
+// Empty job.Needs short-circuits — most jobs don't declare needs and
+// shouldn't pay for a DB round-trip.
+func (s *Scheduler) buildNeedsOutputs(ctx context.Context, runID uuid.UUID, job store.DispatchableJob) (NeedsOutputs, error) {
+	if len(job.Needs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.store.ListJobOutputsForRun(ctx, runID, job.Needs)
+	if err != nil {
+		return nil, fmt.Errorf("list job outputs: %w", err)
+	}
+	return groupNeedsOutputs(rows)
+}
+
+// groupNeedsOutputs is the pure validation/grouping helper extracted
+// from buildNeedsOutputs so the matrix-ambiguity policy can be tested
+// without a DB round-trip. Public-package-local; not exported.
+//
+// Matrix policy (Kleber's #6 invariant for Layer 6): if a referenced
+// name expanded to >1 row (matrix job with >1 instance), error LOUD
+// listing the matrix keys involved. The downstream substitution
+// can't disambiguate; explicit per-row selector
+// `${{ needs.X.matrix[key].outputs.Y }}` is roadmap for #10 follow-up.
+// We refuse to fold ambiguous data into the substitution input rather
+// than letting the downstream pick "any matrix row" silently.
+//
+// Non-success upstream rows are dropped silently — the
+// needsSatisfied gate already blocks dispatch when an upstream
+// isn't terminal-success, so this is defence in depth. A downstream
+// ref against a dropped row falls through to substituteNeedsRefs'
+// "did not produce the named output" message, which is the right
+// UX (the row's not here as far as substitution can tell).
+func groupNeedsOutputs(rows []store.JobOutputs) (NeedsOutputs, error) {
+	grouped := make(map[string][]store.JobOutputs)
+	for _, r := range rows {
+		grouped[r.Name] = append(grouped[r.Name], r)
+	}
+	out := make(NeedsOutputs, len(grouped))
+	for name, group := range grouped {
+		if len(group) > 1 {
+			keys := make([]string, 0, len(group))
+			for _, g := range group {
+				if g.MatrixKey == "" {
+					keys = append(keys, "<empty>")
+				} else {
+					keys = append(keys, g.MatrixKey)
+				}
+			}
+			return nil, fmt.Errorf(
+				"upstream job %q has %d matrix instances [%s] — `${{ needs.%s.outputs.* }}` is ambiguous. "+
+					"v1 supports outputs only from non-matrix upstreams; explicit per-row selector is roadmap",
+				name, len(group), strings.Join(keys, ", "), name)
+		}
+		row := group[0]
+		if row.Status != string(domain.StatusSuccess) {
+			continue
+		}
+		out[name] = row.Outputs
+	}
+	return out, nil
 }
 
 func (s *Scheduler) failJobWithError(ctx context.Context, job store.DispatchableJob, errMsg string) {

@@ -679,6 +679,27 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 			"job_id", jobID, "detail", artifactErr)
 	}
 
+	// Validate outputs server-side — don't trust the agent's cap
+	// (a custom or compromised gRPC client could ship arbitrary
+	// data). Mirror the artifact mismatch shape: claim of success +
+	// invalid outputs → downgrade to failed so downstream gating
+	// can't act on unvetted state. We never persist outputs from a
+	// failed run, so the validator's effect on a non-success result
+	// is just to drop the values before CompleteJob.
+	if err := validateJobOutputs(r.GetOutputs()); err != nil {
+		if status == string(domain.StatusSuccess) {
+			status = string(domain.StatusFailed)
+			if r.GetError() == "" {
+				r.Error = "outputs validation: " + err.Error()
+			}
+			log.Warn("agent result: downgraded to failed due to outputs validation",
+				"job_id", jobID, "detail", err.Error())
+		}
+		// Strip the outputs map so CompleteJob writes '{}' — never
+		// persist what we rejected.
+		r.Outputs = nil
+	}
+
 	// Re-check revocation just before the DB write. confirmArtifacts can
 	// take seconds (HEADs against S3), and the TOCTOU window between
 	// the entry check and CompleteJob is exactly when a successor
@@ -690,6 +711,22 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 		return
 	}
 
+	// Only persist outputs on success. A failed run may have written
+	// partial / inconsistent / junk values to GOCDNEXT_OUTPUT_FILE
+	// before the failure; promoting those to downstream substitution
+	// would be worse than the missing-output error the failed status
+	// already implies. CompleteJob writes '{}' when nil.
+	//
+	// CAS is uniform: outputs are part of the same UPDATE that flips
+	// status, so a stale result (revoked agent / lower attempt) that
+	// fails ExpectedAgentID + ExpectedAttempt CANNOT write outputs
+	// either — protection comes for free from the existing snapshot
+	// predicate in CompleteJobRun (see queries/results.sql:112-118).
+	var outputsForStore map[string]string
+	if status == string(domain.StatusSuccess) {
+		outputsForStore = r.GetOutputs()
+	}
+
 	comp, ok, err := a.store.CompleteJob(ctx, store.CompleteJobInput{
 		JobRunID:        jobID,
 		Status:          status,
@@ -697,6 +734,7 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 		ErrorMsg:        r.GetError(),
 		ExpectedAgentID: agentID,
 		ExpectedAttempt: expectedAttempt,
+		Outputs:         outputsForStore,
 	})
 	if err != nil {
 		log.Warn("agent result: complete job", "err", err, "job_id", jobID)
