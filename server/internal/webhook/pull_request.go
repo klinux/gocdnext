@@ -121,7 +121,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		Provider:    "github",
 		Delivery:    delivery,
 		TriggeredBy: "system:webhook",
-		Cause:       "pull_request",
+		Cause:       string(domain.CausePullRequest),
 		CauseDetail: causeDetail,
 	})
 	rec.materialID = firstCreatedRunMaterialID(outcomes)

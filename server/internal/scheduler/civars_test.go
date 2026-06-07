@@ -298,6 +298,115 @@ func TestBuildCIVars(t *testing.T) {
 				"CI_CAUSE":       "manual",
 			},
 		},
+		{
+			name: "tag cause with full detail emits three CI_TAG_* vars + CI_COMMIT_SHA",
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				// Branch is the tag name (the webhook handler sets
+				// branch=ev.Tag so the agent does a detached checkout).
+				// CI_COMMIT_SHA picks up the SHA from revisions, so we
+				// don't need a separate CI_TAG_SHA — same value.
+				Revisions: json.RawMessage(`{"` + materialA + `":{"revision":"` + fullSHA + `","branch":"v1.2.3"}}`),
+				Cause:     "tag",
+				// tag_sha is no longer surfaced via env (CI_COMMIT_SHA
+				// already carries it); the handler still stamps it
+				// into cause_detail for audit/forensics but civars
+				// ignores it.
+				CauseDetail: json.RawMessage(`{
+					"tag_name":    "v1.2.3",
+					"tag_message": "release v1.2.3",
+					"tag_sha":     "` + fullSHA + `",
+					"tagger":      "release-bot"
+				}`),
+			},
+			jobName: "publish",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":           runID.String(),
+				"CI_RUN_COUNTER":      "1",
+				"CI_PIPELINE_ID":      pipelineID.String(),
+				"CI_PROJECT_ID":       projectID.String(),
+				"CI_JOB_NAME":         "publish",
+				"CI_COMMIT_SHA":       fullSHA,
+				"CI_COMMIT_SHORT_SHA": fullSHA[:8],
+				"CI_BRANCH":           "v1.2.3",
+				"CI_CAUSE":            "tag",
+				"CI_TAG_NAME":         "v1.2.3",
+				"CI_TAG_MESSAGE":      "release v1.2.3",
+				"CI_TAG_AUTHOR":       "release-bot",
+			},
+		},
+		{
+			name: "annotated tag (no head_commit) emits name but not message/author",
+			// Webhook handler leaves tag_message + tagger empty when
+			// ev.HeadCommit is nil — only tag_name is guaranteed.
+			// addTagVars must skip the empties so `${CI_TAG_MESSAGE}`
+			// stays literal at substitution. CI_COMMIT_SHA still
+			// shows up via primaryRevision when the revisions blob
+			// carries a revision.
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions: json.RawMessage(`{}`),
+				Cause:     "tag",
+				CauseDetail: json.RawMessage(`{
+					"tag_name":    "v2.0.0-rc1",
+					"tag_message": "",
+					"tag_sha":     "deadbeef00000000000000000000000000000000",
+					"tagger":      ""
+				}`),
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+				"CI_CAUSE":       "tag",
+				"CI_TAG_NAME":    "v2.0.0-rc1",
+			},
+		},
+		{
+			name: "tag cause with malformed detail JSON degrades silently",
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions:   json.RawMessage(`{}`),
+				Cause:       "tag",
+				CauseDetail: json.RawMessage(`{not-json`),
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+				"CI_CAUSE":       "tag",
+			},
+		},
+		{
+			name: "non-tag cause silently ignores any stamped tag fields",
+			// Defensive: cause_detail with tag-shaped fields under a
+			// non-tag cause shouldn't promote them.
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions:   json.RawMessage(`{}`),
+				Cause:       "manual",
+				CauseDetail: json.RawMessage(`{"tag_name":"v9.9.9"}`),
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+				"CI_CAUSE":       "manual",
+			},
+		},
 	}
 
 	for _, tc := range tests {

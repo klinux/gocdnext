@@ -152,10 +152,12 @@ type Pipeline struct {
 	Concurrency string
 	// TriggerEvents configures which SCM events fire the pipeline's
 	// implicit project material (see injectImplicitProjectMaterial
-	// in api/projects). Sourced from YAML's top-level `on:` field;
-	// empty means "push only". Ignored for pipelines that declare
-	// an explicit git material — those keep full control via the
-	// material's own events list.
+	// in api/projects). Sourced from YAML's top-level
+	// `when.event:` field; empty means "push only". Ignored for
+	// pipelines that declare an explicit git material — those keep
+	// full control via the material's own events list. Accepted
+	// values: "push", "pull_request", "tag" (since v0.10.0 — tag
+	// pushes match URL-only, branch-agnostic).
 	TriggerEvents []string
 	// TriggerBranches whitelists branches that fire the pipeline's
 	// implicit project material. Sourced from YAML's top-level
@@ -320,8 +322,15 @@ type Material struct {
 // DB stays human-readable (e.g. config->>'url') and queries/UI can inspect
 // it without knowing Go's CamelCase field names.
 type GitMaterial struct {
-	URL                 string   `json:"url"`
-	Branch              string   `json:"branch,omitempty"`
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
+	// Events enumerates the SCM events that fire this material.
+	// Accepted values: "push" (branch push — default when omitted),
+	// "pull_request" (PR open/sync/reopen, matched against the PR's
+	// base ref), "tag" (any tag push for the repo, branch-agnostic —
+	// the webhook handler matches by URL only and filters down to
+	// materials whose Events contains "tag"). Empty defaults to
+	// ["push"] in the parser.
 	Events              []string `json:"events,omitempty"`
 	AutoRegisterWebhook bool     `json:"auto_register_webhook,omitempty"`
 	SecretRef           string   `json:"secret_ref,omitempty"`
@@ -518,11 +527,13 @@ const (
 type BuildCause string
 
 const (
-	CauseWebhook  BuildCause = "webhook"
-	CauseUpstream BuildCause = "upstream"
-	CauseManual   BuildCause = "manual"
-	CauseSchedule BuildCause = "schedule"
-	CausePoll     BuildCause = "poll"
+	CauseWebhook     BuildCause = "webhook"
+	CausePullRequest BuildCause = "pull_request"
+	CauseTag         BuildCause = "tag"
+	CauseUpstream    BuildCause = "upstream"
+	CauseManual      BuildCause = "manual"
+	CauseSchedule    BuildCause = "schedule"
+	CausePoll        BuildCause = "poll"
 )
 
 type Revision struct {

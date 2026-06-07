@@ -109,6 +109,9 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		Concurrency: concurrency,
 	}
 	if f.When != nil && len(f.When.Event) > 0 {
+		if err := validatePipelineEvents(f.When.Event); err != nil {
+			return nil, fmt.Errorf("%s: when.event: %w", name, err)
+		}
 		p.TriggerEvents = append([]string(nil), f.When.Event...)
 	}
 	if f.When != nil && len(f.When.Branch) > 0 {
@@ -358,6 +361,9 @@ func toMaterial(m MaterialSpec) (domain.Material, error) {
 		poll, err := ParsePollInterval(m.Git.PollInterval)
 		if err != nil {
 			return domain.Material{}, err
+		}
+		if err := validateGitMaterialEvents(m.Git.On); err != nil {
+			return domain.Material{}, fmt.Errorf("git material %q: %w", m.Git.URL, err)
 		}
 		return domain.Material{
 			Type:        domain.MaterialGit,
@@ -653,6 +659,49 @@ func defaultEvents(ev []string) []string {
 		return []string{"push"}
 	}
 	return ev
+}
+
+// pipelineEvents enumerates the values accepted in top-level
+// `when.event:` — webhook-driven (push, pull_request, tag), trigger-
+// based (manual, cron), and dependency-based (upstream). Adding to
+// this set is the explicit handshake operators trip when wiring a
+// new trigger type, vs. the silent-accept-and-never-fire bug a free-
+// text list lets through.
+var pipelineEvents = map[string]struct{}{
+	"push":         {},
+	"pull_request": {},
+	"tag":          {},
+	"manual":       {},
+	"cron":         {},
+	"upstream":     {},
+}
+
+// gitMaterialEvents are the subset that mean anything to a git
+// material's `on:` filter — only SCM events can actually arrive on
+// that material. cron/manual/upstream don't have an "on a git
+// material" semantic; `on: [cron]` was always a no-op + a typo.
+var gitMaterialEvents = map[string]struct{}{
+	"push":         {},
+	"pull_request": {},
+	"tag":          {},
+}
+
+func validatePipelineEvents(ev []string) error {
+	for _, e := range ev {
+		if _, ok := pipelineEvents[e]; !ok {
+			return fmt.Errorf("unknown event %q (accepted: push, pull_request, tag, manual, cron, upstream)", e)
+		}
+	}
+	return nil
+}
+
+func validateGitMaterialEvents(on []string) error {
+	for _, e := range on {
+		if _, ok := gitMaterialEvents[e]; !ok {
+			return fmt.Errorf("unknown event %q in `on:` (accepted: push, pull_request, tag)", e)
+		}
+	}
+	return nil
 }
 
 // toService validates a service spec and derives a default name
