@@ -6,6 +6,107 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.11.0 — 2026-06-07
+
+The single feature of this release is **structured job outputs**
+([issue #10](https://github.com/klinux/gocdnext/issues/10)). It
+closes the gap that's been forcing downstream jobs to be
+`image:` + `script:` with `source .gocdnext/foo.env` whenever
+they need a runtime value from a prior job.
+
+### Feature — `outputs:` + `${{ needs.X.outputs.Y }}` substitution
+
+A job declares structured key/value outputs it promises to
+produce:
+
+```yaml
+jobs:
+  bump:
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      next: NEXT       # alias → plugin env-var name
+      kind: KIND
+
+  publish:
+    needs: [bump]
+    uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+    with:
+      image: ghcr.io/org/app
+      tags: ${{ needs.bump.outputs.next }}    # resolved at dispatch
+```
+
+The agent injects `$GOCDNEXT_OUTPUT_FILE` (engine-aware path —
+host for Shell, container `/workspace/<rel>` for Docker/K8s).
+Plugins write `KEY=value` lines (same shape as `$GITHUB_OUTPUT`).
+The agent parses, filters to the declared subset, rekeys to the
+YAML alias, and ships `JobResult.outputs`. The server persists
+in a JSONB column on `job_runs` written in the SAME UPDATE as
+the success flip, so downstream `needs:`-gated dispatch always
+sees the upstream's outputs atomically. The scheduler resolves
+`${{ needs.X.outputs.Y }}` against the persisted snapshot at
+dispatch time and substitutes into `env:` / `variables:` /
+plugin `with:` before sending the JobAssignment.
+
+### Validation + safety
+
+- **Caps**: 64 entries per job (parser); 64KB total payload (sum
+  of key+value bytes — enforced agent + server).
+- **Alias regex**: `[a-z][a-zA-Z0-9_-]*` (case-sensitive
+  end-to-end).
+- **Env name regex**: `[A-Za-z_][A-Za-z0-9_]*` (POSIX env-var).
+- **Contract**: declared outputs MUST be written by the plugin —
+  missing key fails the job loud with the alias + env name in
+  the error.
+- **Matrix limitation**: a matrix job with >1 row is ambiguous —
+  the scheduler errors LOUD listing the matrix keys. Explicit
+  per-row selector is roadmap.
+- **Kubernetes isolated mode**: declared outputs rejected at
+  dispatch (the agent can't yet read `$GOCDNEXT_OUTPUT_FILE`
+  from the ephemeral pod filesystem). Use shared
+  workspace (`ReadWriteMany`) or fall back to the legacy
+  `artifacts:` + `.gocdnext/*.env` pattern.
+- **LogMasks**: resolved output values ≥ 8 chars are
+  auto-added to the downstream's LogMasks list — defence in
+  depth so a digest/token landed in outputs doesn't echo in
+  plain text. Documented that outputs are NOT a secret channel;
+  use `secrets:` for real credentials.
+- **CAS**: outputs are part of the SAME UPDATE as status, so a
+  stale `JobResult` rejected by the agent/attempt predicate
+  CANNOT write outputs either — the protection is structural.
+- **Custom agents**: validation independent of agent code
+  rejects malformed outputs server-side (alias regex, UTF-8,
+  caps).
+
+### Substitution scope
+
+`${{ needs.X.outputs.Y }}` substitution runs on `env:` /
+`variables:` / plugin `with:` — **not** on raw `script:` lines
+(so shell-side `${HOME}` etc. survives verbatim). When a
+script needs an output value, land it via `variables:` and
+reference as `$NAME` inside the script.
+
+### Plugin migrations
+
+- **`gocdnext/semver-bump@v1`** writes `.gocdnext/semver.env`
+  (legacy, pre-v0.11 agents) AND `$GOCDNEXT_OUTPUT_FILE` in
+  parallel. Operators can declare a subset of `next` / `kind` /
+  `current` / `prev_sha`; extras are silently dropped.
+- **`gocdnext/image-copy@v1`** same dual-write for
+  `promoted_digest` / `source` / `target` / `backend`. New
+  example shows the clean shape: cosign-sign stays as
+  `uses: gocdnext-plugin-cosign@v1` with
+  `image: ghcr.io/org/app@${{ needs.promote.outputs.digest }}`.
+
+### Engine refactor (internal)
+
+The `Engine` interface gained `ScriptSpec.OutputsHostPath` +
+`ScriptSpec.OutputsRelPath` so each engine injects
+`GOCDNEXT_OUTPUT_FILE` at the path the script will SEE — host
+for Shell + Docker fallback, container `/workspace/<rel>` for
+Docker containerized + Kubernetes. Fixes the Docker→Shell
+fallback case where pre-baked container paths broke
+host-execution jobs.
+
 ## v0.10.0 — 2026-06-07
 
 The "release of one click" cut. Three features that together close
