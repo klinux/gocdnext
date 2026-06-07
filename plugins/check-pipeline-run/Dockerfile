@@ -21,7 +21,7 @@
 #
 # Contract (PLUGIN_* env, mapped from `with:`):
 #   PLUGIN_API_URL          (required)  gocdnext base URL, e.g.
-#                                       `https://gocdnext.cora.tools`.
+#                                       `https://gocdnext.example.com`.
 #                                       No trailing slash; the plugin
 #                                       appends `/api/v1/...` paths.
 #   PLUGIN_API_TOKEN        (required)  `gnk_...` API token. Use
@@ -30,7 +30,7 @@
 #                                       curl --config tempfile so it
 #                                       never lands on argv.
 #   PLUGIN_PROJECT          (required)  project slug to query
-#                                       (e.g. `cora-pulse`).
+#                                       (e.g. `acme-org`).
 #   PLUGIN_PIPELINE         (required)  pipeline name to match
 #                                       (e.g. `release`). Filtered
 #                                       inside the project's recent
@@ -84,7 +84,7 @@
 #
 # Output file shape (shell-sourceable):
 #   RUN_ID='<uuid>'
-#   RUN_URL='https://gocdnext.cora.tools/runs/<uuid>'
+#   RUN_URL='https://gocdnext.example.com/runs/<uuid>'
 #   REVISION='<full commit SHA>'
 #   COUNTER='<run counter int>'
 #   FINISHED_AT='<RFC3339 timestamp>'

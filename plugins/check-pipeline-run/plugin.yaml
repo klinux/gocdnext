@@ -26,7 +26,7 @@ inputs:
     required: true
     description: >
       gocdnext base URL (no trailing slash), e.g.
-      `https://gocdnext.cora.tools`. HTTPS recommended;
+      `https://gocdnext.example.com`. HTTPS recommended;
       `http://` accepted for in-cluster / dev. Charset validated
       against shell metas + spaces.
   api-token:
@@ -38,7 +38,7 @@ inputs:
   project:
     required: true
     description: >
-      Project slug to query (e.g. `cora-pulse`). The plugin reads
+      Project slug to query (e.g. `acme-org`). The plugin reads
       `GET /api/v1/projects/{slug}?runs=100` to scan recent runs.
   pipeline:
     required: true
@@ -136,7 +136,7 @@ examples:
           run_id: RUN_ID
           run_url: RUN_URL
         with:
-          api-url: https://gocdnext.cora.tools
+          api-url: https://gocdnext.example.com
           api-token: ${{ GOCDNEXT_API_TOKEN }}
           project: my-org
           pipeline: release
@@ -160,7 +160,7 @@ examples:
           outputs:
             run_url: RUN_URL
           with:
-            api-url: https://gocdnext.cora.tools
+            api-url: https://gocdnext.example.com
             api-token: ${{ GOCDNEXT_API_TOKEN }}
             project: my-org
             pipeline: release
@@ -190,7 +190,7 @@ examples:
         secrets: [GOCDNEXT_API_TOKEN]
         uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
         with:
-          api-url: https://gocdnext.cora.tools
+          api-url: https://gocdnext.example.com
           api-token: ${{ GOCDNEXT_API_TOKEN }}
           project: my-org
           pipeline: release
@@ -210,7 +210,7 @@ examples:
         secrets: [GOCDNEXT_API_TOKEN]
         uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
         with:
-          api-url: https://gocdnext.cora.tools
+          api-url: https://gocdnext.example.com
           api-token: ${{ GOCDNEXT_API_TOKEN }}
           project: my-org
           pipeline: main

@@ -831,7 +831,7 @@ jobs:
     outputs:
       run_url: RUN_URL
     with:
-      api-url: https://gocdnext.cora.tools
+      api-url: https://gocdnext.example.com
       api-token: ${{ GOCDNEXT_API_TOKEN }}
       project: my-org
       pipeline: release
