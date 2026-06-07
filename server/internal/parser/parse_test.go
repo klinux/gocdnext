@@ -74,6 +74,142 @@ func TestParse_Happy(t *testing.T) {
 	}
 }
 
+func TestParse_TriggerEvents_AcceptsTag(t *testing.T) {
+	// `event: [tag]` is a first-class trigger value alongside push +
+	// pull_request — pipelines auto-fire on any tag push for the
+	// project's repo, routed by URL only (the webhook handler
+	// matches URL + filters by Events). This test guards against
+	// future validation that whitelists only push+pull_request
+	// and would silently drop tag.
+	const y = `
+name: release
+when:
+  event: [tag]
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.TriggerEvents) != 1 || p.TriggerEvents[0] != "tag" {
+		t.Errorf("TriggerEvents = %v, want [tag]", p.TriggerEvents)
+	}
+}
+
+func TestParse_GitMaterialEvents_AcceptsTag(t *testing.T) {
+	// Explicit git material with `on: [push, tag]` — both events
+	// land on the Material.Events list. The webhook handler uses
+	// this list to filter which materials fire on which event.
+	const y = `
+name: release
+stages: [build]
+materials:
+  - git:
+      url: https://github.com/org/repo
+      branch: main
+      on: [push, tag]
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.Materials) != 1 || p.Materials[0].Git == nil {
+		t.Fatalf("materials = %+v, want one git material", p.Materials)
+	}
+	got := p.Materials[0].Git.Events
+	if len(got) != 2 || got[0] != "push" || got[1] != "tag" {
+		t.Errorf("Events = %v, want [push tag]", got)
+	}
+}
+
+func TestParse_TriggerEvents_RejectsTypo(t *testing.T) {
+	// `event: [tags]` (note the trailing s) used to apply cleanly
+	// then silently never fire — the field is enum-validated since
+	// v0.10.0 so the parse fails loud at apply time. Same for
+	// arbitrary garbage values.
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "tags plural typo",
+			yaml: `
+name: release
+when:
+  event: [tags]
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`,
+		},
+		{
+			name: "unknown garbage value",
+			yaml: `
+name: release
+when:
+  event: [push, weekend]
+stages: [build]
+materials:
+  - manual: true
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseNamed(strings.NewReader(tc.yaml), "p", "release")
+			if err == nil {
+				t.Fatal("expected error on invalid event, got nil")
+			}
+		})
+	}
+}
+
+func TestParse_GitMaterialEvents_RejectsTypo(t *testing.T) {
+	// Git material `on:` field — same enum guard, smaller accepted
+	// set (push, pull_request, tag — cron/manual/upstream are
+	// pipeline-level concepts, not per-material).
+	const y = `
+name: release
+stages: [build]
+materials:
+  - git:
+      url: https://github.com/org/repo
+      branch: main
+      on: [push, tagg]
+jobs:
+  build:
+    stage: build
+    image: alpine
+    script: [echo hi]
+`
+	_, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err == nil {
+		t.Fatal("expected error on invalid material event, got nil")
+	}
+}
+
 func TestParse_NameFromFile(t *testing.T) {
 	// YAML has explicit name: — should override the fallback filename.
 	const y = `

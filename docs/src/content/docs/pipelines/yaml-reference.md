@@ -87,7 +87,7 @@ materials:
   - git:
       url: https://github.com/org/shared-libs
       branch: main
-      on: [push]               # which events to react to
+      on: [push, tag]          # push | pull_request | tag — see "Triggers" event list
       poll_interval: 5m        # optional polling fallback
       auto_register_webhook: true
       secret_ref: SHARED_REPO_TOKEN
@@ -427,7 +427,7 @@ The agent injects these into every job's environment:
 | `CI_PROJECT_ID` | UUID of the project |
 | `CI_PROJECT_SLUG` | project slug |
 | `CI_JOB_NAME` | job name |
-| `CI_CAUSE` | trigger that created the run — `webhook`, `pull_request`, `manual`, `upstream`, `schedule`, `poll` |
+| `CI_CAUSE` | trigger that created the run — `webhook`, `pull_request`, `tag`, `manual`, `upstream`, `schedule`, `poll` |
 
 ### Pull-request runs
 
@@ -447,6 +447,46 @@ Missing fields stay UNSET (rather than empty strings) — so a PR
 with no title leaves `${CI_PULL_REQUEST_TITLE}` literal at
 substitution time. Non-PR runs (push, manual, upstream, schedule,
 poll) skip all `CI_PULL_REQUEST_*` vars silently.
+
+### Tag-push runs
+
+When `CI_CAUSE == "tag"`, the following are injected from the
+webhook payload:
+
+| Name | Value |
+|---|---|
+| `CI_TAG_NAME` | tag name (e.g. `v1.2.3`) — always present on tag runs |
+| `CI_TAG_MESSAGE` | head commit message of the tagged commit — lightweight tags only; annotated tags omit |
+| `CI_TAG_AUTHOR` | head commit author — lightweight tags only |
+
+`CI_BRANCH` carries the tag name on tag runs (the agent does a
+detached-HEAD checkout at the tag). `CI_COMMIT_SHA` carries the
+git SHA the tag points at — use it for materials/manifests that
+need to pin to a specific commit. Note that this is the **git
+ref target SHA** (40-hex SHA-1), NOT an OCI image digest — if you
+need to anchor a cosign signature to a specific image manifest,
+either let cosign resolve the tag at sign time (it anchors to the
+manifest digest internally — see the
+[trunk-based release recipe](/gocdnext/docs/concepts/trunk-based-release/))
+or have the build job emit the buildx-produced digest as a job
+output and pass it into the sign step.
+
+Annotated-tag webhooks lack a head_commit so `CI_TAG_MESSAGE` +
+`CI_TAG_AUTHOR` are omitted — the substitution layer keeps those
+literal.
+
+To wire a pipeline to tag pushes, declare it in `when.event`:
+
+```yaml
+name: release
+when:
+  event: [tag]
+```
+
+Tag-listening pipelines match the repo by URL only (branch is
+irrelevant — a tag points at a SHA that may not be on any branch).
+Pipelines that don't opt into `tag` are silently skipped on a
+tag push.
 
 These are also available as `${{ NAME }}` references and
 `${NAME}` shell-style env vars (the latter expanded by the shell

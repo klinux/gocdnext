@@ -181,10 +181,37 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Branch deletions carry no head commit — nothing to persist.
-	if ev.Deleted || ev.HeadCommit == nil {
+	// Deletion events (branch OR tag) carry no useful state to fan
+	// out — `before` is the prior SHA, `after` is the zero SHA, no
+	// head_commit. Acknowledge and stop.
+	if ev.Deleted {
 		rec.status = store.WebhookStatusIgnored
-		h.log.Info("github webhook: skipping delete/no-head-commit", "delivery", delivery, "ref", ev.Ref)
+		h.log.Info("github webhook: skipping ref deletion", "delivery", delivery, "ref", ev.Ref)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Tag pushes route differently: no base branch (a tag points at a
+	// SHA that may not be on any branch), so the URL+branch fingerprint
+	// match used by the branch-push path can't fire. handleTagPush does
+	// URL-only lookup + per-material `Events: [tag]` filter and stamps
+	// cause="tag" + cause_detail={tag_name, tag_message, tag_sha}.
+	//
+	// Routed BEFORE the head_commit nil check below because some tag
+	// payloads (notably annotated tags) arrive with head_commit empty
+	// and we still want them to fire — the tag SHA lives in ev.After
+	// regardless.
+	if ev.IsTag {
+		h.handleTagPush(w, r, body, delivery, rec, ev)
+		return
+	}
+
+	// Branch pushes without a head_commit have nothing to persist
+	// (the head_commit drives modification.author/message/committed_at).
+	if ev.HeadCommit == nil {
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("github webhook: skipping branch push with no head_commit",
+			"delivery", delivery, "ref", ev.Ref)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

@@ -49,7 +49,65 @@ func buildCIVars(run store.RunForDispatch, jobName string) map[string]string {
 		out["CI_CAUSE"] = run.Cause
 	}
 	addPullRequestVars(out, run.Cause, run.CauseDetail)
+	addTagVars(out, run.Cause, run.CauseDetail)
 	return out
+}
+
+// tagDetail mirrors the JSONB the webhook handler stamps on
+// `runs.cause_detail` for a `tag` cause — see
+// server/internal/webhook/tag_push.go. Annotated tags arrive
+// without a head_commit so tag_message + tagger may be empty;
+// unset string fields fall through the "empty → skip" filter in
+// addTagVars below. The git target SHA isn't surfaced here —
+// CI_COMMIT_SHA already carries it via primaryRevision (revisions
+// JSONB), so duplicating as CI_TAG_SHA would (a) be redundant and
+// (b) be easily misread as an OCI digest, which it ISN'T (it's a
+// git ref target SHA, 40-hex SHA-1, not a sha256 manifest digest).
+type tagDetail struct {
+	Name    string `json:"tag_name"`
+	Message string `json:"tag_message"`
+	Tagger  string `json:"tagger"`
+}
+
+// addTagVars materialises CI_TAG_* into out IF AND ONLY IF the run
+// was triggered by a tag push AND cause_detail decodes cleanly.
+// Non-tag causes and malformed JSON silently skip — keeps
+// `${CI_TAG_NAME}` literal on a non-tag run rather than baking
+// `myapp:` style empty tags. Fields that decode as empty (annotated
+// tag with no message, e.g.) likewise stay unset; same rationale as
+// addPullRequestVars.
+//
+// Three vars total:
+//   - CI_TAG_NAME: the tag name (e.g. v1.2.3) — always present on
+//     a successful tag-push run.
+//   - CI_TAG_MESSAGE: head commit message of the tagged commit —
+//     only set when the webhook included a head_commit. Annotated
+//     tags arrive without it; omit rather than emit empty so
+//     `${CI_TAG_MESSAGE}` stays literal at substitution.
+//   - CI_TAG_AUTHOR: head commit author. Same nil-tolerance as
+//     CI_TAG_MESSAGE.
+//
+// For the SHA the tag points at, use CI_COMMIT_SHA (set from the
+// revisions blob). For an OCI digest of the resulting image, the
+// build job must emit it as an artifact / output — gocdnext can't
+// pre-materialise a digest that doesn't exist yet at scheduler time.
+func addTagVars(out map[string]string, cause string, detail []byte) {
+	if cause != "tag" || len(detail) == 0 {
+		return
+	}
+	var t tagDetail
+	if err := json.Unmarshal(detail, &t); err != nil {
+		return
+	}
+	if t.Name != "" {
+		out["CI_TAG_NAME"] = t.Name
+	}
+	if t.Message != "" {
+		out["CI_TAG_MESSAGE"] = t.Message
+	}
+	if t.Tagger != "" {
+		out["CI_TAG_AUTHOR"] = t.Tagger
+	}
 }
 
 // pullRequestDetail mirrors the JSONB the webhook handler stamps on

@@ -42,16 +42,19 @@ manual      →   prod.yaml     (preflight + deploy prod + smoke + auto-rollback
 Four pipelines, one production system. Every step records a run
 in the gocdnext audit log; every approval records who clicked.
 
-**Why one pipeline does both "cut tag" and "deploy stage" (not
-two)**: gocdnext doesn't yet expose tag-push events as
-`event: [tag]` with a `CI_TAG` env var — see
-[Limitations](#limitations--roadmap). Until it does, the
-release flow is one manually-triggered pipeline that runs end
-to end. The release manager passes `TAG=v1.2.3` at trigger
-time; the pipeline cuts the tag, builds the image with that tag,
-scans + signs + publishes, and finally deploys to stage. ~15
-minutes wall-clock on a typical project; one human decision
-("cut release"); one button press.
+**Why this recipe ships one pipeline for "cut tag" + "deploy
+stage" (and what changed in v0.10.0)**: the release flow is one
+manually-triggered pipeline that runs end to end — the release
+manager passes `TAG=v1.2.3` at trigger time; the pipeline cuts
+the tag, builds the image with that tag, scans + signs +
+publishes, and finally deploys to stage. ~15 minutes wall-clock
+on a typical project; one human decision ("cut release"); one
+button press. Since v0.10.0 gocdnext also supports
+`event: [tag]` + `CI_TAG_NAME`, so this CAN be split into a slim
+`release.yaml` (cuts the tag) + a `tag.yaml` that auto-fires on
+the resulting tag push to do the build/scan/sign/deploy — see
+[Variant: split release + tag.yaml](#variant-split-release--tagyaml)
+for that shape. Pick whichever fits your team; both are valid.
 
 ## Branching contract
 
@@ -355,16 +358,20 @@ builds the image → scans → signs by digest → deploys to stage →
 smoke-tests stage. One pipeline does the full release-candidate
 chain end-to-end (~15 min wall-clock on a typical project).
 
-### Why one pipeline instead of two (release + tag)
+### One pipeline vs. split release + tag (your call since v0.10.0)
 
-Originally this guide described a separate `tag.yaml` triggered
-on tag push. That doesn't work today: gocdnext doesn't surface
-tag-push events as `event: [tag]` with a `CI_TAG` env var (the
-backend stores tag info but the agent doesn't see it as a CI
-variable). Until that gap closes (see
-[Limitations](#limitations--roadmap)), the safer pattern is one
-manually-triggered pipeline that knows the tag because the
-operator passes it at trigger time.
+This recipe uses **one** pipeline for cut-tag + build/scan/sign/
+deploy because it's the simpler shape. As of v0.10.0 gocdnext
+ships `event: [tag]` + `CI_TAG_NAME` / `CI_TAG_MESSAGE` /
+`CI_TAG_AUTHOR` (the git ref target SHA arrives via the existing
+`CI_COMMIT_SHA`), so you CAN split this into a `release.yaml`
+that only cuts the tag and a `tag.yaml` that auto-fires the
+build/scan/sign/deploy when the tag push lands —
+see the [Variant: split release + tag.yaml](#variant-split-release--tagyaml)
+section below for the shape. Pick the single-pipeline form if
+you want one button push to cut + deploy stage; pick the split
+form if you want tag pushes from any source (CLI, GitHub UI,
+another automation) to drive the build automatically.
 
 ### Why scan-after-publish (not candidate-then-promote)
 
@@ -641,6 +648,129 @@ registry needs to accept Fulcio certificates). Use it if your
 platform team has this; otherwise the key-content pattern above
 is the realistic path.
 
+### Variant: split release + tag.yaml
+
+Since v0.10.0 gocdnext routes `event: [tag]` webhooks and emits
+`CI_TAG_NAME` / `CI_TAG_MESSAGE` / `CI_TAG_AUTHOR` (the git ref
+target SHA is exposed via the existing `CI_COMMIT_SHA` — that's
+the git SHA the tag points at, NOT an OCI image digest, so use
+`CI_TAG_NAME` for image references the registry will resolve).
+This lets `release.yaml` do **just** the tag cut, and a separate
+`tag.yaml` auto-fires on tag push to do the build/scan/sign/
+deploy. The split is cleaner because the build pipeline doesn't
+need a manual TAG variable — it reads `${CI_TAG_NAME}` from the
+webhook payload — and any tag pushed via CLI or GitHub UI fires
+the same build, not just tags from the Run-latest dashboard.
+
+```yaml title=".gocdnext/release.yaml (slim)"
+name: release
+when:
+  event: [manual]
+
+variables:
+  TAG: ""
+
+stages: [validate, tag]
+
+jobs:
+  validate:
+    stage: validate
+    image: alpine:3.20
+    script: [apk add --no-cache git, |
+      # Same validate body as the single-pipeline variant above.
+      ...]
+
+  create-tag:
+    stage: tag
+    needs: [validate]
+    secrets: [GH_RELEASE_TOKEN]
+    image: alpine:3.20
+    script: [apk add --no-cache git, |
+      # Same GIT_ASKPASS push as the single-pipeline variant.
+      # The tag push fires the GitHub webhook → tag.yaml takes over.
+      ...]
+```
+
+```yaml title=".gocdnext/tag.yaml"
+name: tag
+when:
+  event: [tag]
+
+stages: [build, scan, sign, stage]
+
+jobs:
+  build:
+    stage: build
+    docker: true
+    secrets: [GHCR_USERNAME, GHCR_TOKEN]
+    uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+    with:
+      image: ghcr.io/my-org/my-app
+      tags: |
+        ${CI_TAG_NAME}
+        latest
+      platforms: linux/amd64,linux/arm64
+      push: "true"
+      registry: ghcr.io
+      username: ${{ GHCR_USERNAME }}
+      password: ${{ GHCR_TOKEN }}
+      cache: registry
+
+  trivy-image:
+    stage: scan
+    docker: true
+    needs: [build]
+    uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
+    with:
+      scan-type: image
+      target: ghcr.io/my-org/my-app:${CI_TAG_NAME}
+      severity: HIGH,CRITICAL
+      exit-code: "1"
+
+  cosign-sign:
+    stage: sign
+    needs: [trivy-image]
+    secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GHCR_USERNAME, GHCR_TOKEN]
+    uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
+    with:
+      # cosign resolves the tag to its manifest digest at sign time
+      # and anchors the signature to that digest — passing the
+      # mutable tag here is correct, the signature itself is
+      # immutable. Same pattern as the single-pipeline release.yaml.
+      image: ghcr.io/my-org/my-app:${CI_TAG_NAME}
+      action: sign
+      key-content: ${{ COSIGN_PRIVATE_KEY }}
+      key-password: ${{ COSIGN_PASSWORD }}
+      registry: ghcr.io
+      username: ${{ GHCR_USERNAME }}
+      password: ${{ GHCR_TOKEN }}
+
+  deploy-stage:
+    stage: stage
+    needs: [cosign-sign]
+    secrets: [STAGE_KUBECONFIG]
+    uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
+    with:
+      kubeconfig: ${{ STAGE_KUBECONFIG }}
+      command: |
+        upgrade --install my-app charts/my-app
+        --namespace stage
+        --set image.tag=${CI_TAG_NAME}
+        --wait --timeout 5m
+```
+
+**How it routes**: tag pushes match by URL (a tag points at a SHA
+that may not be on any branch, so branch-based routing can't
+work). Every git material on this repo with `events: [tag]`
+fires; materials without `tag` in their list are silently
+skipped. The implicit project material auto-inherits its events
+from the pipeline-level `when.event:`, so the `tag.yaml` above
+needs no `materials:` block.
+
+`prod.yaml` is unchanged — it still triggers manually with
+`TAG=vX.Y.Z` passed at trigger time, since prod promotion is a
+human gate by design (not a webhook follow-on).
+
 ## Pipeline 4: `prod.yaml`
 
 Triggers manually. The only pipeline that can touch production.
@@ -876,14 +1006,16 @@ shipped. The deliberate gaps:
   `_AUTHOR` / `_URL` materialised server-side from the webhook
   payload. The `pr.yaml` recipe above uses them directly — no
   `variables:` workaround.
-- **Tag-push event + `CI_TAG` not surfaced**: the model above
-  collapses release.yaml + tag.yaml into one manually-triggered
-  pipeline because gocdnext doesn't propagate tag-push events
-  to the agent's env as a usable `CI_TAG`. Once it does, the
-  recipe can split into release.yaml (cuts the tag) +
-  tag.yaml (auto-fires on tag push, builds + deploys stage),
-  which is the cleaner shape. Until then, one manual pipeline
-  is the honest answer.
+- **Tag-push event + tag env vars**: ✅ shipped in v0.10.0. Tag
+  pushes now route via `event: [tag]` (URL-only matching since
+  tags don't carry a base branch); the scheduler injects
+  `CI_TAG_NAME` / `CI_TAG_MESSAGE` / `CI_TAG_AUTHOR` for any run
+  with `cause == "tag"`. The git ref target SHA is on the
+  existing `CI_COMMIT_SHA` — same value, no duplicate var. The
+  [Variant: split release + tag.yaml](#variant-split-release--tagyaml)
+  section above shows the cleaner shape this enables. The
+  single-pipeline form remains in the recipe for teams that
+  prefer one button push.
 - **Multi-arch scan-before-publish**: `gocdnext/docker-push`'s
   `docker tag` + `docker push` flow doesn't preserve multi-arch
   manifest lists during retag. The recipe uses scan-after-

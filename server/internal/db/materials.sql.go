@@ -97,6 +97,58 @@ func (q *Queries) InsertMaterial(ctx context.Context, arg InsertMaterialParams) 
 	return i, err
 }
 
+const listGitMaterials = `-- name: ListGitMaterials :many
+SELECT id, pipeline_id, type, config, fingerprint, auto_update, created_at
+FROM materials
+WHERE type = 'git'
+ORDER BY pipeline_id
+`
+
+// Every type='git' material in the DB. Webhook tag-push routing
+// pulls this set and filters Go-side: NormalizeGitURL on each
+// config->>'url' matched against the canonical clone URL from the
+// webhook payload. URL drift across the operator-typed forms
+// (`.git` suffix, https vs ssh) is canonicalised on BOTH sides at
+// filter time so a material declared with `url:
+// https://github.com/x/y.git` matches a webhook for
+// `https://github.com/x/y` and vice versa.
+//
+// Why a full scan vs an indexed `WHERE config->>'url' = $1`:
+// material URLs are stored verbatim from the YAML (parser keeps the
+// operator's form so the agent's `git clone` reproduces what was
+// declared), so the in-DB string varies across rows. A JSONB
+// functional index would only help for the exact form; the
+// normalize-and-compare path covers all of them. At < 10k git
+// materials the scan is < 100ms; revisit with an `url_fingerprint`
+// column if larger deployments observe latency.
+func (q *Queries) ListGitMaterials(ctx context.Context) ([]Material, error) {
+	rows, err := q.db.Query(ctx, listGitMaterials)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Material{}
+	for rows.Next() {
+		var i Material
+		if err := rows.Scan(
+			&i.ID,
+			&i.PipelineID,
+			&i.Type,
+			&i.Config,
+			&i.Fingerprint,
+			&i.AutoUpdate,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMaterialsByPipeline = `-- name: ListMaterialsByPipeline :many
 SELECT id, pipeline_id, type, config, fingerprint, auto_update, created_at
 FROM materials
