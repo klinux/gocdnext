@@ -81,6 +81,51 @@ inputs:
       boundaries.
 
 examples:
+  - name: native outputs (gocdnext v0.11+) — no needs_artifacts plumbing
+    description: >
+      Declare `outputs:` on the bump job and downstream jobs
+      reference `${{ needs.bump.outputs.next }}` from
+      `variables:` / plugin `with:`. The scheduler substitutes
+      these at dispatch and the resolved values then expand
+      inside `script:` via normal shell `$VAR` references — no
+      `needs_artifacts:` + `source .gocdnext/semver.env` step
+      needed. The legacy workspace-file path is still emitted
+      in parallel for older agents / explicit consumers.
+
+      Important: gocdnext's `${{ ... }}` substitution runs on
+      `env:` / `variables:` / plugin `with:` only — NOT on the
+      raw `script:` lines (so shell-side `${HOME}` etc. survive
+      verbatim). The pattern is to land the value in a `variables:`
+      env var and reference it in the script via normal `$NAME`.
+    yaml: |
+      jobs:
+        bump:
+          stage: tag
+          uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+          outputs:
+            next: NEXT
+            kind: KIND
+
+        create-tag:
+          stage: tag
+          needs: [bump]
+          image: alpine:3.20
+          # Land needs outputs into env so the script sees them
+          # as plain shell vars. Substitution happens here at
+          # dispatch; the script then runs with NEXT/KIND set.
+          variables:
+            NEXT: ${{ needs.bump.outputs.next }}
+            KIND: ${{ needs.bump.outputs.kind }}
+          script:
+            - apk add --no-cache git
+            - |
+              if [ "$KIND" = "none" ]; then
+                echo "No commits — skipping tag"
+                exit 0
+              fi
+              git tag -a "$NEXT" -m "Release"
+              # ... push via GIT_ASKPASS pattern, etc.
+
   - name: auto-bump on every release pipeline
     description: >
       Cuts the next version automatically — no TAG variable at

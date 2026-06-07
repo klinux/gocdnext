@@ -199,6 +199,9 @@ jobs:
       description: "Promote to prod"
       approver_groups: [release-approvers]
       required: 2
+    outputs:                           # values downstream jobs reference via
+      next: NEXT                       # ${{ needs.<this-job>.outputs.<alias> }}
+      kind: KIND                       # plugin/script writes KEY=value to $GOCDNEXT_OUTPUT_FILE
 ```
 
 Per-key:
@@ -518,6 +521,129 @@ or `artifacts:` — an approval job is a gate, not an executor.
 
 See [Approval gates](/gocdnext/docs/concepts/approvals/) for the
 deeper walk-through.
+
+## Job outputs (`outputs:`)
+
+A job declares structured values it promises to produce; downstream
+jobs reference them via `${{ needs.<job>.outputs.<alias> }}`
+resolved at dispatch — no `needs_artifacts:` + `source` plumbing
+required.
+
+```yaml
+jobs:
+  bump:
+    stage: tag
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      next: NEXT       # alias: env-var name written by the plugin
+      kind: KIND       # to $GOCDNEXT_OUTPUT_FILE
+
+  publish:
+    stage: deploy
+    needs: [bump]
+    uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+    with:
+      image: ghcr.io/org/app
+      tags: ${{ needs.bump.outputs.next }}
+```
+
+### How values get there
+
+The agent injects `$GOCDNEXT_OUTPUT_FILE` into the job's env —
+a private path the runner picks, never operator-controlled. The
+plugin (or a `script:` step) writes `KEY=value` lines to that
+file. At job end the agent parses the file, filters to the keys
+declared in `outputs:`, rekeys to the YAML aliases, and ships
+them in `JobResult`. Storage is a JSONB column on `job_runs`
+written in the same transaction as the success flip — so the
+scheduler's `${{ needs.X.outputs.Y }}` lookup at dispatch always
+sees a consistent snapshot.
+
+### Validation
+
+- Aliases (LHS of the map): `[a-z][a-zA-Z0-9_-]*` — lowercase-
+  leading per gocdnext idiom. Case-sensitive end-to-end:
+  `${{ needs.X.outputs.Next }}` does not resolve `outputs.next`.
+- Env names (RHS): POSIX env-var shape `[A-Za-z_][A-Za-z0-9_]*` —
+  what the plugin writes to the output file.
+- Cap: 64 entries per job (declaration); 64 KB total payload
+  (sum of key + value bytes). Both enforced agent-side AND
+  server-side.
+- Outputs are part of the build CONTRACT — if declared, the
+  plugin MUST write each one. Missing keys fail the job loud
+  with a message that cites the alias and the env name expected.
+  Pipelines like `gocdnext/semver-bump` and `gocdnext/image-copy`
+  write a superset, so declaring a subset is fine; extras are
+  silently dropped.
+
+### Outputs are NOT a secret channel
+
+Use `secrets:` for credentials. Outputs are designed for non-
+sensitive small values (versions, digests, deploy URLs) and the
+substituted value WILL appear in logs of any downstream step that
+prints the env var or argv that uses it.
+
+Defence in depth: the scheduler does add every resolved output
+value of length >= 8 to the downstream job's LogMasks list, so
+the runner redacts substring matches automatically. That's a
+safety net for "operator forgot the value was a token" — not the
+recommended path. Short values (< 8 chars) skip the mask to avoid
+false-positive substring replacements across unrelated log lines.
+
+### Substitution scope
+
+`${{ needs.X.outputs.Y }}` substitution happens in `env:` /
+`variables:` / plugin `with:`. It does NOT run on raw `script:`
+lines — shell-side `${VAR}` references stay verbatim so the
+inner shell can resolve them at runtime. The pattern when a
+script needs an output value: land it via `variables:` and
+reference as `$NAME` inside the script. Example:
+
+```yaml
+create-tag:
+  needs: [bump]
+  image: alpine:3.20
+  variables:
+    NEXT: ${{ needs.bump.outputs.next }}   # resolved at dispatch
+  script:
+    - git tag -a "$NEXT" -m "Release"     # shell expansion at runtime
+```
+
+### Matrix limitation (v1)
+
+A matrix job that expands to >1 row can't be referenced via
+`${{ needs.X.outputs.Y }}` — the scheduler errors LOUD listing
+the matrix keys involved. Explicit per-row selector
+(`${{ needs.X.matrix[key].outputs.Y }}`) is roadmap for issue #10
+follow-up. For now, fold matrix-produced values through a
+single non-matrix downstream that consolidates.
+
+### Kubernetes isolated mode (v0.11) limitation
+
+When the agent runs with `agent.workspace.accessMode=ReadWriteOnce`
+(isolated workspace mode), jobs declaring `outputs:` are
+**rejected at dispatch with a clear error** — the agent doesn't
+yet support reading `$GOCDNEXT_OUTPUT_FILE` from the ephemeral
+pod filesystem via housekeeper exec. Workarounds:
+- Switch the agent to `accessMode=ReadWriteMany` (shared
+  workspace mode); outputs work normally.
+- Drop the `outputs:` block and have downstream consume the
+  legacy `.gocdnext/*.env` files via `artifacts:` /
+  `needs_artifacts:` + `source` in a script step. The plugins
+  (`gocdnext/semver-bump`, `gocdnext/image-copy`) write both
+  paths in parallel for exactly this case.
+
+Native isolated-mode outputs are roadmap for an issue #10
+follow-up.
+
+### Compat
+
+Plugins like `gocdnext/semver-bump` and `gocdnext/image-copy`
+emit BOTH the new `$GOCDNEXT_OUTPUT_FILE` AND the legacy
+workspace file (`.gocdnext/semver.env`, `.gocdnext/image-copy.env`)
+in parallel. Pipelines on older gocdnext agents (pre-v0.11) keep
+working via `needs_artifacts:` + `source`. New pipelines should
+prefer the native syntax.
 
 ## Notifications
 
