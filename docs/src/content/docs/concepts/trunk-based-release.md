@@ -819,33 +819,27 @@ jobs:
   preflight:
     stage: preflight
     needs: [approve-prod]
-    image: alpine:3.20
-    script:
-      - apk add --no-cache git
-      - |
-        # gocdnext's API doesn't expose a queryable "find runs
-        # where variable.TAG=X" today — TAG is a pipeline
-        # variable, not a column on `runs`. So this preflight
-        # does what CAN be verified automatically:
-        #   1. The git tag actually exists.
-        #   2. (Optional) the image's cosign signature verifies.
-        #
-        # The substantive verification — "stage smoke passed for
-        # this TAG" — happens MANUALLY at approve time. The
-        # approvers above are responsible for checking the
-        # release pipeline's stage-smoke status in the gocdnext
-        # dashboard BEFORE clicking Approve. The pre-flight is
-        # the last sanity check, not the primary gate.
-        if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-          echo "❌ tag $TAG does not exist in this clone"
-          echo "   the agent's git fetch may not have pulled it — check materials."
-          exit 1
-        fi
-        echo "✓ git tag $TAG exists"
-        # Uncomment when you have cosign.pub committed at the repo root:
-        # apk add --no-cache cosign
-        # cosign verify --key cosign.pub ghcr.io/my-org/my-app:$TAG
-        # echo "✓ cosign signature verified for $TAG"
+    # Since v0.12.0 this is a typed plugin call instead of inline
+    # curl + jq. Confirms a terminal-success run of `release`
+    # exists for ${TAG} via the gocdnext REST API. Fails the gate
+    # loud (exit 1) when no match — the prod deploy chain stays
+    # red. Optional outputs: pipe the matched run URL into the
+    # post-deploy notification so the audit trail links prod
+    # promotion ← upstream release run.
+    secrets: [GOCDNEXT_API_TOKEN]
+    uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+    outputs:
+      run_url: RUN_URL
+    with:
+      api-url: https://gocdnext.cora.tools
+      api-token: ${{ GOCDNEXT_API_TOKEN }}
+      project: my-org
+      pipeline: release
+      tag: ${TAG}
+      expected-status: success
+      max-age: 7d
+    artifacts:
+      paths: [".gocdnext/preflight.env"]
 
   deploy-prod:
     stage: deploy
@@ -1047,10 +1041,14 @@ shipped. The deliberate gaps:
   want the cleaner staging-then-promote shape — see the
   plugin's "digest-pinned promotion + cosign sign-by-digest"
   example in the catalog.
-- **Per-tag preflight via API**: `prod.yaml`'s preflight needs a
-  small curl + jq script against gocdnext's REST API to
-  confirm the tag passed stage. Roadmap: a dedicated plugin or
-  built-in input.
+- **Per-tag preflight via API**: ✅ shipped in v0.12.0. The
+  `gocdnext/check-pipeline-run@v1` plugin queries the gocdnext
+  REST API and confirms a target pipeline produced a
+  terminal-success run matching the operator's filter
+  (`tag:`, `revision:`). Replaces the inline curl + jq in
+  `prod.yaml` with a typed plugin + structured outputs (run id,
+  URL, revision, counter, finished_at). Supports a poll mode
+  for prod chains queued immediately after the release pipeline.
 - **Semver bump as plugin**: ✅ shipped in v0.10.0. The
   `gocdnext/semver-bump@v1` plugin auto-computes the next tag
   from Conventional Commits since the prior tag (major on

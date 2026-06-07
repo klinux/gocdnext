@@ -1,0 +1,218 @@
+name: check-pipeline-run
+category: release
+description: >
+  Preflight check against the gocdnext REST API — confirms a target
+  pipeline produced a terminal-success run matching the operator's
+  filter (tag or commit revision) before a downstream gate proceeds.
+  Replaces the inline `curl + jq` script in trunk-based-release's
+  `prod.yaml` preflight job.
+
+  Two modes:
+    - single-shot (default): query once, fail loud if no match. For
+      flows where the upstream run is GUARANTEED to be terminal by
+      the time this fires (operator workflow: open prod.yaml after
+      release/stage smoke went green).
+    - poll: re-query every interval up to max-attempts. For flows
+      where the prod deploy is queued right after the release
+      pipeline and the upstream might still be running.
+
+  Emits the matched run's id / URL / revision / counter /
+  finished_at to a shell-sourceable file AND to
+  $GOCDNEXT_OUTPUT_FILE (v0.11+) so downstream steps can audit
+  WHICH upstream run cleared the gate.
+
+inputs:
+  api-url:
+    required: true
+    description: >
+      gocdnext base URL (no trailing slash), e.g.
+      `https://gocdnext.cora.tools`. HTTPS recommended;
+      `http://` accepted for in-cluster / dev. Charset validated
+      against shell metas + spaces.
+  api-token:
+    required: true
+    description: >
+      `gnk_...` API token. Pipe via `secrets:` — the plugin writes
+      it to a `curl --config` tempfile (0600 + EXIT/INT/TERM trap)
+      so it NEVER lands on `ps auxww`.
+  project:
+    required: true
+    description: >
+      Project slug to query (e.g. `cora-pulse`). The plugin reads
+      `GET /api/v1/projects/{slug}?runs=100` to scan recent runs.
+  pipeline:
+    required: true
+    description: >
+      Pipeline name to match within the project's recent runs.
+      Same name shape gocdnext's parser accepts (alphanumeric +
+      dash + underscore).
+  tag:
+    required: false
+    description: >
+      Match runs whose `cause_detail.tag_name` equals this value
+      — i.e. the run was triggered by a tag push (cause=tag) for
+      this tag. EXACTLY ONE of `tag:` OR `revision:` must be set:
+      blank is rejected (would match any recent success), and
+      passing both is rejected (would silently AND the filters
+      and confuse the operator).
+      Charset follows Git refname rules (so `release/v1.2.3` and
+      `v1.2.3+build.1` are accepted), not OCI image tag rules.
+  revision:
+    required: false
+    description: >
+      Match runs whose primary commit revision starts with this
+      value. Prefix-match — pass `${CI_COMMIT_SHORT_SHA}` directly.
+      7-40 hex chars. Mutually exclusive with `tag:`.
+  expected-status:
+    required: false
+    default: success
+    description: >
+      Comma-separated terminal statuses to accept. Default
+      `success`. Whitespace around items is tolerated
+      (`success, canceled` works). Use `success,canceled` for
+      rare flows where a canceled run is OK (e.g. promote-to-prod
+      considers a canceled "we did stage-smoke and cancelled the
+      rest" run as valid).
+  max-age:
+    required: false
+    default: "7d"
+    description: >
+      Reject matches whose `finished_at` is older than this.
+      Format: `<N>{m|h|d}` (minutes/hours/days). Set to `0` to
+      disable. Default 7 days — keeps the preflight from accepting
+      a stale matching run that doesn't reflect the current
+      promotion intent.
+  poll-attempts:
+    required: false
+    default: "1"
+    description: >
+      Number of times to re-query the API when the first attempt
+      finds no match. `1` (default) = single-shot. Higher values
+      enable poll mode for queued-immediately-after-release flows.
+      Capped at 60.
+  poll-interval:
+    required: false
+    default: "30"
+    description: >
+      Seconds between poll attempts. Capped at 600s. Ignored when
+      poll-attempts=1.
+  runs-limit:
+    required: false
+    default: "100"
+    description: >
+      How many recent runs of the project the plugin scans per
+      attempt. Default + cap = 100 because the server-side
+      `/api/v1/projects/{slug}?runs=N` handler silently caps at
+      100 today; promising anything higher would create a false
+      sense of coverage. If a legitimate match falls outside the
+      last 100 runs of the project, tighten `max-age:` or use a
+      narrower upstream pipeline name instead.
+  output:
+    required: false
+    default: ".gocdnext/preflight.env"
+    description: >
+      Workspace-relative output file (shell-sourceable). Always
+      written on success. ALSO written to $GOCDNEXT_OUTPUT_FILE
+      when the agent set it (v0.11+ native outputs); operators
+      declare `outputs:` and reference values via
+      `${{ needs.preflight.outputs.run_id }}`. Workspace-relative
+      with no `..` traversal; absolute paths rejected.
+
+examples:
+  - name: preflight prod deploy against the release pipeline
+    description: >
+      The canonical use: `prod.yaml`'s preflight job confirms the
+      release pipeline produced a terminal-success run for the tag
+      being promoted. Fails the deploy chain (gate stays red) when
+      no matching run exists. Replaces the inline curl + jq +
+      `set -e` in prod.yaml.
+    yaml: |
+      preflight:
+        stage: preflight
+        needs: [approve-prod]
+        secrets: [GOCDNEXT_API_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+        outputs:
+          run_id: RUN_ID
+          run_url: RUN_URL
+        with:
+          api-url: https://gocdnext.cora.tools
+          api-token: ${{ GOCDNEXT_API_TOKEN }}
+          project: my-org
+          pipeline: release
+          tag: ${TAG}
+          expected-status: success
+          max-age: 7d
+        artifacts:
+          paths: [".gocdnext/preflight.env"]
+
+  - name: native outputs (gocdnext v0.11+) — pass run_url to audit log
+    description: >
+      Combines `outputs:` with the post-deploy notification step
+      so the audit message links the promoted-to-prod tag to the
+      upstream release run that cleared it.
+    yaml: |
+      jobs:
+        preflight:
+          stage: preflight
+          secrets: [GOCDNEXT_API_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+          outputs:
+            run_url: RUN_URL
+          with:
+            api-url: https://gocdnext.cora.tools
+            api-token: ${{ GOCDNEXT_API_TOKEN }}
+            project: my-org
+            pipeline: release
+            tag: ${TAG}
+
+        notify:
+          stage: verify
+          needs: [deploy-prod, preflight]
+          uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
+          secrets: [SLACK_WEBHOOK]
+          with:
+            webhook: ${{ SLACK_WEBHOOK }}
+            channel: "#deploys"
+            template: |
+              :rocket: ${TAG} live in PROD
+              upstream release run: ${{ needs.preflight.outputs.run_url }}
+
+  - name: poll mode — prod queued right after release
+    description: >
+      When `prod.yaml` is triggered immediately after `release.yaml`
+      (rare; typical workflow waits for a human), the release run
+      may still be `running`. poll-attempts=20 with 30s interval =
+      up to 10 minutes of waiting before failing loud.
+    yaml: |
+      preflight:
+        stage: preflight
+        secrets: [GOCDNEXT_API_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+        with:
+          api-url: https://gocdnext.cora.tools
+          api-token: ${{ GOCDNEXT_API_TOKEN }}
+          project: my-org
+          pipeline: release
+          tag: ${TAG}
+          poll-attempts: "20"
+          poll-interval: "30"
+
+  - name: match by commit revision (no tag flow)
+    description: >
+      For teams that don't tag every release. Pass the short or
+      full SHA — the plugin prefix-matches against the run's
+      primary revision (lowest-uuid material, same rule as
+      scheduler/civars.go::primaryRevision).
+    yaml: |
+      preflight:
+        stage: preflight
+        secrets: [GOCDNEXT_API_TOKEN]
+        uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+        with:
+          api-url: https://gocdnext.cora.tools
+          api-token: ${{ GOCDNEXT_API_TOKEN }}
+          project: my-org
+          pipeline: main
+          revision: ${CI_COMMIT_SHORT_SHA}
+          max-age: "24h"
