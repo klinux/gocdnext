@@ -339,8 +339,10 @@ if [ -z "${promoted_digest}" ]; then
     exit 3
 fi
 
-# --- write output file ------------------------------------------------
+# --- write output files -----------------------------------------------
 
+# Path 1 (legacy, kept for backward compat): the workspace file
+# downstream consumers `source` after `needs_artifacts:`.
 output_dir=$(dirname "${OUTPUT}")
 if [ "${output_dir}" != "." ]; then
     mkdir -p "${output_dir}"
@@ -352,6 +354,29 @@ fi
     echo "TARGET='${TARGET}'"
     echo "BACKEND='${BACKEND}'"
 } > "${OUTPUT}"
+
+# Path 2 (native, since gocdnext v0.11.0): GOCDNEXT_OUTPUT_FILE
+# is the agent-managed path the scheduler reads after the job
+# ends. Downstream jobs reference values via
+# `${{ needs.<this-job>.outputs.<alias> }}` resolved at dispatch
+# (no `needs_artifacts:` + `source` step required). The agent
+# only ships keys the operator DECLARED in their `outputs:`
+# block — extras are silently dropped, so writing all four here
+# costs nothing and lets the operator declare a subset:
+#
+#   outputs:
+#     digest: PROMOTED_DIGEST   # most common — anchors cosign sign
+#
+# When GOCDNEXT_OUTPUT_FILE is empty (older agents, or the job
+# didn't declare any `outputs:`), the writes silently no-op.
+if [ -n "${GOCDNEXT_OUTPUT_FILE:-}" ]; then
+    {
+        echo "PROMOTED_DIGEST=${promoted_digest}"
+        echo "SOURCE=${SOURCE}"
+        echo "TARGET=${TARGET}"
+        echo "BACKEND=${BACKEND}"
+    } > "${GOCDNEXT_OUTPUT_FILE}"
+fi
 
 # --- echo to job log --------------------------------------------------
 

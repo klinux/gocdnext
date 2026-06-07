@@ -648,6 +648,23 @@ registry needs to accept Fulcio certificates). Use it if your
 platform team has this; otherwise the key-content pattern above
 is the realistic path.
 
+### Cleaner downstream chains with native job outputs (v0.11+)
+
+Since v0.11.0 gocdnext supports
+[structured job outputs](/gocdnext/docs/pipelines/yaml-reference/#job-outputs-outputs).
+The recipes above use the legacy "downstream is `image:` + `script:` +
+`source .gocdnext/foo.env`" pattern because that's what worked on
+older agents; for new pipelines, declare `outputs:` on the producer
+and reference `${{ needs.X.outputs.Y }}` directly in any consumer's
+`with:` or `env:`. That lets the cosign-sign step (and every other
+step that needs a runtime value from a prior job) stay as a clean
+`uses:` plugin invocation instead of inlining shell.
+
+`gocdnext/semver-bump@v1` and `gocdnext/image-copy@v1` already
+write both the legacy workspace file AND `$GOCDNEXT_OUTPUT_FILE`,
+so the migration is a one-line declaration on the producer + a
+one-token substitution on the consumer.
+
 ### Variant: split release + tag.yaml
 
 Since v0.10.0 gocdnext routes `event: [tag]` webhooks and emits

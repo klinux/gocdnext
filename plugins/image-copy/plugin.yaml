@@ -119,6 +119,45 @@ inputs:
       the digest into a downstream cosign-sign job.
 
 examples:
+  - name: native outputs (gocdnext v0.11+) — sign by digest, no env file
+    description: >
+      Declare `outputs:` on the promote job and the cosign step
+      references `${{ needs.promote.outputs.digest }}` directly
+      in `with:`. The cosign job can stay as a `uses:` plugin
+      (instead of image+script that sources an env file),
+      because the digest is substituted at dispatch — no
+      runtime file read required. The legacy
+      `.gocdnext/image-copy.env` workspace file is still emitted
+      in parallel for older agents.
+    yaml: |
+      jobs:
+        promote:
+          stage: promote
+          secrets: [GHCR_USERNAME, GHCR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-image-copy@v1
+          outputs:
+            digest: PROMOTED_DIGEST
+          with:
+            source: ghcr.io/org/app@sha256:abc123…
+            target: ghcr.io/org/app:${CI_TAG_NAME}
+            username: ${{ GHCR_USERNAME }}
+            password: ${{ GHCR_TOKEN }}
+
+        cosign-sign:
+          stage: sign
+          needs: [promote]
+          secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GHCR_USERNAME, GHCR_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
+          with:
+            # Resolved at dispatch — no image+script gymnastics.
+            image: ghcr.io/org/app@${{ needs.promote.outputs.digest }}
+            action: sign
+            key-content: ${{ COSIGN_PRIVATE_KEY }}
+            key-password: ${{ COSIGN_PASSWORD }}
+            registry: ghcr.io
+            username: ${{ GHCR_USERNAME }}
+            password: ${{ GHCR_TOKEN }}
+
   - name: same-registry promote staging → release
     description: >
       Build pushes to a staging tag, trivy scans it, then
