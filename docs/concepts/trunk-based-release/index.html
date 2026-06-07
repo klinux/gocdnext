@@ -428,20 +428,34 @@ existing <code dir="auto">CI_COMMIT_SHA</code> — same value, no duplicate var.
 section above shows the cleaner shape this enables. The
 single-pipeline form remains in the recipe for teams that
 prefer one button push.</li>
-<li><strong>Multi-arch scan-before-publish</strong>: <code dir="auto">gocdnext/docker-push</code>’s
-<code dir="auto">docker tag</code> + <code dir="auto">docker push</code> flow doesn’t preserve multi-arch
-manifest lists during retag. The recipe uses scan-after-
-publish + delete-on-fail. Roadmap: a registry-side image-copy
-plugin (wrapping <code dir="auto">crane copy</code> / <code dir="auto">skopeo copy</code> /
-<code dir="auto">buildx imagetools create</code>).</li>
+<li><strong>Multi-arch scan-before-publish</strong>: ✅ shipped in v0.10.0. The
+<code dir="auto">gocdnext/image-copy@v1</code> plugin promotes multi-arch images
+between registries via crane / skopeo / buildx-imagetools
+(operator picks the backend), preserving the manifest list
+end-to-end. Rewrite to scan-before-publish: build to a
+staging registry → trivy-scan staging → image-copy from
+staging to prod registry → cosign-sign by promoted digest.
+The recipe in this page still uses scan-after-publish as the
+single-pipeline shape for simplicity; the
+<a href="#variant-split-release--tagyaml">Variant: split release + tag.yaml</a>
+section above can be extended to use <code dir="auto">image-copy</code> when teams
+want the cleaner staging-then-promote shape — see the
+plugin’s “digest-pinned promotion + cosign sign-by-digest”
+example in the catalog.</li>
 <li><strong>Per-tag preflight via API</strong>: <code dir="auto">prod.yaml</code>’s preflight needs a
 small curl + jq script against gocdnext’s REST API to
 confirm the tag passed stage. Roadmap: a dedicated plugin or
 built-in input.</li>
-<li><strong>Semver bump as plugin</strong>: the recipe inlines <code dir="auto">git tag</code> logic
-in a shell script + relies on the operator passing TAG.
-Roadmap: <code dir="auto">gocdnext/semver-bump@v1</code> plugin that auto-computes
-the next tag from conventional commits since the last tag.</li>
+<li><strong>Semver bump as plugin</strong>: ✅ shipped in v0.10.0. The
+<code dir="auto">gocdnext/semver-bump@v1</code> plugin auto-computes the next tag
+from Conventional Commits since the prior tag (major on
+<code dir="auto">feat!:</code> / <code dir="auto">BREAKING CHANGE:</code>, minor on <code dir="auto">feat:</code>, patch
+otherwise). Writes a shell-sourceable <code dir="auto">.gocdnext/semver.env</code>
+that downstream <code dir="auto">create-tag</code> jobs source. Combined with
+<code dir="auto">event: [tag]</code> + <code dir="auto">CI_TAG_NAME</code> above, the release flow is now
+“click Run on release.yaml → semver-bump → create-tag → push;
+tag webhook auto-fires tag.yaml” with no operator-typed TAG
+variable anywhere.</li>
 <li><strong>Cosign by content key</strong>: ✅ shipped in this release. The
 <code dir="auto">gocdnext/cosign@v1</code> plugin now accepts <code dir="auto">key-content:</code> which
 writes the bytes to a 0600 mktemp inside the plugin’s
