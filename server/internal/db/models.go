@@ -161,6 +161,7 @@ type JobRun struct {
 	ApprovalRequired    int32
 	LogsArchiveUri      *string
 	LogsArchivedAt      pgtype.Timestamptz
+	Outputs             []byte
 }
 
 type JobRunApproval struct {

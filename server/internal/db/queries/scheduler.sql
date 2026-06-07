@@ -152,6 +152,30 @@ WHERE id = $1 AND status = 'queued';
 -- reaper, blocked waiting for a next stage, etc.).
 SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at;
 
+-- name: ListJobOutputsForRun :many
+-- Reads (name, matrix_key, outputs) for every job_run in the given
+-- run whose name appears in @names. Used by the scheduler during
+-- dispatch to resolve `${{ needs.<job>.outputs.<key> }}` refs in a
+-- downstream job's `with:` / `env:` / `script:` (issue #10).
+--
+-- Outputs are NOT NULL DEFAULT '{}' on the column, so a job that
+-- ran without writing outputs returns an empty map — the
+-- substitution layer surfaces "key missing" as a hard error
+-- (operator referenced a key the upstream never produced) rather
+-- than silently substituting empty.
+--
+-- Why scoped by run_id + name list (not just run_id): a typical
+-- needs: list is 1–3 names, the run has 10–50 job_runs. Filtering
+-- at SQL avoids dragging unrelated rows + their JSONB payloads
+-- across the wire. matrix_key returns so a needs:[matrix-parent]
+-- reference can still pick the right instance (today the
+-- substitution path picks the matrix_key='' parent; sibling-
+-- matrix-row refs are a follow-up).
+SELECT name, matrix_key, status, outputs
+FROM job_runs
+WHERE run_id = $1
+  AND name = ANY(@names::text[]);
+
 -- name: GetRunForDispatch :one
 -- project_notifications tags along so the dispatcher can resolve
 -- synth notification jobs that inherited their spec from the

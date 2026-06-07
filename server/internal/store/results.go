@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -236,6 +237,15 @@ type CompleteJobInput struct {
 	ErrorMsg        string
 	ExpectedAgentID uuid.UUID
 	ExpectedAttempt int32
+	// Outputs is the structured k/v map the agent shipped in
+	// JobResult.outputs (issue #10). Nil/empty is the common
+	// case — the column defaults to '{}' so callers don't need
+	// to think about non-output jobs. Persisted in the SAME
+	// transaction as the status flip so downstream jobs gated on
+	// this row's `needs:` always see the outputs as part of the
+	// upstream's terminal state — no read-after-write race
+	// against the dispatch path.
+	Outputs map[string]string
 }
 
 // JobCompletion summarises the cascade that CompleteJob kicked off: which
@@ -279,11 +289,23 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 	q := s.q.WithTx(tx)
 
 	exitCode := in.ExitCode
+	// Marshal outputs to JSONB. Nil/empty map → nil bytes → SQL
+	// COALESCE falls back to '{}', keeping the legacy completion
+	// shape one column wider but otherwise identical.
+	var outputsJSON []byte
+	if len(in.Outputs) > 0 {
+		var err error
+		outputsJSON, err = json.Marshal(in.Outputs)
+		if err != nil {
+			return JobCompletion{}, false, fmt.Errorf("store: complete job: marshal outputs: %w", err)
+		}
+	}
 	row, err := q.CompleteJobRun(ctx, db.CompleteJobRunParams{
 		ID:              pgUUID(in.JobRunID),
 		Status:          in.Status,
 		ExitCode:        &exitCode,
 		Error:           nullableString(in.ErrorMsg),
+		Outputs:         outputsJSON,
 		ExpectedAgentID: pgUUIDNullable(in.ExpectedAgentID),
 		ExpectedAttempt: in.ExpectedAttempt,
 	})

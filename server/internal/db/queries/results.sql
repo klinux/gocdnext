@@ -109,8 +109,17 @@ ON CONFLICT (job_run_id, seq, at) DO NOTHING;
 -- Returns stage/run ids so the caller can cascade. ErrNoRows when
 -- the predicate doesn't match — caller treats as "another path
 -- handled this row already" and drops the message silently.
+-- outputs is set on the SAME row update as status so a successful
+-- CompleteJob atomically publishes the structured k/v outputs the
+-- agent shipped (issue #10). Downstream jobs gated on this row's
+-- needs: read both columns in one query, so the substitution path
+-- sees the final state — no read-after-write race against
+-- dispatch. NULL caller param falls back to '{}' so the legacy
+-- non-output completion path stays a one-line change at the call
+-- site.
 UPDATE job_runs
-SET status = $2, exit_code = $3, error = $4, finished_at = NOW()
+SET status = $2, exit_code = $3, error = $4, finished_at = NOW(),
+    outputs = COALESCE(@outputs::jsonb, '{}'::jsonb)
 WHERE id = $1
   AND status IN ('queued', 'running')
   AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid

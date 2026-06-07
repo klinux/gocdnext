@@ -53,11 +53,12 @@ func (q *Queries) CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID
 
 const completeJobRun = `-- name: CompleteJobRun :one
 UPDATE job_runs
-SET status = $2, exit_code = $3, error = $4, finished_at = NOW()
+SET status = $2, exit_code = $3, error = $4, finished_at = NOW(),
+    outputs = COALESCE($5::jsonb, '{}'::jsonb)
 WHERE id = $1
   AND status IN ('queued', 'running')
-  AND agent_id IS NOT DISTINCT FROM $5::uuid
-  AND attempt = $6::int
+  AND agent_id IS NOT DISTINCT FROM $6::uuid
+  AND attempt = $7::int
 RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at
 `
 
@@ -66,6 +67,7 @@ type CompleteJobRunParams struct {
 	Status          string
 	ExitCode        *int32
 	Error           *string
+	Outputs         []byte
 	ExpectedAgentID pgtype.UUID
 	ExpectedAttempt int32
 }
@@ -99,12 +101,21 @@ type CompleteJobRunRow struct {
 // Returns stage/run ids so the caller can cascade. ErrNoRows when
 // the predicate doesn't match — caller treats as "another path
 // handled this row already" and drops the message silently.
+// outputs is set on the SAME row update as status so a successful
+// CompleteJob atomically publishes the structured k/v outputs the
+// agent shipped (issue #10). Downstream jobs gated on this row's
+// needs: read both columns in one query, so the substitution path
+// sees the final state — no read-after-write race against
+// dispatch. NULL caller param falls back to '{}' so the legacy
+// non-output completion path stays a one-line change at the call
+// site.
 func (q *Queries) CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error) {
 	row := q.db.QueryRow(ctx, completeJobRun,
 		arg.ID,
 		arg.Status,
 		arg.ExitCode,
 		arg.Error,
+		arg.Outputs,
 		arg.ExpectedAgentID,
 		arg.ExpectedAttempt,
 	)
