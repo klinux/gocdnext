@@ -242,27 +242,23 @@ examples:
       result. `wait-for-quality-gate: "true"` makes the job fail
       when the gate fails so the PR is blocked.
 
-      IMPORTANT — gocdnext does not yet inject PR metadata as CI
-      variables. The values below are hard-coded for clarity;
-      in practice operators thread the PR number through a
-      pipeline `variables:` block + webhook integration, or
-      trigger this pipeline manually with the PR number on hand.
-      Watch the roadmap for a `CI_PULL_REQUEST_*` variable set.
+      gocdnext materialises PR metadata as `CI_PULL_REQUEST_*`
+      env vars server-side from the webhook payload (since
+      v0.9.0 — see the YAML reference for the full set). No
+      `variables:` block or trigger-flow plumbing required; PR
+      runs see the values automatically.
     yaml: |
       sonar-pr:
         stage: quality
         secrets: [SONAR_TOKEN]
         uses: ghcr.io/klinux/gocdnext-plugin-sonar@v1
-        variables:
-          PR_NUMBER: "1234"          # provide via your trigger flow
-          PR_SOURCE_BRANCH: feature/new-thing
         with:
           host-url: https://sonarcloud.io
           organization: my-org
           project-key: my-org_my-app
-          pull-request-key: ${PR_NUMBER}
-          pull-request-branch: ${PR_SOURCE_BRANCH}
-          pull-request-base: main
+          pull-request-key: ${CI_PULL_REQUEST_KEY}
+          pull-request-branch: ${CI_PULL_REQUEST_BRANCH}
+          pull-request-base: ${CI_PULL_REQUEST_BASE}
           wait-for-quality-gate: "true"
           quality-gate-timeout: "600"
 

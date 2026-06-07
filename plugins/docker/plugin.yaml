@@ -75,5 +75,5 @@ examples:
       uses: ghcr.io/klinux/gocdnext-plugin-docker@v1
       with:
         image: ghcr.io/org/app
-        tags: pr-${CI_PR_NUMBER}
+        tags: pr-${CI_PULL_REQUEST_KEY}
         push: "false"

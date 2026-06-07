@@ -134,6 +134,170 @@ func TestBuildCIVars(t *testing.T) {
 				"CI_JOB_NAME":    "j",
 			},
 		},
+		{
+			name: "push cause emits CI_CAUSE without PR vars",
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions: json.RawMessage(`{"` + materialA + `":{"revision":"` + fullSHA + `","branch":"main"}}`),
+				Cause:     "webhook",
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":           runID.String(),
+				"CI_RUN_COUNTER":      "1",
+				"CI_PIPELINE_ID":      pipelineID.String(),
+				"CI_PROJECT_ID":       projectID.String(),
+				"CI_JOB_NAME":         "j",
+				"CI_COMMIT_SHA":       fullSHA,
+				"CI_COMMIT_SHORT_SHA": fullSHA[:8],
+				"CI_BRANCH":           "main",
+				"CI_CAUSE":            "webhook",
+			},
+		},
+		{
+			name: "pull_request cause with full detail emits all six PR vars",
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions: json.RawMessage(`{"` + materialA + `":{"revision":"` + fullSHA + `","branch":"feature/foo"}}`),
+				Cause:     "pull_request",
+				CauseDetail: json.RawMessage(`{
+					"pr_number":   1234,
+					"pr_title":    "feat: add ai-review plugin",
+					"pr_author":   "alice@example.com",
+					"pr_url":      "https://github.com/org/repo/pull/1234",
+					"pr_head_ref": "feature/foo",
+					"pr_base_ref": "main",
+					"pr_action":   "opened"
+				}`),
+			},
+			jobName: "ai-review",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":              runID.String(),
+				"CI_RUN_COUNTER":         "1",
+				"CI_PIPELINE_ID":         pipelineID.String(),
+				"CI_PROJECT_ID":          projectID.String(),
+				"CI_JOB_NAME":            "ai-review",
+				"CI_COMMIT_SHA":          fullSHA,
+				"CI_COMMIT_SHORT_SHA":    fullSHA[:8],
+				"CI_BRANCH":              "feature/foo",
+				"CI_CAUSE":               "pull_request",
+				"CI_PULL_REQUEST_KEY":    "1234",
+				"CI_PULL_REQUEST_BRANCH": "feature/foo",
+				"CI_PULL_REQUEST_BASE":   "main",
+				"CI_PULL_REQUEST_TITLE":  "feat: add ai-review plugin",
+				"CI_PULL_REQUEST_AUTHOR": "alice@example.com",
+				"CI_PULL_REQUEST_URL":    "https://github.com/org/repo/pull/1234",
+			},
+		},
+		{
+			name: "pull_request cause with nil detail emits CI_CAUSE but no PR vars",
+			// Defensive path: the webhook handler always stamps
+			// cause_detail today, but a malformed inbound payload
+			// or an older row that predates the stamping path
+			// shouldn't break dispatch.
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions:   json.RawMessage(`{}`),
+				Cause:       "pull_request",
+				CauseDetail: nil,
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+				"CI_CAUSE":       "pull_request",
+			},
+		},
+		{
+			name: "pull_request cause with malformed detail JSON degrades silently",
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions:   json.RawMessage(`{}`),
+				Cause:       "pull_request",
+				CauseDetail: json.RawMessage(`{not-json`),
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+				"CI_CAUSE":       "pull_request",
+			},
+		},
+		{
+			name: "pull_request cause with partial detail emits only present fields",
+			// PR with empty title / zero number / missing author —
+			// each missing field stays UNSET (rather than empty
+			// string) so `${CI_PULL_REQUEST_TITLE}` reads as literal
+			// at substitution time on the rare PR with no title.
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions:   json.RawMessage(`{}`),
+				Cause:       "pull_request",
+				CauseDetail: json.RawMessage(`{"pr_number":0,"pr_head_ref":"feature/x","pr_base_ref":"main"}`),
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":              runID.String(),
+				"CI_RUN_COUNTER":         "1",
+				"CI_PIPELINE_ID":         pipelineID.String(),
+				"CI_PROJECT_ID":          projectID.String(),
+				"CI_JOB_NAME":            "j",
+				"CI_CAUSE":               "pull_request",
+				"CI_PULL_REQUEST_BRANCH": "feature/x",
+				"CI_PULL_REQUEST_BASE":   "main",
+			},
+		},
+		{
+			name: "legacy run with empty cause leaves CI_CAUSE unset",
+			// Pre-cause-column runs (or rows from a future bug that
+			// failed to stamp) should not radiate empty strings.
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions: json.RawMessage(`{}`),
+				Cause:     "",
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+			},
+		},
+		{
+			name: "non-PR cause silently ignores any stamped cause_detail",
+			// Defensive: even if cause_detail somehow has PR-shaped
+			// fields under a non-PR cause, we don't promote them.
+			run: store.RunForDispatch{
+				ID: runID, PipelineID: pipelineID, ProjectID: projectID, Counter: 1,
+				Revisions:   json.RawMessage(`{}`),
+				Cause:       "manual",
+				CauseDetail: json.RawMessage(`{"pr_number":99,"pr_title":"x"}`),
+			},
+			jobName: "j",
+			want: map[string]string{
+				"CI": "true", "GOCDNEXT": "true",
+				"CI_RUN_ID":      runID.String(),
+				"CI_RUN_COUNTER": "1",
+				"CI_PIPELINE_ID": pipelineID.String(),
+				"CI_PROJECT_ID":  projectID.String(),
+				"CI_JOB_NAME":    "j",
+				"CI_CAUSE":       "manual",
+			},
+		},
 	}
 
 	for _, tc := range tests {

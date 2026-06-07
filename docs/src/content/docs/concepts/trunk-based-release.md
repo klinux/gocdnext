@@ -130,14 +130,6 @@ name: pr
 when:
   event: [pull_request]
 
-# Operator-threaded PR metadata. gocdnext doesn't yet inject
-# CI_PULL_REQUEST_* vars (stored in cause_detail but not exposed
-# as env), so the recipe assumes your webhook integration or
-# trigger flow populates these. See "Limitations" below.
-variables:
-  PR_NUMBER: ""
-  PR_BASE_REF: main
-
 stages: [lint, security, test, build, review]
 
 jobs:
@@ -184,9 +176,9 @@ jobs:
       host-url: https://sonarcloud.io
       organization: my-org
       project-key: my-org_my-app
-      pull-request-key: ${PR_NUMBER}
-      pull-request-branch: ${CI_BRANCH}
-      pull-request-base: ${PR_BASE_REF}
+      pull-request-key: ${CI_PULL_REQUEST_KEY}
+      pull-request-branch: ${CI_PULL_REQUEST_BRANCH}
+      pull-request-base: ${CI_PULL_REQUEST_BASE}
       wait-for-quality-gate: "true"
       quality-gate-timeout: "600"
 
@@ -222,7 +214,7 @@ jobs:
     uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
     with:
       image: ghcr.io/my-org/my-app
-      tags: "pr-${PR_NUMBER}"
+      tags: "pr-${CI_PULL_REQUEST_KEY}"
       push: "false"                     # PR doesn't publish
       cache: registry
 
@@ -238,7 +230,7 @@ jobs:
       provider: claude
       mode: pr-comment
       repo: my-org/my-app
-      pr-number: ${PR_NUMBER}
+      pr-number: ${CI_PULL_REQUEST_KEY}
       severity-threshold: warning
       # Advisory mode for the first month; flip fail-on-error to
       # "true" once the team has calibrated what severities mean.
@@ -252,8 +244,8 @@ notifications:
       webhook: ${{ SLACK_WEBHOOK }}
       channel: "#ci-alerts"
       template: |
-        :x: PR #${PR_NUMBER} ${CI_PIPELINE_ID} failed
-        ${CI_COMMIT_SHORT_SHA} on ${CI_BRANCH}
+        :x: PR #${CI_PULL_REQUEST_KEY} ${CI_PIPELINE_ID} failed
+        ${CI_COMMIT_SHORT_SHA} on ${CI_PULL_REQUEST_BRANCH}
 ```
 
 Notes:
@@ -262,11 +254,12 @@ Notes:
   (the webhook handler at `server/internal/webhook/pull_request.go`
   checks the material's events list, which is derived from
   `TriggerEvents`).
-- `PR_NUMBER`, `PR_BASE_REF` aren't injected as CI vars today
-  (see [Limitations](#limitations--roadmap)). The recipe declares
-  them as `variables:` defaults; in real use your webhook
-  integration / trigger flow populates them per-run. Sonar's PR
-  decoration won't activate without these.
+- `CI_PULL_REQUEST_KEY`, `CI_PULL_REQUEST_BRANCH`,
+  `CI_PULL_REQUEST_BASE`, `_TITLE`, `_AUTHOR`, `_URL` are injected
+  server-side from the webhook payload (since v0.9.0 — issue #9).
+  No operator wiring needed; PR runs see them automatically. Push
+  / manual runs skip them silently. See
+  [environment variables](/gocdnext/docs/pipelines/yaml-reference/#environment-variables).
 - Sonar's `wait-for-quality-gate: "true"` blocks PR merge if the
   gate fails — the strict gate. Pair with `gocdnext/ai-review`'s
   `fail-on-error: "true"` for double gating once you trust both.
@@ -877,13 +870,12 @@ talking points that work:
 The model above is **mostly** ready to apply against gocdnext as
 shipped. The deliberate gaps:
 
-- **PR vars not injected**: gocdnext stores PR metadata
-  (`pr_number`, `pr_title`, `pr_head_ref`, etc.) in the run's
-  `cause_detail` JSON but doesn't yet expose them as
-  `CI_PULL_REQUEST_*` env vars — see
-  [issue #9](https://github.com/klinux/gocdnext/issues/9).
-  Workaround in `pr.yaml`: pipeline `variables:` block populated
-  by your webhook integration / trigger flow.
+- **PR vars**: ✅ shipped in v0.9.0 ([issue #9](https://github.com/klinux/gocdnext/issues/9)).
+  PR runs see `CI_CAUSE=pull_request` plus
+  `CI_PULL_REQUEST_KEY` / `_BRANCH` / `_BASE` / `_TITLE` /
+  `_AUTHOR` / `_URL` materialised server-side from the webhook
+  payload. The `pr.yaml` recipe above uses them directly — no
+  `variables:` workaround.
 - **Tag-push event + `CI_TAG` not surfaced**: the model above
   collapses release.yaml + tag.yaml into one manually-triggered
   pipeline because gocdnext doesn't propagate tag-push events

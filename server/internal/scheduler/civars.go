@@ -45,7 +45,65 @@ func buildCIVars(run store.RunForDispatch, jobName string) map[string]string {
 	if branch != "" {
 		out["CI_BRANCH"] = branch
 	}
+	if run.Cause != "" {
+		out["CI_CAUSE"] = run.Cause
+	}
+	addPullRequestVars(out, run.Cause, run.CauseDetail)
 	return out
+}
+
+// pullRequestDetail mirrors the JSONB the webhook handler stamps on
+// `runs.cause_detail` for a `pull_request` cause — see
+// server/internal/webhook/pull_request.go. Only the fields the env
+// surface uses are decoded; unknown fields are ignored so adding new
+// keys to the webhook handler doesn't require touching the scheduler.
+type pullRequestDetail struct {
+	Number  int    `json:"pr_number"`
+	Title   string `json:"pr_title"`
+	Author  string `json:"pr_author"`
+	URL     string `json:"pr_url"`
+	HeadRef string `json:"pr_head_ref"`
+	BaseRef string `json:"pr_base_ref"`
+}
+
+// addPullRequestVars materialises CI_PULL_REQUEST_* into out IF AND
+// ONLY IF the run was triggered by a pull_request AND cause_detail
+// decodes cleanly. Other causes (push, manual, upstream, schedule,
+// poll) and malformed JSON silently skip — keeps the substitution
+// layer happy with literal `${CI_PULL_REQUEST_KEY}` on non-PR runs
+// rather than emitting empty strings that would bake `myapp:pr-` style
+// tags. Fields that decode as zero (PR with no title, e.g.) likewise
+// stay unset; same rationale as primaryRevision.
+//
+// The PR number is INT in JSON but rendered decimal to match how every
+// other CI emits it (1234, not 1234.0). Zero-valued PR numbers are
+// treated as missing — no legitimate PR has number 0.
+func addPullRequestVars(out map[string]string, cause string, detail []byte) {
+	if cause != "pull_request" || len(detail) == 0 {
+		return
+	}
+	var pr pullRequestDetail
+	if err := json.Unmarshal(detail, &pr); err != nil {
+		return
+	}
+	if pr.Number > 0 {
+		out["CI_PULL_REQUEST_KEY"] = strconv.Itoa(pr.Number)
+	}
+	if pr.HeadRef != "" {
+		out["CI_PULL_REQUEST_BRANCH"] = pr.HeadRef
+	}
+	if pr.BaseRef != "" {
+		out["CI_PULL_REQUEST_BASE"] = pr.BaseRef
+	}
+	if pr.Title != "" {
+		out["CI_PULL_REQUEST_TITLE"] = pr.Title
+	}
+	if pr.Author != "" {
+		out["CI_PULL_REQUEST_AUTHOR"] = pr.Author
+	}
+	if pr.URL != "" {
+		out["CI_PULL_REQUEST_URL"] = pr.URL
+	}
 }
 
 // primaryRevision picks one (revision, branch) pair from the

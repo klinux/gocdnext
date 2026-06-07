@@ -61,6 +61,20 @@ type RunForDispatch struct {
 	// synth-notification dispatch path can fall back to it when
 	// the pipeline didn't declare its own block.
 	ProjectNotifications json.RawMessage
+	// Cause is the trigger that created the run — webhook,
+	// pull_request, manual, upstream, schedule, poll. Materialised
+	// into CI_CAUSE so pipelines can branch on `${CI_CAUSE}` (e.g.
+	// "only push to prod when manual" or "skip lint on upstream
+	// fanout"). Empty for legacy runs predating the column.
+	Cause string
+	// CauseDetail is the JSONB payload the webhook handler stamps
+	// alongside Cause. For PR runs it carries pr_number / pr_title /
+	// pr_head_ref / pr_base_ref / pr_author / pr_url — every CI
+	// platform exposes equivalents as CI_PULL_REQUEST_* env vars,
+	// and scheduler/civars.go decodes this blob into them. Nil /
+	// empty / malformed JSON silently produces no PR vars (manual,
+	// poll, push triggers all hit this path).
+	CauseDetail json.RawMessage
 }
 
 // OtherRunningRunForPipeline returns the run_id of an in-flight
@@ -273,6 +287,8 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		Definition:           row.Definition,
 		ConfigPath:           row.ConfigPath,
 		ProjectNotifications: row.ProjectNotifications,
+		Cause:                row.Cause,
+		CauseDetail:          row.CauseDetail,
 	}, nil
 }
 

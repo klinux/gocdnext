@@ -157,7 +157,14 @@ SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at;
 -- synth notification jobs that inherited their spec from the
 -- project (pipeline didn't declare `notifications:`). Single
 -- round-trip keeps the dispatch hot path tight.
+--
+-- r.cause + r.cause_detail come along because scheduler/civars.go
+-- materialises CI_CAUSE + CI_PULL_REQUEST_* env vars from them.
+-- Adding the columns here costs one extra row width on a hot path
+-- query that already loads the JSONB definition — negligible vs.
+-- the round trip we'd otherwise need to fetch them separately.
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
+       r.cause, r.cause_detail,
        p.definition, p.config_path,
        pr.notifications AS project_notifications
 FROM runs r

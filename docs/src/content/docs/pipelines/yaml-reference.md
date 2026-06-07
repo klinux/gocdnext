@@ -427,6 +427,26 @@ The agent injects these into every job's environment:
 | `CI_PROJECT_ID` | UUID of the project |
 | `CI_PROJECT_SLUG` | project slug |
 | `CI_JOB_NAME` | job name |
+| `CI_CAUSE` | trigger that created the run — `webhook`, `pull_request`, `manual`, `upstream`, `schedule`, `poll` |
+
+### Pull-request runs
+
+When `CI_CAUSE == "pull_request"`, the following are also injected
+from the webhook payload (server-side, no operator configuration):
+
+| Name | Value |
+|---|---|
+| `CI_PULL_REQUEST_KEY` | PR number (e.g. `1234`) |
+| `CI_PULL_REQUEST_BRANCH` | head ref (e.g. `feature/foo`) |
+| `CI_PULL_REQUEST_BASE` | base ref (e.g. `main`) |
+| `CI_PULL_REQUEST_TITLE` | PR title |
+| `CI_PULL_REQUEST_AUTHOR` | PR author handle / email |
+| `CI_PULL_REQUEST_URL` | full URL of the PR |
+
+Missing fields stay UNSET (rather than empty strings) — so a PR
+with no title leaves `${CI_PULL_REQUEST_TITLE}` literal at
+substitution time. Non-PR runs (push, manual, upstream, schedule,
+poll) skip all `CI_PULL_REQUEST_*` vars silently.
 
 These are also available as `${{ NAME }}` references and
 `${NAME}` shell-style env vars (the latter expanded by the shell

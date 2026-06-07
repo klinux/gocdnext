@@ -78,6 +78,7 @@ func (q *Queries) ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
 
 const getRunForDispatch = `-- name: GetRunForDispatch :one
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
+       r.cause, r.cause_detail,
        p.definition, p.config_path,
        pr.notifications AS project_notifications
 FROM runs r
@@ -94,6 +95,8 @@ type GetRunForDispatchRow struct {
 	Counter              int64
 	Status               string
 	Revisions            []byte
+	Cause                string
+	CauseDetail          []byte
 	Definition           []byte
 	ConfigPath           string
 	ProjectNotifications []byte
@@ -103,6 +106,12 @@ type GetRunForDispatchRow struct {
 // synth notification jobs that inherited their spec from the
 // project (pipeline didn't declare `notifications:`). Single
 // round-trip keeps the dispatch hot path tight.
+//
+// r.cause + r.cause_detail come along because scheduler/civars.go
+// materialises CI_CAUSE + CI_PULL_REQUEST_* env vars from them.
+// Adding the columns here costs one extra row width on a hot path
+// query that already loads the JSONB definition — negligible vs.
+// the round trip we'd otherwise need to fetch them separately.
 func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error) {
 	row := q.db.QueryRow(ctx, getRunForDispatch, id)
 	var i GetRunForDispatchRow
@@ -113,6 +122,8 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 		&i.Counter,
 		&i.Status,
 		&i.Revisions,
+		&i.Cause,
+		&i.CauseDetail,
 		&i.Definition,
 		&i.ConfigPath,
 		&i.ProjectNotifications,
