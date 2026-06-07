@@ -8,10 +8,100 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
+
+func TestPrep_OutputsFile_CreatedWhenDeclared(t *testing.T) {
+	// When the job declares outputs:, prep must mkdir+touch
+	// .gocdnext/outputs/<short>.env so the task can `> $GOCDNEXT_OUTPUT_FILE`
+	// without "No such file or directory".
+	// Permissions: dir 0o777 + file 0o666 so plugin images running
+	// as a non-root USER can still write — task container's UID is
+	// not known agent-side.
+	tmp := t.TempDir()
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r1", JobId: "abcdef0123456789-aaaa-bbbb-cccc-ddddeeeeffff", Name: "test",
+		Outputs: map[string]string{"next": "NEXT"},
+	}
+	var logs bytes.Buffer
+	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+
+	rel := OutputsRelPath(a.GetJobId())
+	full := filepath.Join(tmp, rel)
+	info, err := os.Stat(full)
+	if err != nil {
+		t.Fatalf("outputs file %s missing: %v", full, err)
+	}
+	if info.Size() != 0 {
+		t.Errorf("outputs file size = %d, want 0 (plugin writes it)", info.Size())
+	}
+	if info.Mode().Perm() != 0o666 {
+		t.Errorf("outputs file mode = %v, want 0666", info.Mode().Perm())
+	}
+	dirInfo, err := os.Stat(filepath.Dir(full))
+	if err != nil {
+		t.Fatalf("outputs dir missing: %v", err)
+	}
+	if dirInfo.Mode().Perm() != 0o777 {
+		t.Errorf("outputs dir mode = %v, want 0777", dirInfo.Mode().Perm())
+	}
+}
+
+func TestPrep_OutputsFile_ParentGocdnextDirIsTraversable(t *testing.T) {
+	// Regression: MkdirAll honours umask, so the parent
+	// `.gocdnext` dir might land at 0o700 root-owned even though
+	// we asked for 0o777. A non-root task USER would then fail to
+	// traverse it. We chmod BOTH `.gocdnext` and
+	// `.gocdnext/outputs` after MkdirAll to force the requested
+	// mode. Both belong to gocdnext exclusively (artifacts go to
+	// user-declared paths), so making them world-traversable is
+	// safe.
+	//
+	// Simulate restrictive umask by manually setting umask before
+	// calling Prep — the process-level call inherits.
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+
+	tmp := t.TempDir()
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r1", JobId: "abcdef0123456789-aaaa-bbbb-cccc-ddddeeeeffff", Name: "test",
+		Outputs: map[string]string{"next": "NEXT"},
+	}
+	var logs bytes.Buffer
+	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+
+	gocdnextDir := filepath.Join(tmp, ".gocdnext")
+	gd, err := os.Stat(gocdnextDir)
+	if err != nil {
+		t.Fatalf("stat .gocdnext: %v", err)
+	}
+	if gd.Mode().Perm() != 0o777 {
+		t.Errorf(".gocdnext mode = %v, want 0777 (parent must be world-traversable for non-root task USERs)", gd.Mode().Perm())
+	}
+}
+
+func TestPrep_OutputsFile_OmittedWhenNotDeclared(t *testing.T) {
+	// No outputs: declaration → no mkdir / touch. Keeps workspace
+	// clean for jobs that don't use the feature.
+	tmp := t.TempDir()
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r1", JobId: "j1", Name: "test",
+	}
+	var logs bytes.Buffer
+	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".gocdnext")); err == nil {
+		t.Errorf(".gocdnext dir should not exist when outputs: empty")
+	}
+}
 
 func TestPrep_HappyPath_ArtifactDownload(t *testing.T) {
 	// Build a tar.gz that DownloadArtifact will pull + extract.

@@ -116,6 +116,61 @@ func TestKubernetes_BuildPodSpec_Defaults(t *testing.T) {
 	}
 }
 
+func TestKubernetes_BuildPodSpec_OutputsEnv_AnchoredAtWorkDir(t *testing.T) {
+	// Regression: shared K8s mounts the WHOLE PVC at
+	// ContainerWorkspaceMount, so a target_dir-nested workspace
+	// (scriptWorkDir = mount + "/" + target_dir) puts the outputs
+	// file at <mount>/<target_dir>/.gocdnext/outputs/X.env on
+	// disk. The previous code joined the env path with
+	// ContainerWorkspaceMount, sending the plugin's
+	// `> $GOCDNEXT_OUTPUT_FILE` to <mount>/.gocdnext/... — a
+	// sibling dir nobody created. Fix: join with workDir.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script:          "echo hi",
+		WorkDir:         "/workspace/r1/j1/app", // ← target_dir nest
+		OutputsHostPath: "/host/.../app/.gocdnext/outputs/abc.env",
+		OutputsRelPath:  ".gocdnext/outputs/abc.env",
+	})
+	c := pod.Spec.Containers[0]
+	var got string
+	for _, e := range c.Env {
+		if e.Name == engine.OutputsEnvName {
+			got = e.Value
+		}
+	}
+	want := "/workspace/r1/j1/app/.gocdnext/outputs/abc.env"
+	if got != want {
+		t.Errorf("%s: want %q (anchored at workDir incl. target_dir), got %q",
+			engine.OutputsEnvName, want, got)
+	}
+}
+
+func TestKubernetes_BuildPodSpec_OutputsEnv_FallsBackToMountWhenWorkDirEmpty(t *testing.T) {
+	// Plugin-only jobs have no checkouts → spec.WorkDir empty →
+	// BuildPodSpec falls back to WorkspaceMountPath. The env
+	// injection must follow the same fallback so the env stays
+	// well-defined.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script:          "echo hi",
+		OutputsHostPath: "/host/.gocdnext/outputs/abc.env",
+		OutputsRelPath:  ".gocdnext/outputs/abc.env",
+	})
+	c := pod.Spec.Containers[0]
+	var got string
+	for _, e := range c.Env {
+		if e.Name == engine.OutputsEnvName {
+			got = e.Value
+		}
+	}
+	want := "/workspace/.gocdnext/outputs/abc.env"
+	if got != want {
+		t.Errorf("%s: want %q (mount fallback when WorkDir empty), got %q",
+			engine.OutputsEnvName, want, got)
+	}
+}
+
 func TestKubernetes_BuildPodSpec_AppliesResources(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{DefaultImage: "alpine:3.19"})
 	pod := k.BuildPodSpec(engine.ScriptSpec{

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -122,6 +123,63 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 		}
 		prepLog(logWriter, "prep: cache %q: restored %d path(s)",
 			entry.GetKey(), len(entry.GetPaths()))
+	}
+
+	// Outputs (issue #10 isolated parity): when the job declares
+	// outputs:, create the directory + empty file that the agent
+	// will GOCDNEXT_OUTPUT_FILE-point the task container at.
+	//
+	// The plugin writes via `> $GOCDNEXT_OUTPUT_FILE`, which
+	// requires the parent dir to exist; without prep doing this,
+	// the very first plugin run would fail with "No such file or
+	// directory" before producing anything to parse.
+	//
+	// Permissions: world-writable (0o777 on dir, 0o666 on file).
+	// The task container's UID is unknown — plugin images can ship
+	// USER 65532 (distroless), 1000 (build images), or root. The
+	// housekeeper that READS this file later runs as root in
+	// alpine, so it can always read regardless. Worst case for
+	// 0o666 is another container in the same pod tampering — but
+	// the pod's PVC is per-job RWO ephemeral; no cross-tenant
+	// surface to abuse.
+	if len(a.GetOutputs()) > 0 {
+		outputsRel := OutputsRelPath(a.GetJobId())
+		outputsFull := filepath.Join(scriptWorkDir, outputsRel)
+		outputsDir := filepath.Dir(outputsFull)            // .../<scriptWorkDir>/.gocdnext/outputs
+		gocdnextDir := filepath.Dir(outputsDir)            // .../<scriptWorkDir>/.gocdnext
+
+		if err := os.MkdirAll(outputsDir, 0o777); err != nil {
+			return fmt.Errorf("mkdir outputs dir %s: %w", outputsDir, err)
+		}
+
+		// Chmod EACH component we just created. MkdirAll honours
+		// the process umask (the prep init container inherits
+		// pod-level defaults, often 0o022 or 0o077 in hardened
+		// images), so even though we asked for 0o777, the parent
+		// `.gocdnext` may have landed at 0o755 or 0o700 root-owned.
+		// A non-root task USER would then fail to traverse it on
+		// the first `> $GOCDNEXT_OUTPUT_FILE`. Both components
+		// belong to gocdnext exclusively (artifacts go to
+		// user-declared paths), so making them world-traversable
+		// is safe and not over-broad.
+		for _, dir := range []string{gocdnextDir, outputsDir} {
+			if err := os.Chmod(dir, 0o777); err != nil {
+				return fmt.Errorf("chmod %s: %w", dir, err)
+			}
+		}
+
+		f, err := os.OpenFile(outputsFull, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+		if err != nil {
+			return fmt.Errorf("touch outputs file %s: %w", outputsFull, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close outputs file %s: %w", outputsFull, err)
+		}
+		if err := os.Chmod(outputsFull, 0o666); err != nil {
+			return fmt.Errorf("chmod outputs file %s: %w", outputsFull, err)
+		}
+		prepLog(logWriter, "prep: outputs file ready at %s (declared aliases: %d)",
+			outputsRel, len(a.GetOutputs()))
 	}
 
 	prepLog(logWriter, "prep: workspace ready at %s", workspaceDir)

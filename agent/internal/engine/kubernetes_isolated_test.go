@@ -225,6 +225,102 @@ func TestBuildIsolatedJobPodSpec_Plugin(t *testing.T) {
 	}
 }
 
+func TestBuildIsolatedJobPodSpec_OutputsEnvInjected(t *testing.T) {
+	// When OutputsRelPath is set, the task container's env must
+	// carry GOCDNEXT_OUTPUT_FILE pointing at mountPath+rel — same
+	// shape as shared-mode RunScript (kubernetes.go:305-307).
+	// Without this the plugin would never know where to write
+	// structured outputs.
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "run-A",
+		JobID:                "job-B",
+		Image:                "plugin:1",
+		WorkDir:              "/workspace",
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+		OutputsRelPath:       ".gocdnext/outputs/abc123def456.env",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	task := findContainer(pod.Spec.Containers, "task")
+	if task == nil {
+		t.Fatal("no task container")
+	}
+	var got string
+	var found bool
+	for _, e := range task.Env {
+		if e.Name == OutputsEnvName {
+			got = e.Value
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("task env missing %s; env=%+v", OutputsEnvName, task.Env)
+	}
+	want := "/workspace/.gocdnext/outputs/abc123def456.env"
+	if got != want {
+		t.Errorf("%s: want %q, got %q", OutputsEnvName, want, got)
+	}
+}
+
+func TestBuildIsolatedJobPodSpec_OutputsEnv_AnchoredAtWorkDir_NotMountRoot(t *testing.T) {
+	// Regression: when the first checkout has target_dir, the
+	// agent passes spec.WorkDir = mountPath + "/" + target_dir.
+	// GOCDNEXT_OUTPUT_FILE MUST land at workDir/<rel>, not
+	// mountPath/<rel>, otherwise the plugin's
+	// `> $GOCDNEXT_OUTPUT_FILE` writes to a sibling dir that
+	// prep never created and the task fails with
+	// "No such file or directory" before producing anything.
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "run-A",
+		JobID:                "job-B",
+		Image:                "plugin:1",
+		WorkDir:              "/workspace/app", // ← target_dir nesting
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+		OutputsRelPath:       ".gocdnext/outputs/abc123def456.env",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	task := findContainer(pod.Spec.Containers, "task")
+	var got string
+	for _, e := range task.Env {
+		if e.Name == OutputsEnvName {
+			got = e.Value
+		}
+	}
+	want := "/workspace/app/.gocdnext/outputs/abc123def456.env"
+	if got != want {
+		t.Errorf("%s: want %q (anchored at workDir incl. target_dir), got %q",
+			OutputsEnvName, want, got)
+	}
+}
+
+func TestBuildIsolatedJobPodSpec_OutputsEnv_OmittedWhenRelPathEmpty(t *testing.T) {
+	// Empty OutputsRelPath → no env injection at all. Required so
+	// jobs that don't declare outputs: don't gain a confusing
+	// stray env var.
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "run-A",
+		JobID:                "job-B",
+		Image:                "plugin:1",
+		WorkDir:              "/workspace",
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	task := findContainer(pod.Spec.Containers, "task")
+	for _, e := range task.Env {
+		if e.Name == OutputsEnvName {
+			t.Errorf("task env unexpectedly carries %s=%q with no OutputsRelPath", e.Name, e.Value)
+		}
+	}
+}
+
 func TestBuildIsolatedJobPodSpec_DockerSidecar(t *testing.T) {
 	k := newIsolatedTestEngine(t)
 	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
