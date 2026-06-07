@@ -126,7 +126,7 @@ examples:
       uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
       with:
         image: ghcr.io/org/app
-        tags: pr-${CI_PR_NUMBER}
+        tags: pr-${CI_PULL_REQUEST_KEY}
         push: "false"
 
   - name: Layer cache via runner profile (zero per-job config)

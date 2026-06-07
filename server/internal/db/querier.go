@@ -364,6 +364,12 @@ type Querier interface {
 	// synth notification jobs that inherited their spec from the
 	// project (pipeline didn't declare `notifications:`). Single
 	// round-trip keeps the dispatch hot path tight.
+	//
+	// r.cause + r.cause_detail come along because scheduler/civars.go
+	// materialises CI_CAUSE + CI_PULL_REQUEST_* env vars from them.
+	// Adding the columns here costs one extra row width on a hot path
+	// query that already loads the JSONB definition — negligible vs.
+	// the round trip we'd otherwise need to fetch them separately.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
 	// For a downstream run, extracts upstream_run_id + upstream pipeline

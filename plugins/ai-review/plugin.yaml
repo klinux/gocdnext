@@ -65,11 +65,11 @@ inputs:
     required: false
     description: >
       PR/MR id (GitHub PR number, GitLab MR iid). Required when
-      mode=pr-comment. IMPORTANT: gocdnext doesn't yet inject
-      this as a CI variable (see roadmap); operators thread it
-      via a pipeline `variables:` block or via webhook
-      integration. See the trunk-based-release concept doc for
-      the recipe.
+      mode=pr-comment. On PR runs gocdnext materialises this as
+      `CI_PULL_REQUEST_KEY` server-side from the webhook payload
+      (since v0.9.0), so the idiomatic value is
+      `${CI_PULL_REQUEST_KEY}` — no `variables:` plumbing needed.
+      For manual reruns or non-PR triggers, hardcode the number.
   repo:
     required: false
     description: >
@@ -170,10 +170,10 @@ examples:
   - name: PR comment with Claude (GitHub)
     description: >
       Posts findings as a PR comment. Requires pr-number +
-      repo + GITHUB_TOKEN. PR vars aren't injected as CI vars
-      today — thread the PR number via a pipeline `variables:`
-      block that the webhook integration populates, or
-      hardcode for manual reruns.
+      repo + GITHUB_TOKEN. On PR-triggered runs gocdnext
+      materialises `CI_PULL_REQUEST_KEY` from the webhook
+      payload — use `pr-number: ${CI_PULL_REQUEST_KEY}` as
+      shown below; no operator plumbing required.
     yaml: |
       ai-review:
         stage: review
@@ -185,7 +185,7 @@ examples:
           provider: claude
           mode: pr-comment
           repo: my-org/my-app
-          pr-number: ${PR_NUMBER}      # operator-provided
+          pr-number: ${CI_PULL_REQUEST_KEY}
 
   - name: PR comment with OpenAI (gpt-4o for harder reviews)
     description: >
@@ -205,7 +205,7 @@ examples:
           model: gpt-4o
           mode: pr-comment
           repo: my-org/my-app
-          pr-number: ${PR_NUMBER}
+          pr-number: ${CI_PULL_REQUEST_KEY}
           severity-threshold: warning
 
   - name: PR merge gate (fail on error-severity)
@@ -226,7 +226,7 @@ examples:
           provider: claude
           mode: pr-comment
           repo: my-org/my-app
-          pr-number: ${PR_NUMBER}
+          pr-number: ${CI_PULL_REQUEST_KEY}
           severity-threshold: error
           fail-on-error: "true"
 
