@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -295,6 +296,15 @@ func (*Kubernetes) Name() string { return "kubernetes" }
 // OnLine, and returns the container's exit code. See Engine for the
 // err contract.
 func (k *Kubernetes) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
+	// Outputs (issue #10): K8s mounts the workspace at
+	// ContainerWorkspaceMount, so the task container sees the
+	// output file there. Set BEFORE BuildPodSpec so the env var
+	// lands on the Pod spec via the normal env-construction
+	// path. The shared-mode RWM lives here; isolated RWO mode
+	// rejects outputs at the runner before reaching this engine.
+	if spec.OutputsHostPath != "" && spec.OutputsRelPath != "" {
+		spec.Env = withOutputsEnv(spec.Env, filepath.Join(ContainerWorkspaceMount, spec.OutputsRelPath))
+	}
 	pod := k.BuildPodSpec(spec)
 
 	created, err := k.client.CoreV1().Pods(k.cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})

@@ -106,6 +106,16 @@ func (*Shell) RunScript(ctx context.Context, spec ScriptSpec) (int, error) {
 	if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir
 	}
+	// Outputs (issue #10): scripts run on the host with
+	// cmd.Dir = spec.WorkDir, so the path they should write to IS
+	// the host path. Inject GOCDNEXT_OUTPUT_FILE unconditionally
+	// when the runner asked for outputs — this branch is also
+	// where Docker engine ends up when it falls back to host
+	// execution (no image / no DefaultImage), so the path
+	// translation is correct for that case too.
+	if spec.OutputsHostPath != "" {
+		spec.Env = withOutputsEnv(spec.Env, spec.OutputsHostPath)
+	}
 	if len(spec.Env) > 0 {
 		cmd.Env = append(os.Environ(), envSlice(spec.Env)...)
 	}

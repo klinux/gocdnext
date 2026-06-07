@@ -50,6 +50,49 @@ func TestDockerEngine_FallsBackToShellWhenImageMissing(t *testing.T) {
 	}
 }
 
+func TestDockerEngine_FallbackPreservesHostPathForOutputs(t *testing.T) {
+	// Findings round (Kleber): when a Docker job has no `image:`
+	// and no DefaultImage, the engine falls back to Shell (host
+	// execution). The runner must NOT have pre-baked /workspace
+	// into GOCDNEXT_OUTPUT_FILE; the engine layer now sets the
+	// env var inside RunScript — Shell sees OutputsHostPath
+	// verbatim because cmd.Dir = WorkDir is the script's view.
+	//
+	// This test pins the contract: when Docker delegates to its
+	// fallback, the ScriptSpec arrives WITHOUT a pre-baked
+	// container env, and the fallback (Shell in production) is
+	// the one responsible for setting GOCDNEXT_OUTPUT_FILE to the
+	// host path. We assert that the OutputsHostPath / OutputsRelPath
+	// fields round-trip into the fallback unchanged, and that the
+	// Docker engine doesn't override env on the fallback path.
+	var seenSpec engine.ScriptSpec
+	stub := stubEngine(func(_ context.Context, spec engine.ScriptSpec) (int, error) {
+		seenSpec = spec
+		return 0, nil
+	})
+	d := engine.NewDocker(engine.DockerConfig{}, stub)
+	_, err := d.RunScript(context.Background(), engine.ScriptSpec{
+		WorkDir:         "/host/work",
+		Script:          "true",
+		OutputsHostPath: "/host/work/.gocdnext/outputs/abc.env",
+		OutputsRelPath:  ".gocdnext/outputs/abc.env",
+	})
+	if err != nil {
+		t.Fatalf("fallback path: %v", err)
+	}
+	// The container-side env (/workspace/...) must NOT have been
+	// pre-set by the Docker engine on the fallback path. If it
+	// were, the Shell fallback would inherit a path the host can't
+	// reach.
+	if v, ok := seenSpec.Env[engine.OutputsEnvName]; ok {
+		t.Errorf("Docker fallback should not inject %s; Shell engine sets it from OutputsHostPath. got: %q",
+			engine.OutputsEnvName, v)
+	}
+	if seenSpec.OutputsHostPath == "" {
+		t.Errorf("OutputsHostPath did not propagate to the fallback engine; Shell would have nothing to inject")
+	}
+}
+
 func TestDockerEngine_StrictRefusesImagelessJobs(t *testing.T) {
 	// No fallback + no DefaultImage = the engine should error
 	// instead of silently succeeding or running bare shell.

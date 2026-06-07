@@ -91,6 +91,51 @@ func TestShell_RunScript_PassesEnvAndWorkDir(t *testing.T) {
 	}
 }
 
+func TestShell_RunScript_InjectsOutputsEnvWithHostPath(t *testing.T) {
+	// Findings round (Kleber): the Shell engine sets
+	// GOCDNEXT_OUTPUT_FILE = OutputsHostPath. This is the path
+	// the host script writes to AND the path the agent reads
+	// after — exactly what's needed for Shell-mode and for the
+	// Docker→Shell fallback (which delegates to Shell with the
+	// same spec).
+	cap := &captured{}
+	dir := t.TempDir()
+	hostPath := dir + "/.gocdnext/outputs/abc.env"
+	exit, err := engine.NewShell().RunScript(context.Background(), engine.ScriptSpec{
+		WorkDir:         dir,
+		Script:          `echo "out=$GOCDNEXT_OUTPUT_FILE"`,
+		OutputsHostPath: hostPath,
+		OutputsRelPath:  ".gocdnext/outputs/abc.env",
+		OnLine:          cap.onLine,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("exit=%d err=%v", exit, err)
+	}
+	out := strings.Join(cap.snapshot(), "\n")
+	if !strings.Contains(out, "out="+hostPath) {
+		t.Errorf("GOCDNEXT_OUTPUT_FILE not set to host path; got: %s", out)
+	}
+}
+
+func TestShell_RunScript_NoOutputsLeavesEnvUnset(t *testing.T) {
+	// Empty OutputsHostPath → engine does NOT inject the env var.
+	// Plugins that respect $GOCDNEXT_OUTPUT_FILE simply no-op.
+	cap := &captured{}
+	dir := t.TempDir()
+	exit, err := engine.NewShell().RunScript(context.Background(), engine.ScriptSpec{
+		WorkDir: dir,
+		Script:  `echo "out=${GOCDNEXT_OUTPUT_FILE:-UNSET}"`,
+		OnLine:  cap.onLine,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("exit=%d err=%v", exit, err)
+	}
+	out := strings.Join(cap.snapshot(), "\n")
+	if !strings.Contains(out, "out=UNSET") {
+		t.Errorf("GOCDNEXT_OUTPUT_FILE should be unset; got: %s", out)
+	}
+}
+
 func TestShell_RunScript_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

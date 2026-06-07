@@ -62,7 +62,41 @@ type ScriptSpec struct {
 	// container-network DNS aliases instead.
 	HostAliases []HostAlias
 	OnLine      func(stream, text string)
+
+	// OutputsHostPath is the absolute path on the host filesystem
+	// where the agent will read the job's output file after this
+	// RunScript returns. Set by the runner via prepareOutputsFile
+	// when the job declared an `outputs:` block; empty string
+	// signals "no outputs, skip GOCDNEXT_OUTPUT_FILE injection".
+	//
+	// The engine uses this to inject the env var with the path
+	// the SCRIPT will actually see — host path for Shell-mode,
+	// container path for Docker/K8s — so the file the plugin
+	// writes inside its execution context lands at the same
+	// place the agent will read afterward.
+	OutputsHostPath string
+
+	// OutputsRelPath is OutputsHostPath made workspace-relative
+	// (e.g. ".gocdnext/outputs/<short-id>.env"). Engines that
+	// containerize compose the env value as `/workspace/<rel>`;
+	// engines that run on the host use OutputsHostPath directly.
+	// Empty when OutputsHostPath is empty.
+	OutputsRelPath string
 }
+
+// OutputsEnvName is the env variable the plugin / script reads to
+// know where to write its structured outputs (issue #10). Exported
+// from the engine package so both runner (injection) and engine
+// implementations (overwriting on fallback / containerize) name
+// the same string without duplication drift.
+const OutputsEnvName = "GOCDNEXT_OUTPUT_FILE"
+
+// ContainerWorkspaceMount is the in-container mount point every
+// containerizing engine (Docker, Kubernetes) maps the host
+// workspace to. Centralised so a future engine that picks a
+// different convention has ONE place to change. The Shell engine
+// ignores this — its scripts see the host path directly.
+const ContainerWorkspaceMount = "/workspace"
 
 // ServiceSpec is the engine-facing shape of a pipeline-level
 // service. Mirrors the gocdnextv1.ServiceSpec proto but lives in
@@ -139,6 +173,14 @@ type Engine interface {
 	// RunScript blocks until the script finishes or ctx is cancelled.
 	// Returns the exit code. err != nil signals "could not run at
 	// all" (distinct from "ran and failed").
+	//
+	// Outputs (issue #10): when spec.OutputsHostPath is non-empty,
+	// the engine MUST inject GOCDNEXT_OUTPUT_FILE into the task's
+	// env at the value the task will actually see (host path for
+	// Shell, container path for Docker/K8s). The runner only sets
+	// the HOST path; the engine is the one who knows whether it'll
+	// containerize. This shape catches the Docker-fallback-to-Shell
+	// case where the wrong env was being injected.
 	RunScript(ctx context.Context, spec ScriptSpec) (exitCode int, err error)
 
 	// EnsureServices brings up the declared pipeline services scoped

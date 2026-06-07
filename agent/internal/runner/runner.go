@@ -289,6 +289,37 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// correctness.
 	r.fetchCaches(ctx, scriptWorkDir, a, &seq)
 
+	// Outputs (issue #10): when the job's YAML declared an
+	// `outputs:` block, prepare an empty file under
+	// .gocdnext/outputs/<short-id>.env. The runner does NOT inject
+	// GOCDNEXT_OUTPUT_FILE into the env directly — the engine does
+	// that inside RunScript, because only the engine knows whether
+	// the task will containerize (and which mount it'll use) or
+	// fall back to host execution (Docker→Shell fallback). Without
+	// this split, a Docker job with no `image:` would receive
+	// `/workspace/...` as env value and then write to a path that
+	// doesn't exist on the host. The shape: runner sets
+	// OutputsHostPath + OutputsRelPath on the spec; engine picks
+	// the right value when constructing the task env.
+	//
+	// Empty declarations → skip the whole path; spec fields stay
+	// "" and engines see no outputs request.
+	taskEnv := a.GetEnv()
+	var outputsHostPath string
+	var outputs outputsPaths
+	if len(a.GetOutputs()) > 0 {
+		var err error
+		outputsHostPath, err = prepareOutputsFile(scriptWorkDir, a.GetJobId())
+		if err != nil {
+			log.Warn("runner: prepare outputs file", "err", err)
+			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
+				"outputs file prep: "+err.Error())
+			return
+		}
+		outputs.host = outputsHostPath
+		outputs.rel = filepath.Join(outputsRelDir, shortJobID(a.GetJobId())+".env")
+	}
+
 	for i, task := range a.GetTasks() {
 		var (
 			exitCode int
@@ -300,7 +331,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			// No user script — the image's ENTRYPOINT IS the logic
 			// (Woodpecker's model: plugins are regular containers,
 			// their contract is "look at PLUGIN_FOO env, do X").
-			exitCode, err = r.runPlugin(ctx, scriptWorkDir, plugin, servicesPhase, a.GetEnv(), a, &seq)
+			exitCode, err = r.runPlugin(ctx, scriptWorkDir, plugin, servicesPhase, taskEnv, outputs, a, &seq)
 		} else {
 			script := task.GetScript()
 			if script == "" {
@@ -310,7 +341,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 				r.emitLog(a, &seq, "stderr", fmt.Sprintf("task %d: empty task (no script, no plugin); skipping", i))
 				continue
 			}
-			exitCode, err = r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), servicesPhase, a.GetEnv(), a, &seq)
+			exitCode, err = r.runScript(ctx, scriptWorkDir, script, a.GetImage(), a.GetDocker(), servicesPhase, taskEnv, outputs, a, &seq)
 		}
 		if err != nil {
 			log.Warn("runner: task error", "err", err, "task", i)
@@ -362,13 +393,50 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		// old best-effort behaviour allowed.
 		log.Warn("runner: required artifact upload failed",
 			"err", uploadErr, "run_id", a.GetRunId(), "job_id", a.GetJobId())
-		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
-			fmt.Sprintf("artifact upload failed: %v", uploadErr), refs)
+		r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
+			fmt.Sprintf("artifact upload failed: %v", uploadErr), refs, nil)
 		return
 	}
 
-	log.Info("runner: execute ok", "artifacts", len(refs))
-	r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs)
+	// Outputs (issue #10): when the job declared an `outputs:` block,
+	// parse the file the plugin wrote. Parse failures (oversized,
+	// bad shape, missing declared key) fail the job — output is
+	// part of the build's CONTRACT for downstream jobs that depend
+	// on it. Better to fail the producer here than have downstream
+	// fail later with a confusing missing-reference error.
+	//
+	// outputsHostPath is "" when the job declared no outputs (we
+	// skipped the path entirely above); the parser also no-ops on
+	// nil declared map, but the early return keeps the success path
+	// clean.
+	var producedOutputs map[string]string
+	if outputsHostPath != "" {
+		out, err := parseOutputsFile(outputsHostPath, a.GetOutputs())
+		if err != nil {
+			log.Warn("runner: outputs parse failed",
+				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+			// We deliberately do NOT log the file's contents — the
+			// failure message includes the line number / key name
+			// for the operator to diagnose, never the value (which
+			// might be a digest/token).
+			r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
+				"outputs: "+err.Error(), refs, nil)
+			return
+		}
+		producedOutputs = out
+	}
+
+	// Log the OUTPUT KEYS at info but NEVER the values — values may
+	// be tokens, digests, or other content that the operator marked
+	// as needs-output for substitution, not for log inspection.
+	outputKeys := make([]string, 0, len(producedOutputs))
+	for k := range producedOutputs {
+		outputKeys = append(outputKeys, k)
+	}
+	log.Info("runner: execute ok",
+		"artifacts", len(refs),
+		"output_keys", outputKeys)
+	r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs, producedOutputs)
 }
 
 // downloadArtifact pulls a single upstream artefact, verifies its
@@ -490,23 +558,35 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 // The engine calls OnLine for each stdout/stderr line it sees; we
 // turn those into LogLine protos via the same emitLog path used
 // everywhere else (so masking + seq numbering remain centralised).
-func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, services servicePhase, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
+func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, services servicePhase, env map[string]string, outputs outputsPaths, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
-		WorkDir:     workDir,
-		Image:       image,
-		Env:         env,
-		Script:      script,
-		Docker:      docker,
-		Network:     services.network,
-		HostAliases: services.hostAliases,
-		Resources:   assignmentResources(a),
-		Profile:     a.GetProfile(),
-		AgentTags:   append([]string(nil), r.cfg.AgentTags...),
+		WorkDir:         workDir,
+		Image:           image,
+		Env:             env,
+		Script:          script,
+		Docker:          docker,
+		Network:         services.network,
+		HostAliases:     services.hostAliases,
+		Resources:       assignmentResources(a),
+		Profile:         a.GetProfile(),
+		AgentTags:       append([]string(nil), r.cfg.AgentTags...),
+		OutputsHostPath: outputs.host,
+		OutputsRelPath:  outputs.rel,
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
 	})
+}
+
+// outputsPaths bundles the agent-chosen output file location so
+// the engine can inject GOCDNEXT_OUTPUT_FILE at the right path
+// (host or container) without us blowing up the runScript /
+// runPlugin signatures further. Both fields empty when the job
+// declared no outputs.
+type outputsPaths struct {
+	host string // absolute host path the agent reads after the task
+	rel  string // workspace-relative path the container script sees
 }
 
 // assignmentResources lifts the proto ResourceRequirements into the
@@ -615,6 +695,14 @@ func (r *Runner) sendResult(a *gocdnextv1.JobAssignment, status gocdnextv1.RunSt
 }
 
 func (r *Runner) sendResultWithArtifacts(a *gocdnextv1.JobAssignment, status gocdnextv1.RunStatus, exitCode int32, errMsg string, refs []*gocdnextv1.ArtifactRef) {
+	r.sendResultWithArtifactsAndOutputs(a, status, exitCode, errMsg, refs, nil)
+}
+
+// sendResultWithArtifactsAndOutputs is the canonical result sender —
+// the other two wrappers exist for call-site readability. Outputs
+// (issue #10) is alias → value, already filtered + validated by
+// parseOutputsFile against the job's declarations.
+func (r *Runner) sendResultWithArtifactsAndOutputs(a *gocdnextv1.JobAssignment, status gocdnextv1.RunStatus, exitCode int32, errMsg string, refs []*gocdnextv1.ArtifactRef, outputs map[string]string) {
 	r.cfg.Send(&gocdnextv1.AgentMessage{
 		Kind: &gocdnextv1.AgentMessage_Result{
 			Result: &gocdnextv1.JobResult{
@@ -624,6 +712,7 @@ func (r *Runner) sendResultWithArtifacts(a *gocdnextv1.JobAssignment, status goc
 				ExitCode:  exitCode,
 				Error:     errMsg,
 				Artifacts: refs,
+				Outputs:   outputs,
 			},
 		},
 	})

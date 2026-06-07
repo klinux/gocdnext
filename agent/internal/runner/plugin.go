@@ -26,6 +26,7 @@ func (r *Runner) runPlugin(
 	plugin *gocdnextv1.PluginSpec,
 	services servicePhase,
 	jobEnv map[string]string,
+	outputs outputsPaths,
 	a *gocdnextv1.JobAssignment,
 	seq *atomic.Int64,
 ) (int, error) {
@@ -58,12 +59,14 @@ func (r *Runner) runPlugin(
 		// "Cannot connect to the Docker daemon" miles away from the
 		// cause. runScript at runner.go:422 already does this for
 		// script tasks; the plugin path silently dropped it.
-		Docker:      a.GetDocker(),
-		Network:     services.network,
-		HostAliases: services.hostAliases,
-		Resources:   assignmentResources(a),
-		Profile:     a.GetProfile(),
-		AgentTags:   append([]string(nil), r.cfg.AgentTags...),
+		Docker:          a.GetDocker(),
+		Network:         services.network,
+		HostAliases:     services.hostAliases,
+		Resources:       assignmentResources(a),
+		Profile:         a.GetProfile(),
+		AgentTags:       append([]string(nil), r.cfg.AgentTags...),
+		OutputsHostPath: outputs.host,
+		OutputsRelPath:  outputs.rel,
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
