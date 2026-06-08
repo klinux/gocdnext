@@ -117,9 +117,9 @@ go (~15 min wall-clock).
 
 ## Hotfixes
 
-Same flow as features. Add the `hotfix` label on the PR; this
-flag is read by `prod.yaml`'s approval gate to optionally reduce
-the quorum from 2 to 1 (see the team's policy).
+Same flow as features. Add the `hotfix` label on the PR; the
+prod approval gate reads this label via `quorum_by_label`
+(shipped in v0.13.0) to drop `required:` from 2 to 1.
 ```
 
 ## Pipeline 1: `pr.yaml`
@@ -814,7 +814,10 @@ jobs:
         Promote ${TAG} to production?
         Check that stage smoke results are green for this tag.
       approver_groups: [release-approvers]
-      required: 2                       # quorum 2 — non-negotiable
+      required: 2                       # quorum 2 — default for normal promotions
+      quorum_by_label:                  # v0.13.0+ — PR-label-driven override
+        hotfix: 1                       # `hotfix` label on the originating PR → quorum 1
+        # add `breaking-change: 3` if your team prefers stricter for risky tags
 
   preflight:
     stage: preflight
@@ -916,10 +919,11 @@ Same four files, two differences:
 1. PR has the `hotfix` label. The reviewer policy can be
    relaxed (e.g. branch protection rule "Allow specific actors
    to bypass" for the on-call user).
-2. `prod.yaml`'s approval gate can be conditioned by reading the
-   tag's associated PR labels via a pre-step (not shown — write
-   a small script that queries GitHub's API) to drop `required:
-   2` to 1 when `hotfix` is present.
+2. `prod.yaml`'s approval gate reads the `hotfix` label natively
+   via `quorum_by_label` (shipped v0.13.0). The override is a
+   snapshot at run materialisation — the PR's labels are read
+   once when the run is created, no pre-step or GitHub-API
+   round-trip. See [Approval gates](/gocdnext/docs/concepts/approvals/#pr-label-driven-quorum).
 
 The path through the pipelines is **identical**: PR → main →
 tag → stage → prod. Hotfix is **faster**, not **safer**. Code
@@ -1065,9 +1069,13 @@ shipped. The deliberate gaps:
   container and `trap`-wipes on exit. The recipe uses this; no
   artifact persistence, no shell hack with the official cosign
   image (which is distroless + has no shell).
-- **PR-label-driven approval quorum**: hotfix-driven quorum-1
-  approval needs a small pre-step that queries GitHub for the
-  tag's PR labels. Could be a plugin in the future.
+- **PR-label-driven approval quorum**: ✅ shipped in v0.13.0
+  via `quorum_by_label` on the `approval:` block. Reads PR
+  labels from the run's `cause_detail.pr_labels` (snapshot at
+  materialisation) and applies the largest matching override.
+  GitHub-only at v0.13.0 ([#11](https://github.com/klinux/gocdnext/issues/11)
+  / [#12](https://github.com/klinux/gocdnext/issues/12) for
+  GitLab MR / Bitbucket PR).
 - **Coverage tab + HTML report preview**: see [issue #8](https://github.com/klinux/gocdnext/issues/8).
   Today coverage = `artifacts.optional:` + Sonar Quality Gate
   covers the gate.
