@@ -30,18 +30,41 @@ describe("collectNodeSelector", () => {
 });
 
 describe("collectTolerations", () => {
-  it("drops Equal rows with empty key but keeps Exists with empty key", () => {
-    // Equal+empty-key is meaningless (server rejects). The kubelet
-    // "tolerate everything" pattern is Exists+empty-key — keep it.
+  it("drops ONLY rows still on the default ('+Add' clicked but nothing typed)", () => {
+    // A row whose key is empty but ANY other field was touched
+    // (operator switched to Exists, a value typed, an effect
+    // picked, seconds entered) must reach the server so the
+    // canonical error message comes back instead of the row
+    // vanishing without explanation.
     const rows: TolerationRow[] = [
+      // Pure default — silently dropped.
       { key: "", operator: "Equal", value: "", effect: "" },
+      // Exists+empty-key — kubelet "tolerate everything" pattern, kept.
       { key: "", operator: "Exists", value: "", effect: "" },
+      // Equal+empty-key but value typed — kept; server returns
+      // "key required unless operator=Exists" (loud).
+      { key: "", operator: "Equal", value: "true", effect: "" },
+      // Equal+empty-key but effect picked — kept; server complains
+      // server-side rather than the UI swallowing it.
+      { key: "", operator: "Equal", value: "", effect: "NoSchedule" },
+      // Equal+empty-key but seconds entered — kept; server rejects.
+      {
+        key: "",
+        operator: "Equal",
+        value: "",
+        effect: "",
+        toleration_seconds: 60,
+      },
+      // Fully filled row — kept.
       { key: "ci-only", operator: "Equal", value: "true", effect: "NoSchedule" },
     ];
     const got = collectTolerations(rows);
-    expect(got).toHaveLength(2);
+    expect(got).toHaveLength(5);
     expect(got[0]).toMatchObject({ key: "", operator: "Exists" });
-    expect(got[1]).toMatchObject({
+    expect(got[1]).toMatchObject({ key: "", value: "true" });
+    expect(got[2]).toMatchObject({ key: "", effect: "NoSchedule" });
+    expect(got[3]).toMatchObject({ key: "", toleration_seconds: 60 });
+    expect(got[4]).toMatchObject({
       key: "ci-only",
       operator: "Equal",
       value: "true",

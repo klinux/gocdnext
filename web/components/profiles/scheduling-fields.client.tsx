@@ -55,25 +55,28 @@ function NodeSelectorEditor({
         Keys + values follow Kubernetes label rules.
       </p>
       {rows.map((row, i) => (
-        <div key={i} className="flex gap-2">
+        <div key={i} className="flex flex-col gap-2 sm:flex-row">
           <Input
             value={row.key}
             placeholder="kubernetes.io/arch"
             onChange={(e) => updateRow(rows, setRows, i, { key: e.target.value })}
             className="flex-1 font-mono text-xs"
+            aria-label="Node selector key"
           />
           <Input
             value={row.value}
             placeholder="amd64"
             onChange={(e) => updateRow(rows, setRows, i, { value: e.target.value })}
             className="flex-1 font-mono text-xs"
+            aria-label="Node selector value"
           />
           <Button
             type="button"
             size="icon"
             variant="ghost"
             onClick={() => removeRow(rows, setRows, i)}
-            aria-label="Remove key"
+            aria-label="Remove node selector key"
+            className="self-end sm:self-auto"
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -148,19 +151,27 @@ function TolerationEditorRow({
   const secondsAllowed = row.effect === "NoExecute";
   return (
     <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-2">
-      <div className="grid grid-cols-12 gap-2">
+      {/*
+        Mobile (< sm): one control per row (grid-cols-1). Above sm:
+        12-col grid with the original spans. Keeps the editor usable
+        on a phone-sized viewport without sacrificing the dense
+        desktop layout.
+      */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
         <Input
           value={row.key ?? ""}
           placeholder="key (e.g. ci-only)"
           onChange={(e) => onChange({ key: e.target.value })}
-          className="col-span-4 font-mono text-xs"
+          className="font-mono text-xs sm:col-span-4"
+          aria-label="Toleration key"
         />
         <select
           value={row.operator}
           onChange={(e) =>
             onChange({ operator: e.target.value as "Equal" | "Exists" })
           }
-          className="col-span-2 rounded-md border border-input bg-background px-2 text-xs"
+          className="rounded-md border border-input bg-background px-2 text-xs sm:col-span-2"
+          aria-label="Toleration operator"
         >
           <option value="Equal">Equal</option>
           <option value="Exists">Exists</option>
@@ -171,16 +182,18 @@ function TolerationEditorRow({
           onChange={(e) => onChange({ value: e.target.value })}
           disabled={isExists}
           className={cn(
-            "col-span-3 font-mono text-xs",
+            "font-mono text-xs sm:col-span-3",
             isExists && "bg-muted/60",
           )}
+          aria-label="Toleration value"
         />
         <select
           value={row.effect ?? ""}
           onChange={(e) =>
             onChange({ effect: e.target.value as TolerationRow["effect"] })
           }
-          className="col-span-2 rounded-md border border-input bg-background px-2 text-xs"
+          className="rounded-md border border-input bg-background px-2 text-xs sm:col-span-2"
+          aria-label="Toleration effect"
         >
           <option value="">any effect</option>
           <option value="NoSchedule">NoSchedule</option>
@@ -193,13 +206,13 @@ function TolerationEditorRow({
           variant="ghost"
           onClick={onRemove}
           aria-label="Remove toleration"
-          className="col-span-1"
+          className="justify-self-end sm:col-span-1 sm:justify-self-auto"
         >
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>
-      <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground">
-        <label className="col-span-6 flex items-center gap-2">
+      <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground sm:grid-cols-12">
+        <label className="flex items-center gap-2 sm:col-span-6">
           <span className="whitespace-nowrap">toleration_seconds</span>
           <Input
             value={
@@ -225,9 +238,10 @@ function TolerationEditorRow({
               !secondsAllowed && "bg-muted/60",
             )}
             inputMode="numeric"
+            aria-label="Toleration seconds (NoExecute only)"
           />
         </label>
-        <span className="col-span-6 self-center">
+        <span className="self-center sm:col-span-6">
           {isExists ? "Exists matches any value" : null}
         </span>
       </div>
@@ -312,11 +326,28 @@ export type CollectedToleration = {
   toleration_seconds: number | null;
 };
 
+// isEmptyTolerationRow recognises the "I clicked + Add but typed
+// nothing" row — every field still on its default. Only THESE rows
+// get silently dropped on save. Anything the user actually touched
+// (a value typed, a non-default operator, an effect set, a seconds
+// value entered) lands on the wire so the server returns the
+// canonical error message instead of the row vanishing without
+// explanation.
+function isEmptyTolerationRow(r: TolerationRow): boolean {
+  return (
+    (r.key ?? "").trim() === "" &&
+    r.operator === "Equal" &&
+    (r.value ?? "") === "" &&
+    (r.effect ?? "") === "" &&
+    (r.toleration_seconds == null)
+  );
+}
+
 export function collectTolerations(
   rows: TolerationRow[],
 ): CollectedToleration[] {
   return rows
-    .filter((r) => (r.key ?? "").trim() !== "" || r.operator === "Exists")
+    .filter((r) => !isEmptyTolerationRow(r))
     .map((r) => ({
       key: (r.key ?? "").trim(),
       operator: r.operator,
