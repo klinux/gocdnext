@@ -222,6 +222,124 @@ func TestResolveProfiles_NoProfileLeavesJobUntouched(t *testing.T) {
 	}
 }
 
+func TestResolveProfiles_NoProfileFallsBackToDefaultResources(t *testing.T) {
+	// Apply-time safety net: when a job declares no `profile:` AND a
+	// `default` profile exists, the job picks up `default`'s
+	// resource bounds. Without this, the pod runs without
+	// `resources:` and gets OOMKilled by the namespace's LimitRange
+	// (or unbounded). Image / tags / env / secrets / caps stay
+	// untouched — those are opt-in via explicit `profile: default`,
+	// keeping the fallback strictly a safety net for bounds.
+	s, ctx := newProfileStore(t)
+
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:              "default",
+		Engine:            "kubernetes",
+		DefaultImage:      "alpine:3.20",
+		DefaultCPURequest: "100m",
+		DefaultMemRequest: "256Mi",
+		DefaultCPULimit:   "1",
+		DefaultMemLimit:   "1Gi",
+		MaxCPU:            "4",
+		MaxMem:            "8Gi",
+		Tags:              []string{"linux", "amd64"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	original := domain.Job{
+		Name:  "build",
+		Image: "myorg/builder:1",
+		Tags:  []string{"linux"},
+		// no Profile declared
+	}
+	pipelines := []*domain.Pipeline{{
+		Name: "p1",
+		Jobs: []domain.Job{original},
+	}}
+	if err := s.ResolveProfiles(ctx, pipelines); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := pipelines[0].Jobs[0]
+	if got.Resources.Requests.CPU != "100m" || got.Resources.Requests.Memory != "256Mi" {
+		t.Errorf("requests not filled from default: %+v", got.Resources.Requests)
+	}
+	if got.Resources.Limits.CPU != "1" || got.Resources.Limits.Memory != "1Gi" {
+		t.Errorf("limits not filled from default: %+v", got.Resources.Limits)
+	}
+	// Image untouched — fallback does NOT inject `default`'s image.
+	if got.Image != "myorg/builder:1" {
+		t.Errorf("image mutated by fallback: %q", got.Image)
+	}
+	// Tags untouched — same reason.
+	if len(got.Tags) != 1 || got.Tags[0] != "linux" {
+		t.Errorf("tags mutated by fallback: %+v", got.Tags)
+	}
+}
+
+func TestResolveProfiles_NoProfileFallback_PreservesExplicitResources(t *testing.T) {
+	// User-declared resources MUST win over `default` profile bounds.
+	// Fallback only FILLS empty slots, never overrides — same
+	// semantics as `fillProfileResources` for explicit `profile:`.
+	s, ctx := newProfileStore(t)
+
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:              "default",
+		Engine:            "kubernetes",
+		DefaultCPURequest: "100m",
+		DefaultMemRequest: "256Mi",
+		DefaultMemLimit:   "1Gi",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	pipelines := []*domain.Pipeline{{
+		Name: "p1",
+		Jobs: []domain.Job{{
+			Name: "build",
+			Resources: domain.ResourceSpec{
+				Requests: domain.ResourceQuantities{Memory: "2Gi"}, // operator overrides mem
+			},
+		}},
+	}}
+	if err := s.ResolveProfiles(ctx, pipelines); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := pipelines[0].Jobs[0].Resources
+	if got.Requests.Memory != "2Gi" {
+		t.Errorf("explicit mem request overridden: %q (want 2Gi)", got.Requests.Memory)
+	}
+	if got.Requests.CPU != "100m" {
+		t.Errorf("empty cpu request not filled: %q (want 100m)", got.Requests.CPU)
+	}
+	if got.Limits.Memory != "1Gi" {
+		t.Errorf("empty mem limit not filled: %q (want 1Gi)", got.Limits.Memory)
+	}
+}
+
+func TestResolveProfiles_NoProfileFallback_NoDefaultIsNoop(t *testing.T) {
+	// When no `default` profile exists in the DB, jobs without
+	// `profile:` stay untouched — pre-fallback contract preserved.
+	// Cluster's LimitRange (or lack thereof) decides bounds, same
+	// as before this change.
+	s, ctx := newProfileStore(t)
+
+	pipelines := []*domain.Pipeline{{
+		Name: "p1",
+		Jobs: []domain.Job{{
+			Name:  "build",
+			Image: "alpine",
+		}},
+	}}
+	if err := s.ResolveProfiles(ctx, pipelines); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	got := pipelines[0].Jobs[0].Resources
+	if !got.IsZero() {
+		t.Errorf("resources populated without a `default` profile present: %+v", got)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {
