@@ -4,11 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 )
+
+// DefaultRunnerProfileName is the conventional name probed as a
+// fallback when a job declares no `profile:` explicitly. When the
+// admin has created (or seeded) a profile with this name, jobs that
+// declared nothing pick up its RESOURCE BOUNDS only — image, tags,
+// env, secrets, and caps stay strictly opt-in via explicit
+// `profile: default` so silent fallback can't surprise pipelines
+// that intentionally ran unbounded before.
+//
+// When no profile named "default" exists, fallback is a no-op and
+// the pre-fallback shape (zero bounds, container without
+// resources:) is preserved.
+const DefaultRunnerProfileName = "default"
 
 // ResolveProfiles is the apply-time validator that turns a parsed
 // pipeline's profile names into concrete policy. For each job that
@@ -31,10 +45,32 @@ import (
 // might already be obviated by an earlier reject.
 func (s *Store) ResolveProfiles(ctx context.Context, pipelines []*domain.Pipeline) error {
 	cache := map[string]RunnerProfile{}
+
+	// Probe for the "default" profile once per apply. Used as a
+	// fallback for jobs that declared no profile: — applies ONLY
+	// resource bounds, never image/tags/env/secrets/caps. Probe is
+	// best-effort: missing default = continue with pre-fallback
+	// shape (containers without resources, kubelet/LimitRange
+	// decide). Real DB errors still propagate.
+	var defaultProfile *RunnerProfile
+	if p, err := s.GetRunnerProfileByName(ctx, DefaultRunnerProfileName); err == nil {
+		defaultProfile = &p
+	} else if !errors.Is(err, ErrRunnerProfileNotFound) {
+		return fmt.Errorf("probe default runner profile: %w", err)
+	}
+
 	for _, p := range pipelines {
 		for i := range p.Jobs {
 			j := &p.Jobs[i]
 			if j.Profile == "" {
+				if defaultProfile != nil {
+					before := j.Resources
+					fillProfileResources(j, *defaultProfile)
+					if before != j.Resources {
+						slog.Debug("store: filled job resources from `default` profile fallback",
+							"pipeline", p.Name, "job", j.Name)
+					}
+				}
 				continue
 			}
 			profile, err := s.lookupProfile(ctx, cache, j.Profile)
