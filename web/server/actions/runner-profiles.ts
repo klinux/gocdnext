@@ -25,6 +25,48 @@ const envKeySchema = z
 
 const envMapSchema = z.record(envKeySchema, z.string()).optional().default({});
 
+// node_selector key / value follow Kubernetes label rules. The
+// server is authoritative (uses k8svalidation.IsQualifiedName /
+// IsValidLabelValue), so the client-side regexes are just a quick
+// "obvious typo" gate — strictly more permissive than the server
+// to keep error UX consistent (server rejects with the canonical
+// k8s message rather than the client's approximation).
+const nodeSelectorKeySchema = z
+  .string()
+  .min(1, "node_selector key cannot be empty")
+  .max(317, "node_selector key too long (max 253 prefix + 63 name)");
+const nodeSelectorValueSchema = z
+  .string()
+  .max(63, "node_selector value cannot exceed 63 chars");
+const nodeSelectorSchema = z
+  .record(nodeSelectorKeySchema, nodeSelectorValueSchema)
+  .optional()
+  .default({});
+
+// TolerationWrite — write-side shape from the OpenAPI:
+// permissive `operator` ("" / Equal / Exists), the server
+// normalises empty → Equal in the stored value. Everything else
+// validated server-side too.
+const tolerationSchema = z.object({
+  key: z.string().optional().default(""),
+  operator: z
+    .enum(["", "Equal", "Exists"])
+    .optional()
+    .default(""),
+  value: z.string().optional().default(""),
+  effect: z
+    .enum(["", "NoSchedule", "PreferNoSchedule", "NoExecute"])
+    .optional()
+    .default(""),
+  toleration_seconds: z
+    .number()
+    .int()
+    .min(0, "toleration_seconds must be ≥ 0")
+    .nullable()
+    .optional(),
+});
+const tolerationsSchema = z.array(tolerationSchema).optional().default([]);
+
 const writeSchema = z.object({
   name: z
     .string()
@@ -40,6 +82,11 @@ const writeSchema = z.object({
   max_cpu: quantitySchema.optional().default(""),
   max_mem: quantitySchema.optional().default(""),
   tags: z.array(tagSchema).optional().default([]),
+  // Scheduling hints (v0.14.0+): Kubernetes engine merges
+  // node_selector with the agent-level config (profile wins on
+  // collision) and concatenates tolerations (kubelet dedupes).
+  node_selector: nodeSelectorSchema,
+  tolerations: tolerationsSchema,
   // Plain env vars the runner injects into every plugin container
   // running on this profile. Use for non-secret config like bucket
   // names and regions.
