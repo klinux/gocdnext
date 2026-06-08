@@ -172,8 +172,30 @@ func TestRunnerProfiles_RejectsInvalidScheduling(t *testing.T) {
 			wantHint: "node_selector key",
 		},
 		{
-			name: "node_selector prefix not DNS subdomain",
+			name: "node_selector prefix not DNS subdomain (uppercase)",
 			body: `{"name":"x","engine":"kubernetes","node_selector":{"BAD/name":"v"}}`,
+			wantHint: "node_selector key",
+		},
+		{
+			// Catches the regex permissiveness gap the previous hand-rolled
+			// validator had — `..` between dot-separated subdomain labels
+			// is rejected by k8svalidation but slipped past the old
+			// `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` shape.
+			name: "node_selector prefix has consecutive dots",
+			body: `{"name":"x","engine":"kubernetes","node_selector":{"a..b/name":"v"}}`,
+			wantHint: "node_selector key",
+		},
+		{
+			// `.-` between labels: same gap as `..`. apiserver rejects;
+			// hand-rolled regex would have accepted.
+			name: "node_selector prefix has dot-dash transition",
+			body: `{"name":"x","engine":"kubernetes","node_selector":{"a.-b/name":"v"}}`,
+			wantHint: "node_selector key",
+		},
+		{
+			// `-.`: mirror case. Same gap.
+			name: "node_selector prefix has dash-dot transition",
+			body: `{"name":"x","engine":"kubernetes","node_selector":{"a-.b/name":"v"}}`,
 			wantHint: "node_selector key",
 		},
 		{

@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -461,76 +461,28 @@ func validEnvKey(k string) bool {
 	return true
 }
 
-// k8s label key / value regexes — copied verbatim from k8s
-// validation rules (apimachinery/pkg/util/validation/validation.go)
-// so a profile rejected here would also be rejected by the apiserver
-// at pod admission time. Catching the error at write-time gives the
-// operator a fixable 400 instead of a confusing pod-stuck-Pending
-// hours later when the next job dispatches.
+// validateNodeSelector validates each (key, value) pair against the
+// SAME rules the k8s apiserver enforces at pod admission. Delegating
+// to `k8svalidation.IsQualifiedName` + `IsValidLabelValue` (instead of
+// re-implementing the regex) means a profile rejected here would also
+// be rejected at pod admission time — no shape can sneak past the
+// write-time gate and then fail at dispatch hours later.
 //
-//   - Label name: alphanumeric optionally surrounded by `-`, `_`, `.`,
-//     starts and ends with alphanumeric. Max 63 chars.
-//   - Optional DNS-subdomain prefix (e.g. `kubernetes.io/`): up to 253
-//     chars, lowercase alphanumeric + `-` and `.`.
-//   - Label value: same shape as name OR empty. Max 63 chars.
-var (
-	labelNameRE       = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
-	labelPrefixDNSRE  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
-	labelValueEmptyRE = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
-)
-
-// validateLabelKey checks a node-selector key (potentially
-// `prefix/name`) against the same rules the k8s apiserver enforces
-// at pod admission. Returns a nil error on success, an explanatory
-// error otherwise — caller appends the offending key to the message.
-func validateLabelKey(key string) error {
-	if key == "" {
-		return fmt.Errorf("empty key")
-	}
-	name := key
-	if idx := strings.Index(key, "/"); idx >= 0 {
-		prefix, rest := key[:idx], key[idx+1:]
-		if prefix == "" || len(prefix) > 253 {
-			return fmt.Errorf("prefix must be 1-253 chars")
-		}
-		if !labelPrefixDNSRE.MatchString(prefix) {
-			return fmt.Errorf("prefix %q is not a valid DNS subdomain", prefix)
-		}
-		name = rest
-	}
-	if name == "" || len(name) > 63 {
-		return fmt.Errorf("name segment must be 1-63 chars")
-	}
-	if !labelNameRE.MatchString(name) {
-		return fmt.Errorf("name segment %q must match [A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?", name)
-	}
-	return nil
-}
-
-// validateLabelValue accepts empty (legal) or a 1-63 char string
-// matching the label value regex. Same source as labelKey: mirror
-// the apiserver, not invent something new.
-func validateLabelValue(v string) error {
-	if v == "" {
-		return nil
-	}
-	if len(v) > 63 {
-		return fmt.Errorf("value must be ≤ 63 chars")
-	}
-	if !labelValueEmptyRE.MatchString(v) {
-		return fmt.Errorf("value %q must match [A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?", v)
-	}
-	return nil
-}
-
-// validateNodeSelector validates each (key, value) pair.
+// IsQualifiedName covers the apiserver's full key syntax:
+//   - Optional DNS1123 subdomain prefix (1-253 chars, lowercase,
+//     starts/ends alphanumeric, no `..`, no `.-` / `-.` transitions).
+//   - Name segment after `/`: 1-63 chars, alphanumeric/-/_/., starts
+//     and ends alphanumeric.
+//
+// IsValidLabelValue accepts empty OR 1-63 chars of the same name-
+// segment shape.
 func validateNodeSelector(ns map[string]string) error {
 	for k, v := range ns {
-		if err := validateLabelKey(k); err != nil {
-			return fmt.Errorf("node_selector key %q: %v", k, err)
+		if errs := k8svalidation.IsQualifiedName(k); len(errs) > 0 {
+			return fmt.Errorf("node_selector key %q: %s", k, strings.Join(errs, "; "))
 		}
-		if err := validateLabelValue(v); err != nil {
-			return fmt.Errorf("node_selector[%q]: %v", k, err)
+		if errs := k8svalidation.IsValidLabelValue(v); len(errs) > 0 {
+			return fmt.Errorf("node_selector[%q]: %s", k, strings.Join(errs, "; "))
 		}
 	}
 	return nil
