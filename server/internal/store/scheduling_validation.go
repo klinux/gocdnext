@@ -67,6 +67,14 @@ var validTolerationEffect = map[string]struct{}{
 //   - Operator=Exists with non-empty Value rejected (k8s spec).
 //   - Empty Key + Equal rejected as meaningless; empty Key + Exists
 //     is legal (kubelet "tolerate-everything" pattern).
+//   - Key (when non-empty) validated against k8svalidation.
+//     IsQualifiedName — same rules as node-selector keys + the
+//     same rules the apiserver applies to taint keys.
+//   - Value (when Operator=Equal) validated against k8svalidation.
+//     IsValidLabelValue — the apiserver's exact rule for taint
+//     values: empty OR 1-63 chars of alphanumeric / `-_.`. Bad
+//     charset / oversize values used to slip past store and fail
+//     at pod admission hours later.
 //   - TolerationSeconds must be ≥ 0 when set, and only with
 //     Effect=NoExecute. k8s silently ignores it elsewhere — we
 //     reject loud because silent surprises age badly.
@@ -93,6 +101,19 @@ func ValidateAndNormaliseTolerations(in []Toleration) ([]Toleration, error) {
 		}
 		if t.Key == "" && t.Operator != "Exists" {
 			return nil, fmt.Errorf("tolerations[%d]: key required unless operator=Exists", i)
+		}
+		if t.Key != "" {
+			if errs := k8svalidation.IsQualifiedName(t.Key); len(errs) > 0 {
+				return nil, fmt.Errorf("tolerations[%d].key %q: %s", i, t.Key, strings.Join(errs, "; "))
+			}
+		}
+		// Operator=Equal taints values match the label value
+		// regex at the apiserver. Operator=Exists already required
+		// empty value above, so this check applies only to Equal.
+		if t.Operator == "Equal" {
+			if errs := k8svalidation.IsValidLabelValue(t.Value); len(errs) > 0 {
+				return nil, fmt.Errorf("tolerations[%d].value %q: %s", i, t.Value, strings.Join(errs, "; "))
+			}
 		}
 		if t.TolerationSeconds != nil {
 			if *t.TolerationSeconds < 0 {

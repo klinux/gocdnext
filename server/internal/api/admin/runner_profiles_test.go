@@ -233,6 +233,28 @@ func TestRunnerProfiles_RejectsInvalidScheduling(t *testing.T) {
 			body: `{"name":"x","engine":"kubernetes","tolerations":[{"operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
 			wantHint: "key required unless operator=Exists",
 		},
+		{
+			// IsQualifiedName rejects `^`, `=`, `@` — anything outside
+			// the apiserver taint-key charset. Without this gate, the
+			// profile would persist and only fail at pod admission.
+			name: "toleration key has forbidden chars",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"nospecialchars^=@","operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
+			wantHint: "tolerations[0].key",
+		},
+		{
+			// IsValidLabelValue rejects spaces (and other non-charset
+			// chars). The apiserver applies this to taint values when
+			// operator=Equal.
+			name: "toleration Equal value has space",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"bad value","effect":"NoSchedule"}]}`,
+			wantHint: "tolerations[0].value",
+		},
+		{
+			// IsValidLabelValue caps at 63 chars. 64-a value fails.
+			name: "toleration Equal value too long",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"` + strings.Repeat("a", 64) + `","effect":"NoSchedule"}]}`,
+			wantHint: "tolerations[0].value",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
