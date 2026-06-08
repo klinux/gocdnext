@@ -1352,7 +1352,7 @@ components:
 
     RunnerProfile:
       type: object
-      required: [id, name, engine, env, secret_keys, created_at, updated_at]
+      required: [id, name, engine, node_selector, tolerations, env, secret_keys, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string, example: "fast-builds" }
@@ -1374,7 +1374,30 @@ components:
         config:
           type: object
           additionalProperties: true
-          description: Engine-specific overflow (nodeSelector, tolerations, etc.)
+          description: Engine-specific overflow. Reserved for future fields.
+        node_selector:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Pins job pods to nodes carrying these labels (k8s
+            `nodeSelector`). Always present on read — empty object
+            means no restriction beyond the agent-level
+            nodeSelector (set on the StatefulSet). Profile values
+            WIN on key collisions when merged with the agent-level
+            set: profile is more specific than agent default.
+          example:
+            workload: ci
+            pool: gradle-heavy
+        tolerations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Toleration'
+          description: |
+            Lets job pods schedule on tainted nodes (k8s
+            `tolerations`). Always present on read — empty array
+            means no tolerations beyond what the agent ships with.
+            Tolerations are APPENDED to the agent-level list
+            (concat; kubelet ignores duplicates).
         env:
           type: object
           additionalProperties: { type: string }
@@ -1440,6 +1463,28 @@ components:
         config:
           type: object
           additionalProperties: true
+        node_selector:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Pins job pods to nodes carrying these labels. Keys
+            and values validated against the k8s apiserver label
+            rules (`IsQualifiedName` / `IsValidLabelValue`) at
+            write time — a misconfig surfaces as a 400 here,
+            not as a Pending pod hours later. Full-replace on
+            update.
+        tolerations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Toleration'
+          description: |
+            Tolerations applied to job pods. Each entry validated:
+            operator ∈ {Equal, Exists}; empty operator normalises
+            to Equal in the stored value. Effect ∈ {"",
+            NoSchedule, PreferNoSchedule, NoExecute}.
+            operator=Exists with non-empty value is rejected.
+            toleration_seconds must be ≥ 0 and only allowed with
+            effect=NoExecute. Full-replace on update.
         env:
           type: object
           additionalProperties: { type: string }
@@ -1465,6 +1510,54 @@ components:
             new value automatically. Templates can compose with
             literal text (`prefix-{{secret:DB_PASSWORD}}-suffix`).
             Unresolvable references fail the dispatch closed.
+
+    Toleration:
+      type: object
+      description: |
+        Mirrors `corev1.Toleration` with concrete strings so the
+        schema is API-stable and decoupled from k8s versions.
+        On read, `operator` is always the explicit value (empty
+        input normalises to `Equal` at write time).
+      properties:
+        key:
+          type: string
+          description: |
+            Taint key the toleration matches. May be empty ONLY
+            when `operator: Exists` (the kubelet "tolerate
+            everything" pattern); empty key with operator=Equal is
+            rejected as meaningless.
+          example: "ci-only"
+        operator:
+          type: string
+          enum: [Equal, Exists]
+          description: |
+            `Equal` (default) requires Value to match the taint
+            value; `Exists` matches any value (and forbids a
+            non-empty Value). Empty on input normalises to
+            `Equal`; reads always carry the explicit form.
+        value:
+          type: string
+          description: |
+            Taint value the toleration matches. Required for
+            `operator: Equal`; must be empty for `operator:
+            Exists`.
+          example: "true"
+        effect:
+          type: string
+          enum: ["", NoSchedule, PreferNoSchedule, NoExecute]
+          description: |
+            Taint effect tolerated. Empty matches any effect.
+        toleration_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            How long the pod tolerates the taint after it's
+            added. Only valid when `effect: NoExecute`; setting
+            it for any other effect is rejected at write time
+            (k8s silently ignores it, but silent surprises age
+            badly). `null` means tolerate forever.
+          example: 60
 
     StorageConfig:
       type: object
