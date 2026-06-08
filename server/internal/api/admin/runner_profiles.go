@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -39,8 +40,16 @@ type runnerProfileDTO struct {
 	MaxMem            string            `json:"max_mem"`
 	Tags              []string          `json:"tags"`
 	Config            map[string]any    `json:"config,omitempty"`
-	Env               map[string]string `json:"env"`
-	SecretKeys        []string          `json:"secret_keys"`
+	// NodeSelector pins job pods to nodes carrying these labels.
+	// Always present on read (UI iterates Object.entries; nil
+	// would crash). Empty map = no restriction.
+	NodeSelector map[string]string `json:"node_selector"`
+	// Tolerations let job pods schedule on tainted nodes. Always
+	// present on read as a list (UI maps over it). Empty list =
+	// no tolerations beyond what the agent ships with.
+	Tolerations []store.Toleration `json:"tolerations"`
+	Env         map[string]string  `json:"env"`
+	SecretKeys  []string           `json:"secret_keys"`
 	// SecretRefs maps a secret KEY → the global secret NAME it
 	// references via `{{secret:NAME}}`. Only populated for rows
 	// where the value is a single template; mixed values
@@ -65,20 +74,22 @@ type runnerProfilesResponse struct {
 // client side. The UI must read SecretKeys, decide which to keep,
 // and send back the full set; missing keys are deletions.
 type runnerProfileWriteRequest struct {
-	Name              string            `json:"name"`
-	Description       string            `json:"description"`
-	Engine            string            `json:"engine"`
-	DefaultImage      string            `json:"default_image"`
-	DefaultCPURequest string            `json:"default_cpu_request"`
-	DefaultCPULimit   string            `json:"default_cpu_limit"`
-	DefaultMemRequest string            `json:"default_mem_request"`
-	DefaultMemLimit   string            `json:"default_mem_limit"`
-	MaxCPU            string            `json:"max_cpu"`
-	MaxMem            string            `json:"max_mem"`
-	Tags              []string          `json:"tags"`
-	Config            map[string]any    `json:"config,omitempty"`
-	Env               map[string]string `json:"env"`
-	Secrets           map[string]string `json:"secrets"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description"`
+	Engine            string             `json:"engine"`
+	DefaultImage      string             `json:"default_image"`
+	DefaultCPURequest string             `json:"default_cpu_request"`
+	DefaultCPULimit   string             `json:"default_cpu_limit"`
+	DefaultMemRequest string             `json:"default_mem_request"`
+	DefaultMemLimit   string             `json:"default_mem_limit"`
+	MaxCPU            string             `json:"max_cpu"`
+	MaxMem            string             `json:"max_mem"`
+	Tags              []string           `json:"tags"`
+	Config            map[string]any     `json:"config,omitempty"`
+	NodeSelector      map[string]string  `json:"node_selector"`
+	Tolerations       []store.Toleration `json:"tolerations"`
+	Env               map[string]string  `json:"env"`
+	Secrets           map[string]string  `json:"secrets"`
 }
 
 // supportedEngines is the allow-list checked at write time. Mirrors
@@ -324,6 +335,16 @@ func decodeRunnerProfileWrite(w http.ResponseWriter, r *http.Request) (runnerPro
 			return req, false
 		}
 	}
+	if err := validateNodeSelector(req.NodeSelector); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return req, false
+	}
+	normalised, err := validateAndNormaliseTolerations(req.Tolerations)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return req, false
+	}
+	req.Tolerations = normalised
 	return req, true
 }
 
@@ -341,6 +362,8 @@ func runnerProfileInputFromReq(req runnerProfileWriteRequest) store.RunnerProfil
 		MaxMem:            req.MaxMem,
 		Tags:              req.Tags,
 		Config:            req.Config,
+		NodeSelector:      req.NodeSelector,
+		Tolerations:       req.Tolerations,
 		Env:               req.Env,
 		Secrets:           req.Secrets,
 	}
@@ -368,6 +391,16 @@ func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerPro
 		// profiles page rendering.
 		tags = []string{}
 	}
+	// nil → {} / [] for the same reason: UI does `Object.entries` /
+	// `array.map` which both crash on null.
+	nodeSel := p.NodeSelector
+	if nodeSel == nil {
+		nodeSel = map[string]string{}
+	}
+	tolerations := p.Tolerations
+	if tolerations == nil {
+		tolerations = []store.Toleration{}
+	}
 	return runnerProfileDTO{
 		ID:                p.ID.String(),
 		Name:              p.Name,
@@ -382,6 +415,8 @@ func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerPro
 		MaxMem:            p.MaxMem,
 		Tags:              tags,
 		Config:            p.Config,
+		NodeSelector:      nodeSel,
+		Tolerations:       tolerations,
 		Env:               env,
 		SecretKeys:        keys,
 		SecretRefs:        refs,
@@ -424,4 +459,158 @@ func validEnvKey(k string) bool {
 		}
 	}
 	return true
+}
+
+// k8s label key / value regexes — copied verbatim from k8s
+// validation rules (apimachinery/pkg/util/validation/validation.go)
+// so a profile rejected here would also be rejected by the apiserver
+// at pod admission time. Catching the error at write-time gives the
+// operator a fixable 400 instead of a confusing pod-stuck-Pending
+// hours later when the next job dispatches.
+//
+//   - Label name: alphanumeric optionally surrounded by `-`, `_`, `.`,
+//     starts and ends with alphanumeric. Max 63 chars.
+//   - Optional DNS-subdomain prefix (e.g. `kubernetes.io/`): up to 253
+//     chars, lowercase alphanumeric + `-` and `.`.
+//   - Label value: same shape as name OR empty. Max 63 chars.
+var (
+	labelNameRE       = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+	labelPrefixDNSRE  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+	labelValueEmptyRE = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+)
+
+// validateLabelKey checks a node-selector key (potentially
+// `prefix/name`) against the same rules the k8s apiserver enforces
+// at pod admission. Returns a nil error on success, an explanatory
+// error otherwise — caller appends the offending key to the message.
+func validateLabelKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("empty key")
+	}
+	name := key
+	if idx := strings.Index(key, "/"); idx >= 0 {
+		prefix, rest := key[:idx], key[idx+1:]
+		if prefix == "" || len(prefix) > 253 {
+			return fmt.Errorf("prefix must be 1-253 chars")
+		}
+		if !labelPrefixDNSRE.MatchString(prefix) {
+			return fmt.Errorf("prefix %q is not a valid DNS subdomain", prefix)
+		}
+		name = rest
+	}
+	if name == "" || len(name) > 63 {
+		return fmt.Errorf("name segment must be 1-63 chars")
+	}
+	if !labelNameRE.MatchString(name) {
+		return fmt.Errorf("name segment %q must match [A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?", name)
+	}
+	return nil
+}
+
+// validateLabelValue accepts empty (legal) or a 1-63 char string
+// matching the label value regex. Same source as labelKey: mirror
+// the apiserver, not invent something new.
+func validateLabelValue(v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > 63 {
+		return fmt.Errorf("value must be ≤ 63 chars")
+	}
+	if !labelValueEmptyRE.MatchString(v) {
+		return fmt.Errorf("value %q must match [A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?", v)
+	}
+	return nil
+}
+
+// validateNodeSelector validates each (key, value) pair.
+func validateNodeSelector(ns map[string]string) error {
+	for k, v := range ns {
+		if err := validateLabelKey(k); err != nil {
+			return fmt.Errorf("node_selector key %q: %v", k, err)
+		}
+		if err := validateLabelValue(v); err != nil {
+			return fmt.Errorf("node_selector[%q]: %v", k, err)
+		}
+	}
+	return nil
+}
+
+// validTolerationOperator: accepted operators. Empty normalises to
+// `Equal` downstream (matches k8s convention — see normalize…).
+var validTolerationOperator = map[string]struct{}{
+	"":       {},
+	"Equal":  {},
+	"Exists": {},
+}
+
+// validTolerationEffect: empty (matches all effects) or one of the
+// three k8s-defined effects. Anything else is rejected.
+var validTolerationEffect = map[string]struct{}{
+	"":                 {},
+	"NoSchedule":       {},
+	"PreferNoSchedule": {},
+	"NoExecute":        {},
+}
+
+// validateAndNormaliseTolerations enforces the apiserver-level
+// invariants the platform team would otherwise see surface as a
+// CreatePod 422 hours later:
+//
+//   - Operator ∈ {Equal, Exists}; empty normalises to Equal.
+//   - Effect ∈ {"", NoSchedule, PreferNoSchedule, NoExecute}.
+//   - Operator=Exists with a non-empty Value is rejected (k8s spec
+//     requires Value empty when Operator=Exists).
+//   - Operator=Equal with empty Value is allowed (matches a taint
+//     with empty value — rare but legal).
+//   - TolerationSeconds must be ≥ 0 when set.
+//   - TolerationSeconds only meaningful when Effect=NoExecute;
+//     setting it otherwise is rejected (k8s silently ignores, but
+//     silent surprises are worse than a clear 400).
+//
+// Returns the normalised list (operator filled when blank). The
+// caller persists the normalised value so downstream consumers
+// (engine, audit, UI) see the explicit form, not the implicit one.
+func validateAndNormaliseTolerations(in []store.Toleration) ([]store.Toleration, error) {
+	if len(in) == 0 {
+		return in, nil
+	}
+	out := make([]store.Toleration, len(in))
+	for i, t := range in {
+		if _, ok := validTolerationOperator[t.Operator]; !ok {
+			return nil, fmt.Errorf("tolerations[%d].operator %q: must be Equal or Exists", i, t.Operator)
+		}
+		if _, ok := validTolerationEffect[t.Effect]; !ok {
+			return nil, fmt.Errorf("tolerations[%d].effect %q: must be \"\", NoSchedule, PreferNoSchedule, or NoExecute", i, t.Effect)
+		}
+		// Normalise empty operator → Equal (k8s convention; spelling
+		// the implicit default explicitly keeps the audit + downstream
+		// consumers honest).
+		if t.Operator == "" {
+			t.Operator = "Equal"
+		}
+		if t.Operator == "Exists" && t.Value != "" {
+			return nil, fmt.Errorf("tolerations[%d]: operator=Exists requires empty value (got %q)", i, t.Value)
+		}
+		// node-affinity-ish guard: key is mandatory unless operator
+		// is Exists matching ALL taints (which itself requires an
+		// empty key). k8s allows empty Key + Exists, but anything
+		// else with empty Key is meaningless. We accept any key
+		// charset here — kubelet validation is broader than node
+		// selector keys — but require non-empty unless the
+		// Exists-everything pattern.
+		if t.Key == "" && t.Operator != "Exists" {
+			return nil, fmt.Errorf("tolerations[%d]: key required unless operator=Exists", i)
+		}
+		if t.TolerationSeconds != nil {
+			if *t.TolerationSeconds < 0 {
+				return nil, fmt.Errorf("tolerations[%d].toleration_seconds: must be ≥ 0 (got %d)", i, *t.TolerationSeconds)
+			}
+			if t.Effect != "NoExecute" {
+				return nil, fmt.Errorf("tolerations[%d]: toleration_seconds only valid with effect=NoExecute (got %q)", i, t.Effect)
+			}
+		}
+		out[i] = t
+	}
+	return out, nil
 }

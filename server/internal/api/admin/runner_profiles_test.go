@@ -98,6 +98,151 @@ func TestRunnerProfiles_CreateListUpdateDelete(t *testing.T) {
 	}
 }
 
+func TestRunnerProfiles_NodeSelectorAndTolerations_RoundTrip(t *testing.T) {
+	// Admin POST → GET round-trip preserves node_selector +
+	// tolerations exactly, including TolerationSeconds + the
+	// normalisation of empty operator → "Equal".
+	_, _, srv := newRunnerProfileHandler(t)
+
+	body := bytes.NewBufferString(`{
+        "name": "gradle-pool",
+        "engine": "kubernetes",
+        "node_selector": {
+            "workload": "ci",
+            "kubernetes.io/arch": "amd64"
+        },
+        "tolerations": [
+            {"key": "ci-only", "operator": "Equal", "value": "true", "effect": "NoSchedule"},
+            {"key": "spot", "operator": "Exists", "effect": "NoExecute", "toleration_seconds": 60},
+            {"key": "implicit", "value": "yes", "effect": "NoSchedule"}
+        ]
+    }`)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var created struct{ ID string }
+	_ = json.Unmarshal(rr.Body.Bytes(), &created)
+
+	rr = request(srv, http.MethodGet, "/api/v1/admin/runner-profiles", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rr.Code)
+	}
+	var listed struct {
+		Profiles []map[string]any `json:"profiles"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &listed)
+	if len(listed.Profiles) != 1 {
+		t.Fatalf("len = %d", len(listed.Profiles))
+	}
+	p := listed.Profiles[0]
+	ns, _ := p["node_selector"].(map[string]any)
+	if ns["workload"] != "ci" || ns["kubernetes.io/arch"] != "amd64" {
+		t.Errorf("node_selector lost: %+v", ns)
+	}
+	tolerations, _ := p["tolerations"].([]any)
+	if len(tolerations) != 3 {
+		t.Fatalf("tolerations len = %d", len(tolerations))
+	}
+	// Third entry had no operator — normalised to "Equal".
+	implicit, _ := tolerations[2].(map[string]any)
+	if implicit["operator"] != "Equal" {
+		t.Errorf("operator not normalised: %+v", implicit)
+	}
+	// Second entry's toleration_seconds round-trips as JSON number.
+	spot, _ := tolerations[1].(map[string]any)
+	if spot["toleration_seconds"] != float64(60) {
+		t.Errorf("toleration_seconds = %v, want 60", spot["toleration_seconds"])
+	}
+}
+
+func TestRunnerProfiles_RejectsInvalidScheduling(t *testing.T) {
+	// Each row hits one of the validation invariants. Failure mode
+	// is HTTP 400 with the offending field surfaced in the body.
+	_, _, srv := newRunnerProfileHandler(t)
+
+	cases := []struct {
+		name     string
+		body     string
+		wantHint string
+	}{
+		{
+			name: "node_selector key has bad charset",
+			body: `{"name":"x","engine":"kubernetes","node_selector":{"bad key":"v"}}`,
+			wantHint: "node_selector key",
+		},
+		{
+			name: "node_selector prefix not DNS subdomain",
+			body: `{"name":"x","engine":"kubernetes","node_selector":{"BAD/name":"v"}}`,
+			wantHint: "node_selector key",
+		},
+		{
+			name: "node_selector value too long",
+			body: `{"name":"x","engine":"kubernetes","node_selector":{"k":"` + strings.Repeat("a", 64) + `"}}`,
+			wantHint: "node_selector[",
+		},
+		{
+			name: "toleration operator unknown",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"DoesNotEqual","effect":"NoSchedule"}]}`,
+			wantHint: "operator",
+		},
+		{
+			name: "toleration effect unknown",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","effect":"Maybe"}]}`,
+			wantHint: "effect",
+		},
+		{
+			name: "toleration Exists with value",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Exists","value":"oops","effect":"NoSchedule"}]}`,
+			wantHint: "Exists requires empty value",
+		},
+		{
+			name: "toleration_seconds negative",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"v","effect":"NoExecute","toleration_seconds":-1}]}`,
+			wantHint: "must be ≥ 0",
+		},
+		{
+			name: "toleration_seconds with wrong effect",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"v","effect":"NoSchedule","toleration_seconds":10}]}`,
+			wantHint: "only valid with effect=NoExecute",
+		},
+		{
+			name: "toleration with empty key + Equal",
+			body: `{"name":"x","engine":"kubernetes","tolerations":[{"operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
+			wantHint: "key required unless operator=Exists",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", bytes.NewBufferString(tc.body))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tc.wantHint) {
+				t.Errorf("body %q missing hint %q", rr.Body.String(), tc.wantHint)
+			}
+		})
+	}
+}
+
+func TestRunnerProfiles_TolerationExistsWithoutKey_Allowed(t *testing.T) {
+	// `tolerations: [{operator: Exists}]` — the kubelet's "tolerate
+	// everything" pattern — is legal: empty Key + Exists matches
+	// every taint. Validator must allow this; only Equal+empty-Key
+	// is meaningless and gets rejected.
+	_, _, srv := newRunnerProfileHandler(t)
+
+	body := bytes.NewBufferString(`{
+        "name": "tolerate-all",
+        "engine": "kubernetes",
+        "tolerations": [{"operator": "Exists"}]
+    }`)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRunnerProfiles_RejectsBadEngine(t *testing.T) {
 	_, _, srv := newRunnerProfileHandler(t)
 	body := bytes.NewBufferString(`{"name":"foo","engine":"docker"}`)
