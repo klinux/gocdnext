@@ -409,6 +409,47 @@ message JobAssignment {
   // means the job declared no outputs; the agent skips reading
   // GOCDNEXT_OUTPUT_FILE entirely on that path. See issue #10.
   map<string, string> outputs = 20;
+  // NodeSelector pins the job pod to nodes carrying these labels
+  // (k8s `nodeSelector`). Resolved server-side from the runner
+  // profile's node_selector and shipped here so the agent
+  // engine doesn't need to look up profile state itself. Empty
+  // map = no profile-supplied restriction; the agent-level
+  // nodeSelector (set on the StatefulSet) still applies.
+  // Profile values WIN on key collisions when merged with the
+  // agent-level set — profile is more specific than agent default.
+  // Honoured by the Kubernetes engine only; Shell + Docker ignore
+  // the field entirely.
+  map<string, string> node_selector = 21;
+  // Tolerations let the job pod schedule on tainted nodes (k8s
+  // `tolerations`). Resolved server-side from the runner profile,
+  // already validated + normalised (empty operator becomes Equal,
+  // value/key shapes match k8svalidation rules) so the agent
+  // engine can drop them straight into the pod spec.
+  // APPENDED to the agent-level tolerations list — kubelet
+  // ignores duplicates so we don't bother deduping on the agent.
+  // Honoured by the Kubernetes engine only.
+  repeated Toleration tolerations = 22;
+}
+
+// Toleration mirrors corev1.Toleration with concrete strings so
+// the wire shape is API-stable and decoupled from k8s versions.
+// Identical semantics to store.Toleration (server domain type);
+// see scheduling_validation.go for the validation rules applied
+// before this lands on the wire.
+message Toleration {
+  string key = 1;
+  // Operator: "Equal" or "Exists". Server normalises empty to
+  // "Equal" before shipping, so the wire always carries the
+  // explicit form.
+  string operator = 2;
+  string value = 3;
+  // Effect: "" (any), "NoSchedule", "PreferNoSchedule", "NoExecute".
+  string effect = 4;
+  // TolerationSeconds: only valid with effect="NoExecute". A
+  // nil/absent value (use HasTolerationSeconds via google.protobuf
+  // semantics through the optional keyword) means "tolerate
+  // forever"; 0 evicts immediately. Server validates >= 0.
+  optional int64 toleration_seconds = 5;
 }
 
 // ResourceRequirements mirrors the subset of corev1.ResourceList the

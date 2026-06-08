@@ -42,8 +42,7 @@ func BuildAssignment(
 	materials []store.Material,
 	secrets map[string]string,
 	downloads []*gocdnextv1.ArtifactDownload,
-	profileEnv map[string]string,
-	profileMasks []string,
+	profile store.ResolvedProfile,
 	cloneTokens map[string]string,
 	needsOutputs NeedsOutputs,
 ) (*gocdnextv1.JobAssignment, error) {
@@ -97,7 +96,7 @@ func BuildAssignment(
 	// vars can override below. Profile secrets are pre-decrypted by
 	// the caller; they share the same map with profile plain env so
 	// override precedence is uniform (later writes win).
-	for k, v := range profileEnv {
+	for k, v := range profile.Env {
 		env[k] = v
 	}
 	for k, v := range def.Variables {
@@ -115,13 +114,13 @@ func BuildAssignment(
 	// Secrets: layer on top of the pipeline-declared env. A secret with the
 	// same name as a plain variable wins — we trust the user to not shadow
 	// a secret name with a plain variable by accident.
-	masks := make([]string, 0, len(secrets)+len(profileMasks))
+	masks := make([]string, 0, len(secrets)+len(profile.SecretValues))
 	// Profile secret VALUES land in masks so the runner redacts them
 	// from logs. Done before the job-secrets loop so the order is
 	// "profile masks then job masks" — order doesn't matter for
 	// correctness (the runner does substring replace) but it makes
 	// test fixtures stable.
-	for _, v := range profileMasks {
+	for _, v := range profile.SecretValues {
 		if v != "" {
 			masks = append(masks, v)
 		}
@@ -314,7 +313,30 @@ func BuildAssignment(
 		Resources:             resourceRequirements(jobDef.Resources),
 		Profile:               jobDef.Profile,
 		Outputs:               copyStringMap(jobDef.Outputs),
+		NodeSelector:          copyStringMap(profile.NodeSelector),
+		Tolerations:           tolerationsToProto(profile.Tolerations),
 	}, nil
+}
+
+// tolerationsToProto maps the store-side Toleration list (validated
+// + normalised at write time) to the proto wire shape. Returns nil
+// on empty input so the wire stays minimal — engines treat absent +
+// empty list identically.
+func tolerationsToProto(in []store.Toleration) []*gocdnextv1.Toleration {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*gocdnextv1.Toleration, len(in))
+	for i, t := range in {
+		out[i] = &gocdnextv1.Toleration{
+			Key:               t.Key,
+			Operator:          t.Operator,
+			Value:             t.Value,
+			Effect:            t.Effect,
+			TolerationSeconds: t.TolerationSeconds,
+		}
+	}
+	return out
 }
 
 // copyStringMap returns a fresh copy of the input — nil-tolerant.

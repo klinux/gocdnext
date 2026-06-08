@@ -349,6 +349,45 @@ func contains(haystack, needle string) bool {
 	return false
 }
 
+func TestRunnerProfile_ResolveByName_CarriesScheduling(t *testing.T) {
+	// Dispatch-time resolver must surface NodeSelector + Tolerations
+	// alongside env + secret values — the scheduler reads ALL of
+	// this from one call. Without this, the agent assignment is
+	// missing the pod-spec hints the admin configured.
+	s, ctx := newProfileStore(t)
+
+	tolSeconds := int64(30)
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:   "scheduling-pool",
+		Engine: "kubernetes",
+		NodeSelector: map[string]string{
+			"workload": "ci",
+		},
+		Tolerations: []store.Toleration{
+			{Key: "ci-only", Operator: "Equal", Value: "true", Effect: "NoSchedule"},
+			{Key: "spot", Operator: "Exists", Effect: "NoExecute", TolerationSeconds: &tolSeconds},
+		},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	resolved, err := s.ResolveProfileByName(ctx, nil, "scheduling-pool")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved.NodeSelector["workload"] != "ci" {
+		t.Errorf("NodeSelector missing: %+v", resolved.NodeSelector)
+	}
+	if len(resolved.Tolerations) != 2 {
+		t.Fatalf("Tolerations len = %d", len(resolved.Tolerations))
+	}
+	if resolved.Tolerations[1].TolerationSeconds == nil ||
+		*resolved.Tolerations[1].TolerationSeconds != 30 {
+		t.Errorf("TolerationSeconds round-trip lost: %v",
+			resolved.Tolerations[1].TolerationSeconds)
+	}
+}
+
 func TestRunnerProfile_NodeSelectorAndTolerations_RoundTrip(t *testing.T) {
 	// Scheduling fields (NodeSelector + Tolerations) round-trip
 	// through Insert + Get + Update + Get without loss. Persisted
@@ -492,20 +531,20 @@ func TestRunnerProfile_EnvAndSecrets_RoundTrip(t *testing.T) {
 	// Resolver path (used by scheduler at dispatch): merged env
 	// includes decrypted secret values + secret VALUES echoed for
 	// LogMasks redaction.
-	env, masks, err := s.ResolveProfileEnvByName(ctx, cipher, "fast-builds")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "fast-builds")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if env["AWS_ACCESS_KEY_ID"] != "AKIA-TEST" {
-		t.Errorf("decrypted secret missing from env: %+v", env)
+	if resolved.Env["AWS_ACCESS_KEY_ID"] != "AKIA-TEST" {
+		t.Errorf("decrypted secret missing from env: %+v", resolved.Env)
 	}
-	if env["GOCDNEXT_LAYER_CACHE_BUCKET"] != "ci-cache" {
-		t.Errorf("plain env missing: %+v", env)
+	if resolved.Env["GOCDNEXT_LAYER_CACHE_BUCKET"] != "ci-cache" {
+		t.Errorf("plain env missing: %+v", resolved.Env)
 	}
-	sort.Strings(masks)
+	sort.Strings(resolved.SecretValues)
 	wantMasks := []string{"AKIA-TEST", "super-secret-value"}
-	if len(masks) != len(wantMasks) || masks[0] != wantMasks[0] || masks[1] != wantMasks[1] {
-		t.Errorf("masks = %+v, want %+v", masks, wantMasks)
+	if len(resolved.SecretValues) != len(wantMasks) || resolved.SecretValues[0] != wantMasks[0] || resolved.SecretValues[1] != wantMasks[1] {
+		t.Errorf("masks = %+v, want %+v", resolved.SecretValues, wantMasks)
 	}
 }
 
@@ -547,18 +586,18 @@ func TestUpdateRunnerProfile_PreserveSentinel(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	env, _, err := s.ResolveProfileEnvByName(ctx, cipher, "preserve-test")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "preserve-test")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if env["AWS_ACCESS_KEY_ID"] != "AKIA-ORIG" {
-		t.Errorf("preserved AWS_ACCESS_KEY_ID = %q, want AKIA-ORIG", env["AWS_ACCESS_KEY_ID"])
+	if resolved.Env["AWS_ACCESS_KEY_ID"] != "AKIA-ORIG" {
+		t.Errorf("preserved AWS_ACCESS_KEY_ID = %q, want AKIA-ORIG", resolved.Env["AWS_ACCESS_KEY_ID"])
 	}
-	if env["AWS_SECRET_ACCESS_KEY"] != "secret-orig" {
-		t.Errorf("preserved AWS_SECRET_ACCESS_KEY = %q, want secret-orig", env["AWS_SECRET_ACCESS_KEY"])
+	if resolved.Env["AWS_SECRET_ACCESS_KEY"] != "secret-orig" {
+		t.Errorf("preserved AWS_SECRET_ACCESS_KEY = %q, want secret-orig", resolved.Env["AWS_SECRET_ACCESS_KEY"])
 	}
-	if env["DOCKER_PASSWORD"] != "docker-NEW" {
-		t.Errorf("replaced DOCKER_PASSWORD = %q, want docker-NEW", env["DOCKER_PASSWORD"])
+	if resolved.Env["DOCKER_PASSWORD"] != "docker-NEW" {
+		t.Errorf("replaced DOCKER_PASSWORD = %q, want docker-NEW", resolved.Env["DOCKER_PASSWORD"])
 	}
 }
 
@@ -599,15 +638,15 @@ func TestUpdateRunnerProfile_PreserveSentinel_DropsUnknownKeys(t *testing.T) {
 	if len(got.SecretKeys) != 1 || got.SecretKeys[0] != "KEPT" {
 		t.Errorf("secret keys = %+v, want [KEPT]", got.SecretKeys)
 	}
-	env, _, err := s.ResolveProfileEnvByName(ctx, cipher, "preserve-orphan")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "preserve-orphan")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if env["KEPT"] != "real-value" {
-		t.Errorf("preserved KEPT = %q, want real-value", env["KEPT"])
+	if resolved.Env["KEPT"] != "real-value" {
+		t.Errorf("preserved KEPT = %q, want real-value", resolved.Env["KEPT"])
 	}
-	if _, ok := env["GHOST"]; ok {
-		t.Errorf("GHOST sentinel must NOT persist as a literal value: %v", env["GHOST"])
+	if _, ok := resolved.Env["GHOST"]; ok {
+		t.Errorf("GHOST sentinel must NOT persist as a literal value: %v", resolved.Env["GHOST"])
 	}
 }
 
@@ -658,27 +697,27 @@ func TestRunnerProfile_SecretTemplate_ResolvesAgainstGlobals(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	env, masks, err := s.ResolveProfileEnvByName(ctx, cipher, "fast-builds-with-refs")
+	resolved, err := s.ResolveProfileByName(ctx, cipher, "fast-builds-with-refs")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if env["AWS_ACCESS_KEY_ID"] != "AKIA-FROM-GLOBAL" {
-		t.Errorf("template not expanded: %q", env["AWS_ACCESS_KEY_ID"])
+	if resolved.Env["AWS_ACCESS_KEY_ID"] != "AKIA-FROM-GLOBAL" {
+		t.Errorf("template not expanded: %q", resolved.Env["AWS_ACCESS_KEY_ID"])
 	}
-	if env["AWS_SECRET_ACCESS_KEY"] != "super-secret-global" {
-		t.Errorf("second template not expanded: %q", env["AWS_SECRET_ACCESS_KEY"])
+	if resolved.Env["AWS_SECRET_ACCESS_KEY"] != "super-secret-global" {
+		t.Errorf("second template not expanded: %q", resolved.Env["AWS_SECRET_ACCESS_KEY"])
 	}
-	if env["LITERAL_VALUE"] != "kept-as-typed" {
-		t.Errorf("literal mutated: %q", env["LITERAL_VALUE"])
+	if resolved.Env["LITERAL_VALUE"] != "kept-as-typed" {
+		t.Errorf("literal mutated: %q", resolved.Env["LITERAL_VALUE"])
 	}
 	// Resolved global values must land in LogMasks so the runner
 	// redacts them — same contract as literal profile secrets.
 	resolvedMasked := map[string]bool{}
-	for _, v := range masks {
+	for _, v := range resolved.SecretValues {
 		resolvedMasked[v] = true
 	}
 	if !resolvedMasked["AKIA-FROM-GLOBAL"] || !resolvedMasked["super-secret-global"] {
-		t.Errorf("resolved global values missing from masks: %+v", masks)
+		t.Errorf("resolved global values missing from masks: %+v", resolved.SecretValues)
 	}
 }
 
@@ -696,7 +735,7 @@ func TestRunnerProfile_SecretTemplate_MissingGlobalFailsClosed(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	_, _, err := s.ResolveProfileEnvByName(ctx, cipher, "broken-ref")
+	_, err := s.ResolveProfileByName(ctx, cipher, "broken-ref")
 	if err == nil {
 		t.Fatal("expected error for unresolvable template, got nil")
 	}

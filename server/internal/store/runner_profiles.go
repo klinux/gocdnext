@@ -361,10 +361,28 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 	return nil
 }
 
-// ResolveProfileEnvByName is the dispatch path: scheduler asks for a
-// profile by name and wants the merged env (plaintext + decrypted
-// secrets) ready to drop into a JobAssignment, plus the list of
-// secret VALUES so the caller can append them to LogMasks.
+// ResolvedProfile is the dispatch-time view of a runner profile —
+// everything the scheduler needs to assemble a JobAssignment without
+// a second DB round-trip.
+//
+//   - Env: merged plain + decrypted secrets, ready for JobAssignment.Env.
+//   - SecretValues: the secret values (not keys) so the agent can
+//     redact them from log lines via LogMasks.
+//   - NodeSelector: k8s-engine pod scheduling hint, propagated to
+//     JobAssignment.NodeSelector.
+//   - Tolerations: k8s-engine tolerations list, propagated to
+//     JobAssignment.Tolerations. Already validated + normalised at
+//     write time (see scheduling_validation.go).
+type ResolvedProfile struct {
+	Env          map[string]string
+	SecretValues []string
+	NodeSelector map[string]string
+	Tolerations  []Toleration
+}
+
+// ResolveProfileByName is the dispatch path: scheduler asks for a
+// profile by name and wants every field the agent assignment needs,
+// in one round-trip.
 //
 // Cipher must be non-nil when the profile has any secrets; on a
 // decrypt failure (wrong key, tampered ciphertext) we surface the
@@ -380,26 +398,26 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 // Returns ErrRunnerProfileNotFound for unknown names — the
 // scheduler turns that into "skip this dispatch, leave the run
 // queued so an admin sees the misconfiguration".
-func (s *Store) ResolveProfileEnvByName(ctx context.Context, cipher *crypto.Cipher, name string) (env map[string]string, secretValues []string, err error) {
+func (s *Store) ResolveProfileByName(ctx context.Context, cipher *crypto.Cipher, name string) (ResolvedProfile, error) {
 	row, err := s.q.GetRunnerProfileByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, ErrRunnerProfileNotFound
+		return ResolvedProfile{}, ErrRunnerProfileNotFound
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("store: resolve profile %q: %w", name, err)
+		return ResolvedProfile{}, fmt.Errorf("store: resolve profile %q: %w", name, err)
 	}
 
 	plain, err := decodeProfileEnv(row.Env)
 	if err != nil {
-		return nil, nil, err
+		return ResolvedProfile{}, err
 	}
 	secrets, err := decodeProfileSecrets(cipher, row.Secrets)
 	if err != nil {
-		return nil, nil, fmt.Errorf("store: decrypt profile secrets %q: %w", name, err)
+		return ResolvedProfile{}, fmt.Errorf("store: decrypt profile secrets %q: %w", name, err)
 	}
 
 	if err := s.expandProfileSecretTemplates(ctx, cipher, name, secrets); err != nil {
-		return nil, nil, err
+		return ResolvedProfile{}, err
 	}
 
 	merged := make(map[string]string, len(plain)+len(secrets))
@@ -413,7 +431,22 @@ func (s *Store) ResolveProfileEnvByName(ctx context.Context, cipher *crypto.Ciph
 			values = append(values, v)
 		}
 	}
-	return merged, values, nil
+
+	nodeSel, err := decodeNodeSelector(row.NodeSelector)
+	if err != nil {
+		return ResolvedProfile{}, err
+	}
+	tolerations, err := decodeTolerations(row.Tolerations)
+	if err != nil {
+		return ResolvedProfile{}, err
+	}
+
+	return ResolvedProfile{
+		Env:          merged,
+		SecretValues: values,
+		NodeSelector: nodeSel,
+		Tolerations:  tolerations,
+	}, nil
 }
 
 // profileSecretTemplate matches `{{secret:NAME}}` substrings inside
