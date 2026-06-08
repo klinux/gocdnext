@@ -415,6 +415,38 @@ func TestRunnerProfile_NodeSelectorAndTolerations_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunnerProfile_SchedulingShapeChecksRejectBadJSON(t *testing.T) {
+	// Belt-and-braces: the migration's CHECK constraints reject
+	// node_selector that's not a JSON object and tolerations that's
+	// not a JSON array, regardless of how they got there. Direct
+	// raw SQL bypasses the store's encoder; the DB still says no.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	row, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:   "shape-check",
+		Engine: "kubernetes",
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// node_selector must be object — array forbidden.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runner_profiles SET node_selector = '[]'::JSONB WHERE id = $1`, row.ID,
+	); err == nil {
+		t.Errorf("expected CHECK constraint to reject array node_selector")
+	}
+
+	// tolerations must be array — object forbidden.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runner_profiles SET tolerations = '{}'::JSONB WHERE id = $1`, row.ID,
+	); err == nil {
+		t.Errorf("expected CHECK constraint to reject object tolerations")
+	}
+}
+
 func TestRunnerProfile_EnvAndSecrets_RoundTrip(t *testing.T) {
 	s, ctx := newProfileStore(t)
 	cipher := newProfileCipher(t)

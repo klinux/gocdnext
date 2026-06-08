@@ -86,11 +86,11 @@ type RunnerProfile struct {
 // honoured for NoExecute; nil = tolerate forever; 0 = evict
 // immediately.
 type Toleration struct {
-	Key               string
-	Operator          string
-	Value             string
-	Effect            string
-	TolerationSeconds *int64
+	Key               string `json:"key,omitempty"`
+	Operator          string `json:"operator,omitempty"`
+	Value             string `json:"value,omitempty"`
+	Effect            string `json:"effect,omitempty"`
+	TolerationSeconds *int64 `json:"toleration_seconds,omitempty"`
 }
 
 // RunnerProfileInput is the write shape for Insert + Update. ID is
@@ -259,6 +259,9 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 	if err != nil {
 		return err
 	}
+	// Column order mirrors `queries/runner_profiles.sql` so the
+	// raw SQL here and the sqlc-generated UpdateRunnerProfile (used
+	// elsewhere / future refactors) stay parameter-compatible.
 	tag, err := s.pool.Exec(ctx, `
         UPDATE runner_profiles
         SET name = $2, description = $3, engine = $4,
@@ -267,8 +270,8 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
             default_mem_request = $8, default_mem_limit = $9,
             max_cpu = $10, max_mem = $11,
             tags = $12, config = $13,
-            node_selector = $14, tolerations = $15,
-            env = $16, secrets = $17,
+            env = $14, secrets = $15,
+            node_selector = $16, tolerations = $17,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -278,8 +281,8 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		in.DefaultMemRequest, in.DefaultMemLimit,
 		in.MaxCPU, in.MaxMem,
 		normalizeTags(in.Tags), cfg,
-		nodeSel, tolerations,
 		envBytes, secretsBytes,
+		nodeSel, tolerations,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update runner profile %s: %w", id, err)
@@ -317,6 +320,7 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 	if err != nil {
 		return err
 	}
+	// Column order mirrors `queries/runner_profiles.sql`.
 	tag, err := s.pool.Exec(ctx, `
         UPDATE runner_profiles
         SET name = $2, description = $3, engine = $4,
@@ -325,8 +329,8 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
             default_mem_request = $8, default_mem_limit = $9,
             max_cpu = $10, max_mem = $11,
             tags = $12, config = $13,
-            node_selector = $14, tolerations = $15,
-            env = $16,
+            env = $14,
+            node_selector = $15, tolerations = $16,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -336,8 +340,8 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 		in.DefaultMemRequest, in.DefaultMemLimit,
 		in.MaxCPU, in.MaxMem,
 		normalizeTags(in.Tags), cfg,
-		nodeSel, tolerations,
 		envBytes,
+		nodeSel, tolerations,
 	)
 	if err != nil {
 		return fmt.Errorf("store: seed-update runner profile %s: %w", id, err)

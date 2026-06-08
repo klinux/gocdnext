@@ -16,7 +16,16 @@
 
 ALTER TABLE runner_profiles
     ADD COLUMN node_selector JSONB NOT NULL DEFAULT '{}'::JSONB,
-    ADD COLUMN tolerations   JSONB NOT NULL DEFAULT '[]'::JSONB;
+    ADD COLUMN tolerations   JSONB NOT NULL DEFAULT '[]'::JSONB,
+    -- Shape guards: belt-and-braces against bad data slipping in via
+    -- direct SQL, a buggy admin handler, or a future migration that
+    -- mishandles the JSONB encoder. Admin API still validates fields
+    -- (operator/effect enums etc); these CHECKs only protect against
+    -- container-level shape drift.
+    ADD CONSTRAINT runner_profiles_node_selector_is_object
+        CHECK (jsonb_typeof(node_selector) = 'object'),
+    ADD CONSTRAINT runner_profiles_tolerations_is_array
+        CHECK (jsonb_typeof(tolerations) = 'array');
 
 -- +goose StatementEnd
 
@@ -24,6 +33,8 @@ ALTER TABLE runner_profiles
 -- +goose StatementBegin
 
 ALTER TABLE runner_profiles
+    DROP CONSTRAINT IF EXISTS runner_profiles_node_selector_is_object,
+    DROP CONSTRAINT IF EXISTS runner_profiles_tolerations_is_array,
     DROP COLUMN node_selector,
     DROP COLUMN tolerations;
 
