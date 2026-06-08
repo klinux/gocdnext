@@ -176,8 +176,27 @@ export type AdminRunnerProfile = {
   // render the chip "→ globals.NAME" instead of the masked
   // placeholder for clean references.
   secret_refs: Record<string, string>;
+  // Scheduling hints honoured by the Kubernetes engine (shipped
+  // v0.14.0). node_selector merges with the agent-level
+  // nodeSelector (profile wins on key collision); tolerations
+  // append. Always emitted as `{}` / `[]` by the server, never
+  // null, so the editor can iterate without nil-checks.
+  node_selector: Record<string, string>;
+  tolerations: AdminToleration[];
   created_at: string;
   updated_at: string;
+};
+
+// AdminToleration mirrors corev1.Toleration on the wire. operator
+// is the explicit normalised value on read (empty input becomes
+// "Equal" server-side before persistence). toleration_seconds is
+// only honoured with effect=NoExecute.
+export type AdminToleration = {
+  key?: string;
+  operator: "Equal" | "Exists";
+  value?: string;
+  effect?: "" | "NoSchedule" | "PreferNoSchedule" | "NoExecute";
+  toleration_seconds?: number | null;
 };
 
 export async function listAdminRunnerProfiles(): Promise<{

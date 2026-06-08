@@ -39,6 +39,13 @@ import {
   updateRunnerProfile,
 } from "@/server/actions/runner-profiles";
 import type { AdminRunnerProfile } from "@/server/queries/admin";
+import {
+  SchedulingFields,
+  collectNodeSelector,
+  collectTolerations,
+  type NodeSelectorRow,
+  type TolerationRow,
+} from "./scheduling-fields.client";
 
 type Props = {
   initial: AdminRunnerProfile[];
@@ -86,6 +93,11 @@ type FormDraft = {
   tagsRaw: string; // comma-separated; parsed on save
   envRows: EnvRow[];
   secretRows: SecretRow[];
+  // Scheduling editor state (v0.14.0+). Empty rows allowed
+  // mid-edit; collapsed on save by collectNodeSelector /
+  // collectTolerations.
+  nodeSelectorRows: NodeSelectorRow[];
+  tolerationRows: TolerationRow[];
 };
 
 function blankForm(): FormDraft {
@@ -104,6 +116,8 @@ function blankForm(): FormDraft {
     tagsRaw: "",
     envRows: [{ key: "", value: "" }],
     secretRows: [{ key: "", value: "", existing: false, replace: true }],
+    nodeSelectorRows: [],
+    tolerationRows: [],
   };
 }
 
@@ -149,6 +163,17 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
     tagsRaw: (p.tags ?? []).join(", "),
     envRows,
     secretRows,
+    nodeSelectorRows: Object.entries(p.node_selector ?? {}).map(([k, v]) => ({
+      key: k,
+      value: v,
+    })),
+    tolerationRows: (p.tolerations ?? []).map((t) => ({
+      key: t.key ?? "",
+      operator: t.operator,
+      value: t.value ?? "",
+      effect: t.effect ?? "",
+      toleration_seconds: t.toleration_seconds ?? null,
+    })),
   };
 }
 
@@ -225,6 +250,8 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
     // now an explicit per-row action via the Remove button.
     const envMap = collectEnv(form.envRows);
     const secretsMap = collectSecrets(form.secretRows);
+    const nodeSelectorMap = collectNodeSelector(form.nodeSelectorRows);
+    const tolerationsList = collectTolerations(form.tolerationRows);
     startTransition(async () => {
       const body = {
         name,
@@ -238,6 +265,8 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
         tags: parseTags(form.tagsRaw),
+        node_selector: nodeSelectorMap,
+        tolerations: tolerationsList,
         env: envMap,
         secrets: secretsMap,
       };
@@ -265,6 +294,8 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         max_cpu: form.max_cpu,
         max_mem: form.max_mem,
         tags: parseTags(form.tagsRaw),
+        node_selector: nodeSelectorMap,
+        tolerations: tolerationsList,
         env: envMap,
         secret_keys: Object.keys(secretsMap).sort(),
         secret_refs: optimisticSecretRefs(secretsMap),
@@ -397,11 +428,14 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
           side="right"
           className={cn(
             "overflow-y-auto",
-            // Wider sheet so the env/secret editors get room to breathe.
-            // 30vw on large screens, capped so it doesn't dominate
-            // ultra-wide displays; min-width keeps narrow viewports
-            // from collapsing the row layout (key + value + actions).
-            "data-[side=right]:w-[min(30vw,720px)] data-[side=right]:sm:max-w-[min(30vw,720px)]",
+            // Wider sheet so the env/secret editors AND the new
+            // scheduling editors (multi-column toleration rows) get
+            // room to breathe. 50vw on large screens — half the
+            // viewport — covers the toleration's 4-control grid +
+            // toleration_seconds row without horizontal scrolling
+            // on a standard 1440-px laptop. min-width keeps the
+            // narrow-viewport case from collapsing the row layout.
+            "data-[side=right]:w-[50vw] data-[side=right]:sm:max-w-[50vw]",
             "data-[side=right]:min-w-[28rem]",
           )}
         >
@@ -492,6 +526,17 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                   placeholder="linux, gpu"
                 />
               </Field>
+
+              <SchedulingFields
+                nodeSelector={form.nodeSelectorRows}
+                setNodeSelector={(rows) =>
+                  setForm({ ...form, nodeSelectorRows: rows })
+                }
+                tolerations={form.tolerationRows}
+                setTolerations={(rows) =>
+                  setForm({ ...form, tolerationRows: rows })
+                }
+              />
 
               <EnvRows
                 rows={form.envRows}
