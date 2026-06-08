@@ -221,17 +221,34 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				if required < 1 {
 					required = 1
 				}
+				// Resolve PR-label-driven quorum override at
+				// materialisation: snapshot of cause_detail
+				// (write-once on insert above) intersected with
+				// the job's quorum_by_label. The label disparadora
+				// is persisted alongside approval_required so the
+				// UI + audit can explain WHY this gate is at the
+				// effective quorum (commit 4 surfaces it). Returns
+				// (baseRequired, "") when no override fires — the
+				// strict default, matching the pre-feature shape.
+				effectiveRequired, overrideLabel := resolveEffectiveQuorum(
+					in.Cause, in.CauseDetail, required, job.Approval.QuorumByLabel)
+				var quorumLabel any
+				if overrideLabel != "" {
+					quorumLabel = overrideLabel
+				}
 				if _, err := tx.Exec(ctx, `
 					UPDATE job_runs
-					SET approval_gate        = true,
-					    approvers            = $2,
-					    approver_groups      = $3,
-					    approval_required    = $4,
-					    approval_description = $5,
-					    awaiting_since       = NOW(),
-					    status               = 'awaiting_approval'
+					SET approval_gate         = true,
+					    approvers             = $2,
+					    approver_groups       = $3,
+					    approval_required     = $4,
+					    approval_description  = $5,
+					    approval_quorum_label = $6,
+					    awaiting_since        = NOW(),
+					    status                = 'awaiting_approval'
 					WHERE id = $1
-				`, row.ID, approvers, approverGroups, required, job.Approval.Description); err != nil {
+				`, row.ID, approvers, approverGroups, effectiveRequired,
+					job.Approval.Description, quorumLabel); err != nil {
 					return RunCreated{}, fmt.Errorf("store: mark approval gate %s: %w", job.Name, err)
 				}
 			}
