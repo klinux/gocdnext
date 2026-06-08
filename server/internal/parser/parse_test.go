@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -974,6 +975,139 @@ jobs:
 				t.Fatal("expected parse error")
 			}
 		})
+	}
+}
+
+func TestParse_ApprovalQuorumByLabel(t *testing.T) {
+	// quorum_by_label gives the operator a per-PR-label override
+	// of the base `required` quorum. Maps lowercased label name →
+	// new quorum value. Resolved at run materialisation time:
+	// PR labels (from cause_detail.pr_labels) are intersected with
+	// the map keys; if any match, the LARGEST override wins
+	// (defensive — two reasons to demand more shouldn't cancel).
+	y := `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  release-prod:
+    stage: deploy
+    approval:
+      approver_groups: [sre, platform, security]
+      required: 2
+      quorum_by_label:
+        hotfix: 1
+        risky:  3
+      description: "Promote to prod?"
+`
+	p, err := Parse(strings.NewReader(y), "p", "n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	a := p.Jobs[0].Approval
+	if a == nil {
+		t.Fatal("Approval nil")
+	}
+	if a.Required != 2 {
+		t.Errorf("required = %d, want 2", a.Required)
+	}
+	if got := a.QuorumByLabel["hotfix"]; got != 1 {
+		t.Errorf("hotfix override = %d, want 1", got)
+	}
+	if got := a.QuorumByLabel["risky"]; got != 3 {
+		t.Errorf("risky override = %d, want 3", got)
+	}
+	if len(a.QuorumByLabel) != 2 {
+		t.Errorf("QuorumByLabel size = %d, want 2", len(a.QuorumByLabel))
+	}
+}
+
+func TestParse_ApprovalQuorumByLabelValidation(t *testing.T) {
+	// Each invalid input must surface at parse time so the
+	// operator catches it before runtime. We test the failure
+	// modes the resolver would otherwise have to defend against.
+	cases := map[string]string{
+		"label with shell meta": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  g:
+    stage: deploy
+    approval:
+      approvers: [a, b]
+      required: 2
+      quorum_by_label:
+        "bad$label": 1
+`,
+		"override below 1": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  g:
+    stage: deploy
+    approval:
+      approvers: [a, b]
+      required: 2
+      quorum_by_label:
+        hotfix: 0
+`,
+		"override exceeds approver pool": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  g:
+    stage: deploy
+    approval:
+      approvers: [a, b]
+      required: 2
+      quorum_by_label:
+        risky: 5
+`,
+		"empty label name": `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  g:
+    stage: deploy
+    approval:
+      approvers: [a, b]
+      required: 2
+      quorum_by_label:
+        "": 1
+`,
+	}
+	for label, y := range cases {
+		t.Run(label, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(y), "p", "n")
+			if err == nil {
+				t.Fatalf("expected parse error for %q", label)
+			}
+		})
+	}
+}
+
+func TestParse_ApprovalQuorumByLabelCap(t *testing.T) {
+	// Hard cap on entries — 16 distinct labels covers the most
+	// elaborate workflow (hotfix, risky, breaking-change, ...).
+	// Higher means the operator is encoding policy in YAML the
+	// wrong way; tell them so at parse time.
+	var labels strings.Builder
+	for i := 0; i < 17; i++ {
+		fmt.Fprintf(&labels, "        label-%d: 1\n", i)
+	}
+	y := `
+stages: [deploy]
+materials: [{manual: true}]
+jobs:
+  g:
+    stage: deploy
+    approval:
+      approvers: [a, b]
+      required: 2
+      quorum_by_label:
+` + labels.String()
+	_, err := Parse(strings.NewReader(y), "p", "n")
+	if err == nil {
+		t.Fatal("expected parse error for >16 quorum_by_label entries")
 	}
 }
 

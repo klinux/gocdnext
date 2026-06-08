@@ -475,8 +475,24 @@ type ApprovalSpec struct {
 	// original "any single approver" semantics. A single reject
 	// from any allowed user still fails the gate immediately,
 	// regardless of how high Required is set.
-	Required    int
-	Description string
+	Required int
+	// QuorumByLabel maps a PR label name (lowercased) to a quorum
+	// override that applies when the run was triggered by a PR
+	// carrying that label. Nil/empty = no overrides; the gate uses
+	// Required for every run.
+	//
+	// Resolution at run materialisation: the materialiser
+	// intersects the PR's labels (cause_detail.pr_labels) with this
+	// map's keys; when multiple match, the LARGEST override wins
+	// (defensive — two labels both wanting more quorum shouldn't
+	// cancel). For non-PR causes (push, tag, manual, upstream,
+	// schedule, poll) the map is ignored and Required applies.
+	//
+	// The override is a snapshot at materialisation time. Relabel
+	// the PR after the run is created → push a new head to
+	// re-materialise; the existing gate keeps its frozen quorum.
+	QuorumByLabel map[string]int
+	Description   string
 }
 
 // CacheSpec pairs a cache key with the directories the agent
