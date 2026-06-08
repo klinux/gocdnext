@@ -467,7 +467,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		profileEnv, profileMasks, profErr := s.resolveProfileEnv(ctx, run, job.Name)
+		profile, profErr := s.resolveProfile(ctx, run, job.Name)
 		if profErr != nil {
 			s.failJobWithError(ctx, job, fmt.Sprintf("runner profile: %v", profErr))
 			continue
@@ -498,7 +498,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profileEnv, profileMasks, cloneTokens, needsOutputs)
+		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs)
 		if err != nil {
 			// Unresolved needs refs (issue #10) are CONFIGURATION
 			// errors — the next tick will see the exact same
@@ -597,28 +597,29 @@ func IsNoIdleAgent(err error) bool {
 	return errors.Is(err, grpcsrv.ErrNoSession)
 }
 
-// resolveProfileEnv pulls the runner profile referenced by the job
-// (if any) and returns the merged env (plain + decrypted secrets)
-// alongside the list of secret VALUES the runner must redact from
-// log lines. A job without a profile returns (nil, nil, nil) — the
-// fast path stays free.
+// resolveProfile pulls the runner profile referenced by the job
+// (if any) and returns the full ResolvedProfile — merged env, secret
+// values for LogMasks, and the k8s scheduling hints (NodeSelector +
+// Tolerations) that the agent engine pipes into the pod spec. A job
+// without a profile returns an empty ResolvedProfile — the fast path
+// stays free.
 //
 // Profile lookup is by name from the job definition; missing profile
 // fails the dispatch with a clear error so the operator notices a
 // rename/typo instead of silently shipping without the env.
-func (s *Scheduler) resolveProfileEnv(ctx context.Context, run store.RunForDispatch, jobName string) (map[string]string, []string, error) {
+func (s *Scheduler) resolveProfile(ctx context.Context, run store.RunForDispatch, jobName string) (store.ResolvedProfile, error) {
 	jobDef, err := jobDefFromDefinition(run.Definition, jobName)
 	if err != nil {
-		return nil, nil, err
+		return store.ResolvedProfile{}, err
 	}
 	if jobDef.Profile == "" {
-		return nil, nil, nil
+		return store.ResolvedProfile{}, nil
 	}
-	env, masks, err := s.store.ResolveProfileEnvByName(ctx, s.cipher, jobDef.Profile)
+	resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, jobDef.Profile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("profile %q: %w", jobDef.Profile, err)
+		return store.ResolvedProfile{}, fmt.Errorf("profile %q: %w", jobDef.Profile, err)
 	}
-	return env, masks, nil
+	return resolved, nil
 }
 
 // resolveJobSecrets reads the declared secret names off the pipeline
