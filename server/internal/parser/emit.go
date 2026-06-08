@@ -215,9 +215,23 @@ func jobToDef(j domain.Job) JobDef {
 		})
 	}
 	if j.Approval != nil {
+		// Previously emit dropped Required + ApproverGroups silently;
+		// the reconstructed YAML in the UI looked weaker than what
+		// was actually persisted ("required: 2" became blank, so the
+		// displayed form lost the quorum policy entirely). Mirror
+		// every domain field that affects gate behaviour so the UI's
+		// "reconstructed" YAML is faithful.
 		def.Approval = &ApprovalDef{
-			Approvers:   append([]string(nil), j.Approval.Approvers...),
-			Description: j.Approval.Description,
+			Approvers:      append([]string(nil), j.Approval.Approvers...),
+			ApproverGroups: append([]string(nil), j.Approval.ApproverGroups...),
+			Required:       j.Approval.Required,
+			Description:    j.Approval.Description,
+		}
+		if len(j.Approval.QuorumByLabel) > 0 {
+			def.Approval.QuorumByLabel = make(map[string]int, len(j.Approval.QuorumByLabel))
+			for k, v := range j.Approval.QuorumByLabel {
+				def.Approval.QuorumByLabel[k] = v
+			}
 		}
 	}
 	for _, dep := range j.ArtifactDeps {

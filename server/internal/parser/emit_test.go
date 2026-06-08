@@ -470,6 +470,66 @@ jobs:
 	}
 }
 
+func TestEmit_RoundTripsApprovalQuorumAndGroups(t *testing.T) {
+	// Regression: emit previously dropped Required + ApproverGroups
+	// + QuorumByLabel, so the "Reconstructed YAML" tab in the UI
+	// showed a weaker gate than the persisted one (required=2
+	// vanished, approver_groups vanished, quorum_by_label vanished).
+	// Round-trip must preserve every field that affects gate
+	// behaviour so the operator's reconstructed view is faithful.
+	const src = `
+name: release
+stages: [deploy]
+materials:
+  - manual: true
+jobs:
+  gate:
+    stage: deploy
+    approval:
+      approvers: [alice, bob]
+      approver_groups: [sre, platform]
+      required: 2
+      quorum_by_label:
+        hotfix: 1
+        risky:  3
+      description: Promote to prod?
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "release")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		"required: 2",
+		"approver_groups:",
+		"quorum_by_label:",
+		"hotfix: 1",
+		"risky: 3",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("emit missing %q:\n%s", want, s)
+		}
+	}
+	second, err := ParseNamed(strings.NewReader(s), "p", "release")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, s)
+	}
+	a := second.Jobs[0].Approval
+	if a.Required != 2 {
+		t.Errorf("required lost in round-trip: %d", a.Required)
+	}
+	if len(a.ApproverGroups) != 2 || a.ApproverGroups[0] != "sre" {
+		t.Errorf("approver_groups lost: %+v", a.ApproverGroups)
+	}
+	if a.QuorumByLabel["hotfix"] != 1 || a.QuorumByLabel["risky"] != 3 {
+		t.Errorf("quorum_by_label lost: %+v", a.QuorumByLabel)
+	}
+}
+
 func TestEmit_QuotesAmbiguousScalars(t *testing.T) {
 	// GO_VERSION: "1.25" must round-trip as a quoted string.
 	// Without explicit quoting yaml.v3 emits `1.25` → re-parses as

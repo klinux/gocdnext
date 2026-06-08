@@ -22,7 +22,26 @@ import (
 const (
 	MinPollInterval = time.Minute
 	MaxPollInterval = 24 * time.Hour
+
+	// approvalQuorumByLabelCap bounds how many distinct PR labels
+	// can override the base quorum on a single approval gate.
+	// 16 fits the most elaborate workflow (hotfix, risky,
+	// breaking-change, security, ...) without being a footgun for
+	// operators who'd otherwise encode label taxonomy in YAML when
+	// it belongs in a wiki.
+	approvalQuorumByLabelCap = 16
 )
+
+// approvalLabelRE bounds the charset of PR labels that can override
+// the quorum. Matches the intersection of GitHub/GitLab label
+// naming conventions (alphanumeric + `.` + `_` + `-` + `/`),
+// rejecting shell metas + spaces. The labels coming OUT of the
+// webhook are already lowercased + trimmed (see github.normaliseLabels);
+// validating again at YAML parse time guards against YAML-side
+// typos like `"hot fix"` or `"weird$tag"` that the operator would
+// otherwise notice only when a PR's labels surprisingly fail to
+// match.
+var approvalLabelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 
 // ParsePollInterval returns (duration, error) for a YAML-supplied
 // poll_interval string. Empty is (0, nil) — caller treats zero as
@@ -572,10 +591,58 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 				"job %q: approval.required=%d exceeds approvers+approver_groups=%d — gate would be un-passable",
 				name, required, listSize)
 		}
+		// quorum_by_label: PR-label-driven quorum override. Validated
+		// here so misconfigured maps don't reach the run materialiser.
+		// Charset matches GitHub/GitLab label naming conventions
+		// (alphanum + dash + dot + underscore + slash); rejecting
+		// shell metas + spaces also keeps the field safe for the
+		// audit event payload and URL-ish surfaces.
+		var quorumByLabel map[string]int
+		if len(jd.Approval.QuorumByLabel) > 0 {
+			if got := len(jd.Approval.QuorumByLabel); got > approvalQuorumByLabelCap {
+				return domain.Job{}, fmt.Errorf(
+					"job %q: approval.quorum_by_label has %d entries — cap is %d (operator is encoding policy in YAML the wrong way past that)",
+					name, got, approvalQuorumByLabelCap)
+				}
+			quorumByLabel = make(map[string]int, len(jd.Approval.QuorumByLabel))
+			for label, override := range jd.Approval.QuorumByLabel {
+				// Normalise BEFORE charset check so `HotFix` in YAML
+				// is accepted (matches GitHub's case-insensitive
+				// label model) and stored alongside the lowercased
+				// labels that come out of the webhook normaliser.
+				lower := strings.ToLower(label)
+				if lower == "" {
+					return domain.Job{}, fmt.Errorf(
+						"job %q: approval.quorum_by_label has an empty label key", name)
+				}
+				if !approvalLabelRE.MatchString(lower) {
+					return domain.Job{}, fmt.Errorf(
+						"job %q: approval.quorum_by_label key %q has forbidden characters — accepted: alphanumeric + . _ - /",
+						name, label)
+				}
+				if override < 1 {
+					return domain.Job{}, fmt.Errorf(
+						"job %q: approval.quorum_by_label[%q]=%d must be >= 1 — a gate with quorum 0 would auto-pass without any approver",
+						name, label, override)
+				}
+				if listSize > 0 && override > listSize {
+					return domain.Job{}, fmt.Errorf(
+						"job %q: approval.quorum_by_label[%q]=%d exceeds approvers+approver_groups=%d — gate would be un-passable for runs with this label",
+						name, label, override, listSize)
+				}
+				if _, dup := quorumByLabel[lower]; dup {
+					return domain.Job{}, fmt.Errorf(
+						"job %q: approval.quorum_by_label has duplicate label key %q (case-insensitive)",
+						name, label)
+				}
+				quorumByLabel[lower] = override
+			}
+		}
 		j.Approval = &domain.ApprovalSpec{
 			Approvers:      append([]string(nil), jd.Approval.Approvers...),
 			ApproverGroups: append([]string(nil), jd.Approval.ApproverGroups...),
 			Required:       required,
+			QuorumByLabel:  quorumByLabel,
 			Description:    jd.Approval.Description,
 		}
 		return j, nil

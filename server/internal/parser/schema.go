@@ -191,8 +191,13 @@ type ApprovalDef struct {
 	// approve before the gate passes. Default 1 (any single approver
 	// is enough, matches legacy behaviour). Rejects always fail the
 	// gate immediately regardless of this.
-	Required    int    `yaml:"required,omitempty"`
-	Description string `yaml:"description,omitempty"`
+	Required int `yaml:"required,omitempty"`
+	// QuorumByLabel maps a PR label name → quorum override applied
+	// when the run is triggered by a PR carrying that label. See
+	// domain.ApprovalSpec.QuorumByLabel for resolution semantics
+	// (snapshot-at-materialisation, MAX wins on multi-label match).
+	QuorumByLabel map[string]int `yaml:"quorum_by_label,omitempty"`
+	Description   string         `yaml:"description,omitempty"`
 }
 
 // NeedsArtifactDef is one entry of a job's `needs_artifacts:` list. It
