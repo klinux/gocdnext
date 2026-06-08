@@ -159,6 +159,178 @@ func TestCreateRun_QuorumByLabel_NoMatchKeepsBaselineWithNullLabel(t *testing.T)
 	}
 }
 
+func TestGetRunDetail_QuorumByLabel_SerialisesWhenOverrideFires(t *testing.T) {
+	// API response: gate carrying an override exposes both
+	// approval_required (effective) AND approval_quorum_label
+	// (the disparadora) so the UI can render
+	// "label: hotfix → quorum 1/2 default" without a second query.
+	pool := dbtest.SetupPool(t)
+	pipelineID, materialID := seedQuorumByLabelPipeline(t, pool, "quorum-detail-fire",
+		2, map[string]int{"hotfix": 1})
+	gateID := triggerPRRun(t, pool, pipelineID, materialID, []string{"hotfix"})
+
+	s := store.New(pool)
+	// fetch the run id from the gate row so we can call GetRunDetail.
+	var runID uuid.UUID
+	if err := pool.QueryRow(context.Background(),
+		`SELECT run_id FROM job_runs WHERE id = $1`, gateID).Scan(&runID); err != nil {
+		t.Fatalf("look up run: %v", err)
+	}
+	detail, err := s.GetRunDetail(context.Background(), runID, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail: %v", err)
+	}
+
+	var jd *store.JobDetail
+	for i := range detail.Stages {
+		for j := range detail.Stages[i].Jobs {
+			if detail.Stages[i].Jobs[j].ID == gateID {
+				jd = &detail.Stages[i].Jobs[j]
+			}
+		}
+	}
+	if jd == nil {
+		t.Fatal("gate JobDetail missing from RunDetail")
+	}
+	if jd.ApprovalRequired != 1 {
+		t.Errorf("approval_required = %d, want 1 (override)", jd.ApprovalRequired)
+	}
+	if jd.ApprovalQuorumLabel != "hotfix" {
+		t.Errorf("approval_quorum_label = %q, want \"hotfix\"", jd.ApprovalQuorumLabel)
+	}
+
+	// JSON round-trip — confirm `approval_quorum_label` lands on
+	// the wire when the override fired (handlers send JobDetail
+	// directly).
+	buf, err := json.Marshal(jd)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var roundtrip map[string]any
+	if err := json.Unmarshal(buf, &roundtrip); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := roundtrip["approval_quorum_label"]; got != "hotfix" {
+		t.Errorf("JSON approval_quorum_label = %v, want \"hotfix\"", got)
+	}
+	if got := roundtrip["approval_required"]; got != float64(1) {
+		t.Errorf("JSON approval_required = %v, want 1", got)
+	}
+}
+
+func TestGetRunDetail_QuorumByLabel_OmitsWhenNoOverride(t *testing.T) {
+	// `omitempty` on ApprovalQuorumLabel keeps regular gates +
+	// non-PR runs clean — operator shouldn't see a phantom
+	// `"approval_quorum_label": ""` field on every gate that
+	// wasn't a label-driven override. JSON should not carry the
+	// key at all.
+	pool := dbtest.SetupPool(t)
+	pipelineID, materialID := seedQuorumByLabelPipeline(t, pool, "quorum-detail-quiet",
+		2, map[string]int{"hotfix": 1})
+	gateID := triggerPRRun(t, pool, pipelineID, materialID, []string{"backend"})
+
+	s := store.New(pool)
+	var runID uuid.UUID
+	if err := pool.QueryRow(context.Background(),
+		`SELECT run_id FROM job_runs WHERE id = $1`, gateID).Scan(&runID); err != nil {
+		t.Fatalf("look up run: %v", err)
+	}
+	detail, err := s.GetRunDetail(context.Background(), runID, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail: %v", err)
+	}
+	var jd *store.JobDetail
+	for i := range detail.Stages {
+		for j := range detail.Stages[i].Jobs {
+			if detail.Stages[i].Jobs[j].ID == gateID {
+				jd = &detail.Stages[i].Jobs[j]
+			}
+		}
+	}
+	if jd == nil {
+		t.Fatal("gate JobDetail missing")
+	}
+	if jd.ApprovalQuorumLabel != "" {
+		t.Errorf("ApprovalQuorumLabel = %q, want \"\"", jd.ApprovalQuorumLabel)
+	}
+
+	buf, _ := json.Marshal(jd)
+	var roundtrip map[string]any
+	_ = json.Unmarshal(buf, &roundtrip)
+	if _, present := roundtrip["approval_quorum_label"]; present {
+		t.Errorf("approval_quorum_label key should be omitted when empty, JSON = %s", buf)
+	}
+	// Baseline required (2) should still be visible — operators
+	// need it to render "1 of 2" even on the default-quorum case.
+	if got := roundtrip["approval_required"]; got != float64(2) {
+		t.Errorf("approval_required = %v, want 2 (baseline visible)", got)
+	}
+}
+
+func TestCreateRun_QuorumByLabel_EmitsAuditEventOnOverride(t *testing.T) {
+	// When an override fires at materialisation, an audit event
+	// with action=approval.quorum_overridden lands AFTER the run
+	// tx commits. Metadata carries the explanation that the UI
+	// + admin audit log surface verbatim.
+	pool := dbtest.SetupPool(t)
+	pipelineID, materialID := seedQuorumByLabelPipeline(t, pool, "quorum-audit-fire",
+		2, map[string]int{"hotfix": 1, "risky": 3})
+	gateID := triggerPRRun(t, pool, pipelineID, materialID, []string{"hotfix", "risky"})
+
+	var (
+		count    int
+		metaRaw  []byte
+		targetID string
+	)
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*), MAX(metadata::text), MAX(target_id)
+		FROM audit_events
+		WHERE action = $1 AND target_id = $2
+	`, store.AuditActionApprovalQuorumOverride, gateID.String()).Scan(&count, &metaRaw, &targetID); err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("audit rows = %d, want 1", count)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta["label"] != "risky" {
+		t.Errorf("audit label = %v, want \"risky\"", meta["label"])
+	}
+	if meta["base_required"] != float64(2) {
+		t.Errorf("audit base_required = %v, want 2", meta["base_required"])
+	}
+	if meta["effective_required"] != float64(3) {
+		t.Errorf("audit effective_required = %v, want 3 (max wins)", meta["effective_required"])
+	}
+	if meta["cause"] != "pull_request" {
+		t.Errorf("audit cause = %v, want pull_request", meta["cause"])
+	}
+}
+
+func TestCreateRun_QuorumByLabel_NoAuditEventWithoutOverride(t *testing.T) {
+	// PR has labels but none match → no override fires → no audit
+	// row. Quiet on the default path keeps the audit log signal-
+	// to-noise ratio high for actual policy events.
+	pool := dbtest.SetupPool(t)
+	pipelineID, materialID := seedQuorumByLabelPipeline(t, pool, "quorum-audit-quiet",
+		2, map[string]int{"hotfix": 1})
+	gateID := triggerPRRun(t, pool, pipelineID, materialID, []string{"backend", "chore"})
+
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM audit_events
+		WHERE action = $1 AND target_id = $2
+	`, store.AuditActionApprovalQuorumOverride, gateID.String()).Scan(&count); err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("audit rows = %d, want 0 (no override fired)", count)
+	}
+}
+
 func TestCreateRun_QuorumByLabel_NonPRCauseUsesBaseline(t *testing.T) {
 	// Push to base branch creates a run with cause="webhook"
 	// (the default in CreateRunFromModification). quorum_by_label

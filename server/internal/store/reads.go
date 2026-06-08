@@ -276,7 +276,15 @@ type JobDetail struct {
 	// true so regular jobs don't carry dead JSON on every response.
 	ApprovalGate        bool       `json:"approval_gate,omitempty"`
 	Approvers           []string   `json:"approvers,omitempty"`
+	ApprovalRequired    int        `json:"approval_required,omitempty"`
 	ApprovalDescription string     `json:"approval_description,omitempty"`
+	// ApprovalQuorumLabel names the PR label whose quorum_by_label
+	// override fired when the gate was materialised. Empty (and
+	// omitted) when no override fired — the UI can then show
+	// "default quorum" without inferring it from absence vs
+	// override. See domain.ApprovalSpec.QuorumByLabel for the
+	// resolution rules.
+	ApprovalQuorumLabel string     `json:"approval_quorum_label,omitempty"`
 	AwaitingSince       *time.Time `json:"awaiting_since,omitempty"`
 	DecidedBy           string     `json:"decided_by,omitempty"`
 	DecidedAt           *time.Time `json:"decided_at,omitempty"`
@@ -877,7 +885,9 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 			FinishedAt:          pgTimePtr(j.FinishedAt),
 			ApprovalGate:        j.ApprovalGate,
 			Approvers:           j.Approvers,
+			ApprovalRequired:    int(j.ApprovalRequired),
 			ApprovalDescription: stringValue(j.ApprovalDescription),
+			ApprovalQuorumLabel: stringValue(j.ApprovalQuorumLabel),
 			AwaitingSince:       pgTimePtr(j.AwaitingSince),
 			DecidedBy:           stringValue(j.DecidedBy),
 			DecidedAt:           pgTimePtr(j.DecidedAt),
