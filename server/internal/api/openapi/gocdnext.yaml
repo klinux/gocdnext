@@ -1529,11 +1529,11 @@ components:
           description: |
             Taint key the toleration matches. Follows Kubernetes
             label key rules (`IsQualifiedName`): optional DNS
-            subdomain prefix + name segment of alphanumeric/-/_/.,
-            max 63 chars per segment. May be empty ONLY when
-            `operator: Exists` (the kubelet "tolerate everything"
-            pattern); empty key with operator=Equal is rejected
-            at write time.
+            subdomain prefix (up to 253 chars) + a name segment
+            of alphanumeric/-/_/. up to 63 chars. May be empty
+            ONLY when `operator: Exists` (the kubelet "tolerate
+            everything" pattern); empty key with operator=Equal
+            is rejected at write time.
           example: "ci-only"
         operator:
           type: string
