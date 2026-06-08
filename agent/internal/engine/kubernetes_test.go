@@ -116,6 +116,53 @@ func TestKubernetes_BuildPodSpec_Defaults(t *testing.T) {
 	}
 }
 
+func TestKubernetes_BuildPodSpec_MergesNodeSelectorWithProfileWinning(t *testing.T) {
+	// Agent NodeSelector is the StatefulSet-level baseline; profile
+	// NodeSelector is the per-spec override. On key collision, the
+	// profile WINS — a job pointing at `pool: gradle` lands on
+	// gradle nodes even if the agent's default says `pool: ci`.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage: "alpine:3.19",
+		NodeSelector: map[string]string{"tier": "ci", "pool": "ci"},
+	})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script:       "true",
+		NodeSelector: map[string]string{"pool": "gradle"},
+	})
+	if pod.Spec.NodeSelector["tier"] != "ci" {
+		t.Errorf("agent tier lost: %v", pod.Spec.NodeSelector)
+	}
+	if pod.Spec.NodeSelector["pool"] != "gradle" {
+		t.Errorf("profile pool did not win: %v", pod.Spec.NodeSelector)
+	}
+}
+
+func TestKubernetes_BuildPodSpec_ConcatsTolerations(t *testing.T) {
+	// Agent-level Tolerations come first; profile entries are
+	// APPENDED. Kubelet handles dedup, so we don't.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage: "alpine:3.19",
+		Tolerations: []corev1.Toleration{
+			{Key: "node.kubernetes.io/unschedulable", Operator: corev1.TolerationOpExists},
+		},
+	})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Script: "true",
+		Tolerations: []corev1.Toleration{
+			{Key: "ci-only", Operator: corev1.TolerationOpEqual, Value: "true"},
+		},
+	})
+	if len(pod.Spec.Tolerations) != 2 {
+		t.Fatalf("expected 2 tolerations, got %d", len(pod.Spec.Tolerations))
+	}
+	if pod.Spec.Tolerations[0].Key != "node.kubernetes.io/unschedulable" {
+		t.Errorf("agent toleration not first: %v", pod.Spec.Tolerations)
+	}
+	if pod.Spec.Tolerations[1].Key != "ci-only" {
+		t.Errorf("profile toleration not appended: %v", pod.Spec.Tolerations)
+	}
+}
+
 func TestKubernetes_BuildPodSpec_OutputsEnv_AnchoredAtWorkDir(t *testing.T) {
 	// Regression: shared K8s mounts the WHOLE PVC at
 	// ContainerWorkspaceMount, so a target_dir-nested workspace

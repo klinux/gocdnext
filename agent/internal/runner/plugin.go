@@ -67,6 +67,8 @@ func (r *Runner) runPlugin(
 		AgentTags:       append([]string(nil), r.cfg.AgentTags...),
 		OutputsHostPath: outputs.host,
 		OutputsRelPath:  outputs.rel,
+		NodeSelector:    assignmentNodeSelector(a),
+		Tolerations:     assignmentTolerations(a),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},

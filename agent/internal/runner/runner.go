@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
@@ -573,6 +574,8 @@ func (r *Runner) runScript(ctx context.Context, workDir, script, image string, d
 		AgentTags:       append([]string(nil), r.cfg.AgentTags...),
 		OutputsHostPath: outputs.host,
 		OutputsRelPath:  outputs.rel,
+		NodeSelector:    assignmentNodeSelector(a),
+		Tolerations:     assignmentTolerations(a),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
@@ -604,6 +607,47 @@ func assignmentResources(a *gocdnextv1.JobAssignment) engine.Resources {
 		MemoryRequest: r.GetMemoryRequest(),
 		MemoryLimit:   r.GetMemoryLimit(),
 	}
+}
+
+// assignmentNodeSelector copies the proto map into a fresh map so the
+// engine can't mutate the proto-owned memory. Empty input → nil so
+// the engine's "absent + nil identical" contract holds.
+func assignmentNodeSelector(a *gocdnextv1.JobAssignment) map[string]string {
+	in := a.GetNodeSelector()
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// assignmentTolerations converts the proto Toleration list into the
+// engine-level corev1.Toleration slice the Kubernetes engine drops
+// straight onto the PodSpec. TolerationSeconds is COPIED into a
+// fresh *int64 so engine mutation can't leak back into the proto
+// (same aliasing discipline as scheduler.tolerationsToProto).
+func assignmentTolerations(a *gocdnextv1.JobAssignment) []corev1.Toleration {
+	in := a.GetTolerations()
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]corev1.Toleration, len(in))
+	for i, t := range in {
+		out[i] = corev1.Toleration{
+			Key:      t.GetKey(),
+			Operator: corev1.TolerationOperator(t.GetOperator()),
+			Value:    t.GetValue(),
+			Effect:   corev1.TaintEffect(t.GetEffect()),
+		}
+		if t.TolerationSeconds != nil {
+			v := *t.TolerationSeconds
+			out[i].TolerationSeconds = &v
+		}
+	}
+	return out
 }
 
 // runCommand executes a command and streams stdout/stderr as LogLines. Returns

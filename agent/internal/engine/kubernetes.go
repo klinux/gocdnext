@@ -126,6 +126,11 @@ type KubernetesConfig struct {
 	DefaultImage       string // fallback when ScriptSpec.Image is empty
 	ImagePullSecrets   []string
 	NodeSelector       map[string]string
+	// Tolerations is the agent-level baseline applied to every pod
+	// (shared mode task + isolated mode task + services). Per-spec
+	// Tolerations (resolved from the runner profile) are appended
+	// to this list inside the pod-spec builders.
+	Tolerations []corev1.Toleration
 
 	// WorkspaceMode picks shared (legacy) vs isolated (per-job
 	// ephemeral PVC). Empty defaults to WorkspaceModeShared so
@@ -491,7 +496,8 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:    corev1.RestartPolicyNever,
-			NodeSelector:     k.cfg.NodeSelector,
+			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
+			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			ImagePullSecrets: pullSecrets,
 			Volumes:          []corev1.Volume{workspaceVolume},
 			Containers:       containers,

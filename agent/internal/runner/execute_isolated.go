@@ -169,6 +169,8 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		AgentTags:      append([]string(nil), r.cfg.AgentTags...),
 		HostAliases:    servicesPhase.hostAliases,
 		OutputsRelPath: outputsRel,
+		NodeSelector:   assignmentNodeSelector(a),
+		Tolerations:    assignmentTolerations(a),
 	}
 
 	if plugin := task.GetPlugin(); plugin != nil {
