@@ -29,6 +29,14 @@ type runnerProfileEntry struct {
 	MaxMem            string         `yaml:"max_mem"`
 	Tags              []string       `yaml:"tags"`
 	Config            map[string]any `yaml:"config"`
+	// NodeSelector + Tolerations: same shape as the admin UI. Must
+	// be persisted by the seed loader — without these, the
+	// UpdateRunnerProfileFromSeed call below would silently
+	// overwrite operator-set scheduling hints with `{}`/`[]` on
+	// every server boot. The values.yaml seed is then the
+	// declarative source of truth for both bounds AND scheduling.
+	NodeSelector map[string]string  `yaml:"node_selector"`
+	Tolerations  []seedToleration   `yaml:"tolerations"`
 	// Env carries plaintext, non-secret runtime config (bucket
 	// names, regions, GOCDNEXT_LAYER_CACHE_* defaults). Plain
 	// values.yaml is the right place — they're not credentials.
@@ -37,6 +45,35 @@ type runnerProfileEntry struct {
 	// a foot-gun. Use the admin UI (or sealed-secrets) to manage
 	// `secrets:` post-install.
 	Env map[string]string `yaml:"env"`
+}
+
+// seedToleration mirrors the Toleration domain shape in YAML/JSON
+// form. snake_case tags match the admin REST API + JSONB column
+// shape so a Helm-managed profile and a UI-edited row read the same
+// way across audit log and DB inspection.
+type seedToleration struct {
+	Key               string `yaml:"key" json:"key"`
+	Operator          string `yaml:"operator" json:"operator"`
+	Value             string `yaml:"value" json:"value"`
+	Effect            string `yaml:"effect" json:"effect"`
+	TolerationSeconds *int64 `yaml:"toleration_seconds" json:"toleration_seconds"`
+}
+
+func (e runnerProfileEntry) tolerations() []Toleration {
+	if len(e.Tolerations) == 0 {
+		return nil
+	}
+	out := make([]Toleration, len(e.Tolerations))
+	for i, t := range e.Tolerations {
+		out[i] = Toleration{
+			Key:               t.Key,
+			Operator:          t.Operator,
+			Value:             t.Value,
+			Effect:            t.Effect,
+			TolerationSeconds: t.TolerationSeconds,
+		}
+	}
+	return out
 }
 
 // SeedRunnerProfilesFromFile reads a YAML file and upserts each
@@ -81,6 +118,8 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 			MaxMem:            p.MaxMem,
 			Tags:              p.Tags,
 			Config:            p.Config,
+			NodeSelector:      p.NodeSelector,
+			Tolerations:       p.tolerations(),
 			Env:               p.Env,
 			// Secrets intentionally NOT seeded from YAML — see the
 			// type comment for the rationale.
