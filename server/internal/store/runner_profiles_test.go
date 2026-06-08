@@ -349,6 +349,72 @@ func contains(haystack, needle string) bool {
 	return false
 }
 
+func TestRunnerProfile_NodeSelectorAndTolerations_RoundTrip(t *testing.T) {
+	// Scheduling fields (NodeSelector + Tolerations) round-trip
+	// through Insert + Get + Update + Get without loss. Persisted
+	// as JSONB; the decoder normalises empty to nil so callers can
+	// do `if profile.NodeSelector != nil` uniformly.
+	s, ctx := newProfileStore(t)
+
+	tolSeconds := int64(60)
+	created, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:   "gradle-pool",
+		Engine: "kubernetes",
+		NodeSelector: map[string]string{
+			"workload": "ci",
+			"pool":     "gradle-heavy",
+		},
+		Tolerations: []store.Toleration{
+			{Key: "ci-only", Operator: "Equal", Value: "true", Effect: "NoSchedule"},
+			{Key: "spot", Operator: "Exists", Effect: "NoExecute", TolerationSeconds: &tolSeconds},
+		},
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := s.GetRunnerProfile(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.NodeSelector) != 2 ||
+		got.NodeSelector["workload"] != "ci" ||
+		got.NodeSelector["pool"] != "gradle-heavy" {
+		t.Errorf("NodeSelector round-trip: %+v", got.NodeSelector)
+	}
+	if len(got.Tolerations) != 2 {
+		t.Fatalf("Tolerations len = %d, want 2", len(got.Tolerations))
+	}
+	if got.Tolerations[0].Key != "ci-only" || got.Tolerations[0].Effect != "NoSchedule" {
+		t.Errorf("Tolerations[0] = %+v", got.Tolerations[0])
+	}
+	if got.Tolerations[1].TolerationSeconds == nil || *got.Tolerations[1].TolerationSeconds != 60 {
+		t.Errorf("Tolerations[1].TolerationSeconds = %v, want pointer to 60",
+			got.Tolerations[1].TolerationSeconds)
+	}
+
+	// Update path: clear NodeSelector + replace tolerations.
+	if err := s.UpdateRunnerProfile(ctx, nil, created.ID, store.RunnerProfileInput{
+		Name:   "gradle-pool",
+		Engine: "kubernetes",
+		Tolerations: []store.Toleration{
+			{Key: "ssd", Operator: "Exists", Effect: "NoSchedule"},
+		},
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err = s.GetRunnerProfile(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if got.NodeSelector != nil {
+		t.Errorf("NodeSelector should be nil after clearing, got: %+v", got.NodeSelector)
+	}
+	if len(got.Tolerations) != 1 || got.Tolerations[0].Key != "ssd" {
+		t.Errorf("Tolerations after update: %+v", got.Tolerations)
+	}
+}
+
 func TestRunnerProfile_EnvAndSecrets_RoundTrip(t *testing.T) {
 	s, ctx := newProfileStore(t)
 	cipher := newProfileCipher(t)
