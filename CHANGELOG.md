@@ -6,6 +6,94 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.13.0 — 2026-06-08
+
+Single feature: **PR-label-driven approval quorum** — the same
+gate's quorum changes based on which labels the originating PR
+carries. Closes a recurring "hotfix should need one approver, not
+two" request without forking pipelines into a parallel hotfix
+file.
+
+### Feature — `approval.quorum_by_label`
+
+```yaml
+deploy-prod:
+  approval:
+    approver_groups: [release-approvers]
+    required: 2            # baseline (push, manual, tag, …)
+    quorum_by_label:
+      hotfix: 1            # PR carrying `hotfix` → quorum 1
+      breaking-change: 3   # PR carrying `breaking-change` → 3
+```
+
+**Semantics**:
+
+- **PR cause only**. Push, manual, tag, upstream, schedule, poll
+  all use the baseline `required:` — none of those carry labels.
+- **Snapshot at run materialisation**. The PR's labels are read
+  once when the run is created (from `runs.cause_detail.pr_labels`,
+  itself stamped by the GitHub webhook handler). Relabeling the PR
+  after the run is created does NOT recompute the gate; push a
+  new head to re-materialise.
+- **Multiple labels match → MAX wins**. PR carrying both `hotfix`
+  (1) and `breaking-change` (3) lands at quorum 3. Two reasons
+  to demand more approvers don't cancel each other.
+- **Ties broken lexicographically**. When two labels override to
+  the same value, the smallest-named label wins. Load-bearing
+  for audit clarity and reproducible tests.
+- **Fail-closed defaults**. Malformed `cause_detail` JSON,
+  missing `pr_labels` key, or labels-not-array all silently fall
+  back to baseline. Failing closed (strict default) is the safe
+  direction; failing open would defeat the gate on a parse glitch.
+
+### Validation
+
+Parse-time (surfaces at `apply`, not runtime):
+
+- Label charset: lowercased alphanumeric + `.` `_` `-` `/`.
+  `HotFix` in YAML auto-lowers to match what the GitHub webhook
+  normaliser stores.
+- Override must be ≥ 1; ≤ approvers + approver_groups; cap 16
+  entries per gate.
+- Empty label keys and case-insensitive duplicate keys rejected.
+
+### UI + audit
+
+- Awaiting-approval card grows a small `label <name>` badge ONLY
+  when an override actually fired. Tooltip surfaces "Quorum
+  overridden to N by PR label X". No badge on regular gates.
+- New audit event `approval.quorum_overridden` carries
+  `{base_required, effective_required, label, cause}` metadata.
+  Default-quorum gates produce no audit row — the log only
+  records the policy events themselves.
+- `JobDetail` response now exposes `approval_required` (the
+  effective quorum, previously missing from the API entirely)
+  and `approval_quorum_label` (omitted when no override fired).
+
+### CI vars
+
+- New `CI_PULL_REQUEST_LABELS` (CSV of the PR's lowercased
+  labels) joins the rest of the `CI_PULL_REQUEST_*` family.
+  Available in `env:` / `variables:` / plugin `with:`
+  substitution; non-PR runs leave it unset so
+  `${CI_PULL_REQUEST_LABELS}` reads as literal.
+
+### Provider coverage
+
+GitHub PRs only at v0.13.0. GitLab MR and Bitbucket PR webhooks
+don't carry labels into gocdnext yet — those adapters today
+process only push events. Follow-up issues track parity:
+[#11 GitLab MR](https://github.com/klinux/gocdnext/issues/11),
+[#12 Bitbucket PR](https://github.com/klinux/gocdnext/issues/12).
+
+### Latent fix on the way in
+
+Parser's YAML emitter (`/api/pipelines/{id}` "reconstructed YAML"
+view) silently dropped `Required` + `ApproverGroups` on the
+approval block before this release — the displayed form lost
+quorum policy. Fixed in lockstep with the new
+`QuorumByLabel` emit so the round-trip is faithful.
+
 ## v0.12.0 — 2026-06-07
 
 Two features that close limitations the v0.11 cycle left open:

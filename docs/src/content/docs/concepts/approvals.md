@@ -82,6 +82,71 @@ approval:
 `approvers:` and `approver_groups:` union — anyone in either list
 counts toward the `required:` quorum.
 
+## PR-label-driven quorum
+
+Shipped in v0.13.0. When a run is triggered by a pull request, the
+gate's effective quorum can be overridden based on labels carried
+on the PR. Useful when one policy ("hotfix bypasses one of the two
+approvers") shouldn't fork into a second pipeline file.
+
+```yaml
+jobs:
+  promote-prod:
+    stage: deploy
+    approval:
+      approver_groups: [release-approvers]
+      required: 2            # base quorum (push, manual, tag…)
+      quorum_by_label:
+        hotfix: 1            # PR carrying `hotfix` → quorum 1
+        breaking-change: 3   # PR carrying `breaking-change` → 3
+      description: "Promote to prod"
+```
+
+**Semantics**:
+
+- **PR cause only.** Push, manual, tag, upstream, schedule, poll —
+  none of those carry labels, so the gate uses `required:`
+  baseline.
+- **Snapshot at run materialisation.** Labels read once from the
+  PR webhook at run creation; relabel the PR afterward and the
+  open gate keeps its frozen quorum (push a new head to
+  re-materialise).
+- **Multiple labels match → MAX wins.** A PR carrying both
+  `hotfix` (override 1) and `breaking-change` (override 3) lands
+  at quorum 3. Two reasons to demand more approvers don't cancel.
+- **Ties broken lexicographically.** When two labels both override
+  to the same value, the smallest-named label wins. Determinism
+  matters for audit clarity.
+- **No match keeps baseline.** PR with labels that don't intersect
+  the map keeps `required:` unchanged; UI shows no override badge.
+
+**UI signal**: when an override fires, the awaiting-approval card
+gains a small `label <name>` badge next to the gate title. Hover
+reveals "Quorum overridden to N by PR label X".
+
+**Audit**: every override emits an `approval.quorum_overridden`
+event with `{base_required, effective_required, label, cause}`
+metadata. Default-quorum gates produce no audit row — the log only
+records the policy events themselves.
+
+**Validation** (parse-time, surfaces at `apply`, not runtime):
+
+- Charset: alphanumeric + `.` `_` `-` `/`. GitHub case-insensitive
+  labels lowercase automatically; `HotFix` in YAML and `hotfix` in
+  the PR collapse to the same key.
+- Override must be ≥ 1 (a quorum of 0 would auto-pass with no
+  approver).
+- Override must be ≤ `approvers + approver_groups` (un-passable
+  detection same as base `required:`).
+- Cap 16 entries per gate. Larger taxonomies belong in policy docs,
+  not the pipeline YAML.
+- Empty label keys + case-insensitive duplicate keys rejected.
+
+**Provider coverage**: GitHub PRs only at v0.13.0. GitLab MR and
+Bitbucket PR webhooks don't carry labels into gocdnext yet
+([#11](https://github.com/klinux/gocdnext/issues/11),
+[#12](https://github.com/klinux/gocdnext/issues/12)).
+
 ## Setting up groups
 
 ### Create the group
@@ -235,7 +300,7 @@ table:
 SELECT actor_email, action, created_at, details
 FROM audit_events
 WHERE entity_type = 'job_run'
-  AND action IN ('approval.approve', 'approval.reject')
+  AND action IN ('approval.approve', 'approval.reject', 'approval.quorum_overridden')
 ORDER BY created_at DESC
 LIMIT 20;
 ```
