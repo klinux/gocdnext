@@ -58,10 +58,39 @@ type RunnerProfile struct {
 	MaxMem            string
 	Tags              []string
 	Config            map[string]any
+	// NodeSelector pins job pods to nodes carrying these labels.
+	// Empty map = no restriction; the agent's own nodeSelector
+	// (set on the StatefulSet) still applies. Profile values
+	// WIN on key collisions when merged with the agent-level set
+	// — profile is more specific than agent-default.
+	NodeSelector map[string]string
+	// Tolerations let job pods schedule on tainted nodes.
+	// Empty list = no tolerations beyond what the agent ships
+	// with. Tolerations from the profile are APPENDED to the
+	// agent-level set (concat, no dedup on the engine side —
+	// kubelet ignores exact duplicates anyway).
+	Tolerations       []Toleration
 	Env               map[string]string
 	SecretKeys        []string // names only, sorted; values never decrypted on this path
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+// Toleration mirrors corev1.Toleration in store-friendly form
+// (concrete strings rather than k8s typedefs so the schema is
+// API-stable and decoupled from k8s versions).
+//
+// Operator: "Equal" (default) requires Value match; "Exists"
+// matches any Value. Effect: "" (any), "NoSchedule",
+// "PreferNoSchedule", "NoExecute". TolerationSeconds: only
+// honoured for NoExecute; nil = tolerate forever; 0 = evict
+// immediately.
+type Toleration struct {
+	Key               string
+	Operator          string
+	Value             string
+	Effect            string
+	TolerationSeconds *int64
 }
 
 // RunnerProfileInput is the write shape for Insert + Update. ID is
@@ -84,6 +113,8 @@ type RunnerProfileInput struct {
 	MaxMem            string
 	Tags              []string
 	Config            map[string]any
+	NodeSelector      map[string]string
+	Tolerations       []Toleration
 	Env               map[string]string
 	Secrets           map[string]string
 }
@@ -141,6 +172,14 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 	if err != nil {
 		return RunnerProfile{}, err
 	}
+	nodeSel, err := encodeNodeSelector(in.NodeSelector)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
+	tolerations, err := encodeTolerations(in.Tolerations)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
 	envBytes, err := encodeProfileEnv(in.Env)
 	if err != nil {
 		return RunnerProfile{}, err
@@ -162,6 +201,8 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		MaxMem:            in.MaxMem,
 		Tags:              normalizeTags(in.Tags),
 		Config:            cfg,
+		NodeSelector:      nodeSel,
+		Tolerations:       tolerations,
 		Env:               envBytes,
 		Secrets:           secretsBytes,
 	})
@@ -202,6 +243,14 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 	if err != nil {
 		return err
 	}
+	nodeSel, err := encodeNodeSelector(in.NodeSelector)
+	if err != nil {
+		return err
+	}
+	tolerations, err := encodeTolerations(in.Tolerations)
+	if err != nil {
+		return err
+	}
 	envBytes, err := encodeProfileEnv(in.Env)
 	if err != nil {
 		return err
@@ -218,7 +267,8 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
             default_mem_request = $8, default_mem_limit = $9,
             max_cpu = $10, max_mem = $11,
             tags = $12, config = $13,
-            env = $14, secrets = $15,
+            node_selector = $14, tolerations = $15,
+            env = $16, secrets = $17,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -228,6 +278,7 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		in.DefaultMemRequest, in.DefaultMemLimit,
 		in.MaxCPU, in.MaxMem,
 		normalizeTags(in.Tags), cfg,
+		nodeSel, tolerations,
 		envBytes, secretsBytes,
 	)
 	if err != nil {
@@ -254,6 +305,14 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 	if err != nil {
 		return err
 	}
+	nodeSel, err := encodeNodeSelector(in.NodeSelector)
+	if err != nil {
+		return err
+	}
+	tolerations, err := encodeTolerations(in.Tolerations)
+	if err != nil {
+		return err
+	}
 	envBytes, err := encodeProfileEnv(in.Env)
 	if err != nil {
 		return err
@@ -266,7 +325,8 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
             default_mem_request = $8, default_mem_limit = $9,
             max_cpu = $10, max_mem = $11,
             tags = $12, config = $13,
-            env = $14,
+            node_selector = $14, tolerations = $15,
+            env = $16,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -276,6 +336,7 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 		in.DefaultMemRequest, in.DefaultMemLimit,
 		in.MaxCPU, in.MaxMem,
 		normalizeTags(in.Tags), cfg,
+		nodeSel, tolerations,
 		envBytes,
 	)
 	if err != nil {
@@ -511,6 +572,14 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 	if err != nil {
 		return RunnerProfile{}, err
 	}
+	nodeSel, err := decodeNodeSelector(r.NodeSelector)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
+	tolerations, err := decodeTolerations(r.Tolerations)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
 	env, err := decodeProfileEnv(r.Env)
 	if err != nil {
 		return RunnerProfile{}, err
@@ -533,6 +602,8 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 		MaxMem:            r.MaxMem,
 		Tags:              append([]string(nil), r.Tags...),
 		Config:            cfg,
+		NodeSelector:      nodeSel,
+		Tolerations:       tolerations,
 		Env:               env,
 		SecretKeys:        keys,
 		CreatedAt:         r.CreatedAt.Time,
@@ -558,6 +629,62 @@ func decodeProfileConfig(raw []byte) (map[string]any, error) {
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("store: unmarshal runner profile config: %w", err)
+	}
+	return out, nil
+}
+
+// encodeNodeSelector / decodeNodeSelector handle the JSONB column.
+// Empty/nil map serialises to `{}` so the column type stays a valid
+// JSON object; the agent engine treats absent + empty identically.
+func encodeNodeSelector(ns map[string]string) ([]byte, error) {
+	if len(ns) == 0 {
+		return []byte("{}"), nil
+	}
+	b, err := json.Marshal(ns)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal node_selector: %w", err)
+	}
+	return b, nil
+}
+
+func decodeNodeSelector(raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("store: unmarshal node_selector: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// encodeTolerations / decodeTolerations handle the JSONB column.
+// Empty/nil slice serialises to `[]`; the agent engine treats absent
+// + empty identically.
+func encodeTolerations(t []Toleration) ([]byte, error) {
+	if len(t) == 0 {
+		return []byte("[]"), nil
+	}
+	b, err := json.Marshal(t)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal tolerations: %w", err)
+	}
+	return b, nil
+}
+
+func decodeTolerations(raw []byte) ([]Toleration, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out []Toleration
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("store: unmarshal tolerations: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }

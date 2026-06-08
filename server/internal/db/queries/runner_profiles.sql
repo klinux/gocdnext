@@ -7,7 +7,8 @@ SELECT id, name, description, engine,
        max_cpu, max_mem,
        tags, config,
        created_at, updated_at,
-       env, secrets
+       env, secrets,
+       node_selector, tolerations
 FROM runner_profiles
 ORDER BY name;
 
@@ -19,7 +20,8 @@ SELECT id, name, description, engine,
        max_cpu, max_mem,
        tags, config,
        created_at, updated_at,
-       env, secrets
+       env, secrets,
+       node_selector, tolerations
 FROM runner_profiles
 WHERE id = $1
 LIMIT 1;
@@ -35,7 +37,8 @@ SELECT id, name, description, engine,
        max_cpu, max_mem,
        tags, config,
        created_at, updated_at,
-       env, secrets
+       env, secrets,
+       node_selector, tolerations
 FROM runner_profiles
 WHERE name = $1
 LIMIT 1;
@@ -48,7 +51,8 @@ INSERT INTO runner_profiles (
     default_mem_request, default_mem_limit,
     max_cpu, max_mem,
     tags, config,
-    env, secrets
+    env, secrets,
+    node_selector, tolerations
 ) VALUES (
     $1, $2, $3,
     $4,
@@ -56,7 +60,8 @@ INSERT INTO runner_profiles (
     $7, $8,
     $9, $10,
     $11, $12,
-    $13, $14
+    $13, $14,
+    $15, $16
 )
 RETURNING id, name, description, engine,
           default_image,
@@ -65,7 +70,8 @@ RETURNING id, name, description, engine,
           max_cpu, max_mem,
           tags, config,
           created_at, updated_at,
-          env, secrets;
+          env, secrets,
+          node_selector, tolerations;
 
 -- name: UpdateRunnerProfile :exec
 UPDATE runner_profiles
@@ -80,6 +86,8 @@ SET name = $2,
     config = $13,
     env = $14,
     secrets = $15,
+    node_selector = $16,
+    tolerations = $17,
     updated_at = NOW()
 WHERE id = $1;
 

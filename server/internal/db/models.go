@@ -293,6 +293,8 @@ type RunnerProfile struct {
 	UpdatedAt         pgtype.Timestamptz
 	Env               []byte
 	Secrets           []byte
+	NodeSelector      []byte
+	Tolerations       []byte
 }
 
 type ScmCredential struct {
