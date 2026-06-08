@@ -16,7 +16,12 @@
     "base": {
       "ref": "main",
       "sha": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"
-    }
+    },
+    "labels": [
+      {"name": "hotfix"},
+      {"name": "needs-review"},
+      {"name": "Hotfix"}
+    ]
   },
   "repository": {
     "id": 4242,

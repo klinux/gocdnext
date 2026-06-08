@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -33,6 +34,14 @@ type PullRequestEvent struct {
 	Merged     bool
 	Repository Repository
 	At         time.Time // PR.updated_at, best proxy for "when this action happened"
+
+	// Labels are the PR's labels, lowercased + deduped. Nil when
+	// the PR has no labels (so downstream `len(...) > 0` checks and
+	// JSON `omitempty` both work). Used by the PR-label-driven
+	// approval quorum feature in `quorum_by_label`; persisted into
+	// cause_detail.pr_labels and surfaced as
+	// CI_PULL_REQUEST_LABELS env var.
+	Labels []string
 }
 
 type prPayload struct {
@@ -50,6 +59,7 @@ type prDetails struct {
 	User      *prUser   `json:"user"`
 	Head      *prRef    `json:"head"`
 	Base      *prRef    `json:"base"`
+	Labels    []prLabel `json:"labels"`
 }
 
 type prUser struct {
@@ -59,6 +69,10 @@ type prUser struct {
 type prRef struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
+}
+
+type prLabel struct {
+	Name string `json:"name"`
 }
 
 // ParsePullRequestEvent decodes a pull_request payload. Returns a
@@ -99,7 +113,37 @@ func ParsePullRequestEvent(body []byte) (PullRequestEvent, error) {
 	if p.PullRequest.User != nil {
 		ev.Author = p.PullRequest.User.Login
 	}
+	ev.Labels = normaliseLabels(p.PullRequest.Labels)
 	return ev, nil
+}
+
+// normaliseLabels lowercases each label name (GitHub treats labels
+// case-insensitively — `Hotfix` and `hotfix` are the same label in
+// the UI), trims whitespace, drops empties, and dedupes preserving
+// first-seen order. Returns nil (not an empty slice) when nothing
+// survives so callers' `len(...) > 0` checks and JSON `omitempty`
+// both behave naturally.
+func normaliseLabels(in []prLabel) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, l := range in {
+		name := strings.ToLower(strings.TrimSpace(l.Name))
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // IsTriggerableAction returns true for the PR actions that SHOULD
