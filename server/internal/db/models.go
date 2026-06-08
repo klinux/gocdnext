@@ -162,6 +162,7 @@ type JobRun struct {
 	LogsArchiveUri      *string
 	LogsArchivedAt      pgtype.Timestamptz
 	Outputs             []byte
+	ApprovalQuorumLabel *string
 }
 
 type JobRunApproval struct {

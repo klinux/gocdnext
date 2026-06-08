@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -161,6 +162,14 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 
 	result := RunCreated{RunID: fromPgUUID(runRow.ID), Counter: runRow.Counter}
 
+	// pendingAuditEmits is filled inside the gate-materialisation
+	// loop and drained AFTER tx.Commit. Audit must not couple the
+	// tx to the audit_events table's availability — best-effort is
+	// the package contract. Only quorum overrides (not unchanged
+	// gates) push entries, keeping audit noise proportional to
+	// actual policy events.
+	var pendingAuditEmits []AuditEmit
+
 	stageIDByName := make(map[string]uuid.UUID, len(def.Stages))
 	for i, name := range def.Stages {
 		row, err := q.InsertStageRun(ctx, db.InsertStageRunParams{
@@ -227,9 +236,9 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				// the job's quorum_by_label. The label disparadora
 				// is persisted alongside approval_required so the
 				// UI + audit can explain WHY this gate is at the
-				// effective quorum (commit 4 surfaces it). Returns
-				// (baseRequired, "") when no override fires — the
-				// strict default, matching the pre-feature shape.
+				// effective quorum. Returns (baseRequired, "") when
+				// no override fires — the strict default, matching
+				// the pre-feature shape.
 				effectiveRequired, overrideLabel := resolveEffectiveQuorum(
 					in.Cause, in.CauseDetail, required, job.Approval.QuorumByLabel)
 				var quorumLabel any
@@ -250,6 +259,29 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				`, row.ID, approvers, approverGroups, effectiveRequired,
 					job.Approval.Description, quorumLabel); err != nil {
 					return RunCreated{}, fmt.Errorf("store: mark approval gate %s: %w", job.Name, err)
+				}
+				// Queue an audit event for AFTER the tx commits. Audit
+				// inside the tx would couple the run creation to the
+				// audit table's availability; queueing keeps audit
+				// best-effort (the only acceptable shape per the
+				// audit package contract). Stamp only when an
+				// override actually fired — quorum-unchanged gates
+				// don't deserve audit noise.
+				if overrideLabel != "" {
+					pendingAuditEmits = append(pendingAuditEmits, AuditEmit{
+						Action:     AuditActionApprovalQuorumOverride,
+						TargetType: "job_run",
+						TargetID:   fromPgUUID(row.ID).String(),
+						Metadata: map[string]any{
+							"run_id":             result.RunID.String(),
+							"job_name":           job.Name,
+							"matrix_key":         key,
+							"base_required":      required,
+							"effective_required": effectiveRequired,
+							"label":              overrideLabel,
+							"cause":              in.Cause,
+						},
+					})
 				}
 			}
 			result.JobRuns = append(result.JobRuns, JobRunRef{
@@ -294,6 +326,17 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 
 	if err := tx.Commit(ctx); err != nil {
 		return RunCreated{}, fmt.Errorf("store: create run: commit: %w", err)
+	}
+
+	// Drain queued audit events post-commit. A failure here logs
+	// but does not break the caller — the run already exists, and
+	// losing a single audit row is preferable to surfacing audit
+	// outage as a run-creation failure.
+	for _, emit := range pendingAuditEmits {
+		if _, err := s.EmitAuditEvent(ctx, emit); err != nil {
+			slog.Warn("store: audit emit failed (quorum override)",
+				"err", err, "target_id", emit.TargetID, "action", emit.Action)
+		}
 	}
 	return result, nil
 }

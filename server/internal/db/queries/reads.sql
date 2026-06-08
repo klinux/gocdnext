@@ -218,7 +218,8 @@ ORDER BY ordinal;
 -- name: ListJobRunsByRunFull :many
 SELECT id, stage_run_id, name, matrix_key, image,
        status, exit_code, error, started_at, finished_at, agent_id,
-       approval_gate, approvers, approval_description,
+       approval_gate, approvers, approval_description, approval_required,
+       approval_quorum_label,
        awaiting_since, decided_by, decided_at, decision
 FROM job_runs
 WHERE run_id = $1

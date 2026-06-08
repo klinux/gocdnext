@@ -317,7 +317,8 @@ func (q *Queries) LatestRunPerPipelineByProjectSlug(ctx context.Context, slug st
 const listJobRunsByRunFull = `-- name: ListJobRunsByRunFull :many
 SELECT id, stage_run_id, name, matrix_key, image,
        status, exit_code, error, started_at, finished_at, agent_id,
-       approval_gate, approvers, approval_description,
+       approval_gate, approvers, approval_description, approval_required,
+       approval_quorum_label,
        awaiting_since, decided_by, decided_at, decision
 FROM job_runs
 WHERE run_id = $1
@@ -339,6 +340,8 @@ type ListJobRunsByRunFullRow struct {
 	ApprovalGate        bool
 	Approvers           []string
 	ApprovalDescription *string
+	ApprovalRequired    int32
+	ApprovalQuorumLabel *string
 	AwaitingSince       pgtype.Timestamptz
 	DecidedBy           *string
 	DecidedAt           pgtype.Timestamptz
@@ -369,6 +372,8 @@ func (q *Queries) ListJobRunsByRunFull(ctx context.Context, runID pgtype.UUID) (
 			&i.ApprovalGate,
 			&i.Approvers,
 			&i.ApprovalDescription,
+			&i.ApprovalRequired,
+			&i.ApprovalQuorumLabel,
 			&i.AwaitingSince,
 			&i.DecidedBy,
 			&i.DecidedAt,
