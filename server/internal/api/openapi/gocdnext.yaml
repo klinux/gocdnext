@@ -1397,7 +1397,9 @@ components:
             `tolerations`). Always present on read — empty array
             means no tolerations beyond what the agent ships with.
             Tolerations are APPENDED to the agent-level list
-            (concat; kubelet ignores duplicates).
+            (concat; kubelet ignores duplicates). On read, each
+            entry's `operator` is always the explicit value
+            (empty input is normalised to `Equal` at write time).
         env:
           type: object
           additionalProperties: { type: string }
@@ -1476,15 +1478,15 @@ components:
         tolerations:
           type: array
           items:
-            $ref: '#/components/schemas/Toleration'
+            $ref: '#/components/schemas/TolerationWrite'
           description: |
             Tolerations applied to job pods. Each entry validated:
-            operator ∈ {Equal, Exists}; empty operator normalises
-            to Equal in the stored value. Effect ∈ {"",
-            NoSchedule, PreferNoSchedule, NoExecute}.
-            operator=Exists with non-empty value is rejected.
-            toleration_seconds must be ≥ 0 and only allowed with
-            effect=NoExecute. Full-replace on update.
+            operator ∈ {Equal, Exists} OR omitted (server
+            normalises empty → Equal in the stored value).
+            Effect ∈ {"", NoSchedule, PreferNoSchedule,
+            NoExecute}. operator=Exists with non-empty value is
+            rejected. toleration_seconds must be ≥ 0 and only
+            allowed with effect=NoExecute. Full-replace on update.
         env:
           type: object
           additionalProperties: { type: string }
@@ -1514,10 +1516,13 @@ components:
     Toleration:
       type: object
       description: |
-        Mirrors `corev1.Toleration` with concrete strings so the
-        schema is API-stable and decoupled from k8s versions.
-        On read, `operator` is always the explicit value (empty
-        input normalises to `Equal` at write time).
+        Read-side shape returned by `GET /admin/runner-profiles`.
+        `operator` is always the explicit value — the server
+        normalises empty input to `Equal` at write time, so this
+        read schema never carries the empty form. Mirrors
+        `corev1.Toleration` with concrete strings; API-stable
+        and decoupled from k8s versions.
+      required: [operator]
       properties:
         key:
           type: string
@@ -1525,22 +1530,22 @@ components:
             Taint key the toleration matches. May be empty ONLY
             when `operator: Exists` (the kubelet "tolerate
             everything" pattern); empty key with operator=Equal is
-            rejected as meaningless.
+            rejected at write time.
           example: "ci-only"
         operator:
           type: string
           enum: [Equal, Exists]
           description: |
-            `Equal` (default) requires Value to match the taint
-            value; `Exists` matches any value (and forbids a
-            non-empty Value). Empty on input normalises to
-            `Equal`; reads always carry the explicit form.
+            `Equal` matches when Value equals the taint value;
+            `Exists` matches any value (and requires Value
+            empty).
         value:
           type: string
           description: |
-            Taint value the toleration matches. Required for
-            `operator: Equal`; must be empty for `operator:
-            Exists`.
+            Taint value the toleration matches. With
+            `operator: Equal` this may be any string — including
+            empty (matches a taint with empty value: rare but
+            legal). With `operator: Exists` this MUST be empty.
           example: "true"
         effect:
           type: string
@@ -1558,6 +1563,47 @@ components:
             (k8s silently ignores it, but silent surprises age
             badly). `null` means tolerate forever.
           example: 60
+
+    TolerationWrite:
+      type: object
+      description: |
+        Write-side shape accepted by `POST`/`PUT
+        /admin/runner-profiles`. Permissive `operator` (empty
+        accepted and normalised to `Equal` server-side); every
+        other invariant matches the read-side `Toleration`
+        schema. Operators authoring a values.yaml or a UI form
+        can omit `operator` for the common Equal case without
+        the codegen client rejecting the body.
+      properties:
+        key:
+          type: string
+          description: |
+            Taint key. Required unless `operator: Exists`
+            (kubelet "tolerate everything" pattern).
+          example: "ci-only"
+        operator:
+          type: string
+          enum: ["", Equal, Exists]
+          description: |
+            Omit (or send empty) to default to `Equal`. Any
+            other input rejected with HTTP 400.
+        value:
+          type: string
+          description: |
+            Taint value. Optional for `operator: Equal` (matches
+            a taint with empty value when omitted). Must be
+            empty for `operator: Exists`.
+          example: "true"
+        effect:
+          type: string
+          enum: ["", NoSchedule, PreferNoSchedule, NoExecute]
+        toleration_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Only allowed with `effect: NoExecute`. Server
+            rejects with 400 otherwise.
 
     StorageConfig:
       type: object
