@@ -33,14 +33,35 @@ func mergeNodeSelector(agent, profile map[string]string) map[string]string {
 // including a *int64) outweighs the benefit of saving the bytes.
 // Returns nil when both inputs are empty.
 //
-// Inputs are not mutated; the result is a fresh slice independent of
-// either input so future mutations don't leak across pods.
+// Each Toleration is DEEP-COPIED via cloneToleration: a naive
+// `append(out, in...)` would copy the struct but alias the
+// `*TolerationSeconds` pointer, so a later mutation on either side
+// would back-propagate. cloneToleration copies the int64 into a
+// fresh pointer so the result is truly independent of both inputs.
 func concatTolerations(agent, profile []corev1.Toleration) []corev1.Toleration {
 	if len(agent) == 0 && len(profile) == 0 {
 		return nil
 	}
 	out := make([]corev1.Toleration, 0, len(agent)+len(profile))
-	out = append(out, agent...)
-	out = append(out, profile...)
+	for _, t := range agent {
+		out = append(out, cloneToleration(t))
+	}
+	for _, t := range profile {
+		out = append(out, cloneToleration(t))
+	}
+	return out
+}
+
+// cloneToleration returns a fully-independent copy of t. The struct
+// fields are scalars (strings + typed enums) which the struct
+// assignment already copies, but TolerationSeconds is a `*int64`
+// shared by default. Allocate a fresh int64 + new pointer when
+// non-nil so mutating either side after the clone can't leak.
+func cloneToleration(t corev1.Toleration) corev1.Toleration {
+	out := t
+	if t.TolerationSeconds != nil {
+		v := *t.TolerationSeconds
+		out.TolerationSeconds = &v
+	}
 	return out
 }
