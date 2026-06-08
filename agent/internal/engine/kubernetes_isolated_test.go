@@ -264,6 +264,53 @@ func TestBuildIsolatedJobPodSpec_OutputsEnvInjected(t *testing.T) {
 	}
 }
 
+func TestBuildIsolatedJobPodSpec_MergesNodeSelectorWithProfileWinning(t *testing.T) {
+	// Same merge contract as shared mode: profile wins on key
+	// collision, agent-only keys survive. Defends the isolated path
+	// against drift where shared-mode tests would have caught the
+	// shared engine but a regression in BuildIsolatedJobPodSpec
+	// wouldn't be visible.
+	k := newIsolatedTestEngine(t)
+	k.cfg.NodeSelector = map[string]string{"tier": "ci", "pool": "ci"}
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r", JobID: "j",
+		Image:                "alpine:3.19", Script: "true",
+		WorkDir:              "/workspace",
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+		NodeSelector:         map[string]string{"pool": "gradle"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if pod.Spec.NodeSelector["tier"] != "ci" || pod.Spec.NodeSelector["pool"] != "gradle" {
+		t.Errorf("merge wrong: %v", pod.Spec.NodeSelector)
+	}
+}
+
+func TestBuildIsolatedJobPodSpec_ConcatsTolerations(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	k.cfg.Tolerations = []corev1.Toleration{
+		{Key: "node.kubernetes.io/unschedulable", Operator: corev1.TolerationOpExists},
+	}
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r", JobID: "j",
+		Image:                "alpine:3.19", Script: "true",
+		WorkDir:              "/workspace",
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+		Tolerations: []corev1.Toleration{
+			{Key: "spot", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(pod.Spec.Tolerations) != 2 ||
+		pod.Spec.Tolerations[0].Key != "node.kubernetes.io/unschedulable" ||
+		pod.Spec.Tolerations[1].Key != "spot" {
+		t.Errorf("concat wrong: %v", pod.Spec.Tolerations)
+	}
+}
+
 func TestBuildIsolatedJobPodSpec_OutputsEnv_AnchoredAtWorkDir_NotMountRoot(t *testing.T) {
 	// Regression: when the first checkout has target_dir, the
 	// agent passes spec.WorkDir = mountPath + "/" + target_dir.

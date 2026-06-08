@@ -74,6 +74,16 @@ type IsolatedJobSpec struct {
 	// at workspace materialisation time, otherwise the plugin
 	// writes one place and post-task exec reads another.
 	OutputsRelPath string
+
+	// NodeSelector + Tolerations carry scheduling hints resolved
+	// from the runner profile. Merged with agent-level config
+	// inside BuildIsolatedJobPodSpec: NodeSelector uses
+	// profile-wins on key collisions (profile is more specific
+	// than agent default), Tolerations are concatenated (no
+	// dedup; kubelet ignores exact duplicates). Empty/nil = use
+	// agent-level only.
+	NodeSelector map[string]string
+	Tolerations  []corev1.Toleration
 }
 
 // BuildIsolatedJobPodSpec materialises the multi-container Pod for
@@ -319,7 +329,8 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:    corev1.RestartPolicyNever,
-			NodeSelector:     k.cfg.NodeSelector,
+			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
+			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			ImagePullSecrets: pullSecrets,
 			Volumes:          []corev1.Volume{workspaceVolume, assignmentVolume},
 			InitContainers:   []corev1.Container{prepContainer},

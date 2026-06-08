@@ -14,7 +14,11 @@
 // script and emit lines as you see them".
 package engine
 
-import "context"
+import (
+	"context"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 // ScriptSpec is the contract: a pre-materialised workspace, an
 // optional image (engines that don't containerise ignore this), env
@@ -82,6 +86,16 @@ type ScriptSpec struct {
 	// engines that run on the host use OutputsHostPath directly.
 	// Empty when OutputsHostPath is empty.
 	OutputsRelPath string
+
+	// NodeSelector + Tolerations carry scheduling hints resolved
+	// from the runner profile (commit 4704841). The Kubernetes
+	// engine MERGES NodeSelector with its agent-level config
+	// (profile values WIN on key collisions — profile is more
+	// specific than agent default) and CONCATENATES Tolerations
+	// (no dedup; kubelet ignores exact duplicates). Other engines
+	// ignore both. Empty/nil = use agent-level only.
+	NodeSelector map[string]string
+	Tolerations  []corev1.Toleration
 }
 
 // OutputsEnvName is the env variable the plugin / script reads to
