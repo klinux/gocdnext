@@ -100,7 +100,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		return
 	}
 
-	causeDetail, _ := json.Marshal(map[string]any{
+	detail := map[string]any{
 		"pr_number":   ev.Number,
 		"pr_title":    ev.Title,
 		"pr_author":   ev.Author,
@@ -109,7 +109,16 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		"pr_head_sha": ev.HeadSHA,
 		"pr_base_ref": ev.BaseRef,
 		"pr_action":   ev.Action,
-	})
+	}
+	// pr_labels: only stamped when the PR actually has labels, so
+	// runs from label-less PRs don't bloat cause_detail with a
+	// `"pr_labels": []` field. Downstream consumers
+	// (civars CI_PULL_REQUEST_LABELS + quorum_by_label resolver)
+	// treat missing-key and empty-list the same way.
+	if len(ev.Labels) > 0 {
+		detail["pr_labels"] = ev.Labels
+	}
+	causeDetail, _ := json.Marshal(detail)
 	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
 		Materials:   materials,
 		Revision:    ev.HeadSHA,

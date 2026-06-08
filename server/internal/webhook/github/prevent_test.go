@@ -35,6 +35,41 @@ func TestParsePullRequestEvent_Opened(t *testing.T) {
 	if ev.Repository.CloneURL != "https://github.com/org/demo.git" {
 		t.Errorf("clone url = %q", ev.Repository.CloneURL)
 	}
+	// Labels: GitHub case-insensitive `Hotfix` and `hotfix` collapse
+	// to one lowercased entry; `needs-review` stays distinct. Order
+	// preserved minus duplicates. Downstream YAML
+	// (`quorum_by_label`) matches against the lowercased value.
+	wantLabels := []string{"hotfix", "needs-review"}
+	if len(ev.Labels) != len(wantLabels) {
+		t.Fatalf("labels = %v, want %v", ev.Labels, wantLabels)
+	}
+	for i, want := range wantLabels {
+		if ev.Labels[i] != want {
+			t.Errorf("labels[%d] = %q, want %q", i, ev.Labels[i], want)
+		}
+	}
+}
+
+func TestParsePullRequestEvent_EmptyLabels(t *testing.T) {
+	// PR with no labels — Labels stays nil, not a length-0
+	// non-nil slice, so downstream nil-checks (`if len() > 0`) +
+	// JSON marshalling (`omitempty`) both behave.
+	body := []byte(`{
+		"action":"opened","number":1,
+		"pull_request":{
+			"html_url":"x","title":"t","updated_at":"2026-01-01T00:00:00Z",
+			"head":{"ref":"f","sha":"abc"},
+			"base":{"ref":"main","sha":"def"}
+		},
+		"repository":{"clone_url":"https://github.com/org/x.git","full_name":"org/x"}
+	}`)
+	ev, err := github.ParsePullRequestEvent(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if ev.Labels != nil {
+		t.Errorf("Labels = %v, want nil for PR without labels", ev.Labels)
+	}
 }
 
 func TestParsePullRequestEvent_TriggerableActions(t *testing.T) {

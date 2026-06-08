@@ -115,6 +115,24 @@ func TestGitHubWebhook_PROpened_TriggersRun(t *testing.T) {
 	if detail["pr_author"] != "kleber" {
 		t.Errorf("pr_author = %v", detail["pr_author"])
 	}
+	// pr_labels persists the lowercased + deduped label list so
+	// downstream (CI_PULL_REQUEST_LABELS + quorum_by_label) can
+	// read it from cause_detail without re-parsing the webhook
+	// body. The fixture has [hotfix, needs-review, Hotfix] →
+	// normalised [hotfix, needs-review].
+	rawLabels, ok := detail["pr_labels"].([]any)
+	if !ok {
+		t.Fatalf("pr_labels missing or wrong type: %T (%v)", detail["pr_labels"], detail["pr_labels"])
+	}
+	want := []string{"hotfix", "needs-review"}
+	if len(rawLabels) != len(want) {
+		t.Fatalf("pr_labels = %v, want %v", rawLabels, want)
+	}
+	for i, w := range want {
+		if rawLabels[i] != w {
+			t.Errorf("pr_labels[%d] = %v, want %q", i, rawLabels[i], w)
+		}
+	}
 }
 
 func TestGitHubWebhook_PRWhenMaterialDoesNotOptIn(t *testing.T) {

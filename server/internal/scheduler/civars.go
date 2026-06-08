@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -116,12 +117,13 @@ func addTagVars(out map[string]string, cause string, detail []byte) {
 // surface uses are decoded; unknown fields are ignored so adding new
 // keys to the webhook handler doesn't require touching the scheduler.
 type pullRequestDetail struct {
-	Number  int    `json:"pr_number"`
-	Title   string `json:"pr_title"`
-	Author  string `json:"pr_author"`
-	URL     string `json:"pr_url"`
-	HeadRef string `json:"pr_head_ref"`
-	BaseRef string `json:"pr_base_ref"`
+	Number  int      `json:"pr_number"`
+	Title   string   `json:"pr_title"`
+	Author  string   `json:"pr_author"`
+	URL     string   `json:"pr_url"`
+	HeadRef string   `json:"pr_head_ref"`
+	BaseRef string   `json:"pr_base_ref"`
+	Labels  []string `json:"pr_labels"`
 }
 
 // addPullRequestVars materialises CI_PULL_REQUEST_* into out IF AND
@@ -161,6 +163,16 @@ func addPullRequestVars(out map[string]string, cause string, detail []byte) {
 	}
 	if pr.URL != "" {
 		out["CI_PULL_REQUEST_URL"] = pr.URL
+	}
+	// CI_PULL_REQUEST_LABELS is a CSV — same convention every other
+	// CI uses for list-shaped env vars. Empty list stays unset so
+	// `${CI_PULL_REQUEST_LABELS}` reads as literal (rather than
+	// empty string) on a PR with no labels. The structured form
+	// also stays available in cause_detail.pr_labels for the
+	// approval-quorum resolver which needs O(1) lookup by label,
+	// not a comma-split.
+	if len(pr.Labels) > 0 {
+		out["CI_PULL_REQUEST_LABELS"] = strings.Join(pr.Labels, ",")
 	}
 }
 

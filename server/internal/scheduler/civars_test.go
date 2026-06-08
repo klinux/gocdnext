@@ -168,7 +168,8 @@ func TestBuildCIVars(t *testing.T) {
 					"pr_url":      "https://github.com/org/repo/pull/1234",
 					"pr_head_ref": "feature/foo",
 					"pr_base_ref": "main",
-					"pr_action":   "opened"
+					"pr_action":   "opened",
+					"pr_labels":   ["hotfix", "needs-review"]
 				}`),
 			},
 			jobName: "ai-review",
@@ -189,6 +190,11 @@ func TestBuildCIVars(t *testing.T) {
 				"CI_PULL_REQUEST_TITLE":  "feat: add ai-review plugin",
 				"CI_PULL_REQUEST_AUTHOR": "alice@example.com",
 				"CI_PULL_REQUEST_URL":    "https://github.com/org/repo/pull/1234",
+				// CSV preserves cause_detail order; downstream uses
+				// it for substitution (and the quorum_by_label
+				// resolver consults the structured cause_detail
+				// directly, not this env var).
+				"CI_PULL_REQUEST_LABELS": "hotfix,needs-review",
 			},
 		},
 		{
