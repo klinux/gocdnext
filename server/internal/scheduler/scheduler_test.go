@@ -448,6 +448,18 @@ func TestBuildAssignment_PropagatesProfileNodeSelectorAndTolerations(t *testing.
 		t.Errorf("Tolerations[1].TolerationSeconds = %d, want 60",
 			got.Tolerations[1].GetTolerationSeconds())
 	}
+
+	// Aliasing guard: mutating the input slice's TolerationSeconds
+	// pointer after BuildAssignment returned MUST NOT change the
+	// wire object. tolerationsToProto copies the value into a fresh
+	// *int64 — without that, a future caller cache that reuses the
+	// slice across dispatches could mutate already-shipped
+	// assignments.
+	tolerSeconds = 999
+	if got.Tolerations[1].GetTolerationSeconds() != 60 {
+		t.Errorf("Tolerations[1] aliased the input pointer; mutation leaked: got %d",
+			got.Tolerations[1].GetTolerationSeconds())
+	}
 }
 
 func TestBuildAssignment_EmptyProfileLeavesSchedulingFieldsNil(t *testing.T) {
