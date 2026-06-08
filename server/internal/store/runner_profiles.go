@@ -168,6 +168,9 @@ func (s *Store) GetRunnerProfileByName(ctx context.Context, name string) (Runner
 // non-empty, cipher must be non-nil — each value is sealed before
 // hitting the column. Plaintext values never reach the DB.
 func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, in RunnerProfileInput) (RunnerProfile, error) {
+	if err := applySchedulingValidation(&in); err != nil {
+		return RunnerProfile{}, err
+	}
 	cfg, err := encodeProfileConfig(in.Config)
 	if err != nil {
 		return RunnerProfile{}, err
@@ -224,6 +227,9 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 // that aren't present in the existing row are dropped — preserving
 // a non-existent key is meaningless.
 func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, id uuid.UUID, in RunnerProfileInput) error {
+	if err := applySchedulingValidation(&in); err != nil {
+		return err
+	}
 	if hasPreserveSentinel(in.Secrets) {
 		row, err := s.q.GetRunnerProfile(ctx, toPgUUID(id))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -304,6 +310,9 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 // full-replace UpdateRunnerProfile so a UI edit can clear secrets
 // when the operator wants.
 func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, in RunnerProfileInput) error {
+	if err := applySchedulingValidation(&in); err != nil {
+		return err
+	}
 	cfg, err := encodeProfileConfig(in.Config)
 	if err != nil {
 		return err

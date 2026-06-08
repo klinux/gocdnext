@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -335,11 +334,16 @@ func decodeRunnerProfileWrite(w http.ResponseWriter, r *http.Request) (runnerPro
 			return req, false
 		}
 	}
-	if err := validateNodeSelector(req.NodeSelector); err != nil {
+	// Early validation here gives the operator a fixable 400 with a
+	// readable message before any DB work. The store also revalidates
+	// at Insert/Update time so seed-loaded profiles + any future
+	// caller flow through the same gate (defence in depth: nobody
+	// can bypass by forgetting to call the validator).
+	if err := store.ValidateNodeSelector(req.NodeSelector); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return req, false
 	}
-	normalised, err := validateAndNormaliseTolerations(req.Tolerations)
+	normalised, err := store.ValidateAndNormaliseTolerations(req.Tolerations)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return req, false
@@ -461,108 +465,8 @@ func validEnvKey(k string) bool {
 	return true
 }
 
-// validateNodeSelector validates each (key, value) pair against the
-// SAME rules the k8s apiserver enforces at pod admission. Delegating
-// to `k8svalidation.IsQualifiedName` + `IsValidLabelValue` (instead of
-// re-implementing the regex) means a profile rejected here would also
-// be rejected at pod admission time — no shape can sneak past the
-// write-time gate and then fail at dispatch hours later.
-//
-// IsQualifiedName covers the apiserver's full key syntax:
-//   - Optional DNS1123 subdomain prefix (1-253 chars, lowercase,
-//     starts/ends alphanumeric, no `..`, no `.-` / `-.` transitions).
-//   - Name segment after `/`: 1-63 chars, alphanumeric/-/_/., starts
-//     and ends alphanumeric.
-//
-// IsValidLabelValue accepts empty OR 1-63 chars of the same name-
-// segment shape.
-func validateNodeSelector(ns map[string]string) error {
-	for k, v := range ns {
-		if errs := k8svalidation.IsQualifiedName(k); len(errs) > 0 {
-			return fmt.Errorf("node_selector key %q: %s", k, strings.Join(errs, "; "))
-		}
-		if errs := k8svalidation.IsValidLabelValue(v); len(errs) > 0 {
-			return fmt.Errorf("node_selector[%q]: %s", k, strings.Join(errs, "; "))
-		}
-	}
-	return nil
-}
-
-// validTolerationOperator: accepted operators. Empty normalises to
-// `Equal` downstream (matches k8s convention — see normalize…).
-var validTolerationOperator = map[string]struct{}{
-	"":       {},
-	"Equal":  {},
-	"Exists": {},
-}
-
-// validTolerationEffect: empty (matches all effects) or one of the
-// three k8s-defined effects. Anything else is rejected.
-var validTolerationEffect = map[string]struct{}{
-	"":                 {},
-	"NoSchedule":       {},
-	"PreferNoSchedule": {},
-	"NoExecute":        {},
-}
-
-// validateAndNormaliseTolerations enforces the apiserver-level
-// invariants the platform team would otherwise see surface as a
-// CreatePod 422 hours later:
-//
-//   - Operator ∈ {Equal, Exists}; empty normalises to Equal.
-//   - Effect ∈ {"", NoSchedule, PreferNoSchedule, NoExecute}.
-//   - Operator=Exists with a non-empty Value is rejected (k8s spec
-//     requires Value empty when Operator=Exists).
-//   - Operator=Equal with empty Value is allowed (matches a taint
-//     with empty value — rare but legal).
-//   - TolerationSeconds must be ≥ 0 when set.
-//   - TolerationSeconds only meaningful when Effect=NoExecute;
-//     setting it otherwise is rejected (k8s silently ignores, but
-//     silent surprises are worse than a clear 400).
-//
-// Returns the normalised list (operator filled when blank). The
-// caller persists the normalised value so downstream consumers
-// (engine, audit, UI) see the explicit form, not the implicit one.
-func validateAndNormaliseTolerations(in []store.Toleration) ([]store.Toleration, error) {
-	if len(in) == 0 {
-		return in, nil
-	}
-	out := make([]store.Toleration, len(in))
-	for i, t := range in {
-		if _, ok := validTolerationOperator[t.Operator]; !ok {
-			return nil, fmt.Errorf("tolerations[%d].operator %q: must be Equal or Exists", i, t.Operator)
-		}
-		if _, ok := validTolerationEffect[t.Effect]; !ok {
-			return nil, fmt.Errorf("tolerations[%d].effect %q: must be \"\", NoSchedule, PreferNoSchedule, or NoExecute", i, t.Effect)
-		}
-		// Normalise empty operator → Equal (k8s convention; spelling
-		// the implicit default explicitly keeps the audit + downstream
-		// consumers honest).
-		if t.Operator == "" {
-			t.Operator = "Equal"
-		}
-		if t.Operator == "Exists" && t.Value != "" {
-			return nil, fmt.Errorf("tolerations[%d]: operator=Exists requires empty value (got %q)", i, t.Value)
-		}
-		// node-affinity-ish guard: key is mandatory unless operator
-		// is Exists matching ALL taints (which itself requires an
-		// empty key). k8s allows empty Key + Exists, but anything
-		// else with empty Key is meaningless. We accept any key
-		// charset here — kubelet validation is broader than node
-		// selector keys — but require non-empty unless the
-		// Exists-everything pattern.
-		if t.Key == "" && t.Operator != "Exists" {
-			return nil, fmt.Errorf("tolerations[%d]: key required unless operator=Exists", i)
-		}
-		if t.TolerationSeconds != nil {
-			if *t.TolerationSeconds < 0 {
-				return nil, fmt.Errorf("tolerations[%d].toleration_seconds: must be ≥ 0 (got %d)", i, *t.TolerationSeconds)
-			}
-			if t.Effect != "NoExecute" {
-				return nil, fmt.Errorf("tolerations[%d]: toleration_seconds only valid with effect=NoExecute (got %q)", i, t.Effect)
-			}
-		}
-		out[i] = t
-	}
-	return out, nil
-}
+// Scheduling validation (node_selector + tolerations) moved to
+// internal/store/scheduling_validation.go so the seed loader and
+// any future Insert/Update caller share the same gate. Handler
+// calls store.ValidateNodeSelector + store.ValidateAndNormalise
+// Tolerations directly (see decodeRunnerProfileWrite).

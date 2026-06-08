@@ -143,6 +143,103 @@ profiles:
 	}
 }
 
+func TestSeedRunnerProfilesFromFile_NormalisesTolerationOperator(t *testing.T) {
+	// Regression: the seed loader used to bypass the validation/
+	// normalisation the admin handler ran, so a YAML omitting
+	// `operator` would persist with operator="" and reads against
+	// /admin/runner-profiles would return a shape the OpenAPI's
+	// strict-read Toleration schema (enum [Equal, Exists]) does
+	// not allow. After moving the gate into the store, both paths
+	// share the same normaliser — omitted operator → Equal.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profiles.yaml")
+	if err := os.WriteFile(path, []byte(`
+profiles:
+  - name: gradle-pool
+    engine: kubernetes
+    tolerations:
+      - key: ci-only
+        value: "true"
+        effect: NoSchedule
+`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := s.SeedRunnerProfilesFromFile(ctx, path); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := s.GetRunnerProfileByName(ctx, "gradle-pool")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(got.Tolerations) != 1 || got.Tolerations[0].Operator != "Equal" {
+		t.Errorf("operator not normalised: %+v", got.Tolerations)
+	}
+}
+
+func TestSeedRunnerProfilesFromFile_RejectsBadNodeSelector(t *testing.T) {
+	// DNS1123 subdomain gap fixed in the admin handler must also
+	// fire at boot for the seed loader. `a..b/name` would have
+	// slipped past the previous hand-rolled regex; with the gate
+	// in the store, both surfaces reject identically.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profiles.yaml")
+	if err := os.WriteFile(path, []byte(`
+profiles:
+  - name: bad-selector
+    engine: kubernetes
+    node_selector:
+      "a..b/name": "v"
+`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := s.SeedRunnerProfilesFromFile(ctx, path)
+	if err == nil {
+		t.Fatal("expected seed to fail on invalid node_selector key")
+	}
+	if !contains(err.Error(), "node_selector key") {
+		t.Errorf("error %q missing hint about node_selector key", err.Error())
+	}
+}
+
+func TestSeedRunnerProfilesFromFile_RejectsExistsWithValue(t *testing.T) {
+	// Tolerations spec: operator=Exists requires Value empty.
+	// Seed must reject loud at startup — same rule the admin
+	// handler enforces with HTTP 400.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profiles.yaml")
+	if err := os.WriteFile(path, []byte(`
+profiles:
+  - name: bad-toleration
+    engine: kubernetes
+    tolerations:
+      - key: spot
+        operator: Exists
+        value: yes
+        effect: NoExecute
+`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := s.SeedRunnerProfilesFromFile(ctx, path)
+	if err == nil {
+		t.Fatal("expected seed to fail on Exists with non-empty value")
+	}
+	if !contains(err.Error(), "Exists requires empty value") {
+		t.Errorf("error %q missing hint about Exists+value", err.Error())
+	}
+}
+
 func TestSeedRunnerProfilesFromFile_EmptyPathIsNoop(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
