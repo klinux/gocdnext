@@ -203,7 +203,15 @@ export type JobDetail = {
   // regular jobs so they stay absent on the wire.
   approval_gate?: boolean;
   approvers?: string[];
+  approval_required?: number;
   approval_description?: string;
+  // approval_quorum_label names the PR label whose
+  // quorum_by_label override fired when this gate was
+  // materialised. Omitted entirely when no override fired
+  // (regular gate, push-cause run, or PR with non-matching
+  // labels) so the UI can render a discreet badge only on the
+  // actual policy events.
+  approval_quorum_label?: string;
   awaiting_since?: string;
   decided_by?: string;
   decided_at?: string;

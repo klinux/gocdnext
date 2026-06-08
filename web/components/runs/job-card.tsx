@@ -15,6 +15,7 @@ import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { LogViewer } from "@/components/runs/log-viewer";
 import { ApprovalButtons } from "@/components/runs/approval-buttons.client";
+import { Badge } from "@/components/ui/badge";
 import type { JobDetail } from "@/types/api";
 
 // Server-side mirror: `_notify_<idx>`. Kept as a prefix rather
@@ -124,7 +125,7 @@ export function JobCard({ job, runID }: Props) {
 
       {awaiting ? (
         <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Gavel className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
             <span className="font-medium text-amber-700 dark:text-amber-300">
               Awaiting approval
@@ -134,6 +135,23 @@ export function JobCard({ job, runID }: Props) {
                 · waiting since{" "}
                 <RelativeTime at={job.awaiting_since} fallback="—" />
               </span>
+            ) : null}
+            {/* PR-label-driven quorum: render a discreet badge ONLY
+                when an override actually fired. Native `title` keeps
+                the explanation off the visual surface but accessible
+                on hover. The full audit lives in the admin audit log. */}
+            {job.approval_quorum_label ? (
+              <Badge
+                variant="outline"
+                className="border-amber-500/40 text-amber-700 dark:text-amber-300"
+                title={
+                  typeof job.approval_required === "number"
+                    ? `Quorum overridden to ${job.approval_required} by PR label "${job.approval_quorum_label}"`
+                    : `Quorum overridden by PR label "${job.approval_quorum_label}"`
+                }
+              >
+                label {job.approval_quorum_label}
+              </Badge>
             ) : null}
           </div>
           {job.approval_description ? (
