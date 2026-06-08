@@ -428,15 +428,14 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
           side="right"
           className={cn(
             "overflow-y-auto",
-            // Wider sheet so the env/secret editors AND the new
-            // scheduling editors (multi-column toleration rows) get
-            // room to breathe. 50vw on large screens — half the
-            // viewport — covers the toleration's 4-control grid +
-            // toleration_seconds row without horizontal scrolling
-            // on a standard 1440-px laptop. min-width keeps the
-            // narrow-viewport case from collapsing the row layout.
-            "data-[side=right]:w-[50vw] data-[side=right]:sm:max-w-[50vw]",
-            "data-[side=right]:min-w-[28rem]",
+            // Responsive width: full viewport on mobile (so the
+            // toleration grid doesn't get clipped), 85vw on small
+            // tablets, 50vw on desktop. Caps `max-w` in lockstep so
+            // an ultra-wide display doesn't leave a 1600-px sheet
+            // floating. Drops the `min-w-[28rem]` constraint that
+            // forced ~448px even on narrow screens.
+            "data-[side=right]:w-full data-[side=right]:sm:w-[85vw] data-[side=right]:lg:w-[50vw]",
+            "data-[side=right]:sm:max-w-[85vw] data-[side=right]:lg:max-w-[50vw]",
           )}
         >
           <SheetHeader>
