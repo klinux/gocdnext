@@ -322,18 +322,29 @@ func BuildAssignment(
 // + normalised at write time) to the proto wire shape. Returns nil
 // on empty input so the wire stays minimal — engines treat absent +
 // empty list identically.
+//
+// TolerationSeconds is COPIED into a fresh pointer rather than
+// aliased: BuildAssignment should produce a wire object independent
+// of the caller's input slice, so a later mutation of the store's
+// Toleration (e.g. a future cache that mutates in place) can't
+// retroactively change a JobAssignment already shipped to an agent.
 func tolerationsToProto(in []store.Toleration) []*gocdnextv1.Toleration {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]*gocdnextv1.Toleration, len(in))
 	for i, t := range in {
+		var seconds *int64
+		if t.TolerationSeconds != nil {
+			v := *t.TolerationSeconds
+			seconds = &v
+		}
 		out[i] = &gocdnextv1.Toleration{
 			Key:               t.Key,
 			Operator:          t.Operator,
 			Value:             t.Value,
 			Effect:            t.Effect,
-			TolerationSeconds: t.TolerationSeconds,
+			TolerationSeconds: seconds,
 		}
 	}
 	return out
