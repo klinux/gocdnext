@@ -85,3 +85,41 @@ func TestConcatTolerations_PreservesOrderAndIndependence(t *testing.T) {
 		t.Errorf("mutation leaked into agent: %v", agent)
 	}
 }
+
+func TestConcatTolerations_DeepCopiesTolerationSeconds(t *testing.T) {
+	// Regression: a naive `append(out, in...)` would copy the struct
+	// but alias the *TolerationSeconds pointer. cloneToleration must
+	// allocate a fresh *int64 so a later mutation on either side
+	// can't leak across.
+	seconds := int64(60)
+	agent := []corev1.Toleration{
+		{Key: "spot", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: &seconds},
+	}
+	got := concatTolerations(agent, nil)
+	if got[0].TolerationSeconds == nil || *got[0].TolerationSeconds != 60 {
+		t.Fatalf("seconds round-trip failed: %v", got[0].TolerationSeconds)
+	}
+
+	// Mutate the cloned int64; agent slice's pointer must stay at 60.
+	*got[0].TolerationSeconds = 999
+	if *agent[0].TolerationSeconds != 60 {
+		t.Errorf("TolerationSeconds aliased agent input; mutation leaked: %d",
+			*agent[0].TolerationSeconds)
+	}
+
+	// Same direction in reverse: mutating the original local var
+	// (which agent[0] points to) must not change the cloned copy.
+	seconds = 1234
+	if *got[0].TolerationSeconds != 999 {
+		t.Errorf("clone aliased the input var; got[0] now reads %d",
+			*got[0].TolerationSeconds)
+	}
+}
+
+func TestCloneToleration_NilTolerationSecondsStaysNil(t *testing.T) {
+	t1 := corev1.Toleration{Key: "k", Operator: corev1.TolerationOpEqual}
+	got := cloneToleration(t1)
+	if got.TolerationSeconds != nil {
+		t.Errorf("nil should stay nil, got %v", got.TolerationSeconds)
+	}
+}

@@ -255,6 +255,50 @@ func TestEnsureServices_CreatesPodPerServiceAndReturnsHostAliases(t *testing.T) 
 // `exec: "-c": executable file not found`. Container.Args is the
 // correct slot — it appends to the image's ENTRYPOINT, matching the
 // docker engine's `docker run postgres -c fsync=off` semantics.
+func TestEnsureServices_AppliesAgentNodeSelectorAndTolerations(t *testing.T) {
+	// Services share the agent-level scheduling baseline with task
+	// pods. Without this, a cluster with NoSchedule taints isolating
+	// CI would schedule the task pod but the service pod (postgres,
+	// redis, etc.) would land Pending — breaking pipelines that
+	// declare services with no obvious cause.
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		DefaultImage:   "alpine:3.19",
+		PollInterval:   2 * time.Millisecond,
+		StartupTimeout: time.Second,
+		NodeSelector:   map[string]string{"pool": "ci"},
+		Tolerations: []corev1.Toleration{
+			{Key: "node.kubernetes.io/unschedulable", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
+			{Key: "ci-only", Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule},
+		},
+	})
+
+	assignPodIPAsync(t, cli, "gocdnext-tests", "gocdnext-svc-runabcd123ab-postgres", "10.0.0.10", 5*time.Millisecond)
+
+	log := func(stream, text string) {}
+	if _, err := k.EnsureServices(context.Background(),
+		[]engine.ServiceSpec{{Name: "postgres", Image: "postgres:16"}},
+		"runabcd123ab", "jobabcd123456", log, nil); err != nil {
+		t.Fatalf("EnsureServices: %v", err)
+	}
+
+	pod, err := cli.CoreV1().Pods("gocdnext-tests").Get(
+		context.Background(), "gocdnext-svc-runabcd123ab-postgres", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get service pod: %v", err)
+	}
+	if pod.Spec.NodeSelector["pool"] != "ci" {
+		t.Errorf("service pod NodeSelector missing pool=ci: %+v", pod.Spec.NodeSelector)
+	}
+	if len(pod.Spec.Tolerations) != 2 {
+		t.Fatalf("service pod Tolerations len = %d, want 2; %+v",
+			len(pod.Spec.Tolerations), pod.Spec.Tolerations)
+	}
+	if pod.Spec.Tolerations[0].Key != "node.kubernetes.io/unschedulable" ||
+		pod.Spec.Tolerations[1].Key != "ci-only" {
+		t.Errorf("service pod Tolerations wrong: %+v", pod.Spec.Tolerations)
+	}
+}
+
 func TestEnsureServices_CommandLandsInArgsNotCommand(t *testing.T) {
 	k, cli := newFakeEngine(t, engine.KubernetesConfig{
 		DefaultImage:   "alpine:3.19",

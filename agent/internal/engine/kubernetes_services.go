@@ -294,8 +294,19 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID 
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy:    corev1.RestartPolicyNever,
-			NodeSelector:     k.cfg.NodeSelector,
+			RestartPolicy: corev1.RestartPolicyNever,
+			// Apply the SAME agent-level scheduling baseline as task
+			// pods. In a cluster with NoSchedule taints isolating CI,
+			// a service pod without these tolerations would land
+			// Pending even though the task pod on the same node
+			// schedules fine — pipelines with services break with
+			// no obvious cause. The mergeNodeSelector/concatTolerations
+			// helpers are used (not just the raw cfg values) so the
+			// service-pod path is symmetric with task-pod paths and a
+			// future refactor that introduces per-service overrides
+			// would have a single shared call site to extend.
+			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, nil),
+			Tolerations:      concatTolerations(k.cfg.Tolerations, nil),
 			ImagePullSecrets: pullSecrets,
 			Containers: []corev1.Container{{
 				Name:  "service",
