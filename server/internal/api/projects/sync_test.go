@@ -1,8 +1,11 @@
 package projects_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,7 +14,10 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
+	cryptopkg "github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
+	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
 // doSync POSTs /api/v1/projects/{slug}/sync via a chi router so
@@ -144,6 +150,111 @@ func TestSync_UnknownProject(t *testing.T) {
 	rr := doSync(t, h, "does-not-exist")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d", rr.Code)
+	}
+}
+
+// TestSync_RunsResolveProfiles is the regression for the v0.14.2
+// silent gap on the Sync path: clicking Sync in the UI re-fetched
+// .gocdnext/ and called ApplyProject directly, skipping
+// ResolveProfiles. Jobs declaring `agent.profile: default` were
+// persisted with their `resources` zeroed even when the `default`
+// profile had bounds configured — exactly the foot-gun an operator
+// hits when editing a profile and clicking Sync expecting the
+// snapshot to pick it up.
+//
+// After the fix, Sync's ApplyProject pipeline runs ResolveProfiles
+// first; the persisted pipelines.definition carries the resolved
+// bounds.
+func TestSync_RunsResolveProfiles(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	c, err := cryptopkg.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	s.SetAuthCipher(c)
+
+	// Seed the default profile with bounds — fillProfileResources
+	// only kicks in when the profile has non-empty defaults.
+	if _, err := s.InsertRunnerProfile(context.Background(), nil, store.RunnerProfileInput{
+		Name:              "default",
+		Engine:            "kubernetes",
+		DefaultCPURequest: "500m",
+		DefaultCPULimit:   "2",
+		DefaultMemRequest: "1Gi",
+		DefaultMemLimit:   "4Gi",
+		MaxCPU:            "4",
+		MaxMem:            "8Gi",
+	}); err != nil {
+		t.Fatalf("seed default profile: %v", err)
+	}
+
+	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	fetcher := &fakeFetcher{}
+	h = h.WithConfigFetcher(fetcher)
+
+	// Seed the project + scm_source via the normal Apply path
+	// (empty files — fetcher staged below).
+	seedProjectWithSCM(t, h, "sync-profiles")
+
+	// Now stage the YAML for the Sync call. The job declares the
+	// `default` profile but leaves resources unspecified — only
+	// ResolveProfiles will fill them.
+	const yaml = `name: ci
+materials:
+  - git:
+      url: https://github.com/org/sync-profiles
+      branch: main
+stages: [build]
+jobs:
+  compile:
+    stage: build
+    agent:
+      profile: default
+    script: [make]
+`
+	fetcher.files = []gh.RawFile{{Name: "ci.yaml", Content: yaml}}
+
+	rr := doSync(t, h, "sync-profiles")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// Read the persisted definition back. The load-bearing
+	// assertion: bounds resolved from the `default` profile, not
+	// the zero-string the YAML carried.
+	var defJSON []byte
+	if err := pool.QueryRow(context.Background(),
+		`SELECT definition FROM pipelines p
+		 JOIN projects pr ON pr.id = p.project_id
+		 WHERE pr.slug = 'sync-profiles'`).Scan(&defJSON); err != nil {
+		t.Fatalf("read definition: %v", err)
+	}
+	var parsed struct {
+		Jobs []struct {
+			Name      string
+			Resources struct {
+				Requests struct{ CPU, Memory string }
+				Limits   struct{ CPU, Memory string }
+			}
+		}
+	}
+	if err := json.Unmarshal(defJSON, &parsed); err != nil {
+		t.Fatalf("decode definition: %v; def=%s", err, defJSON)
+	}
+	if len(parsed.Jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1; def=%s", len(parsed.Jobs), defJSON)
+	}
+	got := parsed.Jobs[0].Resources
+	if got.Requests.CPU != "500m" || got.Requests.Memory != "1Gi" {
+		t.Errorf("requests = %+v, want {CPU:500m Memory:1Gi}", got.Requests)
+	}
+	if got.Limits.CPU != "2" || got.Limits.Memory != "4Gi" {
+		t.Errorf("limits = %+v, want {CPU:2 Memory:4Gi}", got.Limits)
 	}
 }
 

@@ -108,6 +108,17 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		AuthRef:       detail.SCMSource.AuthRef,
 	})
 
+	// Resolve runner profiles BEFORE ApplyProject, same as the CLI
+	// apply handler does. Without this, the persisted
+	// pipelines.definition would carry `Resources: zeroed` even
+	// when the YAML's `agent.profile: foo` would have filled them
+	// — a foot-gun where editing a profile via admin UI + clicking
+	// Sync didn't actually update the snapshot the scheduler reads.
+	if err := h.store.ResolveProfiles(r.Context(), parsed); err != nil {
+		http.Error(w, "resolve profiles: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        slug,
 		Name:        detail.Project.Name,

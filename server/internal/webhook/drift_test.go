@@ -215,6 +215,111 @@ func TestGitHubWebhook_DriftSkippedWhenFetcherUnset(t *testing.T) {
 	}
 }
 
+// TestGitHubWebhook_DriftRunsResolveProfiles is the regression for
+// the v0.14.2 silent gap: ApplyProject from drift didn't run
+// ResolveProfiles, so a job declaring `agent.profile: default` had
+// its `resources` left zeroed in the persisted definition even
+// though the `default` profile had bounds configured. The
+// scheduler then materialised pods with no `resources:` block, the
+// kubelet (or namespace LimitRange) did its own thing, and
+// operators chased "why didn't my profile apply?".
+//
+// After the fix, drift's ApplyProject pipeline runs through
+// ResolveProfiles first; the persisted definition carries the
+// resolved bounds.
+func TestGitHubWebhook_DriftRunsResolveProfiles(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
+
+	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext", "main")
+
+	// Pre-seed the `default` runner profile with bounds the YAML
+	// reference relies on. fillProfileResources only kicks in when
+	// the profile carries non-empty defaults, which is the case
+	// any operator hits after configuring a profile in /admin.
+	if _, err := s.InsertRunnerProfile(context.Background(), nil, store.RunnerProfileInput{
+		Name:              "default",
+		Engine:            "kubernetes",
+		DefaultCPURequest: "500m",
+		DefaultCPULimit:   "2",
+		DefaultMemRequest: "1Gi",
+		DefaultMemLimit:   "4Gi",
+		MaxCPU:            "4",
+		MaxMem:            "8Gi",
+	}); err != nil {
+		t.Fatalf("seed default profile: %v", err)
+	}
+
+	const yaml = `name: ci
+materials:
+  - git:
+      url: https://github.com/gocdnext/gocdnext.git
+      branch: main
+      on: [push]
+stages: [build]
+jobs:
+  compile:
+    stage: build
+    agent:
+      profile: default
+    script: [make]
+`
+	fetcher := &fakeFetcher{files: []gh.RawFile{
+		{Name: "ci.yaml", Content: yaml},
+	}}
+	h := webhook.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithConfigFetcher(fetcher)
+	srv := http.HandlerFunc(h.HandleGitHub)
+
+	body := loadFixture(t, "push_main.json")
+	resp := postSigned(t, srv, "push", body)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	// The persisted definition must carry the resolved bounds —
+	// that's the load-bearing assertion. Without ResolveProfiles
+	// in the drift path, this comes back as `{"Limits":
+	// {"CPU":"", "Memory":""}, "Requests": {"CPU":"", "Memory":""}}`,
+	// which is exactly what an operator's pod was getting before
+	// the fix.
+	var defJSON []byte
+	if err := pool.QueryRow(context.Background(),
+		`SELECT definition FROM pipelines p
+		 JOIN projects pr ON pr.id = p.project_id
+		 WHERE pr.slug = 'gocdnext-webhook-test'`).Scan(&defJSON); err != nil {
+		t.Fatalf("read definition: %v", err)
+	}
+	// Postgres JSONB renders with `"key": "value"` spacing — parse
+	// instead of substring matching so the test is robust to
+	// whitespace + key ordering.
+	var parsed struct {
+		Jobs []struct {
+			Name      string
+			Resources struct {
+				Requests struct{ CPU, Memory string }
+				Limits   struct{ CPU, Memory string }
+			}
+		}
+	}
+	if err := json.Unmarshal(defJSON, &parsed); err != nil {
+		t.Fatalf("decode definition: %v; def=%s", err, defJSON)
+	}
+	if len(parsed.Jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1; def=%s", len(parsed.Jobs), defJSON)
+	}
+	got := parsed.Jobs[0].Resources
+	if got.Requests.CPU != "500m" || got.Requests.Memory != "1Gi" {
+		t.Errorf("requests = %+v, want {CPU:500m Memory:1Gi}", got.Requests)
+	}
+	if got.Limits.CPU != "2" || got.Limits.Memory != "4Gi" {
+		t.Errorf("limits = %+v, want {CPU:2 Memory:4Gi}", got.Limits)
+	}
+}
+
 func TestGitHubWebhook_DriftSkippedForNonDefaultBranch(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

@@ -43,7 +43,13 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 	}
 	if branch != scm.DefaultBranch {
 		// A push on a non-default branch doesn't drive config sync — the live
-		// config tracks main only. We could broaden later (per-env configs).
+		// config tracks main only. Broadening this guard is intentionally
+		// gated on a separate follow-up: every push currently overwrites
+		// the project's global definition, so feature branches with
+		// destructive YAML changes (removed approval gates, swapped
+		// profiles, etc) would otherwise land project-wide. The right
+		// shape is "only re-apply when the pushed branch is itself a
+		// registered material" — separate commit.
 		return out
 	}
 	out.Attempted = true
@@ -89,6 +95,16 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 	// no run. (Same code path the project-apply and project-sync
 	// handlers already go through.)
 	configsync.InjectImplicitProjectMaterial(pipelines, scmInput)
+
+	// Resolve runner profiles before ApplyProject — same step the
+	// CLI apply handler runs. Without this, the persisted
+	// pipelines.definition carries `Resources: zeroed` even when
+	// the YAML's `agent.profile: foo` would have filled them from
+	// the profile's defaults.
+	if err := h.store.ResolveProfiles(ctx, pipelines); err != nil {
+		out.Error = fmt.Sprintf("resolve profiles: %v", err)
+		return out
+	}
 
 	if _, err := h.store.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug:        project.Slug,
