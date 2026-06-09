@@ -392,6 +392,152 @@ func TestBuildIsolatedJobPodSpec_DockerSidecar(t *testing.T) {
 	}
 }
 
+// TestBuildIsolatedJobPodSpec_DockerSocketShared is the v0.14.10
+// regression: when docker:true, DinD + task share a tmpfs emptyDir
+// at /run/dind, DinD adds a `--host=unix://…` listener writing the
+// socket there, the task's DOCKER_HOST points at the same path, and
+// DinD's postStart `chmod 666` makes the socket addressable by the
+// task's non-root user.
+//
+// Without this plumbing the task either uses TCP (Nagle + IP stack
+// overhead → flaky testcontainers timing) or can't reach the socket
+// at all (permission denied as user 1000 against root:docker 660).
+func TestBuildIsolatedJobPodSpec_DockerSocketShared(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "node:20",
+		Script:               "docker build .",
+		Docker:               true,
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	// 1. Volume is present and tmpfs-backed.
+	var sockVol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "dind-socket" {
+			sockVol = &pod.Spec.Volumes[i]
+			break
+		}
+	}
+	if sockVol == nil {
+		t.Fatal("dind-socket volume missing on docker:true pod")
+	}
+	if sockVol.EmptyDir == nil || sockVol.EmptyDir.Medium != corev1.StorageMediumMemory {
+		t.Errorf("dind-socket volume should be tmpfs (Memory medium); got %+v", sockVol.EmptyDir)
+	}
+
+	// 2. DinD container has --host=unix://... arg, the socket-shared
+	//    mount, and a postStart chmod hook.
+	dind := findContainer(pod.Spec.Containers, "dind")
+	var sawUnixHostArg bool
+	for _, a := range dind.Args {
+		if a == "--host=unix:///run/dind/docker.sock" {
+			sawUnixHostArg = true
+		}
+	}
+	if !sawUnixHostArg {
+		t.Errorf("DinD args missing the shared-unix-socket listener: %v", dind.Args)
+	}
+	var sawSharedMount bool
+	for _, m := range dind.VolumeMounts {
+		if m.Name == "dind-socket" && m.MountPath == "/run/dind" {
+			sawSharedMount = true
+		}
+	}
+	if !sawSharedMount {
+		t.Errorf("DinD should mount dind-socket at /run/dind; mounts=%v", dind.VolumeMounts)
+	}
+	if dind.Lifecycle == nil || dind.Lifecycle.PostStart == nil || dind.Lifecycle.PostStart.Exec == nil {
+		t.Error("DinD missing postStart chmod hook — task as non-root will hit EPERM")
+	} else {
+		gotCmd := dind.Lifecycle.PostStart.Exec.Command
+		joined := ""
+		for _, c := range gotCmd {
+			joined += c + " "
+		}
+		if !contains(joined, "chmod 666") || !contains(joined, "/run/dind/docker.sock") {
+			t.Errorf("postStart hook should chmod 666 the shared socket; got %v", gotCmd)
+		}
+	}
+
+	// 3. Task container's DOCKER_HOST is the unix socket path, NOT TCP.
+	task := findContainer(pod.Spec.Containers, "task")
+	var gotHost string
+	for _, e := range task.Env {
+		if e.Name == "DOCKER_HOST" {
+			gotHost = e.Value
+		}
+	}
+	if gotHost != "unix:///run/dind/docker.sock" {
+		t.Errorf("isolated DOCKER_HOST = %q, want unix:///run/dind/docker.sock", gotHost)
+	}
+
+	// 4. Task container mounts the same shared volume so its
+	//    DOCKER_HOST actually resolves to a real file.
+	var taskHasShare bool
+	for _, m := range task.VolumeMounts {
+		if m.Name == "dind-socket" && m.MountPath == "/run/dind" {
+			taskHasShare = true
+		}
+	}
+	if !taskHasShare {
+		t.Errorf("task container missing dind-socket mount; mounts=%v", task.VolumeMounts)
+	}
+
+	// 5. TCP listener preserved — escape hatch for operators who
+	//    explicitly override DOCKER_HOST=tcp://localhost:2375.
+	var sawTCPArg bool
+	for _, a := range dind.Args {
+		if a == "--host=tcp://0.0.0.0:2375" {
+			sawTCPArg = true
+		}
+	}
+	if !sawTCPArg {
+		t.Errorf("TCP listener should be preserved for explicit-override escape hatch; args=%v", dind.Args)
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_NoDockerNoSocketVolume — when the job
+// doesn't ask for docker, no volume + no socket plumbing. Stays
+// minimal so an emptyDir isn't allocated for nothing.
+func TestBuildIsolatedJobPodSpec_NoDockerNoSocketVolume(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "node:20",
+		Script:               "echo no docker",
+		Docker:               false,
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "dind-socket" {
+			t.Errorf("docker:false should not produce a dind-socket volume")
+		}
+	}
+}
+
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestBuildIsolatedJobPodSpec_RejectsWrongMode(t *testing.T) {
 	k := NewKubernetesWithClient(fake.NewSimpleClientset(), KubernetesConfig{
 		Namespace:     "ci",
