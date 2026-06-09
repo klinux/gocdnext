@@ -127,10 +127,14 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 
 	// test_reports collection runs post-task via
 	// scanTestReportsFromPod below (housekeeper exec). The scan
-	// fires only on task-success — failed tasks don't ship reports,
-	// matching shared-mode contract. Pre-v0.14.4 this point in the
-	// flow emitted a warn telling operators to switch back to
-	// ReadWriteMany for Tests-tab visibility; that gap is now
+	// fires on BOTH task-success and non-zero-exit / wait-error
+	// paths — failed builds are exactly when the Tests tab carries
+	// the highest signal (which assertion failed, which stack
+	// trace), and shared mode's scanTestReports has the same
+	// behaviour (runner.go::Execute calls it on every post-task
+	// branch including the failure ones). Pre-v0.14.4 this point
+	// in the flow emitted a warn telling operators to switch back
+	// to ReadWriteMany for Tests-tab visibility; that gap is now
 	// closed and both workspace modes ship the same data.
 
 	cfg := k.Config()
