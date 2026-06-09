@@ -1,11 +1,13 @@
 package webhook_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -323,12 +325,19 @@ jobs:
 func TestGitHubWebhook_DriftSkippedForNonDefaultBranch(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
+	s.SetAuthCipher(newTestCipher(t))
 	// scm_source's default_branch is "main"; the push fixture is on "main",
 	// so flip scm_source to "develop" to exercise the non-default skip path.
 	seedSCMSourceOnly(t, pool, "https://github.com/gocdnext/gocdnext", "develop")
 
 	fetcher := &fakeFetcher{}
-	h := webhook.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
+	// Capture the slog output so we can assert the v0.14.3 skip
+	// log fires with both the pushed branch AND the configured
+	// default — the side-by-side is the diagnostic operators rely
+	// on when "drift didn't fire" on a configured non-`main`
+	// default like `gocdnext-tests`.
+	var logBuf bytes.Buffer
+	h := webhook.NewHandler(s, slog.New(slog.NewTextHandler(&logBuf, nil))).
 		WithConfigFetcher(fetcher)
 	srv := http.HandlerFunc(h.HandleGitHub)
 
@@ -338,5 +347,16 @@ func TestGitHubWebhook_DriftSkippedForNonDefaultBranch(t *testing.T) {
 
 	if fetcher.calls != 0 {
 		t.Fatalf("fetcher called %d times for non-default branch, want 0", fetcher.calls)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "drift skipped") {
+		t.Errorf("expected 'drift skipped' log line, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "pushed_branch=main") {
+		t.Errorf("expected pushed_branch=main in skip log, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "default_branch=develop") {
+		t.Errorf("expected default_branch=develop in skip log, got:\n%s", logs)
 	}
 }
