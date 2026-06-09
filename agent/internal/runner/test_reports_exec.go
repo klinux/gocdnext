@@ -13,12 +13,10 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"strings"
 	"sync/atomic"
 
-	"github.com/bmatcuk/doublestar/v4"
-
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	"github.com/gocdnext/gocdnext/agent/internal/podfs"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
@@ -72,13 +70,13 @@ func (r *Runner) scanTestReportsFromPod(
 		return
 	}
 
-	files, err := listPodFiles(ctx, exec, podName, container, workDir)
+	files, err := podfs.ListFiles(ctx, exec, podName, container, workDir)
 	if err != nil {
 		r.emitLog(a, seq, "stderr", fmt.Sprintf("test_reports: list workspace files: %v", err))
 		return
 	}
 
-	matches := matchPodFilesAgainstGlobs(workDir, files, globs)
+	matches := podfs.MatchGlobs(workDir, files, globs)
 	if len(matches) == 0 {
 		// Silent — same posture as shared mode for "no files matched".
 		return
@@ -120,73 +118,6 @@ func (r *Runner) scanTestReportsFromPod(
 			len(batch.Results), len(matches)))
 }
 
-// listPodFiles runs `find <workDir> -type f` inside the housekeeper
-// and returns the absolute paths of every regular file in the
-// workspace. Globbing is done agent-side (matchPodFilesAgainstGlobs)
-// so a single `find` covers all declared patterns and we stay shell-
-// agnostic — busybox (alpine), bash, dash all accept this invocation
-// unchanged.
-//
-// Cap on stdout: a workspace with millions of files would balloon
-// the buffer. 16 MiB is enough for ~150k file paths at ~100 chars
-// each — well above any real CI workspace.
-func listPodFiles(ctx context.Context, exec engine.PodExecutor, pod, container, workDir string) ([]string, error) {
-	if workDir == "" || !path.IsAbs(workDir) {
-		return nil, fmt.Errorf("workDir must be absolute, got %q", workDir)
-	}
-	var stdout, stderr bytes.Buffer
-	stdoutCap := &cappedBuffer{w: &stdout, max: 16 << 20}
-	if err := exec.Exec(ctx, pod, container,
-		[]string{"find", workDir, "-type", "f"},
-		nil, stdoutCap, &stderr,
-	); err != nil {
-		return nil, fmt.Errorf("exec find in %s/%s: %w (stderr=%q)",
-			pod, container, err, stderr.String())
-	}
-	lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
-	out := lines[:0]
-	for _, l := range lines {
-		if l == "" {
-			continue
-		}
-		out = append(out, l)
-	}
-	return out, nil
-}
-
-// matchPodFilesAgainstGlobs filters the file list down to those
-// matching any of the declared globs (joined under workDir). Uses
-// doublestar.PathMatch — same semantics as shared-mode
-// expandGlobs — so a YAML pattern produces the same result set
-// regardless of workspace mode.
-//
-// Deduplicates by absolute path. Empty patterns are skipped.
-func matchPodFilesAgainstGlobs(workDir string, files, globs []string) []string {
-	if len(files) == 0 || len(globs) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(files))
-	out := make([]string, 0, len(files))
-	for _, g := range globs {
-		if g == "" {
-			continue
-		}
-		pat := path.Join(workDir, g)
-		for _, f := range files {
-			if seen[f] {
-				continue
-			}
-			ok, err := doublestar.PathMatch(pat, f)
-			if err != nil || !ok {
-				continue
-			}
-			seen[f] = true
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // catPodFile execs `cat -- <path>` inside the housekeeper and
 // returns the file bytes. Capped at maxSingleReportBytes so a
 // runaway report can't pin the agent's memory.
@@ -199,41 +130,17 @@ func catPodFile(ctx context.Context, exec engine.PodExecutor, pod, container, fi
 	if filePath == "" || !path.IsAbs(filePath) {
 		return nil, fmt.Sprintf("cat: filePath must be absolute, got %q", filePath)
 	}
-	var stdout, stderr bytes.Buffer
-	stdoutCap := &cappedBuffer{w: &stdout, max: maxSingleReportBytes + 1}
+	stdout := &podfs.CappedBuffer{W: &bytes.Buffer{}, Max: maxSingleReportBytes + 1}
+	var stderr bytes.Buffer
 	if err := exec.Exec(ctx, pod, container,
 		[]string{"cat", "--", filePath},
-		nil, stdoutCap, &stderr,
+		nil, stdout, &stderr,
 	); err != nil {
 		return nil, fmt.Sprintf("cat %s: %v (stderr=%q)", filePath, err, stderr.String())
 	}
-	if stdout.Len() > maxSingleReportBytes {
+	if stdout.W.Len() > maxSingleReportBytes {
 		return nil, fmt.Sprintf("cat %s: exceeds %d bytes cap; truncating",
 			filePath, maxSingleReportBytes)
 	}
-	return stdout.Bytes(), ""
-}
-
-// cappedBuffer is a thin io.Writer that bounds a backing buffer at
-// `max` bytes — extra bytes are silently dropped so the SPDY exec
-// stream stays clean (closing the writer mid-stream would surface
-// as a transport error, which is indistinguishable from a real
-// network failure). Same trick as outputs_exec.go::capBuf, but
-// uses an external bytes.Buffer so the caller can read it without
-// the wrapper's API.
-type cappedBuffer struct {
-	w   *bytes.Buffer
-	max int
-}
-
-func (c *cappedBuffer) Write(p []byte) (int, error) {
-	remaining := c.max - c.w.Len()
-	if remaining <= 0 {
-		return len(p), nil
-	}
-	if len(p) > remaining {
-		_, _ = c.w.Write(p[:remaining])
-		return len(p), nil
-	}
-	return c.w.Write(p)
+	return stdout.W.Bytes(), ""
 }

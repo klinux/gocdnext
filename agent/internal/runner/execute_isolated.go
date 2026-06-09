@@ -158,19 +158,32 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// shared-mode ScriptSpec resolution in runner.go::runScript +
 	// runner.go::runPlugin, kept here so isolated mode doesn't
 	// loop through engine.RunScript (which is per-task).
+	// Detect templated cache keys upfront — drives both the pod
+	// spec (cache-fetch init container) and the post-prep
+	// orchestration below. Doing the scan here keeps the spec
+	// shape deterministic at pod-create time.
+	needsCacheFetch := false
+	for _, e := range a.GetCaches() {
+		if containsTemplate(e.GetKey()) {
+			needsCacheFetch = true
+			break
+		}
+	}
+
 	spec := engine.IsolatedJobSpec{
-		RunID:          a.GetRunId(),
-		JobID:          a.GetJobId(),
-		WorkDir:        scriptWorkDir,
-		Env:            a.GetEnv(),
-		Docker:         a.GetDocker(),
-		Resources:      assignmentResources(a),
-		Profile:        a.GetProfile(),
-		AgentTags:      append([]string(nil), r.cfg.AgentTags...),
-		HostAliases:    servicesPhase.hostAliases,
-		OutputsRelPath: outputsRel,
-		NodeSelector:   assignmentNodeSelector(a),
-		Tolerations:    assignmentTolerations(a),
+		RunID:               a.GetRunId(),
+		JobID:               a.GetJobId(),
+		WorkDir:             scriptWorkDir,
+		Env:                 a.GetEnv(),
+		Docker:              a.GetDocker(),
+		Resources:           assignmentResources(a),
+		Profile:             a.GetProfile(),
+		AgentTags:           append([]string(nil), r.cfg.AgentTags...),
+		HostAliases:         servicesPhase.hostAliases,
+		OutputsRelPath:      outputsRel,
+		NodeSelector:        assignmentNodeSelector(a),
+		Tolerations:         assignmentTolerations(a),
+		NeedsCacheFetchInit: needsCacheFetch,
 	}
 
 	if plugin := task.GetPlugin(); plugin != nil {
@@ -337,6 +350,27 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		return
 	}
 	log.Info("runner: prep ok, task starting")
+
+	// Cache key template resolution (issue #17). When the assignment
+	// declared `{{ hash "..." }}` keys, the engine appended a
+	// `cache-fetch` init container that polls for a marker file. It
+	// runs AFTER prep (so the workspace is materialised) and BEFORE
+	// the main containers start. The agent execs into it to:
+	//   1. List workspace files via `find` (podfs.ListFiles).
+	//   2. Compute hashes via `cat` (podHashResolver).
+	//   3. Resolve the templated keys.
+	//   4. Call RequestCacheGet through the agent's existing gRPC
+	//      session — same path literal keys take.
+	//   5. Stream the cache tarball into the workspace via exec
+	//      stdin (so the cache-fetch container doesn't need network).
+	//   6. Touch the marker — cache-fetch exits, K8s starts task.
+	//
+	// Failure mode: cache resolution / fetch errors are best-effort.
+	// We touch the marker anyway so the task still starts; the job
+	// runs without the cache and the store path on success rebuilds.
+	if needsCacheFetch {
+		r.resolveAndFetchTemplatedCaches(ctx, k, exec, podName, scriptWorkDir, a, &seq)
+	}
 
 	// Cap the time it takes for the task container to leave
 	// Waiting. ImagePullBackOff or similar would otherwise let

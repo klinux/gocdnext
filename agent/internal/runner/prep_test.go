@@ -185,11 +185,13 @@ func TestPrep_CacheMissIsSilent(t *testing.T) {
 	}
 }
 
-func TestPrep_LogsTemplatedKeyLimitation(t *testing.T) {
-	// Templated cache keys are skipped in isolated mode (no
-	// workspace-side hashing yet) with an explicit warning so
-	// the operator understands why their pnpm-store-{{ hash ...
-	// }} cache isn't restoring.
+func TestPrep_SilentOnTemplatedKey(t *testing.T) {
+	// Since v0.14.6 / issue #17, templated cache keys are handled
+	// post-prep by the agent via the `cache-fetch` init container.
+	// Prep itself stays silent — emitting the old "templated keys
+	// aren't yet supported" warning would now be a lie. The agent
+	// will surface the final hit/miss state on the job log after
+	// resolving the template against the materialised workspace.
 	tmp := t.TempDir()
 	a := &gocdnextv1.JobAssignment{
 		RunId: "r", JobId: "j",
@@ -205,8 +207,12 @@ func TestPrep_LogsTemplatedKeyLimitation(t *testing.T) {
 	if err := Prep(context.Background(), a, tmp, &logs); err != nil {
 		t.Fatalf("prep: %v", err)
 	}
-	if !strings.Contains(logs.String(), "templated keys aren't yet supported") {
-		t.Errorf("expected templated-key warning, got: %s", logs.String())
+	if strings.Contains(logs.String(), "templated keys aren't yet supported") {
+		t.Errorf("prep should be silent on templated key (agent handles it post-prep), got: %s",
+			logs.String())
+	}
+	if strings.Contains(logs.String(), "warning") {
+		t.Errorf("prep should not warn on templated key, got: %s", logs.String())
 	}
 }
 

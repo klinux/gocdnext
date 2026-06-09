@@ -68,11 +68,25 @@ const (
 // canceled mid-hash (huge file, slow disk) aborts the read at
 // the next chunk boundary rather than blocking until EOF.
 func (r *Runner) expandCacheKeys(ctx context.Context, workDir string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {
+	return r.expandCacheKeysVia(&workspaceHashResolver{ctx: ctx, workDir: workDir}, a, seq)
+}
+
+// expandCacheKeysVia is the mode-agnostic core. Takes a pre-built
+// FunctionResolver (host filesystem in shared mode,
+// PodExecutor-backed in isolated mode) so callers don't need to
+// know how the workspace is reachable. Iterates the assignment's
+// CacheEntries in place, mutating each templated key's value to
+// its expanded form for downstream Cache RPC lookups.
+//
+// Pure of mode-specific behaviour: every difference between shared
+// and isolated lives in the resolver. Errors propagate exactly the
+// same way (parse / glob-missing / cap exceeded) so the operator
+// sees identical messages regardless of workspace mode.
+func (r *Runner) expandCacheKeysVia(resolver cachekey.FunctionResolver, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {
 	entries := a.GetCaches()
 	if len(entries) == 0 {
 		return nil
 	}
-	resolver := &workspaceHashResolver{ctx: ctx, workDir: workDir}
 	for _, e := range entries {
 		raw := e.GetKey()
 		tpl, err := cachekey.Parse(raw)
