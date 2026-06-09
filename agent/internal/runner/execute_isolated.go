@@ -14,6 +14,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"path/filepath"
@@ -288,7 +289,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		msg := "prep startup timeout: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 
@@ -326,14 +327,14 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		msg := "wait for prep: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 	if prepExit != 0 {
 		msg := fmt.Sprintf("prep init container exited %d", prepExit)
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(prepExit), msg)
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 	log.Info("runner: prep ok, task starting")
@@ -348,7 +349,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		msg := "task startup timeout: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 
@@ -367,7 +368,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		msg := "wait for task: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 	if taskExit != 0 {
@@ -379,7 +380,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// simple: failure = no post-task upload.
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit),
 			fmt.Sprintf("task exited with %d", taskExit))
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 
@@ -402,7 +403,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	if postErr != nil {
 		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
 			"artifact upload failed: "+postErr.Error(), refs)
-		r.cleanupIsolatedPod(k, podName, false)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 
@@ -437,7 +438,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
 			r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
 				"outputs: "+err.Error(), refs, nil)
-			r.cleanupIsolatedPod(k, podName, false)
+			r.cleanupIsolatedPod(ctx, k, podName, false)
 			return
 		}
 		producedOutputs = got
@@ -450,7 +451,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	log.Info("runner: execute (isolated) ok",
 		"artifacts", len(refs), "output_keys", outputKeys)
 	r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs, producedOutputs)
-	r.cleanupIsolatedPod(k, podName, true)
+	r.cleanupIsolatedPod(ctx, k, podName, true)
 }
 
 // cleanupIsolatedPod deletes the pod respecting the engine's
@@ -458,12 +459,25 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 // logged but never propagated (the pod will be GC'd by k8s
 // eventually, and a stuck pod is something the operator wants
 // to see).
-func (r *Runner) cleanupIsolatedPod(k *engine.Kubernetes, podName string, success bool) {
+//
+// Cancellation override: when the job's ctx was canceled (the
+// signal Runner.Cancel sends in response to a server-side
+// CancelJob RPC), the pod is deleted unconditionally — operators
+// expect "Cancel" to actually stop the running container, not
+// leave it lingering under CleanupOnFailure=false. Using
+// ctx.Err() (the in-scope ctx that drove the run) keeps the
+// detection local and avoids threading a separate flag through
+// every call site.
+func (r *Runner) cleanupIsolatedPod(ctx context.Context, k *engine.Kubernetes, podName string, success bool) {
 	cfg := k.Config()
-	keep := (!success && !cfg.CleanupOnFailure) || (success && !cfg.CleanupOnSuccess)
+	canceled := errors.Is(ctx.Err(), context.Canceled)
+	keep := !canceled && ((!success && !cfg.CleanupOnFailure) || (success && !cfg.CleanupOnSuccess))
 	if keep {
 		return
 	}
+	// Use a fresh background ctx for the delete itself — the
+	// run's ctx is canceled by the time we get here on the cancel
+	// path, and we want the DELETE to land.
 	if err := k.DeleteIsolatedJobPod(context.Background(), podName); err != nil {
 		r.cfg.Logger.Warn("runner: cleanup isolated pod failed", "err", err, "pod", podName)
 	}
