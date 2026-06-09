@@ -49,10 +49,12 @@ runs with `CleanupOnFailure=false` (the default operators run).
 Both the shared-mode `maybeCleanup` and the isolated-mode
 `cleanupIsolatedPod` paths now detect `context.Canceled` and
 force-delete the pod regardless of cleanup policy, using a fresh
-background ctx for the DELETE so the canceled run ctx doesn't
-abort the call to kube-apiserver. Cleanup policy still applies
-to natural failures (non-zero exits, prep crashes) — those keep
-the pod for debugging as before.
+background ctx (bounded by a 10s `cleanupPodDeleteTimeout`) for
+the DELETE so the canceled run ctx doesn't abort the call and a
+wedged apiserver can't pin the runner on the very path that's
+supposed to free the slot. Cleanup policy still applies to
+natural failures (non-zero exits, prep crashes) — those keep the
+pod for debugging as before.
 
 ## v0.14.1 — 2026-06-08
 

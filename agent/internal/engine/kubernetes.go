@@ -598,6 +598,15 @@ func (k *Kubernetes) streamLogs(ctx context.Context, name string, emit func(stri
 	_ = io.Discard
 }
 
+// cleanupPodDeleteTimeout caps the cancel-override DELETE so a
+// wedged kube-apiserver or hung connection can't pin the runner
+// indefinitely on the very path that's supposed to be "free the
+// slot". 10s matches assignmentSecretCleanupTimeout for the
+// isolated path — one DELETE against the apiserver shouldn't take
+// longer than that, and if it does the operator wants the runner
+// to move on, not block.
+const cleanupPodDeleteTimeout = 10 * time.Second
+
 // maybeCleanup deletes the Pod if CleanupOn{Success,Failure} enables
 // it. Best-effort; delete failures are swallowed (the Pod will be
 // garbage-collected by K8s eventually, and a stuck Pod is a signal
@@ -607,8 +616,9 @@ func (k *Kubernetes) streamLogs(ctx context.Context, name string, emit func(stri
 // response to a server-side CancelJob RPC), the pod is deleted
 // unconditionally — operators expect "Cancel" to actually stop
 // the container, not leave it lingering under CleanupOnFailure=false.
-// The DELETE uses a fresh background ctx so the canceled run ctx
-// doesn't abort it before kube-apiserver hears the call.
+// The DELETE uses a fresh background ctx (with a bounded timeout)
+// so the canceled run ctx doesn't abort it, and a hung apiserver
+// can't pin the runner forever on the "free the slot" path.
 func (k *Kubernetes) maybeCleanup(ctx context.Context, name string, success bool) {
 	canceled := errors.Is(ctx.Err(), context.Canceled)
 	keep := !canceled && ((!success && !k.cfg.CleanupOnFailure) || (success && !k.cfg.CleanupOnSuccess))
@@ -617,7 +627,9 @@ func (k *Kubernetes) maybeCleanup(ctx context.Context, name string, success bool
 	}
 	delCtx := ctx
 	if canceled {
-		delCtx = context.Background()
+		var cancel context.CancelFunc
+		delCtx, cancel = context.WithTimeout(context.Background(), cleanupPodDeleteTimeout)
+		defer cancel()
 	}
 	_ = k.client.CoreV1().Pods(k.cfg.Namespace).Delete(delCtx, name, metav1.DeleteOptions{})
 }

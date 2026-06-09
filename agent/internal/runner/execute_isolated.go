@@ -454,6 +454,14 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	r.cleanupIsolatedPod(ctx, k, podName, true)
 }
 
+// cleanupIsolatedPodDeleteTimeout caps the cancel-override DELETE
+// so a wedged kube-apiserver or hung connection can't pin the
+// runner indefinitely on the very path that's supposed to be
+// "free the slot". 10s matches assignmentSecretCleanupTimeout and
+// the engine's cleanupPodDeleteTimeout — one DELETE shouldn't
+// take longer.
+const cleanupIsolatedPodDeleteTimeout = 10 * time.Second
+
 // cleanupIsolatedPod deletes the pod respecting the engine's
 // CleanupOn{Success,Failure} flags. Best-effort: errors are
 // logged but never propagated (the pod will be GC'd by k8s
@@ -467,7 +475,10 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 // leave it lingering under CleanupOnFailure=false. Using
 // ctx.Err() (the in-scope ctx that drove the run) keeps the
 // detection local and avoids threading a separate flag through
-// every call site.
+// every call site. The DELETE itself runs against a fresh
+// background ctx (bounded by cleanupIsolatedPodDeleteTimeout) so
+// the canceled run ctx doesn't abort it before kube-apiserver
+// hears the call, and a hung apiserver can't pin the runner.
 func (r *Runner) cleanupIsolatedPod(ctx context.Context, k *engine.Kubernetes, podName string, success bool) {
 	cfg := k.Config()
 	canceled := errors.Is(ctx.Err(), context.Canceled)
@@ -475,10 +486,9 @@ func (r *Runner) cleanupIsolatedPod(ctx context.Context, k *engine.Kubernetes, p
 	if keep {
 		return
 	}
-	// Use a fresh background ctx for the delete itself — the
-	// run's ctx is canceled by the time we get here on the cancel
-	// path, and we want the DELETE to land.
-	if err := k.DeleteIsolatedJobPod(context.Background(), podName); err != nil {
+	delCtx, cancel := context.WithTimeout(context.Background(), cleanupIsolatedPodDeleteTimeout)
+	defer cancel()
+	if err := k.DeleteIsolatedJobPod(delCtx, podName); err != nil {
 		r.cfg.Logger.Warn("runner: cleanup isolated pod failed", "err", err, "pod", podName)
 	}
 }
