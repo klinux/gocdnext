@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -224,6 +225,28 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 			DefaultImage:       os.Getenv("GOCDNEXT_K8S_DEFAULT_IMAGE"),
 			AgentImage:         os.Getenv("GOCDNEXT_K8S_AGENT_IMAGE"),
 			HousekeeperImage:   os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_IMAGE"),
+		}
+		// Job-pod scheduling baseline. Names use the JOB_ prefix
+		// to avoid confusion with the agent's own pod nodeSelector
+		// (set on the StatefulSet directly via Helm, not via these
+		// envs). JSON shapes:
+		//
+		//   GOCDNEXT_K8S_JOB_NODE_SELECTOR={"workload":"ci"}
+		//   GOCDNEXT_K8S_JOB_TOLERATIONS=[{"key":"ci-only","operator":"Equal","value":"true","effect":"NoSchedule"}]
+		//
+		// Empty / absent → no baseline; profile-scoped scheduling
+		// still applies on a per-job basis. Malformed JSON fails
+		// startup loud rather than silently shipping pods that
+		// can't schedule.
+		if raw := strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_JOB_NODE_SELECTOR")); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &cfg.NodeSelector); err != nil {
+				return nil, fmt.Errorf("GOCDNEXT_K8S_JOB_NODE_SELECTOR: invalid JSON object: %w", err)
+			}
+		}
+		if raw := strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_JOB_TOLERATIONS")); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &cfg.Tolerations); err != nil {
+				return nil, fmt.Errorf("GOCDNEXT_K8S_JOB_TOLERATIONS: invalid JSON array: %w", err)
+			}
 		}
 		mode := strings.ToLower(strings.TrimSpace(os.Getenv("GOCDNEXT_K8S_WORKSPACE_MODE")))
 		switch mode {

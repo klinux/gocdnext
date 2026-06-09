@@ -137,6 +137,33 @@ agent:
   # pull-through registry mirror or you want every job to re-resolve
   # the manifest regardless of tag.
   forceImagePullAlways: false
+  # jobNodeSelector / jobTolerations are the SCHEDULING BASELINE the
+  # agent applies to every pod it creates (task pods in shared mode,
+  # task + housekeeper + prep init in isolated mode, service pods
+  # for `services:`-declared sidecars). NOT to be confused with the
+  # agent's OWN pod nodeSelector (set via the chart's standard
+  # pod-spec values, not via these keys).
+  #
+  # Per-job profiles (admin UI / Helm `runnerProfiles[].node_selector`
+  # / `tolerations`) layer on top: their NodeSelector merges with
+  # this baseline with profile values winning on key collision;
+  # their Tolerations append. See concepts/runner-profiles for the
+  # full merge contract.
+  #
+  # Empty defaults skip the env var entirely, so an unconfigured
+  # chart matches pre-v0.14 behaviour bit-for-bit.
+  #
+  # Example for a cluster that taints CI nodes
+  # `ci-only=true:NoSchedule` and labels them `pool=ci`:
+  #   jobNodeSelector:
+  #     pool: ci
+  #   jobTolerations:
+  #     - key: ci-only
+  #       operator: Equal
+  #       value: "true"
+  #       effect: NoSchedule
+  jobNodeSelector: {}
+  jobTolerations: []
   resources:
     requests:
       cpu: 50m

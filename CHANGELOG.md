@@ -6,6 +6,133 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.0 — 2026-06-09
+
+Two related features that close the remaining footguns operators
+hit when adopting profile-driven workloads: a `default`-profile
+fallback for jobs that declare nothing, and full Kubernetes
+scheduling hints (`node_selector` + `tolerations`) on every runner
+profile. Together they unblock the canonical Cora pain case —
+Gradle multi-module builds that OOM-killed on unbounded pods and
+landed Pending when the cluster pinned CI to tainted nodes.
+
+### Feature — fallback to `default` profile bounds
+
+When a job declares no `profile:` AND a profile named `default`
+exists in the DB, the scheduler now auto-applies `default`'s
+resource bounds at apply time. Only the bounds — image, tags, env,
+secrets, caps stay strictly opt-in via explicit `profile: default`.
+Closes the "missing profile reference produced unbounded pod →
+OOM-killed by the namespace LimitRange" failure mode without
+forcing every YAML to grow a profile reference.
+
+Clusters with no `default` profile see no behaviour change — the
+fallback is a no-op.
+
+### Feature — `node_selector` + `tolerations` on runner profile
+
+Profiles now carry Kubernetes scheduling hints:
+
+```yaml
+# admin UI / Helm runnerProfiles[]
+name: gradle-heavy
+engine: kubernetes
+default_mem_request: 4Gi
+default_mem_limit: 8Gi
+node_selector:
+  pool: gradle
+tolerations:
+  - key: gradle-only
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+```
+
+A job referencing the profile lands on nodes labelled `pool=gradle`
+and tolerates the `gradle-only=true:NoSchedule` taint. Honoured by
+the Kubernetes engine only; Shell + Docker engines ignore.
+
+**Merge contract**:
+
+- `node_selector` merges with the agent-level baseline (Helm
+  `agent.jobNodeSelector`). Profile values WIN on key collision
+  — profile is more specific than agent default.
+- `tolerations` concatenate: agent baseline first, profile entries
+  appended. Kubelet ignores exact duplicates so dedup is not
+  applied.
+- Service pods (`services:` sidecars) inherit ONLY the agent
+  baseline. Per-service profile-scoped scheduling is a separate
+  follow-up.
+
+**Validation** at admin write time uses the same
+`k8svalidation.IsQualifiedName` / `IsValidLabelValue` the
+apiserver applies at pod admission, so a misconfig surfaces as
+HTTP 400 immediately, not as a Pending pod hours later. Toleration
+invariants enforced: `Exists+value` rejected, empty operator
+normalises to `Equal`, `toleration_seconds` only with
+`effect: NoExecute`, key/value follow label rules.
+
+### Chart values for the agent baseline
+
+```yaml
+# values.yaml
+agent:
+  jobNodeSelector:
+    pool: ci
+  jobTolerations:
+    - key: ci-only
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+```
+
+Empty defaults skip the env var entirely; the StatefulSet on an
+unconfigured chart matches pre-v0.14 behaviour bit-for-bit.
+
+### Admin UI
+
+`/admin/profiles` editor grows a **Node selector** + **Tolerations**
+section. Tolerations editor enforces cross-field invariants
+client-side (operator=Exists disables value, effect≠NoExecute
+disables `toleration_seconds`) so the form mirrors the server
+rules. Profile-edit Sheet width responsive — full viewport on
+mobile, 85vw on tablet, 50vw on desktop. Validation is intentionally
+permissive client-side; the server returns the canonical k8s error
+message.
+
+### Audit + REST
+
+- New audit action `runner_profile.scheduling_updated` is implicit
+  in the existing `runner_profile.update` event — the metadata
+  field captures the before/after of `node_selector` and
+  `tolerations` so admins can reconstruct policy history.
+- OpenAPI gains `Toleration` (read) and `TolerationWrite` (write)
+  schemas. RunnerProfile + RunnerProfileWrite expose the two new
+  fields with `always-present-on-read` semantics (`{}` / `[]`,
+  never null).
+
+### Internal hardening
+
+- Tolerations deep-copy `*int64` `TolerationSeconds` at every
+  proto↔engine↔store boundary so a future caller cache that reuses
+  a slice can't mutate an already-shipped JobAssignment or pod
+  spec.
+- Service pods now receive the agent-level `Tolerations` baseline.
+  Previously documented as "applies to all pods" but only wired
+  for task pods — a cluster with NoSchedule taints would have left
+  service pods Pending while the task pod scheduled fine.
+- Profile seed loader runs the same validation gate as the admin
+  HTTP handler so a Helm-managed profile and a UI-edited row are
+  interchangeable across the audit + admin REST surfaces.
+
+### Doc
+
+New `concepts/runner-profiles` covers: engine scope, default + max
+resources, the v0.13.1 fallback, tags, env + secrets, scheduling
+hints with the agent-baseline-vs-profile merge contract, services
+inheriting only the baseline, chart values for the baseline, and
+seeding via Helm.
+
 ## v0.13.0 — 2026-06-08
 
 Single feature: **PR-label-driven approval quorum** — the same
