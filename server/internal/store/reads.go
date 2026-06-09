@@ -270,7 +270,24 @@ type JobDetail struct {
 	StartedAt  *time.Time       `json:"started_at,omitempty"`
 	FinishedAt *time.Time       `json:"finished_at,omitempty"`
 	AgentID    *uuid.UUID       `json:"agent_id,omitempty"`
-	Logs       []LogLineSummary `json:"logs,omitempty"`
+	// Logs carries the TAIL of the job's log lines (oldest-first
+	// within the returned window). Kept named `Logs` for backward
+	// compat with consumers that pre-date the head/omitted fields.
+	Logs []LogLineSummary `json:"logs,omitempty"`
+	// LogsHead carries the FIRST N lines of the job's logs when
+	// the caller requests it (via `?head=N`). Together with Logs
+	// (the tail) and LogsOmitted (the gap), the UI can render
+	// long jobs as "start + (X lines omitted) + end" so the
+	// startup-phase signal (Gradle daemon banner, dependency
+	// resolution, JDK toolchain selection) survives the cap that
+	// a tail-only view would clip.
+	LogsHead []LogLineSummary `json:"logs_head,omitempty"`
+	// LogsOmitted is the count of lines NEITHER in LogsHead nor in
+	// Logs — the verbose middle that the UI shows as a divider.
+	// Zero when head + tail >= total (everything is rendered);
+	// also zero when the caller didn't request head at all (tail-
+	// only consumers can ignore this field).
+	LogsOmitted int64 `json:"logs_omitted,omitempty"`
 
 	// Approval gate fields. Populated only when approval_gate is
 	// true so regular jobs don't carry dead JSON on every response.
@@ -817,7 +834,48 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 // pure deltas instead of re-fetching the last N lines every tick
 // — survives bursty jobs that produce >N lines between polls,
 // which the tail-only path silently drops.
+// LogWindow controls how GetRunDetail materialises each job's log
+// view. Separated into a struct (vs more positional args) so the
+// head-and-tail (`?head=`) addition in v0.14.7 doesn't push every
+// call site through a wider signature than it needs.
+//
+// Zero values are safe: a zero-value LogWindow leaves Logs empty
+// and skips all log I/O (the existing callers passing
+// `logsPerJob: 0` to mean "skip logs" route through this).
+type LogWindow struct {
+	// Tail is the legacy field. Asks for the LAST N lines per job
+	// (or, with Since, the next N after the cursor). Wired to the
+	// existing TailLogLinesByJob query.
+	Tail int32
+	// Head asks for the FIRST N lines per job. Combined with Tail,
+	// callers can render "start + (omitted) + end" for long jobs.
+	// Wired to HeadLogLinesByJob. When Head > 0 GetRunDetail also
+	// computes JobDetail.LogsOmitted from CountLogLinesByJob.
+	Head int32
+	// Since is the per-job cursor for incremental polling. When a
+	// cursor is present, the response is the next N AFTER the
+	// cursor (oldest-first), ignoring Head. Used by the UI's live-
+	// tail SSE companion path for terminal jobs.
+	Since map[uuid.UUID]int64
+}
+
+// GetRunDetail is the legacy entry — tail-only, cursor-aware. Kept
+// for the existing call sites in api/runs and checks. New callers
+// that want head+tail should use GetRunDetailWithLogs (below).
 func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob int32, since map[uuid.UUID]int64) (RunDetail, error) {
+	return s.GetRunDetailWithLogs(ctx, runID, LogWindow{Tail: logsPerJob, Since: since})
+}
+
+// GetRunDetailWithLogs is the head+tail-aware variant. The shape
+// of the returned RunDetail is the same as GetRunDetail; jobs
+// gain populated LogsHead + LogsOmitted when LogWindow.Head > 0.
+func (s *Store) GetRunDetailWithLogs(ctx context.Context, runID uuid.UUID, window LogWindow) (RunDetail, error) {
+	return s.getRunDetail(ctx, runID, window)
+}
+
+func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWindow) (RunDetail, error) {
+	logsPerJob := window.Tail
+	since := window.Since
 	run, err := s.q.GetRunWithPipeline(ctx, pgUUID(runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -941,6 +999,34 @@ func (s *Store) GetRunDetail(ctx context.Context, runID uuid.UUID, logsPerJob in
 				return RunDetail{}, fmt.Errorf("store: logs: %w", err)
 			}
 			jd.Logs = logs
+
+			// Head fetch is independent of the cursor path: incremental
+			// polling (with Since) consumes the tail delta, while the
+			// head is a one-time read on initial load — there's no
+			// "head delta", the start of the log doesn't move. Cursor-
+			// driven calls skip the head fetch to avoid re-shipping the
+			// same bytes on every poll tick.
+			if window.Head > 0 && !hasCursor {
+				headLogs, headTotal, hErr := s.fetchJobLogsHead(ctx, jobUUID, arch, window.Head)
+				if hErr != nil {
+					return RunDetail{}, fmt.Errorf("store: head logs: %w", hErr)
+				}
+				jd.LogsHead = headLogs
+				// Omitted = total - len(head) - len(tail). When head
+				// overlaps the tail (small job whose head+tail covers
+				// everything), we dedupe by trimming head entries that
+				// also appear in tail — keeping tail's window canonical
+				// so the consumer can append-render and the head section
+				// drops the duplicates.
+				if headTotal > 0 {
+					jd.LogsHead = dedupeHeadAgainstTail(jd.LogsHead, jd.Logs)
+					omitted := headTotal - int64(len(jd.LogsHead)) - int64(len(jd.Logs))
+					if omitted < 0 {
+						omitted = 0
+					}
+					jd.LogsOmitted = omitted
+				}
+			}
 		}
 		// Synthetic notification job: stamp the human-readable
 		// trigger + plugin ref so the UI can render a real label
@@ -1008,4 +1094,62 @@ func (s *Store) logLinesAfterSeq(ctx context.Context, jobRunID uuid.UUID, sinceS
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// fetchJobLogsHead reads the first N log lines for a job, choosing
+// archive vs log_lines table by the same gate the tail-fetch path
+// uses (HasArchive + logArchiveSrc wired). Returns the trimmed
+// head slice plus the TOTAL count (DB count when reading from
+// log_lines, archive size when reading from cold storage) so the
+// caller can compute LogsOmitted in one round-trip per source.
+func (s *Store) fetchJobLogsHead(
+	ctx context.Context,
+	jobUUID uuid.UUID,
+	arch JobLogArchive,
+	limit int32,
+) ([]LogLineSummary, int64, error) {
+	if arch.HasArchive && s.logArchiveSrc != nil {
+		return s.archivedHead(ctx, arch.URI, limit)
+	}
+	rows, err := s.q.HeadLogLinesByJob(ctx, db.HeadLogLinesByJobParams{
+		JobRunID: pgUUID(jobUUID),
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: head logs: %w", err)
+	}
+	total, err := s.q.CountLogLinesByJob(ctx, pgUUID(jobUUID))
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: count logs: %w", err)
+	}
+	out := make([]LogLineSummary, 0, len(rows))
+	for _, l := range rows {
+		out = append(out, LogLineSummary{
+			Seq: l.Seq, Stream: l.Stream, At: l.At.Time, Text: l.Text,
+		})
+	}
+	return out, total, nil
+}
+
+// dedupeHeadAgainstTail returns the head slice with any entries
+// whose seq also appears in tail removed. Used when head+tail
+// covers the entire log (short jobs) so the consumer doesn't
+// render the same lines twice. Tail is the canonical window —
+// the UI's append-only render assumes the LAST chunk is contiguous.
+func dedupeHeadAgainstTail(head, tail []LogLineSummary) []LogLineSummary {
+	if len(head) == 0 || len(tail) == 0 {
+		return head
+	}
+	tailSeqs := make(map[int64]struct{}, len(tail))
+	for _, l := range tail {
+		tailSeqs[l.Seq] = struct{}{}
+	}
+	out := head[:0]
+	for _, l := range head {
+		if _, dup := tailSeqs[l.Seq]; dup {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }

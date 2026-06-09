@@ -184,10 +184,15 @@ export function JobCard({ job, runID }: Props) {
 
       <details open={hasLogs} className="mt-2">
         <summary className="cursor-pointer select-none text-[11px] text-muted-foreground hover:text-foreground">
-          Logs ({job.logs?.length ?? 0})
+          Logs ({((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0))} of {((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0) + (job.logs_omitted ?? 0))})
         </summary>
         <div className="mt-2 overflow-hidden rounded-md border border-border">
-          <LogViewer logs={job.logs ?? []} jobStartedAt={job.started_at ?? undefined} />
+          <LogViewer
+            logs={job.logs ?? []}
+            head={job.logs_head ?? []}
+            omitted={job.logs_omitted ?? 0}
+            jobStartedAt={job.started_at ?? undefined}
+          />
         </div>
       </details>
     </div>

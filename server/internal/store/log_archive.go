@@ -259,6 +259,31 @@ func (s *Store) archivedTail(ctx context.Context, key string, limit int32) ([]Lo
 	return out, nil
 }
 
+// archivedHead returns the first `limit` lines of an archived job
+// in seq order. Mirror of archivedTail; used by the head+tail UI
+// render so jobs that archived can still show their startup phase.
+//
+// Returns both the trimmed slice AND the total line count: the
+// caller (GetRunDetail) needs the count to compute LogsOmitted
+// without paying for a second archive read.
+func (s *Store) archivedHead(ctx context.Context, key string, limit int32) ([]LogLineSummary, int64, error) {
+	lines, err := s.readArchive(ctx, key)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := int64(len(lines))
+	if int(limit) > 0 && len(lines) > int(limit) {
+		lines = lines[:int(limit)]
+	}
+	out := make([]LogLineSummary, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, LogLineSummary{
+			Seq: l.Seq, Stream: l.Stream, At: l.At, Text: l.Text,
+		})
+	}
+	return out, total, nil
+}
+
 // archivedAfterSeq returns archived lines with seq strictly greater
 // than `cursor`, oldest-first, capped at `limit`. Mirrors
 // logLinesAfterSeq's contract for the cursor-poll path.

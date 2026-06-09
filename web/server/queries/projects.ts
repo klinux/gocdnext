@@ -95,9 +95,16 @@ export async function getProjectLogArchive(
 export async function getRunDetail(
   id: string,
   logsPerJob = 200,
+  // logsHeadPerJob defaults to a chunky 500 so the operator sees the
+  // build's startup (Gradle daemon banner, dep resolution from
+  // Nexus, JDK toolchain selection, classpath assembly). Combined
+  // with the existing tail at `logsPerJob`, a 23k-line build now
+  // shows "head + (~21k omitted) + tail" instead of just the last
+  // 200 lines. Cap=2000 server-side either way.
+  logsHeadPerJob = 500,
 ): Promise<RunDetail> {
   return readJSON<RunDetail>(
-    `/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}`,
+    `/api/v1/runs/${encodeURIComponent(id)}?logs=${logsPerJob}&head=${logsHeadPerJob}`,
   );
 }
 

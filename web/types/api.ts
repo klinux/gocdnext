@@ -196,7 +196,21 @@ export type JobDetail = {
   started_at?: string;
   finished_at?: string;
   agent_id?: string;
+  // logs carries the TAIL of the job log (oldest-first within the
+  // returned window). Name kept for backward compat with callers
+  // that pre-date head+omitted.
   logs?: LogLine[];
+  // logs_head carries the FIRST N lines when the run-detail request
+  // included `?head=N`. Together with `logs_omitted`, the UI renders
+  // long jobs as "start + (X lines omitted) + end" so the startup
+  // phase (Gradle daemon banner, dependency resolution, JDK
+  // selection) survives the tail-only cap.
+  logs_head?: LogLine[];
+  // logs_omitted is the count of lines neither in `logs_head` nor
+  // in `logs`. Zero when head+tail covers everything (short jobs)
+  // and zero when the caller didn't request head. The UI shows
+  // this as a divider between head and tail.
+  logs_omitted?: number;
 
   // Approval-gate metadata. Populated only when the job is a
   // manual approval gate; the server omits these fields on

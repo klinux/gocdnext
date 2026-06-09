@@ -4,6 +4,16 @@ import type { LogLine } from "@/types/api";
 
 type Props = {
   logs: LogLine[];
+  // head, when provided, is rendered ABOVE the tail with a visual
+  // divider between them showing `omitted` lines were trimmed.
+  // Used by the run-detail page to render long jobs as
+  // "first N + (X lines omitted) + last M" — the startup phase
+  // (which `logs` alone hides for 23k-line builds) survives.
+  head?: LogLine[];
+  // omitted is the line count between head and tail. When > 0 the
+  // divider is rendered with the count; when 0 (head+tail covers
+  // everything, or no head requested) no divider appears.
+  omitted?: number;
   // jobStartedAt anchors the per-line elapsed time displayed on the
   // right (Woodpecker-style "0s", "2s", "6s"). When omitted, the
   // grid drops the timing column gracefully — useful for log
@@ -16,8 +26,10 @@ type Props = {
 // Static server-rendered tail — good enough for a completed run. Live tailing
 // (SSE) is a later slice; keeping this component pure makes that drop-in easy:
 // the client variant just replaces `logs` with a streamed state.
-export function LogViewer({ logs, jobStartedAt, className }: Props) {
-  if (logs.length === 0) {
+export function LogViewer({ logs, head, omitted, jobStartedAt, className }: Props) {
+  const hasHead = (head?.length ?? 0) > 0;
+  const hasOmitted = (omitted ?? 0) > 0;
+  if (logs.length === 0 && !hasHead) {
     return (
       <p className="px-3 py-2 text-xs text-muted-foreground">No log lines captured.</p>
     );
@@ -30,6 +42,43 @@ export function LogViewer({ logs, jobStartedAt, className }: Props) {
   // via a top-scope mutable; the map below runs synchronously in a
   // single render so the implicit ordering is stable.
   let lastShown = -1;
+  const renderLine = (line: LogLine) => {
+    const tone = classifyLine(line.text, line.stream);
+    let elapsedLabel: string | null = null;
+    if (showElapsed) {
+      const t = Date.parse(line.at);
+      if (Number.isFinite(t)) {
+        const sec = Math.max(0, Math.floor((t - start) / 1000));
+        if (sec !== lastShown) {
+          elapsedLabel = formatElapsed(sec);
+          lastShown = sec;
+        }
+      }
+    }
+    const cols = showElapsed
+      ? "grid grid-cols-[3rem_1fr_3.5rem] gap-3"
+      : "grid grid-cols-[3rem_1fr] gap-3";
+    return (
+      <div
+        key={line.seq}
+        data-stream={line.stream}
+        data-tone={tone}
+        className={cn(cols, toneClass[tone])}
+      >
+        <span className="select-none text-right text-muted-foreground">{line.seq}</span>
+        <span className="whitespace-pre-wrap break-all">{ansiToReact(line.text)}</span>
+        {showElapsed && (
+          <span
+            className="select-none text-right text-muted-foreground tabular-nums"
+            aria-label={elapsedLabel ? `${elapsedLabel} elapsed` : undefined}
+          >
+            {elapsedLabel ?? ""}
+          </span>
+        )}
+      </div>
+    );
+  };
+
   return (
     <pre
       className={cn(
@@ -37,44 +86,17 @@ export function LogViewer({ logs, jobStartedAt, className }: Props) {
         className,
       )}
     >
-      {logs.map((line) => {
-        const tone = classifyLine(line.text, line.stream);
-        let elapsedLabel: string | null = null;
-        if (showElapsed) {
-          const t = Date.parse(line.at);
-          if (Number.isFinite(t)) {
-            const sec = Math.max(0, Math.floor((t - start) / 1000));
-            if (sec !== lastShown) {
-              elapsedLabel = formatElapsed(sec);
-              lastShown = sec;
-            }
-          }
-        }
-        const cols = showElapsed
-          ? "grid grid-cols-[3rem_1fr_3.5rem] gap-3"
-          : "grid grid-cols-[3rem_1fr] gap-3";
-        return (
-          <div
-            key={line.seq}
-            data-stream={line.stream}
-            data-tone={tone}
-            className={cn(cols, toneClass[tone])}
-          >
-            <span className="select-none text-right text-muted-foreground">
-              {line.seq}
-            </span>
-            <span className="whitespace-pre-wrap break-all">{ansiToReact(line.text)}</span>
-            {showElapsed && (
-              <span
-                className="select-none text-right text-muted-foreground tabular-nums"
-                aria-label={elapsedLabel ? `${elapsedLabel} elapsed` : undefined}
-              >
-                {elapsedLabel ?? ""}
-              </span>
-            )}
-          </div>
-        );
-      })}
+      {hasHead && head?.map(renderLine)}
+      {hasHead && hasOmitted && (
+        <div
+          data-divider="omitted"
+          className="my-1 grid grid-cols-1 border-t border-b border-dashed border-muted-foreground/30 bg-muted/20 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-muted-foreground"
+          aria-label={`${omitted} log lines omitted between head and tail`}
+        >
+          · · · {omitted?.toLocaleString()} lines omitted · · ·
+        </div>
+      )}
+      {logs.map(renderLine)}
     </pre>
   );
 }

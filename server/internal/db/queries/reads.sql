@@ -430,3 +430,28 @@ FROM (
     LIMIT $2
 ) recent
 ORDER BY seq;
+
+-- name: HeadLogLinesByJob :many
+-- Returns the head (first $2 lines) of a job's logs in seq order.
+-- Used together with TailLogLinesByJob to render the run detail's
+-- log view as "first N + last M lines" — the verbose middle of
+-- long jobs (Gradle test execution, kafka chatter) is rarely what
+-- operators need first; the START (Gradle daemon setup, dependency
+-- resolution from Nexus, classpath assembly) and the END (failure
+-- + stack trace) are. Pre-v0.14.7 the cap-on-tail meant a 23k-line
+-- job hid the entire startup; `kubectl logs` was the workaround.
+SELECT seq, stream, at, text
+FROM log_lines
+WHERE job_run_id = $1
+ORDER BY seq
+LIMIT $2;
+
+-- name: CountLogLinesByJob :one
+-- Total log line count for a job_run. Powers the "(N lines omitted)"
+-- divider between head and tail in the UI: omitted = total - head -
+-- tail, clamped to >= 0 (when head+tail overlap or exceed total,
+-- callers dedupe and zero the omitted count). Cheap row count
+-- against the same (job_run_id, seq) index TailLogLinesByJob hits.
+SELECT COUNT(*)::bigint AS count
+FROM log_lines
+WHERE job_run_id = $1;

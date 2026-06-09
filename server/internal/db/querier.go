@@ -143,6 +143,12 @@ type Querier interface {
 	// no rows = zero local admins, the form stays hidden so the page
 	// doesn't advertise a dead code path.
 	CountLocalUsers(ctx context.Context) (int64, error)
+	// Total log line count for a job_run. Powers the "(N lines omitted)"
+	// divider between head and tail in the UI: omitted = total - head -
+	// tail, clamped to >= 0 (when head+tail overlap or exceed total,
+	// callers dedupe and zero the omitted count). Cheap row count
+	// against the same (job_run_id, seq) index TailLogLinesByJob hits.
+	CountLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) (int64, error)
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Paired with ListRunsGlobal so /runs can render "N of M" with the
 	// same filter args. Returned as bigint to fit any table; UI only
@@ -466,6 +472,15 @@ type Querier interface {
 	// Total live artefact bytes. Returns 0 when the artifacts table is
 	// empty. Used for the global hard cap.
 	GlobalArtifactUsage(ctx context.Context) (int64, error)
+	// Returns the head (first $2 lines) of a job's logs in seq order.
+	// Used together with TailLogLinesByJob to render the run detail's
+	// log view as "first N + last M lines" — the verbose middle of
+	// long jobs (Gradle test execution, kafka chatter) is rarely what
+	// operators need first; the START (Gradle daemon setup, dependency
+	// resolution from Nexus, classpath assembly) and the END (failure
+	// + stack trace) are. Pre-v0.14.7 the cap-on-tail meant a 23k-line
+	// job hid the entire startup; `kubectl logs` was the workaround.
+	HeadLogLinesByJob(ctx context.Context, arg HeadLogLinesByJobParams) ([]HeadLogLinesByJobRow, error)
 	// Stores a freshly-minted token. Caller passes the SHA-256 hex
 	// digest in `hash`; the plaintext is shown to the user once at
 	// creation time and never persisted. Either user_id OR
