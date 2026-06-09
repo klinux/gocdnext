@@ -69,6 +69,39 @@ DB-only flip (queued case).
 `AuditActionRunCancel`; the audit log now distinguishes per-job
 from per-run cancellations.
 
+### Honesty guarantees — review-driven
+
+Two race / semantic windows from the first cut, closed before tag:
+
+1. **Dispatch failure no longer reports success.** When the cancel
+   target is a running job, the cancel only takes effect after the
+   `CancelJob` gRPC frame lands on the agent's session. If the
+   dispatch errors (agent disconnected, session busy, dispatcher
+   not wired), the row is still `running` and the container is still
+   burning. Previously the handler returned `202 status=canceled
+   signaled=false` regardless — a lie. Now: `503 status=dispatch_failed`
+   with the operator-facing reason in the response body. The audit
+   event is still emitted (the attempt is part of the trail) but
+   with `signaled=false`, distinguishing "tried, didn't land" from
+   "landed, cancel pending agent ack". Same envelope for the
+   running-but-agent_id-not-yet-set transient (no one to push to).
+
+2. **Race between cancel and dispatch can no longer flip 409.**
+   `GetJobRunForCancel` now uses `SELECT … FOR UPDATE`, serialising
+   against the scheduler's `AssignJob` for the targeted row. If the
+   scheduler claims the row between our `SELECT` and our `UPDATE`,
+   our `SELECT FOR UPDATE` blocks until the scheduler commits; we
+   then read the post-commit state (`running`) and route through
+   the dispatch path instead of returning the misleading
+   `409 already terminal`. Symmetric: if cancel acquires the lock
+   first, the scheduler's `UPDATE WHERE status='queued'` blocks
+   until our commit and then misses its predicate (status is now
+   `canceled`), so nothing dispatches.
+
+Both regressions are covered by tests
+(`TestCancelJob_DispatchFailureReturns503`,
+`TestCancelJob_RunningWithNoAgentReturns503`).
+
 ## v0.14.4 — 2026-06-09
 
 Closes [#15](https://github.com/klinux/gocdnext/issues/15) and the

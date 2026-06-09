@@ -63,6 +63,7 @@ const getJobRunForCancel = `-- name: GetJobRunForCancel :one
 SELECT id, run_id, stage_run_id, name, status, agent_id, attempt
 FROM job_runs
 WHERE id = $1
+FOR UPDATE
 `
 
 type GetJobRunForCancelRow struct {
@@ -82,6 +83,15 @@ type GetJobRunForCancelRow struct {
 // directly here and feed cascadeAfterJobCompletion. Distinguishes
 // "not found" from "already terminal" via pgx.ErrNoRows vs the
 // status check in the caller.
+//
+// `FOR UPDATE` serialises against the scheduler's
+// ClaimJobForDispatch (which writes status='running' + agent_id
+// inside its own tx). Without the lock, a job_run that's queued
+// when we SELECT can be dispatched by the time CancelQueuedJobRun
+// UPDATEs — the UPDATE misses the predicate, we return 409
+// "already terminal" while the job is actually running. With the
+// lock, exactly one of (cancel commits / dispatch commits) wins;
+// the loser sees the post-commit state and routes correctly.
 func (q *Queries) GetJobRunForCancel(ctx context.Context, id pgtype.UUID) (GetJobRunForCancelRow, error) {
 	row := q.db.QueryRow(ctx, getJobRunForCancel, id)
 	var i GetJobRunForCancelRow

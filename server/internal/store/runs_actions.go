@@ -127,17 +127,33 @@ func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]R
 	return out, rows.Err()
 }
 
-// CancelJobRunResult surfaces what CancelJobRun did. Dispatched is
-// populated only on the running-job path (handler pushes one
-// CancelJob frame down the agent's session); on the queued path the
-// row is flipped directly to canceled in this tx and Dispatched is
-// nil. RunID + JobName populate the handler's response body and the
-// audit event.
+// CancelJobRunResult surfaces what CancelJobRun did. The handler
+// keys its HTTP response on NeedsDispatch:
+//
+//   - NeedsDispatch=false → the row was queued and is now `canceled`
+//     in the DB; the cancel has already taken effect. Handler
+//     returns 202 with signaled=false; no gRPC frame required.
+//
+//   - NeedsDispatch=true  → the row was running. The cancel will
+//     only take effect after the handler pushes a CancelJob frame
+//     down the agent's session. Dispatched carries the (job_run,
+//     agent) pair the handler dispatches to. If Dispatched is nil
+//     (running row but no agent_id yet — transient window between
+//     AssignJob committing and the session ack landing), the
+//     handler returns 503 because nothing can be signaled. If
+//     Dispatched is populated but the Dispatcher returns an error,
+//     the handler ALSO returns 503: the DB still shows running,
+//     the container is still burning, "canceled" would be a lie.
+//
+// Splitting "did the cancel land?" out of the result lets the
+// handler avoid the bug where a dispatch failure returned
+// HTTP 202 status="canceled" while the job kept running.
 type CancelJobRunResult struct {
-	RunID      uuid.UUID
-	JobRunID   uuid.UUID
-	JobName    string
-	Dispatched *RunningJobRef
+	RunID         uuid.UUID
+	JobRunID      uuid.UUID
+	JobName       string
+	NeedsDispatch bool
+	Dispatched    *RunningJobRef
 }
 
 // CancelJobRun cancels exactly one job_run, leaving siblings (and
@@ -183,22 +199,25 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 	switch row.Status {
 	case "running":
 		// Agent owns the row's lifecycle until JobResult lands.
-		// We commit an empty tx so the lookup-read materialises
-		// (matters if someone added triggers later) and so the
-		// handler can hand a stable RunID back to the client.
+		// We commit the (empty) tx so the SELECT FOR UPDATE lock
+		// releases. NeedsDispatch=true tells the handler the cancel
+		// has NOT yet taken effect — it depends on the gRPC frame
+		// landing.
 		if err := tx.Commit(ctx); err != nil {
 			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: commit (running): %w", err)
 		}
 		out := CancelJobRunResult{
-			RunID:    fromPgUUID(row.RunID),
-			JobRunID: jobRunID,
-			JobName:  row.Name,
+			RunID:         fromPgUUID(row.RunID),
+			JobRunID:      jobRunID,
+			JobName:       row.Name,
+			NeedsDispatch: true,
 		}
 		// agent_id may legitimately be NULL even with status='running'
-		// during the brief window between dispatch and the agent's
-		// session establishment ack. Without an agent there's no one
-		// to push CancelJob to — the reaper will eventually reclaim
-		// the row. Dispatched stays nil; the audit event still fires.
+		// during the brief window between AssignJob committing and the
+		// agent's session ack landing. Without an agent there's no one
+		// to push CancelJob to; Dispatched stays nil and the handler
+		// returns 503 (operator retries, by then the agent's session
+		// is up or the row has progressed).
 		if row.AgentID.Valid {
 			out.Dispatched = &RunningJobRef{
 				JobID:   jobRunID,
@@ -210,14 +229,16 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 	case "queued":
 		// Flip directly. The cascade may bubble up to stage/run
 		// completion if this was the only unfinished job — same
-		// path CompleteJob takes.
+		// path CompleteJob takes. With FOR UPDATE on the SELECT
+		// above, the scheduler's AssignJob is serialised behind us,
+		// so this UPDATE can no longer miss its predicate due to a
+		// concurrent dispatch — if no rows are returned here, it's
+		// a genuine logic bug rather than a race, and we surface it
+		// as 500 rather than the misleading 409 the prior cut shipped.
 		if _, err := q.CancelQueuedJobRun(ctx, pgUUID(jobRunID)); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				// Raced with dispatch: the row moved to 'running' between
-				// our GetJobRunForCancel and the UPDATE. Bounce to
-				// terminal-409 — operator clicks Cancel again and the
-				// next attempt sees status='running' and dispatches.
-				return CancelJobRunResult{}, ErrJobRunTerminal
+				return CancelJobRunResult{}, fmt.Errorf(
+					"store: cancel job: queued flip missed under FOR UPDATE — invariant violation")
 			}
 			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: queued flip: %w", err)
 		}
