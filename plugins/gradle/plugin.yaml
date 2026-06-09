@@ -76,6 +76,17 @@ inputs:
       Generic extra args appended after `command:`. Use for one-
       off flags that don't deserve a dedicated knob —
       `--info`, `--stacktrace`, `-Pfoo=bar`, etc.
+  jdk:
+    required: false
+    default: "21"
+    description: >
+      JDK version to run gradle (and the test forks) against.
+      Accepts "11", "17", "21", or "25"; default "21". Backed by
+      the shared `jdk-base` image so a single plugin tag covers
+      every supported toolchain — apps stuck on JDK 11 don't
+      need a separate plugin variant. Typos fail loud at the
+      entrypoint (`jdk: "211"` aborts with exit 2 instead of
+      falling through to the default).
 
 examples:
   - name: test

@@ -19,11 +19,17 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
+  # Plugins that FROM the shared jdk-base image. When jdk-base
+  # changes, these MUST rebuild against the new base so a
+  # consumer touching only entrypoint.sh and a base toolchain
+  # bump don't ship out of sync. New JVM plugins (sbt, ant,
+  # kotlin-cli) join this list when they land.
+  JDK_BASE_CONSUMERS: "gradle maven"
 
 jobs:
   changed:
     # Compute which plugin directories changed in this push so the
-    # build matrix only fans out over those — buying the 37-plugin
+    # build matrix only fans out over those — buying the 38-plugin
     # repo back its sub-2-minute CI for a typical PR. On a tag push
     # we rebuild every plugin so the release version stamps a full
     # set of images regardless of which dir last touched main.
@@ -31,6 +37,7 @@ jobs:
     outputs:
       plugins: ${{ steps.set.outputs.plugins }}
       any: ${{ steps.set.outputs.any }}
+      base_needed: ${{ steps.set.outputs.base_needed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,21 +66,104 @@ jobs:
               picks=$all
             else
               picks=$changed
+              # If jdk-base changed, force-add the consumers so a
+              # toolchain bump doesn't leave gradle:main pointing at
+              # last week's base. Consumers in $JDK_BASE_CONSUMERS
+              # get folded in even when their own dir didn't change.
+              if printf '%s\n' $picks | grep -qx jdk-base; then
+                picks=$(printf '%s\n%s\n' "$picks" "$JDK_BASE_CONSUMERS" | tr ' ' '\n' | sort -u)
+              fi
             fi
           fi
 
-          arr=$(printf '%s\n' $picks | jq -R . | jq -sc .)
+          # Split the picks into (a) the matrix list — every plugin
+          # to build EXCEPT jdk-base, which has its own dedicated job
+          # because consumers in the matrix FROM it — and (b) a flag
+          # telling us whether jdk-base itself needs a rebuild this
+          # run. Both are needed downstream.
+          matrix_picks=$(printf '%s\n' $picks | grep -vx jdk-base || true)
+          if printf '%s\n' $picks | grep -qx jdk-base; then
+            base_needed=true
+          else
+            base_needed=false
+          fi
+
+          arr=$(printf '%s\n' $matrix_picks | jq -R . | jq -sc .)
           echo "plugins=$arr" >> "$GITHUB_OUTPUT"
-          if [[ "$arr" == "[]" ]]; then
+          if [[ "$arr" == "[]" ]] && [[ "$base_needed" == "false" ]]; then
             echo "any=false" >> "$GITHUB_OUTPUT"
           else
             echo "any=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "Building: $arr"
+          echo "base_needed=$base_needed" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $arr"
+          echo "Base needed: $base_needed"
+
+  base:
+    # jdk-base is built BEFORE the consumer matrix so gradle and
+    # maven (and future JVM plugins) can FROM the just-pushed
+    # image. Skipped when base_needed=false — consumers then fall
+    # back to the stable `:v1` tag from the last release.
+    needs: changed
+    if: needs.changed.outputs.base_needed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      # The tag the consumer matrix will FROM for this run. On
+      # release-tag push: the semver tag (e.g. "v0.15.0"). On main
+      # push: "main" or the short sha. Empty when this job is
+      # skipped — the matrix's `images` job uses `||` fallback to
+      # `:v1` in that case.
+      ref: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-jdk-base
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=v1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: plugins/jdk-base
+          file: plugins/jdk-base/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=plugin-jdk-base
+          cache-to: type=gha,mode=max,scope=plugin-jdk-base
 
   images:
-    needs: changed
-    if: needs.changed.outputs.any == 'true'
+    # The fan-out matrix for every plugin EXCEPT jdk-base. Waits
+    # for the `base` job so consumers (gradle, maven) FROM the
+    # just-pushed jdk-base when it rebuilt; falls back to the
+    # stable `:v1` tag when base was skipped.
+    #
+    # `if` guards on the matrix having at least one entry AND on
+    # the base job being either successful or skipped — we don't
+    # want a base failure to silently produce a consumer image
+    # against the previous-release base.
+    needs: [changed, base]
+    if: |
+      always() &&
+      needs.changed.outputs.any == 'true' &&
+      needs.changed.outputs.plugins != '[]' &&
+      (needs.base.result == 'success' || needs.base.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -116,6 +206,63 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=v1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
+      - id: base-ref
+        # Compute the BASE_IMAGE build-arg per consumer step.
+        # Four cases, ordered by precedence — PR check MUST come
+        # first because docker/metadata-action populates
+        # `version` even on pull_request (it produces a `pr-N`
+        # tag), so the base job's ref output is non-empty even
+        # though the image was NOT pushed (push: false on PR).
+        # Without the PR-first guard, the consumer would try
+        # `FROM ghcr.io/.../jdk-base:pr-N` and get a 404 pull.
+        #
+        #   1. PR → fall back to :v1. The base job, if it ran
+        #      for the PR, was push: false — the image isn't in
+        #      ghcr to FROM. We accept testing the consumer
+        #      against the LAST RELEASED base; a PR touching
+        #      both jdk-base and a consumer doesn't get a fully
+        #      integrated CI here. CI on main then exercises
+        #      the real combination. ACCEPTED RISK — fix would
+        #      require a PR-scoped registry push + cleanup
+        #      lifecycle; deferred.
+        #
+        #   2. base.outputs.ref is set → the base job ran THIS
+        #      workflow and pushed (push: true on main / tag).
+        #      Consumer FROMs the exact image that was just
+        #      built. Covers: tag push (ref="v0.15.0"), main
+        #      push that touches jdk-base (ref="main").
+        #
+        #   3. main push that did NOT rebuild jdk-base → fall
+        #      back to :main, not :v1. Reason: if jdk-base:main
+        #      diverged from :v1 (someone pushed a base change
+        #      earlier in the day), a downstream-only push that
+        #      falls back to :v1 silently builds gradle:main
+        #      against last-week's stable base — masking
+        #      breakage that :main was supposed to surface.
+        #      :main is the right "HEAD-of-base" tracker for
+        #      the "HEAD-of-consumer" image we're producing.
+        #
+        #   4. Any other ref → :v1 (defence in depth; release
+        #      tag pushes rebuild everything so case 2 handles
+        #      them, but the explicit fallback keeps the script
+        #      safe if a future workflow change introduces
+        #      another push kind).
+        run: |
+          set -euo pipefail
+          owner="${{ github.repository_owner }}"
+          base="${REGISTRY}/${owner}/gocdnext-plugin-jdk-base"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            ref="${base}:v1"
+          elif [[ -n "${{ needs.base.outputs.ref }}" ]]; then
+            ref="${base}:${{ needs.base.outputs.ref }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ref="${base}:main"
+          else
+            ref="${base}:v1"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE for ${{ matrix.plugin }}: $ref"
+
       - uses: docker/build-push-action@v6
         with:
           context: plugins/${{ matrix.plugin }}
@@ -124,5 +271,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # build-args is a NEWLINE-separated list. Plugins that
+          # don't honour BASE_IMAGE (every non-JVM plugin) silently
+          # ignore the unknown ARG — no Dockerfile change needed.
+          build-args: |
+            BASE_IMAGE=${{ steps.base-ref.outputs.ref }}
           cache-from: type=gha,scope=plugin-${{ matrix.plugin }}
           cache-to: type=gha,mode=max,scope=plugin-${{ matrix.plugin }}

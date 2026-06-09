@@ -4,6 +4,12 @@
 
 set -euo pipefail
 
+# Honor the `jdk:` input (PLUGIN_JDK) BEFORE any JVM tool is
+# spawned. select-jdk.sh ships with the jdk-base image and is on
+# PATH at /usr/local/bin/select-jdk.sh. Source (don't exec) so
+# JAVA_HOME + PATH land in this shell for the gradle launcher.
+. /usr/local/bin/select-jdk.sh
+
 # parse_bool — strict bool normaliser; typos fail loud. Accepted:
 # true|1|yes|on, false|0|no|off, case-insensitive. Empty = default.
 parse_bool() {

@@ -6,6 +6,87 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.15.0 — 2026-06-09
+
+JVM plugin family converges on a single image per tool with
+runtime JDK selection. Pre-v0.15 each JVM plugin (`gradle`,
+`maven`) shipped pinned to JDK 21 — a project on JDK 11 had no
+plugin variant to point at, with the maven Dockerfile's own
+comment admitting the workaround was "override via `image:` on
+the step". This release closes that gap via a shared base image
+and a per-step `jdk:` input.
+
+### Convention
+
+- New shared base image `ghcr.io/klinux/gocdnext-plugin-jdk-base:v1`
+  ships Temurin **11, 17, 21, 25** at `/opt/java/jdk-N/` plus a
+  `select-jdk.sh` helper. JVM plugins `FROM` it and `source` the
+  helper from their entrypoint, so the operator's `jdk:` input
+  (mapped to `PLUGIN_JDK`) sets `JAVA_HOME` + `PATH` before any
+  JVM tool is spawned. Typos fail loud (exit 2) — `jdk: "211"`
+  doesn't silently fall through to the default.
+- `gradle` and `maven` honour `jdk: "11"|"17"|"21"|"25"`,
+  default **"21"** (zero-config compat with every pre-v0.15
+  pipeline). Card-style pipelines on JDK 21 keep their YAML
+  unchanged; legacy apps on JDK 11/17 add one input line.
+
+### Why single image + input vs. per-JDK tags
+
+- **Layer cache at the K8s node**: a node running both a gradle
+  job (JDK 21) and a maven job (JDK 11) pulls the JDK layers
+  ONCE because both plugin images share the same `jdk-base`
+  parent. Per-JDK tags would force a separate pull per variant.
+- **Operator UX**: `uses: ...@v1` stays stable across plugin
+  bumps; `jdk:` varies per pipeline. With per-JDK tags, every
+  plugin bump means rewriting `uses:` across every pipeline.
+- **Convention**: future JVM plugins (sbt, ant, kotlin-cli)
+  inherit `jdk-base` and gain the same selector for free.
+
+### Implementation
+
+- `plugins/jdk-base/Dockerfile` — multi-stage from
+  `eclipse-temurin:{11,17,21,25}-jdk` into `debian:bookworm-slim`.
+  ~880 MB image, default `JAVA_HOME=/opt/java/jdk-21`.
+- `plugins/jdk-base/select-jdk.sh` — sourceable helper. Strips
+  any prior `/opt/java/jdk-N/bin` from `PATH` before prepending
+  the new one, so re-sourcing doesn't accrete duplicates.
+- `plugins/gradle/Dockerfile` and `plugins/maven/Dockerfile` —
+  `FROM ${BASE_IMAGE}` (default `gocdnext-plugin-jdk-base:v1`,
+  overridden by the workflow to pin against the exact base
+  built in the same workflow run). Gradle CLI fallback
+  (8.10) pinned by SHA-256; Maven CLI (3.9.9) pinned by
+  SHA-512, pulled from `archive.apache.org/dist` (NOT
+  `dlcdn`, which rotates older 3.9.x releases out as new
+  ones land — 2026-06 only carries 3.9.16).
+- `.github/workflows/plugins.yml` — new `base` job builds
+  `jdk-base` BEFORE the consumer matrix and emits its tag as a
+  job output. Consumer matrix derives `BASE_IMAGE` per step with
+  PR-first precedence to avoid `FROM`-ing an image that wasn't
+  pushed: `PR → :v1`, then `ref-from-base → main push that
+  rebuilt base → :main → :v1`.
+
+### Accepted risk
+
+A PR that simultaneously modifies `jdk-base` and a consumer
+(`gradle`/`maven`) tests the consumer against the LAST RELEASED
+base (`:v1`), not the PR's base. CI on `main` then exercises
+the real combination. Tracked in [issue TBD]
+(`workflow: integrate jdk-base + consumer in one PR via
+PR-scoped registry push`).
+
+### Operator-visible
+
+- Pipelines on JDK 21 (the default): zero YAML change.
+- Pipelines on JDK 11/17/25 add `jdk: "<version>"` under
+  `with:`:
+
+  ```yaml
+  uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+  with:
+    command: test
+    jdk: "11"
+  ```
+
 ## v0.14.11 — 2026-06-09
 
 Cache fetch anchor: isolated-mode templated-cache fetch now untars
