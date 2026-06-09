@@ -6,6 +6,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.11 — 2026-06-09
+
+Cache fetch anchor: isolated-mode templated-cache fetch now untars
+at the task's working directory, matching the post-job store
+anchor. Pre-fix, fetch untarred at the PVC mount root while store
+tarred from workDir, so any job with a `target_dir:` (the implicit
+project material uses `src/<hash>/`) restored `.gradle-home/...`
+to `<mountPath>/.gradle-home/` while the task expected
+`<workDir>/.gradle-home/`. Cache HIT logs were honest — the bytes
+arrived — but the task never saw them. Exposed by the Card
+pipeline: a 925 MB Gradle cache restored cleanly and the build
+re-downloaded every plugin from scratch.
+
+### Fix
+
+- `agent/internal/runner/cache_isolated.go`: templated-cache fetch
+  now passes `workDir` (the task CWD) to `streamCacheIntoPod`
+  instead of `mountPath`. Same anchor as `postjob.go`'s
+  `cfg.PodWorkDir`, so the tarball round-trips: store tars from
+  workDir → fetch untars at workDir → paths declared by the
+  operator (`.gradle-home/caches`, `node_modules`, `.cargo/registry`)
+  end up exactly where the next run's task looks for them.
+- Literal-key fetch (init-container `prep` path) was already
+  correct (`scriptWorkDir`) — only the templated path was wrong.
+
+### Affected configurations
+
+- Any job that combines `cache:` with templated keys (`{{ hash
+  "..." }}`) AND has a checkout writing to a subdirectory (the
+  default for implicit project materials). Pure-key caches on
+  bare `/workspace` checkouts were unaffected.
+
 ## v0.14.10 — 2026-06-09
 
 Isolated-mode DinD: swap default Docker transport from TCP-on-

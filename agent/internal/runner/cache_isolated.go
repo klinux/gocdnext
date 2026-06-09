@@ -181,11 +181,26 @@ func (r *Runner) resolveAndFetchTemplatedCaches(
 		entry.FetchFound = true
 		entry.FetchUrl = url
 		entry.FetchSha256 = sha
-		// Cache content untars at the PVC mount root so paths in the
-		// cache tarball (e.g. `.gradle-home/...`) land at
-		// `/workspace/.gradle-home/...` regardless of the job's
-		// `target_dir`. Same anchor the store path uses.
-		if err := streamCacheIntoPod(ctx, exec, podName, mountPath, url, sha); err != nil {
+		// Cache content untars at workDir — the SAME anchor the
+		// post-job store uses (postjob.go: cfg.PodWorkDir). The
+		// store tars from workDir, so the tarball's top-level
+		// entries are paths declared by the operator (e.g.
+		// `.gradle-home/caches`) RELATIVE TO workDir. Untaring
+		// at workDir round-trips that relativity correctly.
+		//
+		// Pre-v0.14.11 this used mountPath under the (wrong)
+		// theory that caches are workspace-global. The store
+		// never matched that theory — it always tarred from
+		// workDir — so a checkout with `target_dir:` like
+		// `src/<hash>/` produced tarballs containing
+		// `.gradle-home/...` that, on restore, landed at
+		// `<mountPath>/.gradle-home/...`. The job's CWD was
+		// `<mountPath>/src/<hash>/`, GRADLE_USER_HOME=.gradle-home
+		// resolved to `<mountPath>/src/<hash>/.gradle-home/` —
+		// empty, hence cache HIT + full re-download. Same shape
+		// for any node_modules / pnpm-store / cargo cache once
+		// target_dir is in play.
+		if err := streamCacheIntoPod(ctx, exec, podName, workDir, url, sha); err != nil {
 			r.emitLog(a, seq, "stderr", fmt.Sprintf(
 				"cache %q: fetch failed (%v) — task runs without cache",
 				entry.GetKey(), err))
