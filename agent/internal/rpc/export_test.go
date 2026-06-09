@@ -110,6 +110,13 @@ func NewCleanupAckSenderForTest(outbound chan<- *gocdnextv1.AgentMessage, droppe
 	return newCleanupAckSender(outbound, dropped)
 }
 
+// CacheProbeScriptForTest exposes the shell script the cache STORE
+// path execs in the housekeeper. The v0.14.8 regression cover
+// runs this against a real `sh` to verify "no paths exist" exits
+// 0 (not 1, which pre-fix would surface as `cache store failed
+// (probe paths: exit 1)`).
+func CacheProbeScriptForTest() string { return cacheProbeScript() }
+
 // StartCleanupWorkersForTest lets tests drive the worker pool
 // directly without going through Run() (which dials + Registers,
 // out of scope for unit tests of the worker behaviour). Returns

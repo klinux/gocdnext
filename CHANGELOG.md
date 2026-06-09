@@ -6,6 +6,90 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.8 — 2026-06-09
+
+Two operator-visible noise fixes observed in v0.14.7 production runs:
+
+### Fix — Cache probe no longer fakes failure on cold start
+
+`agent/internal/rpc/cache.go::probeCachePaths` execs a shell
+script inside the housekeeper to list which declared cache paths
+actually exist post-task. The script's exit status was implicitly
+the LAST `[ -e "$p" ]` test's status — when NONE of the declared
+paths existed (cache-miss-first-run scenario: operator added a
+`cache:` block, Gradle/pnpm hasn't populated `.gradle-home/` or
+`node_modules/` yet), every test returned 1 and the script exited
+1. The caller then wrapped that as:
+
+```
+cache "gradle-XYZ": store failed (probe paths: …: command terminated with exit code 1)
+```
+
+Alarming noise for what is functionally "nothing to tar, store
+empty cache row". After the fix, the script ends with `exit 0` —
+stdout carries the (possibly empty) list, exit reflects "probe
+ran cleanly", and the caller routes via the existing empty-list
+branch (`storeEmptyCacheBlob`) without a fake error.
+
+`cd "$1" || exit 1` at the start is preserved: an unreachable
+workDir (typo, race with workspace cleanup) is a real failure
+that should keep its non-zero exit so the caller surfaces it.
+
+### Fix — Optional artifact zero-match no longer says "failed"
+
+When a declared OPTIONAL artifact path (Card's Jacoco coverage
+XML, screenshots a test didn't take) glob-resolved to zero files,
+`PostJob` emitted:
+
+```
+optional artifact upload failed (continuing): artifact path "build/reports/jacoco/coverage/*.xml" matched zero files in workspace
+```
+
+The word **failed** for an OPTIONAL declaration ("if it's not
+there, no problem") scared operators reading the log. The
+underlying flow was correct (the error was swallowed, the job
+continued), but the wording made every operator pause to verify.
+
+After: the optional branch distinguishes `*podfs.PathsMissingError`
+from real transport failures via `errors.As`. The former routes to
+a NEUTRAL stdout line — `optional artifact: no files matched <glob>`.
+Real transport failures (agent disconnected mid-upload, network
+glitch, RPC error) keep the alarming wording because they ARE
+something the operator might want to know.
+
+The required path is unchanged — required zero-match still fails
+the job loud (v0.14.6 HIGH-3 fix preserved).
+
+### Architecture — `ArtifactPathsMissingError` moves to `podfs`
+
+To let `runner.PostJob` type-check via `errors.As` without
+creating an import cycle (`runner` → `rpc` → `runner` would
+break), the error type relocated from `agent/internal/rpc` to
+`agent/internal/podfs` as `PathsMissingError`. The legacy
+`rpc.ArtifactPathsMissingError` survives as a type alias for
+backward compat with any external consumers; the alias is a
+v0.15 follow-up to clean up.
+
+### Tests
+
+- `TestCacheProbeScript_AllPathsMissingExitsZero` runs the real
+  shell script against a tmpdir with NO matching files and
+  asserts exit 0 + empty stdout (the regression that produced
+  the alarming log was exit 1).
+- `TestCacheProbeScript_SomePathsExistEmitsOnlyThose` covers the
+  happy path: only existing paths in stdout.
+- `TestCacheProbeScript_LeadingDashDefanged` ensures the
+  `case "$p" in -*) p="./$p" ;;` defang still works post-fix.
+- `TestCacheProbeScript_BadWorkDirFailsLoud` confirms an
+  unreachable workDir still exits non-zero — the fix narrowed
+  the "always exit 0" only to the loop, not the prelude.
+- `TestPostJob_OptionalZeroMatchNeutralWording` asserts the
+  log goes to stdout with "no files matched" wording and no
+  "failed" anywhere.
+- `TestPostJob_OptionalRealFailureStaysAlarming` asserts a
+  real transport failure on the optional path keeps the
+  alarming "failed (continuing)" wording.
+
 ## v0.14.7 — 2026-06-09
 
 Closes [#18](https://github.com/klinux/gocdnext/issues/18). The
