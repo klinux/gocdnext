@@ -41,6 +41,19 @@ follow-up (only re-apply when the pushed branch is itself a
 registered material for the project), so a feature branch can't
 overwrite the project's global definition.
 
+### Fix — Cancel actually kills the pod
+
+Cancelling a running job (server-side CancelJob → Runner.Cancel →
+job ctx canceled) no longer leaves the pod alive when the engine
+runs with `CleanupOnFailure=false` (the default operators run).
+Both the shared-mode `maybeCleanup` and the isolated-mode
+`cleanupIsolatedPod` paths now detect `context.Canceled` and
+force-delete the pod regardless of cleanup policy, using a fresh
+background ctx for the DELETE so the canceled run ctx doesn't
+abort the call to kube-apiserver. Cleanup policy still applies
+to natural failures (non-zero exits, prep crashes) — those keep
+the pod for debugging as before.
+
 ## v0.14.1 — 2026-06-08
 
 Hotfix on v0.14.0. Closes the inconsistency where a job that

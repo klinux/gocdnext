@@ -2,9 +2,13 @@ package runner
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
@@ -96,6 +100,74 @@ func TestExecute_Isolated_PropagatesFirstCheckoutTargetDirToWorkDir(t *testing.T
 	})
 	if want := "/workspace"; got != want {
 		t.Errorf("workdir for empty target_dir: want %q, got %q", want, got)
+	}
+}
+
+// TestCleanupIsolatedPod_KeepsPodWhenCleanupDisabled covers the
+// pre-existing behaviour: a job that failed naturally (non-zero
+// task exit, prep crash, etc.) keeps its pod around for debugging
+// when CleanupOnFailure=false. The cancel-path regression below
+// only fires for context.Canceled — natural failures must NOT
+// take the override path.
+func TestCleanupIsolatedPod_KeepsPodWhenCleanupDisabled(t *testing.T) {
+	cli := fake.NewSimpleClientset()
+	k := engine.NewKubernetesWithClient(cli, engine.KubernetesConfig{
+		Namespace:        "ci",
+		WorkspaceMode:    engine.WorkspaceModeIsolated,
+		CleanupOnFailure: false,
+		CleanupOnSuccess: true, // also exercise the success/keep half
+	})
+	ctx := context.Background()
+	mustCreatePod(t, ctx, cli, "ci", "job-pod-keep")
+
+	r := New(Config{
+		Engine: k,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	r.cleanupIsolatedPod(ctx, k, "job-pod-keep", false /* success */)
+
+	if _, err := cli.CoreV1().Pods("ci").Get(ctx, "job-pod-keep", metav1.GetOptions{}); err != nil {
+		t.Errorf("pod should still exist for debugging; got err=%v", err)
+	}
+}
+
+// TestCleanupIsolatedPod_DeletesOnCancelDespiteCleanupOnFailureFalse
+// is the regression for the v0.14.2 cancel-doesn't-kill-pod bug.
+// Before the fix, Runner.Cancel canceled the job ctx but the
+// cleanup path then took the !CleanupOnFailure branch and the pod
+// stayed Running until an operator nuked it by hand. After the
+// fix, a canceled ctx forces the delete regardless of the
+// cleanup-on-failure policy — "Cancel" actually cancels.
+func TestCleanupIsolatedPod_DeletesOnCancelDespiteCleanupOnFailureFalse(t *testing.T) {
+	cli := fake.NewSimpleClientset()
+	k := engine.NewKubernetesWithClient(cli, engine.KubernetesConfig{
+		Namespace:        "ci",
+		WorkspaceMode:    engine.WorkspaceModeIsolated,
+		CleanupOnFailure: false, // would normally KEEP the pod
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	mustCreatePod(t, ctx, cli, "ci", "job-pod-cancel")
+
+	// Simulate the Runner.Cancel call: the job's ctx is canceled.
+	cancel()
+
+	r := New(Config{
+		Engine: k,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	r.cleanupIsolatedPod(ctx, k, "job-pod-cancel", false /* success */)
+
+	// Pod MUST be gone — cancellation overrides CleanupOnFailure=false.
+	if _, err := cli.CoreV1().Pods("ci").Get(context.Background(), "job-pod-cancel", metav1.GetOptions{}); err == nil {
+		t.Errorf("pod %q should have been deleted on cancel despite CleanupOnFailure=false", "job-pod-cancel")
+	}
+}
+
+func mustCreatePod(t *testing.T, ctx context.Context, cli *fake.Clientset, ns, name string) {
+	t.Helper()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	if _, err := cli.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed pod %s: %v", name, err)
 	}
 }
 

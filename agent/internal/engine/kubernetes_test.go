@@ -450,6 +450,52 @@ func TestKubernetes_RunScript_KeepsPodWhenCleanupDisabled(t *testing.T) {
 	}
 }
 
+// TestKubernetes_RunScript_DeletesPodOnCancelDespiteCleanupOnFailureFalse
+// is the shared-mode regression for the v0.14.2 cancel-doesn't-kill-pod
+// bug. With CleanupOnFailure=false (the default operators run), a job
+// canceled mid-flight via Runner.Cancel (which propagates as
+// context.Canceled on the run ctx) used to leave its pod Running until
+// someone deleted it by hand. After the fix the cleanup path detects
+// the cancellation and force-deletes, using a fresh background ctx so
+// the canceled run ctx doesn't abort the DELETE itself.
+func TestKubernetes_RunScript_DeletesPodOnCancelDespiteCleanupOnFailureFalse(t *testing.T) {
+	k, cli := newFakeEngine(t, engine.KubernetesConfig{
+		CleanupOnFailure: false, // would normally KEEP the pod
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	driven := false
+	var createdName string
+	// First Get on the pod = the polling loop has started. Cancel
+	// the ctx right then — simulates an operator hitting Cancel
+	// while the task is running. PollUntilContextCancel sees the
+	// canceled ctx on its next iteration and returns, RunScript
+	// proceeds to maybeCleanup, and our fix overrides the keep-
+	// pod decision and deletes the pod.
+	cli.PrependReactor("get", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if driven {
+			return false, nil, nil
+		}
+		driven = true
+		createdName = a.(k8stesting.GetAction).GetName()
+		cancel()
+		return false, nil, nil
+	})
+
+	// RunScript will see ctx canceled and exit with an error — fine,
+	// we only care about the cleanup decision afterwards.
+	_, _ = k.RunScript(ctx, engine.ScriptSpec{Script: "sleep 9999"})
+
+	// Pod MUST be gone — cancellation overrides CleanupOnFailure=false.
+	if _, err := cli.CoreV1().Pods("gocdnext-tests").Get(
+		context.Background(), createdName, metav1.GetOptions{}); err == nil {
+		t.Errorf("pod %q should have been deleted on cancel despite CleanupOnFailure=false", createdName)
+	}
+}
+
 func TestKubernetes_Name(t *testing.T) {
 	k, _ := newFakeEngine(t, engine.KubernetesConfig{})
 	if n := k.Name(); n != "kubernetes" {
