@@ -14,11 +14,13 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	"github.com/gocdnext/gocdnext/agent/internal/podfs"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
@@ -99,10 +101,25 @@ func (r *Runner) PostJob(
 			ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
 			a.GetRunId(), a.GetJobId(), optional)
 		if err != nil {
-			r.emitLog(a, seq, "stderr", fmt.Sprintf(
-				"optional artifact upload failed (continuing): %v", err))
-			r.cfg.Logger.Warn("runner: optional artifact upload failed (isolated)",
-				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+			// Distinguish "files don't exist" (the OPTIONAL contract:
+			// "if it's not there, no problem") from "real transport
+			// failure" (network, RPC, exec error). The first is a
+			// neutral info line; the second is a warn-level "failed".
+			// Pre-v0.14.8 both used the alarming "failed (continuing)"
+			// shape, which scared operators who had legitimately
+			// declared an optional Jacoco/screenshot upload that the
+			// run didn't produce.
+			var missing *podfs.PathsMissingError
+			if errors.As(err, &missing) {
+				r.emitLog(a, seq, "stdout", fmt.Sprintf(
+					"optional artifact: no files matched %s",
+					strings.Join(missing.Paths, ", ")))
+			} else {
+				r.emitLog(a, seq, "stderr", fmt.Sprintf(
+					"optional artifact upload failed (continuing): %v", err))
+				r.cfg.Logger.Warn("runner: optional artifact upload failed (isolated)",
+					"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+			}
 		} else {
 			for _, ref := range got {
 				r.emitLog(a, seq, "stdout", fmt.Sprintf(

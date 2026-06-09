@@ -220,3 +220,28 @@ func HasGlobChars(s string) bool {
 // its embedded bytes.Buffer, but expose String() in case a future
 // caller wants it without reaching in.
 var _ io.Writer = (*CappedBuffer)(nil)
+
+// PathsMissingError is returned by callers that resolve a set of
+// declared paths/globs (artifact upload, future cache store) when
+// one or more declarations resolved to zero files. Lives in podfs
+// (not rpc/runner) because the two packages can't import each
+// other (rpc → runner already, no cycle the other way) and both
+// the producer (rpc.UploadFromPod) and consumer (runner.PostJob,
+// which decides required-fails vs optional-swallows) need to
+// type-check via errors.As.
+//
+// Note: the wording on caller-side logs is intentionally NEUTRAL
+// for the optional path. "matched zero files" is honest;
+// "failed (continuing)" reads as alarming for what the YAML
+// explicitly declared as optional.
+type PathsMissingError struct {
+	Paths []string
+}
+
+func (e *PathsMissingError) Error() string {
+	if len(e.Paths) == 1 {
+		return fmt.Sprintf("path %q matched zero files in workspace", e.Paths[0])
+	}
+	return fmt.Sprintf("paths matched zero files in workspace: %s",
+		strings.Join(e.Paths, ", "))
+}

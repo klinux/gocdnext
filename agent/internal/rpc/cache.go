@@ -295,6 +295,32 @@ func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key
 // flirt with that ambiguity.
 //
 // Single exec per cache entry; trades one ~100ms round-trip for
+// cacheProbeScript returns the shell script the cache STORE path
+// execs inside the housekeeper to list which of the declared paths
+// actually exist post-task. Extracted to a helper so a test can
+// drive it via `os/exec` against a real `sh` and pin the contract
+// that "no paths match" is exit 0 + empty stdout, NOT exit 1.
+//
+// Trailing `exit 0` is load-bearing: shell exit follows the LAST
+// command executed, which is `[ -e "$p" ]` inside the loop. If
+// NONE of the declared paths exist (cache-miss-first-run scenario
+// — operator added a cache block, Gradle/pnpm hasn't populated
+// `.gradle-home/`/`node_modules/` yet), every test returns 1 and
+// the script would exit 1 without the trailer. The caller then
+// wraps it as `cache store failed (probe paths: exit 1)` —
+// alarming noise for what is functionally "no paths to tar, store
+// empty". Forcing exit 0 keeps the script honest: stdout carries
+// the path list (possibly empty), exit code reflects "the probe
+// ran cleanly", and the caller routes via the empty-list branch
+// (storeEmptyCacheBlob) without a fake error.
+func cacheProbeScript() string {
+	return `cd "$1" || exit 1; shift; ` +
+		`for p in "$@"; do ` +
+		`  case "$p" in -*) p="./$p" ;; esac; ` +
+		`  [ -e "$p" ] && printf '%s\n' "$p"; ` +
+		`done; exit 0`
+}
+
 // the ability to skip the whole RequestCachePut + PUT +
 // MarkCacheReady sequence when nothing exists.
 func (c *CacheClient) probeCachePaths(
@@ -303,11 +329,7 @@ func (c *CacheClient) probeCachePaths(
 	podName, containerName, podWorkDir string,
 	paths []string,
 ) ([]string, error) {
-	const probeScript = `cd "$1" || exit 1; shift; ` +
-		`for p in "$@"; do ` +
-		`  case "$p" in -*) p="./$p" ;; esac; ` +
-		`  [ -e "$p" ] && printf '%s\n' "$p"; ` +
-		`done`
+	probeScript := cacheProbeScript()
 	cmd := append([]string{"sh", "-c", probeScript, "_", podWorkDir}, paths...)
 	var out bytes.Buffer
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, &out, io.Discard); err != nil {

@@ -185,7 +185,7 @@ func (u *ArtifactUploader) UploadFromPod(
 		}
 	}
 	if len(missing) > 0 {
-		return nil, &ArtifactPathsMissingError{Paths: missing}
+		return nil, &podfs.PathsMissingError{Paths: missing}
 	}
 
 	resp, err := u.client.RequestArtifactUpload(ctx, &gocdnextv1.RequestArtifactUploadRequest{
@@ -213,30 +213,13 @@ func (u *ArtifactUploader) UploadFromPod(
 	return refs, nil
 }
 
-// ArtifactPathsMissingError is returned by UploadFromPod (and via
-// it, UploadFromPod's call sites in PostJob) when one or more
-// declared artefact paths resolved to zero files in the pod's
-// workspace. Required paths bubble this as a job failure
-// (operator declared the file as a build OUTPUT — its absence
-// means the build didn't deliver what it promised). Optional
-// paths get swallowed at PostJob's optional branch — same posture
-// as the pre-v0.14.6 shape where shared mode would surface a per-
-// path os.Stat error for missing literals.
-//
-// The struct carries the missing paths so the PostJob layer can
-// emit them verbatim in the job log; the operator sees their YAML
-// patterns back, not a generic "upload failed".
-type ArtifactPathsMissingError struct {
-	Paths []string
-}
-
-func (e *ArtifactPathsMissingError) Error() string {
-	if len(e.Paths) == 1 {
-		return fmt.Sprintf("artifact path %q matched zero files in workspace", e.Paths[0])
-	}
-	return fmt.Sprintf("artifact paths matched zero files in workspace: %s",
-		strings.Join(e.Paths, ", "))
-}
+// ArtifactPathsMissingError is the legacy name from v0.14.6.
+// Aliased to podfs.PathsMissingError so existing call sites still
+// compile while the type lives in a package both rpc and runner
+// can import. Removing the alias is a v0.15 follow-up; the
+// wording on UploadFromPod's call sites already routes via
+// errors.As against podfs.PathsMissingError.
+type ArtifactPathsMissingError = podfs.PathsMissingError
 
 // resolveArtifactGlobs expands every declared path against the pod
 // workspace. Returns a map of declared → resolved relative paths
