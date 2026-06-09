@@ -150,6 +150,53 @@ if [ -S /var/run/docker.sock ]; then
     export TESTCONTAINERS_HOST_OVERRIDE="${TESTCONTAINERS_HOST_OVERRIDE:-host.docker.internal}"
 fi
 
+# TESTCONTAINERS_* env → JAVA_TOOL_OPTIONS bridge.
+#
+# Operators set `TESTCONTAINERS_RYUK_DISABLED=true` etc. on the
+# runner profile so every job inherits the tuning. Those env vars
+# reach the Gradle LAUNCHER JVM correctly, but Gradle forks
+# separate JVMs to actually run the tests
+# (`test.maxParallelForks=3` is the common case), and those forks
+# do NOT inherit env vars from the launcher. They inherit
+# JAVA_TOOL_OPTIONS though — it's a standard JVM bootstrap knob
+# every JVM honours at startup. Testcontainers reads its config
+# from EITHER the env var OR the equivalent `-D` system property,
+# so this bridge converts:
+#
+#   TESTCONTAINERS_RYUK_DISABLED=true → -Dtestcontainers.ryuk.disabled=true
+#   TESTCONTAINERS_REUSE_ENABLE=true  → -Dtestcontainers.reuse.enable=true
+#   TESTCONTAINERS_X_Y_Z=value        → -Dtestcontainers.x.y.z=value
+#
+# and appends them to JAVA_TOOL_OPTIONS so launcher + daemon + every
+# test fork + Kotlin compiler daemon all see the same settings.
+# Operator no longer needs `systemProperty` blocks in build.gradle
+# to make Testcontainers tuning reach the test JVMs.
+#
+# Scope is intentionally narrow (TESTCONTAINERS_* prefix only):
+# auto-promoting arbitrary env vars to -D flags would leak NEXUS
+# secrets and such into `ps` output. The Testcontainers prefix is
+# the operator-visible knob the upstream library publishes.
+testcontainers_tool_opts=""
+while IFS='=' read -r var val; do
+    case "$var" in
+        TESTCONTAINERS_*)
+            [ -z "$val" ] && continue
+            # TESTCONTAINERS_RYUK_DISABLED → ryuk.disabled
+            suffix="${var#TESTCONTAINERS_}"
+            suffix=$(printf '%s' "$suffix" | tr '[:upper:]_' '[:lower:].')
+            testcontainers_tool_opts="${testcontainers_tool_opts} -Dtestcontainers.${suffix}=${val}"
+            ;;
+    esac
+done < <(env)
+
+if [ -n "${testcontainers_tool_opts# }" ]; then
+    # Preserve any existing JAVA_TOOL_OPTIONS the operator set
+    # (e.g., a custom truststore). Bridge args come AFTER so
+    # explicit operator settings stay authoritative.
+    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-}${testcontainers_tool_opts}"
+    echo "gocdnext/gradle: bridged TESTCONTAINERS_* env vars to JAVA_TOOL_OPTIONS so they reach test forks"
+fi
+
 echo "==> ${CLI} ${daemon_flag} ${build_cache_flag} ${parallel_flag} ${config_cache_flag} ${PLUGIN_COMMAND} ${extra_args}"
 # Unquoted expansion so empty flags (tri-state "no flag" cases)
 # disappear via word-splitting instead of landing as empty
