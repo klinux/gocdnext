@@ -215,6 +215,162 @@ func TestCancel_AlreadyTerminal(t *testing.T) {
 	}
 }
 
+// --- Job-scoped cancel (issue #14) -----------------------------------
+
+func firstJobIDOfRun(t *testing.T, pool *pgxpool.Pool, runID uuid.UUID) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id FROM job_runs WHERE run_id = $1 LIMIT 1`, runID).Scan(&id); err != nil {
+		t.Fatalf("first job_run lookup: %v", err)
+	}
+	return id
+}
+
+// TestCancelJob_QueuedFlipsAndCascades covers the no-agent path: a
+// queued job_run gets DB-flipped directly. Because the seeded
+// pipeline has exactly one job in the single stage, cancelling it
+// is also "last unfinished job in stage" — cascadeAfterJobCompletion
+// fires and the stage + run move to canceled too.
+func TestCancelJob_QueuedFlipsAndCascades(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	jobID := firstJobIDOfRun(t, pool, runID)
+
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var jobStatus string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&jobStatus)
+	if jobStatus != "canceled" {
+		t.Errorf("job status = %q, want canceled", jobStatus)
+	}
+	// Cascade: stage + run also terminal (last job in the single-job
+	// pipeline). The stage status is `canceled` because the only job
+	// in it is canceled; run status derives from the stage outcome.
+	var runStatus string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status FROM runs WHERE id = $1`, runID).Scan(&runStatus)
+	if runStatus == "queued" || runStatus == "running" {
+		t.Errorf("run still active after only-job cancel: %q", runStatus)
+	}
+
+	// Response carries run_id + signaled=false (no agent to push to).
+	var body struct {
+		RunID    string `json:"run_id"`
+		Signaled bool   `json:"signaled"`
+		Status   string `json:"status"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if body.RunID != runID.String() {
+		t.Errorf("run_id in body = %q, want %s", body.RunID, runID)
+	}
+	if body.Signaled {
+		t.Errorf("signaled should be false for queued cancel (no agent)")
+	}
+	if body.Status != "canceled" {
+		t.Errorf("status in body = %q", body.Status)
+	}
+}
+
+// TestCancelJob_RunningPushesCancelJobFrame covers the agent-held
+// case: the row stays 'running' in the DB (agent finalises via
+// JobResult), but a single CancelJob frame is pushed down the
+// agent's session. Regression cover for the issue #14 root cause:
+// pre-fix, cancelling a running job either did nothing or killed
+// the whole run.
+func TestCancelJob_RunningPushesCancelJobFrame(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	jobID := firstJobIDOfRun(t, pool, runID)
+
+	// Promote the job to running + assign to a fake agent.
+	agentID := uuid.New()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO agents (id, name, token_hash) VALUES ($1, 'test-agent-jc', 'x')`,
+		agentID); err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_runs SET status = 'running', agent_id = $1, started_at = NOW()
+		 WHERE id = $2`, agentID, jobID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	disp := &fakeDispatcher{}
+	h = h.WithCancelDispatcher(disp)
+
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", len(disp.calls))
+	}
+	call := disp.calls[0]
+	if call.agentID != agentID || call.jobID != jobID.String() {
+		t.Errorf("dispatched %+v, want agent=%s job=%s", call, agentID, jobID)
+	}
+
+	// DB-side: status stays 'running' until the agent ships JobResult.
+	// (Honest audit trail: finished_at reflects when the container
+	// actually stopped, not when the user clicked Cancel.)
+	var status string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&status)
+	if status != "running" {
+		t.Errorf("job status after cancel = %q, want still running", status)
+	}
+
+	// Run + sibling stages untouched — only this job_run is in flight.
+	// Run row may be queued or running depending on whether the
+	// scheduler has ticked yet; the load-bearing assertion is that
+	// it has NOT been pushed terminal by the job cancel.
+	var runStatus string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status FROM runs WHERE id = $1`, runID).Scan(&runStatus)
+	if runStatus == "canceled" || runStatus == "failed" || runStatus == "success" {
+		t.Errorf("run status = %q, want non-terminal (job-cancel must not touch the run)", runStatus)
+	}
+
+	var body struct {
+		Signaled bool `json:"signaled"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if !body.Signaled {
+		t.Errorf("signaled should be true for running cancel with agent")
+	}
+}
+
+// TestCancelJob_NotFound — random UUID → 404.
+func TestCancelJob_NotFound(t *testing.T) {
+	h, _ := handler(t)
+	rr := doPost(h, "/api/v1/job_runs/"+uuid.NewString()+"/cancel", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d want 404", rr.Code)
+	}
+}
+
+// TestCancelJob_AlreadyTerminal — already-success → 409, idempotent
+// for the operator (the click was on a stale UI; nothing new to do).
+func TestCancelJob_AlreadyTerminal(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	jobID := firstJobIDOfRun(t, pool, runID)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_runs SET status = 'success', finished_at = NOW() WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
+	if rr.Code != http.StatusConflict {
+		t.Errorf("status = %d want 409", rr.Code)
+	}
+}
+
 func TestRerun_Success(t *testing.T) {
 	h, pool := handler(t)
 	runID, _ := seedRunWithModification(t, pool)
@@ -481,6 +637,7 @@ func TestTriggerPipeline_InvalidID(t *testing.T) {
 
 func doPost(h interface {
 	Cancel(http.ResponseWriter, *http.Request)
+	CancelJob(http.ResponseWriter, *http.Request)
 	Rerun(http.ResponseWriter, *http.Request)
 	RerunJob(http.ResponseWriter, *http.Request)
 	TriggerPipeline(http.ResponseWriter, *http.Request)
@@ -488,6 +645,7 @@ func doPost(h interface {
 	r := chi.NewRouter()
 	r.Post("/api/v1/runs/{id}/cancel", h.Cancel)
 	r.Post("/api/v1/runs/{id}/rerun", h.Rerun)
+	r.Post("/api/v1/job_runs/{id}/cancel", h.CancelJob)
 	r.Post("/api/v1/job_runs/{id}/rerun", h.RerunJob)
 	r.Post("/api/v1/pipelines/{id}/trigger", h.TriggerPipeline)
 

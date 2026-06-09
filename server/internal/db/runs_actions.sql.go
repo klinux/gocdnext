@@ -36,6 +36,67 @@ func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.U
 	return id, err
 }
 
+const cancelQueuedJobRun = `-- name: CancelQueuedJobRun :one
+UPDATE job_runs
+SET status      = 'canceled',
+    finished_at = COALESCE(finished_at, NOW())
+WHERE id = $1 AND status = 'queued'
+RETURNING id
+`
+
+// Flips a single job_run to 'canceled' ONLY when it's still queued.
+// `running` jobs go through the agent's gRPC CancelJob → JobResult
+// path so the audit trail records the actual stop time. Returns the
+// row id so the caller can tell whether the update happened (the
+// predicate could miss in a race with the scheduler dispatch path).
+//
+// We DON'T pre-fill exit_code or error here — those columns are
+// agent-driven on running cancels, and for a queued cancel the
+// absence of an exit_code is the honest signal ("never started").
+func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, cancelQueuedJobRun, id)
+	err := row.Scan(&id)
+	return id, err
+}
+
+const getJobRunForCancel = `-- name: GetJobRunForCancel :one
+SELECT id, run_id, stage_run_id, name, status, agent_id, attempt
+FROM job_runs
+WHERE id = $1
+`
+
+type GetJobRunForCancelRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	Name       string
+	Status     string
+	AgentID    pgtype.UUID
+	Attempt    int32
+}
+
+// Thin row used by the job-scoped cancel handler. Returns the
+// structural pointers cancel needs (run_id, stage_run_id) plus the
+// decision inputs (status, agent_id) — `running` jobs are signaled
+// via gRPC (handler dispatches CancelJob), `queued` jobs flip
+// directly here and feed cascadeAfterJobCompletion. Distinguishes
+// "not found" from "already terminal" via pgx.ErrNoRows vs the
+// status check in the caller.
+func (q *Queries) GetJobRunForCancel(ctx context.Context, id pgtype.UUID) (GetJobRunForCancelRow, error) {
+	row := q.db.QueryRow(ctx, getJobRunForCancel, id)
+	var i GetJobRunForCancelRow
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StageRunID,
+		&i.Name,
+		&i.Status,
+		&i.AgentID,
+		&i.Attempt,
+	)
+	return i, err
+}
+
 const getLatestModificationForPipeline = `-- name: GetLatestModificationForPipeline :one
 SELECT m.id, m.material_id, m.revision, m.branch
 FROM modifications m

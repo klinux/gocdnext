@@ -69,6 +69,92 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// CancelJob handles POST /api/v1/job_runs/{id}/cancel — single
+// job-scoped cancel. Distinct from the run-scoped Cancel above:
+// only the one job is touched, siblings (and the run as a whole)
+// keep running. Operator-facing "cancel this one job, leave the
+// others alone" lives here.
+//
+// Response:
+//
+//	202 Accepted   — the job was active and is now cancel-flagged
+//	                 (queued → DB flipped; running → CancelJob
+//	                 frame pushed to the owning agent)
+//	404 Not Found  — unknown job_run id
+//	409 Conflict   — job_run already terminal
+//
+// The response body returns the parent run_id and whether the
+// cancel was signaled to an agent (operator UX hint: "we pushed
+// the cancel; container may take a moment to stop").
+func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := chi.URLParam(r, "id")
+	jobRunID, err := uuid.Parse(raw)
+	if err != nil {
+		http.Error(w, "invalid job_run id", http.StatusBadRequest)
+		return
+	}
+
+	res, err := h.store.CancelJobRun(r.Context(), jobRunID)
+	switch {
+	case err == nil:
+		// Fan the CancelJob frame only when the row was running with
+		// an owning agent. Queued jobs (no agent yet) skip dispatch —
+		// the DB flip is the whole story.
+		signaled := false
+		if res.Dispatched != nil {
+			if h.dispatcher != nil {
+				msg := &gocdnextv1.ServerMessage{
+					Kind: &gocdnextv1.ServerMessage_Cancel{
+						Cancel: &gocdnextv1.CancelJob{
+							RunId:  res.RunID.String(),
+							JobId:  res.Dispatched.JobID.String(),
+							Reason: "user canceled job",
+						},
+					},
+				}
+				if err := h.dispatcher.Dispatch(res.Dispatched.AgentID, msg); err != nil {
+					h.log.Warn("cancel job: dispatch failed",
+						"run_id", res.RunID, "job_run_id", jobRunID,
+						"agent_id", res.Dispatched.AgentID, "err", err)
+				} else {
+					signaled = true
+				}
+			} else {
+				h.log.Warn("cancel job: no gRPC dispatcher wired; container keeps running",
+					"run_id", res.RunID, "job_run_id", jobRunID)
+			}
+		}
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionJobCancel, "job_run", jobRunID.String(),
+			map[string]any{
+				"run_id":   res.RunID.String(),
+				"job_name": res.JobName,
+				"signaled": signaled,
+			})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_run_id": jobRunID.String(),
+			"run_id":     res.RunID.String(),
+			"job_name":   res.JobName,
+			"status":     "canceled",
+			"signaled":   signaled,
+		})
+	case errors.Is(err, store.ErrJobRunNotFound):
+		http.Error(w, "job_run not found", http.StatusNotFound)
+	case errors.Is(err, store.ErrJobRunTerminal):
+		http.Error(w, "job_run already terminal", http.StatusConflict)
+	default:
+		h.log.Error("cancel job", "job_run_id", jobRunID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
 // dispatchCancel pushes a CancelJob frame per running job to the
 // owning agent's session. Best-effort: a missing/busy session is
 // logged and skipped — the job's container eventually exits on

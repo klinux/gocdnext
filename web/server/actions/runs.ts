@@ -17,6 +17,7 @@ import type { JobDetail, RunDetail } from "@/types/api";
 const uuidSchema = z.string().uuid({ message: "expected UUID" });
 
 const cancelSchema = z.object({ runId: uuidSchema });
+const cancelJobSchema = z.object({ jobRunId: uuidSchema });
 const rerunSchema = z.object({ runId: uuidSchema, triggeredBy: z.string().optional() });
 const rerunJobSchema = z.object({
   jobRunId: uuidSchema,
@@ -42,6 +43,30 @@ export async function cancelRun(
   const res = await postJSON(`/api/v1/runs/${parsed.data.runId}/cancel`, {});
   if (res.ok) {
     revalidatePath(`/runs/${parsed.data.runId}`);
+    revalidatePath("/runs");
+    revalidatePath("/");
+  }
+  return res;
+}
+
+// cancelJob cancels exactly one job_run, leaving siblings (and the
+// run itself) alone. Distinct from cancelRun, which tears the whole
+// run down. Queued jobs are DB-flipped server-side; running jobs
+// get a CancelJob gRPC frame to their owning agent, and the row
+// stays 'running' until the agent's JobResult arrives.
+export async function cancelJob(
+  input: z.infer<typeof cancelJobSchema>,
+): Promise<RunActionResult> {
+  const parsed = cancelJobSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  const res = await postJSON(`/api/v1/job_runs/${parsed.data.jobRunId}/cancel`, {});
+  if (res.ok) {
+    // The server returns the parent run_id so we can revalidate
+    // the right run page without the caller threading it through.
+    const runID = typeof res.data.run_id === "string" ? res.data.run_id : "";
+    if (runID) revalidatePath(`/runs/${runID}`);
     revalidatePath("/runs");
     revalidatePath("/");
   }

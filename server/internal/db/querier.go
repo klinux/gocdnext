@@ -45,6 +45,16 @@ type Querier interface {
 	// ClearRunQueueReason call) keeps the cancel atomic and saves a
 	// round-trip.
 	CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	// Flips a single job_run to 'canceled' ONLY when it's still queued.
+	// `running` jobs go through the agent's gRPC CancelJob → JobResult
+	// path so the audit trail records the actual stop time. Returns the
+	// row id so the caller can tell whether the update happened (the
+	// predicate could miss in a race with the scheduler dispatch path).
+	//
+	// We DON'T pre-fill exit_code or error here — those columns are
+	// agent-driven on running cancels, and for a queued cancel the
+	// absence of an exit_code is the honest signal ("never started").
+	CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	// Pending approval gates in a failed run also get canceled so a
 	// rejected deploy doesn't leave a "ready to approve" ghost sitting
 	// in the UI with no path forward. Reject is the intended decision
@@ -312,6 +322,14 @@ type Querier interface {
 	// Returns the archive URI + timestamp for one job_run. NULL URI =
 	// not archived; reads should fall through to log_lines.
 	GetJobLogArchive(ctx context.Context, id pgtype.UUID) (GetJobLogArchiveRow, error)
+	// Thin row used by the job-scoped cancel handler. Returns the
+	// structural pointers cancel needs (run_id, stage_run_id) plus the
+	// decision inputs (status, agent_id) — `running` jobs are signaled
+	// via gRPC (handler dispatches CancelJob), `queued` jobs flip
+	// directly here and feed cascadeAfterJobCompletion. Distinguishes
+	// "not found" from "already terminal" via pgx.ErrNoRows vs the
+	// status check in the caller.
+	GetJobRunForCancel(ctx context.Context, id pgtype.UUID) (GetJobRunForCancelRow, error)
 	// Resolves pipeline_id + project_id + agent_id for a (job_run_id,
 	// run_id) pair. Used by the RequestArtifactUpload handler to authorise
 	// + derive the FKs. Returns ErrNoRows if job_run_id doesn't belong to

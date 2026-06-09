@@ -23,6 +23,34 @@ SET status = 'canceled',
 WHERE id = $1 AND status IN ('queued', 'running')
 RETURNING id;
 
+-- name: GetJobRunForCancel :one
+-- Thin row used by the job-scoped cancel handler. Returns the
+-- structural pointers cancel needs (run_id, stage_run_id) plus the
+-- decision inputs (status, agent_id) — `running` jobs are signaled
+-- via gRPC (handler dispatches CancelJob), `queued` jobs flip
+-- directly here and feed cascadeAfterJobCompletion. Distinguishes
+-- "not found" from "already terminal" via pgx.ErrNoRows vs the
+-- status check in the caller.
+SELECT id, run_id, stage_run_id, name, status, agent_id, attempt
+FROM job_runs
+WHERE id = $1;
+
+-- name: CancelQueuedJobRun :one
+-- Flips a single job_run to 'canceled' ONLY when it's still queued.
+-- `running` jobs go through the agent's gRPC CancelJob → JobResult
+-- path so the audit trail records the actual stop time. Returns the
+-- row id so the caller can tell whether the update happened (the
+-- predicate could miss in a race with the scheduler dispatch path).
+--
+-- We DON'T pre-fill exit_code or error here — those columns are
+-- agent-driven on running cancels, and for a queued cancel the
+-- absence of an exit_code is the honest signal ("never started").
+UPDATE job_runs
+SET status      = 'canceled',
+    finished_at = COALESCE(finished_at, NOW())
+WHERE id = $1 AND status = 'queued'
+RETURNING id;
+
 -- name: GetLatestModificationForPipeline :one
 -- Most recent modification across any material attached to a
 -- pipeline. Powers "trigger latest" for manual runs. Ordered by

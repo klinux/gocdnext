@@ -590,6 +590,7 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
+		p.Post("/api/v1/job_runs/{id}/cancel", runsHandler.CancelJob)
 		p.Post("/api/v1/job_runs/{id}/rerun", runsHandler.RerunJob)
 		p.Post("/api/v1/job_runs/{id}/approve", runsHandler.Approve)
 		p.Post("/api/v1/job_runs/{id}/reject", runsHandler.Reject)
