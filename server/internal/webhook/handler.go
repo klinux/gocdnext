@@ -222,6 +222,11 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	// push is on its default branch, re-read `.gocdnext/` at this revision
 	// and re-apply before we match materials against the (possibly new)
 	// pipeline state. Failure here falls through to the legacy path.
+	// applyDrift also enforces the default-branch guard internally —
+	// see drift.go for the rationale (broadening to non-default
+	// branches is a separate follow-up, gated on a registered-material
+	// check so a feature branch can't overwrite the project's global
+	// definition).
 	var driftOutcome DriftOutcome
 	if scm, ok := h.driftLookup(r.Context(), ev.Repository.CloneURL); ok {
 		driftOutcome = h.applyDrift(r.Context(), scm, branch, ev.After)

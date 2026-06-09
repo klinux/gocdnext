@@ -6,7 +6,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
-## v0.14.1 — 2026-06-09
+## v0.14.2 — 2026-06-08
+
+Hotfix on v0.14.1. Closes a silent gap where ApplyProject from the
+Sync handler (UI / CLI re-fetch) and the Drift handler (webhook
+push) ran **without** calling `ResolveProfiles` first. Only the
+CLI Apply handler did. Result: a job declaring
+`agent.profile: foo` had its `resources` left zeroed in the
+persisted `pipelines.definition` JSONB even when the `foo` profile
+had bounds configured — the scheduler then materialised pods with
+no `resources:` block, the kubelet did its own thing, and the
+operator chased "why didn't my profile apply?" after editing a
+profile and clicking Sync (or after a webhook push triggered a
+drift re-apply).
+
+### Fix
+
+`server/internal/api/projects.Handler.Sync` and
+`server/internal/webhook.Handler.applyDrift` now call
+`store.ResolveProfiles(ctx, parsed)` immediately before
+`ApplyProject`, mirroring the CLI apply path. The persisted
+definition now carries the resolved bounds (and, where the YAML
+omits them, the profile's `node_selector` / `tolerations` too —
+same fill-step as Apply).
+
+Regression coverage: integration tests on both handlers seed a
+`default` profile with bounds, run the path end-to-end, then
+parse the persisted JSONB and assert `Requests` / `Limits` match
+the profile — not just that the fetcher was invoked.
+
+The drift handler keeps its default-branch guard intact:
+broadening drift to non-default branches is gated on a separate
+follow-up (only re-apply when the pushed branch is itself a
+registered material for the project), so a feature branch can't
+overwrite the project's global definition.
+
+## v0.14.1 — 2026-06-08
 
 Hotfix on v0.14.0. Closes the inconsistency where a job that
 declared no `agent.profile:` inherited the `default` profile's
@@ -29,7 +64,7 @@ Result: jobs without an explicit profile now inherit the
 matching the contract operators reasonably expect when they
 configured a single `default` profile to handle the fleet.
 
-## v0.14.0 — 2026-06-09
+## v0.14.0 — 2026-06-08
 
 Two related features that close the remaining footguns operators
 hit when adopting profile-driven workloads: a `default`-profile
