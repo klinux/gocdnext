@@ -612,8 +612,26 @@ func (s *Scheduler) resolveProfile(ctx context.Context, run store.RunForDispatch
 	if err != nil {
 		return store.ResolvedProfile{}, err
 	}
+	// When the job declares no profile, fall back to `default` if
+	// it exists. Mirrors the apply-time fallback in
+	// store.ResolveProfiles (which fills resource bounds from the
+	// `default` profile) so the runtime-resolved fields
+	// (env / secret values / node_selector / tolerations) also pick
+	// up the safety net rather than the inconsistent split where
+	// bounds came from default but scheduling didn't.
+	//
+	// Missing `default` → empty resolved profile, same as before
+	// this fallback existed. The strict path (declared profile not
+	// found) still fails the dispatch.
 	if jobDef.Profile == "" {
-		return store.ResolvedProfile{}, nil
+		resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, store.DefaultRunnerProfileName)
+		if err != nil {
+			if errors.Is(err, store.ErrRunnerProfileNotFound) {
+				return store.ResolvedProfile{}, nil
+			}
+			return store.ResolvedProfile{}, fmt.Errorf("profile %q (fallback): %w", store.DefaultRunnerProfileName, err)
+		}
+		return resolved, nil
 	}
 	resolved, err := s.store.ResolveProfileByName(ctx, s.cipher, jobDef.Profile)
 	if err != nil {
