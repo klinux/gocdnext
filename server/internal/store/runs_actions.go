@@ -21,6 +21,7 @@ var (
 	ErrRunRevisionsMissing       = errors.New("store: run has no revisions to replay")
 	ErrJobRunNotFound            = errors.New("store: job_run not found")
 	ErrJobRunActive              = errors.New("store: job_run still active (queued/running)")
+	ErrJobRunTerminal            = errors.New("store: job_run already terminal")
 	// ErrSnapshotStale is returned by snapshot-CAS write paths
 	// (currently WriteTestResults) when the row's current
 	// (agent_id, attempt) no longer matches what the caller
@@ -124,6 +125,141 @@ func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]R
 		out = append(out, RunningJobRef{JobID: jobID, AgentID: agentID})
 	}
 	return out, rows.Err()
+}
+
+// CancelJobRunResult surfaces what CancelJobRun did. Dispatched is
+// populated only on the running-job path (handler pushes one
+// CancelJob frame down the agent's session); on the queued path the
+// row is flipped directly to canceled in this tx and Dispatched is
+// nil. RunID + JobName populate the handler's response body and the
+// audit event.
+type CancelJobRunResult struct {
+	RunID      uuid.UUID
+	JobRunID   uuid.UUID
+	JobName    string
+	Dispatched *RunningJobRef
+}
+
+// CancelJobRun cancels exactly one job_run, leaving siblings (and
+// the run itself) untouched. Two regimes by current status:
+//
+//   - queued → flip status='canceled' in this tx + cascade
+//     (the cascade may complete the stage + run if this was the
+//     last unfinished job; same path CompleteJob takes). Downstream
+//     jobs whose `needs:` reference this one will surface
+//     "canceled" via needsSatisfied at the next scheduler tick and
+//     be failed via failJobNeedsUnmet — no special handling here.
+//
+//   - running → leave the row in 'running' and return the agent +
+//     job_run id pair so the handler can push a CancelJob frame.
+//     The agent's runner ctx cancels, the container terminates,
+//     and the resulting JobResult flips status to canceled (or
+//     failed) through the normal CompleteJob cascade. Audit-trail-
+//     honest: actual finished_at is when the container actually
+//     stopped, not when the operator clicked Cancel.
+//
+//   - any terminal status → ErrJobRunTerminal (HTTP 409).
+//   - missing id → ErrJobRunNotFound (HTTP 404).
+//
+// Idempotent: re-cancelling an already-canceled job is a 409 by
+// design (the operator clicked again on a stale UI; they didn't
+// "do" anything new).
+func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJobRunResult, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return CancelJobRunResult{}, fmt.Errorf("store: cancel job: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	row, err := q.GetJobRunForCancel(ctx, pgUUID(jobRunID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CancelJobRunResult{}, ErrJobRunNotFound
+	}
+	if err != nil {
+		return CancelJobRunResult{}, fmt.Errorf("store: cancel job: lookup: %w", err)
+	}
+
+	switch row.Status {
+	case "running":
+		// Agent owns the row's lifecycle until JobResult lands.
+		// We commit an empty tx so the lookup-read materialises
+		// (matters if someone added triggers later) and so the
+		// handler can hand a stable RunID back to the client.
+		if err := tx.Commit(ctx); err != nil {
+			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: commit (running): %w", err)
+		}
+		out := CancelJobRunResult{
+			RunID:    fromPgUUID(row.RunID),
+			JobRunID: jobRunID,
+			JobName:  row.Name,
+		}
+		// agent_id may legitimately be NULL even with status='running'
+		// during the brief window between dispatch and the agent's
+		// session establishment ack. Without an agent there's no one
+		// to push CancelJob to — the reaper will eventually reclaim
+		// the row. Dispatched stays nil; the audit event still fires.
+		if row.AgentID.Valid {
+			out.Dispatched = &RunningJobRef{
+				JobID:   jobRunID,
+				AgentID: fromPgUUID(row.AgentID),
+			}
+		}
+		return out, nil
+
+	case "queued":
+		// Flip directly. The cascade may bubble up to stage/run
+		// completion if this was the only unfinished job — same
+		// path CompleteJob takes.
+		if _, err := q.CancelQueuedJobRun(ctx, pgUUID(jobRunID)); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Raced with dispatch: the row moved to 'running' between
+				// our GetJobRunForCancel and the UPDATE. Bounce to
+				// terminal-409 — operator clicks Cancel again and the
+				// next attempt sees status='running' and dispatches.
+				return CancelJobRunResult{}, ErrJobRunTerminal
+			}
+			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: queued flip: %w", err)
+		}
+
+		// Cascade: stage progress reads the canonical job_runs table,
+		// sees one more terminal row, and decides whether the stage
+		// (and run) are done. comp is only used to satisfy the helper
+		// signature — handler doesn't surface it.
+		comp := JobCompletion{
+			JobRunID:   jobRunID,
+			RunID:      fromPgUUID(row.RunID),
+			StageRunID: fromPgUUID(row.StageRunID),
+			JobName:    row.Name,
+		}
+		if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: cascade: %w", err)
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: commit (queued): %w", err)
+		}
+
+		// Wake the scheduler so downstreams that declared `needs:` on
+		// this job re-evaluate immediately — needsSatisfied sees
+		// status='canceled' as UpstreamTerminal and fails the
+		// dependent jobs via failJobNeedsUnmet on the next tick.
+		// Non-fatal on error: the periodic tick still catches it.
+		if err := s.NotifyRunQueued(context.Background(), fromPgUUID(row.RunID)); err != nil {
+			// emit at the caller-log level — store doesn't have a logger.
+			_ = err
+		}
+
+		return CancelJobRunResult{
+			RunID:    fromPgUUID(row.RunID),
+			JobRunID: jobRunID,
+			JobName:  row.Name,
+		}, nil
+
+	default:
+		// success, failed, canceled, skipped → terminal
+		return CancelJobRunResult{}, ErrJobRunTerminal
+	}
 }
 
 // RerunRunInput configures a rerun. TriggeredBy lands on the new run

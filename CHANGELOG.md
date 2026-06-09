@@ -6,6 +6,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.5 — 2026-06-09
+
+Closes [#14](https://github.com/klinux/gocdnext/issues/14): the per-
+job Cancel button no longer tears down the whole run.
+
+### Feature — job-scoped cancel
+
+New `POST /api/v1/job_runs/{id}/cancel` cancels exactly one
+job_run, leaving siblings (and the run itself) untouched. Behaviour
+by current status:
+
+- **`queued`** → flipped to `canceled` directly in the same tx. If
+  this was the last unfinished job in the stage / run, the existing
+  `cascadeAfterJobCompletion` helper promotes the stage and run as
+  it would on any normal completion. A `pg_notify` then wakes the
+  scheduler so downstream jobs that referenced this one in `needs:`
+  re-evaluate: `needsSatisfied` already treats `canceled` as
+  `UpstreamTerminal=true` → the dependents get failed via
+  `failJobNeedsUnmet`, same path that has existed since the
+  approval rejection cascade. No new scheduler code.
+- **`running`** → the row stays `running` in the DB; a single
+  `CancelJob` gRPC frame is pushed to the owning agent. The
+  agent's runner ctx cancels (v0.14.2 wiring), the container
+  terminates, and the resulting `JobResult` finalises the row
+  through the usual `CompleteJob` cascade. Audit-trail honest:
+  `finished_at` reflects when the container actually stopped.
+- **terminal (`success` / `failed` / `canceled`)** → `409` (HTTP).
+- **unknown id** → `404`.
+
+The response body returns `{ job_run_id, run_id, job_name, status,
+signaled }` — `signaled=true` when an agent received the gRPC
+frame, `false` when the cancel was a DB-only (queued) flip.
+
+### UI — disambiguation
+
+The per-job dropdown gained two destructive items:
+
+- **Cancel job** — calls the new job-scoped endpoint. Use this for
+  "stop just this one and let the others keep running."
+- **Cancel whole run** — calls the run-scoped endpoint (the old
+  behaviour). Use this when you actually want to tear everything
+  down.
+
+The toast on success now also tells the operator whether the
+cancel was signaled to an agent (running case) or applied as a
+DB-only flip (queued case).
+
+### Tests
+
+- `TestCancelJob_QueuedFlipsAndCascades` — queued path + cascade
+  to terminal when it's the only job in the stage.
+- `TestCancelJob_RunningPushesCancelJobFrame` — running path:
+  exactly one CancelJob frame dispatched, DB stays `running`,
+  parent run stays non-terminal.
+- `TestCancelJob_NotFound` / `TestCancelJob_AlreadyTerminal` —
+  404 / 409 mapping.
+
+### New audit action
+
+`AuditActionJobCancel = "job.cancel"`. Distinct from the existing
+`AuditActionRunCancel`; the audit log now distinguishes per-job
+from per-run cancellations.
+
 ## v0.14.4 — 2026-06-09
 
 Closes [#15](https://github.com/klinux/gocdnext/issues/15) and the

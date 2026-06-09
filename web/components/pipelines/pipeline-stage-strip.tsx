@@ -19,7 +19,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
-import { cancelRun, rerunJob, rerunRun } from "@/server/actions/runs";
+import { cancelJob, cancelRun, rerunJob, rerunRun } from "@/server/actions/runs";
 import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
 import {
   DropdownMenu,
@@ -344,15 +344,44 @@ function JobNode({
     });
   };
 
-  const onCancel = () => {
+  // onCancelJob targets ONLY this job_run — siblings and the run as
+  // a whole keep going. Backed by POST /api/v1/job_runs/{id}/cancel
+  // since v0.14.5 (issue #14). Use this for "stop just this one"; if
+  // the operator wants to abort everything, the run-level Cancel
+  // button at the top of the run detail page does that.
+  const onCancelJob = () => {
+    startTransition(async () => {
+      const res = await cancelJob({ jobRunId });
+      if (!res.ok) {
+        toast.error(`Cancel ${job.name} failed: ${res.error}`);
+        return;
+      }
+      // signaled=true → agent received the gRPC frame; container
+      // will stop on its own clock. signaled=false → DB-flip only
+      // (queued job, no agent). Tell the operator which one happened.
+      const signaled = (res.data as { signaled?: boolean }).signaled ?? false;
+      toast.success(`Cancelled ${job.name}`, {
+        description: signaled
+          ? "Cancel signal sent to the agent; container will stop shortly."
+          : "Job was queued — removed before it started.",
+      });
+      router.refresh();
+    });
+  };
+
+  // onCancelRun keeps the old "tear down the whole run" behaviour
+  // for operators who really mean to abort everything. Labeled
+  // explicitly so a hurried click on "Cancel job" doesn't take the
+  // siblings with it.
+  const onCancelRun = () => {
     startTransition(async () => {
       const res = await cancelRun({ runId });
       if (!res.ok) {
-        toast.error(`Cancel failed: ${res.error}`);
+        toast.error(`Cancel run failed: ${res.error}`);
         return;
       }
       toast.success(`Cancelled run`, {
-        description: `Cancelling ${job.name} cancels the rest of run too.`,
+        description: `Cancelling the run stops every running job.`,
       });
       router.refresh();
     });
@@ -390,12 +419,20 @@ function JobNode({
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={onCancel}
+                onClick={onCancelJob}
                 disabled={pending}
                 variant="destructive"
               >
                 <X className="size-4" />
-                <span>Cancel run</span>
+                <span>Cancel job</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={onCancelRun}
+                disabled={pending}
+                variant="destructive"
+              >
+                <X className="size-4" />
+                <span>Cancel whole run</span>
               </DropdownMenuItem>
             </>
           ) : null}
