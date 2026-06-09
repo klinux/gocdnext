@@ -3,8 +3,9 @@ category: build
 description: >
   Run Maven commands (verify, package, deploy, etc.) with
   optional Nexus/Artifactory auth via synthesised settings.xml.
-  Ships Maven 3.9 + JDK 21. Pipe credentials from the job's
-  `secrets:` list so the plaintext stays out of logs.
+  Ships Maven 3.9.9 + Temurin 11/17/21/25 (LTS); select the JDK
+  at runtime via `jdk:` (default 21). Pipe credentials from the
+  job's `secrets:` list so the plaintext stays out of logs.
 
 inputs:
   command:
@@ -81,6 +82,17 @@ inputs:
       this run (recommended on `deploy` runs to avoid publishing
       a cache-hit artefact). Empty leaves the extension's own
       default in place.
+  jdk:
+    required: false
+    default: "21"
+    description: >
+      JDK version to run mvn (and the surefire/failsafe forks)
+      against. Accepts "11", "17", "21", or "25"; default "21".
+      Backed by the shared `jdk-base` image so a single plugin
+      tag covers every supported toolchain — legacy apps stuck
+      on JDK 11 don't need a separate plugin variant. Typos fail
+      loud at the entrypoint (`jdk: "211"` aborts with exit 2
+      instead of falling through to the default).
 
 examples:
   - name: test
