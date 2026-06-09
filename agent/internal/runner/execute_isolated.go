@@ -125,18 +125,13 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	defer servicesPhase.cleanup()
 
-	// test_reports require scanning JUnit XML on the agent's
-	// filesystem; in isolated mode the reports live in the pod's
-	// ephemeral PVC and there's no exec-side parser yet. Warn so
-	// the operator knows the Tests tab will be empty; the job
-	// itself still succeeds/fails on the task exit code.
-	if len(a.GetTestReports()) > 0 {
-		r.emitLog(a, &seq, "stderr", fmt.Sprintf(
-			"test_reports: %d glob(s) declared but JUnit collection is not yet "+
-				"supported in workspace isolated mode; the Tests tab will be empty. "+
-				"Switch to agent.workspace.accessMode=ReadWriteMany if you need "+
-				"per-case reporting on this job.", len(a.GetTestReports())))
-	}
+	// test_reports collection runs post-task via
+	// scanTestReportsFromPod below (housekeeper exec). The scan
+	// fires only on task-success — failed tasks don't ship reports,
+	// matching shared-mode contract. Pre-v0.14.4 this point in the
+	// flow emitted a warn telling operators to switch back to
+	// ReadWriteMany for Tests-tab visibility; that gap is now
+	// closed and both workspace modes ship the same data.
 
 	cfg := k.Config()
 	exec := k.Executor()
@@ -367,6 +362,12 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	if err != nil {
 		msg := "wait for task: " + err.Error()
 		r.emitLog(a, &seq, "stderr", msg)
+		// Even on terminal wait error the housekeeper may still be
+		// alive (only the task container terminated) — try to scan
+		// test_reports so the Tests tab carries data the operator
+		// can use to diagnose a borked job. Best-effort; failures
+		// emit warnings via emitLog and never fail the job.
+		r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
@@ -378,6 +379,13 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// housekeeper is still around, we COULD still attempt
 		// optional artifact upload — but v0.5.0 keeps things
 		// simple: failure = no post-task upload.
+		//
+		// test_reports DO get scanned on failure though — that's
+		// exactly when the Tests tab carries the highest signal
+		// (which assertion failed, which stack trace). Mirrors
+		// shared-mode behaviour (runner.go::Execute calls
+		// scanTestReports on the non-zero-exit path too).
+		r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit),
 			fmt.Sprintf("task exited with %d", taskExit))
 		r.cleanupIsolatedPod(ctx, k, podName, false)
@@ -450,6 +458,12 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	log.Info("runner: execute (isolated) ok",
 		"artifacts", len(refs), "output_keys", outputKeys)
+	// test_reports last — after artefacts + outputs but before the
+	// JobResult, so the Tests tab populates ahead of the run going
+	// terminal in the UI. Same emission contract as shared mode:
+	// shipped as a separate TestResultBatch frame, not part of
+	// JobResult.
+	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs, producedOutputs)
 	r.cleanupIsolatedPod(ctx, k, podName, true)
 }

@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
+
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
@@ -119,6 +121,13 @@ func (r *Runner) scanTestReports(ctx context.Context, workDir string, a *gocdnex
 // glob would confuse the XML parser). Patterns that don't match
 // anything are silently skipped — same posture as CI tools that
 // treat an absent report as "no tests ran", not an error.
+//
+// Uses doublestar (not stdlib filepath.Glob) so `**` matches any
+// number of path segments — the common convention in test_reports
+// patterns (`**/build/test-results/test/*.xml`) shipped by Gradle,
+// Maven, pytest, etc. stdlib's filepath.Glob treats `*` as
+// "no separator" and `**` as a literal directory named `**`, so
+// every such pattern silently matched nothing.
 func expandGlobs(workDir string, patterns []string) ([]string, error) {
 	seen := map[string]bool{}
 	out := []string{}
@@ -127,16 +136,12 @@ func expandGlobs(workDir string, patterns []string) ([]string, error) {
 			continue
 		}
 		full := filepath.Join(workDir, pat)
-		matches, err := filepath.Glob(full)
+		matches, err := doublestar.FilepathGlob(full, doublestar.WithFilesOnly())
 		if err != nil {
 			return nil, fmt.Errorf("glob %q: %w", pat, err)
 		}
 		for _, m := range matches {
 			if seen[m] {
-				continue
-			}
-			info, err := os.Stat(m)
-			if err != nil || info.IsDir() {
 				continue
 			}
 			seen[m] = true
@@ -162,18 +167,30 @@ func parseJUnitFiles(paths []string) ([]*gocdnextv1.TestResult, []string) {
 			warnings = append(warnings, fmt.Sprintf("read %s: %v", p, err))
 			continue
 		}
-		suites, err := decodeJUnit(raw)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("parse %s: %v", p, err))
-			continue
-		}
-		for _, s := range suites {
-			for _, c := range s.Cases {
-				results = append(results, caseToProto(s.Name, c))
-			}
-		}
+		res, warns := parseJUnitData(p, raw)
+		results = append(results, res...)
+		warnings = append(warnings, warns...)
 	}
 	return results, warnings
+}
+
+// parseJUnitData decodes one JUnit XML blob — identified by `name`
+// purely for warning attribution — and returns the flat case list.
+// Extracted so the workspace-isolated path can feed bytes captured
+// from `cat` over PodExecutor.Exec through the same decoder the
+// shared-mode path uses, without needing a file on disk.
+func parseJUnitData(name string, raw []byte) ([]*gocdnextv1.TestResult, []string) {
+	suites, err := decodeJUnit(raw)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("parse %s: %v", name, err)}
+	}
+	var results []*gocdnextv1.TestResult
+	for _, s := range suites {
+		for _, c := range s.Cases {
+			results = append(results, caseToProto(s.Name, c))
+		}
+	}
+	return results, nil
 }
 
 // decodeJUnit accepts both `<testsuites>` roots and a bare
