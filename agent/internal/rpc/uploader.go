@@ -168,20 +168,24 @@ func (u *ArtifactUploader) UploadFromPod(
 	// Build the paths we'll actually request tickets for: declared
 	// paths that survived resolution. Preserves operator-typed text
 	// so the ArtifactRef.path round-trips back to the YAML.
+	//
+	// Zero-match declared paths surface as an error rather than a
+	// silent skip — required-vs-optional semantics live one layer
+	// up in PostJob (which swallows the error on the optional path
+	// and bubbles it on the required one). Returning success here
+	// would let `dist/*.tar.gz` as a REQUIRED artifact pass with no
+	// upload, which used to fail loud under the pre-glob shape.
 	requested := make([]string, 0, len(unique))
+	missing := make([]string, 0, len(unique))
 	for _, p := range unique {
 		if files, ok := resolved[p]; ok && len(files) > 0 {
 			requested = append(requested, p)
+		} else {
+			missing = append(missing, p)
 		}
 	}
-	if len(requested) == 0 {
-		// Every declared path either glob'd to zero matches or was a
-		// literal not present in the workspace. The latter would
-		// still surface a tar error per-path under the old shape;
-		// here we return cleanly because there's nothing to PUT.
-		// Caller's required/optional semantics decide whether that's
-		// a job failure.
-		return nil, nil
+	if len(missing) > 0 {
+		return nil, &ArtifactPathsMissingError{Paths: missing}
 	}
 
 	resp, err := u.client.RequestArtifactUpload(ctx, &gocdnextv1.RequestArtifactUploadRequest{
@@ -207,6 +211,31 @@ func (u *ArtifactUploader) UploadFromPod(
 		refs = append(refs, ref)
 	}
 	return refs, nil
+}
+
+// ArtifactPathsMissingError is returned by UploadFromPod (and via
+// it, UploadFromPod's call sites in PostJob) when one or more
+// declared artefact paths resolved to zero files in the pod's
+// workspace. Required paths bubble this as a job failure
+// (operator declared the file as a build OUTPUT — its absence
+// means the build didn't deliver what it promised). Optional
+// paths get swallowed at PostJob's optional branch — same posture
+// as the pre-v0.14.6 shape where shared mode would surface a per-
+// path os.Stat error for missing literals.
+//
+// The struct carries the missing paths so the PostJob layer can
+// emit them verbatim in the job log; the operator sees their YAML
+// patterns back, not a generic "upload failed".
+type ArtifactPathsMissingError struct {
+	Paths []string
+}
+
+func (e *ArtifactPathsMissingError) Error() string {
+	if len(e.Paths) == 1 {
+		return fmt.Sprintf("artifact path %q matched zero files in workspace", e.Paths[0])
+	}
+	return fmt.Sprintf("artifact paths matched zero files in workspace: %s",
+		strings.Join(e.Paths, ", "))
 }
 
 // resolveArtifactGlobs expands every declared path against the pod

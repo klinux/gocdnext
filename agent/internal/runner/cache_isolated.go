@@ -27,11 +27,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"sync/atomic"
+	"time"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
+
+// cacheFetchTerminateTimeout bounds how long we wait for the
+// cache-fetch init container to exit after the agent has touched
+// the marker file. The container's `until` loop polls every 0.2s,
+// so 30s is two orders of magnitude past the expected ~200ms
+// handshake — anything longer indicates a wedged kubelet or an
+// OOMKilled init mid-loop. We'd rather surface that via a fast
+// failure of the downstream WaitForTaskStarted than block the
+// runner until the job-level deadline.
+const cacheFetchTerminateTimeout = 30 * time.Second
 
 // resolveAndFetchTemplatedCaches is the entry point Execute calls
 // when the assignment carries at least one cache entry with a
@@ -54,11 +66,26 @@ import (
 //
 // The marker touch happens in a deferred call so panics or early
 // returns can't strand the pod.
+// resolveAndFetchTemplatedCaches takes BOTH the mount root and the
+// script's working dir because they serve different purposes:
+//
+//   - mountPath (= k.Config().WorkspaceMountPath, typically
+//     `/workspace`): where the marker file lives and where caches
+//     untar to. The init container's wait loop polls this same
+//     path via engine.CacheFetchMarkerPath so a `target_dir`
+//     checkout can't desync the touch from the wait. Caches are
+//     workspace-global (a pnpm-store goes at the PVC root, not
+//     inside a target_dir).
+//   - workDir (= scriptWorkDir, typically `<mountPath>/<target_dir>`):
+//     where the hash resolver runs `find` and reads files. The
+//     operator's `hash "**/pnpm-lock.yaml"` glob is relative to
+//     wherever the task actually runs, which IS target_dir-
+//     dependent.
 func (r *Runner) resolveAndFetchTemplatedCaches(
 	ctx context.Context,
 	k *engine.Kubernetes,
 	exec engine.PodExecutor,
-	podName, workDir string,
+	podName, mountPath, workDir string,
 	a *gocdnextv1.JobAssignment,
 	seq *atomic.Int64,
 ) {
@@ -67,7 +94,7 @@ func (r *Runner) resolveAndFetchTemplatedCaches(
 		// can start. Even if everything above failed, we'd rather
 		// run without the cache than wedge the job on the init
 		// container.
-		if err := touchCacheReadyMarker(ctx, exec, podName, workDir); err != nil {
+		if err := touchCacheReadyMarker(ctx, exec, podName, mountPath); err != nil {
 			r.cfg.Logger.Warn("runner: cache-fetch marker touch failed",
 				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
 			r.emitLog(a, seq, "stderr", fmt.Sprintf(
@@ -79,11 +106,25 @@ func (r *Runner) resolveAndFetchTemplatedCaches(
 		// the still-running cache-fetch (which would make WAIT spin
 		// until StartupTimeout — task hasn't started because init
 		// hasn't ended yet).
-		if _, err := k.WaitForInitTerminated(ctx, podName,
+		//
+		// Bounded: the `until` loop should observe the touched
+		// marker on its next 0.2s poll, so 30s is enormous
+		// headroom for that handshake. If we hit the cap, something
+		// is wrong (kubelet stuck, container OOMKilled mid-loop) —
+		// log loud and let downstream WaitForTaskStarted timeout
+		// surface as the operator-visible error, instead of
+		// blocking here until the job-level cancel/timeout fires.
+		termCtx, cancelTerm := context.WithTimeout(ctx, cacheFetchTerminateTimeout)
+		if _, err := k.WaitForInitTerminated(termCtx, podName,
 			engine.CacheFetchInitContainerName); err != nil {
 			r.cfg.Logger.Warn("runner: cache-fetch terminated wait failed",
 				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+			r.emitLog(a, seq, "stderr", fmt.Sprintf(
+				"cache: cache-fetch init didn't exit within %s after marker touch (%v); "+
+					"task may fail on startup if the init container hangs",
+				cacheFetchTerminateTimeout, err))
 		}
+		cancelTerm()
 	}()
 
 	if err := k.WaitForInitStarted(ctx, podName, engine.CacheFetchInitContainerName); err != nil {
@@ -140,7 +181,11 @@ func (r *Runner) resolveAndFetchTemplatedCaches(
 		entry.FetchFound = true
 		entry.FetchUrl = url
 		entry.FetchSha256 = sha
-		if err := streamCacheIntoPod(ctx, exec, podName, workDir, url, sha); err != nil {
+		// Cache content untars at the PVC mount root so paths in the
+		// cache tarball (e.g. `.gradle-home/...`) land at
+		// `/workspace/.gradle-home/...` regardless of the job's
+		// `target_dir`. Same anchor the store path uses.
+		if err := streamCacheIntoPod(ctx, exec, podName, mountPath, url, sha); err != nil {
 			r.emitLog(a, seq, "stderr", fmt.Sprintf(
 				"cache %q: fetch failed (%v) — task runs without cache",
 				entry.GetKey(), err))
@@ -202,24 +247,37 @@ func streamCacheIntoPod(
 }
 
 // touchCacheReadyMarker `touch`es the marker file the cache-fetch
-// init container's `until` loop polls. Uses `mkdir -p` for the
-// directory because prep may have created the workspace layout
-// without the .gocdnext subdir (e.g., a no-checkout job).
+// init container's `until` loop polls. Two separate exec calls
+// (mkdir + touch) instead of one `sh -c` so a marker path with
+// shell metacharacters can't be exploited and a path with spaces
+// works correctly. mountPath comes from the engine's
+// WorkspaceMountPath config; deriving the marker from it via the
+// shared CacheFetchMarkerPath helper guarantees the agent and the
+// cache-fetch container's wait loop agree on the same absolute
+// path even when the operator configured a non-default mount root
+// or the job declared a checkout target_dir (the marker lives at
+// the PVC root, not at scriptWorkDir).
 func touchCacheReadyMarker(
 	ctx context.Context,
 	exec engine.PodExecutor,
-	podName, workDir string,
+	podName, mountPath string,
 ) error {
-	marker := workDir + "/" + engine.CacheFetchReadyMarker
-	// `dirname` + `mkdir -p` inside one `sh -c` so the marker dir
-	// is guaranteed to exist on systems where prep didn't create it.
-	cmd := []string{
-		"sh", "-c",
-		"mkdir -p $(dirname " + marker + ") && touch " + marker,
-	}
+	marker := engine.CacheFetchMarkerPath(mountPath)
+
+	// Two argv-form execs — no shell string concatenation anywhere,
+	// no risk of metacharacter interpretation in operator-supplied
+	// paths.
 	var stderr bytes.Buffer
 	if err := exec.Exec(ctx, podName, engine.CacheFetchInitContainerName,
-		cmd, nil, io.Discard, &stderr,
+		[]string{"mkdir", "-p", path.Dir(marker)},
+		nil, io.Discard, &stderr,
+	); err != nil {
+		return fmt.Errorf("mkdir marker dir: %w (stderr=%q)", err, stderr.String())
+	}
+	stderr.Reset()
+	if err := exec.Exec(ctx, podName, engine.CacheFetchInitContainerName,
+		[]string{"touch", marker},
+		nil, io.Discard, &stderr,
 	); err != nil {
 		return fmt.Errorf("touch marker: %w (stderr=%q)", err, stderr.String())
 	}

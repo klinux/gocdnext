@@ -369,7 +369,11 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// We touch the marker anyway so the task still starts; the job
 	// runs without the cache and the store path on success rebuilds.
 	if needsCacheFetch {
-		r.resolveAndFetchTemplatedCaches(ctx, k, exec, podName, scriptWorkDir, a, &seq)
+		// mountPath (PVC root, marker + cache untar anchor) is
+		// distinct from scriptWorkDir (hash resolver's enumeration
+		// root, target_dir-aware). See cache_isolated.go for the
+		// rationale.
+		r.resolveAndFetchTemplatedCaches(ctx, k, exec, podName, cfg.WorkspaceMountPath, scriptWorkDir, a, &seq)
 	}
 
 	// Cap the time it takes for the task container to leave
