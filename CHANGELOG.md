@@ -6,6 +6,76 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.10 — 2026-06-09
+
+Isolated-mode DinD: swap default Docker transport from TCP-on-
+localhost to a shared Unix domain socket. Material follow-up to
+v0.14.9 (testcontainers env-var bridge): even with the bridge,
+testcontainers calls dockerd via `DOCKER_HOST`, and the TCP
+transport carries IP stack overhead + Nagle delays + retransmit
+pathologies that AF_UNIX sockets simply don't. Material in
+Kafka/integration testcontainers workloads where the variance —
+not just the mean — matters; the same race the Card pipeline's
+`BusinessCancelConsumerIntegrationTest` exposes lives in that
+variance budget.
+
+### Implementation
+
+- New `dind-socket` emptyDir volume on isolated pods that declare
+  `docker: true`. tmpfs-backed (`Medium: Memory`) since sockets
+  are file-system entries but the bytes through them are kernel
+  buffers — disk-backed emptyDir would be a tax for nothing.
+- DinD sidecar mounts the volume at `/run/dind` and gains a third
+  `--host` arg: `--host=unix:///run/dind/docker.sock`. The TCP
+  listener on `:2375` and the internal `unix:///var/run/docker.sock`
+  stay — operators who set `DOCKER_HOST=tcp://localhost:2375`
+  explicitly continue to work; DinD's own `docker` CLI inside the
+  sidecar still has its private socket.
+- DinD container gains a `lifecycle.postStart` hook that polls for
+  the socket to appear (~1-3s after dockerd binds) and `chmod 666`
+  it. Default mode is `0660 root:docker`; without loosening it the
+  task container (most plugin images run as user 1000 — `gradle`,
+  `node`, `python` etc.) would hit EPERM on connect. The trust
+  boundary here is the pod, not the socket layer (existing TCP
+  path had no auth either), so 666 is appropriate.
+- Task container mounts the same volume at `/run/dind` and its
+  `DOCKER_HOST` env (set by the engine) points at
+  `unix:///run/dind/docker.sock`. Testcontainers' default resolver
+  picks this up; no operator config needed.
+
+### Architecture
+
+- `dindHostIsolated = "unix://" + dindSharedSocketPath` is the
+  ISOLATED-mode constant. Shared mode (`ReadWriteMany`,
+  pre-v0.5.0 default) keeps the old `dindHost = "tcp://localhost:2375"`
+  constant — operators on shared mode have working DinD via TCP
+  and the cost/benefit of touching that path doesn't justify the
+  regression risk. The two modes can carry different defaults.
+- `buildIsolatedVolumes(workspace, assignment, spec)` materialises
+  the volume list with the socket volume conditionally appended.
+  Keeps the assembly inside the engine package, parallel to
+  `buildIsolatedInitContainers`.
+
+### Tests
+
+- `TestBuildIsolatedJobPodSpec_DockerSocketShared` — asserts the
+  full plumbing: tmpfs volume present, DinD `--host=unix://…`
+  arg, DinD mount at `/run/dind`, postStart `chmod 666` hook,
+  task `DOCKER_HOST=unix://…`, task mount, AND TCP listener
+  preserved.
+- `TestBuildIsolatedJobPodSpec_NoDockerNoSocketVolume` —
+  `docker:false` pods stay minimal; no volume, no DinD, no extra
+  mounts.
+
+### Operator impact
+
+None. The plugin images (gradle/node/python/etc.) read
+`DOCKER_HOST` from env; the engine sets it to the socket path
+automatically when `docker: true`. Testcontainers reads the same
+env var. Operators who customised `DOCKER_HOST` in their
+profile env get their explicit value (engine env append, not
+override).
+
 ## v0.14.9 — 2026-06-09
 
 Gradle plugin only. Cures the `TESTCONTAINERS_*` env vars not

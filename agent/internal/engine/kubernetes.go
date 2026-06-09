@@ -286,13 +286,63 @@ func applyKubernetesDefaults(cfg *KubernetesConfig) {
 // same netns), TLS off by way of DOCKER_TLS_CERTDIR="". MVP picks
 // unencrypted intra-pod over the cert-dance because the daemon
 // is already privileged — the trust boundary is the Pod, not the
-// socket layer.
+// socket layer. Kept as a SECONDARY listener since v0.14.10 so
+// operators with explicit `DOCKER_HOST=tcp://...` overrides stay
+// working; the DEFAULT path is the shared unix socket below.
 const dindTCPPort = 2375
 
-// dindHost is what the task container's DOCKER_HOST points at.
+// dindSharedSocketDir is the in-pod directory the DinD sidecar
+// and the task container both mount via an emptyDir volume so the
+// task can reach dockerd through a Unix domain socket instead of
+// the TCP listener on localhost. Unix domain sockets shave the IP
+// stack overhead off every docker API call — Testcontainers makes
+// dozens per @Test class (create, exec, wait, inspect, stop),
+// and the TCP overhead + Nagle delays add observable jitter that
+// shows up in Kafka integration tests as flaky `Iterable should
+// not be empty` failures.
+//
+// `/run/dind` (not `/var/run/docker.sock` directly) because:
+//   - mounting an emptyDir over `/var/run` would shadow the DinD
+//     image's own state directory (pid file, dockerd socket
+//     internal binding) and break startup
+//   - a sibling directory keeps both DinD's internal `/var/run`
+//     and the share point clean
+//   - the path is explicit enough that an operator grepping for
+//     "dind" in a pod yaml understands the layout
+const dindSharedSocketDir = "/run/dind"
+
+// dindSharedSocketPath is the absolute path of the docker.sock
+// inside the shared dir. DinD's `--host=unix://…` arg writes the
+// socket here; the task's `DOCKER_HOST=unix://…` reads from the
+// same path.
+const dindSharedSocketPath = dindSharedSocketDir + "/docker.sock"
+
+// dindSocketVolumeName names the emptyDir volume mounted in both
+// DinD and task containers to share the docker.sock. Surfaced as a
+// const so the pod spec builder and any future test fixture (or
+// operator describe-grep) refer to the same string.
+const dindSocketVolumeName = "dind-socket"
+
+// dindHost is what SHARED-mode task containers point at:
+// localhost TCP. Shared mode (ReadWriteMany) is the legacy
+// workspace shape, kept unchanged across the v0.14.10 socket-
+// sharing work — operators on shared mode have working DinD via
+// TCP and the cost/benefit of touching that path doesn't justify
+// the regression risk.
+//
 // Exposed as a const so tests can assert on the value without
 // hardcoding the port in two places.
 const dindHost = "tcp://localhost:2375"
+
+// dindHostIsolated is what ISOLATED-mode task containers point at
+// since v0.14.10: the shared Unix domain socket. Bypasses the TCP
+// listener on localhost:2375 (which still exists for operators
+// who set `DOCKER_HOST` explicitly) and the IP stack overhead it
+// carries. Material in Kafka/integration testcontainers workloads
+// where the variance, not just the mean, matters — TCP localhost
+// has Nagle delays and retransmit pathologies that AF_UNIX
+// sockets simply don't.
+const dindHostIsolated = "unix://" + dindSharedSocketPath
 
 // Name identifies the engine for log/metric labels.
 func (*Kubernetes) Name() string { return "kubernetes" }

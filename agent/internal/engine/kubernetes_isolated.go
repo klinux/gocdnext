@@ -175,7 +175,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 	}
 	if spec.Docker {
 		env = append(env,
-			corev1.EnvVar{Name: "DOCKER_HOST", Value: dindHost},
+			corev1.EnvVar{Name: "DOCKER_HOST", Value: dindHostIsolated},
 			corev1.EnvVar{Name: "DOCKER_TLS_CERTDIR", Value: ""},
 		)
 	}
@@ -305,15 +305,43 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 
 	if spec.Docker {
 		privileged := true
+		// chmod the shared socket world-read/writable AFTER dockerd
+		// creates it. Default mode is 0660 root:docker; without
+		// loosening it the task container (gradle:1000 in the most
+		// common case) couldn't open the socket.
+		//
+		// Pod is per-job and per-tenant, so 0666 means "any of the
+		// three containers in THIS pod" — same trust boundary the
+		// existing TCP-on-localhost path already lives in (no TLS,
+		// no auth on the socket itself). Polling because dockerd
+		// takes ~1-3s to bind the socket after the container starts.
+		dindLifecycle := &corev1.Lifecycle{
+			PostStart: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{
+						"sh", "-c",
+						`until [ -S "` + dindSharedSocketPath + `" ]; do sleep 0.1; done; chmod 666 "` + dindSharedSocketPath + `"`,
+					},
+				},
+			},
+		}
 		containers = append(containers, corev1.Container{
 			Name:  "dind",
 			Image: k.cfg.DinDImage,
 			Env: []corev1.EnvVar{
 				{Name: "DOCKER_TLS_CERTDIR", Value: ""},
 			},
+			// v0.14.10: third `--host` arg adds the shared Unix
+			// socket. The internal `unix:///var/run/docker.sock` is
+			// preserved so DinD's own tooling (docker CLI inside
+			// the DinD container, used by ad-hoc debugging) still
+			// works without env override. Task containers default
+			// to the shared path; operators wanting TCP keep the
+			// existing localhost:2375 listener as escape hatch.
 			Args: []string{
 				"--host=tcp://0.0.0.0:" + strconv.Itoa(dindTCPPort),
 				"--host=unix:///var/run/docker.sock",
+				"--host=unix://" + dindSharedSocketPath,
 			},
 			SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
 			Ports: []corev1.ContainerPort{{
@@ -321,7 +349,21 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				ContainerPort: int32(dindTCPPort),
 				Protocol:      corev1.ProtocolTCP,
 			}},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: dindSocketVolumeName, MountPath: dindSharedSocketDir},
+			},
+			Lifecycle: dindLifecycle,
 		})
+		// Task container needs to mount the same shared dir so its
+		// `DOCKER_HOST=unix://…` actually finds the socket file
+		// dockerd wrote.
+		for i := range containers {
+			if containers[i].Name == "task" {
+				containers[i].VolumeMounts = append(containers[i].VolumeMounts,
+					corev1.VolumeMount{Name: dindSocketVolumeName, MountPath: dindSharedSocketDir})
+				break
+			}
+		}
 	}
 
 	hostAliases := make([]corev1.HostAlias, 0, len(spec.HostAliases))
@@ -345,7 +387,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			ImagePullSecrets: pullSecrets,
-			Volumes:          []corev1.Volume{workspaceVolume, assignmentVolume},
+			Volumes:          buildIsolatedVolumes(workspaceVolume, assignmentVolume, spec),
 			InitContainers:   buildIsolatedInitContainers(prepContainer, spec, k.cfg.HousekeeperImage, workspaceMount),
 			Containers:       containers,
 			HostAliases:      hostAliases,
@@ -408,6 +450,28 @@ func CacheFetchMarkerPath(mountPath string) string {
 // invariant the runner depends on — by the time the agent execs
 // into cache-fetch, prep has already done the `git clone`, so
 // `find` returns the files the operator's hash() globs match.
+// buildIsolatedVolumes assembles the volume list for an isolated-mode
+// pod. workspace + assignment are always present; the DinD shared
+// socket volume only when the job declared `docker: true` (no point
+// allocating an emptyDir when no DinD sidecar will mount it). The
+// volume is a tmpfs-backed emptyDir — sockets are file-system
+// entries but the bytes flowing through are kernel buffers; sizing
+// the volume large is wasted.
+func buildIsolatedVolumes(workspace, assignment corev1.Volume, spec IsolatedJobSpec) []corev1.Volume {
+	vols := []corev1.Volume{workspace, assignment}
+	if spec.Docker {
+		vols = append(vols, corev1.Volume{
+			Name: dindSocketVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					Medium: corev1.StorageMediumMemory,
+				},
+			},
+		})
+	}
+	return vols
+}
+
 func buildIsolatedInitContainers(
 	prep corev1.Container,
 	spec IsolatedJobSpec,
