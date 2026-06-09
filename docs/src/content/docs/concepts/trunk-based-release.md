@@ -59,18 +59,20 @@ for that shape. Pick whichever fits your team; both are valid.
 ## Production-readiness prerequisites
 
 The four-pipeline shape below moves safety from branches to
-pipelines, but it has THREE hard prerequisites that aren't
+pipelines, but it has FOUR hard prerequisites that aren't
 optional if you're going to claim "this is production-ready."
 Without them, the shape is provenance-for-audit, not enforcement
 — a cosign signature nobody verifies, a digest nobody pins, a
-rollback that breaks on the first DB migration.
+rollback that breaks on the first DB migration, a deploy that
+takes 100% blast radius before the first smoke probe fires.
 
 Each prereq is one knob the operator has to set up ONCE on the
 cluster (Kyverno install, Helm digest values, migration shape
-review). They're cluster-level, not per-pipeline, so the cost
-amortises across every project. Walking past them gives you the
-provenance for an audit conversation; meeting them gives you the
-enforcement that an audit conversation is asking about.
+review, Argo Rollouts install). They're cluster-level, not
+per-pipeline, so the cost amortises across every project.
+Walking past them gives you the provenance for an audit
+conversation; meeting them gives you the enforcement that an
+audit conversation is asking about.
 
 ### 1. Cluster verifies signatures at admission
 
@@ -274,15 +276,179 @@ compatible?". It enforces the gate: a PR labeled
 That makes the operator think twice; the contract above does
 the rest.
 
-### What follows assumes these three are in place
+### 4. Progressive delivery on prod (canary, not big-bang)
+
+`helm upgrade` is a big-bang swap: the new ReplicaSet scales up,
+the old scales down, and 100% of prod traffic is on the new
+image within minutes. If the new image has a bug that only shows
+up under real prod load (a thundering-herd race, a memory leak
+that takes 90 seconds to manifest, a hot-path SQL query on a
+prod-sized table the stage cluster doesn't have), the smoke
+probe at the end of the deploy will catch it — after the bug has
+already burned every active user's session.
+
+Smoke catches dead apps. Progressive delivery catches **degraded
+but alive** apps before everyone sees them. Trunk-based commits
+to "many small deploys", and the math works only if each deploy
+is cheap to fail.
+
+Install **Argo Rollouts** (or Flagger if you already run a
+service mesh) and replace the prod `Deployment` with a `Rollout`
+resource. A canary strategy that ramps 10% → 25% → 50% → 100%
+with a 30s pause + analysis between steps gives you four
+opportunities to halt and auto-rollback per deploy, each on a
+slice of traffic small enough that the user-visible blast
+radius is bounded.
+
+```yaml title="prod-cluster/argo-rollouts-install.yaml"
+# Operator runs once per cluster:
+#   kubectl create namespace argo-rollouts
+#   helm install argo-rollouts argo/argo-rollouts -n argo-rollouts
+# Then enforces the resource shape via a ClusterPolicy:
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: prod-must-use-rollout
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: forbid-deployment-in-prod
+      match:
+        any:
+          - resources:
+              kinds: [Deployment]
+              namespaces: [prod]
+      validate:
+        message: "prod workloads must be Rollouts (argo-rollouts), not Deployments"
+        deny: {}
+```
+
+The Helm chart for the application then renders a `Rollout`
+instead of a `Deployment` when `--set rollout.enabled=true`:
+
+```yaml title="charts/my-app/templates/rollout.yaml"
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: my-app
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    canary:
+      # Each step pauses for analysis before advancing. If any
+      # AnalysisRun comes back Failed, Argo Rollouts halts and
+      # auto-aborts → previous ReplicaSet stays at 100%.
+      steps:
+        - setWeight: 10
+        - pause: { duration: 30s }
+        - analysis:
+            templates: [{ templateName: error-rate }]
+        - setWeight: 25
+        - pause: { duration: 60s }
+        - analysis:
+            templates: [{ templateName: error-rate }]
+        - setWeight: 50
+        - pause: { duration: 60s }
+        - analysis:
+            templates: [{ templateName: error-rate }]
+        - setWeight: 100
+  selector:
+    matchLabels: { app: my-app }
+  template:
+    spec:
+      containers:
+        - name: my-app
+          image: "ghcr.io/my-org/my-app@{{ .Values.image.digest }}"
+```
+
+The AnalysisTemplate evaluates a Prometheus query (or any other
+metrics provider Argo supports). The standard shape is "error
+rate over the last 60s must be < 1%":
+
+```yaml title="charts/my-app/templates/analysis-template.yaml"
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate
+spec:
+  metrics:
+    - name: error-rate
+      interval: 30s
+      successCondition: result[0] < 0.01      # < 1% error rate
+      failureLimit: 1                          # one failed sample → abort
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(http_requests_total{namespace="prod",app="my-app",status=~"5.."}[1m]))
+            /
+            sum(rate(http_requests_total{namespace="prod",app="my-app"}[1m]))
+```
+
+`prod.yaml`'s deploy then becomes a `helm upgrade` that creates
+the Rollout, followed by a watch step that polls the Rollout
+status until it reaches `Healthy` (full ramp completed) or
+`Degraded` (analysis aborted, traffic on the old ReplicaSet):
+
+```yaml
+deploy-prod:
+  stage: deploy
+  needs: [preflight]
+  secrets: [PROD_KUBECONFIG]
+  uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
+  with:
+    kubeconfig: ${{ PROD_KUBECONFIG }}
+    # --set rollout.enabled=true => chart renders Rollout, not Deployment.
+    # helm returns AFTER the Rollout object is applied — it does NOT
+    # wait for the canary to complete (that's the watch job below).
+    command: |
+      upgrade --install my-app charts/my-app
+      --namespace prod
+      --set image.digest=${{ needs.preflight.outputs.digest }}
+      --set rollout.enabled=true
+      --wait --timeout 5m
+
+watch-canary:
+  stage: deploy
+  needs: [deploy-prod]
+  secrets: [PROD_KUBECONFIG]
+  image: alpine:3.20
+  script:
+    - apk add --no-cache curl
+    - |
+      curl -fsSL -o /usr/local/bin/kubectl-argo-rollouts \
+        https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+      chmod +x /usr/local/bin/kubectl-argo-rollouts
+      # `kubectl argo rollouts get rollout --watch` blocks until terminal
+      # status. Exit code is 0 if Healthy, non-zero if Degraded/Paused.
+      # Combined with `prod.yaml`'s auto-rollback job (next stage),
+      # this turns a canary abort into a structured pipeline failure.
+      kubectl argo rollouts get rollout my-app -n prod --watch --timeout 600s
+```
+
+Two halts the operator never had with `helm upgrade` alone:
+
+- **Pre-prod halts** stay in stage (`stage smoke` catches dead apps).
+- **In-prod halts** stay at ≤ 10% traffic share for ≥ 30s
+  (Rollout analysis catches degraded apps before they ramp).
+
+Walking past this prereq is honest if your business genuinely
+accepts 100% blast radius per deploy (low-traffic internal tools,
+SLOs that don't budget for canary). Anything user-facing with
+non-trivial traffic — installing Argo Rollouts is a 10-minute
+operator action that pays for itself the first time a flaky new
+image only hits 10% of prod instead of 100%.
+
+### What follows assumes these four are in place
 
 The remainder of this page (branching, the four pipelines,
-hotfix flow, rollback) treats the three prerequisites above as
+hotfix flow, rollback) treats the four prerequisites above as
 done. If your cluster doesn't verify signatures, you can still
 adopt the four pipelines for everything else they give you (PR
 hygiene, stage smoke, audit trail, quorum gates) — but
 "production-ready" is a softer claim. Promote it to the actual
-claim once the three checks are in place.
+claim once the four checks are in place.
 
 ## Branching contract
 
@@ -601,28 +767,50 @@ you want one button push to cut + deploy stage; pick the split
 form if you want tag pushes from any source (CLI, GitHub UI,
 another automation) to drive the build automatically.
 
-### Why scan-after-publish (not candidate-then-promote)
+### Why scan-before-publish via candidate tag + crane copy
 
-Multi-arch images can't live in a local Docker daemon — buildx
-needs a registry to publish a multi-platform manifest list. And
-`gocdnext/docker-push` is a `docker tag` + `docker push` from
-the agent's daemon, which **doesn't preserve the multi-arch
-manifest** during retag. So the "build candidate → scan → promote"
-flow that works for single-arch breaks silently for multi-arch.
+Earlier cuts of this doc published directly to `${TAG}` and ran
+the scan after, with a runbook that said "manually delete the
+tag if Trivy fails". The published-but-unscanned window was
+~30s and the recovery step was a human action on a live registry
+ref — fine until the day someone forgets, or a downstream
+automation pulls in that window. Phase 2 of the release
+hardening (issue #13) closes the window structurally: the final
+tag does NOT exist until scan + sign both pass.
 
-The honest pattern for trunk-based + multi-arch + this plugin
-set: **publish directly to the final tag, scan after publish, and
-treat scan failure as "manually delete the tag"**. The Trivy job
-fails the run on HIGH/CRITICAL CVE; the operator's runbook
-includes `oras delete ghcr.io/my-org/my-app:${TAG}` (or the
-equivalent for your registry) when this happens. Acceptable
-trade-off: scan failures should be rare on a properly-maintained
-image; the published-but-unscanned window is the time between
-build and the trivy job (~30s).
+Multi-arch is what made the earlier doc hesitate. Buildx
+publishes the multi-platform manifest list directly to the
+registry — a `docker tag` + `docker push` retag from a local
+daemon doesn't preserve the manifest list. The fix is **not**
+to retag locally; it's `crane copy`. crane operates at the
+registry API level: it copies the manifest list verbatim from
+one tag ref to another. Zero blobs over the wire, microseconds,
+multi-arch safe.
 
-(If you need scan-before-publish AND multi-arch in one pipeline,
-add `crane copy` / `skopeo copy` / `buildx imagetools create`
-via a custom script step. Out of scope for the recipe here.)
+The shape:
+
+1. Build publishes `pre-${TAG}` (the candidate). Manifest list
+   lives in the registry as soon as build finishes.
+2. Trivy scans `@${digest}`. Digest is immutable — same bytes
+   regardless of what tag points at them.
+3. Cosign signs `@${digest}`. The signature is anchored to
+   bytes, not a tag — so it applies equally to any tag that
+   later points at this digest.
+4. `crane copy <pre-tag> <final-tag>`. Registry-side manifest
+   rewrite. Final tag now exists, signed, scanned.
+5. Optional cleanup: drop the `pre-${TAG}` tag once prod has
+   consumed the digest. (Most operators leave it for ~7 days
+   as a forensic anchor; it costs nothing since blobs are
+   shared.)
+
+If `crane` is unavailable in your agent image, the two drop-in
+substitutes are `skopeo copy` and `docker buildx imagetools
+create --tag <final> <pre>`. All three are registry-side ops.
+
+The cost: one extra job (`promote`) and an extra image pull in
+build (for the `crane` binary, ~15MB Alpine package). The
+benefit: an attacker can't pull an unscanned tag because the
+unscanned tag never had the production name in the first place.
 
 ```yaml title=".gocdnext/release.yaml"
 name: release
@@ -635,7 +823,7 @@ when:
 variables:
   TAG: ""
 
-stages: [validate, tag, build, scan, sign, stage]
+stages: [validate, tag, build, scan, sign, promote, stage]
 
 jobs:
   # ---------- validate inputs + repo state ---------------------
@@ -718,7 +906,22 @@ jobs:
         GIT_ASKPASS="$ASKPASS" git push origin "$TAG"
         echo "==> Pushed tag $TAG"
 
-  # ---------- build immutable artefact -------------------------
+  # ---------- build immutable artefact (CANDIDATE tag) ---------
+  # v0.14.x recipe: scan-before-publish via candidate tag. Pre-
+  # v0.14.x this section published directly to ${TAG} and the
+  # scan ran after — the failure mode was "scan finds a HIGH CVE,
+  # the operator now has to remember to manually delete the tag
+  # that's already live in the registry". The candidate-then-
+  # promote shape below makes the FINAL tag exist ONLY after
+  # scan + sign both pass.
+  #
+  # Multi-arch is the wrinkle: buildx publishes the manifest list
+  # directly to the registry (it can't be retagged locally because
+  # a docker daemon doesn't hold a multi-arch manifest natively).
+  # The workaround is to push to a candidate tag, scan + sign
+  # against the immutable digest (works regardless of tag), then
+  # `crane copy` the manifest list to the final tag. crane copy is
+  # a registry-side manifest rewrite — zero blob upload, microseconds.
   build:
     stage: build
     needs: [create-tag]
@@ -726,21 +929,20 @@ jobs:
     secrets: [GHCR_USERNAME, GHCR_TOKEN]
     uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
     # `digest:` output is the sha256:… of the built+pushed manifest;
-    # downstream jobs (scan, sign, prod's preflight) consume this so
-    # the operation runs against an immutable digest even if someone
-    # races a `docker push` against the tag.
-    # See [Prerequisite 2: Deploy by digest, not tag](#2-deploy-by-digest-not-tag).
+    # downstream jobs (scan, sign, promote, prod's preflight) all
+    # consume this so the operation runs against an immutable
+    # digest. See [Prerequisite 2: Deploy by digest, not tag](#2-deploy-by-digest-not-tag).
     outputs:
       digest: IMAGE_DIGEST
     with:
       image: ghcr.io/my-org/my-app
-      # NOTE: `latest` is deliberately NOT in this list. The first
-      # cut of this doc pushed `latest` on every release; it
-      # contradicts the immutability discourse (operators end up
-      # pulling a moving target) and is exactly the kind of tag
-      # that Kyverno's `mutateDigest` is forced to clean up. Drop
-      # it and reference tags by `${TAG}` or by digest.
-      tags: ${TAG}
+      # CANDIDATE tag (pre-${TAG}). Only operators with explicit
+      # knowledge of this convention can `docker pull` it; the
+      # public ${TAG} doesn't exist until after promote below.
+      # Drops the historical `:latest` push entirely — a moving
+      # tag fights the immutability claim the rest of the pipeline
+      # makes (see Phase 1 Prerequisite 2).
+      tags: pre-${TAG}
       platforms: linux/amd64,linux/arm64
       push: "true"
       registry: ghcr.io
@@ -794,11 +996,11 @@ jobs:
       # Pin by digest, NOT tag. Cosign anchors the signature to
       # the manifest digest regardless of how you invoke it, but
       # passing the digest explicitly closes the
-      # tag-resolved-twice race: build pushed digest A under tag,
-      # someone races a push of digest B, scan ran on A, cosign
-      # would sign B if it re-resolves the tag here. Reusing
-      # `needs.build.outputs.digest` ensures sign sees the same
-      # bytes that scan blessed.
+      # tag-resolved-twice race: build pushed digest A under
+      # candidate, someone races a push of digest B, scan ran
+      # on A, cosign would sign B if it re-resolves the tag
+      # here. Reusing `needs.build.outputs.digest` ensures sign
+      # sees the same bytes that scan blessed.
       image: ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }}
       action: sign
       key-content: ${{ COSIGN_PRIVATE_KEY }}
@@ -806,6 +1008,45 @@ jobs:
       registry: ghcr.io
       username: ${{ GHCR_USERNAME }}
       password: ${{ GHCR_TOKEN }}
+
+  # ---------- promote candidate → final tag --------------------
+  # crane copy is a REGISTRY-SIDE manifest rewrite. The blobs
+  # already exist (build pushed them); copy creates a new tag
+  # ref pointing at the same digest. Microseconds + zero bytes
+  # over the wire. Multi-arch safe because it copies the manifest
+  # LIST verbatim — no per-platform retag dance needed.
+  #
+  # After this job lands, the registry has:
+  #   ghcr.io/my-org/my-app:pre-${TAG}   (candidate — operators can keep or delete)
+  #   ghcr.io/my-org/my-app:${TAG}        (final, scanned + signed)
+  #   ghcr.io/my-org/my-app@sha256:…      (digest, what prod actually pins)
+  #
+  # The cosign signature, anchored to the digest, applies to both
+  # tag references — they point at the same bytes.
+  promote:
+    stage: promote
+    needs: [cosign-sign]
+    docker: true
+    secrets: [GHCR_USERNAME, GHCR_TOKEN]
+    image: alpine:3.20
+    script:
+      - apk add --no-cache crane
+      - |
+        # crane authenticates via Docker-config; the plugin-style
+        # `docker login` invocation works inside the agent's daemon.
+        echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+        crane copy \
+          ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }} \
+          ghcr.io/my-org/my-app:${TAG}
+
+  # OPTIONAL: delete the candidate tag once the final tag has
+  # landed and prod's preflight has consumed the digest. Many
+  # operators keep the candidate around for ~7 days as a forensic
+  # anchor (the candidate tag references the same digest, so
+  # debugging "what did we ship" works against either). Adding a
+  # scheduled cleanup pipeline is left as an exercise — the
+  # important thing is that the candidate tag is NOT what prod
+  # references; only the final + digest are load-bearing.
 
   github-release:
     stage: sign
@@ -821,17 +1062,21 @@ jobs:
   # ---------- auto-deploy to stage -----------------------------
   deploy-stage:
     stage: stage
-    needs: [cosign-sign]
+    needs: [promote, build]
     secrets: [STAGE_KUBECONFIG]
     uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
     with:
       # helm plugin auto-detects kubeconfig as inline YAML,
       # base64-encoded YAML, or workspace-relative path.
       kubeconfig: ${{ STAGE_KUBECONFIG }}
+      # Set image.digest, not image.tag. The chart resolves to
+      # `image: my-app@${digest}` — same posture prod uses, so
+      # stage exercises the digest-pinned path before prod does.
+      # See [Prerequisite 2: Deploy by digest, not tag](#2-deploy-by-digest-not-tag).
       command: |
         upgrade --install my-app charts/my-app
         --namespace stage
-        --set image.tag=${TAG}
+        --set image.digest=${{ needs.build.outputs.digest }}
         --wait --timeout 5m
 
   smoke-stage:
@@ -960,7 +1205,7 @@ name: tag
 when:
   event: [tag]
 
-stages: [build, scan, sign, stage]
+stages: [build, scan, sign, promote, stage]
 
 jobs:
   build:
@@ -968,11 +1213,14 @@ jobs:
     docker: true
     secrets: [GHCR_USERNAME, GHCR_TOKEN]
     uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+    outputs:
+      digest: IMAGE_DIGEST
     with:
       image: ghcr.io/my-org/my-app
-      tags: |
-        ${CI_TAG_NAME}
-        latest
+      # Candidate tag only — same scan-before-publish posture
+      # as the single-pipeline form. No `latest`: moving tags
+      # fight the immutability claim Kyverno enforces at admission.
+      tags: pre-${CI_TAG_NAME}
       platforms: linux/amd64,linux/arm64
       push: "true"
       registry: ghcr.io
@@ -987,7 +1235,9 @@ jobs:
     uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
     with:
       scan-type: image
-      target: ghcr.io/my-org/my-app:${CI_TAG_NAME}
+      # Pin by digest — same bytes the build pushed, immune to
+      # any concurrent push racing the candidate tag.
+      target: ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }}
       severity: HIGH,CRITICAL
       exit-code: "1"
 
@@ -997,11 +1247,7 @@ jobs:
     secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GHCR_USERNAME, GHCR_TOKEN]
     uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
     with:
-      # cosign resolves the tag to its manifest digest at sign time
-      # and anchors the signature to that digest — passing the
-      # mutable tag here is correct, the signature itself is
-      # immutable. Same pattern as the single-pipeline release.yaml.
-      image: ghcr.io/my-org/my-app:${CI_TAG_NAME}
+      image: ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }}
       action: sign
       key-content: ${{ COSIGN_PRIVATE_KEY }}
       key-password: ${{ COSIGN_PASSWORD }}
@@ -1009,9 +1255,23 @@ jobs:
       username: ${{ GHCR_USERNAME }}
       password: ${{ GHCR_TOKEN }}
 
+  promote:
+    stage: promote
+    needs: [cosign-sign]
+    docker: true
+    secrets: [GHCR_USERNAME, GHCR_TOKEN]
+    image: alpine:3.20
+    script:
+      - apk add --no-cache crane
+      - |
+        echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+        crane copy \
+          ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }} \
+          ghcr.io/my-org/my-app:${CI_TAG_NAME}
+
   deploy-stage:
     stage: stage
-    needs: [cosign-sign]
+    needs: [promote, build]
     secrets: [STAGE_KUBECONFIG]
     uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
     with:
@@ -1019,7 +1279,7 @@ jobs:
       command: |
         upgrade --install my-app charts/my-app
         --namespace stage
-        --set image.tag=${CI_TAG_NAME}
+        --set image.digest=${{ needs.build.outputs.digest }}
         --wait --timeout 5m
 ```
 
@@ -1111,16 +1371,48 @@ jobs:
       # us a deterministic Helm release shape (revision N always
       # references the same bytes) which makes auto-rollback
       # behave predictably.
+      #
+      # `--set rollout.enabled=true` renders the chart's Rollout
+      # template (Argo Rollouts) instead of a Deployment — see
+      # [Prerequisite 4: Progressive delivery](#4-progressive-delivery-on-prod-canary-not-big-bang).
+      # `--wait` here only blocks until the Rollout object is
+      # applied, NOT until the canary ramp completes. The
+      # canary progression is observed by `watch-canary` below.
       command: |
         upgrade --install my-app charts/my-app
         --namespace prod
         --set image.repository=ghcr.io/my-org/app
         --set image.digest=${{ needs.preflight.outputs.digest }}
-        --wait --timeout 10m
+        --set rollout.enabled=true
+        --wait --timeout 5m
+
+  watch-canary:
+    stage: deploy
+    needs: [deploy-prod]
+    secrets: [PROD_KUBECONFIG]
+    image: alpine:3.20
+    script:
+      - apk add --no-cache bash curl
+      - |
+        export KUBECONFIG=$(mktemp)
+        chmod 600 "$KUBECONFIG"
+        printf '%s' "$PROD_KUBECONFIG" > "$KUBECONFIG"
+        trap 'rm -f "$KUBECONFIG"' EXIT
+        curl -fsSL -o /usr/local/bin/kubectl-argo-rollouts \
+          https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+        chmod +x /usr/local/bin/kubectl-argo-rollouts
+        # `--watch` blocks until terminal status. Exit code 0 =
+        # Healthy (canary fully promoted). Non-zero = Degraded
+        # (analysis aborted; Argo Rollouts has already shifted
+        # traffic back to the old ReplicaSet). The pipeline
+        # failure surfaces in the failure notification block.
+        # `--timeout 600s` is the upper bound on the FULL ramp
+        # (10→25→50→100 with pauses + analysis between).
+        kubectl-argo-rollouts get rollout my-app -n prod --watch --timeout 600s
 
   smoke-prod:
     stage: verify
-    needs: [deploy-prod]
+    needs: [watch-canary]
     secrets: [PROD_KUBECONFIG, SLACK_WEBHOOK]
     image: alpine:3.20
     script:
@@ -1136,8 +1428,14 @@ jobs:
         printf '%s' "$PROD_KUBECONFIG" > "$KUBECONFIG"
         trap 'rm -f "$KUBECONFIG"' EXIT
 
+        # At this point the canary is at 100% (watch-canary returned
+        # 0). Smoke is the LAST defence — catches issues that
+        # weren't visible in the canary error-rate signal (e.g.
+        # contract-level regressions where the response is HTTP
+        # 200 but the body is wrong, or first-time-only paths
+        # that only fire on a fresh user session).
         if ! ./tests/smoke-prod.sh; then
-          echo "❌ prod smoke failed — auto-rollback"
+          echo "❌ prod smoke failed at 100% — full helm rollback"
           # `helm rollback <release> 0` rolls back to the prior
           # revision (0 = "one before current"). More reliable
           # than trying to compute "previous tag" under
@@ -1169,9 +1467,28 @@ notifications:
         Investigate: ${CI_RUN_ID}
 ```
 
-Why the auto-rollback is non-negotiable for trunk-based: it
-removes the "what if it breaks?" fear. The previous Helm
-revision is always one `helm rollback` away.
+The deploy stage now gives you **two** halt mechanisms before
+human attention is required, ordered by blast radius:
+
+1. **Canary analysis (Argo Rollouts)** — aborts during ramp
+   when the prometheus error rate crosses 1% on the canary
+   slice. Traffic shifts back to the old ReplicaSet
+   automatically; `watch-canary` exits non-zero; the pipeline
+   fails before smoke ever runs. Max user impact: 10% of
+   traffic for ~30s.
+2. **Full smoke + helm rollback** — runs ONLY after canary
+   reached 100%. Catches regressions invisible to the canary's
+   error-rate signal (semantic regressions, first-time-only
+   code paths). When it triggers, the full deploy is on prod
+   already — same `helm rollback 0` story the pre-v0.14 doc
+   described. Max user impact: 100% of traffic until rollback
+   completes (usually < 60s).
+
+Why the auto-rollback path is non-negotiable for trunk-based:
+both halts together remove the "what if it breaks?" fear. The
+previous Helm revision is always one `helm rollback` away, and
+most failures never reach that point because the canary catches
+them at 10%.
 
 ## Hotfix flow
 
@@ -1193,16 +1510,32 @@ smoke don't disappear.
 
 ## Rollback
 
-Two mechanisms, ONE canonical path, an explicit escape valve.
-The four-pipeline shape gives you both `helm rollback` (Helm
-revision-aware, used by `prod.yaml`'s auto-rollback on smoke
-failure) and "re-trigger `prod.yaml` with the previous tag"
-(human-driven, full pipeline pass). Pre-v0.14 versions of this
-doc described both without picking one — operators ended up
-mixing them, leaving the cluster in different states (Helm
-revision points at chart values from N-1, re-deploy uses values
-at HEAD with image of N-1, drift). Pick one as the default; use
-the other only when the default doesn't apply.
+Three mechanisms, ordered by when they fire. Most failures stop
+at #1; the rest split across #2 and #3.
+
+1. **Canary auto-abort** (Argo Rollouts, during deploy).
+   Analysis crosses the error-rate threshold mid-ramp; Rollouts
+   shifts traffic back to the old ReplicaSet automatically.
+   `watch-canary` exits non-zero; the pipeline fails. **The
+   workload is already on the old version** — no rollback step
+   needed, just close the loop (see [Recovering from a canary
+   abort](#recovering-from-a-canary-abort)).
+2. **Auto-rollback via `helm rollback`** (used by `smoke-prod`
+   on failure, post-canary). Catches regressions invisible to
+   the canary's error-rate signal — semantic regressions,
+   first-time-only paths. At this point the deploy is at 100%,
+   so the rollback transition has the full blast radius until
+   it completes.
+3. **Manual rollback** — re-trigger `prod.yaml` with the
+   previous good `TAG`. For regressions caught past the smoke
+   window, or when chart values changed between deploys.
+
+Pre-v0.14 versions of this doc described #2 and #3 without
+picking one — operators ended up mixing them, leaving the
+cluster in different states (Helm revision points at chart
+values from N-1, re-deploy uses values at HEAD with image of
+N-1, drift). The default is #2 (auto, within the smoke window);
+#3 is the explicit escape valve.
 
 ### When rollback is safe (default path)
 
@@ -1222,8 +1555,48 @@ A rollback is safe when **all** of these hold:
    that has already been to prod successfully). Tags that only
    passed stage haven't proven themselves under prod load.
 
-When all three hold, rollback is one of two flavours below.
+When all three hold, rollback is one of the flavours below.
 When they don't, jump to [Fix-forward](#when-rollback-is-not-safe-fix-forward).
+
+### Recovering from a canary abort
+
+When Argo Rollouts auto-aborts mid-ramp, traffic is already on
+the old ReplicaSet (`status.currentPodHash` still points at the
+old version). The Rollout resource itself, however, references
+the **new** image — Argo Rollouts holds the new ReplicaSet at 0
+replicas pending operator action. Two paths:
+
+1. **Discard the new revision** (the common case — you want the
+   pipeline failure to mean "this tag is dead"):
+
+   ```
+   kubectl-argo-rollouts undo my-app -n prod
+   ```
+
+   `undo` rewrites the Rollout spec back to the previous
+   revision's image. The 0-replica new ReplicaSet is GC'd.
+   Cluster state matches "this deploy never happened" except
+   for the failed Argo `Experiment` / `AnalysisRun` resources,
+   which Argo keeps for forensic reference.
+
+2. **Force the canary through anyway** (rare — analysis
+   threshold was too tight, the new image is actually fine):
+
+   ```
+   kubectl-argo-rollouts promote my-app -n prod
+   ```
+
+   `promote` skips remaining analysis steps and ramps to 100%.
+   Use ONLY when you've verified externally (manual smoke,
+   prometheus query at the canary slice) that the abort was a
+   false positive. Re-trigger the on-call analysis-threshold
+   review before the next release.
+
+The on-call playbook should default to `undo` and treat
+`promote` as a documented exception. Either way, log the
+decision in the incident channel — the canary signal is only
+as trustworthy as the operator's discipline about NOT promoting
+through it.
 
 ### Auto-rollback (Helm-revision based)
 
@@ -1340,8 +1713,13 @@ talking points that work:
 2. **"Two humans approve every prod deploy."** That's already
    more than your git-flow has — most git-flow shops have
    "release manager + tags" with no second-approval contract.
-3. **"Rollback is one click."** Re-run prod.yaml with previous
-   tag. Quicker than any merge-conflict-prone git-flow rollback.
+3. **"Rollback is one click — and most failures never need
+   one."** Canary auto-abort (Argo Rollouts) catches degraded
+   deploys at ≤ 10% traffic before they ramp. When the smoke
+   probe at 100% does catch something, `helm rollback` is one
+   command. Re-running prod.yaml with the previous tag is the
+   manual path for incidents found hours later — quicker than
+   any merge-conflict-prone git-flow rollback.
 4. **"Branches > 800 LOC have 3-5× more bugs in production."**
    Short PRs are the actual safety net — not long-lived
    release branches.
@@ -1372,20 +1750,19 @@ shipped. The deliberate gaps:
   section above shows the cleaner shape this enables. The
   single-pipeline form remains in the recipe for teams that
   prefer one button push.
-- **Multi-arch scan-before-publish**: ✅ shipped in v0.10.0. The
-  `gocdnext/image-copy@v1` plugin promotes multi-arch images
-  between registries via crane / skopeo / buildx-imagetools
-  (operator picks the backend), preserving the manifest list
-  end-to-end. Rewrite to scan-before-publish: build to a
-  staging registry → trivy-scan staging → image-copy from
-  staging to prod registry → cosign-sign by promoted digest.
-  The recipe in this page still uses scan-after-publish as the
-  single-pipeline shape for simplicity; the
-  [Variant: split release + tag.yaml](#variant-split-release--tagyaml)
-  section above can be extended to use `image-copy` when teams
-  want the cleaner staging-then-promote shape — see the
-  plugin's "digest-pinned promotion + cosign sign-by-digest"
-  example in the catalog.
+- **Multi-arch scan-before-publish**: ✅ shipped in v0.10.0
+  (plugin) and adopted in this recipe in v0.14.x. The
+  `gocdnext/image-copy@v1` plugin and the inline `crane copy`
+  used in the [release.yaml promote job](#pipeline-3-releaseyaml)
+  both work the same way: build to a candidate tag, scan + sign
+  the immutable digest, then promote (registry-side manifest
+  rewrite) to the final tag. Multi-arch is preserved end-to-end
+  because the manifest list is copied verbatim — no local
+  retag, no manifest list rebuild. Teams that prefer the
+  `gocdnext/image-copy@v1` plugin over a shell-out to `crane`
+  can substitute it in the `promote` job — same effect, picks
+  crane / skopeo / buildx-imagetools as the backend at the
+  operator's discretion.
 - **Per-tag preflight via API**: ✅ shipped in v0.12.0. The
   `gocdnext/check-pipeline-run@v1` plugin queries the gocdnext
   REST API and confirms a target pipeline produced a
