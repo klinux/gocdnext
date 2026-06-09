@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.3 — 2026-06-09
+
+Observability hotfix. Before this release, when a webhook push
+landed but `applyDrift` decided to skip — either because the push
+was on a non-default branch, or because the server had no
+`ConfigFetcher` wired — the skip was **silent**. Operators
+staring at "I pushed to my project's configured default and drift
+didn't fire" had no signal whether the branch comparison,
+fetcher wiring, or something later in the path was at fault.
+
+### Fix
+
+`server/internal/webhook.Handler.applyDrift` now emits an info
+log on every skip:
+
+- branch mismatch → logs `pushed_branch` AND the configured
+  `default_branch` side-by-side, so a typo in either is obvious
+  (e.g. project default = `gocdnext-tests`, push on `main` →
+  the diagnostic surfaces both values without needing DB
+  inspection).
+- no fetcher wired → logs the missing dependency explicitly.
+
+Regression coverage on the branch-mismatch path asserts both
+field names appear in the log; the configured default and the
+pushed branch both surface so a grep on `drift skipped` after a
+push lands the answer immediately.
+
 ## v0.14.2 — 2026-06-08
 
 Hotfix on v0.14.1. Closes a silent gap where ApplyProject from the

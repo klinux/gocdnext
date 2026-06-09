@@ -39,6 +39,13 @@ type DriftOutcome struct {
 func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, revision string) DriftOutcome {
 	out := DriftOutcome{Revision: revision}
 	if h.fetcher == nil {
+		// Server started without a ConfigFetcher wired — drift is
+		// silently impossible. Log it once per push so an operator
+		// staring at "why didn't my config update?" finds the
+		// answer in the server logs instead of in the code.
+		h.log.Info("github webhook: drift skipped — no config fetcher wired",
+			"scm_source_id", scm.ID, "project_id", scm.ProjectID,
+			"branch", branch, "revision", revision)
 		return out
 	}
 	if branch != scm.DefaultBranch {
@@ -50,6 +57,17 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		// profiles, etc) would otherwise land project-wide. The right
 		// shape is "only re-apply when the pushed branch is itself a
 		// registered material" — separate commit.
+		//
+		// Log the skip — pre-v0.14.3 this was silent and operators
+		// staring at "I pushed to my project's default branch and
+		// drift didn't fire" had no signal whether the branch
+		// comparison or something later in the path was at fault.
+		// Includes both the pushed branch AND the configured default
+		// so a typo in either is obvious side-by-side.
+		h.log.Info("github webhook: drift skipped — branch is not the project's default",
+			"scm_source_id", scm.ID, "project_id", scm.ProjectID,
+			"pushed_branch", branch, "default_branch", scm.DefaultBranch,
+			"revision", revision)
 		return out
 	}
 	out.Attempted = true
