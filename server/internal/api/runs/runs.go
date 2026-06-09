@@ -122,16 +122,41 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 		logsPerJob = int32(parsed)
 	}
 
+	// `?head=N` requests the FIRST N lines per job alongside the
+	// usual tail. Together with the response's `logs_omitted`
+	// integer, the UI can render long jobs as "start + (X lines
+	// omitted) + end" — the startup phase (Gradle daemon banner,
+	// dependency resolution, JDK toolchain) survives the tail-only
+	// cap that pre-v0.14.7 was hiding the first ~22k lines of a
+	// 23k-line job. 0 = no head fetch (legacy behaviour).
+	var logsHeadPerJob int32
+	if raw := r.URL.Query().Get("head"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid 'head' query", http.StatusBadRequest)
+			return
+		}
+		if parsed > 2000 {
+			parsed = 2000
+		}
+		logsHeadPerJob = int32(parsed)
+	}
+
 	// Optional per-job cursors: `?since=<job_run_uuid>:<last_seq>`
 	// (repeatable). When a cursor is present for a job, the store
 	// returns only lines with seq > cursor instead of the last N
 	// tail. Lets the polling client stream deltas without
 	// re-paying the tail cost on every tick — and without losing
 	// the middle chunk when a job produces >N lines between two
-	// polls.
+	// polls. Cursor-driven calls skip the head fetch (head doesn't
+	// move; no delta).
 	since := parseSinceQuery(r.URL.Query()["since"])
 
-	detail, err := h.store.GetRunDetail(r.Context(), runID, logsPerJob, since)
+	detail, err := h.store.GetRunDetailWithLogs(r.Context(), runID, store.LogWindow{
+		Tail:  logsPerJob,
+		Head:  logsHeadPerJob,
+		Since: since,
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrRunNotFound) {
 			http.Error(w, "run not found", http.StatusNotFound)

@@ -11,6 +11,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countLogLinesByJob = `-- name: CountLogLinesByJob :one
+SELECT COUNT(*)::bigint AS count
+FROM log_lines
+WHERE job_run_id = $1
+`
+
+// Total log line count for a job_run. Powers the "(N lines omitted)"
+// divider between head and tail in the UI: omitted = total - head -
+// tail, clamped to >= 0 (when head+tail overlap or exceed total,
+// callers dedupe and zero the omitted count). Cheap row count
+// against the same (job_run_id, seq) index TailLogLinesByJob hits.
+func (q *Queries) CountLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countLogLinesByJob, jobRunID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getProjectBySlug = `-- name: GetProjectBySlug :one
 SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
@@ -102,6 +120,59 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.PipelineDefinition,
 	)
 	return i, err
+}
+
+const headLogLinesByJob = `-- name: HeadLogLinesByJob :many
+SELECT seq, stream, at, text
+FROM log_lines
+WHERE job_run_id = $1
+ORDER BY seq
+LIMIT $2
+`
+
+type HeadLogLinesByJobParams struct {
+	JobRunID pgtype.UUID
+	Limit    int32
+}
+
+type HeadLogLinesByJobRow struct {
+	Seq    int64
+	Stream string
+	At     pgtype.Timestamptz
+	Text   string
+}
+
+// Returns the head (first $2 lines) of a job's logs in seq order.
+// Used together with TailLogLinesByJob to render the run detail's
+// log view as "first N + last M lines" — the verbose middle of
+// long jobs (Gradle test execution, kafka chatter) is rarely what
+// operators need first; the START (Gradle daemon setup, dependency
+// resolution from Nexus, classpath assembly) and the END (failure
+// + stack trace) are. Pre-v0.14.7 the cap-on-tail meant a 23k-line
+// job hid the entire startup; `kubectl logs` was the workaround.
+func (q *Queries) HeadLogLinesByJob(ctx context.Context, arg HeadLogLinesByJobParams) ([]HeadLogLinesByJobRow, error) {
+	rows, err := q.db.Query(ctx, headLogLinesByJob, arg.JobRunID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HeadLogLinesByJobRow{}
+	for rows.Next() {
+		var i HeadLogLinesByJobRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.Stream,
+			&i.At,
+			&i.Text,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const latestRunMetaByProjectSlug = `-- name: LatestRunMetaByProjectSlug :many

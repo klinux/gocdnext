@@ -6,6 +6,66 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.7 — 2026-06-09
+
+Closes [#18](https://github.com/klinux/gocdnext/issues/18). The
+run detail page no longer hides the START of long jobs.
+
+### Feature — head + tail log render
+
+Before v0.14.7, the run detail page's log fetch returned only the
+TAIL (last 200 lines by default, capped at 2000). A 23k-line
+build — Card's `check` job, for example — showed only lines
+~22,800 → 23,000. Everything before (Gradle daemon startup,
+Nexus dependency resolution, JDK toolchain selection,
+`--enable-native-access` warnings, classpath assembly) was
+invisible from the UI; `kubectl logs` was the operator's only
+recourse for diagnosing dependency-resolution failures or
+toolchain issues.
+
+After: the API accepts `?head=N` alongside the existing `?logs=N`
+(tail). Both capped at 2000. The response carries `logs_head`,
+`logs` (the tail), and `logs_omitted` per job. The UI renders the
+head section, a `· · · X lines omitted · · ·` divider, then the
+tail — so a 23k-line build now shows the operator the first 500
+lines AND the last 200, with the verbose middle elided.
+
+Defaults: UI requests `?logs=200&head=500` by default — operator
+gets the startup phase (where dep / toolchain errors live) plus
+the tail (where the failure stack lives), without changing the
+URL.
+
+### Implementation
+
+- New SQL: `HeadLogLinesByJob` (first N by seq) and
+  `CountLogLinesByJob` (total line count for the divider).
+- New store API: `Store.GetRunDetailWithLogs(LogWindow{Tail, Head,
+  Since})`. Legacy `GetRunDetail(_, logsPerJob, since)` kept and
+  delegates — the three pre-existing call sites (checks reporter,
+  test_results handler, default run detail when no head requested)
+  stay on the legacy signature.
+- Archive-aware: cold-archived jobs read both head AND tail from
+  the artifact archive via the existing `LogArchiveSource`. New
+  `archivedHead` helper mirrors `archivedTail`'s shape and returns
+  `(lines, total)` so the omitted count comes off a single
+  archive read.
+- Cursor-driven polling (the SSE companion path) skips the head
+  fetch — the head doesn't move, no point re-shipping it on every
+  tick. Cursor mode keeps the existing delta semantics.
+- Dedupe when head + tail overlap: short jobs whose total fits in
+  head + tail get the head trimmed against tail's seq set so the
+  operator sees each line exactly once, with `logs_omitted = 0`.
+
+### Tests
+
+- `TestGetRunDetailWithLogs_HeadAndTailRendersStartAndEnd` —
+  100-line job, head=5, tail=5 → 90 omitted, head=[1..5],
+  tail=[96..100].
+- `TestGetRunDetailWithLogs_HeadTailOverlapDedupes` — 5-line job,
+  head=10, tail=10 → head empty after dedupe, tail=5, omitted=0.
+- `TestGetRunDetailWithLogs_CursorSkipsHead` — cursor-driven fetch
+  skips the head + omitted entirely.
+
 ## v0.14.6 — 2026-06-09
 
 Closes [#16](https://github.com/klinux/gocdnext/issues/16) and

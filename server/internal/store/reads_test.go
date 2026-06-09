@@ -333,6 +333,170 @@ func TestGetRunDetail_LogCursorReturnsOnlyDelta(t *testing.T) {
 	}
 }
 
+// TestGetRunDetailWithLogs_HeadAndTailRendersStartAndEnd covers the
+// #18 regression: pre-v0.14.7 the tail-only fetch hid the START of
+// long jobs (Gradle daemon setup, dependency resolution from
+// Nexus, JDK toolchain selection — all in the first few hundred
+// lines of a 23k-line build). After: passing LogWindow.Head=N
+// returns the first N lines AND the last M, plus LogsOmitted
+// counting the verbose middle the UI displays as a divider.
+func TestGetRunDetailWithLogs_HeadAndTailRendersStartAndEnd(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	jobID := run.JobRuns[0].ID
+
+	// Seed 100 lines so head=5 + tail=5 = 10 visible, 90 omitted.
+	now := time.Now().UTC()
+	for seq := int64(1); seq <= 100; seq++ {
+		if err := s.InsertLogLine(ctx, store.LogLine{
+			JobRunID: jobID, Seq: seq, Stream: "stdout",
+			At:   now.Add(time.Duration(seq) * time.Millisecond),
+			Text: fmt.Sprintf("line %d", seq),
+		}); err != nil {
+			t.Fatalf("log %d: %v", seq, err)
+		}
+	}
+
+	got, err := s.GetRunDetailWithLogs(ctx, run.RunID, store.LogWindow{Head: 5, Tail: 5})
+	if err != nil {
+		t.Fatalf("GetRunDetailWithLogs: %v", err)
+	}
+
+	var jd store.JobDetail
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == jobID {
+				jd = j
+			}
+		}
+	}
+	if jd.ID == uuid.Nil {
+		t.Fatal("compile job not found in detail")
+	}
+
+	if len(jd.LogsHead) != 5 {
+		t.Errorf("LogsHead = %d, want 5", len(jd.LogsHead))
+	}
+	if len(jd.Logs) != 5 {
+		t.Errorf("Logs (tail) = %d, want 5", len(jd.Logs))
+	}
+	if jd.LogsOmitted != 90 {
+		t.Errorf("LogsOmitted = %d, want 90 (100 - 5 head - 5 tail)", jd.LogsOmitted)
+	}
+	// Head = first 5 by seq, ascending.
+	if jd.LogsHead[0].Seq != 1 || jd.LogsHead[4].Seq != 5 {
+		t.Errorf("head seqs = [%d..%d], want [1..5]",
+			jd.LogsHead[0].Seq, jd.LogsHead[len(jd.LogsHead)-1].Seq)
+	}
+	// Tail = last 5 by seq, also ascending within the window.
+	if jd.Logs[0].Seq != 96 || jd.Logs[4].Seq != 100 {
+		t.Errorf("tail seqs = [%d..%d], want [96..100]",
+			jd.Logs[0].Seq, jd.Logs[len(jd.Logs)-1].Seq)
+	}
+}
+
+// TestGetRunDetailWithLogs_HeadTailOverlapDedupes covers the short-
+// job case where head + tail >= total. Pre-fix this would render
+// the same lines twice in the UI (head shows 1..5, tail shows
+// 1..5 too, operator sees a doubled log). After dedupe, head
+// drops the overlap so tail's window stays canonical and the
+// operator sees each line exactly once with omitted=0.
+func TestGetRunDetailWithLogs_HeadTailOverlapDedupes(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, _ := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	jobID := run.JobRuns[0].ID
+
+	now := time.Now().UTC()
+	for seq := int64(1); seq <= 5; seq++ {
+		if err := s.InsertLogLine(ctx, store.LogLine{
+			JobRunID: jobID, Seq: seq, Stream: "stdout",
+			At: now.Add(time.Duration(seq) * time.Millisecond), Text: fmt.Sprintf("L%d", seq),
+		}); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+	}
+
+	got, _ := s.GetRunDetailWithLogs(ctx, run.RunID, store.LogWindow{Head: 10, Tail: 10})
+
+	var jd store.JobDetail
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == jobID {
+				jd = j
+			}
+		}
+	}
+
+	if jd.LogsOmitted != 0 {
+		t.Errorf("LogsOmitted = %d, want 0 (head+tail covers everything)", jd.LogsOmitted)
+	}
+	if len(jd.Logs) != 5 {
+		t.Errorf("tail = %d, want 5 (all lines)", len(jd.Logs))
+	}
+	// Head should be empty (or near-empty) after dedupe — every
+	// seq is in tail too. Operator sees the 5 lines once via tail.
+	if len(jd.LogsHead) != 0 {
+		t.Errorf("head after dedupe = %d, want 0 (all overlap with tail)", len(jd.LogsHead))
+	}
+}
+
+// TestGetRunDetailWithLogs_CursorSkipsHead — cursor-driven polling
+// only ships the tail delta; the head was already delivered on
+// the initial load and re-shipping it on every tick would
+// dominate the response. Initial load asks Head=N, deltas don't.
+func TestGetRunDetailWithLogs_CursorSkipsHead(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, _ := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	jobID := run.JobRuns[0].ID
+
+	now := time.Now().UTC()
+	for seq := int64(1); seq <= 10; seq++ {
+		_ = s.InsertLogLine(ctx, store.LogLine{
+			JobRunID: jobID, Seq: seq, Stream: "stdout",
+			At: now, Text: fmt.Sprintf("L%d", seq),
+		})
+	}
+
+	got, _ := s.GetRunDetailWithLogs(ctx, run.RunID, store.LogWindow{
+		Head: 5, Tail: 100, Since: map[uuid.UUID]int64{jobID: 7},
+	})
+
+	var jd store.JobDetail
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == jobID {
+				jd = j
+			}
+		}
+	}
+
+	if len(jd.LogsHead) != 0 {
+		t.Errorf("LogsHead = %d, want 0 on cursor-driven fetch", len(jd.LogsHead))
+	}
+	if jd.LogsOmitted != 0 {
+		t.Errorf("LogsOmitted = %d, want 0 on cursor delta", jd.LogsOmitted)
+	}
+	// Tail delta: lines 8, 9, 10 (after cursor=7).
+	if len(jd.Logs) != 3 {
+		t.Errorf("tail delta = %d, want 3 (8,9,10)", len(jd.Logs))
+	}
+}
+
 func TestGetRunDetail_LogsSkippedWhenLimitZero(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
