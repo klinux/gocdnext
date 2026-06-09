@@ -6,6 +6,54 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.4 — 2026-06-09
+
+Closes [#15](https://github.com/klinux/gocdnext/issues/15) and the
+pre-existing `**` glob gap operators hit on Gradle/Maven layouts.
+
+### Feature — test_reports parity in isolated workspace mode
+
+Before this release, jobs running under
+`agent.workspace.accessMode: ReadWriteOnce` (isolated mode, the
+default since v0.5.0) emitted a warn line saying JUnit collection
+was unsupported and the Tests tab would stay empty. The agent
+couldn't walk the pod's ephemeral PVC from outside, so
+`test_reports:` globs were silently dropped.
+
+After v0.14.4, isolated mode collects test reports via the same
+`PodExecutor.Exec` plumbing the outputs and artifact paths already
+use:
+
+1. `find <workDir> -type f` once inside the housekeeper sidecar.
+2. Agent-side glob match against each declared YAML pattern.
+3. `cat -- <path>` per match → bytes flow back through the SPDY
+   stream and into the existing JUnit decoder.
+4. Aggregated `TestResultBatch` ships through the same gRPC stream
+   shared mode uses — UI's Tests tab renders identically.
+
+Reports are scanned on both success and non-zero-exit paths,
+matching shared mode (the Tests tab carries its highest signal
+exactly when a build fails).
+
+### Fix — `**` recursive glob now works in BOTH modes
+
+`expandGlobs` previously used `filepath.Glob`, which treats `*` as
+"any chars except path separator" — `**/build/test-results/test/*.xml`
+silently matched zero files. The replacement
+`doublestar.FilepathGlob(..., WithFilesOnly())` understands `**`
+as "any number of path segments," lining up with the Gradle / Maven
+/ pytest convention every CI tool already supports. Shared-mode
+operators who configured `test_reports: ["**/…"]` and saw an empty
+Tests tab will now see the reports they expected.
+
+### New dependency
+
+`github.com/bmatcuk/doublestar/v4` (agent only). Stdlib
+`filepath.Glob` provides no `**` semantics and no plan to add it;
+the canonical Go implementation is small, MIT, and used widely
+across the ecosystem. Confined to `agent/internal/runner` so the
+server's import surface is unchanged.
+
 ## v0.14.3 — 2026-06-09
 
 Observability hotfix. Before this release, when a webhook push
