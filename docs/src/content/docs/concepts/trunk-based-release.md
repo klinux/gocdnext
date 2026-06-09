@@ -56,6 +56,234 @@ the resulting tag push to do the build/scan/sign/deploy — see
 [Variant: split release + tag.yaml](#variant-split-release--tagyaml)
 for that shape. Pick whichever fits your team; both are valid.
 
+## Production-readiness prerequisites
+
+The four-pipeline shape below moves safety from branches to
+pipelines, but it has THREE hard prerequisites that aren't
+optional if you're going to claim "this is production-ready."
+Without them, the shape is provenance-for-audit, not enforcement
+— a cosign signature nobody verifies, a digest nobody pins, a
+rollback that breaks on the first DB migration.
+
+Each prereq is one knob the operator has to set up ONCE on the
+cluster (Kyverno install, Helm digest values, migration shape
+review). They're cluster-level, not per-pipeline, so the cost
+amortises across every project. Walking past them gives you the
+provenance for an audit conversation; meeting them gives you the
+enforcement that an audit conversation is asking about.
+
+### 1. Cluster verifies signatures at admission
+
+The release pipeline signs the image with cosign. Nothing the
+pipeline does makes the signature **load-bearing** unless the
+cluster checks it at admission time. Without verification,
+signing is a sticker on a glass jar — the lid still opens.
+
+Install **Kyverno** (or sigstore policy-controller, or
+Connaisseur — pick one; we use Kyverno here because the
+ClusterPolicy DSL is the most operator-readable) and apply a
+ClusterPolicy that fails-closed for any image referenced in the
+production namespace that lacks a valid cosign signature anchored
+to your team's identity:
+
+```yaml title="prod-cluster/kyverno-signature-required.yaml"
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-cosign-signature
+spec:
+  validationFailureAction: Enforce
+  webhookConfiguration:
+    failurePolicy: Fail            # fail-closed: missing webhook = deny
+  rules:
+    - name: verify-image-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [prod, prod-system]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/my-org/*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      <your cosign public key>
+                      -----END PUBLIC KEY-----
+          mutateDigest: true       # rewrite tag→digest so the verified bytes are what actually runs
+          required: true
+```
+
+Two things this gives you:
+
+- **`mutateDigest: true`** rewrites every `image: …@sha256:abc`
+  before the container starts. Even if the deploying pipeline
+  used a tag, the cluster runs the digest. That closes the
+  mutable-tag-window gap (next prereq).
+- **`required: true` + `failurePolicy: Fail`** means a fresh
+  pod with NO signature fails admission. Critical for hotfixes
+  that bypass the normal release flow — the cluster still
+  refuses them.
+
+Verify the policy is live before the first prod deploy goes
+through it:
+
+```bash
+kubectl run --rm -it --image=ghcr.io/my-org/scratch:no-sig --restart=Never test-deny -n prod
+# Error from server: admission webhook "...kyverno..." denied the request: image not signed
+```
+
+If that command **succeeds**, the policy isn't enforcing —
+re-check `validationFailureAction: Enforce` and the namespace
+selector. A trunk-based release flow without this check is a
+trunk-based release flow that pretends to verify provenance.
+
+### 2. Deploy by digest, not tag
+
+OCI tags are mutable. Even with signature verification, if the
+deploy references `:v1.2.3` and someone repushes that tag
+between stage smoke and prod deploy (another release pipeline,
+a manual `docker push`, a registry mirror replay), the
+production cluster runs a different binary than the one stage
+tested + signed. The cosign signature is anchored to the
+**digest**, not the tag — verification of the new digest may
+even **succeed** (different bytes, but still a signed image
+from your registry).
+
+Fix: resolve the tag to a digest the moment the image lands in
+the registry, and propagate the digest all the way to prod. The
+Helm chart's `image.digest` value (or whatever your chart names
+it) is what guarantees "what was tested is what runs."
+
+In `release.yaml`'s build job, after the push:
+
+```yaml
+build-and-push:
+  stage: build
+  uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+  outputs:
+    digest: IMAGE_DIGEST          # `crane digest` against the just-pushed tag
+  with:
+    image: ghcr.io/my-org/app:${TAG}
+    push: "true"
+    # The plugin runs `crane digest <image>:<tag>` after push and
+    # captures the sha256:… line into IMAGE_DIGEST. Subsequent jobs
+    # consume it via outputs.
+```
+
+Then `prod.yaml`'s deploy passes `image.digest` (not `image.tag`):
+
+```yaml
+deploy-prod:
+  stage: deploy
+  needs: [preflight]
+  secrets: [PROD_KUBECONFIG]
+  uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
+  with:
+    kubeconfig: ${{ PROD_KUBECONFIG }}
+    command: |
+      upgrade --install my-app charts/my-app
+      --namespace prod
+      --set image.repository=ghcr.io/my-org/app
+      --set image.digest=${{ needs.preflight.outputs.digest }}
+      --wait --timeout 10m
+```
+
+And the preflight resolves the digest from the upstream release
+run's outputs (instead of just verifying the tag exists). The
+`check-pipeline-run` plugin returns `outputs.IMAGE_DIGEST` from
+the matched release run; if the digest doesn't match what was
+just queried with `crane digest …:${TAG}`, that's a mutable-tag
+event between release and prod — fail loud.
+
+```yaml
+preflight:
+  stage: preflight
+  needs: [approve-prod]
+  secrets: [GOCDNEXT_API_TOKEN]
+  uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
+  outputs:
+    digest: IMAGE_DIGEST
+  with:
+    api-url: https://gocdnext.example.com
+    api-token: ${{ GOCDNEXT_API_TOKEN }}
+    project: my-org
+    pipeline: release
+    tag: ${TAG}
+    expected-status: success
+    require-digest-match: true    # plugin re-runs `crane digest` and aborts on mismatch
+    max-age: 7d
+```
+
+After this prereq, "what was tested is what runs" is enforceable
+end-to-end. The digest flows through `release.yaml` outputs →
+preflight check → Helm value → Kyverno's `mutateDigest` →
+container.
+
+### 3. Migrations are forward-only and backward-compatible (expand/contract)
+
+"Rollback is one click" only holds for stateless apps. `helm
+rollback` reverts the Helm release; it does NOT revert a database
+migration. Trunk-based with frequent deploys requires
+expand/contract migrations as a HARD prerequisite — without
+them, every prod deploy with a DDL change is a one-way door, and
+"rollback" is a lie.
+
+The contract:
+
+- **Forward-only.** No `goose down`, no `flyway undo`. Rollback
+  fixes forward via a corrective migration (`fix(db): roll back
+  column rename`).
+- **Backward-compatible.** A migration deploys BEFORE the code
+  that depends on it. Old code (the version we'd rollback to)
+  must still work against the new schema.
+- **Expand/contract for renames + drops.** Three deploys:
+  1. **Expand**: add new column, dual-write from app code, leave
+     old column in place. Both schemas work for both code versions.
+  2. **Backfill + cut over**: stop reading the old column, drop
+     dual-write. Old code still works (reads from the column
+     it knows).
+  3. **Contract**: drop the old column. Only safe AFTER you're
+     confident you won't roll back across the cut-over.
+
+For destructive changes (column drop, table drop, NOT NULL
+without default), the expand/contract dance MUST cross at least
+ONE release boundary — typically a week — so the rollback target
+is always a deploy with the old column still present.
+
+Document this in your repo so it's NOT tribal:
+
+```md title="docs/db-migrations.md"
+# Migration contract
+
+- Forward-only. No `goose down`. Use corrective migrations.
+- Every migration must work against the PREVIOUS deploy's code.
+- Column drops + renames use expand/contract over ≥ 2 releases.
+- Destructive DDL inside a deploy = manual gate. Tag the PR
+  `migration:destructive`; release approvers verify the
+  expand/contract sequence before approving.
+```
+
+The fourth pipeline (`prod.yaml`) doesn't enforce this — there's
+no automated way to check "is this migration backward-
+compatible?". It enforces the gate: a PR labeled
+`migration:destructive` triggers a higher approval quorum via
+`quorum_by_label` (`destructive: 3` instead of the default 2).
+That makes the operator think twice; the contract above does
+the rest.
+
+### What follows assumes these three are in place
+
+The remainder of this page (branching, the four pipelines,
+hotfix flow, rollback) treats the three prerequisites above as
+done. If your cluster doesn't verify signatures, you can still
+adopt the four pipelines for everything else they give you (PR
+hygiene, stage smoke, audit trail, quorum gates) — but
+"production-ready" is a softer claim. Promote it to the actual
+claim once the three checks are in place.
+
 ## Branching contract
 
 ### DO
@@ -497,13 +725,24 @@ jobs:
     docker: true
     secrets: [GHCR_USERNAME, GHCR_TOKEN]
     uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+    # `digest:` output is the sha256:… of the built+pushed manifest;
+    # downstream jobs (scan, sign, prod's preflight) consume this so
+    # the operation runs against an immutable digest even if someone
+    # races a `docker push` against the tag.
+    # See [Prerequisite 2: Deploy by digest, not tag](#2-deploy-by-digest-not-tag).
+    outputs:
+      digest: IMAGE_DIGEST
     with:
       image: ghcr.io/my-org/my-app
-      tags: |
-        ${TAG}
-        latest
+      # NOTE: `latest` is deliberately NOT in this list. The first
+      # cut of this doc pushed `latest` on every release; it
+      # contradicts the immutability discourse (operators end up
+      # pulling a moving target) and is exactly the kind of tag
+      # that Kyverno's `mutateDigest` is forced to clean up. Drop
+      # it and reference tags by `${TAG}` or by digest.
+      tags: ${TAG}
       platforms: linux/amd64,linux/arm64
-      push: "true"          # scan-after-publish trade-off (see above)
+      push: "true"
       registry: ghcr.io
       username: ${{ GHCR_USERNAME }}
       password: ${{ GHCR_TOKEN }}
@@ -520,7 +759,11 @@ jobs:
     uses: ghcr.io/klinux/gocdnext-plugin-trivy@v1
     with:
       scan-type: image
-      target: ghcr.io/my-org/my-app:${TAG}
+      # Scan the DIGEST emitted by build, not the tag — defends
+      # against the (unlikely but real) race where someone pushes
+      # over the tag between build and scan. The bytes that get
+      # signed below are the SAME bytes scanned here.
+      target: ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }}
       severity: HIGH,CRITICAL
       exit-code: "1"          # run-fail = operator deletes the tag
 
@@ -548,11 +791,15 @@ jobs:
     secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GHCR_USERNAME, GHCR_TOKEN]
     uses: ghcr.io/klinux/gocdnext-plugin-cosign@v1
     with:
-      # cosign anchors the signature to the manifest DIGEST even
-      # when invoked against a tag — the tag is resolved once at
-      # sign time and the signature attaches to whatever digest
-      # it pointed at within this run.
-      image: ghcr.io/my-org/my-app:${TAG}
+      # Pin by digest, NOT tag. Cosign anchors the signature to
+      # the manifest digest regardless of how you invoke it, but
+      # passing the digest explicitly closes the
+      # tag-resolved-twice race: build pushed digest A under tag,
+      # someone races a push of digest B, scan ran on A, cosign
+      # would sign B if it re-resolves the tag here. Reusing
+      # `needs.build.outputs.digest` ensures sign sees the same
+      # bytes that scan blessed.
+      image: ghcr.io/my-org/my-app@${{ needs.build.outputs.digest }}
       action: sign
       key-content: ${{ COSIGN_PRIVATE_KEY }}
       key-password: ${{ COSIGN_PASSWORD }}
@@ -824,14 +1071,18 @@ jobs:
     needs: [approve-prod]
     # Since v0.12.0 this is a typed plugin call instead of inline
     # curl + jq. Confirms a terminal-success run of `release`
-    # exists for ${TAG} via the gocdnext REST API. Fails the gate
-    # loud (exit 1) when no match — the prod deploy chain stays
-    # red. Optional outputs: pipe the matched run URL into the
-    # post-deploy notification so the audit trail links prod
-    # promotion ← upstream release run.
+    # exists for ${TAG} via the gocdnext REST API AND that the
+    # resolved digest still matches what release.yaml signed
+    # (`require-digest-match: true` since v0.14.x — re-runs
+    # `crane digest` against the current registry state and
+    # aborts if the tag has been re-pushed since release ran).
+    # Fails the gate loud (exit 1) when either check fails — the
+    # prod deploy chain stays red. The digest flows out as an
+    # output for the deploy job below.
     secrets: [GOCDNEXT_API_TOKEN]
     uses: ghcr.io/klinux/gocdnext-plugin-check-pipeline-run@v1
     outputs:
+      digest: IMAGE_DIGEST
       run_url: RUN_URL
     with:
       api-url: https://gocdnext.example.com
@@ -840,6 +1091,7 @@ jobs:
       pipeline: release
       tag: ${TAG}
       expected-status: success
+      require-digest-match: true
       max-age: 7d
     artifacts:
       paths: [".gocdnext/preflight.env"]
@@ -851,10 +1103,19 @@ jobs:
     uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
     with:
       kubeconfig: ${{ PROD_KUBECONFIG }}
+      # Pin by DIGEST (not tag) so the bytes the cluster runs are
+      # exactly the bytes release.yaml signed. See
+      # [Prerequisite 2: Deploy by digest, not tag](#2-deploy-by-digest-not-tag)
+      # for why this isn't optional. Kyverno's `mutateDigest`
+      # would catch a tag-only deploy too, but pinning here gives
+      # us a deterministic Helm release shape (revision N always
+      # references the same bytes) which makes auto-rollback
+      # behave predictably.
       command: |
         upgrade --install my-app charts/my-app
         --namespace prod
-        --set image.tag=${TAG}
+        --set image.repository=ghcr.io/my-org/app
+        --set image.digest=${{ needs.preflight.outputs.digest }}
         --wait --timeout 10m
 
   smoke-prod:
@@ -932,23 +1193,103 @@ smoke don't disappear.
 
 ## Rollback
 
-Tags are immutable. Rollback = re-trigger `prod.yaml` with the
-previous tag:
+Two mechanisms, ONE canonical path, an explicit escape valve.
+The four-pipeline shape gives you both `helm rollback` (Helm
+revision-aware, used by `prod.yaml`'s auto-rollback on smoke
+failure) and "re-trigger `prod.yaml` with the previous tag"
+(human-driven, full pipeline pass). Pre-v0.14 versions of this
+doc described both without picking one — operators ended up
+mixing them, leaving the cluster in different states (Helm
+revision points at chart values from N-1, re-deploy uses values
+at HEAD with image of N-1, drift). Pick one as the default; use
+the other only when the default doesn't apply.
+
+### When rollback is safe (default path)
+
+A rollback is safe when **all** of these hold:
+
+1. The migration contract from
+   [Prerequisite 3](#3-migrations-are-forward-only-and-backward-compatible-expandcontract)
+   is followed: every migration between current and target is
+   backward-compatible, no destructive DDL crossed the rollback
+   boundary.
+2. The signature verification + digest pinning prereqs are in
+   place — Kyverno's `mutateDigest` ensures the rolled-back
+   container is the bytes that were signed for the target tag,
+   not a re-tagged drift.
+3. The target tag is one that ran green through `release.yaml`
+   AND its `prod.yaml` deploy in the past (i.e., it's a tag
+   that has already been to prod successfully). Tags that only
+   passed stage haven't proven themselves under prod load.
+
+When all three hold, rollback is one of two flavours below.
+When they don't, jump to [Fix-forward](#when-rollback-is-not-safe-fix-forward).
+
+### Auto-rollback (Helm-revision based)
+
+When `smoke-prod` fails immediately after a deploy, the same job
+calls `helm rollback my-app 0 -n prod` — Helm steps back to the
+prior revision. This is what `prod.yaml` does today; nothing
+human-driven is needed. The cluster state matches the previous
+revision EXACTLY (same chart values, same image, same secrets)
+because Helm tracks the revision atomically.
+
+Use this for: smoke-test failures, immediate post-deploy
+regressions caught by automation. Window: the first ~5 minutes
+after the deploy lands.
+
+### Manual rollback (re-trigger `prod.yaml` with the previous tag)
+
+After the smoke-test window closes (auto-rollback won't fire),
+or when the regression was caught by humans hours/days later,
+re-trigger `prod.yaml` with the previous good tag:
 
 ```
 Dashboard → prod pipeline → Run latest
-  TAG: v0.6.4    (the working previous)
-  → approval gate (quorum 2)
-  → preflight
-  → helm upgrade --set image.tag=v0.6.4
+  TAG: v0.6.4    (the previous known-good)
+  → approval gate (quorum 2 — same as forward)
+  → preflight (resolves digest from release.yaml)
+  → helm upgrade --set image.digest=<v0.6.4 digest>
   → smoke
 ```
 
-The same approval gate the forward deploy used governs the
-rollback. Yes, this means "shit's broken right now" deploys still
-need 2 approvers. That's intentional: panic deploys are how
-incidents compound. The on-call playbook should include a list
-of known-good tags so the approval is < 60 seconds.
+Yes, "shit's broken right now" deploys still need 2 approvers.
+Intentional: panic deploys are how incidents compound. The
+on-call playbook should include a list of known-good tags so
+the approval is < 60 seconds.
+
+Use this for: regressions caught past the smoke window, when
+auto-rollback didn't fire, or when chart values changed between
+the deploys (Helm revision rollback would also revert the
+values change, which may not be what you want).
+
+### When rollback is NOT safe — fix-forward
+
+If the deploy you'd roll back across includes any of these,
+**don't roll back** — fix forward:
+
+- A migration that's not backward-compatible (column drop without
+  expand/contract, NOT NULL on existing data without default,
+  destructive DDL marked by the PR's `migration:destructive`
+  label that bypassed the higher-quorum gate).
+- A secret rotation that depended on the new code reading the
+  rotated value (rolling back means old code with new secret =
+  auth failures).
+- A feature-flag default change that the previous code can't
+  parse (also expand/contract territory; if you cross-deploy
+  flag updates, leave the old default working).
+
+Fix-forward = open a hotfix PR with the corrective change, ride
+it through `pr.yaml` → `main.yaml` → `release.yaml` →
+`prod.yaml` like any other deploy. The hotfix label loosens
+quorum on prod from 2 → 1 (per `quorum_by_label`); everything
+else stays the same. ~30 minutes wall-clock for the round-trip.
+
+The on-call playbook should call this out explicitly: **the
+default is rollback; the exception is fix-forward; the question
+that decides is "does the migration / secret / flag survive a
+backward jump?"** That single question is the most important
+rollback skill an on-call rotation can build.
 
 ## Migration plan
 
