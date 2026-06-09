@@ -84,6 +84,18 @@ type IsolatedJobSpec struct {
 	// agent-level only.
 	NodeSelector map[string]string
 	Tolerations  []corev1.Toleration
+
+	// NeedsCacheFetchInit toggles the second init container —
+	// `cache-fetch` — that the agent uses to read workspace files
+	// for `{{ hash "..." }}` cache-key resolution in isolated mode.
+	// When true, BuildIsolatedJobPodSpec emits the alpine sleep-
+	// container after prep; it waits on a marker the agent touches
+	// after resolving + fetching templated cache entries. Caller
+	// (executeIsolated) sets this only when at least one cache
+	// entry's key carries `{{` — avoids the extra container's
+	// startup cost (~200ms image pull on cold node) for the 90%
+	// of jobs without templated caches.
+	NeedsCacheFetchInit bool
 }
 
 // BuildIsolatedJobPodSpec materialises the multi-container Pod for
@@ -333,7 +345,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			ImagePullSecrets: pullSecrets,
 			Volumes:          []corev1.Volume{workspaceVolume, assignmentVolume},
-			InitContainers:   []corev1.Container{prepContainer},
+			InitContainers:   buildIsolatedInitContainers(prepContainer, spec, k.cfg.HousekeeperImage, workspaceMount),
 			Containers:       containers,
 			HostAliases:      hostAliases,
 			// task container runs user-supplied code; mounting the
@@ -344,6 +356,82 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			AutomountServiceAccountToken: ptr.To(false),
 		},
 	}, nil
+}
+
+// CacheFetchInitContainerName is the canonical name of the second
+// init container that mediates `{{ hash "..." }}` cache-key
+// resolution. Constant so the agent's isolated-mode orchestration
+// can target it via PodExecutor.Exec (find/cat for hashing, tar
+// over stdin to populate workspace, touch the marker file to
+// signal exit) without string drift between the engine and runner
+// packages.
+const CacheFetchInitContainerName = "cache-fetch"
+
+// CacheFetchReadyMarker is the workspace-relative path the
+// cache-fetch init container's wait loop polls. When the agent
+// finishes resolving + populating templated caches, it touches
+// this file via exec; the cache-fetch container's `until [ -f ]`
+// loop exits, K8s starts the main containers, and the task can
+// run with caches already in place. Workspace-relative so the
+// existing PVC mount carries it without any extra plumbing.
+const CacheFetchReadyMarker = ".gocdnext/cache-done"
+
+// buildIsolatedInitContainers assembles the init container list
+// for an isolated-mode pod. `prep` is always first; `cache-fetch`
+// is appended only when spec.NeedsCacheFetchInit is set (i.e., the
+// assignment carries at least one templated cache key the agent
+// must resolve against the post-checkout workspace).
+//
+// Order matters: K8s runs init containers sequentially, so
+// cache-fetch starts only AFTER prep has terminated. That's the
+// invariant the runner depends on — by the time the agent execs
+// into cache-fetch, prep has already done the `git clone`, so
+// `find` returns the files the operator's hash() globs match.
+func buildIsolatedInitContainers(
+	prep corev1.Container,
+	spec IsolatedJobSpec,
+	housekeeperImage string,
+	workspaceMount corev1.VolumeMount,
+) []corev1.Container {
+	inits := []corev1.Container{prep}
+	if !spec.NeedsCacheFetchInit {
+		return inits
+	}
+	// cache-fetch — alpine sleep waiting for the agent to touch the
+	// marker. We use the same image as housekeeper so the cluster's
+	// image cache amortises across the two (alpine is tiny enough
+	// the cold pull is sub-second, but warming once helps the next
+	// job on the same node).
+	//
+	// The `until` loop polls every 0.2s. Faster polling shortens
+	// the gap between marker-touch and main-container start; slower
+	// would waste CPU. 0.2s is the lower bound at which `sleep` is
+	// reliably granular across busybox/bash without measurable
+	// busy-wait.
+	cacheFetch := corev1.Container{
+		Name:            CacheFetchInitContainerName,
+		Image:           housekeeperImage,
+		ImagePullPolicy: imagePullPolicyFor(housekeeperImage),
+		Command: []string{
+			"sh", "-c",
+			// `mkdir -p` defends against the marker dir not existing
+			// when prep didn't materialise it (e.g., prep skipped
+			// checkout for a no-material job).
+			"mkdir -p $(dirname /workspace/" + CacheFetchReadyMarker + ") && " +
+				"until [ -f /workspace/" + CacheFetchReadyMarker + " ]; do sleep 0.2; done",
+		},
+		WorkingDir:   "/workspace",
+		VolumeMounts: []corev1.VolumeMount{workspaceMount},
+		// Tiny — the container just sleeps. Same shape as
+		// housekeeper's idle profile.
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
+			},
+		},
+	}
+	return append(inits, cacheFetch)
 }
 
 // CreateIsolatedJobPod is the high-level entry: builds the Secret

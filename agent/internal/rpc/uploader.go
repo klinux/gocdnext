@@ -8,9 +8,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	"github.com/gocdnext/gocdnext/agent/internal/podfs"
 	"github.com/gocdnext/gocdnext/agent/internal/runner"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
@@ -140,22 +143,64 @@ func (u *ArtifactUploader) UploadFromPod(
 		unique = append(unique, p)
 	}
 
+	// Glob expansion (issue #16). Before v0.14.6 the agent invoked
+	// `tar -czf - -- <declared-path>` and let tar receive a literal
+	// `*`/`?`/etc — the housekeeper exec doesn't run a shell, so
+	// `dist/*.jar` was treated as a filename, tar errored, and the
+	// artifact silently vanished. Resolve agent-side via
+	// podfs.MatchSingleGlob so the tar invocation receives concrete
+	// workspace-relative paths.
+	//
+	// Declared paths with no glob characters short-circuit: no
+	// `find` round-trip when nobody asked for one. Declared paths
+	// with glob characters but zero matches are skipped entirely —
+	// we don't even ask the server for a ticket. The caller decides
+	// required-vs-optional semantics; this is upstream of that.
+	resolved, listingErr := resolveArtifactGlobs(ctx, exec, podName, containerName, podWorkDir, unique)
+	if listingErr != nil {
+		// `find` itself failed (housekeeper dead, network glitch).
+		// Bail loud — without the listing we'd have to either upload
+		// nothing or fall back to tar-with-glob which is the bug we
+		// just fixed.
+		return nil, fmt.Errorf("resolve artifact globs in pod: %w", listingErr)
+	}
+
+	// Build the paths we'll actually request tickets for: declared
+	// paths that survived resolution. Preserves operator-typed text
+	// so the ArtifactRef.path round-trips back to the YAML.
+	requested := make([]string, 0, len(unique))
+	for _, p := range unique {
+		if files, ok := resolved[p]; ok && len(files) > 0 {
+			requested = append(requested, p)
+		}
+	}
+	if len(requested) == 0 {
+		// Every declared path either glob'd to zero matches or was a
+		// literal not present in the workspace. The latter would
+		// still surface a tar error per-path under the old shape;
+		// here we return cleanly because there's nothing to PUT.
+		// Caller's required/optional semantics decide whether that's
+		// a job failure.
+		return nil, nil
+	}
+
 	resp, err := u.client.RequestArtifactUpload(ctx, &gocdnextv1.RequestArtifactUploadRequest{
 		SessionId: u.sessionID,
 		RunId:     runID,
 		JobId:     jobID,
-		Paths:     unique,
+		Paths:     requested,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("request upload: %w", err)
 	}
-	if got := len(resp.GetTickets()); got != len(unique) {
-		return nil, fmt.Errorf("server returned %d tickets for %d paths", got, len(unique))
+	if got := len(resp.GetTickets()); got != len(requested) {
+		return nil, fmt.Errorf("server returned %d tickets for %d paths", got, len(requested))
 	}
 
-	refs := make([]*gocdnextv1.ArtifactRef, 0, len(unique))
+	refs := make([]*gocdnextv1.ArtifactRef, 0, len(requested))
 	for _, tkt := range resp.GetTickets() {
-		ref, err := u.uploadOneFromPod(ctx, exec, podName, containerName, podWorkDir, tkt)
+		files := resolved[tkt.GetPath()]
+		ref, err := u.uploadOneFromPod(ctx, exec, podName, containerName, podWorkDir, tkt, files)
 		if err != nil {
 			return refs, fmt.Errorf("upload %q: %w", tkt.GetPath(), err)
 		}
@@ -164,17 +209,101 @@ func (u *ArtifactUploader) UploadFromPod(
 	return refs, nil
 }
 
-// uploadOneFromPod tars one path inside the pod via exec, streams
-// through a temp file (to derive Content-Length), then PUTs.
+// resolveArtifactGlobs expands every declared path against the pod
+// workspace. Returns a map of declared → resolved relative paths
+// (workspace-relative, so they slot straight into tar's `-C
+// podWorkDir -- <rel>` form). Literal paths (no glob chars) round-
+// trip as `{declared: [declared]}`.
+//
+// One `find -type f` per call — shared across all declared paths.
+// Saves N-1 exec round-trips when N paths are declared.
+func resolveArtifactGlobs(
+	ctx context.Context,
+	exec engine.PodExecutor,
+	podName, containerName, podWorkDir string,
+	paths []string,
+) (map[string][]string, error) {
+	if len(paths) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	// Detect whether ANY declared path has glob characters; skip the
+	// `find` round-trip entirely when every path is a literal.
+	needsListing := false
+	for _, p := range paths {
+		if podfs.HasGlobChars(p) {
+			needsListing = true
+			break
+		}
+	}
+
+	var allFiles []string
+	if needsListing {
+		var err error
+		allFiles, err = podfs.ListFiles(ctx, exec, podName, containerName, podWorkDir)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resolved := make(map[string][]string, len(paths))
+	for _, declared := range paths {
+		if !podfs.HasGlobChars(declared) {
+			// Literal — keep as-is. tar will error if the file doesn't
+			// exist; that error is the operator's signal.
+			resolved[declared] = []string{declared}
+			continue
+		}
+		matches := podfs.MatchSingleGlob(podWorkDir, allFiles, declared)
+		if len(matches) == 0 {
+			// Zero matches — don't include in the result map. The
+			// caller filters declared paths against keys-present.
+			continue
+		}
+		// Convert absolute paths back to workspace-relative so tar
+		// can be invoked as `tar -czf - -C podWorkDir -- <rel> ...`.
+		rels := make([]string, 0, len(matches))
+		for _, abs := range matches {
+			rel := strings.TrimPrefix(abs, podWorkDir)
+			rel = strings.TrimPrefix(rel, "/")
+			rels = append(rels, rel)
+		}
+		resolved[declared] = rels
+	}
+	return resolved, nil
+}
+
+// _ uses `path` so the unused-import gate is silenced if a future
+// edit removes the call below — keeps the import block stable
+// against drift.
+var _ = path.Clean
+
+// uploadOneFromPod tars one declared path inside the pod via exec,
+// streams through a temp file (to derive Content-Length), then PUTs.
 // Sha256 is computed during the exec → tmp copy so the
 // ArtifactRef.ContentSha256 matches what the server would receive
 // even though no bytes pass through u.http until the PUT.
+//
+// `files` carries the resolved workspace-relative paths for the
+// ticket's declared path — for literal paths it's `[declared]`, for
+// glob paths it's the resolveArtifactGlobs match set. Passing them
+// as separate args means tar bundles them all into ONE archive per
+// declared path, preserving the operator's 1-declared-path-=-
+// 1-artifact mental model.
 func (u *ArtifactUploader) uploadOneFromPod(
 	ctx context.Context,
 	exec engine.PodExecutor,
 	podName, containerName, podWorkDir string,
 	tkt *gocdnextv1.ArtifactUploadTicket,
+	files []string,
 ) (*gocdnextv1.ArtifactRef, error) {
+	if len(files) == 0 {
+		// Defensive: UploadFromPod filters zero-match paths before
+		// requesting tickets, so we shouldn't reach here. If we did,
+		// fall back to the declared path so the failure mode is the
+		// same as pre-v0.14.6 (tar errors → caller decides).
+		files = []string{tkt.GetPath()}
+	}
 	tmp, err := os.CreateTemp("", "gocdnext-artifact-pod-*.tar.gz")
 	if err != nil {
 		return nil, fmt.Errorf("tempfile: %w", err)
@@ -185,11 +314,11 @@ func (u *ArtifactUploader) uploadOneFromPod(
 	hasher := sha256.New()
 	mw := io.MultiWriter(tmp, hasher)
 
-	// `--` separator before the operand so a path beginning with
+	// `--` separator before the operands so a path beginning with
 	// `-` (e.g. an operator path like `-dist`) isn't reinterpreted
 	// as a tar option. Combined with the agent-side dedupe + the
 	// server validating paths, but cheap belt-and-suspenders.
-	cmd := []string{"tar", "-czf", "-", "-C", podWorkDir, "--", tkt.GetPath()}
+	cmd := append([]string{"tar", "-czf", "-", "-C", podWorkDir, "--"}, files...)
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
 		return nil, fmt.Errorf("exec tar %q: %w", tkt.GetPath(), err)

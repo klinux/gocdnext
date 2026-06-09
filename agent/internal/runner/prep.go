@@ -101,18 +101,14 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 		}
 		if !entry.GetFetchFound() {
 			// Either a literal-key cache miss (normal cold start)
-			// or a templated key we couldn't pre-resolve. Stay
-			// silent on miss; warn loudly on the latter so the
-			// operator sees why.
-			if entry.GetFetchUrl() == "" && containsTemplate(entry.GetKey()) {
-				prepLog(logWriter,
-					"prep: warning — cache key %q has `{{ }}` tokens; "+
-						"templated keys aren't yet supported in workspace "+
-						"isolated mode (workspace-side hashing required, but "+
-						"the init container has no gRPC session to call "+
-						"RequestCacheGet). Cache skipped.",
-					entry.GetKey())
-			}
+			// or a templated key. Templated keys are now handled
+			// post-prep by the agent via the `cache-fetch` init
+			// container (since v0.14.6 / issue #17): the agent
+			// resolves the template against the materialised
+			// workspace, calls RequestCacheGet via its existing
+			// gRPC session, and streams the cache content in.
+			// Silent here either way — the agent surfaces the
+			// final hit/miss state on the job log.
 			continue
 		}
 		if err := DownloadAndUntar(ctx, nil, entry.GetFetchUrl(), scriptWorkDir, entry.GetFetchSha256()); err != nil {

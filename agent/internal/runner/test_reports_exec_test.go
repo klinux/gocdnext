@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	"github.com/gocdnext/gocdnext/agent/internal/podfs"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
 
@@ -270,7 +271,7 @@ func TestMatchPodFilesAgainstGlobs_DoubleStarRecursion(t *testing.T) {
 		workDir + "/build.gradle",
 		workDir + "/main/build/test-results/integrationTest/TEST-I.xml",
 	}
-	got := matchPodFilesAgainstGlobs(workDir, files, []string{"**/build/test-results/test/*.xml"})
+	got := podfs.MatchGlobs(workDir, files, []string{"**/build/test-results/test/*.xml"})
 	if len(got) != 2 {
 		t.Errorf("got %d matches, want 2; %v", len(got), got)
 	}
@@ -291,7 +292,7 @@ func TestMatchPodFilesAgainstGlobs_DoubleStarRecursion(t *testing.T) {
 func TestMatchPodFilesAgainstGlobs_DedupesAcrossGlobs(t *testing.T) {
 	workDir := "/w"
 	files := []string{workDir + "/a.xml", workDir + "/b.xml"}
-	got := matchPodFilesAgainstGlobs(workDir, files, []string{"*.xml", "*.xml", "a.xml"})
+	got := podfs.MatchGlobs(workDir, files, []string{"*.xml", "*.xml", "a.xml"})
 	if len(got) != 2 {
 		t.Errorf("dedup failed: got %v", got)
 	}
@@ -302,7 +303,7 @@ func TestMatchPodFilesAgainstGlobs_DedupesAcrossGlobs(t *testing.T) {
 // housekeeper's CWD — surprising and exploitable. Belt + braces.
 func TestListPodFiles_RequiresAbsoluteWorkDir(t *testing.T) {
 	exec := &routingFakeExec{}
-	_, err := listPodFiles(context.Background(), exec, "p", "c", "relative/workspace")
+	_, err := podfs.ListFiles(context.Background(), exec, "p", "c", "relative/workspace")
 	if err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Errorf("want absolute-required error, got %v", err)
 	}

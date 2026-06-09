@@ -6,6 +6,101 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.6 — 2026-06-09
+
+Closes [#16](https://github.com/klinux/gocdnext/issues/16) and
+[#17](https://github.com/klinux/gocdnext/issues/17). Two related
+gaps in isolated workspace mode that quietly broke real Gradle /
+Maven / pytest pipelines.
+
+### Feature — artifact upload expands globs (closes #16)
+
+Before v0.14.6, declaring an artifact path with glob characters in
+isolated mode silently lost the artefact. The agent invoked
+`tar -czf - -- <declared-path>` via `PodExecutor.Exec` — no shell,
+no glob expansion. tar received the literal string
+`dist/*.tar.gz`, found no file by that name, errored, and the run
+either failed (required path) or silently dropped the upload
+(optional path — exactly the Card project's Jacoco coverage
+scenario).
+
+After: `UploadFromPod` enumerates the workspace once via `find -type f`
+(through the new `agent/internal/podfs` helper) and runs each
+declared pattern through `doublestar.PathMatch`. Each declared
+path's resolved file list flows into a single `tar` invocation as
+separate operands — operator-typed `dist/*.tar.gz` becomes
+`tar -czf - -C <workDir> -- dist/a.tar.gz dist/b.tar.gz`, one
+archive per declared path matching the operator's mental model.
+
+Literal paths (no glob characters) short-circuit the `find` round-
+trip. Zero-match globs skip the ticket request entirely — caller's
+required/optional logic decides what to do.
+
+### Feature — cache key templates resolve in isolated mode (closes #17)
+
+Before v0.14.6, cache keys carrying `{{ hash "..." }}` tokens were
+skipped in isolated mode with a warn line telling the operator to
+switch back to `ReadWriteMany`. The agent host has no workspace
+files to hash; prep init container has the files but no gRPC
+session to call `RequestCacheGet`. The first cut of the design
+considered shipping a new HTTP endpoint + job-scoped JWT + DNS /
+NetworkPolicy plumbing to give prep that capability. The actual
+fix turned out much smaller.
+
+After: the engine appends a second init container (`cache-fetch`,
+alpine image, ~10m CPU / 16Mi mem) when the assignment declares
+any templated cache entry. It runs AFTER prep so the workspace is
+materialised, and waits on a marker file (`/workspace/.gocdnext/cache-done`)
+the agent touches. While it waits, the agent — which already has
+the gRPC session and the K8s exec capability — orchestrates:
+
+1. `find /workspace -type f` via exec into `cache-fetch`.
+2. Compute hashes via `cat` + sha256 (new `podHashResolver`,
+   mirroring `workspaceHashResolver` from shared mode for
+   determinism: sorted match list, per-file
+   `relPath + "\n" + content + "\n"`, 12-hex output).
+3. `tpl.Expand(podHashResolver)` rewrites the key in place.
+4. `RequestCacheGet(resolved_key)` via the existing gRPC session.
+5. On hit: HTTP GET the signed URL on the agent host, stream the
+   body via exec stdin to `tar -xzf - -C <workDir>` inside
+   `cache-fetch`. sha256 verified on the fly.
+6. Touch the marker — `cache-fetch` exits, K8s starts the main
+   containers, task runs with caches in place.
+
+Best-effort throughout: any failure (exec, RPC, sha mismatch)
+logs and continues with the marker still touched, so the task
+isn't stranded waiting for an init container that never exits.
+Same posture as shared mode's cache path — caches are
+acceleration, not correctness.
+
+### Architecture — new `agent/internal/podfs` helper package
+
+Lifted `ListFiles`, `MatchGlobs`, `MatchSingleGlob`, `CappedBuffer`,
+and `HasGlobChars` out of `agent/internal/runner` into a shared
+package so the artifact uploader (in `agent/internal/rpc`) and the
+test_reports collector (in `agent/internal/runner`) can both reach
+them without creating circular imports.
+
+### Tests
+
+- `cachekey_pod_resolver_test.go`: 5 tests covering determinism
+  across listing order, content sensitivity, zero-match fail-loud,
+  `**` recursion, and listing reuse across multiple `hash(...)`
+  tokens in the same template.
+- `uploader_test.go`: 3 new tests — glob expansion before tar,
+  literal-path fast-path skipping `find`, zero-match skipping the
+  ticket request.
+- `prep_test.go`: updated `TestPrep_SilentOnTemplatedKey` to
+  assert the OLD warning is gone (agent handles it now).
+
+### Compatibility
+
+Shared-mode (`ReadWriteMany`) behaviour unchanged: `expandCacheKeys`
+still walks the host filesystem via `workspaceHashResolver` and the
+artifact uploader's `Upload` method still uses `TarGzPath` against
+the agent's local workspace. Only the isolated paths gained the
+new resolver / glob expansion.
+
 ## v0.14.5 — 2026-06-09
 
 Closes [#14](https://github.com/klinux/gocdnext/issues/14): the per-
