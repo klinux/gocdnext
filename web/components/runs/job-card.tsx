@@ -40,7 +40,12 @@ type Props = {
 // so the user never sees the raw index-encoded slug.
 export function JobCard({ job, runID }: Props) {
   const tone: StatusTone = statusTone(job.status);
-  const hasLogs = (job.logs?.length ?? 0) > 0;
+  // Open the details when EITHER head or tail carries lines. With
+  // the v0.14.7 default `?head=500`, a short job whose head+tail
+  // overlap could land entirely in `logs_head` (head dedupe pushes
+  // them to head; tail is empty when head covers all). Looking at
+  // tail alone would mistakenly collapse the details.
+  const hasLogs = ((job.logs?.length ?? 0) + (job.logs_head?.length ?? 0)) > 0;
   const awaiting = job.status === "awaiting_approval" && job.approval_gate;
   const decided = job.approval_gate && !!job.decision;
   const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
