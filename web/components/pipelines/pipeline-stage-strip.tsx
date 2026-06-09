@@ -347,18 +347,29 @@ function JobNode({
   // onCancelJob targets ONLY this job_run — siblings and the run as
   // a whole keep going. Backed by POST /api/v1/job_runs/{id}/cancel
   // since v0.14.5 (issue #14). Use this for "stop just this one"; if
-  // the operator wants to abort everything, the run-level Cancel
-  // button at the top of the run detail page does that.
+  // the operator wants to abort everything, the "Cancel whole run"
+  // item below does that.
+  //
+  // Server responses we distinguish:
+  //   - 202 status=canceled signaled=false → queued, DB-flipped
+  //     directly. Cancel landed.
+  //   - 202 status=canceled signaled=true  → running, agent received
+  //     the CancelJob frame. Container will stop on its own clock.
+  //   - 503 status=dispatch_failed         → running, dispatch
+  //     couldn't reach the agent. The job is STILL running. The
+  //     toast must reflect that — saying "Cancelled" would lie.
   const onCancelJob = () => {
     startTransition(async () => {
       const res = await cancelJob({ jobRunId });
       if (!res.ok) {
-        toast.error(`Cancel ${job.name} failed: ${res.error}`);
+        // status=dispatch_failed lands here too (postJSON treats
+        // non-2xx as !ok). The store-side message has the operator-
+        // facing reason; surface it verbatim instead of hand-rolling.
+        toast.error(`Cancel ${job.name} failed`, {
+          description: res.error || "the agent did not receive the cancel signal; try again",
+        });
         return;
       }
-      // signaled=true → agent received the gRPC frame; container
-      // will stop on its own clock. signaled=false → DB-flip only
-      // (queued job, no agent). Tell the operator which one happened.
       const signaled = (res.data as { signaled?: boolean }).signaled ?? false;
       toast.success(`Cancelled ${job.name}`, {
         description: signaled

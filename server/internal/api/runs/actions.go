@@ -102,49 +102,7 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 	res, err := h.store.CancelJobRun(r.Context(), jobRunID)
 	switch {
 	case err == nil:
-		// Fan the CancelJob frame only when the row was running with
-		// an owning agent. Queued jobs (no agent yet) skip dispatch —
-		// the DB flip is the whole story.
-		signaled := false
-		if res.Dispatched != nil {
-			if h.dispatcher != nil {
-				msg := &gocdnextv1.ServerMessage{
-					Kind: &gocdnextv1.ServerMessage_Cancel{
-						Cancel: &gocdnextv1.CancelJob{
-							RunId:  res.RunID.String(),
-							JobId:  res.Dispatched.JobID.String(),
-							Reason: "user canceled job",
-						},
-					},
-				}
-				if err := h.dispatcher.Dispatch(res.Dispatched.AgentID, msg); err != nil {
-					h.log.Warn("cancel job: dispatch failed",
-						"run_id", res.RunID, "job_run_id", jobRunID,
-						"agent_id", res.Dispatched.AgentID, "err", err)
-				} else {
-					signaled = true
-				}
-			} else {
-				h.log.Warn("cancel job: no gRPC dispatcher wired; container keeps running",
-					"run_id", res.RunID, "job_run_id", jobRunID)
-			}
-		}
-		audit.Emit(r.Context(), h.log, h.store,
-			store.AuditActionJobCancel, "job_run", jobRunID.String(),
-			map[string]any{
-				"run_id":   res.RunID.String(),
-				"job_name": res.JobName,
-				"signaled": signaled,
-			})
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"job_run_id": jobRunID.String(),
-			"run_id":     res.RunID.String(),
-			"job_name":   res.JobName,
-			"status":     "canceled",
-			"signaled":   signaled,
-		})
+		h.respondCancelJob(w, r, jobRunID, res)
 	case errors.Is(err, store.ErrJobRunNotFound):
 		http.Error(w, "job_run not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrJobRunTerminal):
@@ -153,6 +111,122 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("cancel job", "job_run_id", jobRunID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// respondCancelJob translates a CancelJobRunResult into the right
+// HTTP envelope. The hard rule: never tell the client status=canceled
+// when the cancel hasn't actually taken effect.
+//
+//   - queued path (NeedsDispatch=false) → 202, status=canceled,
+//     signaled=false. Cancel has landed in the DB.
+//   - running path with successful dispatch → 202, status=canceled,
+//     signaled=true. Container will stop on its own clock; the agent's
+//     JobResult finalises the row.
+//   - running path with failed dispatch OR no agent_id yet → 503,
+//     status=dispatch_failed. The job is still running; the operator
+//     should retry. We DO emit an audit event so the attempt is
+//     recorded, with signaled=false so the trail is honest.
+func (h *Handler) respondCancelJob(
+	w http.ResponseWriter, r *http.Request, jobRunID uuid.UUID, res store.CancelJobRunResult,
+) {
+	if !res.NeedsDispatch {
+		h.emitCancelAudit(r, jobRunID, res, true /*signaled*/)
+		writeCancelAccepted(w, jobRunID, res, false /*signaled*/, "canceled")
+		return
+	}
+
+	// Running path. The DB row is still 'running'; the cancel only
+	// lands when the agent's JobResult arrives, which only happens
+	// after we successfully push CancelJob down the session.
+	if res.Dispatched == nil {
+		// Transient: row is running but the agent's session ack
+		// hasn't landed yet. Nothing to push to. Tell the operator
+		// to retry; the reaper will eventually reclaim if the
+		// session never comes up.
+		h.log.Warn("cancel job: running row has no agent_id (session not yet acked)",
+			"run_id", res.RunID, "job_run_id", jobRunID)
+		h.emitCancelAudit(r, jobRunID, res, false)
+		writeCancelDispatchFailed(w, jobRunID, res,
+			"agent session not yet established; retry in a moment")
+		return
+	}
+
+	if h.dispatcher == nil {
+		h.log.Warn("cancel job: no gRPC dispatcher wired; container keeps running",
+			"run_id", res.RunID, "job_run_id", jobRunID)
+		h.emitCancelAudit(r, jobRunID, res, false)
+		writeCancelDispatchFailed(w, jobRunID, res,
+			"server has no cancel dispatcher wired")
+		return
+	}
+
+	msg := &gocdnextv1.ServerMessage{
+		Kind: &gocdnextv1.ServerMessage_Cancel{
+			Cancel: &gocdnextv1.CancelJob{
+				RunId:  res.RunID.String(),
+				JobId:  res.Dispatched.JobID.String(),
+				Reason: "user canceled job",
+			},
+		},
+	}
+	if err := h.dispatcher.Dispatch(res.Dispatched.AgentID, msg); err != nil {
+		// Dispatch failed: agent disconnected, busy queue, network
+		// glitch. The DB still shows running; the container is still
+		// burning. Telling the client status=canceled here would be
+		// a lie — return 503 so the UI can show "retry" and the
+		// audit trail records the unsuccessful attempt.
+		h.log.Warn("cancel job: dispatch failed",
+			"run_id", res.RunID, "job_run_id", jobRunID,
+			"agent_id", res.Dispatched.AgentID, "err", err)
+		h.emitCancelAudit(r, jobRunID, res, false)
+		writeCancelDispatchFailed(w, jobRunID, res,
+			"could not deliver cancel to the agent: "+err.Error())
+		return
+	}
+	h.emitCancelAudit(r, jobRunID, res, true)
+	writeCancelAccepted(w, jobRunID, res, true, "canceled")
+}
+
+func (h *Handler) emitCancelAudit(
+	r *http.Request, jobRunID uuid.UUID, res store.CancelJobRunResult, signaled bool,
+) {
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionJobCancel, "job_run", jobRunID.String(),
+		map[string]any{
+			"run_id":   res.RunID.String(),
+			"job_name": res.JobName,
+			"signaled": signaled,
+		})
+}
+
+func writeCancelAccepted(
+	w http.ResponseWriter, jobRunID uuid.UUID, res store.CancelJobRunResult,
+	signaled bool, status string,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"job_run_id": jobRunID.String(),
+		"run_id":     res.RunID.String(),
+		"job_name":   res.JobName,
+		"status":     status,
+		"signaled":   signaled,
+	})
+}
+
+func writeCancelDispatchFailed(
+	w http.ResponseWriter, jobRunID uuid.UUID, res store.CancelJobRunResult, reason string,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"job_run_id": jobRunID.String(),
+		"run_id":     res.RunID.String(),
+		"job_name":   res.JobName,
+		"status":     "dispatch_failed",
+		"signaled":   false,
+		"error":      reason,
+	})
 }
 
 // dispatchCancel pushes a CancelJob frame per running job to the

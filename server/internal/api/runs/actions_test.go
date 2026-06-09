@@ -346,6 +346,123 @@ func TestCancelJob_RunningPushesCancelJobFrame(t *testing.T) {
 	}
 }
 
+// failingDispatcher mirrors fakeDispatcher but returns an error
+// from Dispatch — simulates "agent disconnected" / "session busy".
+// Regression cover for the bug the v0.14.5 first cut shipped:
+// dispatch failure with status='running' used to return 202
+// status="canceled" even though the container kept running.
+type failingDispatcher struct {
+	calls []dispatchCall
+	err   error
+}
+
+func (f *failingDispatcher) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMessage) error {
+	c := msg.GetCancel()
+	if c != nil {
+		f.calls = append(f.calls, dispatchCall{
+			agentID: agentID, runID: c.GetRunId(), jobID: c.GetJobId(),
+		})
+	}
+	return f.err
+}
+func (*failingDispatcher) AllAgentIDs(string) []uuid.UUID { return nil }
+
+// TestCancelJob_DispatchFailureReturns503 — running cancel where
+// the gRPC dispatch errors must NOT report success. The job is
+// still burning on the agent; the operator needs to know the
+// cancel didn't take and retry. Returning 202 status="canceled"
+// here would be a lie.
+func TestCancelJob_DispatchFailureReturns503(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	jobID := firstJobIDOfRun(t, pool, runID)
+
+	agentID := uuid.New()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO agents (id, name, token_hash) VALUES ($1, 'failing-agent', 'x')`,
+		agentID); err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_runs SET status = 'running', agent_id = $1, started_at = NOW()
+		 WHERE id = $2`, agentID, jobID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	disp := &failingDispatcher{err: errSimulatedSessionGone}
+	h = h.WithCancelDispatcher(disp)
+
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Status   string `json:"status"`
+		Signaled bool   `json:"signaled"`
+		Error    string `json:"error"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if body.Status != "dispatch_failed" {
+		t.Errorf("status = %q, want dispatch_failed", body.Status)
+	}
+	if body.Signaled {
+		t.Errorf("signaled should be false on dispatch failure")
+	}
+	if body.Error == "" {
+		t.Errorf("error message should explain the failure")
+	}
+
+	// Critical: the DB state didn't change — job is still running.
+	// If we'd flipped it to canceled, the operator's retry would
+	// see 409 and never get the chance to actually cancel.
+	var status string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&status)
+	if status != "running" {
+		t.Errorf("job status = %q, want still running after dispatch failure", status)
+	}
+}
+
+// TestCancelJob_RunningWithNoAgentReturns503 — row marked running
+// but agent_id is NULL (transient window between AssignJob committing
+// and the session ack landing). No one to dispatch to → 503; the
+// operator retries when the agent's session is up.
+func TestCancelJob_RunningWithNoAgentReturns503(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	jobID := firstJobIDOfRun(t, pool, runID)
+
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_runs SET status = 'running', agent_id = NULL, started_at = NOW()
+		 WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	disp := &fakeDispatcher{}
+	h = h.WithCancelDispatcher(disp)
+
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
+	}
+	// No dispatch should have happened — there was no agent to push to.
+	if len(disp.calls) != 0 {
+		t.Errorf("dispatcher calls = %d, want 0 when agent_id is NULL", len(disp.calls))
+	}
+	_ = runID
+}
+
+// errSimulatedSessionGone stands in for the real
+// grpcsrv.ErrSessionGone / ErrSessionBusy that the dispatcher would
+// surface in production. Decoupled here so the test doesn't import
+// grpcsrv just to grab the sentinel.
+var errSimulatedSessionGone = stringError("session gone (simulated)")
+
+type stringError string
+
+func (e stringError) Error() string { return string(e) }
+
 // TestCancelJob_NotFound — random UUID → 404.
 func TestCancelJob_NotFound(t *testing.T) {
 	h, _ := handler(t)
