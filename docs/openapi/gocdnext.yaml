@@ -1352,7 +1352,7 @@ components:
 
     RunnerProfile:
       type: object
-      required: [id, name, engine, env, secret_keys, created_at, updated_at]
+      required: [id, name, engine, node_selector, tolerations, env, secret_keys, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string, example: "fast-builds" }
@@ -1374,7 +1374,32 @@ components:
         config:
           type: object
           additionalProperties: true
-          description: Engine-specific overflow (nodeSelector, tolerations, etc.)
+          description: Engine-specific overflow. Reserved for future fields.
+        node_selector:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Pins job pods to nodes carrying these labels (k8s
+            `nodeSelector`). Always present on read — empty object
+            means no restriction beyond the agent-level
+            nodeSelector (set on the StatefulSet). Profile values
+            WIN on key collisions when merged with the agent-level
+            set: profile is more specific than agent default.
+          example:
+            workload: ci
+            pool: gradle-heavy
+        tolerations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Toleration'
+          description: |
+            Lets job pods schedule on tainted nodes (k8s
+            `tolerations`). Always present on read — empty array
+            means no tolerations beyond what the agent ships with.
+            Tolerations are APPENDED to the agent-level list
+            (concat; kubelet ignores duplicates). On read, each
+            entry's `operator` is always the explicit value
+            (empty input is normalised to `Equal` at write time).
         env:
           type: object
           additionalProperties: { type: string }
@@ -1440,6 +1465,28 @@ components:
         config:
           type: object
           additionalProperties: true
+        node_selector:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Pins job pods to nodes carrying these labels. Keys
+            and values validated against the k8s apiserver label
+            rules (`IsQualifiedName` / `IsValidLabelValue`) at
+            write time — a misconfig surfaces as a 400 here,
+            not as a Pending pod hours later. Full-replace on
+            update.
+        tolerations:
+          type: array
+          items:
+            $ref: '#/components/schemas/TolerationWrite'
+          description: |
+            Tolerations applied to job pods. Each entry validated:
+            operator ∈ {Equal, Exists} OR omitted (server
+            normalises empty → Equal in the stored value).
+            Effect ∈ {"", NoSchedule, PreferNoSchedule,
+            NoExecute}. operator=Exists with non-empty value is
+            rejected. toleration_seconds must be ≥ 0 and only
+            allowed with effect=NoExecute. Full-replace on update.
         env:
           type: object
           additionalProperties: { type: string }
@@ -1465,6 +1512,108 @@ components:
             new value automatically. Templates can compose with
             literal text (`prefix-{{secret:DB_PASSWORD}}-suffix`).
             Unresolvable references fail the dispatch closed.
+
+    Toleration:
+      type: object
+      description: |
+        Read-side shape returned by `GET /admin/runner-profiles`.
+        `operator` is always the explicit value — the server
+        normalises empty input to `Equal` at write time, so this
+        read schema never carries the empty form. Mirrors
+        `corev1.Toleration` with concrete strings; API-stable
+        and decoupled from k8s versions.
+      required: [operator]
+      properties:
+        key:
+          type: string
+          description: |
+            Taint key the toleration matches. Follows Kubernetes
+            label key rules (`IsQualifiedName`): optional DNS
+            subdomain prefix (up to 253 chars) + a name segment
+            of alphanumeric/-/_/. up to 63 chars. May be empty
+            ONLY when `operator: Exists` (the kubelet "tolerate
+            everything" pattern); empty key with operator=Equal
+            is rejected at write time.
+          example: "ci-only"
+        operator:
+          type: string
+          enum: [Equal, Exists]
+          description: |
+            `Equal` matches when Value equals the taint value;
+            `Exists` matches any value (and requires Value
+            empty).
+        value:
+          type: string
+          description: |
+            Taint value the toleration matches. Follows
+            Kubernetes label value rules (`IsValidLabelValue`):
+            empty OR 1-63 chars of alphanumeric/-/_/.. With
+            `operator: Equal` this may be any conforming string
+            including empty (matches a taint with empty value:
+            rare but legal). With `operator: Exists` this MUST
+            be empty.
+          example: "true"
+        effect:
+          type: string
+          enum: ["", NoSchedule, PreferNoSchedule, NoExecute]
+          description: |
+            Taint effect tolerated. Empty matches any effect.
+        toleration_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            How long the pod tolerates the taint after it's
+            added. Only valid when `effect: NoExecute`; setting
+            it for any other effect is rejected at write time
+            (k8s silently ignores it, but silent surprises age
+            badly). `null` means tolerate forever.
+          example: 60
+
+    TolerationWrite:
+      type: object
+      description: |
+        Write-side shape accepted by `POST`/`PUT
+        /admin/runner-profiles`. Permissive `operator` (empty
+        accepted and normalised to `Equal` server-side); every
+        other invariant matches the read-side `Toleration`
+        schema. Operators authoring a values.yaml or a UI form
+        can omit `operator` for the common Equal case without
+        the codegen client rejecting the body.
+      properties:
+        key:
+          type: string
+          description: |
+            Taint key. Required unless `operator: Exists`
+            (kubelet "tolerate everything" pattern). Validated
+            with the same Kubernetes label key rules as the
+            read-side `Toleration` schema (`IsQualifiedName`).
+          example: "ci-only"
+        operator:
+          type: string
+          enum: ["", Equal, Exists]
+          description: |
+            Omit (or send empty) to default to `Equal`. Any
+            other input rejected with HTTP 400.
+        value:
+          type: string
+          description: |
+            Taint value. Optional for `operator: Equal` (matches
+            a taint with empty value when omitted). Must be
+            empty for `operator: Exists`. When non-empty,
+            validated with Kubernetes label value rules
+            (`IsValidLabelValue`).
+          example: "true"
+        effect:
+          type: string
+          enum: ["", NoSchedule, PreferNoSchedule, NoExecute]
+        toleration_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Only allowed with `effect: NoExecute`. Server
+            rejects with 400 otherwise.
 
     StorageConfig:
       type: object
