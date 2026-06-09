@@ -140,6 +140,18 @@ spec:
             - name: GOCDNEXT_WORKSPACE_ROOT
               value: {{ . | quote }}
             {{- end }}
+            # Job-pod scheduling baseline (v0.14.0+). Map / list →
+            # JSON via toJson. Empty defaults render as `{}` / `[]`
+            # which the agent treats as "no baseline" and skips
+            # parsing entirely.
+            {{- with .Values.agent.jobNodeSelector }}
+            - name: GOCDNEXT_K8S_JOB_NODE_SELECTOR
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.agent.jobTolerations }}
+            - name: GOCDNEXT_K8S_JOB_TOLERATIONS
+              value: {{ toJson . | quote }}
+            {{- end }}
             {{- end }}
           {{- if and (eq .Values.agent.engine "kubernetes") (eq .Values.agent.workspace.accessMode "ReadWriteMany") }}
           volumeMounts:
