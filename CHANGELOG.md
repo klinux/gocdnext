@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.1 — 2026-06-09
+
+Hotfix on v0.14.0. Closes the inconsistency where a job that
+declared no `agent.profile:` inherited the `default` profile's
+resource bounds at apply time (the v0.13.1 fallback) but did NOT
+inherit its `node_selector` / `tolerations` at dispatch time —
+the safety net stopped half-way and pods landed on the wrong
+nodes despite the admin configuring `default`'s scheduling.
+
+### Fix
+
+`scheduler.resolveProfile` now falls back to the `default` profile
+by name when the job declares no profile, mirroring the
+apply-time bounds fallback. Missing `default` profile → no-op
+(same behaviour as before the fallback existed). A job that DOES
+declare a profile and that profile is missing still fails the
+dispatch loud.
+
+Result: jobs without an explicit profile now inherit the
+`default`'s NodeSelector + Tolerations in addition to the bounds,
+matching the contract operators reasonably expect when they
+configured a single `default` profile to handle the fleet.
+
 ## v0.14.0 — 2026-06-09
 
 Two related features that close the remaining footguns operators

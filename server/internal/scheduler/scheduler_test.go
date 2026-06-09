@@ -88,6 +88,97 @@ func seedAgentRow(t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
 	return id
 }
 
+func TestDispatchRun_JobWithoutProfileInheritsDefaultScheduling(t *testing.T) {
+	// Hotfix v0.14.1: a job that declares no `agent.profile:` AND a
+	// runner profile named `default` exists in the DB must inherit
+	// the default's NodeSelector + Tolerations on the wire. Mirrors
+	// the apply-time bounds fallback shipped in v0.13.1 so the
+	// safety net is consistent across both apply (bounds) and
+	// dispatch (scheduling). Missing `default` profile = no-op,
+	// same as before this fix.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	tolSeconds := int64(60)
+	if _, err := s.InsertRunnerProfile(ctx, nil, store.RunnerProfileInput{
+		Name:   "default",
+		Engine: "kubernetes",
+		NodeSelector: map[string]string{
+			"cloud.google.com/gke-nodepool": "node-pool-spot-ci",
+		},
+		Tolerations: []store.Toleration{
+			{Key: "cora", Operator: "Equal", Value: "spot-ci", Effect: "NoSchedule"},
+			{Key: "spot", Operator: "Exists", Effect: "NoExecute", TolerationSeconds: &tolSeconds},
+		},
+	}); err != nil {
+		t.Fatalf("seed default profile: %v", err)
+	}
+
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+
+	runID, _ := seed(t, pool)
+	agentID := seedAgentRow(t, pool, "agent-default-inherit")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, runID)
+
+	select {
+	case msg := <-sess.Out():
+		assign := msg.GetAssign()
+		if assign == nil {
+			t.Fatalf("message is not JobAssignment: %+v", msg)
+		}
+		if assign.NodeSelector["cloud.google.com/gke-nodepool"] != "node-pool-spot-ci" {
+			t.Errorf("NodeSelector not inherited from default: %+v", assign.NodeSelector)
+		}
+		if len(assign.Tolerations) != 2 {
+			t.Fatalf("Tolerations len = %d, want 2", len(assign.Tolerations))
+		}
+		if assign.Tolerations[1].GetTolerationSeconds() != 60 {
+			t.Errorf("Tolerations[1].TolerationSeconds = %d, want 60",
+				assign.Tolerations[1].GetTolerationSeconds())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no assignment after 2s")
+	}
+}
+
+func TestDispatchRun_JobWithoutProfileNoDefaultIsNoop(t *testing.T) {
+	// No `default` profile in the DB → fallback is a no-op,
+	// JobAssignment carries no NodeSelector / Tolerations. Defends
+	// against a regression where the fallback would attribute
+	// scheduling fields when none should be set.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+
+	runID, _ := seed(t, pool)
+	agentID := seedAgentRow(t, pool, "agent-no-default")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, runID)
+
+	select {
+	case msg := <-sess.Out():
+		assign := msg.GetAssign()
+		if assign == nil {
+			t.Fatalf("message is not JobAssignment: %+v", msg)
+		}
+		if len(assign.NodeSelector) != 0 {
+			t.Errorf("NodeSelector should be empty without default profile: %+v", assign.NodeSelector)
+		}
+		if len(assign.Tolerations) != 0 {
+			t.Errorf("Tolerations should be empty without default profile: %+v", assign.Tolerations)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no assignment after 2s")
+	}
+}
+
 func TestDispatchRun_PushesAssignmentToIdleAgent(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
