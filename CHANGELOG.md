@@ -6,6 +6,70 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.14.9 — 2026-06-09
+
+Gradle plugin only. Cures the `TESTCONTAINERS_*` env vars not
+reaching test forks under DinD — observed live on the Card
+pipeline where `BusinessCancelConsumerIntegrationTest` was flaky
+in gocdnext but stable on GoCD with the same code.
+
+### Feature — TESTCONTAINERS_* env → JAVA_TOOL_OPTIONS bridge
+
+Operators set `TESTCONTAINERS_RYUK_DISABLED=true` and
+`TESTCONTAINERS_REUSE_ENABLE=true` on the runner profile so every
+job inherits the testcontainers tuning. Those env vars reach the
+Gradle LAUNCHER JVM correctly, but Gradle forks separate JVMs to
+actually run tests (`test.maxParallelForks=3` is the common case),
+and **forks don't inherit env vars from the launcher** — they only
+see what `JAVA_TOOL_OPTIONS` carries OR what the project's
+`build.gradle` explicitly declares via `systemProperty`.
+
+GoCD's `docker_test` Makefile sidesteps this with REUSE + RYUK
+already-active inside its host-mounted docker.sock environment;
+gocdnext's DinD timing is tighter and exposes the race the test
+has anyway. Operators don't think to add `systemProperty
+'testcontainers.ryuk.disabled', 'true'` in build.gradle because
+the env var "is already set on the profile" — that's the
+muddiness this bridge clears.
+
+After: the plugin entrypoint walks env vars at startup and
+translates anything matching `TESTCONTAINERS_*` into the
+equivalent `-Dtestcontainers.<lowercased>` system property,
+appending it to `JAVA_TOOL_OPTIONS`. JVM bootstrap honours
+`JAVA_TOOL_OPTIONS` at process startup — launcher, Gradle daemon,
+Kotlin compiler daemon, and every test fork all see the
+properties without any build.gradle change.
+
+Examples:
+
+- `TESTCONTAINERS_RYUK_DISABLED=true` → `-Dtestcontainers.ryuk.disabled=true`
+- `TESTCONTAINERS_REUSE_ENABLE=true` → `-Dtestcontainers.reuse.enable=true`
+- `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=…` → `-Dtestcontainers.docker.socket.override=…`
+
+### Scope
+
+- Only `TESTCONTAINERS_*` env vars. Auto-promoting arbitrary env
+  vars to `-D` flags would leak secrets (NEXUS_PASSWORD,
+  GITHUB_USER_TOKEN, etc.) into `ps auxww` output.
+- Empty-valued env vars are skipped.
+- Existing `JAVA_TOOL_OPTIONS` from the operator (custom
+  truststore, locale, etc.) is preserved; bridge args append at
+  the end.
+
+### Action for operators
+
+For Card and similar Kotlin/Gradle test pipelines that already
+have `TESTCONTAINERS_*` env vars on their gocdnext runner profile
+(or runner-profile env block), nothing to change. Next push will
+have the env vars reach the forks via JAVA_TOOL_OPTIONS, and the
+flaky `Iterable should not be empty` Kafka integration tests will
+land in the "stable" timing window where the GoCD pipeline already
+lived.
+
+The flaky test pattern itself (assume-immediate-arrival on
+`consume()` poll) is still a race that Card team should fix with
+Awaitility — gocdnext just stops exposing it as frequently.
+
 ## v0.14.8 — 2026-06-09
 
 Two operator-visible noise fixes observed in v0.14.7 production runs:
