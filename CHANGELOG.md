@@ -101,6 +101,56 @@ artifact uploader's `Upload` method still uses `TarGzPath` against
 the agent's local workspace. Only the isolated paths gained the
 new resolver / glob expansion.
 
+### Honesty guarantees — review-driven
+
+Four windows from the first cut, closed before the tag landed:
+
+1. **Marker path no longer desyncs with target_dir.** The init
+   container's wait loop and the agent's touch now both go through
+   `engine.CacheFetchMarkerPath(mountPath)`. Pre-fix the agent
+   computed the marker from `scriptWorkDir` (which dives into
+   `target_dir`) while the init container hardcoded `/workspace/…`
+   — a job declaring `target_dir: src` with a templated cache
+   would have the agent touch `/workspace/src/.gocdnext/cache-done`
+   and the init container would block on
+   `/workspace/.gocdnext/cache-done` until the job-level timeout.
+   Marker lives at the PVC root, not at scriptWorkDir — caches are
+   workspace-global, only the hash resolver's enumeration root is
+   `target_dir`-aware.
+2. **Shell injection on marker touch closed.** Previous shape did
+   `sh -c "mkdir -p $(dirname " + marker + ") && touch " + marker"` —
+   operator-controlled `mountPath` was string-pasted into a shell
+   script. Replaced with two argv-form execs (`mkdir -p <dir>` +
+   `touch <file>`), no shell, no metacharacter interpretation,
+   paths with spaces work. The init container's wait shell was
+   tightened the same way (marker arrives via `$1`, properly
+   quoted, instead of string-pasted).
+3. **Required artifact with zero-match no longer passes silently.**
+   `UploadFromPod` previously returned `(nil, nil)` when every
+   declared path resolved to zero files. PostJob's required path
+   then succeeded with NO artefact — a regression vs the pre-glob
+   shape where a missing literal triggered `os.Stat` errors and
+   failed the job. After: typed `*ArtifactPathsMissingError`
+   carries the missing patterns; PostJob's required branch bubbles
+   it (job fails loud), optional branch swallows it (matches the
+   acceleration posture). Tests cover both the full-zero-match
+   and partial-zero-match scenarios.
+4. **`podfs.ListFiles` fails loud on listing truncation.**
+   `CappedBuffer` now exposes `Truncated()` and `ListFiles`
+   surfaces a typed error when `find`'s output exceeds the 16 MiB
+   cap. Critical for cache-key hashing: silently consuming a
+   partial listing would compute a key over an incomplete file
+   set and successfully restore the WRONG content from cache next
+   run. Better a hard error here than corruption downstream.
+
+Regression coverage:
+- `TestCappedBuffer_TruncationFlag`,
+  `TestListFiles_OverflowReturnsError`.
+- `TestTouchMarker_UsesArgvFormNotShellConcat`,
+  `TestTouchMarker_PathDerivesFromMountPathNotWorkDir`.
+- `TestUploadFromPod_ZeroMatchesErrorsLoud`,
+  `TestUploadFromPod_PartialMatchStillBubblesErrorForMissing`.
+
 ## v0.14.5 — 2026-06-09
 
 Closes [#14](https://github.com/klinux/gocdnext/issues/14): the per-

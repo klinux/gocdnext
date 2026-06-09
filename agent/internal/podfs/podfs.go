@@ -39,27 +39,44 @@ import (
 const DefaultListBufCap = 16 << 20
 
 // CappedBuffer is a thin io.Writer that bounds a backing buffer at
-// `Max` bytes — extra bytes are silently dropped so the SPDY exec
-// stream stays clean. Closing the writer mid-stream surfaces as a
-// transport error indistinguishable from a real network failure,
-// hence the silent-drop policy. Callers gate behaviour on Len()
-// against the cap (`Len() == Max` → overflowed).
+// `Max` bytes — extra bytes are silently dropped from the buffer
+// (closing the writer mid-stream would surface as a transport
+// error indistinguishable from a real network failure), but the
+// Overflowed flag is set so callers can detect and surface the
+// truncation. Critical for cache-key hashing, where a partial
+// listing would silently produce a key based on incomplete input
+// and could restore the WRONG cache content on a future run.
+//
+// `Truncated()` is the public predicate; check it before consuming
+// the buffer when correctness depends on completeness.
 type CappedBuffer struct {
-	W   *bytes.Buffer
+	W *bytes.Buffer
 	Max int
+
+	overflowed bool
 }
 
 func (c *CappedBuffer) Write(p []byte) (int, error) {
 	remaining := c.Max - c.W.Len()
 	if remaining <= 0 {
+		c.overflowed = true
 		return len(p), nil
 	}
 	if len(p) > remaining {
 		_, _ = c.W.Write(p[:remaining])
+		c.overflowed = true
 		return len(p), nil
 	}
 	return c.W.Write(p)
 }
+
+// Truncated reports whether at least one byte was dropped because
+// the buffer hit its Max cap. Callers whose downstream logic
+// requires completeness (e.g., cache-key hashing) MUST check this
+// after the producer finishes writing and fail loud if true —
+// silently consuming a truncated buffer is the bug the
+// determinism contract exists to prevent.
+func (c *CappedBuffer) Truncated() bool { return c.overflowed }
 
 // NewListBuffer is a convenience that builds a CappedBuffer over a
 // fresh bytes.Buffer sized for the typical `find` output. Use this
@@ -100,6 +117,17 @@ func ListFiles(
 	); err != nil {
 		return nil, fmt.Errorf("podfs: exec find in %s/%s: %w (stderr=%q)",
 			pod, container, err, stderr.String())
+	}
+	// Fail loud on truncation: a partial listing would silently
+	// drop matches downstream — cache-key hashing would compute
+	// over the surviving subset and produce a key that
+	// "successfully" restores the WRONG cache content next run.
+	// Better a hard error here than silent corruption later.
+	if stdout.Truncated() {
+		return nil, fmt.Errorf(
+			"podfs: list output exceeded %d-byte cap in %s/%s (workspace likely has >150k files); "+
+				"results would be partial — caller should bail or raise the cap",
+			DefaultListBufCap, pod, container)
 	}
 	lines := strings.Split(strings.TrimRight(stdout.W.String(), "\n"), "\n")
 	out := lines[:0]

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -367,14 +368,34 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 // packages.
 const CacheFetchInitContainerName = "cache-fetch"
 
-// CacheFetchReadyMarker is the workspace-relative path the
-// cache-fetch init container's wait loop polls. When the agent
-// finishes resolving + populating templated caches, it touches
-// this file via exec; the cache-fetch container's `until [ -f ]`
-// loop exits, K8s starts the main containers, and the task can
-// run with caches already in place. Workspace-relative so the
-// existing PVC mount carries it without any extra plumbing.
-const CacheFetchReadyMarker = ".gocdnext/cache-done"
+// cacheFetchMarkerRel is the marker file's path RELATIVE to the
+// PVC mount root (e.g. `/workspace`). Kept relative because the
+// mount path is operator-configurable (`cfg.WorkspaceMountPath`);
+// callers join it via CacheFetchMarkerPath to get the absolute
+// form both the init container and the agent's touch agree on.
+//
+// IMPORTANT: the marker lives at the MOUNT ROOT, NOT at the task
+// container's WorkingDir. With `target_dir` checkouts the task's
+// CWD dives one level into the workspace (`/workspace/<target_dir>`),
+// but the marker must stay at the PVC root so the init container's
+// `until [ -f ... ]` and the agent's `touch` agree on a single
+// location regardless of what target_dir the job declared.
+const cacheFetchMarkerRel = ".gocdnext/cache-done"
+
+// CacheFetchMarkerPath returns the absolute marker path inside the
+// pod, given the PVC mount root. The init container and the agent
+// MUST use this single helper so the polled and touched paths
+// always match — pre-v0.14.6 fix this was hardcoded in two places
+// and `target_dir` jobs touched `/workspace/<target_dir>/.gocdnext/cache-done`
+// while the init container polled `/workspace/.gocdnext/cache-done`.
+// The job then sat blocked until the cancel/timeout. Single source
+// of truth here.
+func CacheFetchMarkerPath(mountPath string) string {
+	if mountPath == "" {
+		mountPath = "/workspace"
+	}
+	return strings.TrimRight(mountPath, "/") + "/" + cacheFetchMarkerRel
+}
 
 // buildIsolatedInitContainers assembles the init container list
 // for an isolated-mode pod. `prep` is always first; `cache-fetch`
@@ -408,19 +429,24 @@ func buildIsolatedInitContainers(
 	// would waste CPU. 0.2s is the lower bound at which `sleep` is
 	// reliably granular across busybox/bash without measurable
 	// busy-wait.
+	marker := CacheFetchMarkerPath(workspaceMount.MountPath)
 	cacheFetch := corev1.Container{
 		Name:            CacheFetchInitContainerName,
 		Image:           housekeeperImage,
 		ImagePullPolicy: imagePullPolicyFor(housekeeperImage),
 		Command: []string{
+			// Marker arrives as $1 instead of being string-pasted
+			// into the script so a (Helm-side) mountPath with shell
+			// metacharacters doesn't get evaluated. Same posture as
+			// the agent's marker touch, which uses argv-form exec
+			// rather than `sh -c`. `mkdir -p` defends against the
+			// marker dir not existing when prep didn't materialise
+			// it (e.g., prep skipped checkout for a no-material job).
 			"sh", "-c",
-			// `mkdir -p` defends against the marker dir not existing
-			// when prep didn't materialise it (e.g., prep skipped
-			// checkout for a no-material job).
-			"mkdir -p $(dirname /workspace/" + CacheFetchReadyMarker + ") && " +
-				"until [ -f /workspace/" + CacheFetchReadyMarker + " ]; do sleep 0.2; done",
+			`mkdir -p "$(dirname "$1")" && until [ -f "$1" ]; do sleep 0.2; done`,
+			"sh", marker,
 		},
-		WorkingDir:   "/workspace",
+		WorkingDir:   workspaceMount.MountPath,
 		VolumeMounts: []corev1.VolumeMount{workspaceMount},
 		// Tiny — the container just sleeps. Same shape as
 		// housekeeper's idle profile.

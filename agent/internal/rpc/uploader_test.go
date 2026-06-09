@@ -264,29 +264,68 @@ func TestUploadFromPod_LiteralPathSkipsFind(t *testing.T) {
 	}
 }
 
-// TestUploadFromPod_ZeroMatchesSkipsTicketRequest — operator
-// declared a glob that resolves to zero files (cleaner produces
-// nothing, optional report path never written). The agent doesn't
-// request a ticket for that path — the wire stays clean and the
-// caller's optional-vs-required logic determines whether the empty
-// match is acceptable.
-func TestUploadFromPod_ZeroMatchesSkipsTicketRequest(t *testing.T) {
+// TestUploadFromPod_ZeroMatchesErrorsLoud — operator declared a
+// glob that resolves to zero files. Pre-honesty-fix this returned
+// (nil, nil) and PostJob's required branch silently succeeded
+// with no artefact — a REGRESSION vs the shared-mode posture
+// where a missing literal would surface as an os.Stat error and
+// fail the job. Returning a typed error lets PostJob bubble it on
+// the required path while still swallowing on optional.
+func TestUploadFromPod_ZeroMatchesErrorsLoud(t *testing.T) {
 	const workDir = "/workspace"
 	exec := &fakeArtifactExec{findOut: workDir + "/main.go\n"} // no .xml files
-	stub := &stubAgentClient{} // tickets unused — the test asserts the RPC isn't made
+	stub := &stubAgentClient{}                                 // tickets unused — the test asserts the RPC isn't made
 	u := NewArtifactUploader(stub, "sess", &http.Client{})
 
 	refs, err := u.UploadFromPod(context.Background(), exec,
 		"pod-X", "housekeeper", workDir, "run-1", "job-1",
 		[]string{"build/reports/**/*.xml"})
-	if err != nil {
-		t.Fatalf("UploadFromPod: %v", err)
+	if err == nil {
+		t.Fatal("want error for zero-match glob, got nil (this is the silent-success regression)")
+	}
+	var pathsErr *ArtifactPathsMissingError
+	if !errors.As(err, &pathsErr) {
+		t.Errorf("want *ArtifactPathsMissingError, got %T: %v", err, err)
+	} else if len(pathsErr.Paths) != 1 || pathsErr.Paths[0] != "build/reports/**/*.xml" {
+		t.Errorf("missing paths = %v, want [build/reports/**/*.xml]", pathsErr.Paths)
 	}
 	if len(refs) != 0 {
-		t.Errorf("refs = %d, want 0 (zero matches → no upload)", len(refs))
+		t.Errorf("refs = %d, want 0 (nothing uploaded)", len(refs))
 	}
 	if stub.lastRequest != nil {
 		t.Errorf("RPC fired despite zero matches: %+v", stub.lastRequest)
+	}
+}
+
+// TestUploadFromPod_PartialMatchStillBubblesErrorForMissing — when
+// one declared path matches and another doesn't, the matching one
+// stays in flight but the error still names the missing path.
+// PostJob's required branch surfaces this; optional swallows.
+func TestUploadFromPod_PartialMatchStillBubblesErrorForMissing(t *testing.T) {
+	const workDir = "/workspace"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	exec := &fakeArtifactExec{
+		findOut: workDir + "/dist/app.jar\n",
+	}
+	stub := &stubAgentClient{}
+	u := NewArtifactUploader(stub, "sess", srv.Client())
+
+	_, err := u.UploadFromPod(context.Background(), exec,
+		"pod-X", "housekeeper", workDir, "run-1", "job-1",
+		[]string{"dist/*.jar", "build/reports/**/*.xml"})
+	if err == nil {
+		t.Fatal("want error for one zero-match path among two declared, got nil")
+	}
+	var pathsErr *ArtifactPathsMissingError
+	if !errors.As(err, &pathsErr) {
+		t.Fatalf("want *ArtifactPathsMissingError, got %T: %v", err, err)
+	}
+	if len(pathsErr.Paths) != 1 || pathsErr.Paths[0] != "build/reports/**/*.xml" {
+		t.Errorf("missing paths = %v, want only the unmatched one", pathsErr.Paths)
 	}
 }
 
