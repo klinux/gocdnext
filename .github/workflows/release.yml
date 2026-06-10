@@ -10,6 +10,9 @@ permissions:
   contents: write    # chart job pushes to the gh-pages branch
   packages: write
   actions: read      # verify-ci-green reads workflow_runs via gh api
+  id-token: write    # cosign keyless signs against the Sigstore
+                     # Fulcio instance using a short-lived GitHub
+                     # OIDC token — no PAT, no long-lived cert.
 
 env:
   REGISTRY: ghcr.io
@@ -110,6 +113,16 @@ jobs:
           driver-opts: |
             image=mirror.gcr.io/moby/buildkit:buildx-stable-1
 
+      # cosign keyless signs against Sigstore Fulcio using the
+      # workflow's id-token (GitHub OIDC). No long-lived PAT or
+      # private key in repo secrets — Fulcio mints a short-lived
+      # certificate bound to the workflow's OIDC claims (repo,
+      # ref, sha, workflow). Verifiers then pin those claims via
+      # `cosign verify --certificate-identity-regexp`.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -141,7 +154,8 @@ jobs:
             echo "value=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -153,6 +167,22 @@ jobs:
             VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # Sign the manifest digest, not a tag — tags are mutable;
+      # the digest is the only handle that can't shift under the
+      # signature. build-push-action exposes the published digest
+      # as steps.build.outputs.digest. We iterate every tag the
+      # metadata step produced so the cluster can verify against
+      # whichever reference operators happen to pin. Fan-out over
+      # tags is cheap because cosign reuses the same signature
+      # for the digest — it just writes additional refs.
+      - name: cosign sign (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
 
   chart:
     runs-on: ubuntu-latest
