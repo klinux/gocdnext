@@ -163,6 +163,26 @@ func BuildAssignment(
 		}
 	}
 
+	// Opt-in masking (issue #22): for each upstream that flagged
+	// `outputs.<alias>.masked: true`, add the resolved value to
+	// LogMasks unconditionally — bypassing the 8+-char heuristic
+	// above. The heuristic is a backstop; the explicit declaration
+	// is the operator's contract for "this value IS sensitive".
+	// Look up OutputMasks on each upstream's domain.Job in the
+	// pipeline definition snapshot (already deserialised into
+	// `def` above).
+	for upstreamName, group := range needsOutputs {
+		upstream, ok := findJob(def.Jobs, upstreamName)
+		if !ok || len(upstream.OutputMasks) == 0 {
+			continue
+		}
+		for alias, value := range group {
+			if upstream.OutputMasks[alias] && value != "" {
+				masks = append(masks, value)
+			}
+		}
+	}
+
 	// CI_* built-ins (CI_BRANCH, CI_COMMIT_SHORT_SHA, CI_RUN_COUNTER, …)
 	// land in env BEFORE substitution so a pipeline variable like
 	// `IMAGE_TAG: 1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}` resolves

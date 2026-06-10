@@ -6,6 +6,62 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.15.3 — 2026-06-10
+
+Opt-in masking on job outputs (issue #22). An upstream job can
+now flag a declared output as sensitive so the resolved value is
+added to the downstream job's LogMasks regardless of the
+8+-char heuristic the scheduler applies to unmarked outputs.
+The agent's 4-char floor still applies; opt-in is a log-scrubbing
+contract only — no UI surface changes in this release.
+
+### YAML
+
+Two forms for `outputs:` entries; the short form is unchanged:
+
+```yaml
+outputs:
+  next: NEXT                  # short form — same as v0.11.0
+  release-token:               # object form — opt-in masking
+    env: RELEASE_TOKEN
+    masked: true
+```
+
+Object-form keys are validated strictly. A typo (`mask:` missing
+`e`, or `env_var:` instead of `env:`) fails parse with an
+"unknown key" error rather than silently landing as
+`masked=false`.
+
+### Honest scope
+
+- Bypasses the SCHEDULER's 8-char auto-mask heuristic for the
+  flagged value at dispatch.
+- Inherits the AGENT's 4-char floor in `runner.go:applyMasks` —
+  values shorter than 4 chars are not scrubbed in log streams
+  either way. `secrets:` hits the same floor when echoed; the
+  recommendation for short-and-sensitive values is to NOT
+  treat them as build outputs at all.
+- Substitution scope: `env:` / `variables:` / plugin `with:`.
+  Raw `script:` lines are not pre-substituted (shell resolves
+  `${VAR}` at runtime from the env we ship), so masked values
+  don't leak via script body verbatim — they only land in env
+  exported into the container, which the agent log replacer
+  scrubs.
+- The persisted output value still propagates verbatim to
+  downstream `${{ needs.X.outputs.Y }}` substitutions.
+
+### Tests
+
+- `TestParse_JobOutputs_ObjectFormCarriesMaskedFlag` — schema
+  accepts both forms; `OutputMasks` populated for the object
+  form.
+- `TestParse_JobOutputs_ObjectFormRejectsUnknownKeys` — three
+  typos (`mask:`, `env_var:`, `secret:`) fail loud with
+  "unknown key" errors.
+- `TestBuildAssignment_MasksOptInOutputsBypassesEightCharHeuristic`
+  — opt-in value (6-char) bypasses the heuristic; non-masked
+  6-char value is correctly skipped.
+
 ## v0.15.2 — 2026-06-10
 
 Logs of a previous attempt would surface in the UI of a rerun job:

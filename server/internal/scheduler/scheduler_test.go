@@ -436,6 +436,76 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 	}
 }
 
+// TestBuildAssignment_MasksOptInOutputsBypassesEightCharHeuristic
+// — issue #22.
+//
+// Contract: `masked: true` makes the scheduler emit the resolved
+// value into LogMasks regardless of the 8-char threshold the
+// heuristic uses for unmarked outputs. The agent runner still
+// imposes its own 4-char floor (runner.go::applyMasks) — that's
+// out of scope here; operators needing to mask <4-char values
+// should use `secrets:` instead.
+//
+// The test pins the scheduler boundary: a 6-char opt-in value
+// is below the 8-char heuristic but well above the 4-char floor,
+// so it's the clean case for verifying opt-in fires where the
+// heuristic wouldn't.
+func TestBuildAssignment_MasksOptInOutputsBypassesEightCharHeuristic(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"prep", "deploy"},
+		Jobs: []domain.Job{
+			{
+				Name:  "bump",
+				Stage: "prep",
+				// Two aliases — both 6 chars (under heuristic, over
+				// agent floor): `secret` is masked-opt-in → must mask.
+				// `pub` is not masked → must NOT appear (heuristic
+				// skips it).
+				Outputs: map[string]string{
+					"secret": "NEXT_SECRET",
+					"pub":    "NEXT_PUB",
+				},
+				OutputMasks: map[string]bool{
+					"secret": true,
+				},
+			},
+			{
+				Name:  "deploy",
+				Stage: "deploy",
+				Needs: []string{"bump"},
+				Tasks: []domain.Task{{Script: "echo done"}},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "deploy", Needs: []string{"bump"}}
+
+	needs := scheduler.NeedsOutputs{
+		"bump": {
+			"secret": "abc123", // 6 chars: < heuristic, > floor; opt-in MUST fire
+			"pub":    "public", // 6 chars: < heuristic; no opt-in → heuristic skips
+		},
+	}
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	masks := map[string]bool{}
+	for _, m := range got.LogMasks {
+		masks[m] = true
+	}
+	if !masks["abc123"] {
+		t.Errorf("log_masks missing %q — opt-in masked output MUST bypass the 8-char scheduler heuristic; got %+v", "abc123", got.LogMasks)
+	}
+	if masks["public"] {
+		t.Errorf("log_masks contains %q — non-masked 6-char output should be skipped by the heuristic; got %+v", "public", got.LogMasks)
+	}
+}
+
 func TestBuildAssignment_MergesProfileEnvAndMasks(t *testing.T) {
 	def := domain.Pipeline{
 		Stages: []string{"build"},
