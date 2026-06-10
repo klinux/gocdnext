@@ -527,6 +527,77 @@ func TestGetRunDetail_LogsSkippedWhenLimitZero(t *testing.T) {
 	}
 }
 
+// TestGetRunDetail_CancelRequestedAtSurfaced — when a running
+// job has a cancel intent stamped (operator hit Cancel, agent
+// hasn't acknowledged), GetRunDetail must surface the
+// timestamp on JobDetail so the UI can render "Canceling…".
+// This is the read-side of the v0.15.1 deferred cancel
+// contract: the field is the SINGLE source of truth for the
+// "we asked, waiting for the agent" state — status stays
+// "running" until the agent's JobResult lands.
+func TestGetRunDetail_CancelRequestedAtSurfaced(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	target := run.JobRuns[0].ID
+
+	// Simulate the operator-side cancel landing: status stays
+	// running, cancel_requested_at gets stamped. Bypass the
+	// API path here — we're asserting the read serialisation,
+	// not the action handler.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='running', cancel_requested_at = NOW() WHERE id = $1`,
+		target,
+	); err != nil {
+		t.Fatalf("stamp cancel: %v", err)
+	}
+
+	got, err := s.GetRunDetail(ctx, run.RunID, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail: %v", err)
+	}
+	var seen bool
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID != target {
+				continue
+			}
+			seen = true
+			if j.Status != "running" {
+				t.Errorf("status = %q, want running (cancel is deferred, not terminal)", j.Status)
+			}
+			if j.CancelRequestedAt == nil {
+				t.Errorf("CancelRequestedAt = nil; want a non-nil pointer so the UI can render Canceling…")
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("target job missing from RunDetail")
+	}
+
+	// Sibling jobs (status running, no cancel intent stamped)
+	// MUST NOT carry the field — `omitempty` on the json tag
+	// only kicks in on nil, so an over-eager pgTimePtr would
+	// leak Canceling… to every sibling job.
+	for _, st := range got.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == target {
+				continue
+			}
+			if j.CancelRequestedAt != nil {
+				t.Errorf("sibling job %s carries CancelRequestedAt = %v, want nil",
+					j.Name, j.CancelRequestedAt)
+			}
+		}
+	}
+}
+
 func nonexistentUUID() (u [16]byte) {
 	// Deterministic, doesn't need to be random.
 	u[0] = 0xff

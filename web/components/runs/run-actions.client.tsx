@@ -27,7 +27,16 @@ export function RunActions({ runId, status }: Props) {
     startTransition(async () => {
       const res = await cancelRun({ runId });
       if (res.ok) {
-        toast.success("Run canceled");
+        // The server stamps cancel_requested_at synchronously,
+        // but the agent's container may take a few seconds to
+        // tear down — surface that explicitly so the operator
+        // doesn't re-click thinking nothing happened. The
+        // "Canceling…" badge on each running job is the
+        // persistent confirmation.
+        toast.success("Cancel requested", {
+          description:
+            "Running jobs will stop when the agent acknowledges. Queued jobs are canceled immediately.",
+        });
         router.refresh();
       } else {
         toast.error(`Cancel failed: ${res.error}`);

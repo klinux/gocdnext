@@ -270,6 +270,14 @@ type JobDetail struct {
 	StartedAt  *time.Time       `json:"started_at,omitempty"`
 	FinishedAt *time.Time       `json:"finished_at,omitempty"`
 	AgentID    *uuid.UUID       `json:"agent_id,omitempty"`
+
+	// CancelRequestedAt is non-nil when the operator hit Cancel
+	// but the agent hasn't acknowledged yet (deferred cancel
+	// path — v0.15.1). Combined with Status="running" it tells
+	// the UI to render a "Canceling…" badge instead of the
+	// regular running spinner so operators see the request landed
+	// even when the agent is mid-task or briefly offline.
+	CancelRequestedAt *time.Time `json:"cancel_requested_at,omitempty"`
 	// Logs carries the TAIL of the job's log lines (oldest-first
 	// within the returned window). Kept named `Logs` for backward
 	// compat with consumers that pre-date the head/omitted fields.
@@ -941,6 +949,7 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			Error:               stringValue(j.Error),
 			StartedAt:           pgTimePtr(j.StartedAt),
 			FinishedAt:          pgTimePtr(j.FinishedAt),
+			CancelRequestedAt:   pgTimePtr(j.CancelRequestedAt),
 			ApprovalGate:        j.ApprovalGate,
 			Approvers:           j.Approvers,
 			ApprovalRequired:    int(j.ApprovalRequired),
