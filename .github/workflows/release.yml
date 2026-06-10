@@ -167,6 +167,14 @@ jobs:
             VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          # Buildkit emits SLSA v1 provenance + an SPDX SBOM
+          # alongside the image manifest. mode=max captures the
+          # full build graph (which Dockerfile stage produced
+          # each layer, which build args were used) — that's the
+          # predicate cosign attests below. Tag-stripped digest
+          # output by build-push-action is the binding target.
+          provenance: mode=max
+          sbom: true
 
       # Sign the manifest digest, not a tag — tags are mutable;
       # the digest is the only handle that can't shift under the
@@ -183,6 +191,43 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # Syft generates a richer CycloneDX SBOM than buildkit's
+      # native SPDX one — it walks every layer's package manager
+      # state (apk/dpkg + go.mod + node_modules) which is what
+      # most vuln scanners read. We attach it as an in-toto
+      # attestation bound to the SAME digest cosign just signed
+      # so verifiers see a single bundle: signature + SBOM
+      # predicate + SLSA predicate.
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-${{ matrix.name }}@${{ steps.build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.name }}.cdx.json
+          upload-artifact: false
+
+      - name: cosign attest (SBOM, CycloneDX)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-${{ matrix.name }}
+          PREDICATE: sbom-${{ matrix.name }}.cdx.json
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --predicate "${PREDICATE}" \
+            --type cyclonedx \
+            "${IMAGE}@${DIGEST}"
+
+      # SLSA provenance: NOT a separate cosign attest step.
+      # `provenance: mode=max` on build-push-action above tells
+      # buildkit to emit a SLSA v1 in-toto attestation anchored
+      # to the manifest list — same digest cosign just signed,
+      # verifiable via `cosign verify-attestation --type slsa…`
+      # OR via Kyverno's `verifyImages.attestations`. Duplicating
+      # it via `cosign attest --type slsaprovenance` would require
+      # extracting buildkit's predicate JSON from the manifest,
+      # which is brittle across buildx versions (the field name
+      # has shifted). The native attestation IS the SLSA chain.
 
   chart:
     runs-on: ubuntu-latest
