@@ -8,6 +8,7 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -45,6 +46,7 @@ func BuildAssignment(
 	profile store.ResolvedProfile,
 	cloneTokens map[string]string,
 	needsOutputs NeedsOutputs,
+	matrixNeedsOutputs MatrixNeedsOutputs,
 ) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
@@ -162,6 +164,20 @@ func BuildAssignment(
 			}
 		}
 	}
+	// Same heuristic for matrix-expanded outputs (issue #21): every
+	// row of every matrix upstream contributes its long values to
+	// the auto-mask backstop. The scheduler doesn't know yet which
+	// rows the downstream's selector will pick at substitution
+	// time, so we err on the safe side and include them all.
+	for _, rows := range matrixNeedsOutputs {
+		for _, group := range rows {
+			for _, v := range group {
+				if len(v) >= 8 {
+					masks = append(masks, v)
+				}
+			}
+		}
+	}
 
 	// Opt-in masking (issue #22): for each upstream that flagged
 	// `outputs.<alias>.masked: true`, add the resolved value to
@@ -182,6 +198,44 @@ func BuildAssignment(
 			}
 		}
 	}
+	// Matrix variant of the opt-in mask: walk every row of every
+	// flagged upstream and add masked values across the board.
+	// Same selector-uncertainty rationale as the heuristic block
+	// — we mask all rows since the downstream may pick any of them.
+	for upstreamName, rows := range matrixNeedsOutputs {
+		upstream, ok := findJob(def.Jobs, upstreamName)
+		if !ok || len(upstream.OutputMasks) == 0 {
+			continue
+		}
+		for _, group := range rows {
+			for alias, value := range group {
+				if upstream.OutputMasks[alias] && value != "" {
+					masks = append(masks, value)
+				}
+			}
+		}
+	}
+
+	// Build the MatrixDimNames table the substitution layer needs
+	// to resolve the `matrix[apac]` 1-dim shortcut (issue #21).
+	// Only upstreams that actually have rows in matrixNeedsOutputs
+	// need an entry — for other jobs the lookup is irrelevant.
+	// Dimension order in the slice is lex-sorted so 1-dim
+	// shortcut behaviour stays deterministic regardless of YAML
+	// declaration order.
+	matrixDims := make(MatrixDimNames, len(matrixNeedsOutputs))
+	for upstreamName := range matrixNeedsOutputs {
+		upstream, ok := findJob(def.Jobs, upstreamName)
+		if !ok || len(upstream.Matrix) == 0 {
+			continue
+		}
+		dims := make([]string, 0, len(upstream.Matrix))
+		for d := range upstream.Matrix {
+			dims = append(dims, d)
+		}
+		sort.Strings(dims)
+		matrixDims[upstreamName] = dims
+	}
 
 	// CI_* built-ins (CI_BRANCH, CI_COMMIT_SHORT_SHA, CI_RUN_COUNTER, …)
 	// land in env BEFORE substitution so a pipeline variable like
@@ -199,7 +253,7 @@ func BuildAssignment(
 	// doc; here we just thread the pre-built table through. Nil
 	// NeedsOutputs short-circuits the pre-pass for jobs with no
 	// needs (the common case).
-	if needsResolved, err := substituteNeedsRefsMap(env, needsOutputs); err != nil {
+	if needsResolved, err := substituteNeedsRefsMap(env, needsOutputs, matrixNeedsOutputs, matrixDims); err != nil {
 		return nil, fmt.Errorf("scheduler: needs refs in env for job %s: %w", job.Name, err)
 	} else {
 		env = needsResolved
@@ -235,7 +289,7 @@ func BuildAssignment(
 			})
 		case tk.Plugin != nil:
 			// Pre-pass on plugin settings too — same contract as env.
-			pluginSettings, err := substituteNeedsRefsMap(tk.Plugin.Settings, needsOutputs)
+			pluginSettings, err := substituteNeedsRefsMap(tk.Plugin.Settings, needsOutputs, matrixNeedsOutputs, matrixDims)
 			if err != nil {
 				return nil, fmt.Errorf("scheduler: needs refs in plugin %q settings: %w", tk.Plugin.Image, err)
 			}

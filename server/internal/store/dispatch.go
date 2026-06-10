@@ -288,14 +288,17 @@ type JobOutputs struct {
 // ListJobOutputsForRun returns the outputs of every job_run in `runID`
 // whose name appears in `names`. Used by the scheduler when building
 // a downstream job's JobAssignment to resolve
-// `${{ needs.<job>.outputs.<key> }}` references. See issue #10.
+// `${{ needs.<job>.outputs.<key> }}` references (issue #10) and
+// `${{ needs.<job>.matrix[KEY].outputs.<key> }}` matrix selectors
+// (issue #21).
 //
 // Returns one entry per matrix instance for matrix jobs (matrix_key
-// distinguishes); the substitution layer picks matrix_key='' (the
-// parent) by default. Empty slice when no name matches — that's a
-// configuration error caught earlier by needs-validation but
-// surfaced again here as "no upstream outputs" so the substitution
-// error message points at the right job.
+// distinguishes the row). The scheduler's groupNeedsOutputs sorts
+// rows into NeedsOutputs (matrix_key='') vs MatrixNeedsOutputs
+// (matrix_key!=''); see refs.go::NeedsOutputs for the routing
+// contract. Empty slice when no name matches — surfaced again
+// here as "no upstream outputs" so the substitution error
+// message points at the right job.
 func (s *Store) ListJobOutputsForRun(ctx context.Context, runID uuid.UUID, names []string) ([]JobOutputs, error) {
 	if len(names) == 0 {
 		return nil, nil

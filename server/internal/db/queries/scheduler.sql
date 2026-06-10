@@ -187,10 +187,11 @@ SELECT id FROM runs WHERE status IN ('queued', 'running') ORDER BY created_at;
 -- Why scoped by run_id + name list (not just run_id): a typical
 -- needs: list is 1–3 names, the run has 10–50 job_runs. Filtering
 -- at SQL avoids dragging unrelated rows + their JSONB payloads
--- across the wire. matrix_key returns so a needs:[matrix-parent]
--- reference can still pick the right instance (today the
--- substitution path picks the matrix_key='' parent; sibling-
--- matrix-row refs are a follow-up).
+-- across the wire. matrix_key returns so the scheduler's
+-- groupNeedsOutputs can route each row to the right table:
+-- matrix_key='' rows fold into NeedsOutputs (bare-ref path),
+-- matrix_key!='' rows go into MatrixNeedsOutputs (issue #21
+-- selector path).
 SELECT name, matrix_key, status, outputs
 FROM job_runs
 WHERE run_id = $1

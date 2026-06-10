@@ -1380,3 +1380,103 @@ jobs:
 		t.Errorf("matrix not flattened correctly: %+v", j.Matrix)
 	}
 }
+
+// TestParse_Matrix_RejectsEmptyDimension — issue #21 review fix.
+// A dimension declared with an empty list (`shard: []`) used to
+// silently get dropped by the runtime expansion, producing a row
+// with no matrix_key — which then leaked into the bare-ref path
+// and bypassed the "matrix upstream needs a selector" contract.
+// Reject at parse time with an error citing the offending job
+// and dimension.
+func TestParse_Matrix_RejectsEmptyDimension(t *testing.T) {
+	const y = `
+name: release
+stages: [build]
+materials: [{manual: true}]
+jobs:
+  bump:
+    stage: build
+    image: alpine:3.20
+    script:
+      - echo $SHARD
+    parallel:
+      matrix:
+        - shard: []
+`
+	_, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err == nil {
+		t.Fatal("expected parse error for empty matrix dimension")
+	}
+	for _, want := range []string{"bump", "shard", "no values"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+// TestParse_Matrix_RejectsDuplicateValues — issue #21 review fix.
+// Duplicate values within a dimension (`shard: [apac, apac]`)
+// used to expand to multiple rows that collide on the lex-sorted
+// canonical matrix_key — the substitution layer's rowMap then
+// overwrote silently, leaking iteration-order non-determinism
+// into the downstream's `${{ needs.X.matrix[apac].outputs.Y }}`
+// resolution. Reject at parse with the dimension and value cited.
+func TestParse_Matrix_RejectsDuplicateValues(t *testing.T) {
+	const y = `
+name: release
+stages: [build]
+materials: [{manual: true}]
+jobs:
+  bump:
+    stage: build
+    image: alpine:3.20
+    script:
+      - echo $SHARD
+    parallel:
+      matrix:
+        - shard: [apac, apac]
+`
+	_, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err == nil {
+		t.Fatal("expected parse error for duplicate matrix values")
+	}
+	for _, want := range []string{"bump", "shard", "duplicate", "apac"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+// TestParse_Matrix_RejectsEmptyEntry — issue #21 round 2 review fix.
+// `parallel.matrix: [{}]` used to pass parse silently: flattenMatrix
+// produced an empty flat map, validateMatrixDimensions had nothing
+// to iterate, and the store's expandMatrix returned a single row
+// with matrix_key="". That violated the "matrix-declared job never
+// produces an empty-key row" invariant the routing depends on.
+// Reject loud at the entry level with the index cited so the
+// operator finds the bad entry directly.
+func TestParse_Matrix_RejectsEmptyEntry(t *testing.T) {
+	const y = `
+name: release
+stages: [build]
+materials: [{manual: true}]
+jobs:
+  bump:
+    stage: build
+    image: alpine:3.20
+    script:
+      - echo $SHARD
+    parallel:
+      matrix:
+        - {}
+`
+	_, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err == nil {
+		t.Fatal("expected parse error for empty matrix entry")
+	}
+	for _, want := range []string{"bump", "entry 0", "empty"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}

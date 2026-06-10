@@ -650,14 +650,54 @@ create-tag:
     - git tag -a "$NEXT" -m "Release"     # shell expansion at runtime
 ```
 
-### Matrix limitation (v1)
+### Matrix selector (`${{ needs.X.matrix[KEY].outputs.Y }}`)
 
-A matrix job that expands to >1 row can't be referenced via
-`${{ needs.X.outputs.Y }}` — the scheduler errors LOUD listing
-the matrix keys involved. Explicit per-row selector
-(`${{ needs.X.matrix[key].outputs.Y }}`) is roadmap for issue #10
-follow-up. For now, fold matrix-produced values through a
-single non-matrix downstream that consolidates.
+Issue #21. When the upstream job declares a `strategy.matrix`,
+it expands into one job_run per combination. Bare
+`${{ needs.X.outputs.Y }}` against such an upstream errors loud —
+the scheduler can't pick "the right one". The downstream picks
+explicitly via the matrix selector:
+
+```yaml
+jobs:
+  bump:
+    strategy:
+      matrix:
+        shard: [apac, emea, us]
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      next: NEXT
+
+  publish-apac:
+    needs: [bump]
+    image: alpine:3.20
+    variables:
+      # 1-dim shortcut — `shard` is the only dimension
+      TAG: ${{ needs.bump.matrix[apac].outputs.next }}
+    script:
+      - git tag -a "$TAG" -m "Release APAC"
+```
+
+Three selector forms accepted:
+
+| Form | When to use |
+|---|---|
+| `matrix[VALUE]` | 1-dim shortcut. Only valid when the upstream's `strategy.matrix` has exactly one dimension; expanded to `dim=VALUE` at resolution time. |
+| `matrix[K=V]` | Explicit 1-dim. Stable shape if you might add a second dimension later. |
+| `matrix[K1=V1,K2=V2]` | Multi-dim. Order doesn't matter — the resolver lex-sorts both your selector and the stored row key before comparing, so `matrix[arch=amd64,os=linux]` and `matrix[os=linux,arch=amd64]` resolve to the same row. |
+
+Errors at dispatch (loud, the downstream job is failed before
+the agent ever sees the assignment):
+
+- 1-dim shortcut against a multi-dim upstream → "use the explicit form matrix[k=v,...]"
+- Unknown dimension name in selector → cites the declared dimensions
+- Selector value doesn't match any row (matrix `exclude:` removed it, or typo) → cites the available canonical keys
+- Selector against a NON-matrix upstream → "drop the matrix[...] selector and use the bare form"
+
+Out of scope (separate issues if demand surfaces):
+
+- Aggregation: `${{ needs.X.outputs.next[*] }}` (a list across all matrix rows).
+- Reduce expressions: piping through `| join(",")` or similar.
 
 ### Kubernetes isolated mode parity (v0.12+)
 

@@ -6,6 +6,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.16.0 — 2026-06-10
+
+Matrix-selector resolution on job outputs (issue #21). A
+downstream job can now pick a specific row of a matrix-expanded
+upstream via `${{ needs.X.matrix[KEY].outputs.Y }}` instead of
+the v0.11.0–v0.15.x error-loud-on-matrix behaviour. The bare
+form `${{ needs.X.outputs.Y }}` still errors loud against a
+matrix upstream — the selector is mandatory when the operator
+declared `strategy.matrix`.
+
+### YAML
+
+Three selector forms accepted, picked by the upstream's
+declared dimensions:
+
+```yaml
+jobs:
+  bump:
+    strategy:
+      matrix:
+        shard: [apac, emea, us]
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      next: NEXT
+
+  publish-apac:
+    needs: [bump]
+    variables:
+      # 1-dim shortcut (shard is the only dim)
+      TAG: ${{ needs.bump.matrix[apac].outputs.next }}
+    image: alpine:3.20
+    script:
+      - git tag "$TAG"
+```
+
+| Form | When |
+|---|---|
+| `matrix[VALUE]` | 1-dim shortcut. Only valid when the upstream has exactly one matrix dimension. |
+| `matrix[K=V]` | Explicit 1-dim. Stable shape if a second dim might be added later. |
+| `matrix[K1=V1,K2=V2]` | Multi-dim. Order doesn't matter — selector and stored matrix_key are both lex-sorted before comparison. |
+
+### Failure modes (all loud at dispatch)
+
+- 1-dim shortcut against a multi-dim upstream → "use the explicit form matrix[k=v,...]"
+- Unknown dimension in selector → cites declared dimensions
+- Selector value matches no row → cites available canonical keys
+- Selector against a non-matrix upstream → "drop the matrix[...] selector and use the bare form"
+- Bare ref against a matrix upstream → "use the explicit per-row selector"
+
+### Parser hardening (review-driven)
+
+- `parallel.matrix: [{}]`, `shard: []`, and `shard: [apac, apac]`
+  now reject at parse time. Each shape used to slip past
+  validation and produce a row that violated the routing
+  invariants (empty-key row from a matrix-declared job,
+  duplicate canonical keys overwriting each other in the
+  lookup table). The matrix-declared invariant the
+  substitution layer relies on is now enforced loud at apply.
+- Per-entry, post-flatten, and per-dimension checks layered so
+  a malformed matrix is rejected at the closest point to the
+  YAML cause.
+
+### Scheduler / dispatch
+
+- `groupNeedsOutputs` routes by `matrix_key`: empty string →
+  bare-ref `NeedsOutputs` table; non-empty → selector-ref
+  `MatrixNeedsOutputs` table keyed by canonical k=v form.
+  Duplicate canonical keys within one upstream refuse loud
+  (defence in depth — parser already prevents the data shape).
+- `BuildAssignment` threads both tables + `MatrixDimNames` (the
+  lex-sorted dim names per matrix upstream) into the
+  substitution layer so the 1-dim shortcut can canonicalize
+  against the declared dim. Heuristic auto-mask + opt-in mask
+  walk matrix outputs too so selector-uncertainty doesn't leak
+  unmasked values.
+
+### Tests
+
+- Unit: 7 new `TestSubstituteNeedsRefs_Matrix*` cases in
+  refs_test.go covering all selector shapes and error
+  classifications.
+- Store/parser: empty entry, empty dim, duplicate value
+  rejections.
+- Scheduler: duplicate canonical key guard.
+- E2E: `TestE2E_MatrixSelectorResolvesPerRow` drives the full
+  path through ApplyProject → matrix expansion → CompleteJob
+  per row → BuildAssignment → resolved env.
+
+### Out of scope (separate follow-ups if demand surfaces)
+
+- Aggregation across matrix rows
+  (`${{ needs.X.outputs.next[*] }}`).
+- Reduce expressions piped through `join(",")` or similar.
+
 ## v0.15.3 — 2026-06-10
 
 Opt-in masking on job outputs (issue #22). An upstream job can
