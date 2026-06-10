@@ -340,6 +340,54 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 	sess := a.sessions.CreateSession(agent.ID, req.GetTags(), req.GetCapacity(), generation,
 		CreateSessionOpts{Engine: req.GetEngine()})
 
+	// Pending-cancel replay. A cancel request that landed while the
+	// previous session was in flux (Revoke→Register race) persisted
+	// itself as job_runs.cancel_requested_at — Dispatch on that brief
+	// window returns ErrNoSession, but cancel_requested_at survives.
+	// The new session, now live, is the canonical destination for
+	// those cancels; we enqueue them onto sess.out so the Connect
+	// stream — about to be established — drains them as if they had
+	// arrived through the normal cancel handler path. The agent's
+	// runner code path for a CancelJob frame is identical regardless
+	// of provenance.
+	//
+	// Failures are non-fatal: the reaper's
+	// ReclaimPendingCancelsForOfflineAgent sweep finalises any cancel
+	// that this replay misses (the agent goes offline again before
+	// the stream drains, sess.out fills past defaultSendBuffer=16
+	// with concurrent pendings). The replay is the fast path; the
+	// reaper is the safety net.
+	if pendings, err := a.store.ListPendingCancelsForAgent(ctx, agent.ID); err != nil {
+		a.log.Warn("agent register: list pending cancels failed",
+			"agent_uuid", agent.ID, "err", err)
+	} else if len(pendings) > 0 {
+		enqueued := 0
+		for _, p := range pendings {
+			msg := &gocdnextv1.ServerMessage{
+				Kind: &gocdnextv1.ServerMessage_Cancel{
+					Cancel: &gocdnextv1.CancelJob{
+						RunId:  p.RunID.String(),
+						JobId:  p.JobRunID.String(),
+						Reason: "deferred cancel (request landed during session recycle)",
+					},
+				},
+			}
+			if err := a.sessions.Dispatch(agent.ID, msg); err != nil {
+				// The session we JUST created should be live. The
+				// likely failure mode here is ErrSessionBusy
+				// (sess.out buffer of defaultSendBuffer=16 saturated
+				// because the agent had >16 concurrent pendings); the
+				// reaper finalises the overflow.
+				a.log.Warn("agent register: replay pending cancel failed",
+					"agent_uuid", agent.ID, "job_run_id", p.JobRunID, "err", err)
+				break
+			}
+			enqueued++
+		}
+		a.log.Info("agent register: pending cancels replayed",
+			"agent_uuid", agent.ID, "found", len(pendings), "enqueued", enqueued)
+	}
+
 	// Now that the new session exists, fire the deferred wake-ups.
 	// One NOTIFY per distinct run id — the scheduler dedups at its
 	// LISTEN side anyway, but coalescing here keeps the channel

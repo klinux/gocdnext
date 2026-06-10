@@ -60,20 +60,21 @@ func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtyp
 }
 
 const getJobRunForCancel = `-- name: GetJobRunForCancel :one
-SELECT id, run_id, stage_run_id, name, status, agent_id, attempt
+SELECT id, run_id, stage_run_id, name, status, agent_id, attempt, cancel_requested_at
 FROM job_runs
 WHERE id = $1
 FOR UPDATE
 `
 
 type GetJobRunForCancelRow struct {
-	ID         pgtype.UUID
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-	Status     string
-	AgentID    pgtype.UUID
-	Attempt    int32
+	ID                pgtype.UUID
+	RunID             pgtype.UUID
+	StageRunID        pgtype.UUID
+	Name              string
+	Status            string
+	AgentID           pgtype.UUID
+	Attempt           int32
+	CancelRequestedAt pgtype.Timestamptz
 }
 
 // Thin row used by the job-scoped cancel handler. Returns the
@@ -103,6 +104,7 @@ func (q *Queries) GetJobRunForCancel(ctx context.Context, id pgtype.UUID) (GetJo
 		&i.Status,
 		&i.AgentID,
 		&i.Attempt,
+		&i.CancelRequestedAt,
 	)
 	return i, err
 }
@@ -165,4 +167,232 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 		&i.Revisions,
 	)
 	return i, err
+}
+
+const listPendingCancelsForAgent = `-- name: ListPendingCancelsForAgent :many
+SELECT id, run_id
+FROM job_runs
+WHERE agent_id = $1
+  AND status = 'running'
+  AND cancel_requested_at IS NOT NULL
+`
+
+type ListPendingCancelsForAgentRow struct {
+	ID    pgtype.UUID
+	RunID pgtype.UUID
+}
+
+// The agent calls this right after Register + Connect lands so
+// it picks up any cancels that were requested while its session
+// was being recycled. Returns (job_run_id, run_id) pairs the
+// agent can issue local-cancel-equivalent handling on. The
+// agent then sends the usual JobResult(status=canceled) to
+// close out each row server-side — the existing result handler
+// finalises the status, and the cancel_requested_at column
+// becomes operationally redundant on that row (kept for the
+// audit trail's at-time).
+//
+// Hits the partial index job_runs_pending_cancel_by_agent_idx;
+// index-only on the WHERE clause makes this a sub-millisecond
+// lookup even on a job_runs table in the millions.
+func (q *Queries) ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error) {
+	rows, err := q.db.Query(ctx, listPendingCancelsForAgent, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingCancelsForAgentRow{}
+	for rows.Next() {
+		var i ListPendingCancelsForAgentRow
+		if err := rows.Scan(&i.ID, &i.RunID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reclaimPendingCancelsForOfflineAgent = `-- name: ReclaimPendingCancelsForOfflineAgent :many
+UPDATE job_runs jr
+SET status      = 'canceled',
+    finished_at = COALESCE(finished_at, NOW())
+FROM agents a
+WHERE jr.agent_id = a.id
+  AND jr.status = 'running'
+  AND jr.cancel_requested_at IS NOT NULL
+  AND (
+        a.status = 'offline'
+        OR a.last_seen_at IS NULL
+        OR a.last_seen_at < NOW() - $1::INTERVAL
+      )
+RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.agent_id, jr.cancel_requested_at, jr.name
+`
+
+type ReclaimPendingCancelsForOfflineAgentRow struct {
+	ID                pgtype.UUID
+	RunID             pgtype.UUID
+	StageRunID        pgtype.UUID
+	AgentID           pgtype.UUID
+	CancelRequestedAt pgtype.Timestamptz
+	Name              string
+}
+
+// The reaper's path for cancels that never reached an agent
+// because the agent went offline and stayed offline past the
+// cancel grace window. Finalises every still-running row that
+// belongs to an offline agent AND was cancel-requested as
+// 'canceled' with finished_at=NOW().
+//
+// Why this lives in the reaper (not a hot path):
+//
+//   - The hot path (cancel handler) does not block on agent
+//     liveness — it stamps cancel_requested_at and returns
+//     202 immediately. The DB row stays 'running' from the
+//     handler's perspective; the reaper does the finalising
+//     when it's clear the agent isn't coming back.
+//
+//   - Latency of cancel finalisation = reaper tick interval +
+//     offline-grace window. Both are operator-tunable; default
+//     is ~5min total. Acceptable for a "we tried, agent gone"
+//     case; the operator-visible status is 'canceling' in the
+//     meantime via the cancel_requested_at column.
+//
+// Liveness predicate mirrors the reaper's main path
+// (ListStaleRunningJobs in sweeper.sql) so a heartbeat-stale
+// agent that's still marked online doesn't accumulate
+// cancel-pending rows forever. Three failure shapes catch
+// everything except a perfectly healthy agent the replay path
+// still owns:
+//
+//  1. a.status = 'offline'  — explicit liveness flip; the
+//     Connect-defer or the reaper has marked the row offline.
+//  2. a.last_seen_at IS NULL — agent never sent a heartbeat
+//     since this server started; either fresh-DB state or a
+//     truly dead row.
+//  3. a.last_seen_at < NOW() - grace — heartbeat stopped past
+//     the grace window. agents.status may still be 'online'
+//     if the offline-mark never fired (network partition;
+//     Connect-defer crashed), but the heartbeat signal is
+//     gone for real.
+//
+// A perfectly healthy agent (status=online AND last_seen_at
+// recent) is skipped — the replay path is still expected to
+// land the cancel on its next Connect frame.
+func (q *Queries) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error) {
+	rows, err := q.db.Query(ctx, reclaimPendingCancelsForOfflineAgent, graceInterval)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReclaimPendingCancelsForOfflineAgentRow{}
+	for rows.Next() {
+		var i ReclaimPendingCancelsForOfflineAgentRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.StageRunID,
+			&i.AgentID,
+			&i.CancelRequestedAt,
+			&i.Name,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const stampCancelRequestedAt = `-- name: StampCancelRequestedAt :one
+UPDATE job_runs
+SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
+WHERE id = $1
+  AND status = 'running'
+  AND agent_id IS NOT NULL
+RETURNING id, agent_id, cancel_requested_at
+`
+
+type StampCancelRequestedAtRow struct {
+	ID                pgtype.UUID
+	AgentID           pgtype.UUID
+	CancelRequestedAt pgtype.Timestamptz
+}
+
+// Persists the cancel INTENT on a running job_run BEFORE the
+// handler attempts the gRPC dispatch. Decouples the cancel UX
+// from "is the agent's session alive in this instant" — even if
+// Dispatch fails because of a Revoke→Register race (the agent
+// pod is in flux), the intent survives. When the agent's new
+// session comes up it calls ListPendingCancelsForAgent and
+// honors the cancel; if it never comes back, the reaper
+// finalises the row via ReclaimPendingCancelsForOfflineAgent.
+//
+// Idempotent on the timestamp: COALESCE keeps the FIRST cancel
+// request's at-time so the audit trail matches the first click
+// (a re-click that lands in the brief window between dispatch
+// attempts shouldn't reset the requested-at clock).
+//
+// Predicate guards: only stamp when the row is STILL running
+// AND has an agent_id pinned (no-op on rows that finished
+// between the cancel handler's read and this write). The
+// handler ran GetJobRunForCancel under FOR UPDATE in the same
+// tx, so by definition the row was running at SELECT time —
+// but a result handler in another tx can have committed in
+// between if the cancel handler is using a separate tx. The
+// guards keep us honest in either calling shape.
+func (q *Queries) StampCancelRequestedAt(ctx context.Context, id pgtype.UUID) (StampCancelRequestedAtRow, error) {
+	row := q.db.QueryRow(ctx, stampCancelRequestedAt, id)
+	var i StampCancelRequestedAtRow
+	err := row.Scan(&i.ID, &i.AgentID, &i.CancelRequestedAt)
+	return i, err
+}
+
+const stampCancelRequestedAtForRun = `-- name: StampCancelRequestedAtForRun :many
+UPDATE job_runs
+SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
+WHERE run_id = $1
+  AND status = 'running'
+  AND agent_id IS NOT NULL
+RETURNING id, agent_id
+`
+
+type StampCancelRequestedAtForRunRow struct {
+	ID      pgtype.UUID
+	AgentID pgtype.UUID
+}
+
+// Batch variant of StampCancelRequestedAt used by the run-scoped
+// cancel path. Stamps cancel_requested_at on EVERY running job
+// belonging to the run that hasn't been stamped yet. The handler
+// then attempts gRPC dispatch per row; any dispatch that lands in
+// the Revoke→Register race window is rescued by the same replay
+// + reaper paths that cover the job-scoped cancel.
+//
+// COALESCE preserves the FIRST stamp's at-time across re-cancel
+// attempts (the same idempotency as the single-row variant).
+// Returns (id, agent_id) per stamped row so the handler can
+// correlate Dispatch failures with their owning agent.
+func (q *Queries) StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error) {
+	rows, err := q.db.Query(ctx, stampCancelRequestedAtForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StampCancelRequestedAtForRunRow{}
+	for rows.Next() {
+		var i StampCancelRequestedAtForRunRow
+		if err := rows.Scan(&i.ID, &i.AgentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

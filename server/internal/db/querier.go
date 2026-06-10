@@ -744,6 +744,20 @@ type Querier interface {
 	// the URI update lands. The read path already serves from the
 	// archive, so the rows are pure cost — sweep them on a slow tick.
 	ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pgtype.UUID, error)
+	// The agent calls this right after Register + Connect lands so
+	// it picks up any cancels that were requested while its session
+	// was being recycled. Returns (job_run_id, run_id) pairs the
+	// agent can issue local-cancel-equivalent handling on. The
+	// agent then sends the usual JobResult(status=canceled) to
+	// close out each row server-side — the existing result handler
+	// finalises the status, and the cancel_requested_at column
+	// becomes operationally redundant on that row (kept for the
+	// audit trail's at-time).
+	//
+	// Hits the partial index job_runs_pending_cancel_by_agent_idx;
+	// index-only on the WHERE clause makes this a sub-millisecond
+	// lookup even on a job_runs table in the millions.
+	ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
 	// Returns definition alongside metadata so the card can pull
 	// stage names from the YAML when the pipeline has never run
@@ -804,6 +818,17 @@ type Querier interface {
 	//
 	// Returned columns mirror ListStaleRunningJobs so the reaper-Go
 	// side can reuse the same ReclaimResult shape.
+	//
+	// cancel_requested_at IS NULL guard: rows with a cancel intent
+	// stamped don't belong to this reclaim path — they belong to the
+	// agent_service.Register replay path
+	// (ListPendingCancelsForAgent), which honors the cancel as a
+	// terminal 'canceled' instead of dropping it back to 'queued' as
+	// a retry. Without the guard, the reclaim wins the race and the
+	// operator's cancel intent becomes a generic requeue; on hits
+	// past max attempts it becomes a failed (not canceled) row,
+	// mis-attributing the operator's deliberate stop as a process
+	// crash.
 	ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListRunningJobsForAgentRow, error)
 	ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProjectSlugParams) ([]ListRunsByProjectSlugRow, error)
 	// Cross-project timeline: most recent runs first. Carries the
@@ -979,7 +1004,57 @@ type Querier interface {
 	//
 	// ErrNoRows signals the caller should take a different code path
 	// (failed-at-max, already-reclaimed, raced-out-of-window).
+	// cancel_requested_at = NULL: defensive clear, mirrored from
+	// RerunJob's reset list. ListRunningJobsForAgent already excludes
+	// rows with cancel_requested_at IS NOT NULL from the
+	// register-fence reclaim, so a stamped row should NEVER reach
+	// this UPDATE — but the clear is cheap and closes the door on
+	// an in-flight Phase 0 reaper losing a CAS race against this
+	// one, which would otherwise leave the row queued with a stale
+	// stamp and re-trigger the replay path on the next AssignJob.
 	ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error)
+	// The reaper's path for cancels that never reached an agent
+	// because the agent went offline and stayed offline past the
+	// cancel grace window. Finalises every still-running row that
+	// belongs to an offline agent AND was cancel-requested as
+	// 'canceled' with finished_at=NOW().
+	//
+	// Why this lives in the reaper (not a hot path):
+	//
+	//   * The hot path (cancel handler) does not block on agent
+	//     liveness — it stamps cancel_requested_at and returns
+	//     202 immediately. The DB row stays 'running' from the
+	//     handler's perspective; the reaper does the finalising
+	//     when it's clear the agent isn't coming back.
+	//
+	//   * Latency of cancel finalisation = reaper tick interval +
+	//     offline-grace window. Both are operator-tunable; default
+	//     is ~5min total. Acceptable for a "we tried, agent gone"
+	//     case; the operator-visible status is 'canceling' in the
+	//     meantime via the cancel_requested_at column.
+	//
+	// Liveness predicate mirrors the reaper's main path
+	// (ListStaleRunningJobs in sweeper.sql) so a heartbeat-stale
+	// agent that's still marked online doesn't accumulate
+	// cancel-pending rows forever. Three failure shapes catch
+	// everything except a perfectly healthy agent the replay path
+	// still owns:
+	//
+	//   1. a.status = 'offline'  — explicit liveness flip; the
+	//      Connect-defer or the reaper has marked the row offline.
+	//   2. a.last_seen_at IS NULL — agent never sent a heartbeat
+	//      since this server started; either fresh-DB state or a
+	//      truly dead row.
+	//   3. a.last_seen_at < NOW() - grace — heartbeat stopped past
+	//      the grace window. agents.status may still be 'online'
+	//      if the offline-mark never fired (network partition;
+	//      Connect-defer crashed), but the heartbeat signal is
+	//      gone for real.
+	//
+	// A perfectly healthy agent (status=online AND last_seen_at
+	// recent) is skipped — the replay path is still expected to
+	// land the cancel on its next Connect frame.
+	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -1048,6 +1123,41 @@ type Querier interface {
 	// skipped is the right semantic (the job was never attempted on
 	// purpose) vs. canceled (user/system stopped it).
 	SkipJobRun(ctx context.Context, id pgtype.UUID) (SkipJobRunRow, error)
+	// Persists the cancel INTENT on a running job_run BEFORE the
+	// handler attempts the gRPC dispatch. Decouples the cancel UX
+	// from "is the agent's session alive in this instant" — even if
+	// Dispatch fails because of a Revoke→Register race (the agent
+	// pod is in flux), the intent survives. When the agent's new
+	// session comes up it calls ListPendingCancelsForAgent and
+	// honors the cancel; if it never comes back, the reaper
+	// finalises the row via ReclaimPendingCancelsForOfflineAgent.
+	//
+	// Idempotent on the timestamp: COALESCE keeps the FIRST cancel
+	// request's at-time so the audit trail matches the first click
+	// (a re-click that lands in the brief window between dispatch
+	// attempts shouldn't reset the requested-at clock).
+	//
+	// Predicate guards: only stamp when the row is STILL running
+	// AND has an agent_id pinned (no-op on rows that finished
+	// between the cancel handler's read and this write). The
+	// handler ran GetJobRunForCancel under FOR UPDATE in the same
+	// tx, so by definition the row was running at SELECT time —
+	// but a result handler in another tx can have committed in
+	// between if the cancel handler is using a separate tx. The
+	// guards keep us honest in either calling shape.
+	StampCancelRequestedAt(ctx context.Context, id pgtype.UUID) (StampCancelRequestedAtRow, error)
+	// Batch variant of StampCancelRequestedAt used by the run-scoped
+	// cancel path. Stamps cancel_requested_at on EVERY running job
+	// belonging to the run that hasn't been stamped yet. The handler
+	// then attempts gRPC dispatch per row; any dispatch that lands in
+	// the Revoke→Register race window is rescued by the same replay
+	// + reaper paths that cover the job-scoped cancel.
+	//
+	// COALESCE preserves the FIRST stamp's at-time across re-cancel
+	// attempts (the same idempotency as the single-row variant).
+	// Returns (id, agent_id) per stamped row so the handler can
+	// correlate Dispatch failures with their owning agent.
+	StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
@@ -1072,6 +1182,13 @@ type Querier interface {
 	// NOT bump attempt here. The attempt counter exists to detect
 	// crashes mid-execution; a dispatch failure that never reached the
 	// agent doesn't count as an attempt.
+	// cancel_requested_at = NULL: defensive clear in case a cancel
+	// landed in the AssignJob→DispatchAssignment window (operator
+	// raced the scheduler). The row is going back to 'queued' with
+	// agent_id NULL — there's no agent to replay against, and the
+	// next AssignJob may pick a different agent entirely; carrying
+	// the stamp forward would let ListPendingCancelsForAgent honor
+	// it against an agent that never received the cancel intent.
 	UnassignJob(ctx context.Context, arg UnassignJobParams) (UnassignJobRow, error)
 	// Called from the gRPC heartbeat handler so the reaper can tell which agents
 	// are still alive. Tiny write per heartbeat (default cadence 30s).

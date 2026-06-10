@@ -1306,6 +1306,51 @@ func TestRerunJob_RetiresArtifacts(t *testing.T) {
 	}
 }
 
+// TestRerunJob_ClearsCancelRequestedAt — a row that was canceled
+// (deferred path or reaper-finalised) carries cancel_requested_at
+// into its terminal state for the audit trail. When the operator
+// reruns that row, the new attempt MUST NOT inherit the prior
+// attempt's cancel intent — otherwise the agent's next Register
+// would replay the stale cancel via ListPendingCancelsForAgent
+// and kill the new attempt before it had a chance.
+func TestRerunJob_ClearsCancelRequestedAt(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+
+	// Simulate a deferred cancel that the reaper finalised: row
+	// went canceled with cancel_requested_at preserved in the
+	// audit trail.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs
+		    SET status='canceled', finished_at=NOW(), cancel_requested_at=NOW() - INTERVAL '1 minute'
+		  WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("flip canceled with stamp: %v", err)
+	}
+
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{JobRunID: jobID, TriggeredBy: "user:test"}); err != nil {
+		t.Fatalf("RerunJob: %v", err)
+	}
+
+	var status string
+	var cancelRequestedAt *time.Time
+	var attempt int32
+	_ = pool.QueryRow(ctx,
+		`SELECT status, cancel_requested_at, attempt FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&status, &cancelRequestedAt, &attempt)
+	if status != "queued" {
+		t.Errorf("status = %q, want queued", status)
+	}
+	if cancelRequestedAt != nil {
+		t.Errorf("cancel_requested_at = %v, want NULL — rerun must clear stale cancel intent", cancelRequestedAt)
+	}
+	if attempt != 1 {
+		t.Errorf("attempt = %d, want 1 (bumped from 0)", attempt)
+	}
+}
+
 // TestRetireArtifactsByJobRun_ClearsPinned — pinned artifacts that
 // get retired (because the owning attempt died) must have pinned_at
 // cleared, otherwise the sweeper's pinned-skip guard would leave
@@ -1427,4 +1472,321 @@ func TestMarkAgentSeen_UpdatesLastSeenAt(t *testing.T) {
 	if !got.After(before) {
 		t.Fatalf("last_seen_at = %v, expected recent", got)
 	}
+}
+
+// TestReclaimPendingCancelsForOfflineAgent_FinalisesWhenAgentGone —
+// the reaper's path for cancels that the in-process replay couldn't
+// land. Stamps cancel_requested_at on a running job, flips its
+// agent offline + sets last_seen_at past the grace window, and
+// asserts the reaper finalises the row to status='canceled'.
+func TestReclaimPendingCancelsForOfflineAgent_FinalisesWhenAgentGone(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, runID := seedRunningAgentJob(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at = NOW() WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("stamp cancel_requested_at: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE agents SET status = 'offline', last_seen_at = NOW() - INTERVAL '10 minutes'
+		 WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("flip agent offline: %v", err)
+	}
+
+	got, err := s.ReclaimPendingCancelsForOfflineAgent(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("ReclaimPendingCancelsForOfflineAgent: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d finalised rows, want 1", len(got))
+	}
+	if got[0].JobRunID != jobID || got[0].RunID != runID || got[0].AgentID != agentID {
+		t.Errorf("result mismatch: %+v", got[0])
+	}
+
+	var status string
+	var finishedAt *time.Time
+	_ = pool.QueryRow(ctx,
+		`SELECT status, finished_at FROM job_runs WHERE id = $1`, jobID).
+		Scan(&status, &finishedAt)
+	if status != "canceled" {
+		t.Errorf("post-sweep status = %q, want canceled", status)
+	}
+	if finishedAt == nil {
+		t.Errorf("finished_at must be set after finalisation")
+	}
+}
+
+// TestReclaimPendingCancelsForOfflineAgent_SkipsOnlineAgent — when
+// the owning agent is online AND heartbeat is fresh (the replay
+// path is still expected to land the cancel on its next Connect),
+// the reaper MUST NOT finalise the row. Otherwise the reaper races
+// against an in-flight replay and double-completes the row.
+func TestReclaimPendingCancelsForOfflineAgent_SkipsOnlineAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+
+	// Stamp the cancel intent + ensure the agent is fully healthy
+	// (online status AND fresh last_seen_at). seedRunningAgentJob
+	// leaves last_seen_at NULL which the predicate treats as stale.
+	if _, err := pool.Exec(ctx,
+		`UPDATE agents SET status='online', last_seen_at=NOW() WHERE id=$1`, agentID); err != nil {
+		t.Fatalf("flip agent healthy: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at = NOW() WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	got, err := s.ReclaimPendingCancelsForOfflineAgent(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("ReclaimPendingCancelsForOfflineAgent: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d finalised rows, want 0 (agent is online — replay path owns this)", len(got))
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&status)
+	if status != "running" {
+		t.Errorf("post-sweep status = %q, want still running (reaper must not finalise an online agent's row)", status)
+	}
+}
+
+// TestReclaimPendingCancelsForOfflineAgent_FinalisesStaleHeartbeatOnline
+// — an agent that's still marked online but whose heartbeat hasn't
+// landed past the grace window is dead from the cancel-replay
+// perspective. Predicate mirrors the reaper's main path so a
+// network-partitioned agent doesn't leave a pending cancel
+// hanging forever.
+func TestReclaimPendingCancelsForOfflineAgent_FinalisesStaleHeartbeatOnline(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at = NOW() WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+	// Agent looks online but its heartbeat is 10 minutes old.
+	if _, err := pool.Exec(ctx,
+		`UPDATE agents SET status='online', last_seen_at = NOW() - INTERVAL '10 minutes'
+		 WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("flip agent online but heartbeat stale: %v", err)
+	}
+
+	got, err := s.ReclaimPendingCancelsForOfflineAgent(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("ReclaimPendingCancelsForOfflineAgent: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d finalised rows, want 1 — stale heartbeat must count as unreachable", len(got))
+	}
+
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&status)
+	if status != "canceled" {
+		t.Errorf("post-sweep status = %q, want canceled", status)
+	}
+}
+
+// TestReclaimPendingCancelsForOfflineAgent_CascadesToStageAndRun
+// — when the finalised row is the last unfinished job under its
+// stage, the cascade must terminalise stage_runs.status (and the
+// run, when its last stage closes). Without the cascade the job
+// flips canceled but the parent stays running forever, blocking
+// the operator's view of "is this run done?".
+//
+// seedRunningJob lays out two stages (build/compile, test/unit)
+// with one job each. We terminalise every OTHER job + stage so
+// the cancel-finalisation of `compile` is the trigger that closes
+// its stage; the run still has the `test` stage open, so we also
+// terminalise that branch to drive the run-level cascade.
+func TestReclaimPendingCancelsForOfflineAgent_CascadesToStageAndRun(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, runID := seedRunningAgentJob(t, pool)
+
+	// Mark every sibling job as already terminal AND every sibling
+	// stage as success so the canceled job IS the trigger that
+	// closes its stage AND the run.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='success', finished_at=NOW()
+		 WHERE run_id=$1 AND id <> $2`, runID, jobID); err != nil {
+		t.Fatalf("terminalise sibling jobs: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='success', finished_at=NOW()
+		 WHERE run_id=$1
+		   AND id <> (SELECT stage_run_id FROM job_runs WHERE id=$2)`,
+		runID, jobID); err != nil {
+		t.Fatalf("terminalise sibling stages: %v", err)
+	}
+	// Promote the run + the target stage to running so the cascade's
+	// CompleteStageRun / CompleteRun predicates (which gate on
+	// non-terminal source state) actually fire.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='running' WHERE id=$1`, runID); err != nil {
+		t.Fatalf("promote run: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='running'
+		 WHERE id=(SELECT stage_run_id FROM job_runs WHERE id=$1)`, jobID); err != nil {
+		t.Fatalf("promote stage: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at=NOW() WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE agents SET status='offline', last_seen_at=NOW() - INTERVAL '10 minutes'
+		 WHERE id=$1`, agentID); err != nil {
+		t.Fatalf("flip agent offline: %v", err)
+	}
+
+	if _, err := s.ReclaimPendingCancelsForOfflineAgent(ctx, 5*time.Minute); err != nil {
+		t.Fatalf("ReclaimPendingCancelsForOfflineAgent: %v", err)
+	}
+
+	var jobStatus, stageStatus, runStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus)
+	_ = pool.QueryRow(ctx,
+		`SELECT sr.status FROM stage_runs sr JOIN job_runs jr ON jr.stage_run_id = sr.id WHERE jr.id=$1`,
+		jobID).Scan(&stageStatus)
+	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, runID).Scan(&runStatus)
+
+	if jobStatus != "canceled" {
+		t.Errorf("job status = %q, want canceled", jobStatus)
+	}
+	if stageStatus == "running" || stageStatus == "queued" {
+		t.Errorf("stage status = %q, want terminal (cascade missed)", stageStatus)
+	}
+	if runStatus == "running" || runStatus == "queued" {
+		t.Errorf("run status = %q, want terminal (cascade missed)", runStatus)
+	}
+}
+
+// TestReclaimPendingCancelsForOfflineAgent_RespectsGrace — the
+// status='offline' branch finalises immediately (the agent told us
+// it's gone); the heartbeat-stale branch waits for the grace
+// window. This test pins the heartbeat-stale branch: agent stays
+// online, heartbeat 30s old, grace 5min → skip.
+func TestReclaimPendingCancelsForOfflineAgent_RespectsGrace(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at = NOW() WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+	// Agent online, heartbeat 30s old — well inside the grace window.
+	if _, err := pool.Exec(ctx,
+		`UPDATE agents SET status='online', last_seen_at = NOW() - INTERVAL '30 seconds'
+		 WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("set fresh-online heartbeat: %v", err)
+	}
+
+	got, err := s.ReclaimPendingCancelsForOfflineAgent(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("ReclaimPendingCancelsForOfflineAgent: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d finalised rows, want 0 — heartbeat is within the grace window", len(got))
+	}
+}
+
+// TestReclaimAgentJobs_SkipsPendingCancels — the register-fence
+// reclaim MUST NOT requeue/fail-at-max a row that already has
+// cancel_requested_at stamped. Such rows belong to the Register
+// replay path (ListPendingCancelsForAgent) which honors them as
+// 'canceled' instead of dropping them back to 'queued' (where a
+// subsequent dispatch would mis-attribute the operator's intent
+// as a generic retry).
+func TestReclaimAgentJobs_SkipsPendingCancels(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, agentID, _ := seedRunningAgentJob(t, pool)
+
+	// Stamp the cancel intent BEFORE the register-fence kicks in.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at=NOW() WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	got, err := s.ReclaimAgentJobs(ctx, agentID, 3)
+	if err != nil {
+		t.Fatalf("ReclaimAgentJobs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d reclaim results, want 0 — pending cancels belong to the replay path", len(got))
+	}
+
+	// Critical: the row is STILL running with cancel_requested_at.
+	// The replay path picks it up; if the reclaim had grabbed it,
+	// the row would be queued (agent_id NULL) and the cancel intent
+	// would be invisible to ListPendingCancelsForAgent's predicate.
+	var status string
+	var cancelRequestedAt *time.Time
+	var agent *uuid.UUID
+	_ = pool.QueryRow(ctx,
+		`SELECT status, cancel_requested_at, agent_id FROM job_runs WHERE id=$1`, jobID).
+		Scan(&status, &cancelRequestedAt, &agent)
+	if status != "running" || agent == nil || cancelRequestedAt == nil {
+		t.Errorf("row drifted: status=%q agent=%v stamp=%v — want still running + agent set + stamp set",
+			status, agent, cancelRequestedAt)
+	}
+}
+
+// TestListPendingCancelsForAgent_ReturnsOnlyOwnedAndPending — the
+// agent's replay query MUST scope to rows belonging to this agent
+// AND with cancel_requested_at stamped. A canceled-but-no-stamp
+// row, or a stamp on another agent's row, must NOT leak into this
+// agent's replay set.
+func TestListPendingCancelsForAgent_ReturnsOnlyOwnedAndPending(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobMineWithStamp, agentMine, _ := seedRunningAgentJob(t, pool)
+	jobMineNoStamp, _, _ := seedRunningAgentJob(t, pool)
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET agent_id = $1 WHERE id = $2`,
+		agentMine, jobMineNoStamp); err != nil {
+		t.Fatalf("repoint second job to mine: %v", err)
+	}
+	jobOtherWithStamp, _, _ := seedRunningAgentJob(t, pool)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at = NOW() WHERE id IN ($1, $2)`,
+		jobMineWithStamp, jobOtherWithStamp); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	got, err := s.ListPendingCancelsForAgent(ctx, agentMine)
+	if err != nil {
+		t.Fatalf("ListPendingCancelsForAgent: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1; entries=%+v", len(got), got)
+	}
+	if got[0].JobRunID != jobMineWithStamp {
+		t.Errorf("returned wrong job: got %s, want %s (mine+stamped)",
+			got[0].JobRunID, jobMineWithStamp)
+	}
+	_ = jobMineNoStamp // explicitly unused in assertion; ensured to be excluded by count check.
 }

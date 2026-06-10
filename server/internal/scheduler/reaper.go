@@ -166,6 +166,34 @@ func (r *Reaper) Run(ctx context.Context) error {
 // overwrite a different-attempt assignment and the dispatch is
 // rejected as busy.
 func (r *Reaper) Sweep(ctx context.Context) {
+	// Phase 0: finalise cancels deferred to the reaper. Jobs whose
+	// operator clicked Cancel but whose Dispatch landed in the
+	// Revoke→Register race window had cancel_requested_at stamped
+	// in the DB; the agent's next Register replays them. If the
+	// agent stays offline past `staleness`, the replay never fires
+	// — we finalise the row here as 'canceled' so the UI stops
+	// showing 'canceling' indefinitely. MUST run BEFORE
+	// ReclaimStaleJobs: that path would requeue/fail-at-max the
+	// same row by its own predicate, masking the operator's
+	// cancel intent as a generic reaper requeue.
+	if cancels, err := r.store.ReclaimPendingCancelsForOfflineAgent(ctx, r.staleness); err != nil {
+		r.log.Warn("reaper: reclaim pending cancels failed", "err", err)
+	} else if len(cancels) > 0 {
+		notifySeen := make(map[uuid.UUID]struct{}, len(cancels))
+		for _, c := range cancels {
+			r.log.Info("reaper: pending cancel finalised",
+				"run_id", c.RunID, "job_run_id", c.JobRunID,
+				"agent_id", c.AgentID, "requested_at", c.CancelRequestedAt)
+			if _, dup := notifySeen[c.RunID]; !dup {
+				notifySeen[c.RunID] = struct{}{}
+				if err := r.store.NotifyRunQueued(ctx, c.RunID); err != nil {
+					r.log.Warn("reaper: pending cancel notify failed",
+						"run_id", c.RunID, "err", err)
+				}
+			}
+		}
+	}
+
 	results, err := r.store.ReclaimStaleJobs(ctx, r.maxAttempts, r.staleness)
 	if err != nil {
 		r.log.Warn("reaper: sweep failed", "err", err)

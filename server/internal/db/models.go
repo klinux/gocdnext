@@ -163,6 +163,7 @@ type JobRun struct {
 	LogsArchivedAt      pgtype.Timestamptz
 	Outputs             []byte
 	ApprovalQuorumLabel *string
+	CancelRequestedAt   pgtype.Timestamptz
 }
 
 type JobRunApproval struct {

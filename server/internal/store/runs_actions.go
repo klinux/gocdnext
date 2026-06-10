@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
@@ -79,6 +81,21 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 		return CancelRunResult{}, fmt.Errorf("store: cancel run: list running: %w", err)
 	}
 
+	// Persist the cancel INTENT on every running job belonging to
+	// this run, BEFORE the handler tries to push CancelJob frames
+	// to their owning agents' sessions. Same posture as the
+	// job-scoped CancelJobRun: if Dispatch lands in the
+	// Revoke→Register race window for any agent, the row's
+	// cancel_requested_at survives, the agent's next Register
+	// drains it via the replay path, and the reaper finalises
+	// stragglers. Without this stamp, a CancelRun with a flaky
+	// agent fleet would leave half the jobs running and the
+	// already-canceled run with cancel-pending children — exactly
+	// the inconsistency the job-scoped fix closed.
+	if _, err := s.q.StampCancelRequestedAtForRun(ctx, pgUUID(runID)); err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: stamp pending: %w", err)
+	}
+
 	// Cancel the run row first so any racing scheduler pass sees the
 	// new status before it tries to claim the next job. CancelActiveRun
 	// is a no-op if the status moved away under us between the SELECT
@@ -136,18 +153,29 @@ func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]R
 //
 //   - NeedsDispatch=true  → the row was running. The cancel will
 //     only take effect after the handler pushes a CancelJob frame
-//     down the agent's session. Dispatched carries the (job_run,
-//     agent) pair the handler dispatches to. If Dispatched is nil
-//     (running row but no agent_id yet — transient window between
-//     AssignJob committing and the session ack landing), the
-//     handler returns 503 because nothing can be signaled. If
-//     Dispatched is populated but the Dispatcher returns an error,
-//     the handler ALSO returns 503: the DB still shows running,
-//     the container is still burning, "canceled" would be a lie.
+//     down the agent's session OR the agent's next Register drains
+//     the stamped cancel_requested_at via ListPendingCancelsForAgent.
+//     Dispatched carries the (job_run, agent) pair the handler
+//     dispatches to.
+//
+//     - Dispatched populated + Dispatch SUCCESS → 202 canceling,
+//       signaled=true. Agent will report JobResult; row flips to
+//       canceled cleanly.
+//     - Dispatched populated + Dispatch FAILURE → 202 canceling,
+//       signaled=false, deferred=true. cancel_requested_at IS
+//       stamped; the replay path lands the cancel on the next
+//       Register, or the reaper finalises if the agent stays gone.
+//     - Dispatched is nil (running row but no agent_id yet —
+//       transient AssignJob→ack window) → 503 dispatch_failed.
+//       The stamp predicate requires agent_id NOT NULL so no
+//       intent was persisted; operator retries when agent_id is
+//       populated.
 //
 // Splitting "did the cancel land?" out of the result lets the
 // handler avoid the bug where a dispatch failure returned
-// HTTP 202 status="canceled" while the job kept running.
+// HTTP 202 status="canceled" while the job kept running, while
+// the deferred-stamp path keeps the cancel intent durable across
+// session recycles.
 type CancelJobRunResult struct {
 	RunID         uuid.UUID
 	JobRunID      uuid.UUID
@@ -198,11 +226,53 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 
 	switch row.Status {
 	case "running":
+		// Persist the cancel INTENT (cancel_requested_at) on the
+		// row in this same tx, BEFORE the handler tries to push
+		// the CancelJob frame down the agent's session. The
+		// intent survives even if the session is in flux when
+		// Dispatch is attempted (Revoke→Register race during a
+		// pod restart) — the agent honors it via
+		// ListPendingCancelsForAgent right after the new session
+		// comes up, or the reaper finalises it via
+		// ReclaimPendingCancelsForOfflineAgent if the agent
+		// stays gone. Idempotent on the timestamp (COALESCE in
+		// the SQL keeps the first cancel's at-time).
+		//
+		// Two skip conditions:
+		//
+		//   1. Already stamped (re-click): row.CancelRequestedAt
+		//      is Valid → no-op, the first click's at-time is
+		//      authoritative.
+		//   2. agent_id IS NULL: the AssignJob window — status is
+		//      'running' but the row hasn't yet been attributed
+		//      to an agent (race-improbable but defensible). The
+		//      stamp's predicate refuses the row; we'd interpret
+		//      that as invariant violation. Skip the stamp; the
+		//      handler sees Dispatched=nil and returns 503 with
+		//      a retry hint, the same path as before this column
+		//      existed. By the time the operator retries, AssignJob
+		//      has populated agent_id and the stamp lands cleanly.
+		alreadyRequested := row.CancelRequestedAt.Valid
+		if !alreadyRequested && row.AgentID.Valid {
+			if _, err := q.StampCancelRequestedAt(ctx, pgUUID(jobRunID)); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					// The row is running AND agent_id is set (we
+					// just checked row.AgentID.Valid) — the only
+					// way the predicate misses here is a logic
+					// bug. Surface so we notice.
+					return CancelJobRunResult{}, fmt.Errorf(
+						"store: cancel job: stamp missed under FOR UPDATE — invariant violation")
+				}
+				return CancelJobRunResult{}, fmt.Errorf("store: cancel job: stamp: %w", err)
+			}
+		}
+
 		// Agent owns the row's lifecycle until JobResult lands.
-		// We commit the (empty) tx so the SELECT FOR UPDATE lock
-		// releases. NeedsDispatch=true tells the handler the cancel
-		// has NOT yet taken effect — it depends on the gRPC frame
-		// landing.
+		// We commit the tx so the SELECT FOR UPDATE lock and the
+		// cancel_requested_at stamp both publish. NeedsDispatch=true
+		// tells the handler the cancel has NOT yet taken effect —
+		// it depends on the gRPC frame landing (best-effort) or
+		// the agent's reconnect-time honor (always-effective).
 		if err := tx.Commit(ctx); err != nil {
 			return CancelJobRunResult{}, fmt.Errorf("store: cancel job: commit (running): %w", err)
 		}
@@ -215,9 +285,12 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 		// agent_id may legitimately be NULL even with status='running'
 		// during the brief window between AssignJob committing and the
 		// agent's session ack landing. Without an agent there's no one
-		// to push CancelJob to; Dispatched stays nil and the handler
-		// returns 503 (operator retries, by then the agent's session
-		// is up or the row has progressed).
+		// to push CancelJob to AND the stamp predicate (StampCancel-
+		// RequestedAt requires agent_id NOT NULL) refused the row, so
+		// cancel_requested_at is NOT set. Dispatched stays nil; the
+		// handler returns 503 with a retry hint. Operator retries
+		// once AssignJob has populated agent_id; on retry both the
+		// stamp and Dispatch land normally.
 		if row.AgentID.Valid {
 			out.Dispatched = &RunningJobRef{
 				JobID:   jobRunID,
@@ -281,6 +354,127 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 		// success, failed, canceled, skipped → terminal
 		return CancelJobRunResult{}, ErrJobRunTerminal
 	}
+}
+
+// PendingCancel surfaces a cancel request that an agent didn't
+// observe through the gRPC stream (Dispatch failed because the
+// session was in flux between Revoke and Register, OR the agent
+// pod was restarted between cancel-request and the next Connect).
+// The agent calls ListPendingCancelsForAgent right after Register
+// and synthesises a CancelJob handler invocation for each entry.
+type PendingCancel struct {
+	JobRunID uuid.UUID
+	RunID    uuid.UUID
+}
+
+// ListPendingCancelsForAgent returns every still-running job_run
+// belonging to the agent that has cancel_requested_at stamped.
+// Called by the agent's Connect path right after the session is
+// established so a cancel that landed during a session recycle
+// is honored as if the gRPC frame had arrived. Empty result is
+// the hot path — most Register events have no pending cancels —
+// so we return a nil slice rather than allocating zero-length.
+func (s *Store) ListPendingCancelsForAgent(ctx context.Context, agentID uuid.UUID) ([]PendingCancel, error) {
+	rows, err := s.q.ListPendingCancelsForAgent(ctx, pgUUID(agentID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list pending cancels: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]PendingCancel, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, PendingCancel{
+			JobRunID: fromPgUUID(r.ID),
+			RunID:    fromPgUUID(r.RunID),
+		})
+	}
+	return out, nil
+}
+
+// FinalizedPendingCancel is what the reaper's
+// ReclaimPendingCancelsForOfflineAgent sweep flipped to canceled
+// because the owning agent went offline past the grace window
+// without acknowledging. The reaper logs each entry and fires a
+// NOTIFY so the scheduler re-evaluates dependent jobs (same
+// cascade as a normal cancel landing).
+type FinalizedPendingCancel struct {
+	JobRunID          uuid.UUID
+	RunID             uuid.UUID
+	StageRunID        uuid.UUID
+	AgentID           uuid.UUID
+	CancelRequestedAt time.Time
+}
+
+// ReclaimPendingCancelsForOfflineAgent runs in the reaper tick.
+// Sweeps every running job_run with cancel_requested_at stamped
+// whose owning agent is unreachable (status='offline' OR
+// heartbeat older than `grace`). Each row flips to
+// status='canceled' with finished_at=NOW() AND cascades into
+// stage_runs/runs so a canceled last-job-of-stage completes the
+// stage instead of leaving it stuck on 'running' forever.
+//
+// `grace` should be wide enough to accommodate normal agent pod
+// churn (rolling restart, K8s evictions on node patch) so the
+// reaper doesn't finalise rows whose agent is about to come back
+// in 30s and honor the cancel via ListPendingCancelsForAgent.
+// Default 5min upstream; operators on flakier infra can extend.
+//
+// Wraps the UPDATE + cascade in a single tx so a partial cascade
+// failure can't leave half the run with terminal job_runs and a
+// stale stage_run pointing at the run.
+func (s *Store) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, grace time.Duration) ([]FinalizedPendingCancel, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("store: reclaim pending cancels: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	rows, err := q.ReclaimPendingCancelsForOfflineAgent(ctx,
+		pgtype.Interval{Microseconds: grace.Microseconds(), Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("store: reclaim pending cancels: %w", err)
+	}
+	if len(rows) == 0 {
+		// Commit to release any locks held by the UPDATE — even
+		// the no-op SELECT path inside a tx is best closed cleanly.
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: reclaim pending cancels: commit (empty): %w", err)
+		}
+		return nil, nil
+	}
+
+	// Cascade each finalised row through stage/run completion. If
+	// this was the last unfinished job under its stage, the cascade
+	// marks the stage terminal; if also the last unfinished stage,
+	// the run terminal. Same path CompleteJob takes when an agent
+	// reports JobResult naturally.
+	out := make([]FinalizedPendingCancel, 0, len(rows))
+	for _, r := range rows {
+		comp := JobCompletion{
+			JobRunID:   fromPgUUID(r.ID),
+			RunID:      fromPgUUID(r.RunID),
+			StageRunID: fromPgUUID(r.StageRunID),
+			JobName:    r.Name,
+		}
+		if err := cascadeAfterJobCompletion(ctx, q, r.StageRunID, r.RunID, &comp); err != nil {
+			return nil, fmt.Errorf("store: reclaim pending cancels: cascade %s: %w",
+				comp.JobRunID, err)
+		}
+		out = append(out, FinalizedPendingCancel{
+			JobRunID:          comp.JobRunID,
+			RunID:             comp.RunID,
+			StageRunID:        comp.StageRunID,
+			AgentID:           fromPgUUID(r.AgentID),
+			CancelRequestedAt: r.CancelRequestedAt.Time,
+		})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: reclaim pending cancels: commit: %w", err)
+	}
+	return out, nil
 }
 
 // RerunRunInput configures a rerun. TriggeredBy lands on the new run
@@ -501,19 +695,28 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	var attempt int32
 	err = tx.QueryRow(ctx, `
 		UPDATE job_runs SET
-			status      = 'queued',
-			agent_id    = NULL,
-			started_at  = NULL,
-			finished_at = NULL,
-			exit_code   = NULL,
-			error       = NULL,
-			attempt     = attempt + 1
+			status              = 'queued',
+			agent_id            = NULL,
+			started_at          = NULL,
+			finished_at         = NULL,
+			exit_code           = NULL,
+			error               = NULL,
+			cancel_requested_at = NULL,
+			attempt             = attempt + 1
 		WHERE id = $1
 		RETURNING attempt
 	`, in.JobRunID).Scan(&attempt)
 	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reset: %w", err)
 	}
+	// cancel_requested_at = NULL: the operator's rerun-click is a
+	// fresh intent that doesn't inherit the prior attempt's
+	// (possibly deferred) cancel. Without this reset, a row that
+	// was finalised via the cancel replay/reaper path and then
+	// rerun would carry the stamp into the new attempt — and any
+	// Register the agent issues mid-rerun would re-honor the OLD
+	// cancel via ListPendingCancelsForAgent, killing the new
+	// attempt before it had a chance.
 
 	// Clear the previous attempt's logs — mirrors what
 	// ReclaimJobForRetry does for reaper-driven retries and keeps
