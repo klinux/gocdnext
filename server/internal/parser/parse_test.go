@@ -114,6 +114,124 @@ jobs:
 	}
 }
 
+// TestParse_JobOutputs_ObjectFormCarriesMaskedFlag — issue #22.
+// The schema accepts both short and object forms; the object form
+// passes the `masked: true` opt-in through to domain.Job.OutputMasks
+// so the scheduler can add the resolved value to LogMasks at
+// dispatch.
+func TestParse_JobOutputs_ObjectFormCarriesMaskedFlag(t *testing.T) {
+	const y = `
+name: release
+stages: [bump]
+materials:
+  - manual: true
+jobs:
+  bump:
+    stage: bump
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      next: NEXT                       # short form — not masked
+      release-token:
+        env: RELEASE_TOKEN              # object form — masked opt-in
+        masked: true
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	bump := findJob(t, p, "bump")
+	if got := bump.Outputs["next"]; got != "NEXT" {
+		t.Errorf("outputs[next] = %q, want NEXT", got)
+	}
+	if got := bump.Outputs["release-token"]; got != "RELEASE_TOKEN" {
+		t.Errorf("outputs[release-token] = %q, want RELEASE_TOKEN", got)
+	}
+	if bump.OutputMasks["release-token"] != true {
+		t.Errorf("output_masks[release-token] = %v, want true (object form opt-in)", bump.OutputMasks["release-token"])
+	}
+	if bump.OutputMasks["next"] {
+		t.Errorf("output_masks[next] = true, want false (short form keeps default)")
+	}
+}
+
+// TestParse_JobOutputs_ObjectFormRejectsUnknownKeys — issue #22.
+// `masked` is a security-adjacent flag; a typo (`mask:` missing
+// `e`, or `env_var:` instead of `env:`) MUST fail loud at parse
+// rather than silently landing as `masked=false`.
+//
+// The outer parser uses KnownFields(true), but that strictness
+// doesn't propagate into a Node.Decode inside an UnmarshalYAML;
+// OutputDef.UnmarshalYAML walks the mapping keys manually.
+func TestParse_JobOutputs_ObjectFormRejectsUnknownKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string // substring expected in the error
+	}{
+		{
+			name: "mask typo (missing e)",
+			yaml: `
+name: release
+stages: [bump]
+materials: [{manual: true}]
+jobs:
+  bump:
+    stage: bump
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      release-token:
+        env: RELEASE_TOKEN
+        mask: true
+`,
+			want: `unknown key "mask"`,
+		},
+		{
+			name: "env_var instead of env",
+			yaml: `
+name: release
+stages: [bump]
+materials: [{manual: true}]
+jobs:
+  bump:
+    stage: bump
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      release-token:
+        env_var: RELEASE_TOKEN
+`,
+			want: `unknown key "env_var"`,
+		},
+		{
+			name: "completely made-up key",
+			yaml: `
+name: release
+stages: [bump]
+materials: [{manual: true}]
+jobs:
+  bump:
+    stage: bump
+    uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+    outputs:
+      release-token:
+        env: RELEASE_TOKEN
+        secret: true
+`,
+			want: `unknown key "secret"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseNamed(strings.NewReader(tc.yaml), "p", "release")
+			if err == nil {
+				t.Fatalf("parse: expected error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parse: error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestParse_JobOutputs_RejectsBadShape(t *testing.T) {
 	cases := []struct {
 		name string

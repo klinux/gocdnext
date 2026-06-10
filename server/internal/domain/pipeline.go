@@ -456,6 +456,16 @@ type Job struct {
 	// upstream. Empty / nil = the job doesn't promise any outputs.
 	// See issue #10.
 	Outputs map[string]string
+	// OutputMasks lists which aliases (keys in Outputs) are
+	// opt-in masked via the object-form YAML
+	// (`alias: {env: NAME, masked: true}`). When the scheduler
+	// resolves `${{ needs.X.outputs.<masked-alias> }}` for a
+	// downstream job, the resolved value is added to LogMasks
+	// so it gets scrubbed in agent log streams. Defence-in-depth
+	// on top of the heuristic 8+-char auto-mask, and an explicit
+	// operator-visible contract for "this value IS sensitive".
+	// Empty / nil = no masking opt-ins. See issue #22.
+	OutputMasks map[string]bool
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`

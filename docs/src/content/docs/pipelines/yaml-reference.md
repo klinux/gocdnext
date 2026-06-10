@@ -538,6 +538,14 @@ jobs:
       next: NEXT       # alias: env-var name written by the plugin
       kind: KIND       # to $GOCDNEXT_OUTPUT_FILE
 
+      # Object form — opt-in log masking (issue #22, v0.15.3+).
+      # The resolved value gets added to the downstream job's
+      # LogMasks even when it's under the 8-char heuristic
+      # threshold. See "Outputs are NOT a secret channel" below.
+      release-token:
+        env: RELEASE_TOKEN
+        masked: true
+
   publish:
     stage: deploy
     needs: [bump]
@@ -583,12 +591,45 @@ sensitive small values (versions, digests, deploy URLs) and the
 substituted value WILL appear in logs of any downstream step that
 prints the env var or argv that uses it.
 
-Defence in depth: the scheduler does add every resolved output
-value of length >= 8 to the downstream job's LogMasks list, so
-the runner redacts substring matches automatically. That's a
-safety net for "operator forgot the value was a token" — not the
-recommended path. Short values (< 8 chars) skip the mask to avoid
-false-positive substring replacements across unrelated log lines.
+Defence in depth, in two layers:
+
+1. **Heuristic auto-mask (scheduler).** The scheduler adds every
+   resolved output value of length ≥ 8 to the downstream job's
+   LogMasks list automatically. That's a safety net for
+   "operator forgot the value was a token" — not the recommended
+   path. Short values (< 8 chars) skip the heuristic to avoid
+   false-positive substring replacements across unrelated log lines.
+
+2. **Opt-in mask (operator, issue #22).** The object form
+   `alias: {env: NAME, masked: true}` flags an output as
+   sensitive, bypassing the 8-char scheduler heuristic — the
+   resolved value lands in LogMasks regardless. This is the
+   right escape hatch for a 4-7 char token that the heuristic
+   would skip.
+
+   ```yaml
+   outputs:
+     release-token:
+       env: RELEASE_TOKEN
+       masked: true
+   ```
+
+   Schema is strict on the object form: a typo like `mask:`
+   (missing `e`) or `env_var:` fails parse with an "unknown key"
+   error. Accepted keys are `env` and `masked`.
+
+   **4-char floor still applies.** The agent's log replacer
+   skips masks shorter than 4 characters so common short tokens
+   ("go", "v1") aren't globally rewritten. There is no log
+   redaction at all for values under 4 chars — `secrets:` hits
+   the same runner floor when echoed, so the recommendation for
+   a short-and-sensitive value is to NOT treat it as a build
+   output at all: take it from `secrets:` directly (it stays out
+   of the outputs persistence + downstream substitution surface)
+   and avoid echoing it in any step that prints env or argv.
+   Masking applies to agent log streams only — the persisted
+   output value is propagated verbatim to downstream
+   `${{ needs.X.outputs.Y }}` substitutions.
 
 ### Substitution scope
 
@@ -618,23 +659,14 @@ the matrix keys involved. Explicit per-row selector
 follow-up. For now, fold matrix-produced values through a
 single non-matrix downstream that consolidates.
 
-### Kubernetes isolated mode (v0.11) limitation
+### Kubernetes isolated mode parity (v0.12+)
 
-When the agent runs with `agent.workspace.accessMode=ReadWriteOnce`
-(isolated workspace mode), jobs declaring `outputs:` are
-**rejected at dispatch with a clear error** — the agent doesn't
-yet support reading `$GOCDNEXT_OUTPUT_FILE` from the ephemeral
-pod filesystem via housekeeper exec. Workarounds:
-- Switch the agent to `accessMode=ReadWriteMany` (shared
-  workspace mode); outputs work normally.
-- Drop the `outputs:` block and have downstream consume the
-  legacy `.gocdnext/*.env` files via `artifacts:` /
-  `needs_artifacts:` + `source` in a script step. The plugins
-  (`gocdnext/semver-bump`, `gocdnext/image-copy`) write both
-  paths in parallel for exactly this case.
-
-Native isolated-mode outputs are roadmap for an issue #10
-follow-up.
+Both `agent.workspace.accessMode` values (`ReadWriteMany` shared
+mode and `ReadWriteOnce` isolated mode) support `outputs:`
+identically since v0.12.0. The isolated path reads
+`$GOCDNEXT_OUTPUT_FILE` via housekeeper exec on the ephemeral
+pod; semantics, caps, and validation are unchanged. No workaround
+needed.
 
 ### Compat
 

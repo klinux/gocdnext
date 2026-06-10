@@ -6,6 +6,12 @@
 //   - Woodpecker: plugin = container + settings (PLUGIN_* env vars)
 package parser
 
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
 // File is the top-level structure of a YAML file inside `.gocdnext/`.
 // Each file defines exactly one pipeline. The folder may contain many files.
 //
@@ -163,20 +169,138 @@ type JobDef struct {
 	// it; parser rejects the combination.
 	Approval *ApprovalDef `yaml:"approval,omitempty"`
 	// Outputs declares the structured k/v pairs this job promises
-	// to produce. Map is YAML-alias → plugin env-var name read
-	// from $GOCDNEXT_OUTPUT_FILE at job end (same shape as
-	// $GITHUB_OUTPUT). Downstream jobs reference any declared
+	// to produce. Each entry maps a YAML-alias to a plugin env-var
+	// name read from $GOCDNEXT_OUTPUT_FILE at job end (same shape
+	// as $GITHUB_OUTPUT). Downstream jobs reference any declared
 	// alias via `${{ needs.<this-job>.outputs.<alias> }}` resolved
 	// at dispatch. Empty/omitted = no outputs (the common case).
 	// See issue #10.
 	//
-	// Example:
-	//   bump:
-	//     uses: ghcr.io/.../gocdnext-plugin-semver-bump@v1
-	//     outputs:
-	//       next: NEXT      # alias `next` reads NEXT from $GOCDNEXT_OUTPUT_FILE
-	//       kind: KIND
-	Outputs map[string]string `yaml:"outputs,omitempty"`
+	// Two forms accepted (UnmarshalYAML on OutputDef):
+	//
+	//   outputs:
+	//     # short form — alias: ENV_VAR (default masked: false)
+	//     next: NEXT
+	//     kind: KIND
+	//     # object form — pin masking explicitly (issue #22)
+	//     release-token:
+	//       env: RELEASE_TOKEN
+	//       masked: true        # bypass the scheduler 8-char heuristic for log scrubbing
+	//
+	// Masking semantics: outputs marked `masked: true` are added
+	// to the downstream job's LogMasks at dispatch (same path
+	// secrets take). Substitution scope is `env:` / `variables:`
+	// / plugin `with:` — raw `script:` lines are NOT substituted
+	// pre-dispatch (the shell resolves `${VAR}` at runtime from
+	// the env we ship), so the script body never carries the
+	// resolved value verbatim. Wherever the substituted value
+	// DOES land (env exported into the container, plugin
+	// settings echoed by the runner), the agent's log replacer
+	// scrubs it. Downstream resolution of
+	// `${{ needs.X.outputs.Y }}` still produces the real value;
+	// the mask is for agent log streams only. Defence-in-depth:
+	// the heuristic 8+-char auto-mask still applies for unmarked
+	// outputs.
+	//
+	// 4-char floor: the agent's log replacer (applyMasks in
+	// runner.go) skips masks shorter than 4 characters so common
+	// short tokens ("v1", "go", "id") don't get globally rewritten.
+	// `masked: true` bypasses the SCHEDULER's 8-char heuristic
+	// but inherits the agent's 4-char floor — values shorter than
+	// 4 chars are NOT scrubbed in log streams either way.
+	// `secrets:` hits the same runner floor when echoed; the
+	// honest recommendation for a short-and-sensitive value is to
+	// NOT treat it as a build output at all — take it from
+	// `secrets:` directly (stays off the outputs persistence +
+	// downstream substitution surface) and avoid echoing it in
+	// any step that prints env or argv.
+	//
+	// Scope of this release: log scrubbing only. UI rendering of
+	// masked values is out of scope — the persisted output value
+	// still propagates verbatim to downstream
+	// `${{ needs.X.outputs.Y }}` substitutions and any future
+	// outputs surface that reads job_runs.outputs directly.
+	Outputs map[string]OutputDef `yaml:"outputs,omitempty"`
+}
+
+// OutputDef is the YAML shape of a single `outputs:` entry on a
+// job. Two surface forms via the custom UnmarshalYAML:
+//
+//	# short form — same behaviour as v0.11.0
+//	next: NEXT
+//
+//	# object form — opt-in fields (currently just `masked`)
+//	release-token:
+//	  env: RELEASE_TOKEN
+//	  masked: true
+//
+// Internally normalised to the same struct; downstream code
+// (parser, scheduler, dispatch) only sees the struct form.
+type OutputDef struct {
+	// Env is the plugin env-var name written to
+	// $GOCDNEXT_OUTPUT_FILE that this alias maps to. Required.
+	Env string `yaml:"env"`
+	// Masked, when true, adds the resolved value to LogMasks at
+	// dispatch so it gets scrubbed in downstream agent log
+	// streams. The default (false) leaves the value plain — the
+	// 8+-char heuristic auto-mask still applies as a backstop.
+	// Explicit opt-in here is the operator declaring intent
+	// ("this value IS sensitive"), tightening the contract
+	// without breaking the heuristic-based defaults.
+	Masked bool `yaml:"masked,omitempty"`
+}
+
+// UnmarshalYAML accepts both the short form ("alias: NEXT") and
+// the object form ({env: NEXT, masked: true}). The short form is
+// the v0.11.0 shape; pipelines that don't need masking stay
+// unchanged. The object form is the v0.15.3+ opt-in for masking
+// (issue #22).
+//
+// Strict on object-form keys: the outer parser uses
+// yaml.Decoder.KnownFields(true) to fail loud on unknown keys,
+// but that strictness does NOT propagate into a Node.Decode call
+// inside an UnmarshalYAML. A typo like `mask: true` (missing
+// `e`) would silently land as `masked=false` — exactly the kind
+// of failure mode that should fail loud for a security-adjacent
+// flag. We walk the mapping node manually so unknown keys
+// terminate parsing instead of being dropped.
+func (o *OutputDef) UnmarshalYAML(node *yaml.Node) error {
+	// Scalar: short form. The YAML value is the env-var name.
+	if node.Kind == yaml.ScalarNode {
+		o.Env = node.Value
+		return nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("outputs entry must be a string (env-var name) or an object {env, masked} — got YAML kind %d", node.Kind)
+	}
+	// Mapping: walk key/value pairs and validate keys before
+	// decoding. node.Content alternates [key0, val0, key1, val1, ...].
+	if len(node.Content)%2 != 0 {
+		return fmt.Errorf("outputs entry mapping has odd number of nodes (malformed YAML)")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i]
+		val := node.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			return fmt.Errorf("outputs entry key at line %d is not a scalar", key.Line)
+		}
+		switch key.Value {
+		case "env":
+			if err := val.Decode(&o.Env); err != nil {
+				return fmt.Errorf("outputs entry `env` at line %d: %w", key.Line, err)
+			}
+		case "masked":
+			if err := val.Decode(&o.Masked); err != nil {
+				return fmt.Errorf("outputs entry `masked` at line %d: %w", key.Line, err)
+			}
+		default:
+			return fmt.Errorf(
+				"outputs entry has unknown key %q at line %d — accepted keys are `env` and `masked`. "+
+					"Common typos: `mask` (missing `e`) or `env_var` (use `env`)",
+				key.Value, key.Line)
+		}
+	}
+	return nil
 }
 
 // ApprovalDef is the YAML shape of a manual approval gate. Kept

@@ -533,15 +533,27 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 	}
 
 	if len(jd.Outputs) > 0 {
-		if err := validateOutputsDeclaration(name, jd.Outputs); err != nil {
+		// Flatten YAML's two-shape OutputDef into the legacy
+		// alias→env-var map for validation + downstream consumers
+		// that don't care about masking. The masking flag lives
+		// on a parallel map so adding it didn't have to ripple
+		// through every consumer of Job.Outputs.
+		flat := make(map[string]string, len(jd.Outputs))
+		var masks map[string]bool
+		for k, v := range jd.Outputs {
+			flat[k] = v.Env
+			if v.Masked {
+				if masks == nil {
+					masks = make(map[string]bool, 1)
+				}
+				masks[k] = true
+			}
+		}
+		if err := validateOutputsDeclaration(name, flat); err != nil {
 			return domain.Job{}, err
 		}
-		// Copy so a later mutation of the parsed YAML map can't
-		// reach the domain object.
-		j.Outputs = make(map[string]string, len(jd.Outputs))
-		for k, v := range jd.Outputs {
-			j.Outputs[k] = v
-		}
+		j.Outputs = flat
+		j.OutputMasks = masks
 	}
 
 	for _, na := range jd.NeedsArtifacts {
