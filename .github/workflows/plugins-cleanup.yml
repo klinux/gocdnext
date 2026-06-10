@@ -1,0 +1,202 @@
+name: Plugins Cleanup
+
+# Cleanup companion to plugins.yml (issue #20). Deletes the
+# transient `pr-N` and `pr-N-sha-*` tagged versions the `base`
+# job pushes on PR runs so the ghcr container doesn't accrete
+# one tag per closed PR forever.
+#
+# Two triggers:
+#
+#   - pull_request closed (merged OR abandoned): delete EVERY
+#     version whose tag set contains `pr-N` OR `pr-N-sha-*`.
+#     The mutable `pr-N` tag moves on each PR push, so older
+#     builds of the same PR are orphan-tagged only by their
+#     immutable `pr-N-sha-FULL` — we MUST collect both shapes
+#     or those orphans live forever.
+#
+#   - daily cron at 04:00 UTC: list every version whose tag
+#     set contains a `pr-*` shape (mutable OR immutable) AND
+#     is older than 14 days. Safety net for PRs that close
+#     without firing the hook (force-pushed close, GitHub API
+#     hiccup, etc.).
+#
+# Safety guard on EVERY delete: pre-flight check the version's
+# full tag list. If it carries any protected tag (`main`,
+# `latest`, `v...`), skip + warn. GHCR collapses multiple tags
+# onto the same digest, so a coincidentally-identical PR build
+# and main build share a version — deleting it by `pr-N` would
+# wipe the `:main` tag too.
+#
+# Scope: today only `gocdnext-plugin-jdk-base` is PR-pushed.
+# When other plugins join the JDK_BASE_CONSUMERS-style pattern,
+# add them to the IMAGES env below.
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGES: "gocdnext-plugin-jdk-base"
+
+jobs:
+  pr-close:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete pr-N tagged versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          tag_mutable="pr-${PR_NUMBER}"
+          tag_immut_prefix="pr-${PR_NUMBER}-sha-"
+
+          # Resolve owner type once (User vs Org). The container
+          # packages API has different roots for the two.
+          if gh api "/users/${OWNER}" --jq '.type' 2>/dev/null | grep -qx 'User'; then
+            api_root_fmt="/users/${OWNER}/packages/container/%s/versions"
+          else
+            api_root_fmt="/orgs/${OWNER}/packages/container/%s/versions"
+          fi
+
+          for image in $IMAGES; do
+            echo "::group::cleanup ${image} for PR #${PR_NUMBER}"
+            api_root=$(printf "$api_root_fmt" "$image")
+
+            # Walk every version and decide per-version whether
+            # to delete. We page up to 5×100 = 500 versions which
+            # covers any realistic PR backlog (jdk-base has ~265
+            # versions total, growing slowly).
+            deleted=0
+            for page in 1 2 3 4 5; do
+              # Each row: id|comma-separated-tags. Empty tag list
+              # means an untagged manifest (manifest-list children,
+              # buildcache, etc.) — we leave those alone.
+              while IFS='|' read -r vid tags_csv; do
+                [[ -z "${vid}" ]] && continue
+                [[ -z "${tags_csv}" ]] && continue
+
+                # Match: does this version carry pr-N or pr-N-sha-*?
+                matched=0
+                for t in ${tags_csv//,/ }; do
+                  if [[ "$t" == "$tag_mutable" ]] || [[ "$t" == "$tag_immut_prefix"* ]]; then
+                    matched=1
+                    break
+                  fi
+                done
+                [[ "$matched" -eq 0 ]] && continue
+
+                # Pre-flight guard: if ANY tag on this version is
+                # protected (main / latest / v* semver-shaped),
+                # SKIP. GHCR collapses identical-digest builds
+                # onto one version, so deleting by pr-N could nuke
+                # the stable channel.
+                protected=""
+                for t in ${tags_csv//,/ }; do
+                  case "$t" in
+                    main|latest|v[0-9]*)
+                      protected="$t"
+                      break
+                      ;;
+                  esac
+                done
+                if [[ -n "$protected" ]]; then
+                  echo "::warning::skipping version ${vid} (${image}): tag '${protected}' is protected; tags=${tags_csv}"
+                  continue
+                fi
+
+                echo "deleting ${image} version ${vid} (tags: ${tags_csv})"
+                if gh api -X DELETE "${api_root}/${vid}"; then
+                  deleted=$((deleted + 1))
+                else
+                  echo "::warning::failed to delete version ${vid} of ${image}"
+                fi
+              done < <(gh api "${api_root}?per_page=100&page=${page}" \
+                       --jq '.[] | "\(.id)|\((.metadata.container.tags // []) | join(","))"' \
+                       2>/dev/null || true)
+            done
+
+            echo "deleted ${deleted} pr-${PR_NUMBER}* version(s) of ${image}"
+            echo "::endgroup::"
+          done
+
+  nightly-sweep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep stale pr-* tagged versions (>14d)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # Cutoff: 14 days ago. ISO-8601 string comparison is
+          # lexical-safe for the same TZ (GitHub uses Z/UTC).
+          cutoff=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          echo "cutoff: ${cutoff}"
+
+          if gh api "/users/${OWNER}" --jq '.type' 2>/dev/null | grep -qx 'User'; then
+            api_root_fmt="/users/${OWNER}/packages/container/%s/versions"
+          else
+            api_root_fmt="/orgs/${OWNER}/packages/container/%s/versions"
+          fi
+
+          for image in $IMAGES; do
+            echo "::group::sweep ${image}"
+            api_root=$(printf "$api_root_fmt" "$image")
+
+            swept=0
+            for page in 1 2 3 4 5; do
+              while IFS='|' read -r vid updated tags_csv; do
+                [[ -z "${vid}" ]] && continue
+                [[ -z "${tags_csv}" ]] && continue
+                [[ "${updated}" > "${cutoff}" ]] && continue
+
+                # Match: any tag starting with `pr-`?
+                matched=0
+                for t in ${tags_csv//,/ }; do
+                  if [[ "$t" == pr-* ]]; then
+                    matched=1
+                    break
+                  fi
+                done
+                [[ "$matched" -eq 0 ]] && continue
+
+                # Same protected-tag guard as the pr-close path.
+                protected=""
+                for t in ${tags_csv//,/ }; do
+                  case "$t" in
+                    main|latest|v[0-9]*)
+                      protected="$t"
+                      break
+                      ;;
+                  esac
+                done
+                if [[ -n "$protected" ]]; then
+                  echo "::warning::skipping version ${vid} (${image}): tag '${protected}' is protected; tags=${tags_csv}"
+                  continue
+                fi
+
+                echo "deleting ${image} version ${vid} (updated ${updated}, tags: ${tags_csv})"
+                if gh api -X DELETE "${api_root}/${vid}"; then
+                  swept=$((swept + 1))
+                else
+                  echo "::warning::failed to delete version ${vid}"
+                fi
+              done < <(gh api "${api_root}?per_page=100&page=${page}" \
+                       --jq '.[] | "\(.id)|\(.updated_at)|\((.metadata.container.tags // []) | join(","))"' \
+                       2>/dev/null || true)
+            done
+
+            echo "swept ${swept} stale pr-* version(s) from ${image}"
+            echo "::endgroup::"
+          done

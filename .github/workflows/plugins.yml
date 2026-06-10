@@ -110,10 +110,15 @@ jobs:
     outputs:
       # The tag the consumer matrix will FROM for this run. On
       # release-tag push: the semver tag (e.g. "v0.15.0"). On main
-      # push: "main" or the short sha. Empty when this job is
-      # skipped — the matrix's `images` job uses `||` fallback to
-      # `:v1` in that case.
+      # push: "main" or the short sha. On same-repo PR: "pr-N".
+      # Empty when this job is skipped — the matrix's `images`
+      # job uses `||` fallback to `:v1` in that case.
       ref: ${{ steps.meta.outputs.version }}
+      # Whether the base image was actually pushed to ghcr. False
+      # on fork PRs (token can't write); the consumer matrix MUST
+      # ignore `ref` in that case and fall back to `:v1` instead
+      # of trying to FROM a non-existent `:pr-N` tag.
+      pushed: ${{ steps.can-push.outputs.push }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -122,7 +127,36 @@ jobs:
           # bootstrap step (issue #19). Same pin in release.yml.
           driver-opts: |
             image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+
+      - id: can-push
+        # Decide can-push BEFORE the registry login so a fork-PR
+        # token without packages:write doesn't crash the login
+        # step (which would short-circuit the whole job before
+        # the build-push fallback fired). The login step below is
+        # gated on push=true; fork PRs skip login + push, but
+        # still run the validation build via build-push with
+        # push: false.
+        #
+        # Fork detection: head.repo.full_name on a PR opened from
+        # an external fork differs from the workflow's own
+        # github.repository; same-repo PRs (push to a branch in
+        # the same repo) match. `pull_request_target` is NOT used
+        # here on purpose — it would run with write tokens against
+        # UNTRUSTED Dockerfile content, exactly the supply-chain
+        # risk #20 was not meant to introduce.
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::fork PR detected (head=${{ github.event.pull_request.head.repo.full_name }}); base build validates without push, consumers fall back to :v1"
+          fi
+
       - uses: docker/login-action@v3
+        if: steps.can-push.outputs.push == 'true'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -141,15 +175,44 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=v1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # PR-scoped immutable tag: `pr-N-sha-FULL` is unique per
+            # commit so successive PR pushes never overwrite each
+            # other's manifest. Cleanup walks ALL versions whose
+            # tags match `pr-N` OR `pr-N-sha-*` so orphaned older
+            # builds (no longer holding the moving `pr-N` tag) get
+            # collected too.
+            type=raw,value=pr-${{ github.event.pull_request.number }}-sha-${{ github.sha }},enable=${{ github.event_name == 'pull_request' }}
 
       - uses: docker/build-push-action@v6
         with:
           context: plugins/jdk-base
           file: plugins/jdk-base/Dockerfile
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          # PR-scoped push (issue #20): pushing on same-repo PRs
+          # lets the consumer matrix FROM the exact base the PR
+          # is proposing, instead of falling back to the last
+          # released `:v1`. The metadata-action tag set restricts
+          # what lands per event kind:
+          #   - tag push → semver tags (v0.15.0, v0.15, v0) + latest + v1 + sha-
+          #   - main push → main + sha-
+          #   - same-repo PR → pr-N (moves on each push) + pr-N-sha-FULL (immutable) + sha-
+          #   - fork PR → no push, validates only (see can-push step)
+          # Cleanup workflow (.github/workflows/plugins-cleanup.yml)
+          # deletes ALL pr-N* tagged versions when the PR closes;
+          # a nightly sweep collects stragglers.
+          push: ${{ steps.can-push.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # provenance + sbom only on main/tag pushes. PR-scoped
+          # builds produce ephemeral images that the cleanup
+          # workflow deletes by tag; the provenance/SBOM
+          # referrers are untagged child manifests of the same
+          # digest, so they leak past the tag-based cleanup. For
+          # release/main builds we want both for supply-chain
+          # provenance; for PR-scoped builds the throwaway nature
+          # means the noise isn't worth the residue.
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=plugin-jdk-base
           cache-to: type=gha,mode=max,scope=plugin-jdk-base
 
@@ -188,6 +251,19 @@ jobs:
             image=mirror.gcr.io/moby/buildkit:buildx-stable-1
 
       - uses: docker/login-action@v3
+        # Skip login on fork PRs — same rationale as the `base`
+        # job's `can-push` guard: a fork-PR token doesn't carry
+        # packages:write so the login step would 403 and kill
+        # the matrix entry before the build-push fallback to
+        # push: false fires. The consumer matrix already runs
+        # push: false on any PR (including same-repo), so
+        # technically same-repo PRs don't need login either —
+        # but keeping it on same-repo lets a future change that
+        # pushes consumer images on same-repo PRs land without
+        # re-touching this guard.
+        if: |
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -218,53 +294,41 @@ jobs:
 
       - id: base-ref
         # Compute the BASE_IMAGE build-arg per consumer step.
-        # Four cases, ordered by precedence — PR check MUST come
-        # first because docker/metadata-action populates
-        # `version` even on pull_request (it produces a `pr-N`
-        # tag), so the base job's ref output is non-empty even
-        # though the image was NOT pushed (push: false on PR).
-        # Without the PR-first guard, the consumer would try
-        # `FROM ghcr.io/.../jdk-base:pr-N` and get a 404 pull.
+        # Precedence after issue #20:
         #
-        #   1. PR → fall back to :v1. The base job, if it ran
-        #      for the PR, was push: false — the image isn't in
-        #      ghcr to FROM. We accept testing the consumer
-        #      against the LAST RELEASED base; a PR touching
-        #      both jdk-base and a consumer doesn't get a fully
-        #      integrated CI here. CI on main then exercises
-        #      the real combination. ACCEPTED RISK — fix would
-        #      require a PR-scoped registry push + cleanup
-        #      lifecycle; deferred.
+        #   1. base.outputs.ref is set AND base.outputs.pushed
+        #      is "true" → the base job ran THIS workflow and
+        #      its image is in ghcr. Consumer FROMs the exact
+        #      image that was just built. Covers:
+        #        - tag push (ref="v0.15.0", pushed=true)
+        #        - main push touching jdk-base (ref="main", pushed=true)
+        #        - same-repo PR touching jdk-base (ref="pr-42", pushed=true)
         #
-        #   2. base.outputs.ref is set → the base job ran THIS
-        #      workflow and pushed (push: true on main / tag).
-        #      Consumer FROMs the exact image that was just
-        #      built. Covers: tag push (ref="v0.15.0"), main
-        #      push that touches jdk-base (ref="main").
+        #   2. base ran but did NOT push (fork PR) → fall back
+        #      to :v1. The image isn't in ghcr to FROM. Same
+        #      shape as pre-#20 fork PR behaviour.
         #
-        #   3. main push that did NOT rebuild jdk-base → fall
-        #      back to :main, not :v1. Reason: if jdk-base:main
-        #      diverged from :v1 (someone pushed a base change
-        #      earlier in the day), a downstream-only push that
-        #      falls back to :v1 silently builds gradle:main
-        #      against last-week's stable base — masking
-        #      breakage that :main was supposed to surface.
-        #      :main is the right "HEAD-of-base" tracker for
-        #      the "HEAD-of-consumer" image we're producing.
+        #   3. PR that did NOT rebuild jdk-base (consumer-only
+        #      changes) → fall back to :v1. The PR isn't
+        #      proposing a base change so the stable channel is
+        #      the right anchor.
         #
-        #   4. Any other ref → :v1 (defence in depth; release
-        #      tag pushes rebuild everything so case 2 handles
-        #      them, but the explicit fallback keeps the script
-        #      safe if a future workflow change introduces
-        #      another push kind).
+        #   4. main push that did NOT rebuild jdk-base → fall
+        #      back to :main, not :v1. If jdk-base:main diverged
+        #      from :v1, a downstream-only push that falls back
+        #      to :v1 silently builds gradle:main against
+        #      last-week's stable base — masking breakage that
+        #      :main was supposed to surface.
+        #
+        #   5. Any other ref → :v1 (defence in depth).
         run: |
           set -euo pipefail
           owner="${{ github.repository_owner }}"
           base="${REGISTRY}/${owner}/gocdnext-plugin-jdk-base"
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            ref="${base}:v1"
-          elif [[ -n "${{ needs.base.outputs.ref }}" ]]; then
+          if [[ -n "${{ needs.base.outputs.ref }}" ]] && [[ "${{ needs.base.outputs.pushed }}" == "true" ]]; then
             ref="${base}:${{ needs.base.outputs.ref }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            ref="${base}:v1"
           elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             ref="${base}:main"
           else
