@@ -1012,6 +1012,12 @@ type Querier interface {
 	// an in-flight Phase 0 reaper losing a CAS race against this
 	// one, which would otherwise leave the row queued with a stale
 	// stamp and re-trigger the replay path on the next AssignJob.
+	//
+	// logs_archive_uri / logs_archived_at = NULL: the prior attempt's
+	// archive points at a GCS object holding the OLD run's logs;
+	// without clearing, the reads.go cold-archive fallback would
+	// surface those old logs in the UI for the new attempt. Mirrored
+	// from RerunJob's reset for the same reason.
 	ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error)
 	// The reaper's path for cancels that never reached an agent
 	// because the agent went offline and stayed offline past the
@@ -1189,6 +1195,14 @@ type Querier interface {
 	// next AssignJob may pick a different agent entirely; carrying
 	// the stamp forward would let ListPendingCancelsForAgent honor
 	// it against an agent that never received the cancel intent.
+	//
+	// logs_archive_uri / logs_archived_at = NULL: an AssignJob that
+	// bounced into UnassignJob almost never had time to archive logs
+	// (the archiver fires from terminal status, not the brief
+	// running window before Dispatch failed), but if a redispatch
+	// picks the same row up later, reads against the row would
+	// otherwise see a stale archive pointer. Defensive mirror of
+	// the RerunJob reset list.
 	UnassignJob(ctx context.Context, arg UnassignJobParams) (UnassignJobRow, error)
 	// Called from the gRPC heartbeat handler so the reaper can tell which agents
 	// are still alive. Tiny write per heartbeat (default cadence 30s).

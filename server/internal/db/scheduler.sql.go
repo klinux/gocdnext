@@ -435,7 +435,9 @@ UPDATE job_runs
 SET status = 'queued',
     agent_id = NULL,
     started_at = NULL,
-    cancel_requested_at = NULL
+    cancel_requested_at = NULL,
+    logs_archive_uri = NULL,
+    logs_archived_at = NULL
 WHERE id = $1
   AND status = 'running'
   AND agent_id = $2
@@ -474,6 +476,14 @@ type UnassignJobRow struct {
 // next AssignJob may pick a different agent entirely; carrying
 // the stamp forward would let ListPendingCancelsForAgent honor
 // it against an agent that never received the cancel intent.
+//
+// logs_archive_uri / logs_archived_at = NULL: an AssignJob that
+// bounced into UnassignJob almost never had time to archive logs
+// (the archiver fires from terminal status, not the brief
+// running window before Dispatch failed), but if a redispatch
+// picks the same row up later, reads against the row would
+// otherwise see a stale archive pointer. Defensive mirror of
+// the RerunJob reset list.
 func (q *Queries) UnassignJob(ctx context.Context, arg UnassignJobParams) (UnassignJobRow, error) {
 	row := q.db.QueryRow(ctx, unassignJob, arg.ID, arg.AgentID, arg.ExpectedAttempt)
 	var i UnassignJobRow

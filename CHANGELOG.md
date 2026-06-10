@@ -6,6 +6,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.15.2 — 2026-06-10
+
+Logs of a previous attempt would surface in the UI of a rerun job:
+`RerunJob`, `ReclaimJobForRetry` (reaper-driven retry) and
+`UnassignJob` (scheduler dispatch rollback) all reset rows back
+to `queued`, but none cleared `logs_archive_uri` /
+`logs_archived_at`. Once `log_lines` were deleted by the same
+reset, the read path's cold-archive fallback in
+`reads.go:GetRunDetail` consulted the stale URI and served the
+prior attempt's archived logs to the UI.
+
+### Fix
+
+- `RerunJob`, `ReclaimJobForRetry`, `UnassignJob` UPDATE lists
+  now include `logs_archive_uri = NULL` and
+  `logs_archived_at = NULL`. Mirrors the same defensive-clear
+  pattern the v0.15.1 round 3 review applied to
+  `cancel_requested_at`.
+- New test `TestRerunJob_ClearsLogArchivePointers` locks in the
+  central case (a previously-archived row reruns; reads must
+  fall back to live `log_lines` until the archiver runs again).
+- Build green across `server/...`, `agent/...`, `cli/...`,
+  `proto/...`, `plugins/slack/...`.
+
 ## v0.15.1 — 2026-06-09
 
 Cancel job/run survives Revoke→Register churn: persists the cancel

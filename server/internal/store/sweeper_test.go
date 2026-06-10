@@ -1306,6 +1306,53 @@ func TestRerunJob_RetiresArtifacts(t *testing.T) {
 	}
 }
 
+// TestRerunJob_ClearsLogArchivePointers — a previous attempt may
+// have shipped its log_lines to the artifact store and stamped
+// logs_archive_uri + logs_archived_at on the job_run. RerunJob
+// DELETEs the log_lines but unless it also clears those pointers,
+// the read path's cold-archive fallback (reads.go GetRunDetail)
+// will serve the PRIOR attempt's archived logs back to the UI —
+// the rerun shows "logs of the previous job" until the archiver
+// runs again for the new attempt and overwrites the URI.
+func TestRerunJob_ClearsLogArchivePointers(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+
+	// Simulate the prior attempt: terminal + archived.
+	archivedAt := time.Now().Add(-1 * time.Hour)
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs
+		    SET status='success', finished_at=NOW(),
+		        logs_archive_uri='gs://logs/prev-attempt.gz',
+		        logs_archived_at=$2
+		  WHERE id=$1`, jobID, archivedAt); err != nil {
+		t.Fatalf("seed archived terminal row: %v", err)
+	}
+
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{JobRunID: jobID, TriggeredBy: "user:test"}); err != nil {
+		t.Fatalf("RerunJob: %v", err)
+	}
+
+	var status string
+	var archiveURI *string
+	var archivedAtAfter *time.Time
+	_ = pool.QueryRow(ctx,
+		`SELECT status, logs_archive_uri, logs_archived_at FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&status, &archiveURI, &archivedAtAfter)
+	if status != "queued" {
+		t.Errorf("status = %q, want queued", status)
+	}
+	if archiveURI != nil {
+		t.Errorf("logs_archive_uri = %q, want NULL — rerun must clear stale archive pointer", *archiveURI)
+	}
+	if archivedAtAfter != nil {
+		t.Errorf("logs_archived_at = %v, want NULL", archivedAtAfter)
+	}
+}
+
 // TestRerunJob_ClearsCancelRequestedAt — a row that was canceled
 // (deferred path or reaper-finalised) carries cancel_requested_at
 // into its terminal state for the audit trail. When the operator
