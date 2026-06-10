@@ -715,7 +715,36 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 	}
 
 	if jd.Parallel != nil && len(jd.Parallel.Matrix) > 0 {
-		j.Matrix = flattenMatrix(jd.Parallel.Matrix)
+		// Reject empty entries (`matrix: [{}]`) BEFORE folding —
+		// an entry that's `{}` contributes nothing to the flat
+		// map and would pass `validateMatrixDimensions` (which
+		// iterates dims) silently, then expandMatrix in the
+		// store turns it into a single row with matrix_key="" —
+		// violating the "matrix-declared job never produces an
+		// empty-key row" invariant the substitution layer relies
+		// on. Reject loud at the entry level so the operator
+		// sees exactly which entry is malformed.
+		for i, e := range jd.Parallel.Matrix {
+			if len(e) == 0 {
+				return domain.Job{}, fmt.Errorf("job %q: parallel.matrix entry %d is empty; remove the entry or supply at least one dimension", name, i)
+			}
+		}
+		flat := flattenMatrix(jd.Parallel.Matrix)
+		// Defence in depth: even with non-empty entries, if every
+		// entry's dim list was empty (caught by
+		// validateMatrixDimensions below) OR the user passed
+		// `matrix: [{ }]` shapes the YAML parser unmarshalled as
+		// non-empty but produced no keys, the flattened map is
+		// empty. Either way, a declared `matrix:` MUST yield at
+		// least one dimension; otherwise the row routing gets
+		// the wrong contract.
+		if len(flat) == 0 {
+			return domain.Job{}, fmt.Errorf("job %q: parallel.matrix is declared but expands to zero dimensions; remove the matrix block or supply at least one dimension", name)
+		}
+		if err := validateMatrixDimensions(name, flat); err != nil {
+			return domain.Job{}, err
+		}
+		j.Matrix = flat
 	}
 
 	for _, r := range jd.Rules {
@@ -737,6 +766,41 @@ func flattenMatrix(entries []map[string][]string) map[string][]string {
 		}
 	}
 	return out
+}
+
+// validateMatrixDimensions enforces two parse-time invariants on a
+// flattened matrix (issue #21 review fix):
+//
+//   - every declared dimension MUST have at least one value. An
+//     empty list (`shard: []`) used to silently get dropped by the
+//     runtime matrixCombos walker, producing a row with no
+//     matrix_key — which then fell into the bare-ref path and
+//     bypassed the "matrix upstream needs a selector" contract.
+//   - within a dimension, values MUST be unique. Duplicates
+//     (`shard: [apac, apac]`) used to expand to multiple rows with
+//     the same canonical matrix_key, which the scheduler's
+//     groupNeedsOutputs then overwrote silently in the rowMap
+//     lookup. The downstream's `${{ needs.X.matrix[apac].outputs.Y }}`
+//     would resolve to whichever row was iterated last — operator-
+//     invisible non-determinism. Reject loud at parse so the
+//     pipeline doesn't apply.
+//
+// jobName is folded into the error so the operator finds the
+// offending job directly from the parser message.
+func validateMatrixDimensions(jobName string, matrix map[string][]string) error {
+	for dim, values := range matrix {
+		if len(values) == 0 {
+			return fmt.Errorf("job %q: matrix dimension %q has no values; remove the dimension or supply at least one value", jobName, dim)
+		}
+		seen := make(map[string]struct{}, len(values))
+		for _, v := range values {
+			if _, dup := seen[v]; dup {
+				return fmt.Errorf("job %q: matrix dimension %q has duplicate value %q; values within a dimension must be unique", jobName, dim, v)
+			}
+			seen[v] = struct{}{}
+		}
+	}
+	return nil
 }
 
 func defaultStr(s, fallback string) string {

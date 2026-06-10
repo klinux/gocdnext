@@ -307,7 +307,7 @@ func TestSubstituteNeedsRefs_HappyPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := substituteNeedsRefs(tc.in, needs)
+			got, err := substituteNeedsRefs(tc.in, needs, nil, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -325,7 +325,7 @@ func TestSubstituteNeedsRefs_MissingJob(t *testing.T) {
 	// link so the operator's not chasing a confusing downstream
 	// failure.
 	needs := NeedsOutputs{"bump": {"next": "v1.0.0"}}
-	_, err := substituteNeedsRefs("tag=${{ needs.unknown.outputs.foo }}", needs)
+	_, err := substituteNeedsRefs("tag=${{ needs.unknown.outputs.foo }}", needs, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing upstream job, got nil")
 	}
@@ -340,7 +340,7 @@ func TestSubstituteNeedsRefs_MissingAlias(t *testing.T) {
 	// case (operator typo'd the alias vs operator forgot the
 	// declaration vs plugin didn't write to $GOCDNEXT_OUTPUT_FILE).
 	needs := NeedsOutputs{"bump": {"next": "v1.0.0"}}
-	_, err := substituteNeedsRefs("tag=${{ needs.bump.outputs.nope }}", needs)
+	_, err := substituteNeedsRefs("tag=${{ needs.bump.outputs.nope }}", needs, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing alias, got nil")
 	}
@@ -362,7 +362,7 @@ func TestSubstituteNeedsRefs_MalformedBodyPassesThrough(t *testing.T) {
 		"${{ needs.bump.foo.next }}",
 		"${{ needs.bump }}",
 	} {
-		got, err := substituteNeedsRefs(body, needs)
+		got, err := substituteNeedsRefs(body, needs, nil, nil)
 		if err != nil {
 			t.Errorf("body %q should pass through, got error: %v", body, err)
 		}
@@ -378,7 +378,7 @@ func TestSubstituteNeedsRefs_NilNeedsErrorsOnReference(t *testing.T) {
 	// `${{ needs.X.outputs.Y }}` to the agent, which would land
 	// in a plugin setting and surface as a confusing downstream
 	// error.
-	_, err := substituteNeedsRefs("tag=${{ needs.bump.outputs.next }}", nil)
+	_, err := substituteNeedsRefs("tag=${{ needs.bump.outputs.next }}", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error with nil needs + a reference, got nil")
 	}
@@ -390,7 +390,7 @@ func TestSubstituteNeedsRefsMap_PreservesKeysAndCarriesKeyContext(t *testing.T) 
 		"TAG":    "${{ needs.bump.outputs.next }}",
 		"BRANCH": "main",
 	}
-	out, err := substituteNeedsRefsMap(in, needs)
+	out, err := substituteNeedsRefsMap(in, needs, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestSubstituteNeedsRefsMap_KeyAppearsInError(t *testing.T) {
 	in := map[string]string{
 		"IMAGE_TAG": "${{ needs.unknown.outputs.x }}",
 	}
-	_, err := substituteNeedsRefsMap(in, NeedsOutputs{})
+	_, err := substituteNeedsRefsMap(in, NeedsOutputs{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -433,5 +433,159 @@ func TestSubstituteRefs_RegexCompiledOnce(t *testing.T) {
 	b := refPattern
 	if a != b {
 		t.Errorf("refPattern reallocated between calls")
+	}
+}
+
+// =================================================================
+// Matrix selector resolution (issue #21).
+// =================================================================
+
+func TestSubstituteNeedsRefs_MatrixSelectorExplicitMultiDim(t *testing.T) {
+	// Explicit selector with both dims declared: lex-sorted
+	// canonicalization makes operator-order and storage-order
+	// match deterministically.
+	matrix := MatrixNeedsOutputs{
+		"build": {
+			"arch=amd64,os=linux": {"digest": "sha256:aaa"},
+			"arch=arm64,os=linux": {"digest": "sha256:bbb"},
+		},
+	}
+	dims := MatrixDimNames{"build": []string{"arch", "os"}}
+
+	// Selector body order doesn't matter — canonical form is
+	// lex-sorted, same as the stored keys.
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"img=${{ needs.build.matrix[os=linux,arch=amd64].outputs.digest }}", "img=sha256:aaa"},
+		{"img=${{ needs.build.matrix[arch=amd64,os=linux].outputs.digest }}", "img=sha256:aaa"},
+		{"img=${{ needs.build.matrix[arch=arm64,os=linux].outputs.digest }}", "img=sha256:bbb"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := substituteNeedsRefs(tc.in, nil, matrix, dims)
+			if err != nil {
+				t.Fatalf("substituteNeedsRefs: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSubstituteNeedsRefs_MatrixSelectorOneDimShortcut(t *testing.T) {
+	// 1-dim upstream: operator can write `matrix[apac]` instead
+	// of `matrix[shard=apac]`. canonicalMatrixKey expands using
+	// the single declared dim name.
+	matrix := MatrixNeedsOutputs{
+		"bump": {
+			"shard=apac": {"next": "v1.0.0-apac"},
+			"shard=emea": {"next": "v1.0.0-emea"},
+		},
+	}
+	dims := MatrixDimNames{"bump": []string{"shard"}}
+
+	got, err := substituteNeedsRefs("tag=${{ needs.bump.matrix[apac].outputs.next }}", nil, matrix, dims)
+	if err != nil {
+		t.Fatalf("substituteNeedsRefs: %v", err)
+	}
+	if got != "tag=v1.0.0-apac" {
+		t.Errorf("got %q, want tag=v1.0.0-apac", got)
+	}
+}
+
+func TestSubstituteNeedsRefs_MatrixBareRefErrorsLoud(t *testing.T) {
+	// Bare ref against a matrix-expanded upstream is an
+	// operator error — the scheduler can't pick "the right one".
+	// Error message must say so and point at the selector form.
+	matrix := MatrixNeedsOutputs{
+		"bump": {"shard=apac": {"next": "x"}, "shard=emea": {"next": "y"}},
+	}
+	dims := MatrixDimNames{"bump": []string{"shard"}}
+
+	_, err := substituteNeedsRefs("tag=${{ needs.bump.outputs.next }}", nil, matrix, dims)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"matrix", "selector", "needs.bump.outputs.next"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestSubstituteNeedsRefs_MatrixSelectorOnPlainErrors(t *testing.T) {
+	// The inverse: selector against a non-matrix upstream is
+	// also a typo. Tell the operator to drop the selector.
+	needs := NeedsOutputs{"bump": {"next": "v1.0.0"}}
+
+	_, err := substituteNeedsRefs("tag=${{ needs.bump.matrix[apac].outputs.next }}", needs, nil, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"NOT a matrix", "drop the matrix"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestSubstituteNeedsRefs_MatrixSelectorUnknownKey(t *testing.T) {
+	// A selector that doesn't match any row — surfaces with the
+	// available canonical keys for the operator's debugging.
+	matrix := MatrixNeedsOutputs{
+		"bump": {"shard=apac": {"next": "x"}, "shard=emea": {"next": "y"}},
+	}
+	dims := MatrixDimNames{"bump": []string{"shard"}}
+
+	_, err := substituteNeedsRefs("tag=${{ needs.bump.matrix[us].outputs.next }}", nil, matrix, dims)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"shard=us", "available"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestSubstituteNeedsRefs_MatrixSelectorOneDimShortcutAgainstMultiDimErrors(t *testing.T) {
+	// 1-dim shortcut against a multi-dim upstream is ambiguous —
+	// refuse and tell the operator to use the explicit form.
+	matrix := MatrixNeedsOutputs{
+		"build": {"arch=amd64,os=linux": {"digest": "x"}},
+	}
+	dims := MatrixDimNames{"build": []string{"arch", "os"}}
+
+	_, err := substituteNeedsRefs("tag=${{ needs.build.matrix[linux].outputs.digest }}", nil, matrix, dims)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"1-dim shortcut", "matrix dimensions"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestSubstituteNeedsRefs_MatrixSelectorUnknownDim(t *testing.T) {
+	// Explicit k=v with k NOT in the upstream's declared
+	// strategy.matrix — typo, refuse loud with the declared
+	// dimensions cited.
+	matrix := MatrixNeedsOutputs{
+		"bump": {"shard=apac": {"next": "x"}},
+	}
+	dims := MatrixDimNames{"bump": []string{"shard"}}
+
+	_, err := substituteNeedsRefs("tag=${{ needs.bump.matrix[region=us].outputs.next }}", nil, matrix, dims)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"region", "not declared", "shard"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
 	}
 }

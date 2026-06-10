@@ -415,7 +415,7 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 		"GH_TOKEN":          "ghp_abc123",
 		"REGISTRY_PASSWORD": "reg-pw-xyz",
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestBuildAssignment_MasksOptInOutputsBypassesEightCharHeuristic(t *testing.
 			"pub":    "public", // 6 chars: < heuristic; no opt-in → heuristic skips
 		},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestBuildAssignment_MergesProfileEnvAndMasks(t *testing.T) {
 	}
 	profileMasks := []string{"AKIA"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{Env: profileEnv, SecretValues: profileMasks}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{Env: profileEnv, SecretValues: profileMasks}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestBuildAssignment_PropagatesProfileNodeSelectorAndTolerations(t *testing.
 		},
 	}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, resolved, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, resolved, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestBuildAssignment_EmptyProfileLeavesSchedulingFieldsNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "b"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestBuildAssignment_PropagatesProfileAndResources(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -703,7 +703,7 @@ func TestBuildAssignment_NoResourcesLeavesProtoNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, store.ResolvedProfile{}, nil, nil); err == nil {
+	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, store.ResolvedProfile{}, nil, nil, nil); err == nil {
 		t.Fatalf("expected error when declared secret is unresolved")
 	}
 }
@@ -779,7 +779,7 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -837,7 +837,7 @@ func TestBuildAssignment_DedupesArtifactPathsCanonical(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
 		"DOCKER_PASSWORD": "hunter2",
 	}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -955,7 +955,7 @@ func TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch(t *testing.T) {
 	job := store.DispatchableJob{ID: uuid.New(), Name: "buildx"}
 
 	_, err := scheduler.BuildAssignment(run, job, nil,
-		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, store.ResolvedProfile{}, nil, nil)
+		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unresolved ref")
 	}
@@ -1095,12 +1095,178 @@ func TestE2E_OutputsRoundTripFromBumpToPublish(t *testing.T) {
 	}
 }
 
+// TestE2E_MatrixSelectorResolvesPerRow — issue #21 review fix.
+// Travels the full path: ApplyProject of a pipeline with a matrix
+// upstream + downstream selector → CreateRunFromModification
+// expands the matrix into 2 job_runs with distinct matrix_keys →
+// DispatchRun ships both → CompleteJob per row writes the
+// per-row outputs into JSONB → second-tick dispatch of the
+// downstream pulls matrix outputs via ListJobOutputsForRun →
+// groupNeedsOutputs routes into MatrixNeedsOutputs →
+// BuildAssignment builds MatrixDimNames from def.Jobs and
+// substituteNeedsRefsMap canonicalizes the selector body
+// against it. Asserts the downstream's resolved env carries the
+// EXACT per-row value the matrix selector pointed at.
+//
+// Scope of this E2E: the 1-dim shortcut happy path through the
+// real DB-backed pipeline. The other selector shapes
+// (multi-dim, lex-sort canonicalization both ways, unknown
+// key, selector-on-plain, bare-on-matrix, dim typo) are
+// covered by the unit-level TestSubstituteNeedsRefs_Matrix*
+// tests in refs_test.go — those exercise the same lookup
+// without paying the DB cost.
+func TestE2E_MatrixSelectorResolvesPerRow(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	fp := domain.GitFingerprint("https://github.com/org/e2e-matrix-sel", "main")
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "e2e-matrix-sel", Name: "E2E Matrix Selector",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "release",
+			Stages: []string{"bump", "publish"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/e2e-matrix-sel", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{
+					Name: "bump", Stage: "bump", Image: "alpine:3.20",
+					Tasks:   []domain.Task{{Script: "echo NEXT=v1.2.3 > $GOCDNEXT_OUTPUT_FILE"}},
+					Outputs: map[string]string{"next": "NEXT"},
+					// 1-dim matrix → exercises the 1-dim shortcut
+					// at downstream substitution.
+					Matrix: map[string][]string{"shard": {"apac", "emea"}},
+				},
+				{
+					Name: "publish-apac", Stage: "publish", Image: "alpine:3.20",
+					Needs: []string{"bump"},
+					Variables: map[string]string{
+						"IMAGE_TAG": "${{ needs.bump.matrix[apac].outputs.next }}",
+					},
+					Tasks: []domain.Task{{Script: "echo $IMAGE_TAG"}},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	pipelineID := applyRes.Pipelines[0].PipelineID
+
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("mat lookup: %v", err)
+	}
+	runRes, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID,
+		Revision: "abc0123456789abc0123456789abc0123456789a", Branch: "main",
+		Provider: "github", Delivery: "test-matrix-sel", TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	runID := runRes.RunID
+
+	// Dispatch tick 1: both bump rows are dispatchable.
+	// Capacity 2 so both ride on the same agent.
+	agentID := seedAgentRow(t, pool, "e2e-agent-matrix-sel")
+	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	sched.DispatchRun(ctx, runID)
+
+	type bumpRow struct {
+		jobID     uuid.UUID
+		matrixKey string
+	}
+	var rows []bumpRow
+	for i := 0; i < 2; i++ {
+		select {
+		case msg := <-sess.Out():
+			assign := msg.GetAssign()
+			if assign == nil || assign.GetName() != "bump" {
+				t.Fatalf("dispatch %d = %+v, want bump", i, msg)
+			}
+			// matrix_key is exposed to the agent via the
+			// GOCDNEXT_MATRIX env (see assignment.go); use that
+			// to identify which row this assignment is for.
+			rows = append(rows, bumpRow{
+				jobID:     uuid.MustParse(assign.GetJobId()),
+				matrixKey: assign.GetEnv()["GOCDNEXT_MATRIX"],
+			})
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no bump assignment %d delivered", i)
+		}
+	}
+
+	// Complete each row with its shard-specific NEXT value.
+	// Decrement the session's running counter for each one — in
+	// production the gRPC handler does this when JobResult lands;
+	// in the test we drive CompleteJob directly so we have to mirror
+	// that side-effect or FindIdleWithTags will keep returning
+	// "no idle slot" and the next dispatch tick won't pick up
+	// publish-apac.
+	for _, r := range rows {
+		var shardVal string
+		switch r.matrixKey {
+		case "shard=apac":
+			shardVal = "v1.2.3-apac"
+		case "shard=emea":
+			shardVal = "v1.2.3-emea"
+		default:
+			t.Fatalf("unexpected matrix_key %q", r.matrixKey)
+		}
+		if _, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+			JobRunID:        r.jobID,
+			Status:          "success",
+			ExitCode:        0,
+			ExpectedAgentID: agentID,
+			ExpectedAttempt: 0,
+			Outputs:         map[string]string{"next": shardVal},
+		}); err != nil || !ok {
+			t.Fatalf("complete bump (%s): ok=%v err=%v", r.matrixKey, ok, err)
+		}
+		sess.DecRunning()
+	}
+
+	// Dispatch tick 2: publish-apac should now be dispatchable
+	// with IMAGE_TAG resolved to the APAC row's value. Retry a
+	// few ticks because the scheduler's needsSatisfied gate may
+	// take a tick to re-evaluate after the parent matrix
+	// completes.
+	for i := 0; i < 5; i++ {
+		sched.DispatchRun(ctx, runID)
+		select {
+		case msg := <-sess.Out():
+			assign := msg.GetAssign()
+			if assign == nil || assign.GetName() != "publish-apac" {
+				t.Fatalf("second-tick dispatch = %+v, want publish-apac", msg)
+			}
+			got := assign.GetEnv()["IMAGE_TAG"]
+			if got != "v1.2.3-apac" {
+				t.Errorf("publish-apac.env[IMAGE_TAG] = %q, want v1.2.3-apac — matrix selector resolution broken", got)
+			}
+			return
+		case <-time.After(500 * time.Millisecond):
+			// not delivered yet — tick again
+		}
+	}
+	var pubStatus, pubErr string
+	_ = pool.QueryRow(ctx,
+		`SELECT status, COALESCE(error, '') FROM job_runs WHERE run_id = $1 AND name = 'publish-apac'`,
+		runID).Scan(&pubStatus, &pubErr)
+	t.Fatalf("publish-apac not dispatched after 5 ticks (current status=%q error=%q)",
+		pubStatus, pubErr)
+}
+
 func TestGroupNeedsOutputs_SingleRowFolds(t *testing.T) {
 	// Non-matrix upstream → single row, matrix_key="", fold trivially.
 	rows := []store.JobOutputs{
 		{Name: "bump", MatrixKey: "", Status: "success", Outputs: map[string]string{"next": "v1.0.0"}},
 	}
-	got, err := scheduler.GroupNeedsOutputs(rows)
+	got, _, err := scheduler.GroupNeedsOutputs(rows)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1118,7 +1284,7 @@ func TestGroupNeedsOutputs_NonSuccessRowsAreDropped(t *testing.T) {
 	rows := []store.JobOutputs{
 		{Name: "bump", MatrixKey: "", Status: "failed", Outputs: map[string]string{"next": "v1.0.0"}},
 	}
-	got, err := scheduler.GroupNeedsOutputs(rows)
+	got, _, err := scheduler.GroupNeedsOutputs(rows)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1127,45 +1293,78 @@ func TestGroupNeedsOutputs_NonSuccessRowsAreDropped(t *testing.T) {
 	}
 }
 
-func TestGroupNeedsOutputs_MatrixAmbiguityRejected(t *testing.T) {
-	// Kleber's #6 invariant: > 1 row sharing a name = ambiguous
-	// matrix; refuse with LOUD error listing the matrix keys.
+func TestGroupNeedsOutputs_MatrixRowsLandInMatrixTable(t *testing.T) {
+	// Issue #21: matrix-expanded upstreams populate
+	// MatrixNeedsOutputs (keyed by canonical k=v form) instead
+	// of erroring out. The bare NeedsOutputs table stays empty
+	// for those upstreams — bare-ref against a matrix upstream
+	// is the substitution layer's error (covered by
+	// substituteNeedsRefs tests), not this layer's.
 	rows := []store.JobOutputs{
-		{Name: "build", MatrixKey: "linux-amd64", Status: "success", Outputs: map[string]string{"digest": "sha256:aaa"}},
-		{Name: "build", MatrixKey: "linux-arm64", Status: "success", Outputs: map[string]string{"digest": "sha256:bbb"}},
+		{Name: "build", MatrixKey: "os=linux,arch=amd64", Status: "success", Outputs: map[string]string{"digest": "sha256:aaa"}},
+		{Name: "build", MatrixKey: "arch=arm64,os=linux", Status: "success", Outputs: map[string]string{"digest": "sha256:bbb"}},
 	}
-	_, err := scheduler.GroupNeedsOutputs(rows)
+	plain, matrix, err := scheduler.GroupNeedsOutputs(rows)
+	if err != nil {
+		t.Fatalf("groupNeedsOutputs: %v", err)
+	}
+	if _, ok := plain["build"]; ok {
+		t.Errorf("matrix-expanded upstream leaked into NeedsOutputs; got %v", plain)
+	}
+	got, ok := matrix["build"]
+	if !ok {
+		t.Fatalf("expected matrix entry for build, got %v", matrix)
+	}
+	if got["arch=amd64,os=linux"]["digest"] != "sha256:aaa" {
+		t.Errorf("amd64 row missing or wrong: %v", got)
+	}
+	if got["arch=arm64,os=linux"]["digest"] != "sha256:bbb" {
+		t.Errorf("arm64 row missing or wrong: %v", got)
+	}
+}
+
+// TestGroupNeedsOutputs_DuplicateCanonicalKeyRejected — defence
+// in depth (issue #21 review fix). The parser rejects duplicate
+// matrix values at apply time, so the only way for two rows to
+// collide on the lex-sorted canonical k=v form is data
+// corruption / a future regression. If it happens anyway, refuse
+// loud rather than silently overwriting the prior row and
+// leaking operator-invisible non-determinism into the
+// downstream's selector resolution.
+func TestGroupNeedsOutputs_DuplicateCanonicalKeyRejected(t *testing.T) {
+	rows := []store.JobOutputs{
+		// Two rows that canonicalize to the same key
+		// "arch=amd64,os=linux" — should never happen post-parser,
+		// but the guard catches it just in case.
+		{Name: "build", MatrixKey: "os=linux,arch=amd64", Status: "success", Outputs: map[string]string{"digest": "aaa"}},
+		{Name: "build", MatrixKey: "arch=amd64,os=linux", Status: "success", Outputs: map[string]string{"digest": "bbb"}},
+	}
+	_, _, err := scheduler.GroupNeedsOutputs(rows)
 	if err == nil {
-		t.Fatal("expected matrix-ambiguity rejection")
+		t.Fatal("expected duplicate-canonical-key rejection")
 	}
-	// UX: message must cite the upstream name AND every matrix key
-	// so the operator immediately sees which instances exist.
-	for _, want := range []string{"build", "linux-amd64", "linux-arm64", "ambiguous"} {
+	for _, want := range []string{"build", "duplicate canonical", "arch=amd64,os=linux"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should contain %q, got: %v", want, err)
 		}
 	}
-	// Roadmap hint should be there for the operator's next step.
-	if !strings.Contains(err.Error(), "explicit per-row selector") {
-		t.Errorf("error should mention the roadmap selector form, got: %v", err)
-	}
 }
 
-func TestGroupNeedsOutputs_EmptyMatrixKeyMappedToPlaceholder(t *testing.T) {
-	// Edge case: two non-matrix rows of the same name (data
-	// corruption or a buggy migration). Mode keys would both be
-	// ""; we render them as "<empty>" in the message so the
-	// operator can spot the duplicate clearly.
+func TestGroupNeedsOutputs_MalformedMatrixKeyRejected(t *testing.T) {
+	// A row whose matrix_key isn't k=v[,k=v…] is a data shape
+	// the parser never emits — but defence in depth: refuse loud
+	// with the offending value cited.
 	rows := []store.JobOutputs{
-		{Name: "dup", MatrixKey: "", Status: "success"},
-		{Name: "dup", MatrixKey: "", Status: "success"},
+		{Name: "build", MatrixKey: "linux-amd64", Status: "success"},
 	}
-	_, err := scheduler.GroupNeedsOutputs(rows)
+	_, _, err := scheduler.GroupNeedsOutputs(rows)
 	if err == nil {
-		t.Fatal("expected duplicate-row rejection")
+		t.Fatal("expected malformed-matrix-key rejection")
 	}
-	if !strings.Contains(err.Error(), "<empty>") {
-		t.Errorf("error should render empty matrix-key as <empty>, got: %v", err)
+	for _, want := range []string{"build", "linux-amd64", "malformed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
 	}
 }
 
@@ -1192,7 +1391,7 @@ func TestBuildAssignment_ResolvesNeedsOutputsInEnv(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {"next": "v1.3.0"},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1228,7 +1427,7 @@ func TestBuildAssignment_ResolvesNeedsOutputsInPluginSettings(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"promote": {"digest": "sha256:beef1234"},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1266,7 +1465,7 @@ func TestBuildAssignment_NeedsOutputValuesEnterLogMasks(t *testing.T) {
 			"short": "v1",  // < 8 chars → must NOT enter masks
 		},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1305,7 +1504,7 @@ func TestBuildAssignment_NeedsRefErrorsWrapSentinel(t *testing.T) {
 	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
 
 	needsOutputs := scheduler.NeedsOutputs{"bump": {"next": "v1.3.0"}}
-	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs)
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1337,7 +1536,7 @@ func TestBuildAssignment_MissingNeedsOutputErrors(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {"next": "v1.3.0"}, // declared `next`, NOT `missing`
 	}
-	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs)
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
 	if err == nil {
 		t.Fatal("expected error for missing alias")
 	}
@@ -1371,7 +1570,7 @@ func TestBuildAssignment_MissingUpstreamJobErrors(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {"next": "v1.0.0"},
 	}
-	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs)
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
 	if err == nil {
 		t.Fatal("expected error for missing upstream job")
 	}
@@ -1424,7 +1623,7 @@ func TestBuildAssignment_SubstitutesCIVarsAndShellRefs(t *testing.T) {
 
 	got, err := scheduler.BuildAssignment(run, job, nil,
 		map[string]string{"DOCKER_USERNAME": "deploybot"},
-		nil, store.ResolvedProfile{}, nil, nil)
+		nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1478,7 +1677,7 @@ func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
 	cloneTokens := map[string]string{materialID.String(): "ghs_fake_install_token"}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, cloneTokens, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, cloneTokens, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1516,7 +1715,7 @@ func TestBuildAssignment_NoTokenLeavesURLUntouched(t *testing.T) {
 	gitCfg, _ := json.Marshal(domain.GitMaterial{URL: "https://github.com/octocat/hello-world", Branch: "main"})
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1554,7 +1753,7 @@ func TestBuildAssignment_PropagatesPipelineServices(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "integration", Image: "golang:1.25"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1586,7 +1785,7 @@ func TestBuildAssignment_NoServicesWhenPipelineHasNone(t *testing.T) {
 		Revisions: json.RawMessage(`{}`),
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "compile"}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
