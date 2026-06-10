@@ -6,6 +6,80 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.15.1 — 2026-06-09
+
+Cancel job/run survives Revoke→Register churn: persists the cancel
+intent in the DB so it lands via Register-replay or reaper-
+finalisation even when the gRPC dispatch hits an empty
+`latestByAg` window. Closes the operator-visible bug where
+clicking Cancel on a running job returned `503 could not deliver
+cancel to the agent: grpcsrv: no active session for agent` while
+both agents showed `online` in the dashboard.
+
+### What changed
+
+- New column `job_runs.cancel_requested_at TIMESTAMPTZ` + partial
+  index pinned to (agent_id, status='running', cancel_requested_at
+  NOT NULL). Migration 00043, forward-only.
+- `CancelJobRun` and `CancelRun` stamp `cancel_requested_at` in
+  the same tx that returns the dispatch target. The stamp survives
+  even if the subsequent gRPC dispatch fails because of a session
+  recycle (Revoke→Register race during a pod restart).
+- New `Register` handler step (`agent_service.Register`): after
+  `CreateSession`, the server queries `ListPendingCancelsForAgent`
+  and enqueues a `CancelJob` frame onto `sess.out` for each
+  pending row. The agent's brand-new Connect stream drains the
+  cancels as if they had arrived through the normal handler path.
+  Zero proto change; the existing `CancelJob` semantics serve both
+  paths.
+- New reaper Phase 0 (`ReclaimPendingCancelsForOfflineAgent`)
+  runs before the existing `ReclaimStaleJobs`. Finalises pending
+  cancels as `canceled` (with cascade into stage/run completion)
+  when the owning agent is offline OR `last_seen_at` is past the
+  grace window OR `last_seen_at` is NULL — the same liveness
+  signal the reaper main path uses.
+- Handler contract change: a Dispatch failure for a running job
+  now returns `202 status="canceling" signaled=false` instead of
+  `503 dispatch_failed`. The intent is persisted, the operator's
+  click is not wasted, and `canceling` is the honest intermediate
+  state until the agent or reaper finalises. The
+  no-agent-yet edge stays at `503` (intent can't be persisted
+  without an agent_id).
+- Audit entries gain a `deferred` field alongside `signaled` so
+  forensic queries can tell "landed via gRPC this turn" from
+  "deferred to replay/reaper". The two fields are kept in sync
+  with the response envelope so the audit trail matches what the
+  operator saw.
+
+### Defenses against state drift
+
+- `ListRunningJobsForAgent` (used by the register-fence reclaim)
+  now excludes rows with `cancel_requested_at IS NOT NULL` — those
+  belong to the replay path, not the requeue path. Without the
+  guard, a register-fence would drop the cancel intent back to
+  `queued` (agent_id NULL) and the cancel would be invisible to
+  every subsequent path.
+- `RerunJob`, `UnassignJob` and `ReclaimJobForRetry` all clear
+  `cancel_requested_at = NULL` when they reset a row to `queued`.
+  A rerun-click on a previously-canceled row produces a fresh
+  attempt the next Register can't mistake for the prior cancel.
+
+### Tests
+
+- `TestCancelJob_DispatchFailureDefersToReplayPath` — the rewrite
+  of the 503 test; asserts 202 canceling + `cancel_requested_at`
+  stamped.
+- `TestReclaimPendingCancelsForOfflineAgent_FinalisesWhenAgentGone`
+  / `_SkipsOnlineAgent` / `_RespectsGrace` /
+  `_FinalisesStaleHeartbeatOnline` / `_CascadesToStageAndRun` —
+  Phase 0 sweep paths.
+- `TestListPendingCancelsForAgent_ReturnsOnlyOwnedAndPending` —
+  the replay query is scoped to one agent.
+- `TestReclaimAgentJobs_SkipsPendingCancels` — register-fence
+  doesn't steal cancels from the replay path.
+- `TestRerunJob_ClearsCancelRequestedAt` — rerun produces a fresh
+  attempt without inheriting the prior cancel intent.
+
 ## v0.15.0 — 2026-06-09
 
 JVM plugin family converges on a single image per tool with

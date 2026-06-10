@@ -115,22 +115,38 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 
 // respondCancelJob translates a CancelJobRunResult into the right
 // HTTP envelope. The hard rule: never tell the client status=canceled
-// when the cancel hasn't actually taken effect.
+// when the cancel hasn't actually taken effect — `canceling` is the
+// honest intermediate state until the agent's JobResult finalises
+// the row.
 //
 //   - queued path (NeedsDispatch=false) → 202, status=canceled,
-//     signaled=false. Cancel has landed in the DB.
-//   - running path with successful dispatch → 202, status=canceled,
-//     signaled=true. Container will stop on its own clock; the agent's
-//     JobResult finalises the row.
-//   - running path with failed dispatch OR no agent_id yet → 503,
-//     status=dispatch_failed. The job is still running; the operator
-//     should retry. We DO emit an audit event so the attempt is
-//     recorded, with signaled=false so the trail is honest.
+//     signaled=false. Cancel has landed in the DB; row is already
+//     terminal because the agent never started the work.
+//   - running path with successful dispatch → 202, status=canceling,
+//     signaled=true. Container will stop on its own clock; the
+//     agent's JobResult finalises the row to status=canceled.
+//   - running path with failed dispatch → 202, status=canceling,
+//     signaled=false. cancel_requested_at IS stamped in the DB by
+//     CancelJobRun's tx, so the agent's next Register replays it
+//     via the pending-cancel path in agent_service.Register; if
+//     the agent stays offline, the reaper finalises via
+//     ReclaimPendingCancelsForOfflineAgent.
+//   - running path with no agent_id yet → 503 with retry hint.
+//     This is the AssignJob window (status='running' but agent_id
+//     transiently NULL); the cancel_requested_at predicate didn't
+//     stamp because there's nothing to attribute it to yet.
+//     Operator retries; AssignJob's atomic UPDATE will have
+//     populated agent_id by then.
 func (h *Handler) respondCancelJob(
 	w http.ResponseWriter, r *http.Request, jobRunID uuid.UUID, res store.CancelJobRunResult,
 ) {
 	if !res.NeedsDispatch {
-		h.emitCancelAudit(r, jobRunID, res, true /*signaled*/)
+		// Queued path: the cancel landed in the DB transactionally,
+		// no gRPC frame was sent (and none was needed — the job
+		// never reached an agent). Audit signaled=false matches
+		// the response, and deferred=false because there's nothing
+		// to replay later — this row is already terminal.
+		h.emitCancelAudit(r, jobRunID, res, false /*signaled*/, false /*deferred*/)
 		writeCancelAccepted(w, jobRunID, res, false /*signaled*/, "canceled")
 		return
 	}
@@ -140,12 +156,15 @@ func (h *Handler) respondCancelJob(
 	// after we successfully push CancelJob down the session.
 	if res.Dispatched == nil {
 		// Transient: row is running but the agent's session ack
-		// hasn't landed yet. Nothing to push to. Tell the operator
-		// to retry; the reaper will eventually reclaim if the
-		// session never comes up.
+		// hasn't landed yet — cancel_requested_at was NOT stamped
+		// (the stamp predicate requires agent_id NOT NULL), so
+		// there's nothing to replay either. Tell the operator to
+		// retry once AssignJob has populated agent_id; the reaper
+		// won't reclaim a row without cancel_requested_at via the
+		// pending-cancel path.
 		h.log.Warn("cancel job: running row has no agent_id (session not yet acked)",
 			"run_id", res.RunID, "job_run_id", jobRunID)
-		h.emitCancelAudit(r, jobRunID, res, false)
+		h.emitCancelAudit(r, jobRunID, res, false /*signaled*/, false /*deferred*/)
 		writeCancelDispatchFailed(w, jobRunID, res,
 			"agent session not yet established; retry in a moment")
 		return
@@ -154,7 +173,7 @@ func (h *Handler) respondCancelJob(
 	if h.dispatcher == nil {
 		h.log.Warn("cancel job: no gRPC dispatcher wired; container keeps running",
 			"run_id", res.RunID, "job_run_id", jobRunID)
-		h.emitCancelAudit(r, jobRunID, res, false)
+		h.emitCancelAudit(r, jobRunID, res, false /*signaled*/, false /*deferred*/)
 		writeCancelDispatchFailed(w, jobRunID, res,
 			"server has no cancel dispatcher wired")
 		return
@@ -170,25 +189,48 @@ func (h *Handler) respondCancelJob(
 		},
 	}
 	if err := h.dispatcher.Dispatch(res.Dispatched.AgentID, msg); err != nil {
-		// Dispatch failed: agent disconnected, busy queue, network
-		// glitch. The DB still shows running; the container is still
-		// burning. Telling the client status=canceled here would be
-		// a lie — return 503 so the UI can show "retry" and the
-		// audit trail records the unsuccessful attempt.
-		h.log.Warn("cancel job: dispatch failed",
+		// Dispatch failed: agent's session is in flux right now
+		// (Revoke→Register race during a pod restart, momentary
+		// network glitch, busy queue). The DB still shows running,
+		// the container is still burning — BUT cancel_requested_at
+		// is already stamped by CancelJobRun's tx. The new session,
+		// when it lands, drains the pending cancel via the replay
+		// path in agent_service.Register. If the agent never comes
+		// back, the reaper finalises the row.
+		//
+		// Honesty contract (closes the v0.14 honesty windows even
+		// further): respond 202 status="canceling" not 503. The
+		// cancel intent IS persisted; the operator's click was not
+		// in vain. signaled=false reflects "agent has not yet acked"
+		// — same nuance as the queued path. Audit records the dispatch
+		// attempt with deferred=true so the trail distinguishes
+		// "landed through gRPC" from "landed via DB → replay path".
+		h.log.Warn("cancel job: dispatch failed, deferred to replay path",
 			"run_id", res.RunID, "job_run_id", jobRunID,
 			"agent_id", res.Dispatched.AgentID, "err", err)
-		h.emitCancelAudit(r, jobRunID, res, false)
-		writeCancelDispatchFailed(w, jobRunID, res,
-			"could not deliver cancel to the agent: "+err.Error())
+		h.emitCancelAudit(r, jobRunID, res, false /*signaled*/, true /*deferred*/)
+		writeCancelAccepted(w, jobRunID, res, false, "canceling")
 		return
 	}
-	h.emitCancelAudit(r, jobRunID, res, true)
-	writeCancelAccepted(w, jobRunID, res, true, "canceled")
+	h.emitCancelAudit(r, jobRunID, res, true /*signaled*/, false /*deferred*/)
+	writeCancelAccepted(w, jobRunID, res, true, "canceling")
 }
 
+// emitCancelAudit records the cancel attempt in the audit log
+// with the same semantics the response uses for `signaled`:
+//   - signaled=true  → CancelJob frame landed on the agent's
+//     gRPC stream this turn.
+//   - signaled=false → frame didn't land — either no agent to
+//     dispatch to (queued path), or dispatch failed and the
+//     replay path will deliver it on the next Register, or the
+//     reaper will finalise the row. `deferred` distinguishes
+//     "no dispatch attempted (queued / no agent yet)" from
+//     "dispatch attempted and rescued to the replay path" so
+//     forensic queries on the audit table can tell the two
+//     apart without joining the response log.
 func (h *Handler) emitCancelAudit(
-	r *http.Request, jobRunID uuid.UUID, res store.CancelJobRunResult, signaled bool,
+	r *http.Request, jobRunID uuid.UUID, res store.CancelJobRunResult,
+	signaled bool, deferred bool,
 ) {
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionJobCancel, "job_run", jobRunID.String(),
@@ -196,6 +238,7 @@ func (h *Handler) emitCancelAudit(
 			"run_id":   res.RunID.String(),
 			"job_name": res.JobName,
 			"signaled": signaled,
+			"deferred": deferred,
 		})
 }
 

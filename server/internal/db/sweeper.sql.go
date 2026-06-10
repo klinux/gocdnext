@@ -110,7 +110,9 @@ func (q *Queries) GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAtte
 const listRunningJobsForAgent = `-- name: ListRunningJobsForAgent :many
 SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id
 FROM job_runs j
-WHERE j.status = 'running' AND j.agent_id = $1
+WHERE j.status = 'running'
+  AND j.agent_id = $1
+  AND j.cancel_requested_at IS NULL
 `
 
 type ListRunningJobsForAgentRow struct {
@@ -132,6 +134,17 @@ type ListRunningJobsForAgentRow struct {
 //
 // Returned columns mirror ListStaleRunningJobs so the reaper-Go
 // side can reuse the same ReclaimResult shape.
+//
+// cancel_requested_at IS NULL guard: rows with a cancel intent
+// stamped don't belong to this reclaim path — they belong to the
+// agent_service.Register replay path
+// (ListPendingCancelsForAgent), which honors the cancel as a
+// terminal 'canceled' instead of dropping it back to 'queued' as
+// a retry. Without the guard, the reclaim wins the race and the
+// operator's cancel intent becomes a generic requeue; on hits
+// past max attempts it becomes a failed (not canceled) row,
+// mis-attributing the operator's deliberate stop as a process
+// crash.
 func (q *Queries) ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListRunningJobsForAgentRow, error) {
 	rows, err := q.db.Query(ctx, listRunningJobsForAgent, agentID)
 	if err != nil {
@@ -264,7 +277,8 @@ func (q *Queries) ListStaleRunningJobs(ctx context.Context, staleness pgtype.Int
 const reclaimJobForRetry = `-- name: ReclaimJobForRetry :one
 UPDATE job_runs
 SET status = 'queued', agent_id = NULL, started_at = NULL, finished_at = NULL,
-    exit_code = NULL, error = NULL, attempt = attempt + 1
+    exit_code = NULL, error = NULL, cancel_requested_at = NULL,
+    attempt = attempt + 1
 WHERE id = $1
   AND status = 'running'
   AND attempt < $2::int
@@ -306,6 +320,14 @@ type ReclaimJobForRetryRow struct {
 //
 // ErrNoRows signals the caller should take a different code path
 // (failed-at-max, already-reclaimed, raced-out-of-window).
+// cancel_requested_at = NULL: defensive clear, mirrored from
+// RerunJob's reset list. ListRunningJobsForAgent already excludes
+// rows with cancel_requested_at IS NOT NULL from the
+// register-fence reclaim, so a stamped row should NEVER reach
+// this UPDATE — but the clear is cheap and closes the door on
+// an in-flight Phase 0 reaper losing a CAS race against this
+// one, which would otherwise leave the row queued with a stale
+// stamp and re-trigger the replay path on the next AssignJob.
 func (q *Queries) ReclaimJobForRetry(ctx context.Context, arg ReclaimJobForRetryParams) (ReclaimJobForRetryRow, error) {
 	row := q.db.QueryRow(ctx, reclaimJobForRetry,
 		arg.ID,

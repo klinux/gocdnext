@@ -367,12 +367,17 @@ func (f *failingDispatcher) Dispatch(agentID uuid.UUID, msg *gocdnextv1.ServerMe
 }
 func (*failingDispatcher) AllAgentIDs(string) []uuid.UUID { return nil }
 
-// TestCancelJob_DispatchFailureReturns503 — running cancel where
-// the gRPC dispatch errors must NOT report success. The job is
-// still burning on the agent; the operator needs to know the
-// cancel didn't take and retry. Returning 202 status="canceled"
-// here would be a lie.
-func TestCancelJob_DispatchFailureReturns503(t *testing.T) {
+// TestCancelJob_DispatchFailureDefersToReplayPath — running cancel
+// where the gRPC dispatch errors (Revoke→Register race during agent
+// pod restart, busy queue, etc.) MUST NOT report failure to the
+// operator. cancel_requested_at IS persisted in the DB by
+// CancelJobRun's tx; the agent's next Register replays the cancel
+// via ListPendingCancelsForAgent, or the reaper finalises it via
+// ReclaimPendingCancelsForOfflineAgent. Handler responds 202
+// status="canceling" signaled=false — the intent landed, just not
+// through the gRPC path. The job stays 'running' in the DB until
+// the agent or reaper finalises it.
+func TestCancelJob_DispatchFailureDefersToReplayPath(t *testing.T) {
 	h, pool := handler(t)
 	runID, _ := seedRunWithModification(t, pool)
 	jobID := firstJobIDOfRun(t, pool, runID)
@@ -393,34 +398,35 @@ func TestCancelJob_DispatchFailureReturns503(t *testing.T) {
 	h = h.WithCancelDispatcher(disp)
 
 	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
 	}
 
 	var body struct {
 		Status   string `json:"status"`
 		Signaled bool   `json:"signaled"`
-		Error    string `json:"error"`
 	}
 	_ = json.Unmarshal(rr.Body.Bytes(), &body)
-	if body.Status != "dispatch_failed" {
-		t.Errorf("status = %q, want dispatch_failed", body.Status)
+	if body.Status != "canceling" {
+		t.Errorf("status = %q, want canceling", body.Status)
 	}
 	if body.Signaled {
-		t.Errorf("signaled should be false on dispatch failure")
-	}
-	if body.Error == "" {
-		t.Errorf("error message should explain the failure")
+		t.Errorf("signaled should be false when dispatch failed (replay path will land it)")
 	}
 
-	// Critical: the DB state didn't change — job is still running.
-	// If we'd flipped it to canceled, the operator's retry would
-	// see 409 and never get the chance to actually cancel.
+	// Critical: the DB row stays 'running' (only the agent ack /
+	// reaper finalisation flips to terminal) AND cancel_requested_at
+	// IS stamped so the replay path can honor it.
 	var status string
+	var cancelRequestedAt *time.Time
 	_ = pool.QueryRow(context.Background(),
-		`SELECT status FROM job_runs WHERE id = $1`, jobID).Scan(&status)
+		`SELECT status, cancel_requested_at FROM job_runs WHERE id = $1`,
+		jobID).Scan(&status, &cancelRequestedAt)
 	if status != "running" {
-		t.Errorf("job status = %q, want still running after dispatch failure", status)
+		t.Errorf("job status = %q, want still running until agent/reaper finalises", status)
+	}
+	if cancelRequestedAt == nil {
+		t.Errorf("cancel_requested_at must be stamped so the replay path can honor it")
 	}
 }
 

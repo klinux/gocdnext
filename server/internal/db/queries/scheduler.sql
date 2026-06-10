@@ -128,8 +128,18 @@ RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, agent_id, a
 -- NOT bump attempt here. The attempt counter exists to detect
 -- crashes mid-execution; a dispatch failure that never reached the
 -- agent doesn't count as an attempt.
+-- cancel_requested_at = NULL: defensive clear in case a cancel
+-- landed in the AssignJob→DispatchAssignment window (operator
+-- raced the scheduler). The row is going back to 'queued' with
+-- agent_id NULL — there's no agent to replay against, and the
+-- next AssignJob may pick a different agent entirely; carrying
+-- the stamp forward would let ListPendingCancelsForAgent honor
+-- it against an agent that never received the cancel intent.
 UPDATE job_runs
-SET status = 'queued', agent_id = NULL, started_at = NULL
+SET status = 'queued',
+    agent_id = NULL,
+    started_at = NULL,
+    cancel_requested_at = NULL
 WHERE id = $1
   AND status = 'running'
   AND agent_id = $2
