@@ -117,9 +117,16 @@ WHERE j.status = 'running'
 -- an in-flight Phase 0 reaper losing a CAS race against this
 -- one, which would otherwise leave the row queued with a stale
 -- stamp and re-trigger the replay path on the next AssignJob.
+--
+-- logs_archive_uri / logs_archived_at = NULL: the prior attempt's
+-- archive points at a GCS object holding the OLD run's logs;
+-- without clearing, the reads.go cold-archive fallback would
+-- surface those old logs in the UI for the new attempt. Mirrored
+-- from RerunJob's reset for the same reason.
 UPDATE job_runs
 SET status = 'queued', agent_id = NULL, started_at = NULL, finished_at = NULL,
     exit_code = NULL, error = NULL, cancel_requested_at = NULL,
+    logs_archive_uri = NULL, logs_archived_at = NULL,
     attempt = attempt + 1
 WHERE id = $1
   AND status = 'running'

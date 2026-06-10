@@ -702,6 +702,8 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 			exit_code           = NULL,
 			error               = NULL,
 			cancel_requested_at = NULL,
+			logs_archive_uri    = NULL,
+			logs_archived_at    = NULL,
 			attempt             = attempt + 1
 		WHERE id = $1
 		RETURNING attempt
@@ -717,6 +719,16 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	// Register the agent issues mid-rerun would re-honor the OLD
 	// cancel via ListPendingCancelsForAgent, killing the new
 	// attempt before it had a chance.
+	//
+	// logs_archive_uri / logs_archived_at = NULL: the prior
+	// attempt's archive points at a GCS object that holds the
+	// OLD run's logs. The reads.go cold-archive fallback consults
+	// logs_archive_uri before hitting log_lines, so a rerun whose
+	// log_lines we DELETE below would otherwise show the previous
+	// attempt's logs in the UI ("logs of finished job show
+	// previous job's logs"). Clearing the URI here pushes reads
+	// back to the live log_lines path until the archiver runs
+	// again for the new attempt.
 
 	// Clear the previous attempt's logs — mirrors what
 	// ReclaimJobForRetry does for reaper-driven retries and keeps
