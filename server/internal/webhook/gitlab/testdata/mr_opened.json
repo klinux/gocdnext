@@ -1,0 +1,76 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "user": {
+    "id": 1,
+    "name": "Operator",
+    "username": "operator-user",
+    "avatar_url": "https://gitlab.example.com/uploads/-/system/user/avatar/1/avatar.png",
+    "email": "operator@example.com"
+  },
+  "project": {
+    "id": 42,
+    "name": "demo",
+    "description": "",
+    "web_url": "https://gitlab.example.com/group/demo",
+    "avatar_url": null,
+    "git_ssh_url": "git@gitlab.example.com:group/demo.git",
+    "git_http_url": "https://gitlab.example.com/group/demo.git",
+    "namespace": "group",
+    "visibility_level": 0,
+    "path_with_namespace": "group/demo",
+    "default_branch": "main"
+  },
+  "object_attributes": {
+    "id": 99,
+    "iid": 7,
+    "title": "Add caching to scheduler",
+    "description": "",
+    "state": "opened",
+    "created_at": "2026-06-10 12:00:00 UTC",
+    "updated_at": "2026-06-10 12:00:00 UTC",
+    "merge_status": "can_be_merged",
+    "target_branch": "main",
+    "source_branch": "feat/cache-scheduler",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "source": {
+      "git_http_url": "https://gitlab.example.com/group/demo.git",
+      "path_with_namespace": "group/demo",
+      "default_branch": "main"
+    },
+    "target": {
+      "git_http_url": "https://gitlab.example.com/group/demo.git",
+      "path_with_namespace": "group/demo",
+      "default_branch": "main"
+    },
+    "last_commit": {
+      "id": "abc0123456789abc0123456789abc0123456789a",
+      "message": "Add caching to scheduler\n",
+      "title": "Add caching to scheduler",
+      "timestamp": "2026-06-10T12:00:00Z",
+      "url": "https://gitlab.example.com/group/demo/-/commit/abc0123456789abc0123456789abc0123456789a",
+      "author": {
+        "name": "Operator",
+        "email": "operator@example.com"
+      }
+    },
+    "work_in_progress": false,
+    "draft": false,
+    "url": "https://gitlab.example.com/group/demo/-/merge_requests/7",
+    "action": "open",
+    "labels": []
+  },
+  "labels": [
+    {"id": 100, "title": "hotfix",   "color": "#FF0000", "type": "ProjectLabel"},
+    {"id": 101, "title": "Hotfix",   "color": "#FF0000", "type": "ProjectLabel"},
+    {"id": 102, "title": "  needs-review  ", "color": "#0000FF", "type": "ProjectLabel"},
+    {"id": 103, "title": "", "color": "#000000", "type": "ProjectLabel"}
+  ],
+  "repository": {
+    "name": "demo",
+    "url": "git@gitlab.example.com:group/demo.git",
+    "description": "",
+    "homepage": "https://gitlab.example.com/group/demo"
+  }
+}

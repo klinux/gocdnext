@@ -6,6 +6,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.17.0 — 2026-06-10
+
+GitLab Merge Request webhook support (issue #11). Materials
+that declare `on: [pull_request]` now react to both GitHub PR
+webhooks AND GitLab MR webhooks — the SCM webhook is the
+provider boundary, the `pull_request` keyword stays uniform.
+Same `cause='pull_request'` + same `cause_detail` shape
+(`pr_number`, `pr_head_sha`, `pr_labels`, …) so the
+`CI_PULL_REQUEST_*` env vars and `quorum_by_label` work
+identically on either provider.
+
+### Behaviour
+
+- Triggerable MR actions: `open` / `update` / `reopen`. `close`
+  and `merge` return 204 — the subsequent push to
+  `target_branch` already covers that path.
+- Defence-in-depth: if `state == "merged"` somehow arrives with
+  a normally-triggerable action verb (some self-hosted installs
+  emit a trailing `update` after the merge), the dispatch
+  still bails out.
+- MR labels lowercased + deduped, same contract as the GitHub
+  side. `quorum_by_label` and the env-var path see the same
+  shape regardless of provider.
+- Project label in logs prefers `project.path_with_namespace`
+  (e.g. `group/demo`) over the raw clone URL, since the URL CAN
+  carry credentials in unusual self-hosted setups.
+
+### Compatibility
+
+No proto, schema, or migration change. Existing GitLab push
+webhooks continue to work unchanged — the new branch is
+strictly additive on the `Merge Request Hook` event header.
+
+Bitbucket PR webhook parity is still tracked in issue #12.
+
 ## v0.16.0 — 2026-06-10
 
 Matrix-selector resolution on job outputs (issue #21). A
