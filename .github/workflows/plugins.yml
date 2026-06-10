@@ -16,6 +16,14 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write    # cosign keyless: short-lived Sigstore Fulcio
+                     # cert bound to GitHub OIDC claims (repo, ref,
+                     # sha, workflow). Same pattern as release.yml.
+                     # Fork PRs DON'T sign — the cosign steps are
+                     # gated on `github.event_name != 'pull_request'`
+                     # mirroring the provenance/sbom flags, so this
+                     # elevated permission only fires on
+                     # main/tag/workflow_dispatch.
 
 env:
   REGISTRY: ghcr.io
@@ -162,6 +170,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # cosign keyless installer. Cheap to run unconditionally —
+      # only the sign/attest steps further down actually exercise
+      # the OIDC token, and those are gated on non-PR.
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+        with:
+          cosign-release: v2.4.1
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -183,7 +199,8 @@ jobs:
             # collected too.
             type=raw,value=pr-${{ github.event.pull_request.number }}-sha-${{ github.sha }},enable=${{ github.event_name == 'pull_request' }}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: plugins/jdk-base
           file: plugins/jdk-base/Dockerfile
@@ -210,11 +227,51 @@ jobs:
           # digest, so they leak past the tag-based cleanup. For
           # release/main builds we want both for supply-chain
           # provenance; for PR-scoped builds the throwaway nature
-          # means the noise isn't worth the residue.
+          # means the noise isn't worth the residue. Same gate
+          # applies to the cosign sign/attest steps below.
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=plugin-jdk-base
           cache-to: type=gha,mode=max,scope=plugin-jdk-base
+
+      # Sign the manifest digest, not a tag — tags are mutable
+      # (jdk-base ships `:v1`, `:latest`, `:main`, semver tags,
+      # `:pr-N` and `:pr-N-sha-FULL` simultaneously); the digest
+      # is the only handle that can't shift under the signature.
+      # Verifier pins the OIDC identity to this workflow file +
+      # tag the same way as release.yml.
+      - name: cosign sign (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-jdk-base
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # CycloneDX SBOM via Syft — same rationale as release.yml.
+      # The buildkit-native SBOM (sbom: true above) is SPDX;
+      # most vuln scanners read CycloneDX, so we attach both
+      # bound to the same digest.
+      - uses: anchore/sbom-action@v0
+        if: github.event_name != 'pull_request'
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-jdk-base@${{ steps.build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-jdk-base.cdx.json
+          upload-artifact: false
+
+      - name: cosign attest (SBOM, CycloneDX)
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-jdk-base
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --predicate sbom-jdk-base.cdx.json \
+            --type cyclonedx \
+            "${IMAGE}@${DIGEST}"
 
   images:
     # The fan-out matrix for every plugin EXCEPT jdk-base. Waits
@@ -268,6 +325,14 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # cosign keyless: same pattern as base/release. Skipped on
+      # PR runs because the matrix build-push runs push: false
+      # in that case — no published image to sign.
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+        with:
+          cosign-release: v2.4.1
 
       - id: meta
         uses: docker/metadata-action@v5
@@ -337,7 +402,8 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "BASE_IMAGE for ${{ matrix.plugin }}: $ref"
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: plugins/${{ matrix.plugin }}
           file: plugins/${{ matrix.plugin }}/Dockerfile
@@ -350,5 +416,48 @@ jobs:
           # ignore the unknown ARG — no Dockerfile change needed.
           build-args: |
             BASE_IMAGE=${{ steps.base-ref.outputs.ref }}
+          # Same supply-chain flags as the base job: buildkit
+          # provenance (SLSA v1 in-toto) + native SPDX SBOM, only
+          # on non-PR pushes. PR-scoped builds don't push, so
+          # there's nothing to attest anyway.
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=plugin-${{ matrix.plugin }}
           cache-to: type=gha,mode=max,scope=plugin-${{ matrix.plugin }}
+
+      # Sign the manifest digest of every consumer plugin
+      # (gradle, maven, node, go, docker, kubectl, trivy, slack
+      # …) the same way as base + release.yml. Verifier pins:
+      #   cosign verify \
+      #     --certificate-identity-regexp \
+      #       'https://github.com/<owner>/<repo>/\.github/workflows/plugins\.yml@.*' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     ghcr.io/<owner>/gocdnext-plugin-<name>@sha256:...
+      - name: cosign sign (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-${{ matrix.plugin }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - uses: anchore/sbom-action@v0
+        if: github.event_name != 'pull_request'
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-${{ matrix.plugin }}@${{ steps.build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.plugin }}.cdx.json
+          upload-artifact: false
+
+      - name: cosign attest (SBOM, CycloneDX)
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-${{ matrix.plugin }}
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --predicate "sbom-${{ matrix.plugin }}.cdx.json" \
+            --type cyclonedx \
+            "${IMAGE}@${DIGEST}"
