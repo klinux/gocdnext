@@ -335,3 +335,18 @@ jobs:
           # job's GITHUB_TOKEN.
           draft: false
           token: ${{ secrets.GITHUB_TOKEN }}
+          # make_latest=legacy fixes the parallel-tags race that
+          # demoted v0.18.1 on the retroactive v0.17/v0.18 push:
+          # the action's default `true` says "set THIS release as
+          # :latest now", so when 3 chart jobs ran in parallel the
+          # last one to finish won — v0.17.0 finished last and
+          # claimed :latest over v0.18.1. `legacy` instead asks
+          # the GitHub backend to re-evaluate :latest from all
+          # releases, picking the highest SemVer. Each parallel
+          # call still triggers a re-eval, but they converge on
+          # the same answer regardless of finish order.
+          # GHCR's `:latest` tag is unaffected (gated separately
+          # by `startsWith(github.ref, 'refs/tags/v')` in the
+          # metadata step). One-time manual fix for the existing
+          # bad state: `gh release edit v0.18.1 --latest`.
+          make_latest: legacy
