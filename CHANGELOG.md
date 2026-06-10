@@ -6,6 +6,48 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.18.0 — 2026-06-10
+
+Bitbucket Cloud pull request webhook support (issue #12). Now
+all three SCM providers fan out through the same dispatch path
+— GitHub `pull_request`, GitLab `Merge Request Hook`, and
+Bitbucket Cloud `pullrequest:*` all land in materials that
+declare `on: [pull_request]`. Same `cause='pull_request'`, same
+`cause_detail` shape, same `CI_PULL_REQUEST_*` env vars.
+
+### Behaviour
+
+- Triggerable subset: `pullrequest:created` /
+  `pullrequest:updated` (the action verb is the X-Event-Key
+  tail, since Bitbucket doesn't restate it inside the body).
+  `pullrequest:fulfilled` (merged), `pullrequest:rejected`
+  (declined), and the approval / comment events return 204.
+- Defence-in-depth: `state == "MERGED"` short-circuits even
+  when the action is a normally-triggerable verb — Bitbucket
+  has been observed sending a trailing `updated` after merge.
+- Repository label in logs prefers
+  `destination.repository.full_name` (e.g. `acme/demo`) over
+  the raw clone URL — same defensive rationale as the gitlab
+  side.
+- `pr_labels` stays absent in `cause_detail` for Bitbucket
+  deliveries — Bitbucket Cloud has no PR label primitive, so
+  `quorum_by_label` overrides never satisfy on this provider
+  (correct: no labels declared ⇒ default quorum applies).
+
+### Scope
+
+- Bitbucket **Cloud** only (the SaaS, bitbucket.org). Bitbucket
+  Data Center / Server emits `pr:opened` instead of
+  `pullrequest:created` and has a different payload shape —
+  out of scope for this release.
+
+### Compatibility
+
+No proto, schema, or migration change. The new branch on
+`HandleBitbucket` is strictly additive on the `pullrequest:*`
+event family; existing push webhooks (`repo:push`) are
+untouched.
+
 ## v0.17.0 — 2026-06-10
 
 GitLab Merge Request webhook support (issue #11). Materials

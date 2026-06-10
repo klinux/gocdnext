@@ -317,6 +317,19 @@ func (h *Handler) HandleBitbucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	delivery := r.Header.Get("X-Request-UUID")
+
+	// pullrequest:* family routes through the provider-uniform
+	// PR dispatch path (issue #12). The action verb is the
+	// X-Event-Key tail since Bitbucket doesn't restate it inside
+	// the body. Material matching reuses the `pull_request`
+	// event name on the operator's side — webhook is the
+	// provider boundary, the keyword stays uniform.
+	if bitbucketpkg.IsPullRequestEvent(event) {
+		h.handleBitbucketPullRequest(w, r, body, delivery, bitbucketpkg.EventKeyToAction(event), rec)
+		return
+	}
+
 	if event != "repo:push" {
 		rec.status = store.WebhookStatusIgnored
 		h.log.Info("bitbucket webhook: ignored event", "event", event)
@@ -337,7 +350,6 @@ func (h *Handler) HandleBitbucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	delivery := r.Header.Get("X-Request-UUID")
 	h.persistPush(w, r, rec, normalizedPush{
 		Provider:    "bitbucket",
 		Delivery:    delivery,

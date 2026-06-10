@@ -11,6 +11,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	bitbucketpkg "github.com/gocdnext/gocdnext/server/internal/webhook/bitbucket"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 	gitlabpkg "github.com/gocdnext/gocdnext/server/internal/webhook/gitlab"
 )
@@ -145,12 +146,66 @@ func (h *Handler) handleGitLabMergeRequest(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleBitbucketPullRequest is the Bitbucket Cloud entry point
+// (issue #12). Bitbucket emits the action verb out-of-band on
+// X-Event-Key (the body doesn't restate it), so the caller
+// passes it in. ParsePullRequestEvent normalises the rest of the
+// shape, then we fold into the same dispatchPullRequest path so
+// cause_detail, CI_PULL_REQUEST_* env vars, and label-driven
+// approval quorum stay provider-uniform downstream.
+//
+// Bitbucket Cloud has no native PR label primitive — Labels is
+// nil for every event from this provider, which means
+// quorum_by_label never satisfies an override on Bitbucket
+// (correct: no labels declared ⇒ default quorum applies).
+func (h *Handler) handleBitbucketPullRequest(w http.ResponseWriter, r *http.Request, body []byte, delivery, action string, rec *deliveryRec) {
+	ev, err := bitbucketpkg.ParsePullRequestEvent(body, action)
+	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "parse pullrequest: " + err.Error()
+		h.log.Warn("bitbucket webhook: PR parse failed", "delivery", delivery, "err", err)
+		http.Error(w, "invalid pullrequest payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ev.IsTriggerableAction() {
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("bitbucket webhook: PR action ignored",
+			"delivery", delivery, "action", ev.Action, "number", ev.Number)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// RepoLabel prefers destination.repository.full_name
+	// ("ws/repo") over the clone URL — same defensive rationale
+	// as the gitlab side (URL CAN carry credentials in unusual
+	// self-hosted setups).
+	repoLabel := ev.RepoSlug
+	if repoLabel == "" {
+		repoLabel = ev.Repository.CloneURL
+	}
+	h.dispatchPullRequest(w, r, body, delivery, rec, pullRequestEvent{
+		Provider:  "bitbucket",
+		Action:    ev.Action,
+		Number:    ev.Number,
+		Title:     ev.Title,
+		Author:    ev.Author,
+		HTMLURL:   ev.HTMLURL,
+		HeadSHA:   ev.HeadSHA,
+		HeadRef:   ev.HeadRef,
+		BaseRef:   ev.BaseRef,
+		CloneURL:  ev.Repository.CloneURL,
+		RepoLabel: repoLabel,
+		At:        ev.At,
+		Labels:    ev.Labels,
+	})
+}
+
 // dispatchPullRequest is the provider-agnostic fan-out path used
-// by both handlePullRequest (GitHub) and handleGitLabMergeRequest
-// (GitLab). The pullRequestEvent argument is already provider-
-// normalised — the only branching left is the `provider` field
-// on the fan-out input (so persisted modifications + delivery
-// records remember which adapter parsed the body).
+// by handlePullRequest (GitHub), handleGitLabMergeRequest
+// (GitLab), and handleBitbucketPullRequest (Bitbucket). The
+// pullRequestEvent argument is already provider-normalised —
+// the only branching left is the `provider` field on the fan-out
+// input (so persisted modifications + delivery records remember
+// which adapter parsed the body).
 //
 // Material matching rule: the material that would fire on a push
 // to the PR/MR's BASE ref also fires on the PR/MR when its events
