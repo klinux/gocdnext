@@ -1,0 +1,66 @@
+# CODEOWNERS — risk-weighted review enforcement
+#
+# Last entry wins. The default rule sits at the top so paths
+# below it that match a narrower glob override. Required-review
+# enforcement happens at branch protection level (GitHub's
+# "Require review from Code Owners" toggle); this file just names
+# WHO the reviewers are per area. Branches protected via this
+# rule:
+#   - main (release-cutting, all production-bound code)
+#
+# Anchors the trunk-based-release.md "Separation of duties"
+# section in the repo state — without CODEOWNERS, the prose is
+# advisory; with it, "PR author can't merge their own
+# release-impacting change" becomes a GitHub-level constraint.
+
+# Default — every file routes to the maintainer until split.
+*                                       @klinux
+
+# --- CI + supply-chain surface (highest blast radius) ---------
+# A bad workflow can publish unsigned images, leak the
+# GITHUB_TOKEN, or skip the CI-green gate. Treat as the
+# separation-of-duties hottest layer: author CANNOT self-approve
+# (branch-protection ruleset "exclude_pr_author" is the actual
+# enforcer; this file makes ownership explicit so reviewers know
+# they own the policy implications, not just the YAML diff).
+/.github/workflows/                     @klinux
+/.github/CODEOWNERS                     @klinux
+
+# --- Database migrations (forward-only contract) --------------
+# Migrations are forward-only and backward-compatible by policy.
+# A reviewer needs to confirm the expand/contract shape AND the
+# column-nullability semantics, not just the SQL syntax. Naming
+# the owner here surfaces that responsibility on every PR diff.
+/server/migrations/                     @klinux
+
+# --- Helm chart + Kubernetes manifests ------------------------
+# Chart changes ride v0.x.y to operators directly; a regression
+# in default values (resource limits, RBAC bindings, NetworkPolicy
+# scope) lands in every fresh install. Same review attention as
+# CI: production-impacting, hard to roll back via "just bump
+# again" because operators may pin.
+/charts/                                @klinux
+
+# --- Proto / gRPC contracts -----------------------------------
+# A breaking proto change cascades to every generated binding
+# (Go server, Go agent, TS web). buf-breaking guards the wire
+# shape; the owner here is responsible for the COMPATIBILITY
+# semantics (deprecate vs delete, version bump, etc.) that buf
+# can't see.
+/proto/                                 @klinux
+
+# --- Auth, secrets, RBAC --------------------------------------
+# Substitution code, secret resolution, and RBAC checks form
+# the security boundary. The CLAUDE.md "Security is not optional"
+# section governs these paths; a reviewer needs to track
+# constant-time compare + single-pass substitution + LogMasks
+# coverage on EVERY change here, not just the smoking-gun ones.
+/server/internal/secrets/               @klinux
+/server/internal/auth/                  @klinux
+/server/internal/api/authapi/           @klinux
+/server/internal/api/admin/             @klinux
+
+# --- Webhook signature verification ---------------------------
+# HMAC/token compare paths for GitHub, GitLab, Bitbucket. A
+# signature-skip regression here is a public exploit.
+/server/internal/webhook/               @klinux
