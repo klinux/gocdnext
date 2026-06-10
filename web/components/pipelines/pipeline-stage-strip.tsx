@@ -350,32 +350,43 @@ function JobNode({
   // the operator wants to abort everything, the "Cancel whole run"
   // item below does that.
   //
-  // Server responses we distinguish:
-  //   - 202 status=canceled signaled=false → queued, DB-flipped
-  //     directly. Cancel landed.
-  //   - 202 status=canceled signaled=true  → running, agent received
-  //     the CancelJob frame. Container will stop on its own clock.
-  //   - 503 status=dispatch_failed         → running, dispatch
-  //     couldn't reach the agent. The job is STILL running. The
-  //     toast must reflect that — saying "Cancelled" would lie.
+  // Server responses we distinguish (v0.15.1+ deferred-cancel
+  // contract):
+  //   - 202 status=canceled  signaled=false → queued, DB-flipped
+  //     directly to terminal. "Canceled" is honest.
+  //   - 202 status=canceling signaled=true  → running, the agent
+  //     received the CancelJob frame; container stops on its own
+  //     clock. "Canceling…" — the persistent badge on the job card
+  //     mirrors the toast.
+  //   - 202 status=canceling signaled=false → running, dispatch
+  //     missed the agent (session churning) BUT cancel_requested_at
+  //     IS stamped. Register replay or reaper finalises shortly.
+  //     "Canceling…" — operator sees the intent landed.
+  //   - 503 status=dispatch_failed → running, no row written. Job
+  //     is STILL running. Surface the error verbatim — calling it
+  //     "Canceled" would lie.
   const onCancelJob = () => {
     startTransition(async () => {
       const res = await cancelJob({ jobRunId });
       if (!res.ok) {
-        // status=dispatch_failed lands here too (postJSON treats
-        // non-2xx as !ok). The store-side message has the operator-
-        // facing reason; surface it verbatim instead of hand-rolling.
         toast.error(`Cancel ${job.name} failed`, {
           description: res.error || "the agent did not receive the cancel signal; try again",
         });
         return;
       }
-      const signaled = (res.data as { signaled?: boolean }).signaled ?? false;
-      toast.success(`Cancelled ${job.name}`, {
-        description: signaled
-          ? "Cancel signal sent to the agent; container will stop shortly."
-          : "Job was queued — removed before it started.",
-      });
+      const data = res.data as { signaled?: boolean; status?: string };
+      const status = data.status ?? "";
+      if (status === "canceling") {
+        toast.success(`Canceling ${job.name}`, {
+          description: data.signaled
+            ? "Cancel signal sent to the agent; container will stop shortly."
+            : "Cancel requested — will stop when the agent acknowledges.",
+        });
+      } else {
+        toast.success(`Canceled ${job.name}`, {
+          description: "Job was queued — removed before it started.",
+        });
+      }
       router.refresh();
     });
   };
@@ -391,8 +402,9 @@ function JobNode({
         toast.error(`Cancel run failed: ${res.error}`);
         return;
       }
-      toast.success(`Cancelled run`, {
-        description: `Cancelling the run stops every running job.`,
+      toast.success(`Cancel requested`, {
+        description:
+          "Running jobs will stop when the agent acknowledges. Queued jobs are canceled immediately.",
       });
       router.refresh();
     });

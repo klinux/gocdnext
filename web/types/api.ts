@@ -196,6 +196,14 @@ export type JobDetail = {
   started_at?: string;
   finished_at?: string;
   agent_id?: string;
+  // cancel_requested_at is non-null when the operator hit Cancel
+  // but the agent hasn't acknowledged yet (deferred cancel — the
+  // server stamps it in the same tx as the SELECT FOR UPDATE so
+  // it survives Revoke→Register session churn). Combined with
+  // status==="running" it tells the UI to render a "Canceling…"
+  // badge instead of the regular running spinner — operators see
+  // the request landed even when the agent is mid-task.
+  cancel_requested_at?: string;
   // logs carries the TAIL of the job log (oldest-first within the
   // returned window). Name kept for backward compat with callers
   // that pre-date head+omitted.

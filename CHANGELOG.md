@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.18.1 — 2026-06-10
+
+UI surface for the v0.15.1 deferred-cancel contract. When the
+operator hits Cancel on a running job and the agent hasn't
+acknowledged yet, the job card now renders a "Canceling…"
+badge so the request is visible IN-page (the badge persists
+through polling — not just a transient toast). Mirrors the
+`cancel_requested_at` column the server already stamped.
+
+### Changes
+
+- `JobDetail.cancel_requested_at` is exposed on
+  `GET /api/v1/runs/{id}` (sqlc query extended; field added to
+  the wire shape with `omitempty`). Sibling jobs without an
+  intent never carry the field.
+- Web: amber "Canceling…" badge with a `Ban` icon and
+  hover-title showing the request timestamp. Renders on
+  `status ∈ {running, queued, assigning}` AND
+  `cancel_requested_at != null`; hidden on terminal jobs.
+- Toasts updated to reflect the deferred contract:
+  - Run-level Cancel → "Cancel requested — running jobs will
+    stop when the agent acknowledges. Queued jobs are canceled
+    immediately."
+  - Per-job Cancel → "Canceling X" with a description that
+    distinguishes signaled (dispatch reached the agent) from
+    deferred (agent session churning; Register replay or
+    reaper finalises).
+
+### Compatibility
+
+No schema, proto, or migration change. The
+`cancel_requested_at` column has existed since v0.15.1; this
+release just teaches the read path and the UI about it.
+
 ## v0.18.0 — 2026-06-10
 
 Bitbucket Cloud pull request webhook support (issue #12). Now

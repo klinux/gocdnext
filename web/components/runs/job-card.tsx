@@ -1,4 +1,5 @@
 import {
+  Ban,
   Bell,
   Check,
   ChevronsRight,
@@ -50,6 +51,15 @@ export function JobCard({ job, runID }: Props) {
   const decided = job.approval_gate && !!job.decision;
   const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
   const displayName = isNotify ? job.notify_uses || job.name : job.name;
+  // Cancel intent landed but agent hasn't acknowledged yet — the
+  // server keeps status="running" until the JobResult arrives.
+  // We render the badge in BOTH the running case (operator-facing
+  // "we're trying") and the queued case (cancel landed before
+  // dispatch — still worth surfacing so the operator doesn't
+  // re-click) but skip terminal jobs where it'd be stale UI.
+  const isCanceling =
+    !!job.cancel_requested_at &&
+    (job.status === "running" || job.status === "queued" || job.status === "assigning");
 
   return (
     <div
@@ -94,6 +104,20 @@ export function JobCard({ job, runID }: Props) {
           <span className="font-mono text-[11px] text-muted-foreground">
             [{job.matrix_key}]
           </span>
+        ) : null}
+        {isCanceling ? (
+          <Badge
+            variant="outline"
+            className="gap-1 border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+            title={
+              job.cancel_requested_at
+                ? `Cancel requested at ${new Date(job.cancel_requested_at).toLocaleString()} — waiting for the agent to acknowledge`
+                : "Cancel requested — waiting for the agent to acknowledge"
+            }
+          >
+            <Ban className="size-3" aria-hidden />
+            Canceling…
+          </Badge>
         ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
           {job.image ? (
