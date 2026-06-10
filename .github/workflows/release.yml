@@ -188,3 +188,14 @@ jobs:
         with:
           files: ${{ steps.pkg.outputs.package }}
           fail_on_unmatched_files: true
+          # Force published-not-draft + explicit token. v0.15.3 hit a
+          # 401 on the finalize PATCH leaving the release stuck in
+          # draft state; the action's default behaviour creates as
+          # draft and PATCHes to published as a separate call, which
+          # is the exact request that failed. Setting draft: false +
+          # threading the token explicitly closes both flake modes —
+          # the action no longer needs the finalize call (created
+          # already-published) and the token is unambiguously the
+          # job's GITHUB_TOKEN.
+          draft: false
+          token: ${{ secrets.GITHUB_TOKEN }}
