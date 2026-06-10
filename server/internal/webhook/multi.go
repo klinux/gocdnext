@@ -211,6 +211,17 @@ func (h *Handler) HandleGitLab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	delivery := r.Header.Get("X-Gitlab-Event-UUID")
+
+	// Merge Request Hook routes through the provider-uniform PR
+	// dispatch path (issue #11). Material matching reuses the
+	// `pull_request` event name on the operator's side — the
+	// webhook handler IS the provider boundary.
+	if event == "Merge Request Hook" {
+		h.handleGitLabMergeRequest(w, r, body, delivery, rec)
+		return
+	}
+
 	if event != "Push Hook" {
 		rec.status = store.WebhookStatusIgnored
 		h.log.Info("gitlab webhook: ignored event", "event", event)
@@ -231,7 +242,6 @@ func (h *Handler) HandleGitLab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	delivery := r.Header.Get("X-Gitlab-Event-UUID")
 	h.persistPush(w, r, rec, normalizedPush{
 		Provider:    "gitlab",
 		Delivery:    delivery,

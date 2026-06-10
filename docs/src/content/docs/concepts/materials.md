@@ -49,7 +49,10 @@ materials:
   - git:
       url: https://github.com/myorg/shared-libs
       branch: main
-      on: [push]              # which SCM events react
+      on: [push]              # which SCM events react. Valid: push, pull_request, tag.
+                              # `pull_request` covers GitHub pull_request AND
+                              # GitLab Merge Request webhooks — the SCM webhook is
+                              # the provider boundary, the keyword is uniform.
       poll_interval: 5m       # optional polling fallback
       auto_register_webhook: true
       secret_ref: SHARED_REPO_TOKEN

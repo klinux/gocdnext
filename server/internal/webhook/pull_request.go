@@ -5,13 +5,41 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
+	gitlabpkg "github.com/gocdnext/gocdnext/server/internal/webhook/gitlab"
 )
+
+// pullRequestEvent is the provider-uniform projection both
+// GitHub's pull_request and GitLab's merge_request paths fold
+// into BEFORE the fan-out. Keeps dispatchPullRequest agnostic of
+// which adapter parsed the body — the only thing that varies is
+// the field labels in errors/logs, threaded through via
+// pullRequestEvent.provider.
+//
+// All fields mirror github.PullRequestEvent + the GitLab
+// equivalent so cause_detail and CI_PULL_REQUEST_* env vars
+// stay identical across providers.
+type pullRequestEvent struct {
+	Provider    string // "github" | "gitlab"
+	Action      string // provider-specific action (opened/synchronize/open/update/...)
+	Number      int
+	Title       string
+	Author      string
+	HTMLURL     string
+	HeadSHA     string
+	HeadRef     string
+	BaseRef     string
+	CloneURL    string
+	RepoLabel   string // for log diagnostics — github.FullName OR gitlab project path
+	At          time.Time
+	Labels      []string
+}
 
 // handlePullRequest reacts to GitHub's pull_request webhook. Matching
 // rule: the material that would fire on a push to the PR's BASE ref
@@ -41,7 +69,6 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		http.Error(w, "invalid pull_request payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	if !ev.IsTriggerableAction() {
 		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: PR action ignored",
@@ -49,41 +76,124 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	h.dispatchPullRequest(w, r, body, delivery, rec, pullRequestEvent{
+		Provider:  "github",
+		Action:    ev.Action,
+		Number:    ev.Number,
+		Title:     ev.Title,
+		Author:    ev.Author,
+		HTMLURL:   ev.HTMLURL,
+		HeadSHA:   ev.HeadSHA,
+		HeadRef:   ev.HeadRef,
+		BaseRef:   ev.BaseRef,
+		CloneURL:  ev.Repository.CloneURL,
+		RepoLabel: ev.Repository.FullName,
+		At:        ev.At,
+		Labels:    ev.Labels,
+	})
+}
 
-	// Match by (url, base_ref). Fingerprint is the same normalisation
-	// the material uses on its own side, so this finds the material a
-	// user declared with `branch: main on: [push, pull_request]`.
-	// N pipelines can share the same fingerprint — fan-out one run
-	// per pipeline that ALSO opts into pull_request via its events
-	// list.
-	fp := store.FingerprintFor(ev.Repository.CloneURL, ev.BaseRef)
+// handleGitLabMergeRequest is the GitLab-side entry point. GitLab
+// emits "Merge Request Hook" events whose payload looks different
+// from GitHub's pull_request but carries the same semantic
+// information; ParseMergeRequestEvent normalises the shape, then
+// we fold into the same dispatchPullRequest path so cause_detail,
+// CI_PULL_REQUEST_* env vars, and label-driven approval quorum
+// are provider-uniform downstream.
+//
+// Material matching uses `events: [pull_request]` (NOT a separate
+// "merge_request" entry) so operators don't have to declare both
+// for projects that mirror to GitHub + GitLab. The webhook handler
+// is the provider boundary; everything past it is generic.
+func (h *Handler) handleGitLabMergeRequest(w http.ResponseWriter, r *http.Request, body []byte, delivery string, rec *deliveryRec) {
+	ev, err := gitlabpkg.ParseMergeRequestEvent(body)
+	if err != nil {
+		rec.status = store.WebhookStatusError
+		rec.errText = "parse merge_request: " + err.Error()
+		h.log.Warn("gitlab webhook: MR parse failed", "delivery", delivery, "err", err)
+		http.Error(w, "invalid merge_request payload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !ev.IsTriggerableAction() {
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("gitlab webhook: MR action ignored",
+			"delivery", delivery, "action", ev.Action, "number", ev.Number)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// RepoLabel prefers project.path_with_namespace ("group/demo")
+	// over the raw clone URL — self-hosted GitLab installs CAN
+	// emit URLs with embedded credentials in unusual setups.
+	repoLabel := ev.ProjectPath
+	if repoLabel == "" {
+		repoLabel = ev.Repository.CloneURL
+	}
+	h.dispatchPullRequest(w, r, body, delivery, rec, pullRequestEvent{
+		Provider:  "gitlab",
+		Action:    ev.Action,
+		Number:    ev.Number,
+		Title:     ev.Title,
+		Author:    ev.Author,
+		HTMLURL:   ev.HTMLURL,
+		HeadSHA:   ev.HeadSHA,
+		HeadRef:   ev.HeadRef,
+		BaseRef:   ev.BaseRef,
+		CloneURL:  ev.Repository.CloneURL,
+		RepoLabel: repoLabel,
+		At:        ev.At,
+		Labels:    ev.Labels,
+	})
+}
+
+// dispatchPullRequest is the provider-agnostic fan-out path used
+// by both handlePullRequest (GitHub) and handleGitLabMergeRequest
+// (GitLab). The pullRequestEvent argument is already provider-
+// normalised — the only branching left is the `provider` field
+// on the fan-out input (so persisted modifications + delivery
+// records remember which adapter parsed the body).
+//
+// Material matching rule: the material that would fire on a push
+// to the PR/MR's BASE ref also fires on the PR/MR when its events
+// list includes "pull_request" in the YAML — operators don't
+// have to declare both `pull_request` and a hypothetical
+// `merge_request` event for projects that mirror to multiple
+// providers. The fingerprint normalisation makes (url, base_ref)
+// lookups hit the same row regardless of provider.
+func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, body []byte, delivery string, rec *deliveryRec, ev pullRequestEvent) {
+	logKind := "PR"
+	if ev.Provider == "gitlab" {
+		logKind = "MR"
+	}
+
+	fp := store.FingerprintFor(ev.CloneURL, ev.BaseRef)
 	allMaterials, err := h.store.FindMaterialsByFingerprint(r.Context(), fp)
 	if err != nil {
 		rec.status = store.WebhookStatusError
-		rec.errText = "material lookup (PR): " + err.Error()
-		h.log.Error("github webhook: material lookup failed (PR)",
+		rec.errText = "material lookup (" + logKind + "): " + err.Error()
+		h.log.Error(ev.Provider+" webhook: material lookup failed ("+logKind+")",
 			"delivery", delivery, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if len(allMaterials) == 0 {
 		rec.status = store.WebhookStatusIgnored
-		h.log.Info("github webhook: no material for PR base",
-			"delivery", delivery, "repo", ev.Repository.FullName,
+		h.log.Info(ev.Provider+" webhook: no material for "+logKind+" base",
+			"delivery", delivery, "repo", ev.RepoLabel,
 			"base_ref", ev.BaseRef, "fingerprint", fp)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	// Per-material event filter: only the materials that declare
-	// `pull_request` in their events list are eligible. A pipeline
-	// that hasn't opted in (push-only) is silently skipped — the
-	// other pipelines still fire.
+	// Per-material event filter: only materials that declare
+	// `pull_request` in their events list are eligible (GitLab MRs
+	// reuse the same event name — webhook is the provider
+	// boundary). A pipeline that hasn't opted in (push-only) is
+	// silently skipped; other pipelines still fire.
 	materials := make([]store.Material, 0, len(allMaterials))
 	for _, m := range allMaterials {
 		var cfg domain.GitMaterial
 		if err := json.Unmarshal(m.Config, &cfg); err != nil {
-			h.log.Warn("github webhook: decode material config (PR)",
+			h.log.Warn(ev.Provider+" webhook: decode material config ("+logKind+")",
 				"delivery", delivery, "material_id", m.ID, "err", err)
 			continue
 		}
@@ -94,7 +204,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	}
 	if len(materials) == 0 {
 		rec.status = store.WebhookStatusIgnored
-		h.log.Info("github webhook: no PR-listening material for this base ref",
+		h.log.Info(ev.Provider+" webhook: no "+logKind+"-listening material for this base ref",
 			"delivery", delivery, "material_candidates", len(allMaterials))
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -110,11 +220,9 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		"pr_base_ref": ev.BaseRef,
 		"pr_action":   ev.Action,
 	}
-	// pr_labels: only stamped when the PR actually has labels, so
-	// runs from label-less PRs don't bloat cause_detail with a
-	// `"pr_labels": []` field. Downstream consumers
-	// (civars CI_PULL_REQUEST_LABELS + quorum_by_label resolver)
-	// treat missing-key and empty-list the same way.
+	// pr_labels: only stamped when the PR/MR actually has labels.
+	// Same shape across providers — both adapters lowercase + dedupe
+	// before this point.
 	if len(ev.Labels) > 0 {
 		detail["pr_labels"] = ev.Labels
 	}
@@ -127,7 +235,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		Message:     ev.Title,
 		Payload:     json.RawMessage(body),
 		CommittedAt: ev.At,
-		Provider:    "github",
+		Provider:    ev.Provider,
 		Delivery:    delivery,
 		TriggeredBy: "system:webhook",
 		Cause:       string(domain.CausePullRequest),
@@ -141,7 +249,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		if oc.Err == nil {
 			allErrored = false
 			if oc.RunID != uuid.Nil {
-				h.log.Info("github webhook: PR run queued",
+				h.log.Info(ev.Provider+" webhook: "+logKind+" run queued",
 					"delivery", delivery, "pipeline_id", oc.PipelineID,
 					"run_id", oc.RunID, "counter", oc.RunCounter,
 					"pr_number", ev.Number, "head_sha", ev.HeadSHA, "head_ref", ev.HeadRef)
@@ -151,7 +259,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	}
 	if allErrored {
 		rec.status = store.WebhookStatusError
-		rec.errText = "PR fan-out: every pipeline errored"
+		rec.errText = logKind + " fan-out: every pipeline errored"
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -165,6 +273,6 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		"pr_number": ev.Number,
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		h.log.Warn("github webhook: encode response failed", "err", fmt.Sprint(err))
+		h.log.Warn(ev.Provider+" webhook: encode response failed", "err", fmt.Sprint(err))
 	}
 }
