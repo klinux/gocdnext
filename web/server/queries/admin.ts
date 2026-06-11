@@ -12,6 +12,7 @@ import type {
   AuthProvidersAdmin,
   GitHubIntegration,
   IntegrationsSummary,
+  OIDCKeysList,
   RetentionSnapshot,
   SCMCredentialsList,
   SecretsList,
@@ -213,6 +214,13 @@ export async function listAdminGroupMembers(
   return readJSON<{ members: AdminGroupMember[] }>(
     `/api/v1/admin/groups/${encodeURIComponent(groupID)}/members`,
   );
+}
+
+// listOIDCKeys returns every id_tokens signing key (active +
+// retired + revoked), newest first. Lifecycle metadata only — key
+// material never crosses the admin API.
+export async function listOIDCKeys(): Promise<OIDCKeysList> {
+  return readJSON<OIDCKeysList>("/api/v1/admin/oidc/keys");
 }
 
 export async function listAuditEvents(

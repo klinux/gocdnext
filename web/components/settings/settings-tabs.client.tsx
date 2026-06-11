@@ -7,6 +7,7 @@ import {
   Activity,
   Archive,
   Database,
+  KeyRound,
   Lock,
   Plug,
   Webhook,
@@ -34,6 +35,7 @@ const tabs: Tab[] = [
   { label: "Storage", href: "/settings/storage" as Route, matchPrefix: "/settings/storage", icon: Database },
   { label: "Integrations", href: "/settings/integrations" as Route, matchPrefix: "/settings/integrations", icon: Plug },
   { label: "Auth", href: "/settings/auth" as Route, matchPrefix: "/settings/auth", icon: Lock },
+  { label: "OIDC issuer", href: "/settings/oidc" as Route, matchPrefix: "/settings/oidc", icon: KeyRound },
 ];
 
 // SettingsTabs drives base-ui's controlled Tabs with the URL —

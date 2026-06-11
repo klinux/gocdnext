@@ -685,3 +685,21 @@ export type RunService = {
   stopped_at?: string;
   error?: string;
 };
+
+// OIDCKey is the lifecycle view of one id_tokens signing key, as
+// served by GET /api/v1/admin/oidc/keys. Key material (even the
+// public DER) never crosses this endpoint — the JWKS is the only
+// public-key surface; the admin UI shows lifecycle.
+// active = neither retired_at nor revoked_at;
+// retired  = still in the JWKS until in-flight tokens expire;
+// revoked  = emergency-rotated out, gone from the JWKS.
+export type OIDCKey = {
+  id: string;
+  kid: string;
+  alg: string;
+  created_at: string;
+  retired_at?: string;
+  revoked_at?: string;
+};
+
+export type OIDCKeysList = { keys: OIDCKey[] };
