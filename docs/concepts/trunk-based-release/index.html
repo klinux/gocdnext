@@ -195,6 +195,12 @@ migration. Trunk-based with frequent deploys requires
 expand/contract migrations as a HARD prerequisite — without
 them, every prod deploy with a DDL change is a one-way door, and
 “rollback” is a lie.</p>
+<blockquote>
+<p>The full operational guide — the prohibition table, lock
+hygiene, pipeline patterns with the flyway/liquibase/goose
+plugins — lives in
+<a href="/concepts/migrations/">Database migrations in pipelines</a>.</p>
+</blockquote>
 <p>The contract:</p>
 <ul>
 <li><strong>Forward-only.</strong> No <code dir="auto">goose down</code>, no <code dir="auto">flyway undo</code>. Rollback
