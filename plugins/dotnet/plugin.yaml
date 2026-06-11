@@ -1,0 +1,102 @@
+name: dotnet
+category: build
+description: >
+  .NET build + test runner. Single image ships the 8.0 and 10.0
+  LTS SDKs side-by-side (jdk-base pattern); the dotnet muxer
+  resolves a repo's global.json natively, or pin via the `sdk:`
+  input when the repo doesn't carry one. Runs the provided
+  dotnet subcommand and exits with its exit code.
+
+inputs:
+  command:
+    required: true
+    description: >
+      dotnet subcommand + args, word-split. Examples:
+      "test -c Release", "build", "publish -c Release -o out",
+      "format --verify-no-changes".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into before running
+      dotnet. Monorepos with a solution in a subdir set this.
+  sdk:
+    required: false
+    description: >
+      Pin the SDK major: "8" or "10". Only for repos WITHOUT a
+      global.json — the plugin resolves the exact installed
+      version and writes a global.json with rollForward
+      latestPatch. A repo that already ships global.json needs
+      nothing (the muxer honours it); setting both fails loud
+      (exit 2) so two pins can't drift apart silently. The
+      conflict check mirrors the muxer's lookup — it walks up
+      from working-dir to the filesystem root, so a repo-root
+      global.json is detected even when working-dir points at a
+      subdir. Empty = muxer default (newest installed SDK).
+
+examples:
+  - name: test
+    description: >
+      Run the test suite in Release. Restore happens implicitly.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-dotnet@v1
+      with:
+        command: test -c Release
+
+  - name: pin SDK 8 (no global.json in repo)
+    description: >
+      Forces the 8.0 LTS SDK for a repo that hasn't adopted
+      global.json. Repos that ship global.json should NOT set
+      this — the file wins and the input would exit 2. Pinning
+      also keeps net8.0 ref-pack resolution fully local: under
+      SDK 8 the bundled packs/ match exactly, while building
+      net8.0 under the (default) SDK 10 requests a newer patch
+      of the ref packs and fetches them from NuGet once into
+      the cache — inherent .NET roll-forward behaviour, same as
+      GHA's setup-dotnet.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-dotnet@v1
+      with:
+        command: test -c Release
+        sdk: "8"
+
+  - name: publish + artifact
+    description: >
+      Publish the app and attach the output directory as an
+      artifact for the deploy stage.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-dotnet@v1
+      with:
+        command: publish src/Api -c Release -o out
+      artifacts: [out/]
+
+  - name: cached test run
+    description: >
+      Tar + restore the NuGet package cache across runs. The
+      plugin redirects NUGET_PACKAGES to .nuget-packages/ inside
+      the workspace so a single `paths:` entry covers it. Key on
+      the lock file when the repo uses central package locking;
+      fall back to a branch key otherwise.
+    yaml: |
+      cache:
+        - key: nuget-{{ hash "**/packages.lock.json" }}
+          paths: [.nuget-packages]
+      uses: ghcr.io/klinux/gocdnext-plugin-dotnet@v1
+      with:
+        command: test -c Release
+
+  - name: Testcontainers for .NET (integration tests)
+    description: >
+      `docker: true` gives the job a Docker daemon. The plugin
+      auto-exports TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE and
+      TESTCONTAINERS_HOST_OVERRIDE only when the host socket is
+      really mounted — in the Kubernetes DinD path Testcontainers
+      for .NET auto-detects via DOCKER_HOST natively.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-dotnet@v1
+      docker: true
+      cache:
+        - key: nuget-${CI_COMMIT_BRANCH}
+          paths: [.nuget-packages]
+      with:
+        command: test -c Release --filter Category=Integration
