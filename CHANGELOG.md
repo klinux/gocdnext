@@ -6,6 +6,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.22.0 — 2026-06-11
+
+New `pr-comment` plugin (issue #24) — post or update-in-place a
+comment on the PR/MR that triggered the run. Closes the feedback
+loop the webhook trio opened: terraform plans, migration DDL
+previews and coverage diffs now land INSIDE the review, not just
+in the CI log.
+
+- **Zero-config targeting**: provider + repo + number resolved
+  from `CI_PULL_REQUEST_URL` (stamped by all three webhook
+  providers) via path shape — `/pull/` GitHub, `/-/merge_requests/`
+  GitLab, `/pull-requests/` Bitbucket. Self-hosted GitHub
+  Enterprise (`/api/v3`) and GitLab (`/api/v4`) derived from the
+  URL host; GitLab subgroup paths URL-encoded correctly.
+- **Upsert by default**: a hidden HTML-comment marker
+  (default `gocdnext/pr-comment:<job>`) lets the plugin find and
+  edit its own previous comment — successive pushes update one
+  comment instead of stacking duplicates. `mode: create` opts
+  out; distinct markers coexist.
+- **Non-PR runs are a loud success no-op** so
+  `on: [push, pull_request]` pipelines don't fail their push leg.
+- Bodies over 60 KB truncated with an explicit notice (GitHub's
+  cap is 65536 chars — silent 422s on big terraform plans help
+  nobody). Tokens via `secrets:` ride a curl config file, never
+  argv. `dry-run` + `api-base` inputs for preflight and proxies.
+- Auth: `GITHUB_TOKEN` / `GITLAB_TOKEN` / `BITBUCKET_TOKEN` (or
+  username + app password). Automatic GitHub App token injection
+  is a possible follow-up.
+
+Validated end-to-end against a mock API: create → upsert-edit
+(single comment, no duplicates) → distinct-marker coexistence →
+mode:create, plus 401 fail-loud with the API body in the log, and
+URL-shape parsing for github.com / GHE / GitLab subgroups /
+Bitbucket. 51 plugins in the catalog.
+
 ## v0.21.0 — 2026-06-11
 
 Database migration plugins — `flyway`, `liquibase` and `goose`
