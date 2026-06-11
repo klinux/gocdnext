@@ -1,0 +1,87 @@
+name: semgrep
+category: security
+description: >
+  SAST scan with semgrep — the de-facto OSS static analyzer
+  (registry packs like p/golang, p/owasp-top-ten, or your own rule
+  files). The FULL report (every severity) is always written as
+  SARIF; the fail-on threshold only decides the exit code, so the
+  artifact never loses findings to the gate. Telemetry is off by
+  default (--metrics=off): a CI scanner phoning home is an opt-in,
+  never a default. Baseline mode (--baseline-commit) reports only
+  findings introduced since a commit — the PR-pipeline pattern
+  that keeps legacy debt from blocking new work.
+
+inputs:
+  config:
+    required: false
+    default: "p/default"
+    description: >
+      Rule source(s), comma- or space-separated: registry packs
+      ("p/golang, p/owasp-top-ten"), local rule files or dirs.
+      Each entry becomes its own --config flag.
+  fail-on:
+    required: false
+    default: "error"
+    description: >
+      Severity threshold for exit 1: error | warning | info |
+      none. "none" = report-only (the job stays green; pair with
+      artifacts to keep the SARIF). The report always contains
+      every severity regardless of the gate.
+  report-file:
+    required: false
+    default: "semgrep.sarif"
+    description: >
+      SARIF output path — attach via the job's artifacts: so the
+      report survives the run.
+  baseline-commit:
+    required: false
+    description: >
+      Only report findings NEW since this commit (semgrep
+      --baseline-commit). Typical PR usage: ${CI_PULL_REQUEST_BASE}
+      resolved to a SHA, or origin/main.
+  paths:
+    required: false
+    default: "."
+    description: >
+      Scan target path(s), comma- or space-separated, relative to
+      working-dir.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: gate on errors, keep the full report
+    description: >
+      Fails the job on any error-severity finding; warnings and
+      infos land in the SARIF artifact without blocking.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-semgrep@v1
+      with:
+        config: p/golang, p/owasp-top-ten
+      artifacts:
+        optional: [semgrep.sarif]
+
+  - name: report-only on PRs, comment the count
+    description: >
+      fail-on: none keeps PRs green while the SARIF ships as an
+      artifact — pair with pr-comment for in-review visibility.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-semgrep@v1
+      with:
+        config: p/default
+        fail-on: none
+      artifacts:
+        optional: [semgrep.sarif]
+
+  - name: only NEW findings on the PR (baseline)
+    description: >
+      Legacy findings don't block; anything the PR introduces
+      does. Requires full git history in the workspace.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-semgrep@v1
+      with:
+        config: p/default
+        fail-on: warning
+        baseline-commit: origin/main

@@ -6,6 +6,54 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.23.0 — 2026-06-11
+
+SAST/SCA plugins — `semgrep` + `osv-scanner` (issue #28) — plus
+two operator-reported fixes: the ingress was 404ing the OIDC
+discovery endpoints, and two concept pages were missing from the
+docs sidebar.
+
+### Plugins
+
+- **semgrep** (SAST): registry packs (`p/golang`,
+  `p/owasp-top-ten`) or local rules. The FULL report (every
+  severity) is always written as SARIF — the `fail-on` threshold
+  (error | warning | info | none) only decides the exit code, so
+  the artifact never loses findings to the gate. Severity is
+  resolved per the SARIF spec from each rule's
+  `defaultConfiguration.level` (semgrep doesn't stamp levels on
+  results — naive `.level` reads count everything as info).
+  Telemetry off by default. `baseline-commit` reports only
+  findings introduced since a commit — the PR pattern that keeps
+  legacy debt from blocking new work.
+- **osv-scanner** (SCA): lockfile-level scanning across
+  ecosystems against OSV.dev, complementing trivy's image/fs
+  focus. Built from the pinned module version (`go install
+  @v2.0.0`, checksum-db verified). `fail-on: none` converts ONLY
+  the findings-exit into success — scan errors (broken lockfile,
+  network, no lockfiles found) stay loud, so report-only mode can
+  never fake a clean scan. Ignores/baseline via
+  `osv-scanner.toml` with per-entry reasons.
+
+Both E2E-tested in real images: semgrep against a local-rule
+fixture (severity gating across error/warning/none, clean-repo
+pass, paths narrowing); osv-scanner against a go.mod with known
+CVEs (53 findings → exit 1; report-only; lockfile-less dir fails
+loud even with fail-on: none).
+
+### Fixed
+
+- **Ingress 404 on `/.well-known/*`** — v0.20.0 shipped the OIDC
+  issuer + the chart env var but not the ingress route: requests
+  fell through to the web catch-all. `/.well-known` added to the
+  default `serverPaths` (Ingress and Gateway API both). Operators
+  with a custom `serverPaths` override need to add it manually.
+- **Docs sidebar** — the "OIDC id_tokens" and "Database
+  migrations" concept pages were reachable only via search;
+  both now listed under Concepts.
+
+53 plugins in the catalog.
+
 ## v0.22.0 — 2026-06-11
 
 New `pr-comment` plugin (issue #24) — post or update-in-place a

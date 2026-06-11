@@ -243,6 +243,10 @@ ingress:
     - /metrics
     - /version
     - /artifacts
+    # OIDC discovery + JWKS (id_tokens feature, v0.20.0). Served
+    # by the SERVER — without this entry the requests fall through
+    # to the web catch-all and 404 even though the issuer is up.
+    - /.well-known
 
 # Gateway API equivalent of the unified ingress above. Same path
 # strategy, same hostnames, just renders an HTTPRoute (and
@@ -264,6 +268,10 @@ gateway:
     - /metrics
     - /version
     - /artifacts
+    # OIDC discovery + JWKS (id_tokens feature, v0.20.0). Served
+    # by the SERVER — without this entry the requests fall through
+    # to the web catch-all and 404 even though the issuer is up.
+    - /.well-known
 
 # ----- database --------------------------------------------------------
 # PRODUCTION: point at an externally-managed Postgres (RDS / CloudSQL /
