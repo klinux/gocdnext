@@ -235,6 +235,11 @@ expand/contract migrations as a HARD prerequisite — without
 them, every prod deploy with a DDL change is a one-way door, and
 "rollback" is a lie.
 
+> The full operational guide — the prohibition table, lock
+> hygiene, pipeline patterns with the flyway/liquibase/goose
+> plugins — lives in
+> [Database migrations in pipelines](/concepts/migrations/).
+
 The contract:
 
 - **Forward-only.** No `goose down`, no `flyway undo`. Rollback

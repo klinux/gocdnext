@@ -6,6 +6,62 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.21.0 — 2026-06-11
+
+Database migration plugins — `flyway`, `liquibase` and `goose`
+(issue #30, plus goose for the Go ecosystem / dogfooding) — and a
+new **"Database migrations in pipelines"** concept page covering
+what actually makes a migration safe under canary / blue-green.
+
+### Plugins
+
+Shared contract across the three:
+
+- **Connection material via `secrets:` only** — each plugin reads
+  its tool's native env (`FLYWAY_*`, `LIQUIBASE_COMMAND_*`,
+  `GOOSE_DBSTRING`); there are no url/user/password inputs on
+  purpose, because `with:` values land in the persisted pipeline
+  definition and credentials never belong there. Values also never
+  touch argv.
+- **Forward-only enforced**: `down` / `rollback*` / `redo` /
+  `reset` / `repair` are rejected with an explanatory error —
+  rollback in pipelines is a corrective forward migration.
+- **Validate-on-PR / apply-gated convention** baked into every
+  example: `validate` (+ `info` / `update-sql` / `status`) on PR
+  pipelines, the mutating command only on the protected branch,
+  ideally behind an approval gate, always BEFORE the deploy.
+
+Per-tool:
+
+- **flyway**: `info | validate | migrate`. Postgres lock hygiene
+  ON BY DEFAULT — `lock_timeout 5s` + `statement_timeout 15min`
+  injected via initSql, so a DDL that can't take its lock fails
+  fast instead of queueing production traffic behind it.
+  Overridable per-job; `init-sql` input for full control.
+- **liquibase**: `status | validate | update-sql | update` —
+  `update-sql` is the real dry-run, printing the exact DDL in the
+  job log for the PR reviewer.
+- **goose**: `status | validate | up`, built from the pinned
+  module version (`go install …@v3.27.0`, checksum-db verified)
+  rather than trusting a registry image tag.
+
+All three validated end-to-end against a real Postgres: migrate /
+update / up applied and schema asserted, dry-run output checked,
+blocked commands and missing-secret paths fail loud.
+
+### Docs
+
+New concept page: expand/contract as the one rule, the
+**prohibition table** (rename-in-place, in-place type change,
+unqualified NOT NULL, drop-still-read — and what to do instead),
+why an aborted canary is the stress test, forward-only rationale,
+Postgres lock hygiene (`lock_timeout`, `CREATE INDEX
+CONCURRENTLY` + non-transactional caveats), the
+migrate-before-canary DAG pattern, and a pre-merge checklist.
+Cross-linked with the trunk-based-release prerequisite #3.
+
+50 plugins in the catalog.
+
 ## v0.20.0 — 2026-06-11
 
 OIDC token issuer for jobs — `id_tokens:` (keyless cloud auth).

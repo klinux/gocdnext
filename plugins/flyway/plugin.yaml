@@ -1,0 +1,122 @@
+name: flyway
+category: deploy
+description: >
+  Run Flyway schema migrations as a pipeline step. Connection
+  material comes EXCLUSIVELY via the job's `secrets:` list
+  (FLYWAY_URL / FLYWAY_USER / FLYWAY_PASSWORD — Flyway reads its
+  own env natively, values never touch argv or the persisted
+  pipeline definition). On Postgres URLs (jdbc:postgresql:), lock
+  hygiene is ON by default: lock_timeout 5s + statement_timeout
+  15min via initSql, so a DDL that can't take its lock fails fast
+  instead of queueing production traffic behind it — other
+  databases skip the defaults (the injected initSql is Postgres
+  syntax; use init-sql there). OSS edition: the PR-pipeline
+  preflight is `validate` + `info` (dry-run is a Flyway Teams
+  feature). `repair` is deliberately not exposed.
+
+inputs:
+  command:
+    required: true
+    description: >
+      info | validate | migrate. Convention: `validate` (+ `info`)
+      on PR pipelines as the cheap no-effect preflight; `migrate`
+      only on the protected-branch pipeline, ideally behind an
+      approval gate. `repair` rewrites the schema history table
+      and belongs to a human with context — run it manually.
+  locations:
+    required: false
+    default: "filesystem:./migrations"
+    description: >
+      Flyway locations list (comma-separated). Relative paths
+      resolve against working-dir.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+  lock-timeout:
+    required: false
+    default: "5s"
+    description: >
+      POSTGRES-ONLY (the default only applies when FLYWAY_URL is
+      jdbc:postgresql:; setting it explicitly with another
+      database fails loud — use init-sql with your engine's
+      equivalent there). Injects lock_timeout via Flyway initSql:
+      a DDL that can't take its lock within this window FAILS
+      instead of queueing every query behind it — the failure
+      mode that takes production down with a "tiny" ALTER TABLE.
+      "0" disables.
+  statement-timeout:
+    required: false
+    default: "15min"
+    description: >
+      POSTGRES-ONLY (same gating as lock-timeout). Injects
+      statement_timeout via initSql — caps a runaway backfill or
+      table rewrite. "0" disables.
+  init-sql:
+    required: false
+    description: >
+      Full override of the initSql session setup. When set,
+      lock-timeout / statement-timeout inputs are ignored —
+      you own the whole session preamble.
+
+examples:
+  - name: validate on PR (no effect on the database)
+    description: >
+      The cheap preflight — parses every migration and checks
+      checksums against the schema history. Pair with `info` in
+      a second task if you want the pending-list in the log.
+    yaml: |
+      secrets: [FLYWAY_URL, FLYWAY_USER, FLYWAY_PASSWORD]
+      uses: ghcr.io/klinux/gocdnext-plugin-flyway@v1
+      with:
+        command: validate
+
+  - name: migrate gated by approval (deploy pipeline)
+    description: >
+      `migrate` runs ONLY after a human approves, and BEFORE the
+      app deploy starts — expand/contract means schema N+1 must
+      serve app N and N+1 (see the migrations concept page).
+    yaml: |
+      jobs:
+        approve-migration:
+          stage: migrate
+          approval:
+            approvers: [dba, platform-lead]
+
+        migrate:
+          stage: migrate
+          needs: [approve-migration]
+          secrets: [FLYWAY_URL, FLYWAY_USER, FLYWAY_PASSWORD]
+          uses: ghcr.io/klinux/gocdnext-plugin-flyway@v1
+          with:
+            command: migrate
+
+        deploy-canary:
+          stage: deploy
+          needs: [migrate]
+          uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
+          with:
+            command: upgrade --install app ./chart --set canary=true
+
+  - name: custom migrations dir + relaxed statement timeout
+    description: >
+      A long-running backfill migration that legitimately needs
+      more than 15 minutes — raise the cap explicitly instead of
+      disabling it. Mutating, therefore gated like every apply.
+    yaml: |
+      jobs:
+        approve-migration:
+          stage: migrate
+          approval:
+            approvers: [dba, platform-lead]
+
+        migrate:
+          stage: migrate
+          needs: [approve-migration]
+          secrets: [FLYWAY_URL, FLYWAY_USER, FLYWAY_PASSWORD]
+          uses: ghcr.io/klinux/gocdnext-plugin-flyway@v1
+          with:
+            command: migrate
+            locations: filesystem:./db/migrations
+            statement-timeout: "45min"
