@@ -6,6 +6,49 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.19.0 — 2026-06-10
+
+New `dotnet` toolchain plugin — the first language gap closed
+from the competitive catalog review (GHA / GitLab CI /
+Woodpecker).
+
+### Plugin
+
+- Single image ships the **8.0 and 10.0 LTS SDKs side-by-side**
+  (jdk-base pattern: multi-stage COPY of `sdk/`, `shared/`,
+  `packs/`, `sdk-manifests/`, `templates/`, `metadata/`; the
+  10.0 `host/fxr` muxer stays and runs both). LTS-only by
+  policy — .NET 9 (STS, in support until 2026-11-10) is
+  intentionally absent, same stance as jdk-base.
+- `packs/` is load-bearing: with it, net8.0 ref packs resolve
+  locally under a pinned SDK 8 — `dotnet build --no-restore`
+  works fully offline. Building net8.0 under the default SDK 10
+  fetches a newer ref-pack patch from NuGet once (inherent .NET
+  roll-forward, same as GHA setup-dotnet; documented).
+- `sdk:` input pins the major (8/10) for repos without a
+  `global.json`, by writing one at the **workspace root** with
+  the exact installed version + a provenance marker key:
+  - conflict detection mirrors the muxer's upward walk from
+    `working-dir`, so a repo-root `global.json` is caught even
+    when the task runs in a subdir;
+  - re-entry by a later task of the same job is idempotent
+    (marker + byte-identical = ours);
+  - two tasks pinning different majors fail loud — one job,
+    one SDK pin, enforced structurally by root placement;
+  - a repo file that merely *coincides* with our content (no
+    marker) still fails loud, so an image-side SDK patch can't
+    convert a silent pass into a surprise failure later.
+- `NUGET_PACKAGES` redirected into the workspace
+  (`.nuget-packages/`) for the native `cache:` block; same
+  Testcontainers socket auto-config as the go plugin.
+
+### Catalog
+
+47 plugins. Nine issues opened for the remaining competitive
+gaps (GitLab/Bitbucket commit status, pr-comment, OIDC job
+tokens, static deploys, public registry publishing, php/ruby,
+semgrep/osv-scanner, sentry/deploy-markers, flyway/liquibase).
+
 ## v0.18.1 — 2026-06-10
 
 UI surface for the v0.15.1 deferred-cancel contract. When the
