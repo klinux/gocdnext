@@ -1,0 +1,66 @@
+name: deploy-marker
+category: notifications
+description: >
+  Record a deploy event in the observability stack — Datadog
+  (events API) or Grafana (annotations API) behind one provider:
+  switch. Title/text default from the run context (tag or SHA +
+  run id), so the minimal usage is provider + token. Tokens ride
+  the job's `secrets:` through a curl config file, never argv.
+
+inputs:
+  provider:
+    required: true
+    description: >
+      datadog | grafana.
+  title:
+    required: false
+    description: >
+      Event title — default "deploy: <tag-or-sha>".
+  text:
+    required: false
+    description: >
+      Event body — default carries the version + run id.
+  tags:
+    required: false
+    description: >
+      Comma-separated tags, e.g. "env:prod,service:shop".
+  grafana-url:
+    required: false
+    description: >
+      Grafana base URL (grafana provider; or GRAFANA_URL env).
+  api-base:
+    required: false
+    description: >
+      API base override (Datadog EU site, proxies, testing).
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: datadog marker after the prod deploy
+    yaml: |
+      jobs:
+        deploy:
+          stage: deploy
+          uses: ghcr.io/klinux/gocdnext-plugin-helm@v1
+          with: { command: upgrade --install app ./chart }
+
+        mark:
+          stage: deploy
+          needs: [deploy]
+          secrets: [DATADOG_API_KEY]
+          uses: ghcr.io/klinux/gocdnext-plugin-deploy-marker@v1
+          with:
+            provider: datadog
+            tags: "env:prod,service:shop"
+
+  - name: grafana annotation
+    yaml: |
+      secrets: [GRAFANA_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-deploy-marker@v1
+      with:
+        provider: grafana
+        grafana-url: https://grafana.example.com
+        tags: "env:prod"

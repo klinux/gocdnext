@@ -1,0 +1,69 @@
+name: maven-central-publish
+category: registry
+description: >
+  Upload a deployment bundle to Maven Central via the Sonatype
+  Central Portal API, then poll validation to a terminal state.
+  Scope is deliberate: this plugin UPLOADS a pre-built bundle —
+  producing it (jars + sources + javadoc + poms + .asc signatures
+  + checksums in the Central layout) is the build job's
+  responsibility, and GPG signing stays in the build job where the
+  key lives; this container never sees private key material. The
+  portal token rides the job's `secrets:` through a curl config
+  file, never argv. Validation failures surface the portal's
+  per-file errors in the log and fail the job.
+
+inputs:
+  bundle:
+    required: true
+    description: >
+      Path to the deployment zip (Central layout). Maven's
+      central-publishing-maven-plugin and Gradle's equivalent
+      produce exactly this file.
+  publishing-type:
+    required: false
+    default: "AUTOMATIC"
+    description: >
+      AUTOMATIC publishes on successful validation; USER_MANAGED
+      stops at VALIDATED for a human to release in the portal UI.
+  wait:
+    required: false
+    default: "true"
+    description: >
+      Poll the deployment to a terminal state (30-min cap, fails
+      loud). false = fire-and-forget upload.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: build the bundle, then publish gated
+    description: >
+      Maven produces the bundle (signing happens there, where the
+      GPG key lives); the upload is approval-gated like every
+      mutating release step.
+    yaml: |
+      jobs:
+        bundle:
+          stage: build
+          uses: ghcr.io/klinux/gocdnext-plugin-maven@v1
+          with:
+            command: -Prelease deploy   # central-publishing plugin zips the bundle
+          artifacts: [target/central-publishing/central-bundle.zip]
+
+        approve-publish:
+          stage: release
+          approval:
+            approvers: [release-managers]
+
+        publish:
+          stage: release
+          needs: [approve-publish]
+          needs_artifacts:
+            - from_job: bundle
+              paths: [target/central-publishing/central-bundle.zip]
+          secrets: [CENTRAL_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-maven-central-publish@v1
+          with:
+            bundle: target/central-publishing/central-bundle.zip

@@ -1,0 +1,75 @@
+name: pypi-publish
+category: registry
+description: >
+  Upload built distributions (dist/*.whl, *.tar.gz) to PyPI or a
+  compatible index via twine. Building is the BUILD job's
+  responsibility (python -m build) — this plugin uploads what
+  dist/ holds, shipped over via artifacts. `twine check` always
+  runs first (a broken long_description otherwise fails AFTER the
+  version number is burned). check-only: true is the no-token PR
+  preflight; skip-existing makes retried pipelines idempotent
+  (files on PyPI are immutable). Trusted publishing note: PyPI's
+  OIDC exchange accepts an allowlist of issuers (GitHub, GitLab,
+  Google, ActiveState) — gocdnext id_tokens can't mint PyPI
+  tokens until custom issuers are accepted, so auth is
+  token-based.
+
+inputs:
+  dist-dir:
+    required: false
+    default: "dist"
+    description: >
+      Directory with the built distributions.
+  repository-url:
+    required: false
+    description: >
+      Upload endpoint override — test.pypi.org or a private index.
+      Default is PyPI.
+  skip-existing:
+    required: false
+    default: "false"
+    description: >
+      twine --skip-existing: already-uploaded files don't fail
+      the run (set true on retry-prone release pipelines).
+  check-only:
+    required: false
+    default: "false"
+    description: >
+      Run twine check and stop — metadata validation without
+      upload, no token needed. The PR preflight.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: build job + publish job
+    description: >
+      Canonical split: build produces dist/, publish (gated to the
+      tag pipeline) uploads it.
+    yaml: |
+      jobs:
+        build:
+          stage: build
+          uses: ghcr.io/klinux/gocdnext-plugin-python@v1
+          with: { command: "python -m build" }
+          artifacts: [dist/]
+
+        publish:
+          stage: release
+          needs_artifacts:
+            - from_job: build
+              paths: [dist/]
+          secrets: [PYPI_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-pypi-publish@v1
+          with:
+            skip-existing: "true"
+
+  - name: metadata preflight on PRs
+    description: >
+      twine check without upload — no token in the PR context.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-pypi-publish@v1
+      with:
+        check-only: "true"

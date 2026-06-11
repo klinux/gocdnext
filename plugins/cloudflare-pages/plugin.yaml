@@ -1,0 +1,45 @@
+name: cloudflare-pages
+category: deploy
+description: >
+  Deploy a built directory to Cloudflare Pages via wrangler.
+  Token + account id ride env through the job's `secrets:`
+  (wrangler's native contract), never argv. branch: maps
+  non-production branches to Pages preview URLs.
+
+inputs:
+  dir:
+    required: true
+    description: >
+      The built site directory.
+  project-name:
+    required: true
+    description: >
+      The Cloudflare Pages project.
+  branch:
+    required: false
+    description: >
+      Deployment branch — non-production branches get preview
+      URLs (e.g. pr-${CI_PULL_REQUEST_KEY}).
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: production deploy
+    yaml: |
+      secrets: [CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID]
+      uses: ghcr.io/klinux/gocdnext-plugin-cloudflare-pages@v1
+      with:
+        dir: dist
+        project-name: my-site
+
+  - name: PR preview
+    yaml: |
+      secrets: [CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID]
+      uses: ghcr.io/klinux/gocdnext-plugin-cloudflare-pages@v1
+      with:
+        dir: dist
+        project-name: my-site
+        branch: pr-${CI_PULL_REQUEST_KEY}

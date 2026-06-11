@@ -1,0 +1,66 @@
+name: vercel
+category: deploy
+description: >
+  Deploy to Vercel. Headless linkage via VERCEL_ORG_ID +
+  VERCEL_PROJECT_ID (+ VERCEL_TOKEN through `secrets:`). prebuilt:
+  true deploys the .vercel/output a prior job produced with
+  `vercel build` — keeping the build in the build stage and the
+  deploy step instant.
+
+inputs:
+  prod:
+    required: false
+    default: "false"
+    description: >
+      true = production deploy; false = preview URL.
+  prebuilt:
+    required: false
+    default: "false"
+    description: >
+      Deploy .vercel/output from a prior `vercel build` job
+      (shipped via artifacts) instead of building remotely.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: simple deploy (Vercel builds remotely)
+    yaml: |
+      jobs:
+        deploy:
+          stage: deploy
+          secrets: [VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID]
+          uses: ghcr.io/klinux/gocdnext-plugin-vercel@v1
+          with: { prod: "true" }
+
+  - name: build once, deploy prebuilt
+    yaml: |
+      jobs:
+        # The Vercel CLI has no env-var auth and --token would put
+        # the secret on argv — write its auth.json instead (the
+        # vercel plugin below does this internally).
+        build:
+          stage: build
+          secrets: [VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID]
+          uses: ghcr.io/klinux/gocdnext-plugin-node@v1
+          with:
+            command: |
+              VCONF="$(mktemp -d)"
+              trap 'rm -rf "$VCONF"' EXIT
+              node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({token:process.env.VERCEL_TOKEN}),{mode:0o600})' "$VCONF/auth.json"
+              npx vercel@37 pull --yes --environment=production --global-config "$VCONF"
+              npx vercel@37 build --prod --yes --global-config "$VCONF"
+          artifacts: [.vercel/output/]
+
+        deploy:
+          stage: deploy
+          needs_artifacts:
+            - from_job: build
+              paths: [.vercel/output/]
+          secrets: [VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID]
+          uses: ghcr.io/klinux/gocdnext-plugin-vercel@v1
+          with:
+            prod: "true"
+            prebuilt: "true"

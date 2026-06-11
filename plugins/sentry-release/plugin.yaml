@@ -1,0 +1,69 @@
+name: sentry-release
+category: notifications
+description: >
+  Create + finalize a Sentry release, optionally setting commit
+  metadata (--auto, degrading gracefully on shallow clones),
+  uploading sourcemaps and marking a deploy to an environment.
+  Version precedence: explicit input → CI_TAG_NAME → CI_COMMIT_SHA,
+  so tag-triggered release pipelines need zero config. Auth via
+  the job's `secrets:` (sentry-cli's native env), never argv.
+
+inputs:
+  version:
+    required: false
+    description: >
+      Release identifier. Default: the triggering tag
+      (CI_TAG_NAME), falling back to the commit SHA.
+  org:
+    required: false
+    description: >
+      Sentry organization slug (or SENTRY_ORG env).
+  project:
+    required: false
+    description: >
+      Sentry project slug (or SENTRY_PROJECT env).
+  set-commits:
+    required: false
+    default: "true"
+    description: >
+      Attach commit metadata via --auto --ignore-missing; skipped
+      gracefully when the repo isn't mapped in Sentry or the
+      clone is too shallow.
+  sourcemaps:
+    required: false
+    description: >
+      Directory of sourcemaps to upload for this release.
+  finalize:
+    required: false
+    default: "true"
+    description: >
+      Mark the release finalized (sets the released-at timestamp).
+  environment:
+    required: false
+    description: >
+      Also record a deploy of this release to the environment
+      (shows up in Sentry's Releases → Deploys).
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: release on tag with deploy marker
+    yaml: |
+      secrets: [SENTRY_AUTH_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-sentry-release@v1
+      with:
+        org: acme-org
+        project: shop
+        environment: production
+
+  - name: frontend release with sourcemaps
+    yaml: |
+      secrets: [SENTRY_AUTH_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-sentry-release@v1
+      with:
+        org: acme-org
+        project: shop-web
+        sourcemaps: dist/assets
