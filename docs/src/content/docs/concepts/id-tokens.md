@@ -61,6 +61,34 @@ Server clocks must be NTP-synced: tokens carry a 60s `nbf`
 backdate for skew, but a badly drifting clock breaks verification
 anyway.
 
+### Who actually fetches `/.well-known/*`
+
+"Reachable by cloud verifiers" has a precise meaning: the ONLY
+client of these endpoints is the **verifier you federate with**.
+Nothing else in the gocdnext flow touches them — your SCM provider
+(GitHub/GitLab/Bitbucket) never does; their allowlisted webhook
+ranges are unrelated inbound traffic.
+
+| Federation target | Who fetches the JWKS | Stable IP range to allowlist? |
+|---|---|---|
+| GCP Workload Identity | Google's STS infrastructure | **No** — Google publishes no CIDR for these fetchers |
+| AWS IAM OIDC provider | AWS-internal infrastructure (at provider creation + token validation) | **No** |
+| Azure federated credentials | Microsoft infrastructure | **No** |
+| HashiCorp Vault (JWT auth) | your **own Vault server** | Yes — it's your machine |
+
+Consequences for deployments behind an IP allowlist:
+
+- **Self-hosted Vault on the same network**: nothing to open —
+  Vault fetches the JWKS from inside; if your internal ranges are
+  already allowed, `id_tokens` + Vault works today.
+- **GCP / AWS / Azure**: there is no range to add. The practical
+  fix is exposing **only** the two `/.well-known/*` paths without
+  the allowlist (a separate ingress rule for those paths on the
+  same host). That is safe by design: they serve exclusively
+  PUBLIC key material from an in-memory cache — no auth, no
+  database access, no tenant data. Every public OIDC issuer
+  (GitHub Actions' included) is world-readable by construction.
+
 ## Claims
 
 | Claim | Value | Notes |
