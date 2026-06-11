@@ -6,6 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.25.0 — 2026-06-11
+
+OIDC signing-key management lands in the web UI — `/settings/oidc`.
+Until now rotation was API-only, which made the emergency runbook
+(key compromise at 3am) a curl-from-memory exercise.
+
+### Added
+
+- **/settings/oidc** (admin-only, new "OIDC issuer" tab): discovery
+  endpoint links (relative hrefs — they resolve on the public host
+  in the standard single-ingress deployment) and the signing-key
+  lifecycle table (active / retired-in-JWKS / revoked, newest
+  first). Key material never reaches the page — the admin API only
+  serves lifecycle metadata; the JWKS stays the sole public-key
+  surface.
+- **Rotate key** (graceful): one confirm — the old key keeps
+  verifying in the JWKS until in-flight tokens expire, zero impact
+  on running jobs.
+- **Emergency rotate**: destructive dialog that requires typing the
+  active kid to arm the button, with the blast radius spelled out
+  (already-issued tokens stop verifying immediately; verifiers may
+  cache the old JWKS up to 5 minutes). The server action's mode is
+  a closed Zod enum — a typo'd mode is rejected client-side rather
+  than silently degrading to graceful (the server treats an empty
+  mode as graceful, so this guard matters).
+
+No backend change — the admin endpoints shipped in v0.20.0.
+
 ## v0.24.0 — 2026-06-11
 
 Twelve plugins closing the remaining catalog-gap issues in one
