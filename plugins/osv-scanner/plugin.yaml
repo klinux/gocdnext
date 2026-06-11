@@ -1,0 +1,82 @@
+name: osv-scanner
+category: security
+description: >
+  Dependency vulnerability scan (SCA) with Google's osv-scanner —
+  reads lockfiles across ecosystems (go.mod, package-lock.json,
+  pnpm-lock.yaml, poetry.lock, Cargo.lock, …) against the OSV.dev
+  database. Complements trivy: trivy looks at images and
+  filesystems, osv-scanner at the dependency graph your lockfiles
+  declare. Report written as SARIF (default), json or table;
+  fail-on: none turns findings into report-only WITHOUT silencing
+  scan errors — a broken lockfile never fakes a clean report.
+  Ignores / acknowledged vulnerabilities go in an
+  osv-scanner.toml (the baseline mechanism).
+
+inputs:
+  dir:
+    required: false
+    default: "."
+    description: >
+      Scan root, recursive. Lockfiles are auto-detected.
+  format:
+    required: false
+    default: "sarif"
+    description: >
+      sarif | json | table. The report file extension follows.
+  report-file:
+    required: false
+    description: >
+      Output path, default osv-report.<format> — attach via the
+      job's artifacts:.
+  fail-on:
+    required: false
+    default: "any"
+    description: >
+      any (default): exit 1 when vulnerabilities are found.
+      none: report-only — findings don't fail the job, but scan
+      ERRORS (bad lockfile, network) still do.
+  config:
+    required: false
+    description: >
+      Path to an osv-scanner.toml with ignore rules — the
+      acknowledged-vulnerability baseline (each entry carries a
+      reason and optional expiry).
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: gate the build on known vulns
+    description: >
+      Scans every lockfile in the repo; any known vulnerability
+      fails the job. The SARIF ships as an artifact either way.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-osv-scanner@v1
+      artifacts:
+        optional: [osv-report.sarif]
+
+  - name: report-only on PRs
+    description: >
+      Findings don't block the PR; the report lands as an
+      artifact (pair with pr-comment for in-review visibility).
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-osv-scanner@v1
+      with:
+        fail-on: none
+      artifacts:
+        optional: [osv-report.sarif]
+
+  - name: acknowledged vulns via osv-scanner.toml
+    description: >
+      The baseline mechanism: ignores live in a reviewed file
+      with reasons, not in pipeline flags.
+    yaml: |
+      # osv-scanner.toml:
+      #   [[IgnoredVulns]]
+      #   id = "GO-2024-1234"
+      #   reason = "not reachable — vendored CLI only used in tests"
+      uses: ghcr.io/klinux/gocdnext-plugin-osv-scanner@v1
+      with:
+        config: osv-scanner.toml
