@@ -236,8 +236,16 @@ jobs:
           # applies to the cosign sign/attest steps below.
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=plugin-jdk-base
-          cache-to: type=gha,mode=max,scope=plugin-jdk-base
+          # Registry cache instead of type=gha: the Actions cache has a
+          # 10 GB per-repo cap with LRU eviction, and a tag push
+          # rebuilding the whole catalog blows through it every release —
+          # evicted blobs leave per-scope indexes dangling and buildkit
+          # fails the IMPORT with "blob not found" instead of treating it
+          # as a miss (goose on v0.22.0/v0.23.0). GHCR has no such cap.
+          # cache-to only when we can push (fork PRs read the public
+          # cache but can't write — an empty string input is ignored).
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-buildcache:jdk-base
+          cache-to: ${{ steps.can-push.outputs.push == 'true' && format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:jdk-base,mode=max', env.REGISTRY, github.repository_owner) || '' }}
 
       # Sign the manifest digest, not a tag — tags are mutable
       # (jdk-base ships `:v1`, `:latest`, `:main`, semver tags,
@@ -451,8 +459,12 @@ jobs:
           # there's nothing to attest anyway.
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=plugin-${{ matrix.plugin }}
-          cache-to: type=gha,mode=max,scope=plugin-${{ matrix.plugin }}
+          # Registry cache — same rationale as the base job (10 GB GHA
+          # cache cap + full-catalog rebuilds = recurring evicted-blob
+          # import failures). cache-to skipped on any PR: the matrix
+          # never pushes on PRs, and fork tokens can't write GHCR.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-buildcache:${{ matrix.plugin }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}/gocdnext-plugin-buildcache:{2},mode=max', env.REGISTRY, github.repository_owner, matrix.plugin) || '' }}
 
       # Sign the manifest digest of every consumer plugin
       # (gradle, maven, node, go, docker, kubectl, trivy, slack
