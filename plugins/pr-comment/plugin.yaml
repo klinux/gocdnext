@@ -1,0 +1,129 @@
+name: pr-comment
+category: notifications
+description: >
+  Post — or update in place — a comment on the pull request /
+  merge request that triggered the run. GitHub, GitLab and
+  Bitbucket Cloud, resolved automatically from the run's PR
+  context (CI_PULL_REQUEST_URL): no repo or provider inputs
+  needed, self-hosted GitHub Enterprise / GitLab included. Upsert
+  mode (default) finds its own previous comment via a hidden
+  marker and edits it, so successive pushes don't stack
+  duplicates. Non-PR runs (push, manual, tag) are a loud success
+  no-op, so `on: [push, pull_request]` pipelines don't fail their
+  push leg. Bodies over 60 KB are truncated with an explicit
+  notice (GitHub's hard cap is 65536 chars). Auth via the job's
+  `secrets:` — tokens never touch argv.
+
+inputs:
+  body:
+    required: false
+    description: >
+      Comment content (markdown). Mutually exclusive with
+      body-file; one of the two is required.
+  body-file:
+    required: false
+    description: >
+      Workspace path to read the content from — the natural fit
+      for output produced by an earlier job (terraform plan,
+      liquibase update-sql) shipped over via artifacts.
+  marker:
+    required: false
+    description: >
+      Upsert identity, embedded as an HTML comment. Default:
+      "gocdnext/pr-comment:<job name>" — two pr-comment jobs in
+      one pipeline get distinct comments automatically. Matching
+      is on the full "<!-- marker -->" sentinel, so prefix
+      markers never collide ("plan" does not match "plan-extra").
+      Single line, must not contain "-->". On Bitbucket the
+      marker may render as visible text (cosmetic).
+  mode:
+    required: false
+    default: "upsert"
+    description: >
+      upsert (default): edit the previous comment carrying the
+      marker, create when none exists. create: always post a new
+      comment.
+  provider:
+    required: false
+    default: "auto"
+    description: >
+      auto (default — detected from the PR URL path shape, which
+      also covers self-hosted hosts) | github | gitlab |
+      bitbucket.
+  api-base:
+    required: false
+    description: >
+      API base URL override. Rarely needed — GHE and self-hosted
+      GitLab are derived from the PR URL host automatically; this
+      exists for API proxies and testing.
+  dry-run:
+    required: false
+    default: "false"
+    description: >
+      Resolve provider/endpoints/payload and print them without
+      calling the API.
+
+examples:
+  - name: terraform plan on the PR (atlantis-style)
+    description: >
+      The plan job saves the plan as an artifact; pr-comment
+      ships it into the PR. Reviewers see the exact diff without
+      opening the CI. GITHUB_TOKEN needs repo comment scope.
+    yaml: |
+      jobs:
+        plan:
+          stage: check
+          image: hashicorp/terraform:1.10
+          script:
+            - terraform init -input=false
+            - terraform plan -no-color -input=false > plan.txt
+          artifacts: [plan.txt]
+
+        comment-plan:
+          stage: check
+          needs: [plan]
+          needs_artifacts:
+            - from_job: plan
+              paths: [plan.txt]
+          secrets: [GITHUB_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-pr-comment@v1
+          with:
+            body-file: plan.txt
+
+  - name: migration DDL preview on the MR (GitLab)
+    description: >
+      Pairs with the liquibase plugin's update-sql dry-run: the
+      DDL the merge would apply, posted on the MR and updated in
+      place on every push.
+    yaml: |
+      jobs:
+        ddl-preview:
+          stage: check
+          image: liquibase/liquibase:4.31-alpine
+          script:
+            - liquibase --changelog-file=db/changelog-master.yaml update-sql > ddl.sql
+          secrets: [LIQUIBASE_COMMAND_URL, LIQUIBASE_COMMAND_USERNAME, LIQUIBASE_COMMAND_PASSWORD]
+          artifacts: [ddl.sql]
+
+        comment-ddl:
+          stage: check
+          needs: [ddl-preview]
+          needs_artifacts:
+            - from_job: ddl-preview
+              paths: [ddl.sql]
+          secrets: [GITLAB_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-pr-comment@v1
+          with:
+            body-file: ddl.sql
+            marker: ddl-preview
+
+  - name: static body, always a fresh comment
+    description: >
+      mode: create skips the upsert lookup — every run posts a
+      new comment (use sparingly; upsert is the polite default).
+    yaml: |
+      secrets: [GITHUB_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-pr-comment@v1
+      with:
+        body: ":rocket: preview environment ready at https://pr-${CI_PULL_REQUEST_KEY}.preview.example.com"
+        mode: create
