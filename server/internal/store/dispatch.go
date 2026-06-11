@@ -51,11 +51,16 @@ type RunForDispatch struct {
 	ID         uuid.UUID
 	PipelineID uuid.UUID
 	ProjectID  uuid.UUID
-	Counter    int64
-	Status     string
-	Revisions  json.RawMessage
-	Definition json.RawMessage
-	ConfigPath string
+	// ProjectSlug rides along for the OIDC id_token claims — the
+	// `sub` grammar pins policies to project:{slug}:..., and slugs
+	// are the operator-facing identity (UUIDs are not memorable in
+	// IAM conditions). Same hot-path round-trip as everything else.
+	ProjectSlug string
+	Counter     int64
+	Status      string
+	Revisions   json.RawMessage
+	Definition  json.RawMessage
+	ConfigPath  string
 	// ProjectNotifications is the owning project's notifications
 	// JSONB, pulled in the same round-trip as Definition so the
 	// synth-notification dispatch path can fall back to it when
@@ -294,8 +299,8 @@ type JobOutputs struct {
 //
 // Returns one entry per matrix instance for matrix jobs (matrix_key
 // distinguishes the row). The scheduler's groupNeedsOutputs sorts
-// rows into NeedsOutputs (matrix_key='') vs MatrixNeedsOutputs
-// (matrix_key!=''); see refs.go::NeedsOutputs for the routing
+// rows into NeedsOutputs (matrix_key=”) vs MatrixNeedsOutputs
+// (matrix_key!=”); see refs.go::NeedsOutputs for the routing
 // contract. Empty slice when no name matches — surfaced again
 // here as "no upstream outputs" so the substitution error
 // message points at the right job.
@@ -344,6 +349,7 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		ID:                   fromPgUUID(row.ID),
 		PipelineID:           fromPgUUID(row.PipelineID),
 		ProjectID:            fromPgUUID(row.ProjectID),
+		ProjectSlug:          row.ProjectSlug,
 		Counter:              row.Counter,
 		Status:               row.Status,
 		Revisions:            row.Revisions,

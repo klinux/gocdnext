@@ -1,6 +1,10 @@
 package scheduler
 
-import "github.com/gocdnext/gocdnext/server/internal/store"
+import (
+	"context"
+
+	"github.com/gocdnext/gocdnext/server/internal/store"
+)
 
 // GroupNeedsOutputs exposes the pure grouping/validation helper for
 // black-box tests in the scheduler_test package. The non-exported
@@ -21,4 +25,11 @@ func SubstituteNeedsRefs(s string, needs NeedsOutputs, matrix MatrixNeedsOutputs
 // SubstituteNeedsRefsMap is the map-valued lift; same contract.
 func SubstituteNeedsRefsMap(in map[string]string, needs NeedsOutputs, matrix MatrixNeedsOutputs, dims MatrixDimNames) (map[string]string, error) {
 	return substituteNeedsRefsMap(in, needs, matrix, dims)
+}
+
+// MintIDTokensForTest exposes the dispatch-path id_token resolution
+// for black-box tests: fast-path gating, claims construction per
+// cause, and the issuer-disabled configuration error.
+func MintIDTokensForTest(s *Scheduler, ctx context.Context, run store.RunForDispatch, job store.DispatchableJob) (map[string]string, error) {
+	return s.mintIDTokens(ctx, run, job)
 }

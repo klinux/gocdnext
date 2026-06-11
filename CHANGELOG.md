@@ -6,6 +6,84 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.20.0 — 2026-06-11
+
+OIDC token issuer for jobs — `id_tokens:` (keyless cloud auth).
+The server is now an OIDC identity provider: jobs opt in via
+YAML and receive short-lived RS256 JWTs as env vars, which GCP
+Workload Identity Federation, AWS IAM OIDC, Azure federated
+credentials and Vault JWT auth exchange for real credentials.
+The long-lived service account key in `secrets:` disappears.
+Parity with GHA `id-token: write` / GitLab `id_tokens:` (the
+YAML shape follows GitLab).
+
+### YAML
+
+```yaml
+jobs:
+  deploy:
+    id_tokens:
+      GCP_ID_TOKEN:
+        aud: https://iam.googleapis.com/projects/.../providers/x
+      VAULT_JWT:
+        aud: [https://vault.example.com, https://vault-dr.example.com]
+```
+
+`aud` required (scalar or list, no default — deliberate);
+multiple tokens per job; env names validated (POSIX charset,
+`CI_`/`GOCDNEXT_` reserved, collisions with variables/secrets
+rejected at apply).
+
+### Security design
+
+- `sub` grammar is the policy surface:
+  `project:{slug}:pipeline:{name}:ref_type:branch:ref:{branch}`
+  (tags analogous). **PR runs mint a ref-less sub**
+  (`...:pull_request`) — the attacker-controlled head ref never
+  enters the sub, so branch-pinned cloud policies exclude PRs by
+  construction. `:` rejected in pipeline names + percent-encoded
+  in segments (grammar can't be impersonated).
+- RSA-2048 signing key generated on first boot, sealed with the
+  server's AES-256-GCM cipher in Postgres. Multi-replica boot
+  race resolved at the database (partial unique index + ON
+  CONFLICT); proven by an 8-goroutine race test.
+- Signing is hand-rolled stdlib RS256 (the repo's GitHub App JWT
+  pattern) — we never parse or verify untrusted tokens, which is
+  where the JWT-library CVE class lives. Interop proven by
+  verifying minted tokens with coreos/go-oidc end-to-end over
+  HTTP discovery.
+- Every JWT lands in LogMasks — bearer tokens never reach log
+  streams. Minted fresh per dispatch (rerun = new jti/exp).
+- Issuer disabled (no publicBase/secretKey) + job declaring
+  tokens → job fails loud at dispatch. Never a silent dispatch
+  without the token, never a wrong `iss`.
+
+### Endpoints
+
+- `GET /.well-known/openid-configuration` + `/.well-known/jwks.json`
+  (public, served from memory, `max-age=300`).
+- `POST /api/v1/admin/oidc/keys/rotate` — `graceful` (old key
+  verifies until in-flight tokens expire) or `emergency`
+  (compromise: out of the JWKS immediately). Audit-logged.
+- `GET /api/v1/admin/oidc/keys` — lifecycle metadata, never
+  material.
+
+### Config
+
+- `GOCDNEXT_OIDC_TOKEN_TTL` (chart: `server.oidc.tokenTTL`),
+  default 1h, clamp [5m, 24h]. Tokens are minted at dispatch —
+  exchange early in long builds.
+- Feature gates on `GOCDNEXT_PUBLIC_BASE` (the `iss`; HTTPS
+  required by clouds) + `GOCDNEXT_SECRET_KEY`.
+
+### Compatibility
+
+No proto change — tokens ride the existing assignment env +
+log_masks fields, so old agents work unmodified. Migration
+00044 (forward-only) adds `oidc_signing_keys`. New docs concept
+page with per-provider trust snippets + key-compromise runbook;
+example pipeline in `examples/oidc-deploy/`.
+
 ## v0.19.0 — 2026-06-10
 
 New `dotnet` toolchain plugin — the first language gap closed

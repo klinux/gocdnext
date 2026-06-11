@@ -39,6 +39,12 @@ spec:
             {{- include "gocdnext.database.envVar" . | nindent 12 }}
             - name: GOCDNEXT_PUBLIC_BASE
               value: {{ .Values.server.publicBase | quote }}
+            {{- with .Values.server.oidc }}
+            {{- if .tokenTTL }}
+            - name: GOCDNEXT_OIDC_TOKEN_TTL
+              value: {{ .tokenTTL | quote }}
+            {{- end }}
+            {{- end }}
             - name: GOCDNEXT_WEBHOOK_TOKEN
               valueFrom:
                 secretKeyRef:

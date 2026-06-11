@@ -495,6 +495,43 @@ These are also available as `${{ NAME }}` references and
 `${NAME}` shell-style env vars (the latter expanded by the shell
 inside the container).
 
+## OIDC id_tokens (`id_tokens:`)
+
+Per-job OIDC JWTs for keyless cloud auth — exchange them for GCP /
+AWS / Azure / Vault credentials via workload identity federation
+instead of storing service account keys in `secrets:`.
+
+```yaml
+jobs:
+  deploy:
+    stage: ship
+    image: google/cloud-sdk:slim
+    id_tokens:
+      GCP_ID_TOKEN:
+        aud: https://iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/ci/providers/gocdnext
+      VAULT_JWT:
+        aud: [https://vault.example.com, https://vault-dr.example.com]
+    script:
+      - ./deploy.sh   # $GCP_ID_TOKEN and $VAULT_JWT hold signed JWTs
+```
+
+- Map key = env var name (POSIX charset; `CI_`/`GOCDNEXT_`
+  prefixes reserved; collisions with pipeline- or job-level
+  `variables:` and the job's `secrets:` rejected at apply).
+- Not allowed on approval gates (they never dispatch a
+  container, so the token would never be minted).
+- `aud` is **required** — scalar or list, must match the cloud
+  trust config's expected audience exactly.
+- Token values are auto-added to the job's log masks.
+- Requires the server to have `publicBase` + `secretKey`
+  configured; otherwise the job fails loud at dispatch.
+- Pull-request runs get a deliberately ref-less `sub`
+  (`project:X:pipeline:Y:pull_request`) so branch-pinned cloud
+  policies exclude PRs by construction.
+
+Claims, `sub` grammar, per-provider trust snippets, TTL and key
+rotation live in [OIDC id_tokens](/concepts/id-tokens/).
+
 ## Approval gates
 
 ```yaml

@@ -221,6 +221,65 @@ type JobDef struct {
 	// `${{ needs.X.outputs.Y }}` substitutions and any future
 	// outputs surface that reads job_runs.outputs directly.
 	Outputs map[string]OutputDef `yaml:"outputs,omitempty"`
+
+	// IDTokens declares per-job OIDC tokens (keyless cloud auth).
+	// Map key = env var name the JWT is injected as; `aud` is
+	// REQUIRED (no default — an aud that silently equals the
+	// issuer URL would pass misconfigured verifiers, which is a
+	// corner case, not a convenience). GitLab `id_tokens:` shape
+	// for migration ergonomics:
+	//
+	//	id_tokens:
+	//	  GCP_ID_TOKEN:
+	//	    aud: https://iam.googleapis.com/projects/N/.../providers/X
+	//	  VAULT_JWT:
+	//	    aud: [https://vault.example.com, https://vault-dr.example.com]
+	IDTokens map[string]IDTokenDef `yaml:"id_tokens,omitempty"`
+}
+
+// IDTokenDef is one `id_tokens:` entry. Only `aud` exists today;
+// the custom UnmarshalYAML keeps unknown keys loud (the outer
+// KnownFields(true) does not propagate into Node.Decode) and
+// accepts both scalar and sequence aud.
+type IDTokenDef struct {
+	Aud []string `yaml:"aud"`
+}
+
+// UnmarshalYAML enforces the object form ({aud: ...}) and walks the
+// mapping manually so a typo like `audience:` fails loud instead of
+// minting a token with no audience restriction intent.
+func (d *IDTokenDef) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("id_tokens entry must be an object with an `aud` key (line %d) — e.g. `MY_TOKEN: {aud: https://...}`", node.Line)
+	}
+	if len(node.Content)%2 != 0 {
+		return fmt.Errorf("id_tokens entry mapping has odd number of nodes (malformed YAML)")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i]
+		val := node.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			return fmt.Errorf("id_tokens entry key at line %d is not a scalar", key.Line)
+		}
+		switch key.Value {
+		case "aud":
+			// Scalar or sequence — GitLab parity; GCP/AWS/Vault all
+			// accept multi-audience tokens.
+			if val.Kind == yaml.ScalarNode {
+				d.Aud = []string{val.Value}
+				continue
+			}
+			if err := val.Decode(&d.Aud); err != nil {
+				return fmt.Errorf("id_tokens entry `aud` at line %d: %w", key.Line, err)
+			}
+		default:
+			return fmt.Errorf(
+				"id_tokens entry has unknown key %q at line %d — the only accepted key is `aud`. "+
+					"Common typo: `audience` (use `aud`)",
+				key.Value, key.Line)
+		}
+	}
+	return nil
 }
 
 // OutputDef is the YAML shape of a single `outputs:` entry on a

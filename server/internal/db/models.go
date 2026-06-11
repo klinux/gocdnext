@@ -213,6 +213,17 @@ type Modification struct {
 	DetectedAt  pgtype.Timestamptz
 }
 
+type OidcSigningKey struct {
+	ID            pgtype.UUID
+	Kid           string
+	Alg           string
+	PrivateKeyEnc []byte
+	PublicKeyDer  []byte
+	CreatedAt     pgtype.Timestamptz
+	RetiredAt     pgtype.Timestamptz
+	RevokedAt     pgtype.Timestamptz
+}
+
 type Pipeline struct {
 	ID                pgtype.UUID
 	ProjectID         pgtype.UUID

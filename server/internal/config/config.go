@@ -60,6 +60,12 @@ type Config struct {
 	// until manually cleaned. The ensure pass (creating future
 	// partitions) always runs.
 	LogRetention time.Duration
+
+	// OIDCTokenTTL is the lifetime of job id_tokens minted by the
+	// OIDC issuer (id_tokens: feature). Clamped to [5m, 24h] at
+	// load; default 1h. The issuer itself is gated on PublicBase +
+	// SecretKeyHex being configured.
+	OIDCTokenTTL time.Duration
 	// LogMonthsAhead controls how many future months of partitions
 	// the sweeper keeps stocked. Default 3 — daily ticks refresh.
 	LogMonthsAhead int
@@ -253,6 +259,29 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES: %w", err)
 	}
 	c.CacheGlobalQuotaBytes = cacheGlobalQuota
+
+	// OIDC id_token TTL. Tokens are minted at job dispatch but
+	// exchanged whenever the script reaches its cloud-auth step —
+	// possibly deep into a long build — so the default is 1h
+	// (GitLab parity). Clamped to [5m, 24h]: below 5m slow builds
+	// fail intermittently at the exchange step, above 24h the
+	// bearer-token exposure window stops being "short-lived".
+	c.OIDCTokenTTL = time.Hour
+	if raw := env("GOCDNEXT_OIDC_TOKEN_TTL", ""); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("GOCDNEXT_OIDC_TOKEN_TTL: %w", err)
+		}
+		switch {
+		case d < 5*time.Minute:
+			slog.Warn("GOCDNEXT_OIDC_TOKEN_TTL below 5m; clamping", "requested", d)
+			d = 5 * time.Minute
+		case d > 24*time.Hour:
+			slog.Warn("GOCDNEXT_OIDC_TOKEN_TTL above 24h; clamping", "requested", d)
+			d = 24 * time.Hour
+		}
+		c.OIDCTokenTTL = d
+	}
 
 	// Log retention. Accepts Go's time.ParseDuration syntax — "720h"
 	// for 30 days, "168h" for 7 days, etc. Empty / "0" disables the
