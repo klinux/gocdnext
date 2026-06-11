@@ -254,6 +254,25 @@ jobs:
           set -euo pipefail
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
+      # GHCR is eventually consistent for by-digest reads right
+      # after a push — gate before Syft, same flake class as
+      # release.yml (manifest unknown a few hundred ms post-push).
+      - name: wait for pushed manifest
+        if: github.event_name != 'pull_request'
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-jdk-base@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if docker manifest inspect "${REF}" >/dev/null 2>&1; then
+              echo "manifest resolvable after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::${REF} not resolvable after 60s — registry propagation stuck"
+          exit 1
+
       # CycloneDX SBOM via Syft — same rationale as release.yml.
       # The buildkit-native SBOM (sbom: true above) is SPDX;
       # most vuln scanners read CycloneDX, so we attach both
@@ -451,6 +470,26 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # Same GHCR by-digest propagation gate as the base job —
+      # 3 of 47 matrix entries flaked "manifest unknown" on the
+      # post-#31 main run, proving the flake is independent of
+      # the parallel-runs race.
+      - name: wait for pushed manifest
+        if: github.event_name != 'pull_request'
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-plugin-${{ matrix.plugin }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if docker manifest inspect "${REF}" >/dev/null 2>&1; then
+              echo "manifest resolvable after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::${REF} not resolvable after 60s — registry propagation stuck"
+          exit 1
 
       - uses: anchore/sbom-action@v0
         if: github.event_name != 'pull_request'

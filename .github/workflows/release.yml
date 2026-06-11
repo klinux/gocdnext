@@ -197,6 +197,28 @@ jobs:
           set -euo pipefail
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
+      # GHCR is eventually consistent for by-digest reads right
+      # after a push: Syft pulling the digest a few hundred ms
+      # after buildx occasionally gets "manifest unknown" and
+      # kills the matrix job (observed on v0.19.0 kaniko + the
+      # v0.20.0-era main run: buf/nexus/helm). Gate on the
+      # manifest being resolvable before invoking Syft —
+      # bounded retry, fails loud past the deadline.
+      - name: wait for pushed manifest
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository_owner }}/gocdnext-${{ matrix.name }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if docker manifest inspect "${REF}" >/dev/null 2>&1; then
+              echo "manifest resolvable after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::${REF} not resolvable after 60s — registry propagation stuck"
+          exit 1
+
       # Syft generates a richer CycloneDX SBOM than buildkit's
       # native SPDX one — it walks every layer's package manager
       # state (apk/dpkg + go.mod + node_modules) which is what
