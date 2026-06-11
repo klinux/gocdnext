@@ -1272,7 +1272,7 @@ Two related features that close the remaining footguns operators
 hit when adopting profile-driven workloads: a `default`-profile
 fallback for jobs that declare nothing, and full Kubernetes
 scheduling hints (`node_selector` + `tolerations`) on every runner
-profile. Together they unblock the canonical Cora pain case —
+profile. Together they unblock a canonical operator pain case —
 Gradle multi-module builds that OOM-killed on unbounded pods and
 landed Pending when the cluster pinned CI to tainted nodes.
 
@@ -1484,7 +1484,7 @@ quorum policy. Fixed in lockstep with the new
 ## v0.12.0 — 2026-06-07
 
 Two features that close limitations the v0.11 cycle left open:
-**isolated workspace mode now supports structured outputs** (Cora's
+**isolated workspace mode now supports structured outputs** (an operator's
 RWO deployment can finally use the feature), and a new
 **`gocdnext/check-pipeline-run@v1` plugin** replaces the inline
 `curl + jq` preflight in the trunk-based-release recipe.
@@ -2106,7 +2106,7 @@ terraform gained cached examples.
 
 ### Chore — scrub internal customer references from public repo
 
-Replaced `cora`, `corabank`, `corapulse`, `img.cora.tools` with
+Replaced internal customer-specific names and registry hosts with
 generic placeholders (`registry.example.com`, `@app/web`,
 `acme-org`, `monorepo-app`, `gocdnext.example.com`) across
 tests, source comments, plugin examples, and CHANGELOG prose.

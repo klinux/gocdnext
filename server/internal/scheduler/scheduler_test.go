@@ -108,7 +108,7 @@ func TestDispatchRun_JobWithoutProfileInheritsDefaultScheduling(t *testing.T) {
 			"cloud.google.com/gke-nodepool": "node-pool-spot-ci",
 		},
 		Tolerations: []store.Toleration{
-			{Key: "cora", Operator: "Equal", Value: "spot-ci", Effect: "NoSchedule"},
+			{Key: "team", Operator: "Equal", Value: "spot-ci", Effect: "NoSchedule"},
 			{Key: "spot", Operator: "Exists", Effect: "NoExecute", TolerationSeconds: &tolSeconds},
 		},
 	}); err != nil {
