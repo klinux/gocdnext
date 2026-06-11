@@ -62,6 +62,12 @@ type Scheduler struct {
 	// so private-repo clones succeed without the operator wiring a
 	// per-project secret. nil = current PAT-only behaviour.
 	gitTokens GitTokenSource
+
+	// idTokens, when set, mints per-job OIDC JWTs for jobs that
+	// declare id_tokens: in YAML. nil = feature off; such jobs then
+	// fail dispatch loud (configuration error, same contract as
+	// secrets/artifacts above).
+	idTokens IDTokenMinter
 }
 
 // New wires the scheduler. dsn is used for a dedicated LISTEN connection —
@@ -500,7 +506,19 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs)
+		// OIDC id_tokens (keyless cloud auth). Minted fresh per
+		// dispatch — a rerun gets a new jti/exp. Failure here is a
+		// CONFIGURATION error (issuer off, key unavailable): the next
+		// tick reproduces it identically, so terminalise loud instead
+		// of leaving the job queued forever. NEVER dispatch a job
+		// without a token it declared.
+		idTokens, idErr := s.mintIDTokens(ctx, run, job)
+		if idErr != nil {
+			s.failJobWithError(ctx, job, fmt.Sprintf("id_tokens: %v", idErr))
+			continue
+		}
+
+		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs, idTokens)
 		if err != nil {
 			// Unresolved needs refs (issue #10) are CONFIGURATION
 			// errors — the next tick will see the exact same

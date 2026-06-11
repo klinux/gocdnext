@@ -25,6 +25,15 @@ server:
   # resources targeting the same host is undefined behaviour
   # across controllers; nginx merges them, others reject).
   publicBase: ""
+  # OIDC id_token issuer (keyless cloud auth for jobs — the
+  # `id_tokens:` YAML feature). Turns on automatically when BOTH
+  # publicBase and a secretKey are configured; no separate enable
+  # flag. tokenTTL is the job-token lifetime (Go duration; the
+  # server clamps to [5m, 24h]). Tokens are minted at dispatch but
+  # exchanged whenever the script reaches its cloud-auth step, so
+  # size this to your longest build.
+  oidc:
+    tokenTTL: "1h"
   resources:
     requests:
       cpu: 100m

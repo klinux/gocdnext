@@ -415,7 +415,7 @@ func TestBuildAssignment_InjectsSecretsIntoEnvAndMasks(t *testing.T) {
 		"GH_TOKEN":          "ghp_abc123",
 		"REGISTRY_PASSWORD": "reg-pw-xyz",
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestBuildAssignment_MasksOptInOutputsBypassesEightCharHeuristic(t *testing.
 			"pub":    "public", // 6 chars: < heuristic; no opt-in → heuristic skips
 		},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestBuildAssignment_MergesProfileEnvAndMasks(t *testing.T) {
 	}
 	profileMasks := []string{"AKIA"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{Env: profileEnv, SecretValues: profileMasks}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{Env: profileEnv, SecretValues: profileMasks}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestBuildAssignment_PropagatesProfileNodeSelectorAndTolerations(t *testing.
 	// this, the admin-edited profile gets the values but the agent
 	// pod spec never sees them — silent drop.
 	pipeline := &domain.Pipeline{
-		Name:   "p", Stages: []string{"build"},
+		Name: "p", Stages: []string{"build"},
 		Jobs: []domain.Job{{Name: "b", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
 	}
 	pipelineJSON, _ := json.Marshal(pipeline)
@@ -590,7 +590,7 @@ func TestBuildAssignment_PropagatesProfileNodeSelectorAndTolerations(t *testing.
 		},
 	}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, resolved, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, resolved, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestBuildAssignment_EmptyProfileLeavesSchedulingFieldsNil(t *testing.T) {
 	// keeps the proto bytes minimal AND lets the engine treat
 	// absent + nil identically.
 	pipeline := &domain.Pipeline{
-		Name:   "p", Stages: []string{"build"},
+		Name: "p", Stages: []string{"build"},
 		Jobs: []domain.Job{{Name: "b", Stage: "build", Tasks: []domain.Task{{Script: "true"}}}},
 	}
 	pipelineJSON, _ := json.Marshal(pipeline)
@@ -640,7 +640,7 @@ func TestBuildAssignment_EmptyProfileLeavesSchedulingFieldsNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "b"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestBuildAssignment_PropagatesProfileAndResources(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "build"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -703,7 +703,7 @@ func TestBuildAssignment_NoResourcesLeavesProtoNil(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestBuildAssignment_MissingSecretIsError(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "j"}
 
-	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, store.ResolvedProfile{}, nil, nil, nil); err == nil {
+	if _, err := scheduler.BuildAssignment(run, job, nil, map[string]string{}, nil, store.ResolvedProfile{}, nil, nil, nil, nil); err == nil {
 		t.Fatalf("expected error when declared secret is unresolved")
 	}
 }
@@ -779,7 +779,7 @@ func TestBuildAssignment_MapsTasksAndCheckouts(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -837,7 +837,7 @@ func TestBuildAssignment_DedupesArtifactPathsCanonical(t *testing.T) {
 		ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg,
 	}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestBuildAssignment_SubstitutesPluginSettings(t *testing.T) {
 		"DOCKER_PASSWORD": "hunter2",
 	}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, secrets, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -955,7 +955,7 @@ func TestBuildAssignment_RejectsUnresolvedRefBeforeDispatch(t *testing.T) {
 	job := store.DispatchableJob{ID: uuid.New(), Name: "buildx"}
 
 	_, err := scheduler.BuildAssignment(run, job, nil,
-		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, store.ResolvedProfile{}, nil, nil, nil)
+		map[string]string{"DOCKER_USERNAME": "deploybot"}, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unresolved ref")
 	}
@@ -1004,7 +1004,7 @@ func TestE2E_OutputsRoundTripFromBumpToPublish(t *testing.T) {
 					Outputs: map[string]string{"next": "NEXT"},
 				},
 				{
-					Name:      "publish", Stage: "publish", Image: "alpine:3.20",
+					Name: "publish", Stage: "publish", Image: "alpine:3.20",
 					Variables: map[string]string{"IMAGE_TAG": "${{ needs.bump.outputs.next }}"},
 					Tasks:     []domain.Task{{Script: "echo $IMAGE_TAG"}},
 					Needs:     []string{"bump"},
@@ -1391,7 +1391,7 @@ func TestBuildAssignment_ResolvesNeedsOutputsInEnv(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {"next": "v1.3.0"},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1427,7 +1427,7 @@ func TestBuildAssignment_ResolvesNeedsOutputsInPluginSettings(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"promote": {"digest": "sha256:beef1234"},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1462,10 +1462,10 @@ func TestBuildAssignment_NeedsOutputValuesEnterLogMasks(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {
 			"token": longValue,
-			"short": "v1",  // < 8 chars → must NOT enter masks
+			"short": "v1", // < 8 chars → must NOT enter masks
 		},
 	}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1504,7 +1504,7 @@ func TestBuildAssignment_NeedsRefErrorsWrapSentinel(t *testing.T) {
 	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", Needs: []string{"bump"}}
 
 	needsOutputs := scheduler.NeedsOutputs{"bump": {"next": "v1.3.0"}}
-	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1536,7 +1536,7 @@ func TestBuildAssignment_MissingNeedsOutputErrors(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {"next": "v1.3.0"}, // declared `next`, NOT `missing`
 	}
-	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing alias")
 	}
@@ -1570,7 +1570,7 @@ func TestBuildAssignment_MissingUpstreamJobErrors(t *testing.T) {
 	needsOutputs := scheduler.NeedsOutputs{
 		"bump": {"next": "v1.0.0"},
 	}
-	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil)
+	_, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needsOutputs, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing upstream job")
 	}
@@ -1623,7 +1623,7 @@ func TestBuildAssignment_SubstitutesCIVarsAndShellRefs(t *testing.T) {
 
 	got, err := scheduler.BuildAssignment(run, job, nil,
 		map[string]string{"DOCKER_USERNAME": "deploybot"},
-		nil, store.ResolvedProfile{}, nil, nil, nil)
+		nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1677,7 +1677,7 @@ func TestBuildAssignment_CloneTokenRewritesURLAndMasks(t *testing.T) {
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
 	cloneTokens := map[string]string{materialID.String(): "ghs_fake_install_token"}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, cloneTokens, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, cloneTokens, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1715,7 +1715,7 @@ func TestBuildAssignment_NoTokenLeavesURLUntouched(t *testing.T) {
 	gitCfg, _ := json.Marshal(domain.GitMaterial{URL: "https://github.com/octocat/hello-world", Branch: "main"})
 	materials := []store.Material{{ID: materialID, Type: string(domain.MaterialGit), Config: gitCfg}}
 
-	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, materials, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1753,7 +1753,7 @@ func TestBuildAssignment_PropagatesPipelineServices(t *testing.T) {
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "integration", Image: "golang:1.25"}
 
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -1785,7 +1785,7 @@ func TestBuildAssignment_NoServicesWhenPipelineHasNone(t *testing.T) {
 		Revisions: json.RawMessage(`{}`),
 	}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "compile"}
-	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil)
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}

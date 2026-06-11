@@ -101,6 +101,15 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 	if name == "" {
 		return nil, fmt.Errorf("pipeline has no name (set top-level `name:` or pass a filename)")
 	}
+	// ':' is the segment separator of the OIDC id_token `sub` claim
+	// grammar (project:X:pipeline:Y:ref_type:...) — a name carrying
+	// one could impersonate grammar segments in sloppy glob-based
+	// cloud policies. The sub builder also percent-encodes as
+	// defence in depth, but the front door rejects so operators see
+	// the constraint at apply time, not in an IAM debugging session.
+	if strings.Contains(name, ":") {
+		return nil, fmt.Errorf("pipeline name %q must not contain ':' (reserved as the id_token subject-claim separator)", name)
+	}
 
 	concurrency := strings.ToLower(strings.TrimSpace(f.Concurrency))
 	switch concurrency {
@@ -191,7 +200,7 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		if !declared[jd.Stage] {
 			return nil, fmt.Errorf("job %q references undeclared stage %q", name, jd.Stage)
 		}
-		j, err := toJob(name, jd)
+		j, err := toJob(name, jd, f.Variables)
 		if err != nil {
 			return nil, err
 		}
@@ -426,7 +435,7 @@ func toMaterial(m MaterialSpec) (domain.Material, error) {
 	}
 }
 
-func toJob(name string, jd JobDef) (domain.Job, error) {
+func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, error) {
 	j := domain.Job{
 		Name:      name,
 		Stage:     jd.Stage,
@@ -556,6 +565,14 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		j.OutputMasks = masks
 	}
 
+	if len(jd.IDTokens) > 0 {
+		specs, err := validateIDTokensDeclaration(name, jd, pipelineVars)
+		if err != nil {
+			return domain.Job{}, err
+		}
+		j.IDTokens = specs
+	}
+
 	for _, na := range jd.NeedsArtifacts {
 		if na.FromJob == "" {
 			return domain.Job{}, fmt.Errorf("job %q: needs_artifacts entry missing from_job", name)
@@ -578,9 +595,9 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 		if len(jd.Script) > 0 || jd.Uses != "" || jd.Image != "" ||
 			jd.Settings != nil || jd.Artifacts != nil ||
 			len(jd.NeedsArtifacts) > 0 || len(jd.Cache) > 0 ||
-			jd.Docker {
+			jd.Docker || len(jd.IDTokens) > 0 {
 			return domain.Job{}, fmt.Errorf(
-				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker — it only blocks on a human decision",
+				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens — it only blocks on a human decision",
 				name,
 			)
 		}
@@ -615,7 +632,7 @@ func toJob(name string, jd JobDef) (domain.Job, error) {
 				return domain.Job{}, fmt.Errorf(
 					"job %q: approval.quorum_by_label has %d entries — cap is %d (operator is encoding policy in YAML the wrong way past that)",
 					name, got, approvalQuorumByLabelCap)
-				}
+			}
 			quorumByLabel = make(map[string]int, len(jd.Approval.QuorumByLabel))
 			for label, override := range jd.Approval.QuorumByLabel {
 				// Normalise BEFORE charset check so `HotFix` in YAML

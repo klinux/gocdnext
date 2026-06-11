@@ -211,7 +211,8 @@ WHERE run_id = $1
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
        r.cause, r.cause_detail,
        p.definition, p.config_path,
-       pr.notifications AS project_notifications
+       pr.notifications AS project_notifications,
+       pr.slug AS project_slug
 FROM runs r
 JOIN pipelines p ON p.id = r.pipeline_id
 JOIN projects pr ON pr.id = p.project_id

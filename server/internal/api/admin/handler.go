@@ -4,6 +4,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -75,6 +76,16 @@ type Handler struct {
 	// need to seal/open secrets (runner profile secrets today)
 	// 503 when nil, mirroring how GlobalSecretsHandler behaves.
 	cipher *crypto.Cipher
+	// oidcRotator routes key rotation through the issuer when it's
+	// enabled: the issuer holds its signing-key mutex across the DB
+	// commit AND the cache swap, closing the window where a
+	// concurrent dispatch could sign with a just-revoked key (other
+	// replicas converge via the Postgres NOTIFY listener). Nil when
+	// the issuer is disabled — rotation then goes straight to the
+	// store (there are no caches to race).
+	oidcRotator interface {
+		Rotate(ctx context.Context, emergency bool) (store.OIDCSigningKey, error)
+	}
 }
 
 // NewHandler wires the admin handler. sweeper may be nil —
@@ -102,6 +113,15 @@ func (h *Handler) SetArtifactsEnv(s ArtifactsEnvSnapshot) {
 // cipher hasn't been configured (GOCDNEXT_SECRET_KEY unset).
 func (h *Handler) SetCipher(c *crypto.Cipher) {
 	h.cipher = c
+}
+
+// SetOIDCRotator routes rotation through the issuer (atomic DB
+// commit + cache swap under one lock). Call once during boot when
+// the OIDC issuer is enabled.
+func (h *Handler) SetOIDCRotator(rot interface {
+	Rotate(ctx context.Context, emergency bool) (store.OIDCSigningKey, error)
+}) {
+	h.oidcRotator = rot
 }
 
 // Retention handles GET /api/v1/admin/retention. Returns the sweeper

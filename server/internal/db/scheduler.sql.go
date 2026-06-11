@@ -80,7 +80,8 @@ const getRunForDispatch = `-- name: GetRunForDispatch :one
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
        r.cause, r.cause_detail,
        p.definition, p.config_path,
-       pr.notifications AS project_notifications
+       pr.notifications AS project_notifications,
+       pr.slug AS project_slug
 FROM runs r
 JOIN pipelines p ON p.id = r.pipeline_id
 JOIN projects pr ON pr.id = p.project_id
@@ -100,6 +101,7 @@ type GetRunForDispatchRow struct {
 	Definition           []byte
 	ConfigPath           string
 	ProjectNotifications []byte
+	ProjectSlug          string
 }
 
 // project_notifications tags along so the dispatcher can resolve
@@ -127,6 +129,7 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 		&i.Definition,
 		&i.ConfigPath,
 		&i.ProjectNotifications,
+		&i.ProjectSlug,
 	)
 	return i, err
 }

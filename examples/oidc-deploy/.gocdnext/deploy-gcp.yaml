@@ -1,0 +1,52 @@
+# Keyless deploy to GCP via OIDC workload identity federation —
+# no service account key stored anywhere. The job declares an
+# id_token; the server mints a short-lived JWT whose claims name
+# THIS project/pipeline/branch; GCP's STS verifies it against the
+# server's public JWKS and hands back a federated access token.
+#
+# One-time GCP setup (see docs/concepts/id-tokens):
+#   gcloud iam workload-identity-pools providers create-oidc gocdnext \
+#     --workload-identity-pool=ci --location=global \
+#     --issuer-uri="https://gocdnext.example.com" \
+#     --allowed-audiences="https://iam.googleapis.com/projects/123/.../providers/gocdnext" \
+#     --attribute-mapping="google.subject=assertion.sub" \
+#     --attribute-condition="assertion.sub == 'project:acme:pipeline:deploy-gcp:ref_type:branch:ref:main'"
+#
+# The attribute-condition pins the policy to THIS pipeline on
+# main — by EQUALITY, not startsWith: a prefix match on
+# `ref:main` would also accept `main-fix` and every other branch
+# sharing the prefix. Pull-request runs mint a sub WITHOUT a ref
+# segment (project:acme:pipeline:deploy-gcp:pull_request), so
+# they can never satisfy this condition — PR exclusion is
+# structural.
+name: deploy-gcp
+
+materials:
+  - git:
+      url: https://github.com/acme-org/shop
+      branch: main
+      on: [push]
+      auto_register_webhook: true
+
+stages: [ship]
+
+jobs:
+  deploy:
+    stage: ship
+    image: google/cloud-sdk:slim
+    id_tokens:
+      GCP_ID_TOKEN:
+        aud: https://iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/ci/providers/gocdnext
+    script:
+      # Exchange EARLY: the token is minted at dispatch and lives
+      # GOCDNEXT_OIDC_TOKEN_TTL (default 1h) — don't leave the
+      # exchange for after a 50-minute build step.
+      - echo "$GCP_ID_TOKEN" > /tmp/oidc-token
+      - >
+        gcloud iam workload-identity-pools create-cred-config
+        projects/123/locations/global/workloadIdentityPools/ci/providers/gocdnext
+        --service-account=deployer@acme-prod.iam.gserviceaccount.com
+        --credential-source-file=/tmp/oidc-token
+        --output-file=/tmp/creds.json
+      - export GOOGLE_APPLICATION_CREDENTIALS=/tmp/creds.json
+      - gcloud run deploy shop --image "gcr.io/acme-prod/shop:${CI_COMMIT_SHORT_SHA}" --region us-east1

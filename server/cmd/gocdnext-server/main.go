@@ -47,6 +47,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
+	"github.com/gocdnext/gocdnext/server/internal/oidcissuer"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/polling"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
@@ -162,7 +163,24 @@ func main() {
 		logger.Info("seeded runner profiles", "file", cfg.RunnerProfilesFile, "touched", touched)
 	}
 
+	// The AES cipher is INDEPENDENT of the project-secret backend:
+	// it also seals auth providers, VCS integrations, runner-profile
+	// secrets, platform credentials and the OIDC signing key. A
+	// kubernetes-backend deployment with GOCDNEXT_SECRET_KEY set
+	// must still get encrypted-at-rest support for all of those —
+	// pre-v0.20 the cipher was only built inside the `db` branch
+	// below, which silently disabled the whole encrypted column
+	// family (and the OIDC issuer) for k8s-backend operators.
 	var cipher *crypto.Cipher
+	if cfg.SecretKeyHex != "" {
+		c, err := crypto.NewCipherFromHex(cfg.SecretKeyHex)
+		if err != nil {
+			logger.Error("secret key", "err", err)
+			os.Exit(1)
+		}
+		cipher = c
+	}
+
 	var resolver secrets.Resolver = secrets.NopResolver{}
 	switch cfg.SecretBackend {
 	case "kubernetes":
@@ -185,13 +203,7 @@ func main() {
 			"backend", "kubernetes",
 			"namespace", cfg.SecretK8sNamespace)
 	case "db", "":
-		if cfg.SecretKeyHex != "" {
-			c, err := crypto.NewCipherFromHex(cfg.SecretKeyHex)
-			if err != nil {
-				logger.Error("secret key", "err", err)
-				os.Exit(1)
-			}
-			cipher = c
+		if cipher != nil {
 			r, err := secrets.NewDBResolver(st, cipher)
 			if err != nil {
 				logger.Error("secrets resolver", "err", err)
@@ -433,6 +445,37 @@ func main() {
 		st.SetAuthCipher(cipher)
 	}
 
+	// OIDC token issuer (id_tokens: feature). Gated on BOTH the
+	// public base URL (the `iss` claim + discovery endpoints must be
+	// externally reachable for cloud verifiers) and the cipher (the
+	// signing key is sealed at rest). When disabled, jobs declaring
+	// id_tokens fail loud at dispatch — never a token with a wrong
+	// or empty iss.
+	var oidcIss *oidcissuer.Issuer
+	switch {
+	case cfg.PublicBase == "":
+		logger.Info("oidc issuer disabled: GOCDNEXT_PUBLIC_BASE not set (id_tokens jobs will fail at dispatch)")
+	case cipher == nil:
+		logger.Info("oidc issuer disabled: GOCDNEXT_SECRET_KEY not set (id_tokens jobs will fail at dispatch)")
+	default:
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		key, err := st.EnsureActiveOIDCKey(bootCtx)
+		bootCancel()
+		if err != nil {
+			logger.Error("oidc issuer: ensure signing key", "err", err)
+			os.Exit(1)
+		}
+		oidcIss, err = oidcissuer.New(cfg.PublicBase, oidcKeySource{st}, cfg.OIDCTokenTTL, logger)
+		if err != nil {
+			logger.Error("oidc issuer: init", "err", err)
+			os.Exit(1)
+		}
+		oidcIss = oidcIss.WithRotator(st)
+		sched = sched.WithIDTokenMinter(oidcIss)
+		adminHandler.SetOIDCRotator(oidcIss)
+		logger.Info("oidc issuer enabled", "issuer", oidcIss.IssuerURL(), "kid", key.Kid, "token_ttl", cfg.OIDCTokenTTL)
+	}
+
 	authCtx, authCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	authRegistry, err := auth.BuildRegistry(authCtx, cfg, st, logger)
 	if err != nil {
@@ -511,6 +554,13 @@ func main() {
 	// OpenAPI 3.1 spec — public so SDKs / explorers can introspect
 	// without a session. The doc describes interfaces, not secrets.
 	r.Handle("/api/v1/openapi.yaml", openapi.Handler())
+
+	// OIDC discovery + JWKS — public by OIDC design (cloud verifiers
+	// fetch these anonymously). Serves public key material only,
+	// from an in-memory cache; no DB hit per request.
+	if oidcIss != nil {
+		oidcIss.MountWellKnown(r)
+	}
 
 	r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintln(w, "gocdnext-server dev")
@@ -650,6 +700,11 @@ func main() {
 		p.Get("/api/v1/admin/secrets", globalSecretsHandler.List)
 		p.Post("/api/v1/admin/secrets", globalSecretsHandler.Set)
 		p.Delete("/api/v1/admin/secrets/{name}", globalSecretsHandler.Delete)
+		// OIDC issuer key lifecycle (id_tokens feature). Rotation is
+		// admin-only by definition — it can invalidate every
+		// in-flight token (emergency mode).
+		p.Get("/api/v1/admin/oidc/keys", adminHandler.OIDCKeys)
+		p.Post("/api/v1/admin/oidc/keys/rotate", adminHandler.RotateOIDCKey)
 	})
 
 	srv := &http.Server{
@@ -687,6 +742,16 @@ func main() {
 			logger.Error("scheduler exited", "err", err)
 		}
 	}()
+
+	// Cross-replica OIDC key-rotation propagation: every replica
+	// LISTENs and converges its issuer caches on the rotation
+	// notice (typically ms after commit; the 60s cache TTL is the
+	// backstop while the listener reconnects). The notice is
+	// idempotent by kid — see Issuer.HandleRotationNotice for the
+	// precise contract.
+	if oidcIss != nil {
+		go oidcissuer.ListenForRotations(ctx, cfg.DatabaseURL, oidcIss, logger)
+	}
 
 	go func() {
 		if err := reaper.Run(ctx); err != nil {
@@ -940,6 +1005,21 @@ func resolveArtifactSignKey(cfg *config.Config, logger *slog.Logger) ([]byte, er
 	}
 	logger.Warn("GOCDNEXT_ARTIFACTS_SIGN_KEY not set; generated ephemeral key (signed URLs will break across restart)")
 	return b, nil
+}
+
+// oidcKeySource adapts *store.Store to oidcissuer.KeySource. The
+// issuer's "ActiveOIDCKey" maps to EnsureActiveOIDCKey on purpose:
+// if rows vanished out-of-band (manual DELETE), the next mint
+// self-heals by generating a fresh key instead of failing every
+// dispatch until a restart.
+type oidcKeySource struct{ st *store.Store }
+
+func (k oidcKeySource) ActiveOIDCKey(ctx context.Context) (store.OIDCSigningKey, error) {
+	return k.st.EnsureActiveOIDCKey(ctx)
+}
+
+func (k oidcKeySource) OIDCJWKSKeys(ctx context.Context, cutoff time.Time) ([]store.OIDCPublicKey, error) {
+	return k.st.ListOIDCJWKSKeys(ctx, cutoff)
 }
 
 // devCORS opens the HTTP API to any origin so the Next.js dev server (port

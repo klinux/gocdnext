@@ -47,6 +47,7 @@ func BuildAssignment(
 	cloneTokens map[string]string,
 	needsOutputs NeedsOutputs,
 	matrixNeedsOutputs MatrixNeedsOutputs,
+	idTokens map[string]string,
 ) (*gocdnextv1.JobAssignment, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
@@ -138,6 +139,19 @@ func BuildAssignment(
 		env[name] = v
 		if v != "" {
 			masks = append(masks, v)
+		}
+	}
+
+	// OIDC id_tokens: pre-minted by the caller (mintIDTokens), same
+	// pure-function pattern as cloneTokens. Injected AFTER secrets so
+	// a token wins any residual name collision — the parser already
+	// rejects declared collisions, this is defence in depth against
+	// future env layers. Every JWT goes into masks: it's a bearer
+	// credential and must never survive into a log stream.
+	for name, token := range idTokens {
+		env[name] = token
+		if token != "" {
+			masks = append(masks, token)
 		}
 	}
 

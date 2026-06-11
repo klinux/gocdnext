@@ -466,6 +466,25 @@ type Job struct {
 	// operator-visible contract for "this value IS sensitive".
 	// Empty / nil = no masking opt-ins. See issue #22.
 	OutputMasks map[string]bool
+
+	// IDTokens declares per-job OIDC tokens (id_tokens: in YAML).
+	// Map key = env var name the JWT is injected as at dispatch;
+	// the spec carries the required audience list. The token VALUE
+	// never lives here — it's minted fresh per dispatch and exists
+	// only in the JobAssignment env + LogMasks. Aud is config, not
+	// secret, so JSONB persistence of the definition is fine.
+	//
+	// omitempty is LOAD-BEARING: the scheduler's dispatch fast path
+	// gates on bytes.Contains(definition, `"IDTokens"`) before
+	// paying any JSON decode — without omitempty every persisted
+	// job would carry `"IDTokens":null` and the gate would never
+	// skip.
+	IDTokens map[string]IDTokenSpec `json:",omitempty"`
+}
+
+// IDTokenSpec is the audience contract for one job id_token.
+type IDTokenSpec struct {
+	Aud []string
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`
