@@ -6,6 +6,91 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.24.0 — 2026-06-11
+
+Twelve plugins closing the remaining catalog-gap issues in one
+sweep — #25 (static deploys), #26 (registry publishing), #27
+(language toolchains), #29 (release observability). The catalog
+reaches 65 plugins.
+
+### Toolchains (#27)
+
+- **php**: php:8.3-cli + composer 2; auto `composer install`
+  (no-install opt-out), COMPOSER_CACHE_DIR in the workspace.
+- **ruby**: ruby:3.3 with build-base + headers (native gems:
+  nokogiri/pg/ffi compile out of the box); auto `bundle install`,
+  BUNDLE_PATH=vendor/bundle for cache + artifact reuse.
+
+### Registry publishing (#26)
+
+- **npm-publish**: token via user-scoped .npmrc (never argv,
+  never the workspace); `if-exists: skip` for idempotent retried
+  releases; tokenless --dry-run for PRs.
+- **pypi-publish**: uploads pre-built dist/ via twine; `twine
+  check` always runs first (a broken long_description otherwise
+  fails AFTER the version is burned); check-only is the no-token
+  PR preflight; --skip-existing for retries. Trusted-publishing
+  note: PyPI's OIDC exchange allowlists issuers (GitHub/GitLab/
+  Google/ActiveState) — custom issuers not accepted yet.
+- **crates-publish**: CARGO_REGISTRY_TOKEN via cargo's native
+  env; --dry-run packages + verifies without a token.
+- **maven-central-publish**: uploads a pre-built bundle to the
+  Sonatype Central Portal API and polls validation to a terminal
+  state (AUTOMATIC | USER_MANAGED). GPG signing deliberately
+  stays in the build job — this container never sees key
+  material.
+
+### Static deploys (#25)
+
+- **gh-pages**: fresh orphan commit force-pushed per deploy
+  (pages history is noise that bloats clones); remote derived
+  from the workspace origin with embedded credentials STRIPPED —
+  pushes use the operator's GIT_TOKEN via GIT_ASKPASS — the push
+  URL stays credential-free, so the token never reaches argv
+  (`/proc`-visible) nor git's URL-embedding error output;
+  .nojekyll automatic, cname: input. A failed push fails the job
+  (no pipe on the push — it would mask git's exit code).
+- **netlify** / **cloudflare-pages**: thin pinned-CLI wrappers
+  (netlify-cli 17, wrangler 3); tokens ride each CLI's native env
+  contract; preview-vs-prod + PR-alias inputs.
+- **vercel** (pinned CLI 37): the Vercel CLI has no env-var auth
+  and `--token` would expose the secret on argv — the plugin
+  writes the CLI's own auth.json into a 0700 temp dir and points
+  `--global-config` at it, keeping argv clean (verified by argv
+  sentinel sweep in E2E).
+
+### Release observability (#29)
+
+- **sentry-release**: create → set-commits (--auto, degrading
+  gracefully on shallow clones) → sourcemaps → finalize → deploy
+  marker. Version defaults CI_TAG_NAME → CI_COMMIT_SHA.
+- **deploy-marker**: Datadog events / Grafana annotations behind
+  one `provider:` switch; title/text default from run context.
+
+### Fixed
+
+- **Plugins CI: registry build cache** — the goose image failed
+  both the v0.22.0 and v0.23.0 tag runs with "blob … not found"
+  at cache import: full-catalog rebuilds blow through the Actions
+  cache's 10 GB per-repo cap every release, LRU eviction leaves
+  per-scope indexes pointing at deleted blobs, and buildkit fails
+  the import instead of treating it as a miss. The plugins
+  workflow now caches to GHCR (`gocdnext-plugin-buildcache:<name>`,
+  no size cap, no eviction race); fork PRs read the public cache
+  but never write. No artifact impact — goose:v1 from the v0.21.0
+  run is byte-equivalent (identical Dockerfile).
+
+### Validation
+
+Every plugin built; E2E against real tools where hermetic: php
+composer-install + run, ruby bundle + rake, npm pack --dry-run,
+twine check on a real wheel, cargo publish --dry-run (package +
+verify), gh-pages content push to a local bare repo (branch
+carries .nojekyll/CNAME/site), maven-central upload + status
+polling against a mock portal, deploy-marker against mock
+Datadog/Grafana APIs. CLI wrappers (netlify/vercel/wrangler/
+sentry-cli) validated for input contracts + pinned CLI presence.
+
 ## v0.23.0 — 2026-06-11
 
 SAST/SCA plugins — `semgrep` + `osv-scanner` (issue #28) — plus

@@ -1,0 +1,66 @@
+name: gh-pages
+category: deploy
+description: >
+  Publish a built directory to a Git branch (the GitHub Pages
+  convention — works on any host). Each deploy is a fresh orphan
+  commit force-pushed to the branch: pages branches are generated
+  artifacts, and keeping a history of minified bundles only bloats
+  every future clone. The remote defaults to the workspace clone's
+  origin with embedded credentials STRIPPED — pushes use the
+  operator's GIT_TOKEN from `secrets:` (the agent's clone token is
+  read-only/short-lived). Writes .nojekyll automatically; cname:
+  writes a CNAME file.
+
+inputs:
+  dir:
+    required: true
+    description: >
+      The built site directory (dist/, build/, public/…). Fails
+      loud when missing or empty.
+  branch:
+    required: false
+    default: "gh-pages"
+    description: >
+      Target branch.
+  remote-url:
+    required: false
+    description: >
+      Push remote (https). Default: derived from the workspace's
+      origin, credentials stripped.
+  cname:
+    required: false
+    description: >
+      Custom domain — written as the CNAME file.
+  commit-message:
+    required: false
+    description: >
+      Default "deploy: <short sha>".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: docs site on push to main
+    description: >
+      Build job produces dist/; this publishes it. The pipeline's
+      material listens to push only — deploys never run from PRs.
+    yaml: |
+      jobs:
+        build:
+          stage: build
+          uses: ghcr.io/klinux/gocdnext-plugin-node@v1
+          with: { command: "npm ci && npm run build" }
+          artifacts: [dist/]
+
+        publish:
+          stage: deploy
+          needs_artifacts:
+            - from_job: build
+              paths: [dist/]
+          secrets: [GIT_TOKEN]
+          uses: ghcr.io/klinux/gocdnext-plugin-gh-pages@v1
+          with:
+            dir: dist
+            cname: docs.example.com

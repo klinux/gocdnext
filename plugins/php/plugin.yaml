@@ -1,0 +1,64 @@
+name: php
+category: build
+description: >
+  PHP build + test runner — official php:8.3-cli image with
+  composer 2. Runs `composer install` automatically when a
+  composer.json is present (skip with no-install: true to reuse a
+  vendor/ shipped via artifacts), then executes the provided
+  command. Composer's cache is redirected into the workspace
+  (.composer-cache/) so the native `cache:` block captures it.
+
+inputs:
+  command:
+    required: true
+    description: >
+      Shell command to run after the install step. Examples:
+      "vendor/bin/phpunit", "vendor/bin/phpstan analyse --error-format=raw".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+  no-install:
+    required: false
+    default: "false"
+    description: >
+      Skip `composer install` and run the command against the
+      vendor/ already present in the workspace — pair with an
+      install job exposing vendor/ as an artifact for the
+      install-once-reuse-N pattern.
+
+examples:
+  - name: phpunit with composer cache
+    description: >
+      Lock-file-keyed cache so dependency bumps invalidate
+      automatically.
+    yaml: |
+      cache:
+        - key: composer-{{ hash "composer.lock" }}
+          paths: [.composer-cache]
+      uses: ghcr.io/klinux/gocdnext-plugin-php@v1
+      with:
+        command: vendor/bin/phpunit
+
+  - name: install once, reuse across jobs
+    description: >
+      One install job ships vendor/; lint and test consume it
+      without re-resolving.
+    yaml: |
+      jobs:
+        install:
+          stage: build
+          uses: ghcr.io/klinux/gocdnext-plugin-php@v1
+          with: { command: "true" }
+          artifacts: [vendor/]
+
+        phpstan:
+          stage: test
+          needs_artifacts:
+            - from_job: install
+              paths: [vendor/]
+          uses: ghcr.io/klinux/gocdnext-plugin-php@v1
+          with:
+            command: vendor/bin/phpstan analyse src
+            no-install: "true"

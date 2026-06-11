@@ -1,0 +1,53 @@
+name: netlify
+category: deploy
+description: >
+  Deploy a built directory to Netlify (netlify-cli, --no-build —
+  building belongs to the build job). Token + site id ride env
+  via the job's `secrets:` (the CLI's native contract), never
+  argv. prod: false (default) creates a preview deploy; alias:
+  pins a stable preview URL per PR.
+
+inputs:
+  dir:
+    required: true
+    description: >
+      The built site directory.
+  site-id:
+    required: false
+    description: >
+      Netlify site id (or provide NETLIFY_SITE_ID via secrets —
+      treat it as config, not secret, your call).
+  prod:
+    required: false
+    default: "false"
+    description: >
+      true = production deploy; false = preview.
+  alias:
+    required: false
+    description: >
+      Preview alias — e.g. pr-${CI_PULL_REQUEST_KEY} gives every
+      PR a stable URL.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: PR preview with stable alias
+    yaml: |
+      secrets: [NETLIFY_AUTH_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-netlify@v1
+      with:
+        dir: dist
+        site-id: 0a1b2c3d-…
+        alias: pr-${CI_PULL_REQUEST_KEY}
+
+  - name: production on push to main
+    yaml: |
+      secrets: [NETLIFY_AUTH_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-netlify@v1
+      with:
+        dir: dist
+        site-id: 0a1b2c3d-…
+        prod: "true"

@@ -1,0 +1,46 @@
+name: crates-publish
+category: registry
+description: >
+  Publish a crate to crates.io. The token rides
+  CARGO_REGISTRY_TOKEN via the job's `secrets:` — cargo reads it
+  natively from env, never argv. crates.io versions are immutable
+  AND cargo already answers "version exists" with a clean error,
+  so reruns fail loud rather than silently re-tagging. dry-run
+  packages + verifies the build without uploading (no token
+  needed) — the PR preflight.
+
+inputs:
+  dir:
+    required: false
+    default: "."
+    description: >
+      Crate directory (where Cargo.toml lives).
+  dry-run:
+    required: false
+    default: "false"
+    description: >
+      cargo publish --dry-run: package + verify, no upload, no
+      token. Run it on PR pipelines.
+  allow-dirty:
+    required: false
+    default: "false"
+    description: >
+      Pass --allow-dirty — needed when earlier jobs generated
+      files into the workspace (build artifacts, version stamps).
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: publish on tag
+    yaml: |
+      secrets: [CARGO_REGISTRY_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-crates-publish@v1
+
+  - name: dry-run preflight on PRs
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-crates-publish@v1
+      with:
+        dry-run: "true"

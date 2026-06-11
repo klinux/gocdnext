@@ -1,0 +1,62 @@
+name: ruby
+category: build
+description: >
+  Ruby build + test runner — ruby:3.3 with build-base + common
+  headers (the ecosystem leans hard on native extensions: nokogiri,
+  pg, ffi). Runs `bundle install` automatically when a Gemfile is
+  present (skip with no-install: true), with BUNDLE_PATH redirected
+  into the workspace (vendor/bundle) so the native `cache:` block
+  and the install-once-reuse-N artifact pattern both work.
+
+inputs:
+  command:
+    required: true
+    description: >
+      Shell command to run after the install step. Examples:
+      "bundle exec rspec", "bundle exec rubocop --format simple".
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+  no-install:
+    required: false
+    default: "false"
+    description: >
+      Skip `bundle install` and run against the workspace's
+      vendor/bundle as-is.
+
+examples:
+  - name: rspec with gem cache
+    description: >
+      Lock-file-keyed cache so dependency bumps invalidate
+      automatically.
+    yaml: |
+      cache:
+        - key: gems-{{ hash "Gemfile.lock" }}
+          paths: [vendor/bundle]
+      uses: ghcr.io/klinux/gocdnext-plugin-ruby@v1
+      with:
+        command: bundle exec rspec
+
+  - name: rubocop reusing an installed bundle
+    description: >
+      vendor/bundle shipped by an install job; rubocop consumes it
+      without re-resolving.
+    yaml: |
+      jobs:
+        install:
+          stage: build
+          uses: ghcr.io/klinux/gocdnext-plugin-ruby@v1
+          with: { command: "true" }
+          artifacts: [vendor/bundle/]
+
+        rubocop:
+          stage: test
+          needs_artifacts:
+            - from_job: install
+              paths: [vendor/bundle/]
+          uses: ghcr.io/klinux/gocdnext-plugin-ruby@v1
+          with:
+            command: bundle exec rubocop
+            no-install: "true"

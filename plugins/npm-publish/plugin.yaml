@@ -1,0 +1,69 @@
+name: npm-publish
+category: registry
+description: >
+  Publish a package to npm (or any compatible registry). The token
+  comes via the job's `secrets:` and is written to a USER-scoped
+  .npmrc — never argv, never the workspace (a workspace .npmrc
+  could leak into artifacts). `if-exists: skip` makes retried
+  pipelines idempotent: name@version is immutable on npm, and a
+  rerun that already published should not fail the run. dry-run
+  packs and validates without uploading.
+
+inputs:
+  dir:
+    required: false
+    default: "."
+    description: >
+      Package directory (where package.json lives).
+  tag:
+    required: false
+    description: >
+      npm dist-tag (default registry behaviour: latest).
+  access:
+    required: false
+    description: >
+      public | restricted — required as "public" for the FIRST
+      publish of a scoped package.
+  registry:
+    required: false
+    default: "https://registry.npmjs.org"
+    description: >
+      Registry URL — point at a private registry if needed.
+  if-exists:
+    required: false
+    default: "fail"
+    description: >
+      fail (default) or skip when name@version is already
+      published — set skip for idempotent retried pipelines.
+  dry-run:
+    required: false
+    default: "false"
+    description: >
+      npm publish --dry-run: packs + prints what would ship,
+      uploads nothing, needs no token. Run it on PR pipelines.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: publish on tag, idempotent
+    description: >
+      Tag-triggered release pipeline; a rerun after a flake won't
+      fail on the already-published version.
+    yaml: |
+      secrets: [NPM_TOKEN]
+      uses: ghcr.io/klinux/gocdnext-plugin-npm-publish@v1
+      with:
+        access: public
+        if-exists: skip
+
+  - name: dry-run on PRs
+    description: >
+      Validates the publish (files list, version, dist-tag)
+      without uploading — no token needed.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-npm-publish@v1
+      with:
+        dry-run: "true"
