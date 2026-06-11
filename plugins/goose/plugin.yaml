@@ -1,0 +1,104 @@
+name: goose
+category: deploy
+description: >
+  Run goose schema migrations as a pipeline step — the
+  Go-ecosystem counterpart of flyway/liquibase, and the tool
+  gocdnext's own schema is managed with. The DSN comes EXCLUSIVELY
+  via the job's `secrets:` list (GOOSE_DBSTRING — goose reads it
+  natively; the value never touches argv or the persisted pipeline
+  definition). down/redo/reset are deliberately not exposed:
+  migrations are forward-only in pipelines, rollback is a
+  corrective forward migration.
+
+inputs:
+  command:
+    required: true
+    description: >
+      status | validate | up. Convention: `validate` (parses every
+      migration) + `status` on PR pipelines; `up` only on the
+      protected-branch pipeline, ideally behind an approval gate.
+  dir:
+    required: false
+    default: "./migrations"
+    description: >
+      Migrations directory, relative to working-dir. Fails loud
+      when missing.
+  driver:
+    required: false
+    default: "postgres"
+    description: >
+      goose driver (postgres | mysql | sqlite3 | mssql |
+      clickhouse). The DSN in GOOSE_DBSTRING must match.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: validate + status on PR
+    description: >
+      No effect on the database — `validate` parses every
+      migration file, `status` shows the pending list in the job
+      log. Two jobs because a plugin job runs one command.
+    yaml: |
+      jobs:
+        validate-migrations:
+          stage: test
+          secrets: [GOOSE_DBSTRING]
+          uses: ghcr.io/klinux/gocdnext-plugin-goose@v1
+          with:
+            command: validate
+
+        migration-status:
+          stage: test
+          secrets: [GOOSE_DBSTRING]
+          uses: ghcr.io/klinux/gocdnext-plugin-goose@v1
+          with:
+            command: status
+
+  - name: up gated, before the deploy
+    description: >
+      Schema first, deploy second — expand/contract means schema
+      N+1 must serve app N and N+1 simultaneously during a canary
+      (see the migrations concept page). The mutating command sits
+      behind an approval gate, in a pipeline whose material
+      listens to `push` only.
+    yaml: |
+      jobs:
+        approve-migration:
+          stage: migrate
+          approval:
+            approvers: [dba, platform-lead]
+
+        migrate:
+          stage: migrate
+          needs: [approve-migration]
+          secrets: [GOOSE_DBSTRING]
+          uses: ghcr.io/klinux/gocdnext-plugin-goose@v1
+          with:
+            command: up
+            dir: server/migrations
+
+  - name: Postgres lock hygiene via DSN options
+    description: >
+      Inject lock_timeout / statement_timeout in the DSN itself
+      (inside the secret value) so a DDL that can't take its lock
+      fails fast instead of queueing production traffic behind it.
+      Mutating, therefore gated like every apply.
+    yaml: |
+      # GOOSE_DBSTRING secret value:
+      #   postgres://app:***@db:5432/app?options=-c%20lock_timeout%3D5s%20-c%20statement_timeout%3D15min
+      jobs:
+        approve-migration:
+          stage: migrate
+          approval:
+            approvers: [dba, platform-lead]
+
+        migrate:
+          stage: migrate
+          needs: [approve-migration]
+          secrets: [GOOSE_DBSTRING]
+          uses: ghcr.io/klinux/gocdnext-plugin-goose@v1
+          with:
+            command: up

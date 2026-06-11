@@ -1,0 +1,90 @@
+name: liquibase
+category: deploy
+description: >
+  Run Liquibase changesets as a pipeline step. Connection material
+  comes EXCLUSIVELY via the job's `secrets:` list
+  (LIQUIBASE_COMMAND_URL / _USERNAME / _PASSWORD — Liquibase reads
+  its own env natively; values never touch argv or the persisted
+  pipeline definition). `update-sql` is the real dry-run: prints
+  the SQL `update` would execute without touching the database —
+  run it on PR pipelines so reviewers see the exact DDL in the job
+  log. Rollback commands are deliberately not exposed (migrations
+  are forward-only in pipelines; ship a corrective changeset).
+
+inputs:
+  command:
+    required: true
+    description: >
+      status | validate | update-sql | update. Convention:
+      `validate` + `update-sql` on PR pipelines (no effect, full
+      DDL preview in the log); `update` only on the
+      protected-branch pipeline, ideally behind an approval gate.
+  changelog-file:
+    required: false
+    default: "db/changelog/db.changelog-master.yaml"
+    description: >
+      Path to the changelog root, relative to working-dir. The
+      plugin fails loud when the file doesn't exist.
+  working-dir:
+    required: false
+    default: "."
+    description: >
+      Directory under the workspace to cd into first.
+
+examples:
+  - name: DDL preview on PR (update-sql)
+    description: >
+      The reviewer sees the exact SQL in the job log — no effect
+      on the database. Pair with `validate` in a prior task.
+    yaml: |
+      secrets: [LIQUIBASE_COMMAND_URL, LIQUIBASE_COMMAND_USERNAME, LIQUIBASE_COMMAND_PASSWORD]
+      uses: ghcr.io/klinux/gocdnext-plugin-liquibase@v1
+      with:
+        command: update-sql
+
+  - name: update gated by approval, before the canary
+    description: >
+      Schema first, deploy second — expand/contract means schema
+      N+1 must serve app N and N+1 simultaneously during the
+      canary (see the migrations concept page). The mutating
+      command sits behind an approval gate, in a pipeline whose
+      material listens to `push` only.
+    yaml: |
+      jobs:
+        approve-migration:
+          stage: migrate
+          approval:
+            approvers: [dba, platform-lead]
+
+        migrate:
+          stage: migrate
+          needs: [approve-migration]
+          secrets: [LIQUIBASE_COMMAND_URL, LIQUIBASE_COMMAND_USERNAME, LIQUIBASE_COMMAND_PASSWORD]
+          uses: ghcr.io/klinux/gocdnext-plugin-liquibase@v1
+          with:
+            command: update
+            changelog-file: db/changelog-master.yaml
+
+  - name: Postgres lock hygiene via JDBC options
+    description: >
+      Liquibase has no initSql equivalent — inject lock_timeout /
+      statement_timeout through the JDBC url's options parameter
+      (set inside the secret value): a DDL that can't take its
+      lock fails fast instead of queueing production traffic.
+      Mutating, therefore gated like every apply.
+    yaml: |
+      # LIQUIBASE_COMMAND_URL secret value:
+      #   jdbc:postgresql://db:5432/app?options=-c%20lock_timeout%3D5s%20-c%20statement_timeout%3D15min
+      jobs:
+        approve-migration:
+          stage: migrate
+          approval:
+            approvers: [dba, platform-lead]
+
+        migrate:
+          stage: migrate
+          needs: [approve-migration]
+          secrets: [LIQUIBASE_COMMAND_URL, LIQUIBASE_COMMAND_USERNAME, LIQUIBASE_COMMAND_PASSWORD]
+          uses: ghcr.io/klinux/gocdnext-plugin-liquibase@v1
+          with:
+            command: update
