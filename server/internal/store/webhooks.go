@@ -25,6 +25,11 @@ const (
 	WebhookStatusRejected = "rejected"
 	WebhookStatusError    = "error"
 	WebhookStatusIgnored  = "ignored"
+	// WebhookStatusSkipped: the push was valid and matched, but the
+	// commit message carried a [skip ci]-style marker — distinct from
+	// "ignored" (didn't match anything) so operators can audit
+	// intentional skips apart from configuration gaps.
+	WebhookStatusSkipped = "skipped"
 )
 
 // InsertWebhookDeliveryInput captures everything the admin console

@@ -239,6 +239,16 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// [skip ci] check sits AFTER drift on purpose: the marker means
+	// "don't create runs", not "don't observe the push" — a skip-ci
+	// commit that edits .gocdnext/ still syncs project config, it
+	// just doesn't trigger pipelines. Never applied to pull_request
+	// events (see skipci.go for the security rationale).
+	if marker, ok := skipCIMarker(ev.HeadCommit.Message); ok {
+		h.respondSkipCI(w, rec, "github", delivery, ev.Ref, marker)
+		return
+	}
+
 	normalizedURL := domain.NormalizeGitURL(ev.Repository.CloneURL)
 	fp := store.FingerprintFor(ev.Repository.CloneURL, branch)
 

@@ -37,6 +37,17 @@ import (
 // best-effort — empty values are silently omitted so the substitution
 // layer keeps `${CI_TAG_MESSAGE}` literal on a lightweight tag.
 func (h *Handler) handleTagPush(w http.ResponseWriter, r *http.Request, body []byte, delivery string, rec *deliveryRec, ev github.PushEvent) {
+	// Best-effort [skip ci]: lightweight tags carry the target
+	// commit (and its message) in head_commit; annotated tags arrive
+	// with head_commit empty, so there is no message to inspect and
+	// the tag fires normally — same caveat GitHub Actions has.
+	if ev.HeadCommit != nil {
+		if marker, ok := skipCIMarker(ev.HeadCommit.Message); ok {
+			h.respondSkipCI(w, rec, "github", delivery, ev.Ref, marker)
+			return
+		}
+	}
+
 	allMaterials, err := h.store.FindMaterialsByCloneURL(r.Context(), ev.Repository.CloneURL)
 	if err != nil {
 		rec.status = store.WebhookStatusError
