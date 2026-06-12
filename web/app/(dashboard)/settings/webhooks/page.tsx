@@ -38,6 +38,9 @@ const STATUSES = [
   { label: "All", value: "" },
   { label: "Accepted", value: "accepted", tone: "success" as StatusTone },
   { label: "Ignored", value: "ignored", tone: "neutral" as StatusTone },
+  // Skipped = the push matched but the commit message carried a
+  // [skip ci]-style marker; distinct from Ignored (matched nothing).
+  { label: "Skipped", value: "skipped", tone: "neutral" as StatusTone },
   { label: "Rejected", value: "rejected", tone: "failed" as StatusTone },
   { label: "Error", value: "error", tone: "warning" as StatusTone },
 ];

@@ -6,6 +6,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.26.0 — 2026-06-12
+
+`[skip ci]` support (#33) — the missing piece for GitOps-style
+pipelines that commit back to their own repo: without it, an
+image-tag bump job pushing to main retriggers itself forever (the
+run counter mints a new tag each lap, so the loop never converges).
+
+### Added
+
+- **Commit-message CI skip**: branch and tag pushes whose
+  head-commit message contains `[skip ci]`, `[ci skip]` or
+  `[no ci]` (case-insensitive, anywhere in the message) create no
+  runs. All three providers (GitHub, GitLab, Bitbucket — the
+  GitLab/Bitbucket path shares one dispatch routine). Deliveries
+  get a distinct `skipped` status — filterable in
+  Settings → Webhooks — so "intentionally skipped" never reads as
+  "didn't match anything", and the 200 response body carries the
+  matched marker for the provider's redelivery view.
+- Boundaries, on purpose: `pull_request` events NEVER honor the
+  markers (a contributor must not be able to bypass PR validation
+  from their own commit message); annotated tags can't be skipped
+  (no commit message in the payload — GHA has the same caveat);
+  config drift still observes skipped pushes, so a `[skip ci]`
+  commit editing `.gocdnext/` syncs pipelines without running them.
+
+### Fixed
+
+- **Plugins CI: contract tag from the manifest** — the workflow
+  hardcoded `:v1` for every plugin while the node manifest declared
+  `image_tag: v2`, so the docs catalog rendered `node@v2` examples
+  against a tag that was never published (operator-reported
+  ImagePullBackOff). The matrix now reads `image_tag:` from each
+  plugin.yaml and publishes it alongside `v1` (same digest — v1
+  keeps tracking the current contract since pinned consumers have
+  been getting v2 semantics under the v1 tag since the v0.4.39
+  rewrite anyway).
+
 ## v0.25.0 — 2026-06-11
 
 OIDC signing-key management lands in the web UI — `/settings/oidc`.

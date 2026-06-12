@@ -54,6 +54,13 @@ func (h *Handler) persistPush(
 		}
 	}
 
+	// Same placement as the GitHub handler: after drift (config sync
+	// still observes the push), before any run is materialised.
+	if marker, ok := skipCIMarker(np.CommitMsg); ok {
+		h.respondSkipCI(w, rec, np.Provider, np.Delivery, np.Branch, marker)
+		return
+	}
+
 	fp := store.FingerprintFor(np.CloneURL, np.Branch)
 	materials, err := h.store.FindMaterialsByFingerprint(r.Context(), fp)
 	if err != nil {

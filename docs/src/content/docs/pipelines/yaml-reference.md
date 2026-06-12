@@ -75,6 +75,28 @@ reserved — not consumed at pipeline level today. Path-based
 filtering and tag-name regexes aren't wired; use one pipeline per
 trigger shape if you need either.
 
+### Skipping CI from the commit message
+
+A branch or tag push whose head-commit message contains
+`[skip ci]`, `[ci skip]` or `[no ci]` (case-insensitive, anywhere
+in the message) creates **no runs** — the delivery is acknowledged
+with status `skipped`, visible in *Settings → Webhooks*. This is
+how a job that commits back to its own repo (GitOps image-tag
+bumps, changelog regeneration) avoids retriggering itself.
+
+Two deliberate boundaries:
+
+- **`pull_request` events never honor the markers** — otherwise any
+  contributor could bypass PR validation by writing the marker into
+  their own commits.
+- **Annotated tags can't be skipped**: the push payload carries no
+  commit message for them (same caveat GitHub Actions has).
+  Lightweight tags honor the marker on the tagged commit.
+
+Config sync still observes skipped pushes — a `[skip ci]` commit
+that edits `.gocdnext/` updates the project's pipelines; it just
+doesn't run them.
+
 ## Materials
 
 Extra checkouts beyond the implicit project material. Each entry is

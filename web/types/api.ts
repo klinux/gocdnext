@@ -458,7 +458,8 @@ export type WebhookDeliverySummary = {
   provider: string;
   event: string;
   material_id?: string;
-  status: "accepted" | "rejected" | "error" | "ignored";
+  // "skipped" = valid push suppressed by a [skip ci] commit marker.
+  status: "accepted" | "rejected" | "error" | "ignored" | "skipped";
   http_status: number;
   error?: string;
   received_at: string;
