@@ -444,7 +444,14 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// skip both scans, diverging from shared mode's scan-first
 	// order in runner.go).
 	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
-	r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+	if gateFailed, reason := r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq); gateFailed {
+		// fail_under: green build under the declared floor — job
+		// fails before post-job work (no cache store, no artifact
+		// upload), mirroring shared mode and task failures.
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason)
+		r.cleanupIsolatedPod(ctx, k, podName, false)
+		return
+	}
 
 	// Post-task work via housekeeper exec.
 	// PodWorkDir is the SCRIPT working dir, not the PVC mount

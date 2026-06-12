@@ -216,6 +216,9 @@ message TestResult {
 message CoverageReportSpec {
   string path   = 1;
   string format = 2;
+  // fail_under > 0 turns the report into a gate: the agent fails
+  // the job when total coverage lands below this percentage.
+  double fail_under = 3;
 }
 
 // CoverageSummary is the parsed result of one job's coverage file.

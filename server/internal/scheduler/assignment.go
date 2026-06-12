@@ -728,7 +728,8 @@ func coverageSpec(cr *domain.CoverageReportSpec) *gocdnextv1.CoverageReportSpec 
 		return nil
 	}
 	return &gocdnextv1.CoverageReportSpec{
-		Path:   cr.Path,
-		Format: cr.Format,
+		Path:      cr.Path,
+		Format:    cr.Format,
+		FailUnder: cr.FailUnder,
 	}
 }

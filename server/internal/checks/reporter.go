@@ -185,6 +185,14 @@ func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status st
 	conclusion := conclusionFor(status)
 	title := "Pipeline " + status
 	summary := fmt.Sprintf("gocdnext run finished with status=%s.", status)
+	// Coverage enrichment: when the run reported coverage, the
+	// check summary carries the per-series percentages + delta vs
+	// the mainline baseline — the number a PR reviewer wants
+	// without leaving GitHub. Best-effort: a lookup failure
+	// degrades to the plain summary, never blocks the check.
+	if covLine := r.coverageSummaryLine(ctx, runID); covLine != "" {
+		summary += "\n\n" + covLine
+	}
 
 	if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
 		Owner:      link.Owner,
@@ -203,6 +211,42 @@ func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status st
 		"run_id", runID, "check_run_id", link.CheckRunID,
 		"status", status, "conclusion", conclusion)
 	return nil
+}
+
+// coverageSummaryLine renders the run's coverage rows as markdown
+// for the check output. Empty when the run reported none. The
+// percentage formula matches the agent's log line and the UI
+// (100×covered/total, one decimal) — three surfaces, one number.
+func (r *Reporter) coverageSummaryLine(ctx context.Context, runID uuid.UUID) string {
+	rows, err := r.store.CoverageByRun(ctx, runID)
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Coverage**")
+	for _, row := range rows {
+		name := row.JobName
+		if row.MatrixKey != "" {
+			name += " [" + row.MatrixKey + "]"
+		}
+		if row.LinesTotal <= 0 {
+			continue
+		}
+		pct := 100 * float64(row.LinesCovered) / float64(row.LinesTotal)
+		fmt.Fprintf(&b, "\n- `%s`: %.1f%%", name, pct)
+		if base := row.Baseline; base != nil && base.LinesTotal > 0 {
+			delta := pct - 100*float64(base.LinesCovered)/float64(base.LinesTotal)
+			switch {
+			case delta >= 0.05:
+				fmt.Fprintf(&b, " (+%.1fpp vs main)", delta)
+			case delta <= -0.05:
+				fmt.Fprintf(&b, " (−%.1fpp vs main)", -delta)
+			default:
+				b.WriteString(" (±0.0pp vs main)")
+			}
+		}
+	}
+	return b.String()
 }
 
 // runContext is the shape reporter needs: triggering material URL,

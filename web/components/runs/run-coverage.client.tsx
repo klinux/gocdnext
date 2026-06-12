@@ -24,7 +24,20 @@ export type CoverageRow = {
   lines_total: number;
   packages?: { name: string; lines_covered: number; lines_total: number }[];
   created_at: string;
+  // Latest mainline (push-run) measurement of the same series —
+  // the delta anchor. Absent on the first ever run of a series.
+  baseline?: { run_id: string; lines_covered: number; lines_total: number };
 };
+
+// deltaPP is the percentage-point movement vs baseline, or null
+// when either side has no measurable lines.
+export function deltaPP(row: CoverageRow): number | null {
+  const b = row.baseline;
+  if (!b || row.lines_total <= 0 || b.lines_total <= 0) return null;
+  const cur = (100 * row.lines_covered) / row.lines_total;
+  const base = (100 * b.lines_covered) / b.lines_total;
+  return cur - base;
+}
 
 export type CoverageTrendPoint = {
   run_id: string;
@@ -157,6 +170,7 @@ function JobCoverageCard({
         </div>
         <div className="flex items-center gap-4">
           <Sparkline points={trend} />
+          <DeltaChip row={row} />
           <span className="text-2xl font-semibold tabular-nums">
             {pct(row.lines_covered, row.lines_total)}
           </span>
@@ -205,6 +219,29 @@ function JobCoverageCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+// DeltaChip shows the movement vs the latest mainline run of the
+// same series — the number a PR reviewer actually wants.
+function DeltaChip({ row }: { row: CoverageRow }) {
+  const d = deltaPP(row);
+  if (d === null) return null;
+  const rounded = Math.abs(d) < 0.05 ? 0 : d;
+  const label =
+    rounded === 0
+      ? "±0.0pp vs main"
+      : `${rounded > 0 ? "+" : "−"}${Math.abs(rounded).toFixed(1)}pp vs main`;
+  const tone =
+    rounded > 0
+      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+      : rounded < 0
+        ? "bg-red-500/15 text-red-600 dark:text-red-400"
+        : "bg-muted text-muted-foreground";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs tabular-nums ${tone}`}>
+      {label}
+    </span>
   );
 }
 

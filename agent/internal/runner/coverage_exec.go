@@ -19,20 +19,30 @@ func (r *Runner) scanCoverageFromPod(
 	podName, container, workDir string,
 	a *gocdnextv1.JobAssignment,
 	seq *atomic.Int64,
-) {
+) (bool, string) {
 	spec := a.GetCoverageReport()
 	if spec == nil {
-		return
+		return false, ""
 	}
+	gated := spec.GetFailUnder() > 0
 	if exec == nil {
-		r.emitLog(a, seq, "stderr", "coverage_report: no pod executor wired; skipping")
-		return
+		msg := "coverage_report: no pod executor wired; skipping"
+		r.emitLog(a, seq, "stderr", msg)
+		if gated {
+			return true, msg + " (fail_under gate cannot be evaluated)"
+		}
+		return false, ""
 	}
 	full := path.Join(workDir, spec.GetPath())
 	raw, warn := catPodFileN(ctx, exec, podName, container, full, maxCoverageFileBytes)
 	if warn != "" {
 		r.emitLog(a, seq, "stderr", "coverage_report: "+warn)
-		return
+		// Same bypass-proofing as shared mode: a gate that can't
+		// read its evidence fails.
+		if gated {
+			return true, "coverage_report: " + warn + " (fail_under gate cannot be evaluated)"
+		}
+		return false, ""
 	}
-	r.parseAndSendCoverage(spec, raw, a, seq)
+	return r.parseAndSendCoverage(spec, raw, a, seq)
 }

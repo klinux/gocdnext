@@ -11,6 +11,68 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const coverageBaselineByPipeline = `-- name: CoverageBaselineByPipeline :many
+SELECT DISTINCT ON (c.job_name, c.matrix_key)
+    c.job_name, c.matrix_key, c.lines_covered, c.lines_total, c.run_id, c.created_at
+FROM coverage_reports c
+JOIN runs r ON r.id = c.run_id
+WHERE c.pipeline_id = $1
+  AND c.run_id <> $2
+  AND r.cause IN ('webhook', 'poll')
+ORDER BY c.job_name, c.matrix_key, c.created_at DESC
+`
+
+type CoverageBaselineByPipelineParams struct {
+	PipelineID pgtype.UUID
+	RunID      pgtype.UUID
+}
+
+type CoverageBaselineByPipelineRow struct {
+	JobName      string
+	MatrixKey    string
+	LinesCovered int64
+	LinesTotal   int64
+	RunID        pgtype.UUID
+	CreatedAt    pgtype.Timestamptz
+}
+
+// Latest coverage per series from MAINLINE runs, used as the delta
+// baseline. Mainline = branch-head advancement: cause 'webhook'
+// (push deliveries — the store default for branch pushes) and
+// 'poll' (poll-discovered head moves). There is NO 'push' cause in
+// the domain — review round caught the original filter matching
+// nothing real. Tag/PR/manual/cron/upstream runs never baseline.
+// Excludes the asking run so a mainline run compares against its
+// predecessor, not itself. Branch is NOT filtered: pipelines that
+// register multiple push branches mix them — acceptable v1,
+// documented in the YAML reference.
+func (q *Queries) CoverageBaselineByPipeline(ctx context.Context, arg CoverageBaselineByPipelineParams) ([]CoverageBaselineByPipelineRow, error) {
+	rows, err := q.db.Query(ctx, coverageBaselineByPipeline, arg.PipelineID, arg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CoverageBaselineByPipelineRow{}
+	for rows.Next() {
+		var i CoverageBaselineByPipelineRow
+		if err := rows.Scan(
+			&i.JobName,
+			&i.MatrixKey,
+			&i.LinesCovered,
+			&i.LinesTotal,
+			&i.RunID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const coverageByRun = `-- name: CoverageByRun :many
 SELECT job_run_id, job_name, matrix_key, format, lines_covered, lines_total, packages, created_at
 FROM coverage_reports
