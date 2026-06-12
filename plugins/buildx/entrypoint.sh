@@ -195,6 +195,46 @@ fi
 if [ -n "${buildkit_image}" ]; then
     buildx_create_args+=(--driver-opt "image=${buildkit_image}")
 fi
+
+# Registry mirror for docker.io base-image pulls (issue #35).
+# Without it every FROM resolves straight to Docker Hub from the
+# builder — anonymous pulls are rate-limited per IP and clusters
+# egress through a handful of NAT IPs, so a cold-cache rebuild day
+# can exhaust the quota. The mirror lands in a buildkitd.toml the
+# builder is created with; BuildKit falls back to the upstream
+# registry automatically when the mirror misses or is down.
+PLUGIN_MIRROR="$(trim "${PLUGIN_MIRROR:-}")"
+if [ -n "${PLUGIN_MIRROR}" ]; then
+    mirror="${PLUGIN_MIRROR#https://}"
+    mirror="${mirror#http://}"
+    mirror="${mirror%/}"
+    # The value is interpolated into TOML — reject anything outside
+    # host[:port][/path] characters so a stray quote can't smuggle
+    # config keys into the builder (defence in depth; with: inputs
+    # are operator-authored, not untrusted).
+    if [[ ! "${mirror}" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+        echo "gocdnext/buildx: mirror '${PLUGIN_MIRROR}' has characters outside [A-Za-z0-9._:/-]" >&2
+        exit 2
+    fi
+    BUILDKITD_CONFIG="$(mktemp)"
+    cat > "${BUILDKITD_CONFIG}" <<EOF
+[registry."docker.io"]
+  mirrors = ["${mirror}"]
+EOF
+    buildx_create_args+=(--config "${BUILDKITD_CONFIG}")
+    echo "==> docker.io pulls mirrored via ${mirror} (fallback: upstream)"
+    # Authenticated mirrors: the login happens in THIS container —
+    # buildx forwards registry auth to BuildKit through the client
+    # session's auth provider, mirrors included. Credentials ride
+    # the job's `secrets:`, same masking contract as the push creds.
+    if [ -n "${PLUGIN_MIRROR_USERNAME:-}" ]; then
+        mirror_host="${mirror%%/*}"
+        echo "==> logging into mirror ${mirror_host} as ${PLUGIN_MIRROR_USERNAME}"
+        echo "${PLUGIN_MIRROR_PASSWORD:-}" | docker login "${mirror_host}" \
+            --username "${PLUGIN_MIRROR_USERNAME}" --password-stdin
+    fi
+fi
+
 docker buildx create "${buildx_create_args[@]}" >/dev/null
 docker buildx inspect --bootstrap >/dev/null
 
