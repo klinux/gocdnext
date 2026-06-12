@@ -6,6 +6,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.29.0 — 2026-06-12
+
+Coverage lands in the UI (#36) — the Tests tab's sibling. A
+`coverage-unit.out` used to be an artifact nobody opened; now it's
+a number you can watch move.
+
+### Added
+
+- **`coverage_report:` on jobs**: one file + format (`go-cover` |
+  `lcov` | `cobertura`), parsed by the AGENT after tasks complete
+  (failure included — red test runs still produce valid profiles).
+  Only the summary crosses the wire: lines covered/total + a
+  per-package breakdown capped at 200 (worst-first, loud
+  truncation, exact totals). go-cover counts statements with
+  duplicate-block merging; lcov prefers LH/LF with DA fallback;
+  cobertura sums exact `<line>` elements, never the float rates.
+- **Coverage tab on the run page**: per-job percentage (same
+  100×covered/total formula the agent logs — UI and job log can
+  never disagree), tri-color bar, collapsible package breakdown,
+  and a per-job trend sparkline over the pipeline's recent runs —
+  series are keyed by (job, matrix cell), never blended across
+  jobs. Tab badge shows the run-wide line-weighted percentage.
+- **API**: `GET /runs/{id}/coverage` + `GET
+  /pipelines/{id}/coverage-trend?limit=`.
+- Persistence mirrors test_results end to end: snapshot-CAS write
+  (stale agent/attempt drops loudly, reruns upsert the same row),
+  revoked-session drops on the stream, migration 00045 with the
+  trend index.
+
 ## v0.28.0 — 2026-06-12
 
 The CLI grows its local loop (#32) — the push → webhook → wait

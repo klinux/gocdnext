@@ -458,6 +458,11 @@ type Job struct {
 	// `image:`, `tasks:`, `uses:`, or `artifacts:` — their only
 	// side effect is the state transition, not execution.
 	Approval *ApprovalSpec
+	// CoverageReport, when non-nil, points the agent at one
+	// coverage file to parse after tasks complete. Only the parsed
+	// SUMMARY crosses the wire; the raw file stays in the
+	// workspace. JSON tags keep the JSONB definition readable.
+	CoverageReport *CoverageReportSpec `json:",omitempty"`
 	// TestReports is the glob list the agent scans after tasks
 	// complete, parses as JUnit XML, and sends back as a
 	// TestResultBatch so the server can render a Tests tab.
@@ -561,6 +566,14 @@ type ArtifactDep struct {
 	FromPipeline string
 	Paths        []string
 	Dest         string
+}
+
+// CoverageReportSpec is the persisted shape of `coverage_report:`.
+// Format is parse-time validated against the closed set the agent
+// implements (go-cover | lcov | cobertura).
+type CoverageReportSpec struct {
+	Path   string `json:"path"`
+	Format string `json:"format"`
 }
 
 type Task struct {

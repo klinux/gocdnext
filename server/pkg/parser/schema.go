@@ -140,14 +140,19 @@ type JobDef struct {
 	// after tasks complete. Each match is parsed as JUnit/xUnit
 	// XML and the per-case results ship back as a TestResultBatch
 	// alongside the JobResult. Empty list = no test reporting.
-	TestReports []string  `yaml:"test_reports,omitempty"`
-	Parallel    *Parallel `yaml:"parallel,omitempty"`
-	Rules       []RuleDef `yaml:"rules,omitempty"`
-	When        *WhenDef  `yaml:"when,omitempty"`
-	Timeout     string    `yaml:"timeout,omitempty"`
-	Retry       int       `yaml:"retry,omitempty"`
-	Secrets     []string  `yaml:"secrets,omitempty"`
-	Tags        []string  `yaml:"tags,omitempty"`
+	TestReports []string `yaml:"test_reports,omitempty"`
+	// CoverageReport points the agent at ONE coverage file to parse
+	// after tasks complete (go-cover profile, lcov info, cobertura
+	// XML). Only the SUMMARY ships back — keep the raw file via
+	// artifacts.optional when you want it.
+	CoverageReport *CoverageReportDef `yaml:"coverage_report,omitempty"`
+	Parallel       *Parallel          `yaml:"parallel,omitempty"`
+	Rules          []RuleDef          `yaml:"rules,omitempty"`
+	When           *WhenDef           `yaml:"when,omitempty"`
+	Timeout        string             `yaml:"timeout,omitempty"`
+	Retry          int                `yaml:"retry,omitempty"`
+	Secrets        []string           `yaml:"secrets,omitempty"`
+	Tags           []string           `yaml:"tags,omitempty"`
 	// Agent picks a runner profile by name and may add extra tag
 	// constraints. Profile resolution happens at apply time; the
 	// resolved profile's tags merge (union) with the job's own
@@ -429,6 +434,15 @@ type RuleDef struct {
 	Changes []string `yaml:"changes,omitempty"`
 	Exists  []string `yaml:"exists,omitempty"`
 	When    string   `yaml:"when,omitempty"` // always|manual|never|on_success
+}
+
+// CoverageReportDef declares the job's coverage output. Both fields
+// required: a default format would mis-parse silently the day a
+// project switches tools, and the path is the contract for "this
+// job produces coverage".
+type CoverageReportDef struct {
+	Path   string `yaml:"path"`
+	Format string `yaml:"format"` // go-cover | lcov | cobertura
 }
 
 type WhenDef struct {

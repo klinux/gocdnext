@@ -102,6 +102,20 @@ type Cach struct {
 	LastAccessedAt pgtype.Timestamptz
 }
 
+type CoverageReport struct {
+	ID           int64
+	JobRunID     pgtype.UUID
+	RunID        pgtype.UUID
+	PipelineID   pgtype.UUID
+	JobName      string
+	MatrixKey    string
+	Format       string
+	LinesCovered int64
+	LinesTotal   int64
+	Packages     []byte
+	CreatedAt    pgtype.Timestamptz
+}
+
 type CronState struct {
 	MaterialID  pgtype.UUID
 	LastFiredAt pgtype.Timestamptz

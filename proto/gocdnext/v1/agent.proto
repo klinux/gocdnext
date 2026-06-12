@@ -71,6 +71,7 @@ message AgentMessage {
     TestResultBatch           test_results                 = 5;
     CleanupRunServicesResult  cleanup_run_services_result  = 6;
     ServiceLifecycle          service_lifecycle            = 7;
+    CoverageSummary           coverage                     = 8;
   }
 }
 
@@ -207,6 +208,36 @@ message TestResult {
   string failure_detail   = 8;
   string system_out       = 9;
   string system_err       = 10;
+}
+
+// CoverageReportSpec mirrors the YAML `coverage_report:` block —
+// one workspace-relative file plus the format that decides which
+// agent parser runs (go-cover | lcov | cobertura).
+message CoverageReportSpec {
+  string path   = 1;
+  string format = 2;
+}
+
+// CoverageSummary is the parsed result of one job's coverage file.
+// Lines only in v1 — every supported format expresses line
+// coverage; branch/function coverage are format-specific extras a
+// later field can add. The server derives the percentage so
+// rounding lives in ONE place.
+message CoverageSummary {
+  string run_id        = 1;
+  string job_id        = 2;
+  string format        = 3;
+  int64  lines_covered = 4;
+  int64  lines_total   = 5;
+  // Per-package/file breakdown, capped agent-side (the summary
+  // must stay small — it rides the control stream).
+  repeated PackageCoverage packages = 6;
+}
+
+message PackageCoverage {
+  string name          = 1;
+  int64  lines_covered = 2;
+  int64  lines_total   = 3;
 }
 
 // TestResultBatch bundles every case parsed from a job's test
@@ -429,6 +460,15 @@ message JobAssignment {
   // ignores duplicates so we don't bother deduping on the agent.
   // Honoured by the Kubernetes engine only.
   repeated Toleration tolerations = 22;
+
+  // 23 stays reserved for the future on-demand OIDC token mint RPC
+  // (see the id_tokens design notes).
+
+  // CoverageReport, when set, points the agent at ONE coverage file
+  // to parse after tasks succeed. Only the parsed summary returns
+  // (CoverageSummary on the agent stream) — the raw file never
+  // crosses this boundary.
+  CoverageReportSpec coverage_report = 24;
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so

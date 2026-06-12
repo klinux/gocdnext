@@ -543,6 +543,13 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 			Paths: append([]string(nil), c.Paths...),
 		})
 	}
+	if jd.CoverageReport != nil {
+		cr, err := toCoverageReport(name, jd.CoverageReport)
+		if err != nil {
+			return domain.Job{}, err
+		}
+		j.CoverageReport = cr
+	}
 	if len(jd.TestReports) > 0 {
 		j.TestReports = append([]string(nil), jd.TestReports...)
 	}

@@ -8,11 +8,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts, fetchArtifacts } from "@/components/runs/run-artifacts.client";
 import { RunServices, fetchServices } from "@/components/runs/run-services.client";
+import { RunCoverage, fetchCoverage, pct } from "@/components/runs/run-coverage.client";
 import { RunTests, fetchTests } from "@/components/runs/run-tests.client";
 import { isTerminalStatus } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
 
-const TAB_VALUES = ["jobs", "tests", "artifacts", "services"] as const;
+const TAB_VALUES = ["jobs", "tests", "coverage", "artifacts", "services"] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 const TESTS_POLL_MS = 5_000;
@@ -78,6 +79,12 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
   // tab badge count. Avoids three concurrent refetchIntervals
   // (canvas, badge here, services-tab content) all racing on the
   // same fetch.
+  const coverageQuery = useQuery({
+    queryKey: ["run-coverage", runId],
+    queryFn: () => fetchCoverage(apiBaseURL, runId),
+    refetchInterval: isTerminalStatus(run.status) ? false : TESTS_POLL_MS,
+    staleTime: 30_000,
+  });
   const servicesQuery = useQuery({
     queryKey: ["run-services", runId],
     queryFn: () => fetchServices(apiBaseURL, runId),
@@ -89,6 +96,12 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
     0,
   );
   const artifactCount = artifactsQuery.data?.length ?? 0;
+  // Badge = run-wide percentage, weighted by lines across every
+  // reporting job — the same covered/total arithmetic the agent
+  // logged per job, never an average of percentages.
+  const covRows = coverageQuery.data ?? [];
+  const covCovered = covRows.reduce((acc, r) => acc + r.lines_covered, 0);
+  const covTotal = covRows.reduce((acc, r) => acc + r.lines_total, 0);
   const serviceCount = servicesQuery.data?.length ?? 0;
 
   return (
@@ -100,6 +113,14 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
           {testCount > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
               {testCount}
+            </span>
+          ) : null}
+        </TabsTrigger>
+        <TabsTrigger value="coverage">
+          Coverage
+          {covTotal > 0 ? (
+            <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+              {pct(covCovered, covTotal)}
             </span>
           ) : null}
         </TabsTrigger>
@@ -140,6 +161,15 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
           runId={runId}
           runStatus={run.status}
           run={run}
+          apiBaseURL={apiBaseURL}
+        />
+      </TabsContent>
+
+      <TabsContent value="coverage" className="mt-4">
+        <RunCoverage
+          runId={runId}
+          runStatus={run.status}
+          pipelineId={run.pipeline_id}
           apiBaseURL={apiBaseURL}
         />
       </TabsContent>

@@ -127,10 +127,16 @@ func (r *Runner) scanTestReportsFromPod(
 // so the operator can see which file blew up; the caller continues
 // with the remaining files.
 func catPodFile(ctx context.Context, exec engine.PodExecutor, pod, container, filePath string) ([]byte, string) {
+	return catPodFileN(ctx, exec, pod, container, filePath, maxSingleReportBytes)
+}
+
+// catPodFileN is catPodFile with a caller-chosen byte cap — coverage
+// profiles legitimately exceed the JUnit cap on large repos.
+func catPodFileN(ctx context.Context, exec engine.PodExecutor, pod, container, filePath string, maxBytes int) ([]byte, string) {
 	if filePath == "" || !path.IsAbs(filePath) {
 		return nil, fmt.Sprintf("cat: filePath must be absolute, got %q", filePath)
 	}
-	stdout := &podfs.CappedBuffer{W: &bytes.Buffer{}, Max: maxSingleReportBytes + 1}
+	stdout := &podfs.CappedBuffer{W: &bytes.Buffer{}, Max: maxBytes + 1}
 	var stderr bytes.Buffer
 	if err := exec.Exec(ctx, pod, container,
 		[]string{"cat", "--", filePath},
@@ -138,9 +144,9 @@ func catPodFile(ctx context.Context, exec engine.PodExecutor, pod, container, fi
 	); err != nil {
 		return nil, fmt.Sprintf("cat %s: %v (stderr=%q)", filePath, err, stderr.String())
 	}
-	if stdout.W.Len() > maxSingleReportBytes {
+	if stdout.W.Len() > maxBytes {
 		return nil, fmt.Sprintf("cat %s: exceeds %d bytes cap; truncating",
-			filePath, maxSingleReportBytes)
+			filePath, maxBytes)
 	}
 	return stdout.W.Bytes(), ""
 }

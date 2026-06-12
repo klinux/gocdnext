@@ -410,6 +410,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// can use to diagnose a borked job. Best-effort; failures
 		// emit warnings via emitLog and never fail the job.
 		r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+		r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
@@ -428,13 +429,24 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// shared-mode behaviour (runner.go::Execute calls
 		// scanTestReports on the non-zero-exit path too).
 		r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+		r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit),
 			fmt.Sprintf("task exited with %d", taskExit))
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 
-	// Task succeeded — run post-task work via housekeeper exec.
+	// Task succeeded — ship test reports + coverage BEFORE the
+	// post-job work. The evidence exists the moment tasks finish;
+	// a failed artifact upload or a malformed outputs file must
+	// not erase the Tests tab / coverage of a build that actually
+	// ran (review-round MEDIUM: the early returns below used to
+	// skip both scans, diverging from shared mode's scan-first
+	// order in runner.go).
+	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+	r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+
+	// Post-task work via housekeeper exec.
 	// PodWorkDir is the SCRIPT working dir, not the PVC mount
 	// root: artifact + cache paths in the YAML are relative to
 	// where the user's task ran (= scriptWorkDir, post-target_dir
@@ -500,12 +512,6 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	log.Info("runner: execute (isolated) ok",
 		"artifacts", len(refs), "output_keys", outputKeys)
-	// test_reports last — after artefacts + outputs but before the
-	// JobResult, so the Tests tab populates ahead of the run going
-	// terminal in the UI. Same emission contract as shared mode:
-	// shipped as a separate TestResultBatch frame, not part of
-	// JobResult.
-	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_SUCCESS, 0, "", refs, producedOutputs)
 	r.cleanupIsolatedPod(ctx, k, podName, true)
 }
