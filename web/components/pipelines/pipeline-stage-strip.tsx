@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
+import { approveJob, rejectJob } from "@/server/actions/approvals";
 import { cancelJob, cancelRun, rerunJob, rerunRun } from "@/server/actions/runs";
 import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
 import {
@@ -321,6 +322,11 @@ function JobNode({
 
   const jobRunId = job.run.id;
   const isActive = status === "running" || status === "queued";
+  // Approval gates park the run at the stage boundary; surfacing the
+  // decision here means an operator scanning the project page can
+  // approve without drilling into the run. The server re-checks role
+  // + quorum on POST — these items are convenience, not authority.
+  const isAwaiting = status === "awaiting_approval";
 
   const onRestart = () => {
     startTransition(async () => {
@@ -410,6 +416,41 @@ function JobNode({
     });
   };
 
+  // Approve straight from the project page. Reject keeps a native
+  // confirm() (same pattern as destructive actions elsewhere): it
+  // permanently fails the run, and a mis-click here is costlier than
+  // one extra dialog.
+  const onApprove = () => {
+    startTransition(async () => {
+      const res = await approveJob({ jobRunID: jobRunId, runID: runId });
+      if (!res.ok) {
+        toast.error(`Approve ${job.name} failed: ${res.error}`);
+        return;
+      }
+      toast.success(`Approved ${job.name}`);
+      router.refresh();
+    });
+  };
+
+  const onReject = () => {
+    if (
+      !confirm(
+        `Reject "${job.name}"? The run fails permanently — downstream stages will not execute.`,
+      )
+    ) {
+      return;
+    }
+    startTransition(async () => {
+      const res = await rejectJob({ jobRunID: jobRunId, runID: runId });
+      if (!res.ok) {
+        toast.error(`Reject ${job.name} failed: ${res.error}`);
+        return;
+      }
+      toast.success(`Rejected ${job.name}`);
+      router.refresh();
+    });
+  };
+
   return (
     <>
       <DropdownMenu>
@@ -438,6 +479,23 @@ function JobNode({
             />
             <span>Restart job</span>
           </DropdownMenuItem>
+          {isAwaiting ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onApprove} disabled={pending}>
+                <Check className="size-4 text-emerald-500" />
+                <span>Approve</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={onReject}
+                disabled={pending}
+                variant="destructive"
+              >
+                <X className="size-4" />
+                <span>Reject</span>
+              </DropdownMenuItem>
+            </>
+          ) : null}
           {isActive ? (
             <>
               <DropdownMenuSeparator />
