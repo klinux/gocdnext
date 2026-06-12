@@ -18,7 +18,9 @@ import (
 
 	"github.com/gocdnext/gocdnext/cli/internal/admin"
 	"github.com/gocdnext/gocdnext/cli/internal/apply"
+	"github.com/gocdnext/gocdnext/cli/internal/runlocal"
 	"github.com/gocdnext/gocdnext/cli/internal/secrets"
+	"github.com/gocdnext/gocdnext/cli/internal/validate"
 )
 
 // Version is stamped at build time via -ldflags "-X main.Version=...".
@@ -52,27 +54,55 @@ func validateCmd() *cobra.Command {
 		Use:   "validate [path]",
 		Short: "Validate .gocdnext/ pipelines",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(c *cobra.Command, args []string) error {
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
 			}
-			fmt.Printf("TODO: validate %s\n", path)
-			return nil
+			return validate.Run(c.OutOrStdout(), path)
 		},
 	}
 }
 
 func runLocalCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "run-local [file]",
+	var (
+		workspace string
+		event     string
+		onlyJob   string
+		envFile   string
+	)
+	cmd := &cobra.Command{
+		Use:   "run-local FILE",
 		Short: "Run a pipeline locally (requires Docker)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, _ []string) error {
-			fmt.Println("TODO: run-local")
-			return nil
+		Long: strings.TrimSpace(`
+Execute a pipeline file against the local Docker daemon: stages in
+order, needs-respecting order inside stages, matrix expanded,
+services on a per-run network, one shared workspace mounted at
+/workspace. Approval gates auto-skip with a warning; declared
+secrets resolve from --env-file and fail loud when missing.
+
+Not simulated: caches (local state is the cache), artifact backend
+(jobs share the workspace), id_tokens, runner profiles/resources.
+`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			return runlocal.Run(ctx, c.OutOrStdout(), runlocal.Options{
+				File:      args[0],
+				Workspace: workspace,
+				Event:     event,
+				OnlyJob:   onlyJob,
+				EnvFile:   envFile,
+			})
 		},
 	}
+	cmd.Flags().StringVar(&workspace, "workspace", ".", "host dir mounted at /workspace")
+	cmd.Flags().StringVar(&event, "event", "manual", "synthesized trigger cause: push | pull_request | manual")
+	cmd.Flags().StringVar(&onlyJob, "job", "", "run only this job")
+	cmd.Flags().StringVar(&envFile, "env-file", "", "KEY=VALUE file resolving secrets:")
+	cmd.SetContext(context.Background())
+	return cmd
 }
 
 func applyCmd() *cobra.Command {
@@ -194,10 +224,10 @@ func secretCmd() *cobra.Command {
 
 func secretSetCmd() *cobra.Command {
 	var (
-		slug       string
-		serverURL  string
-		fromStdin  bool
-		fromFile   string
+		slug      string
+		serverURL string
+		fromStdin bool
+		fromFile  string
 	)
 	cmd := &cobra.Command{
 		Use:   "set NAME",

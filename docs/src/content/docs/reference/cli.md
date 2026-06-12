@@ -129,17 +129,59 @@ echo 'new-password' | gocdnext admin reset-password \
 
 Same flags as `create-user` minus `--name` / `--role`.
 
-## `validate` and `run-local` — stubs
+## `validate` — parse pipelines without a server
 
-Both commands exist as Cobra placeholders today and print `TODO`
-on invocation. They will land:
+```bash
+gocdnext validate            # ./.gocdnext/*.yaml (or ./*.yaml)
+gocdnext validate path/to/repo
+gocdnext validate .gocdnext/ci.yaml
+```
 
-- `validate [path]` — parse + apply-time validate `.gocdnext/`
-  without touching the server.
-- `run-local [file]` — execute a single pipeline against the local
-  Docker daemon for fast iteration.
+Runs every file through the **real server parser** (the same code
+the apply path uses — not a re-implementation), one line per file:
 
-Watch the repository roadmap if these are blocking.
+```
+OK   ci.yaml — pipeline "ci", 3 job(s)
+FAIL release.yaml: release.yaml: when.paths: "[unclosed" is not a valid glob
+```
+
+Every file is checked even after the first failure; any failure
+exits 1. No Docker, no network, no server.
+
+## `run-local` — execute a pipeline on your machine
+
+```bash
+gocdnext run-local .gocdnext/ci.yaml
+gocdnext run-local ci.yaml --job lint
+gocdnext run-local release.yaml --env-file .env.local --event push
+```
+
+The `woodpecker exec` of gocdnext: stages in declared order,
+`needs`-respecting order inside each stage, matrix expanded one
+container per cell (dims ride `GOCDNEXT_MATRIX="K=V,..."`, exactly
+like dispatch — never decomposed into individual env vars),
+`services:` on a per-run docker network
+(reachable by name, exactly like the cluster), one host directory
+(`--workspace`, default `.`) mounted at `/workspace` and shared by
+every job. Plugin jobs get the same `PLUGIN_*` env transform the
+agent applies, and `${{ NAME }}` / `${VAR}` substitution follows
+the dispatch contract (strict refs fail loud on unresolved names;
+unknown shell vars stay literal). `CI_*` vars are synthesized from
+the local git checkout (`GOCDNEXT_LOCAL=true` marks these runs).
+
+| Flag | Meaning |
+|---|---|
+| `--workspace` | host dir mounted at `/workspace` (default `.`) |
+| `--job NAME` | run a single job, skip everything else |
+| `--env-file` | `KEY=VALUE` file resolving `secrets:` — a declared secret missing from it fails loud |
+| `--event` | synthesized `CI_CAUSE`: `push` / `pull_request` / `manual` |
+
+**Deliberately not simulated:** caches (your local state IS the
+cache), the artifact backend (jobs share the mounted workspace,
+which covers the common flows), `id_tokens:` (no issuer to mint
+from), runner profiles / resources / tags (cluster concerns).
+Approval gates are auto-skipped with a loud warning — a real run
+parks there.
 
 ## Environment
 
