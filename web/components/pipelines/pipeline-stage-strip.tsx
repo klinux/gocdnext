@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { formatDurationSeconds } from "@/lib/format";
 import { approveJob, rejectJob } from "@/server/actions/approvals";
+import { ApprovalRejectDialog } from "@/components/pipelines/approval-reject-dialog.client";
 import { cancelJob, cancelRun, rerunJob, rerunRun } from "@/server/actions/runs";
 import { JobDetailSheet } from "@/components/pipelines/job-detail-sheet.client";
 import {
@@ -304,6 +305,7 @@ function JobNode({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
 
   const tooltip = [label, status ?? "not run", duration]
     .filter(Boolean)
@@ -416,10 +418,10 @@ function JobNode({
     });
   };
 
-  // Approve straight from the project page. Reject keeps a native
-  // confirm() (same pattern as destructive actions elsewhere): it
-  // permanently fails the run, and a mis-click here is costlier than
-  // one extra dialog.
+  // Approve straight from the project page. Reject goes through a
+  // real Dialog (ApprovalRejectDialog) — it permanently fails the
+  // run, and a native confirm() reads as a browser artifact, not
+  // product UI (operator-reported).
   const onApprove = () => {
     startTransition(async () => {
       const res = await approveJob({ jobRunID: jobRunId, runID: runId });
@@ -432,20 +434,14 @@ function JobNode({
     });
   };
 
-  const onReject = () => {
-    if (
-      !confirm(
-        `Reject "${job.name}"? The run fails permanently — downstream stages will not execute.`,
-      )
-    ) {
-      return;
-    }
+  const onRejectConfirmed = () => {
     startTransition(async () => {
       const res = await rejectJob({ jobRunID: jobRunId, runID: runId });
       if (!res.ok) {
         toast.error(`Reject ${job.name} failed: ${res.error}`);
         return;
       }
+      setRejectOpen(false);
       toast.success(`Rejected ${job.name}`);
       router.refresh();
     });
@@ -487,7 +483,7 @@ function JobNode({
                 <span>Approve</span>
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={onReject}
+                onClick={() => setRejectOpen(true)}
                 disabled={pending}
                 variant="destructive"
               >
@@ -519,6 +515,13 @@ function JobNode({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+      <ApprovalRejectDialog
+        jobName={job.name}
+        open={rejectOpen}
+        onOpenChange={setRejectOpen}
+        onConfirm={onRejectConfirmed}
+        pending={pending}
+      />
       <JobDetailSheet
         runId={runId}
         jobId={jobRunId}

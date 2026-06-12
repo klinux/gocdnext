@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.27.1 — 2026-06-12
+
+### Fixed
+
+- **Reject confirmation is a real dialog** (operator-reported): the
+  stage-dropdown Reject shipped with a native `confirm()`, which
+  reads as a browser artifact instead of product UI. Now a proper
+  destructive Dialog (shadcn) spelling out the blast radius — the
+  run fails permanently and downstream stages are skipped.
+
 ## v0.27.0 — 2026-06-12
 
 Monorepo ergonomics train: `when.paths` (#34) + buildx registry
