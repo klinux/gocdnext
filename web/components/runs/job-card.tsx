@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
-import { LogViewer } from "@/components/runs/log-viewer";
+import { LogPane } from "@/components/runs/log-pane.client";
 import { ApprovalButtons } from "@/components/runs/approval-buttons.client";
 import { Badge } from "@/components/ui/badge";
 import type { JobDetail } from "@/types/api";
@@ -26,6 +26,9 @@ import type { JobDetail } from "@/types/api";
 const SYNTH_NOTIFY_PREFIX = "_notify_";
 
 type Props = {
+  // apiBaseURL prefixes the log-download href so split-domain
+  // deployments hit the API host, not the Next host.
+  apiBaseURL?: string;
   job: JobDetail;
   // runID enables the ApprovalButtons revalidation path — the
   // server action revalidates `/runs/[runID]` after a decision.
@@ -39,7 +42,7 @@ type Props = {
 // Synth notification jobs (`_notify_<idx>`) show the plugin ref as
 // their label + a trigger pill ("on failure" / "on success" / …)
 // so the user never sees the raw index-encoded slug.
-export function JobCard({ job, runID }: Props) {
+export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
   const tone: StatusTone = statusTone(job.status);
   // Open the details when EITHER head or tail carries lines. With
   // the v0.14.7 default `?head=500`, a short job whose head+tail
@@ -216,11 +219,13 @@ export function JobCard({ job, runID }: Props) {
           Logs ({((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0))} of {((job.logs_head?.length ?? 0) + (job.logs?.length ?? 0) + (job.logs_omitted ?? 0))})
         </summary>
         <div className="mt-2 overflow-hidden rounded-md border border-border">
-          <LogViewer
+          <LogPane
             logs={job.logs ?? []}
             head={job.logs_head ?? []}
             omitted={job.logs_omitted ?? 0}
             jobStartedAt={job.started_at ?? undefined}
+            running={job.status === "running"}
+            downloadHref={`${apiBaseURL}/api/v1/runs/${runID}/jobs/${job.id}/log.txt`}
           />
         </div>
       </details>

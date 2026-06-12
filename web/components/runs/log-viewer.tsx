@@ -20,13 +20,17 @@ type Props = {
   // fragments rendered outside a job context (test fixtures, the
   // archive viewer's per-file tail, etc).
   jobStartedAt?: string;
+  // matchSeqs marks lines as search hits (line-level background);
+  // activeSeq is the focused hit (LogPane scrolls it into view).
+  matchSeqs?: Set<number>;
+  activeSeq?: number;
   className?: string;
 };
 
 // Static server-rendered tail — good enough for a completed run. Live tailing
 // (SSE) is a later slice; keeping this component pure makes that drop-in easy:
 // the client variant just replaces `logs` with a streamed state.
-export function LogViewer({ logs, head, omitted, jobStartedAt, className }: Props) {
+export function LogViewer({ logs, head, omitted, jobStartedAt, matchSeqs, activeSeq, className }: Props) {
   const hasHead = (head?.length ?? 0) > 0;
   const hasOmitted = (omitted ?? 0) > 0;
   if (logs.length === 0 && !hasHead) {
@@ -58,14 +62,30 @@ export function LogViewer({ logs, head, omitted, jobStartedAt, className }: Prop
     const cols = showElapsed
       ? "grid grid-cols-[3rem_1fr_3.5rem] gap-3"
       : "grid grid-cols-[3rem_1fr] gap-3";
+    const isMatch = matchSeqs?.has(line.seq) ?? false;
+    const isActive = activeSeq === line.seq;
     return (
       <div
         key={line.seq}
+        id={`L${line.seq}`}
         data-stream={line.stream}
         data-tone={tone}
-        className={cn(cols, toneClass[tone])}
+        data-match={isMatch || undefined}
+        className={cn(
+          cols,
+          toneClass[tone],
+          isMatch && "bg-amber-500/10",
+          isActive && "bg-amber-500/25",
+        )}
       >
-        <span className="select-none text-right text-muted-foreground">{line.seq}</span>
+        {/* Line number doubles as the permalink anchor — click to
+            put #L<seq> in the URL for sharing. */}
+        <a
+          href={`#L${line.seq}`}
+          className="select-none text-right text-muted-foreground hover:text-foreground"
+        >
+          {line.seq}
+        </a>
         <span className="whitespace-pre-wrap break-all">{ansiToReact(line.text)}</span>
         {showElapsed && (
           <span

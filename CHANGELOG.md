@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.31.0 — 2026-06-12
+
+The log experience train: where the time went, and a viewer that
+behaves like a tool instead of a wall of text (#37).
+
+### Added
+
+- **Phase-boundary markers in job logs**: the agent prints `──`
+  markers with elapsed time at every post-task boundary — "tasks
+  completed in 1m12s", "cache store (1 entry) … done in 34s",
+  "artifact upload done in 8s", "post-job (artifacts + caches)
+  done in 41s" (isolated). The operator-reported "job stuck for 4
+  minutes" was a green build whose silent phases printed nothing;
+  the UI's per-line elapsed column now attributes every gap.
+  Markers are gated on the same conditions as the work (an agent
+  without a cache client stays byte-silent about caches).
+- **Interactive log pane** (run page job cards + the job drawer):
+  smart follow — tail -f pinned to the bottom while the job runs,
+  auto-pausing when you scroll up and resuming at the bottom;
+  jump to top/bottom; in-log search with match count and
+  Enter/Shift-Enter navigation (line-level highlight); copy
+  (head + omission note + tail); **download of the FULL log** via
+  the new `GET /runs/{id}/jobs/{jobId}/log.txt` endpoint (streamed
+  from the DB row by row, scope-checked against the run in the
+  URL); `#L<seq>` permalinks — line numbers are anchors you can
+  paste in a PR comment or incident channel.
+
+### Fixed
+
+- **Misleading isolated-mode cache message**: a still-templated key
+  at store time means the fetch-phase EXPANSION failed (expansion
+  stamps the resolved key in place on success) — the message now
+  points there instead of claiming templated keys are unsupported.
+
 ## v0.30.0 — 2026-06-12
 
 Coverage phase 2 — the actionable half of #36: the delta a PR

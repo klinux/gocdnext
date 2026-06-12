@@ -602,6 +602,7 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/notifications", projectsHandler.ListNotifications)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
+		p.Get("/api/v1/runs/{id}/jobs/{jobId}/log.txt", runsHandler.LogExport)
 		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
 		p.Get("/api/v1/runs/{id}/tests", runsHandler.TestResults)
 		p.Get("/api/v1/runs/{id}/coverage", runsHandler.Coverage)
