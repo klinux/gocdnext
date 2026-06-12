@@ -289,11 +289,22 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 		Command:         []string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done"},
 		WorkingDir:      workDir,
 		VolumeMounts:    []corev1.VolumeMount{workspaceMount},
-		// Minimal resources — housekeeper is idle waiting for exec.
+		// Requests stay minimal (the container idles between execs),
+		// but limits are EXPLICIT and sized for the real work: the
+		// cache/artifact `tar -czf` runs IN here, and a populated Go
+		// or Gradle cache is hundreds of MB to GBs. Without explicit
+		// limits, a cluster LimitRange can default this container to
+		// a pathological cap and the tar exec dies with exit 137
+		// (OOMKill / CPU-starved past the job timeout) exactly when
+		// the cache first becomes worth keeping (operator-reported).
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("10m"),
-				corev1.ResourceMemory: resource.MustParse("16Mi"),
+				corev1.ResourceMemory: resource.MustParse("32Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
 			},
 		},
 	}

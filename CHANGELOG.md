@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.27.2 — 2026-06-12
+
+### Fixed
+
+- **Cache store dying with exit 137 on big caches**
+  (operator-reported): the housekeeper sidecar — where the
+  cache/artifact `tar -czf` actually runs — shipped with minimal
+  requests and NO limits, sized for idling. A cluster LimitRange
+  then defaults the container to a pathological cap, and the tar
+  exec gets OOM-killed/CPU-starved exactly when a cache first
+  becomes big enough to be worth keeping (a freshly-populated Go
+  module+build cache). Limits are now explicit: 1 CPU / 512Mi,
+  requests stay minimal. The job itself was never failed by this
+  (cache store degrades gracefully), but every run rebuilt cold.
+
 ## v0.27.1 — 2026-06-12
 
 ### Fixed
