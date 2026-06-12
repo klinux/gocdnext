@@ -321,6 +321,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		outputs.rel = filepath.Join(outputsRelDir, shortJobID(a.GetJobId())+".env")
 	}
 
+	tasksStart := time.Now()
 	for i, task := range a.GetTasks() {
 		var (
 			exitCode int
@@ -351,6 +352,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			// but the XML file it wrote is what the Tests tab needs
 			// to render the per-case breakdown. Scan before reporting
 			// so failed runs surface their evidence.
+			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d: error)", phaseDur(tasksStart), i))
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
@@ -359,6 +361,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		}
 		if exitCode != 0 {
 			log.Info("runner: task exited non-zero", "task", i, "exit", exitCode)
+			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d, exit %d)", phaseDur(tasksStart), i, exitCode))
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
@@ -366,6 +369,13 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			return
 		}
 	}
+
+	// Phase boundary marker: the "4 silent minutes" class of
+	// confusion (operator-reported) was a job whose tasks went
+	// quiet and whose post-task phases were invisible — every
+	// boundary now prints, and the UI's per-line elapsed does the
+	// attribution.
+	r.emitPhase(a, &seq, fmt.Sprintf("tasks completed in %s", phaseDur(tasksStart)))
 
 	// Successful task loop — scan any declared test_reports and
 	// ship them before the artifact upload so the server has the
@@ -386,7 +396,14 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// `pnpm install`. Same scriptWorkDir base as fetch so the
 	// paths round-trip exactly. Failures log but don't block
 	// the successful JobResult below.
-	r.storeCaches(ctx, scriptWorkDir, a, &seq)
+	// Marker gated on the SAME condition storeCaches acts on
+	// (declared entries AND a wired client) — an agent without a
+	// CacheClient must stay byte-silent about caches.
+	if len(a.GetCaches()) > 0 && r.cfg.Cache != nil {
+		r.timedPhase(a, &seq, fmt.Sprintf("cache store (%d entr%s)", len(a.GetCaches()), plural(len(a.GetCaches()), "y", "ies")), func() {
+			r.storeCaches(ctx, scriptWorkDir, a, &seq)
+		})
+	}
 
 	// Artifact paths in YAML are repo-relative (user writes
 	// `bin/gocdnext-agent` because that's where `go build` puts
@@ -395,7 +412,13 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// the correct base for resolving artifact paths — passing
 	// workDir would miss the `src/<id>` checkout prefix and 404
 	// on every single-material pipeline.
-	refs, uploadErr := r.uploadArtifacts(ctx, scriptWorkDir, a, &seq)
+	var refs []*gocdnextv1.ArtifactRef
+	var uploadErr error
+	if len(a.GetArtifactPaths()) > 0 || len(a.GetOptionalArtifactPaths()) > 0 {
+		r.timedPhase(a, &seq, "artifact upload", func() {
+			refs, uploadErr = r.uploadArtifacts(ctx, scriptWorkDir, a, &seq)
+		})
+	}
 	if uploadErr != nil {
 		// Required artifact upload failed — the YAML declared the
 		// file as a build output so a missing file means the build

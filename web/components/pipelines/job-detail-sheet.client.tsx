@@ -20,7 +20,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { LogViewer } from "@/components/runs/log-viewer";
+import { LogPane } from "@/components/runs/log-pane.client";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import {
@@ -237,10 +237,15 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
           ref={logRef}
           className="min-h-0 flex-1 overflow-auto rounded-md border border-border"
         >
-          <LogViewer
+          <LogPane
             logs={job.logs ?? []}
             head={job.logs_head ?? []}
             omitted={job.logs_omitted ?? 0}
+            running={job.status === "running"}
+            // Relative on purpose: project-page components follow the
+            // same-origin convention (see pipeline-card.tsx) — only
+            // the run page threads GOCDNEXT_PUBLIC_API_URL.
+            downloadHref={`/api/v1/runs/${run.id}/jobs/${job.id}/log.txt`}
             jobStartedAt={job.started_at ?? undefined}
             className="h-full max-h-none overflow-visible"
           />

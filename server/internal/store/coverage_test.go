@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -252,5 +253,41 @@ func TestCoverageByRun_BaselineFromMainline(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Baseline != nil {
 		t.Fatalf("mainline rows = %+v — must not self-baseline", rows)
+	}
+}
+
+// #37: full-log export streams text in seq order; the scope check
+// refuses a job addressed through the wrong run.
+func TestWriteJobLogTextAndScopeCheck(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+	for i, text := range []string{"$ go test ./...", "ok  pkg 0.1s", "── tasks completed in 5s"} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO log_lines (job_run_id, seq, stream, at, text)
+			 VALUES ($1, $2, 'stdout', NOW(), $3)`, jobID, i+1, text); err != nil {
+			t.Fatalf("seed line: %v", err)
+		}
+	}
+
+	var buf strings.Builder
+	n, err := s.WriteJobLogText(ctx, jobID, &buf)
+	if err != nil || n != 3 {
+		t.Fatalf("WriteJobLogText = %d lines, err %v", n, err)
+	}
+	want := "$ go test ./...\nok  pkg 0.1s\n── tasks completed in 5s\n"
+	if buf.String() != want {
+		t.Fatalf("export = %q, want %q", buf.String(), want)
+	}
+
+	ok, err := s.JobBelongsToRun(ctx, jobID, runID)
+	if err != nil || !ok {
+		t.Fatalf("scope check own run = %v, %v", ok, err)
+	}
+	ok, err = s.JobBelongsToRun(ctx, jobID, uuid.New())
+	if err != nil || ok {
+		t.Fatalf("scope check wrong run = %v, %v — must refuse", ok, err)
 	}
 }

@@ -17,6 +17,10 @@ import { JobCard } from "@/components/runs/job-card";
 import type { StageDetail } from "@/types/api";
 
 type Props = {
+  // apiBaseURL prefixes browser-facing links (log download) — empty
+  // for same-origin deployments, the public API URL for split-domain
+  // (see lib/env.ts GOCDNEXT_PUBLIC_API_URL).
+  apiBaseURL?: string;
   stage: StageDetail;
   // runID piped through to JobCard so awaiting-approval gates
   // can POST to the decision endpoint without having to look up
@@ -39,7 +43,7 @@ const NOTIFICATION_STAGE = "_notifications";
 // synth `_notifications` stage gets a softer tone + bell icon so
 // it reads as "post-run plumbing" rather than another gate on
 // the critical path.
-export function StageSection({ stage, runID }: Props) {
+export function StageSection({ stage, runID, apiBaseURL }: Props) {
   const tone: StatusTone = statusTone(stage.status);
   const isNotification = stage.name === NOTIFICATION_STAGE;
 
@@ -98,7 +102,7 @@ export function StageSection({ stage, runID }: Props) {
       </header>
       <div className="divide-y divide-border/50">
         {stage.jobs.map((j) => (
-          <JobCard key={j.id} job={j} runID={runID} />
+          <JobCard key={j.id} job={j} runID={runID} apiBaseURL={apiBaseURL} />
         ))}
       </div>
     </section>

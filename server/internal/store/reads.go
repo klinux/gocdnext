@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -1161,4 +1162,82 @@ func dedupeHeadAgainstTail(head, tail []LogLineSummary) []LogLineSummary {
 		out = append(out, l)
 	}
 	return out
+}
+
+// WriteJobLogText streams a job's full log as plain text into w —
+// the download endpoint's backend (#37). Hot path: raw pgx row
+// iteration over log_lines (a 100k-line log writes through without
+// materialising as one slice). Cold path: when the retention sweep
+// already shipped the rows to the archive, fall back to the SAME
+// archive source the run page reads — a button named "full log"
+// must not download empty for exactly the old jobs people export.
+// Text only, newline-joined — decoration belongs to the UI.
+// Returns the line count for the handler's logging.
+func (s *Store) WriteJobLogText(ctx context.Context, jobRunID uuid.UUID, w io.Writer) (int, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT text FROM log_lines WHERE job_run_id = $1 ORDER BY seq ASC`, jobRunID)
+	if err != nil {
+		return 0, fmt.Errorf("store: job log export: %w", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return n, fmt.Errorf("store: job log export scan: %w", err)
+		}
+		if _, err := io.WriteString(w, text); err != nil {
+			return n, err
+		}
+		if _, err := io.WriteString(w, "\n"); err != nil {
+			return n, err
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return n, err
+	}
+	if n > 0 {
+		return n, nil
+	}
+
+	// Zero DB rows: archived, or genuinely empty. Mirror the run
+	// page's fallback chain (GetRunDetail) so the UI and the
+	// download always agree on what exists.
+	arch, err := s.GetJobLogArchive(ctx, jobRunID)
+	if err != nil {
+		return 0, fmt.Errorf("store: job log export archive lookup: %w", err)
+	}
+	if !arch.HasArchive || s.logArchiveSrc == nil {
+		return 0, nil
+	}
+	lines, err := s.readArchive(ctx, arch.URI)
+	if err != nil {
+		return 0, fmt.Errorf("store: job log export archive read: %w", err)
+	}
+	for _, l := range lines {
+		if _, err := io.WriteString(w, l.Text); err != nil {
+			return n, err
+		}
+		if _, err := io.WriteString(w, "\n"); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// JobBelongsToRun is the URL-scope check for per-job endpoints: a
+// job UUID is only addressable through the run it belongs to, so a
+// viewer can't walk job ids across unrelated runs.
+func (s *Store) JobBelongsToRun(ctx context.Context, jobRunID, runID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM job_runs WHERE id = $1 AND run_id = $2)`,
+		jobRunID, runID,
+	).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("store: job-run scope check: %w", err)
+	}
+	return ok, nil
 }

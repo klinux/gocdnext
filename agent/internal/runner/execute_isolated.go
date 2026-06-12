@@ -390,6 +390,8 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		return
 	}
 
+	taskStart := time.Now()
+
 	// Stream task logs.
 	taskDone := make(chan struct{})
 	go func() {
@@ -417,6 +419,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 	if taskExit != 0 {
 		log.Info("runner: task exited non-zero (isolated)", "exit", taskExit)
+		r.emitPhase(a, &seq, fmt.Sprintf("task failed after %s (exit %d)", phaseDur(taskStart), taskExit))
 		// Post-task work (artifact upload) requires the
 		// housekeeper sidecar to be alive. If the task failed but
 		// housekeeper is still around, we COULD still attempt
@@ -435,6 +438,8 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
+
+	r.emitPhase(a, &seq, fmt.Sprintf("task completed in %s", phaseDur(taskStart)))
 
 	// Task succeeded — ship test reports + coverage BEFORE the
 	// post-job work. The evidence exists the moment tasks finish;
@@ -461,14 +466,18 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// (runner.go::uploadArtifacts passes scriptWorkDir). Using the
 	// mount root drops the target_dir prefix and breaks tar in
 	// the housekeeper.
-	refs, postErr := r.PostJob(ctx, PostJobConfig{
-		Executor:      exec,
-		Uploader:      r.cfg.IsolatedUploader,
-		Cache:         r.cfg.IsolatedCache,
-		PodName:       podName,
-		HousekeeperCt: "housekeeper",
-		PodWorkDir:    scriptWorkDir,
-	}, a, &seq)
+	var refs []*gocdnextv1.ArtifactRef
+	var postErr error
+	r.timedPhase(a, &seq, "post-job (artifacts + caches)", func() {
+		refs, postErr = r.PostJob(ctx, PostJobConfig{
+			Executor:      exec,
+			Uploader:      r.cfg.IsolatedUploader,
+			Cache:         r.cfg.IsolatedCache,
+			PodName:       podName,
+			HousekeeperCt: "housekeeper",
+			PodWorkDir:    scriptWorkDir,
+		}, a, &seq)
+	})
 	if postErr != nil {
 		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1,
 			"artifact upload failed: "+postErr.Error(), refs)

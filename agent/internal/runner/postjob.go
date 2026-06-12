@@ -136,14 +136,15 @@ func (r *Runner) PostJob(
 				continue
 			}
 			if strings.Contains(entry.GetKey(), "{{") {
-				// Templated key — agent couldn't pre-expand,
-				// the runtime key is unknown here. Skip with
-				// a warning; matches the prep-side warning so
-				// the operator sees a consistent message at
-				// both ends.
+				// A still-templated key here means the fetch-phase
+				// expansion FAILED (expandCacheKeysVia stamps the
+				// resolved form in place on success) — storing
+				// under the literal template would create a
+				// garbage bucket nothing ever restores. Skip loud,
+				// pointing at the real cause.
 				r.emitLog(a, seq, "stderr", fmt.Sprintf(
-					"cache %q: templated key not yet supported in "+
-						"isolated mode; store skipped", entry.GetKey()))
+					"cache %q: key expansion failed earlier this run "+
+						"(see the cache-fetch log above); store skipped", entry.GetKey()))
 				continue
 			}
 			if len(entry.GetPaths()) == 0 {

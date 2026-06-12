@@ -150,7 +150,7 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
         ) : (
           <div className="space-y-8">
             {run.stages.map((s) => (
-              <StageSection key={s.id} stage={s} runID={runId} />
+              <StageSection key={s.id} stage={s} runID={runId} apiBaseURL={apiBaseURL} />
             ))}
           </div>
         )}
