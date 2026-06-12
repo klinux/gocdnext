@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.28.0 — 2026-06-12
+
+The CLI grows its local loop (#32) — the push → webhook → wait
+cycle was the tax on every pipeline iteration this far.
+
+### Added
+
+- **`gocdnext validate`**: parses `.gocdnext/*.yaml` with the real
+  server parser (extracted to `server/pkg/parser` in v0.27.2
+  precisely for this). One line per file, every file checked even
+  after a failure, exit 1 on any. No server, no Docker.
+- **`gocdnext run-local`**: executes a pipeline against the local
+  Docker daemon — stages in order, `needs` topology, matrix cells,
+  `services:` on a per-run network reachable by name, shared
+  workspace at `/workspace`, agent-identical `PLUGIN_*` env
+  transform, `CI_*` synthesized from local git. Secrets come from
+  `--env-file` and fail loud when missing; approval gates
+  auto-skip with a warning. Deliberate boundaries (caches,
+  artifact backend, id_tokens, profiles) documented in the CLI
+  reference.
+
 ## v0.27.2 — 2026-06-12
 
 ### Fixed
