@@ -52,17 +52,17 @@ const cacheFetchTerminateTimeout = 30 * time.Second
 // blocked on the marker.
 //
 // Steps (each best-effort; partial failure logs and continues):
-//   1. Wait for cache-fetch to be in Running state (~ms after
-//      prep terminates; K8s schedules init containers sequentially).
-//   2. Build a podHashResolver pointing at cache-fetch + workDir.
-//   3. expandCacheKeysVia — mutates each templated entry's key in
-//      place to its resolved form.
-//   4. For each formerly-templated entry, call RequestCacheGet via
-//      the agent's gRPC session.
-//   5. On hit: HTTP GET the URL on the agent host, stream the body
-//      into `tar -xzf - -C <workDir>` via exec stdin.
-//   6. Touch the marker — cache-fetch exits, K8s starts the main
-//      containers, task runs with caches in place.
+//  1. Wait for cache-fetch to be in Running state (~ms after
+//     prep terminates; K8s schedules init containers sequentially).
+//  2. Build a podHashResolver pointing at cache-fetch + workDir.
+//  3. expandCacheKeysVia — mutates each templated entry's key in
+//     place to its resolved form.
+//  4. For each formerly-templated entry, call RequestCacheGet via
+//     the agent's gRPC session.
+//  5. On hit: HTTP GET the URL on the agent host, stream the body
+//     into `tar -xzf - -C <workDir>` via exec stdin.
+//  6. Touch the marker — cache-fetch exits, K8s starts the main
+//     containers, task runs with caches in place.
 //
 // The marker touch happens in a deferred call so panics or early
 // returns can't strand the pod.

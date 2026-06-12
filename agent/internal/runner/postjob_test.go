@@ -39,9 +39,9 @@ func (f *fakeIsolatedUploader) UploadFromPod(
 // cares about the stream→text mapping for assertion.
 type captureRunnerPJ struct {
 	*Runner
-	mu    sync.Mutex
-	out   []string // stdout text lines
-	errs  []string // stderr text lines
+	mu   sync.Mutex
+	out  []string // stdout text lines
+	errs []string // stderr text lines
 }
 
 func newCaptureRunnerPJ(t *testing.T) *captureRunnerPJ {

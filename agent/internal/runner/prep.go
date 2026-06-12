@@ -141,8 +141,8 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 	if len(a.GetOutputs()) > 0 {
 		outputsRel := OutputsRelPath(a.GetJobId())
 		outputsFull := filepath.Join(scriptWorkDir, outputsRel)
-		outputsDir := filepath.Dir(outputsFull)            // .../<scriptWorkDir>/.gocdnext/outputs
-		gocdnextDir := filepath.Dir(outputsDir)            // .../<scriptWorkDir>/.gocdnext
+		outputsDir := filepath.Dir(outputsFull) // .../<scriptWorkDir>/.gocdnext/outputs
+		gocdnextDir := filepath.Dir(outputsDir) // .../<scriptWorkDir>/.gocdnext
 
 		if err := os.MkdirAll(outputsDir, 0o777); err != nil {
 			return fmt.Errorf("mkdir outputs dir %s: %w", outputsDir, err)

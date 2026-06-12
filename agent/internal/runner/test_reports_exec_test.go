@@ -38,15 +38,15 @@ var _ engine.PodExecutor = (*routingFakeExec)(nil)
 // scanTestReportsFromPod (the listing pass and the per-file reads)
 // without smuggling state through shared mutable fields.
 type routingFakeExec struct {
-	findOut   string
-	findErr   error
-	files     map[string][]byte // filepath → cat stdout
-	catErrs   map[string]error  // filepath → cat error (overrides files)
-	mu        sync.Mutex
-	gotFinds  int
-	gotCats   []string
-	gotPod    string
-	gotCont   string
+	findOut    string
+	findErr    error
+	files      map[string][]byte // filepath → cat stdout
+	catErrs    map[string]error  // filepath → cat error (overrides files)
+	mu         sync.Mutex
+	gotFinds   int
+	gotCats    []string
+	gotPod     string
+	gotCont    string
 	gotWorkDir string
 }
 
