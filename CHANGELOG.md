@@ -6,6 +6,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.27.0 — 2026-06-12
+
+Monorepo ergonomics train: `when.paths` (#34) + buildx registry
+mirror (#35) — the two remaining platform gaps the Woodpecker→
+gocdnext port exposed — plus approve/reject straight from the
+project page.
+
+### Added
+
+- **`when.paths` — path-filtered triggers (#34)**: the pipeline
+  fires only when a changed file of the triggering push/PR matches
+  one of its globs (doublestar, repo-relative, validated at apply).
+  Changed files come from the push payload (GitHub/GitLab) or the
+  PR files API (GitHub, paginated to 3000 files, credentials via
+  the same PAT/App resolution config sync uses — fetched lazily,
+  only when a matched pipeline actually declares paths). The
+  semantics are FAIL OPEN everywhere the set can't be known
+  completely (Bitbucket pushes, >20-commit payloads, files-API
+  errors, GitLab/Bitbucket PRs pending adapters): extra runs are
+  noise, silently missing CI is an incident. Fully-filtered
+  deliveries are acknowledged with `filtered_by_paths` and create
+  no run rows.
+- **buildx `mirror:` input (#35)**: routes docker.io base-image
+  pulls through a pull-through mirror (path prefixes supported)
+  via a generated buildkitd.toml, with automatic fallback to the
+  Hub on miss — kills the anonymous-rate-limit roulette on shared
+  NAT egress. Optional `mirror-username`/`mirror-password` for
+  authenticated mirrors; mirror value is charset-validated before
+  TOML interpolation.
+- **Approve/Reject in the project page**: the stage strip's job
+  dropdown now offers Approve and Reject when the job is awaiting
+  approval — no more drilling into the run to act on a gate.
+  Reject confirms first (it permanently fails the run); the server
+  still enforces role + quorum, the menu is convenience.
+
 ## v0.26.0 — 2026-06-12
 
 `[skip ci]` support (#33) — the missing piece for GitOps-style
