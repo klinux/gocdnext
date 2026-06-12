@@ -398,6 +398,7 @@ func BuildAssignment(
 		Services:              services,
 		Caches:                caches,
 		TestReports:           append([]string(nil), jobDef.TestReports...),
+		CoverageReport:        coverageSpec(jobDef.CoverageReport),
 		Resources:             resourceRequirements(jobDef.Resources),
 		Profile:               jobDef.Profile,
 		Outputs:               copyStringMap(jobDef.Outputs),
@@ -717,4 +718,17 @@ func dedupeArtifactPaths(required, optional []string) (req, opt []string) {
 		opt = append(opt, p)
 	}
 	return req, opt
+}
+
+// coverageSpec lowers the parsed coverage_report into the proto
+// spec. Nil-safe: most jobs don't declare coverage and the agent
+// treats a nil spec as "nothing to scan".
+func coverageSpec(cr *domain.CoverageReportSpec) *gocdnextv1.CoverageReportSpec {
+	if cr == nil {
+		return nil
+	}
+	return &gocdnextv1.CoverageReportSpec{
+		Path:   cr.Path,
+		Format: cr.Format,
+	}
 }

@@ -379,6 +379,36 @@ block). The matched files are parsed as JUnit/xUnit XML at job
 completion and populate the run's *Tests* tab — per-case status,
 duration, failure message + stack trace.
 
+## Coverage reports
+
+```yaml
+jobs:
+  unit:
+    stage: test
+    image: golang:1.26
+    script: ["go test -coverprofile=coverage.out ./..."]
+    coverage_report:
+      path: coverage.out
+      format: go-cover          # go-cover | lcov | cobertura
+    artifacts:
+      optional: [coverage.out]  # keep the raw file too, if you want it
+```
+
+After tasks complete (success OR failure — a red test run still
+produced a valid profile), the agent parses the declared file and
+ships ONLY the summary: total lines covered/total plus a per-package
+breakdown capped at 200 entries (worst coverage first; truncation is
+announced in the job log, totals stay exact). The run page gains a
+**Coverage** tab — per-job percentage, package breakdown, and a
+trend sparkline per job across the pipeline's recent runs.
+
+Formats: `go-cover` (`go test -coverprofile`, counted in statements
+— the same unit `go tool cover -func` reports), `lcov`
+(vitest/jest/nyc), `cobertura` XML (jacoco's export, coverage.py).
+A declared-but-missing file logs an error line and reports nothing —
+it never fails the job; gating is a future `fail_under` knob, not a
+side effect of reporting.
+
 ## Parallel / matrix
 
 ```yaml

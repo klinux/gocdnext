@@ -161,6 +161,13 @@ type Querier interface {
 	CountTestResultsByJobRun(ctx context.Context, jobRunIds []pgtype.UUID) ([]CountTestResultsByJobRunRow, error)
 	// Pair for ListWebhookDeliveries so the UI can render "N of M".
 	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
+	CoverageByRun(ctx context.Context, runID pgtype.UUID) ([]CoverageByRunRow, error)
+	// Newest N points PER SERIES (job_name, matrix_key) — a global
+	// LIMIT would let one chatty job starve every other sparkline out
+	// of the window (review-round MEDIUM). row_number() over the
+	// partition keeps each series complete; the per-series cap is the
+	// limit arg. Newest-first; caller flips for charting.
+	CoverageTrendByPipeline(ctx context.Context, arg CoverageTrendByPipelineParams) ([]CoverageTrendByPipelineRow, error)
 	// Median run duration in seconds across the last 7 days. NULL when
 	// no finished runs.
 	DashboardP50DurationSec7d(ctx context.Context) (float64, error)
@@ -1284,6 +1291,10 @@ type Querier interface {
 	// ON CONFLICT (name) DO UPDATE bumps kind + display + id/secret
 	// + issuer + api base + enabled. We never update created_at.
 	UpsertAuthProvider(ctx context.Context, arg UpsertAuthProviderParams) (AuthProvider, error)
+	// Resolves run/pipeline/job metadata from the job_run row itself so
+	// the gRPC handler only needs the job_run id it already validated
+	// via snapshot-CAS. Rerun/attempt rewrites land on the same row.
+	UpsertCoverageReport(ctx context.Context, arg UpsertCoverageReportParams) error
 	// Records a fire time for a cron material. The ticker calls this
 	// right after dispatching a run so a crashed server doesn't re-
 	// fire the same tick when it comes back.

@@ -352,6 +352,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			// to render the per-case breakdown. Scan before reporting
 			// so failed runs surface their evidence.
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
+			r.scanCoverage(scriptWorkDir, a, &seq)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
 				fmt.Sprintf("task %d: %v", i, err))
 			return
@@ -359,6 +360,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		if exitCode != 0 {
 			log.Info("runner: task exited non-zero", "task", i, "exit", exitCode)
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
+			r.scanCoverage(scriptWorkDir, a, &seq)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
 				fmt.Sprintf("task %d exited with %d", i, exitCode))
 			return
@@ -370,6 +372,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// per-case tally persisted by the time JobResult lands and
 	// the cascade fires.
 	r.scanTestReports(ctx, scriptWorkDir, a, &seq)
+	r.scanCoverage(scriptWorkDir, a, &seq)
 
 	// Cache store runs after every task succeeded — there's no
 	// point caching a half-built node_modules from a failed

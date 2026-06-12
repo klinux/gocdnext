@@ -172,6 +172,14 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				continue
 			}
 			a.handleTestResultBatch(stream.Context(), log, sess, kind.TestResults)
+		case *gocdnextv1.AgentMessage_Coverage:
+			// Same revoked-session drop rationale as TestResults:
+			// a fenced agent's late summary must not clobber the
+			// successor attempt's coverage.
+			if sess.revoked.Load() {
+				continue
+			}
+			a.handleCoverage(stream.Context(), log, sess, kind.Coverage)
 		case *gocdnextv1.AgentMessage_CleanupRunServicesResult:
 			// Revoked-session drop: a half-open stream from a
 			// register-fenced agent can keep emitting acks for
@@ -376,6 +384,66 @@ func (a *AgentService) handleTestResultBatch(ctx context.Context, log logger, se
 		return
 	}
 	log.Info("agent test results persisted", "job_id", jobID, "count", len(in))
+}
+
+// handleCoverage persists one job's coverage summary. Same session
+// + snapshot-CAS contract as handleTestResultBatch — the two ride
+// the identical trust path, just different payload shapes.
+func (a *AgentService) handleCoverage(ctx context.Context, log logger, sess *Session, sum *gocdnextv1.CoverageSummary) {
+	if sess.revoked.Load() {
+		log.Warn("agent coverage: dropped — session revoked",
+			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", sum.GetJobId())
+		return
+	}
+	jobID, err := uuid.Parse(sum.GetJobId())
+	if err != nil {
+		log.Warn("agent coverage: bad job_id", "job_id", sum.GetJobId())
+		return
+	}
+	expectedAttempt, ok := sess.LookupAssignment(jobID)
+	if !ok {
+		log.Warn("agent coverage: dropped — session has no assignment for this job",
+			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", jobID)
+		return
+	}
+	if sum.GetLinesTotal() < 0 || sum.GetLinesCovered() < 0 || sum.GetLinesCovered() > sum.GetLinesTotal() {
+		log.Warn("agent coverage: dropped — inconsistent totals",
+			"job_id", jobID, "covered", sum.GetLinesCovered(), "total", sum.GetLinesTotal())
+		return
+	}
+	in := store.CoverageIn{
+		Format:       sum.GetFormat(),
+		LinesCovered: sum.GetLinesCovered(),
+		LinesTotal:   sum.GetLinesTotal(),
+	}
+	for _, p := range sum.GetPackages() {
+		// Per-package defence in depth (mirrors the totals check
+		// above): the agent validates at parse time, but the wire is
+		// not the parser — a bad entry drops alone, loudly, without
+		// taking the (already-validated) summary down with it.
+		if p.GetLinesTotal() < 0 || p.GetLinesCovered() < 0 || p.GetLinesCovered() > p.GetLinesTotal() {
+			log.Warn("agent coverage: dropped inconsistent package entry",
+				"job_id", jobID, "package", p.GetName(),
+				"covered", p.GetLinesCovered(), "total", p.GetLinesTotal())
+			continue
+		}
+		in.Packages = append(in.Packages, store.PackageCoverageIn{
+			Name:         p.GetName(),
+			LinesCovered: p.GetLinesCovered(),
+			LinesTotal:   p.GetLinesTotal(),
+		})
+	}
+	if err := a.store.WriteCoverage(ctx, jobID, sess.AgentID, expectedAttempt, in); err != nil {
+		if errors.Is(err, store.ErrSnapshotStale) {
+			log.Warn("agent coverage: dropped — snapshot stale (row reclaimed/redispatched)",
+				"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", jobID)
+			return
+		}
+		log.Warn("agent coverage: persist failed", "err", err, "job_id", jobID)
+		return
+	}
+	log.Info("agent coverage persisted", "job_id", jobID,
+		"covered", in.LinesCovered, "total", in.LinesTotal)
 }
 
 func clampBytes(s string, max int) string {

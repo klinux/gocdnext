@@ -2394,3 +2394,41 @@ drainPrep:
 		t.Errorf("run status = %q, want failed (ghost needs must count toward run failure — silent-green is the bug we're guarding)", runStatus)
 	}
 }
+
+// Review-round HIGH (v0.29.0): coverage_report parsed + persisted
+// but NEVER copied into the JobAssignment — pipelines declaring it
+// dispatched a nil spec and the agent scanned nothing. This test is
+// the regression pin: the spec must flow def → assignment.
+func TestBuildAssignment_CarriesCoverageReport(t *testing.T) {
+	def := domain.Pipeline{
+		Stages: []string{"test"},
+		Jobs: []domain.Job{
+			{
+				Name: "unit", Stage: "test",
+				Tasks: []domain.Task{{Script: "go test ./..."}},
+				CoverageReport: &domain.CoverageReportSpec{
+					Path:   "coverage.out",
+					Format: "go-cover",
+				},
+			},
+		},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{
+		ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON,
+		Revisions: json.RawMessage(`{}`),
+	}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "unit"}
+
+	got, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	cr := got.GetCoverageReport()
+	if cr == nil {
+		t.Fatal("assignment.CoverageReport = nil — the spec never reached the agent")
+	}
+	if cr.GetPath() != "coverage.out" || cr.GetFormat() != "go-cover" {
+		t.Fatalf("spec = %+v", cr)
+	}
+}
