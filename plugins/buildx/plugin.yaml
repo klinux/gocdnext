@@ -97,8 +97,47 @@ inputs:
       the import-side mirror of `cache-to`. Examples:
         type=s3,region=us-east-1,bucket=my-cache,name=org/app
         type=registry,ref=ghcr.io/org/app:cache
+  mirror:
+    required: false
+    description: >
+      Pull-through mirror for docker.io base images, e.g.
+      "mirror.gcr.io" or "registry.example.com/dockerhub" (path
+      prefixes supported). FROM pulls resolve via the mirror with
+      automatic fallback to Docker Hub when it misses or is down —
+      the fix for Hub anonymous rate limits when the cluster
+      egresses through shared NAT IPs. Only docker.io is mirrored;
+      images referencing other registries are untouched.
+  mirror-username:
+    required: false
+    description: >
+      Username for an authenticated mirror. Optional — public
+      mirrors need no login.
+  mirror-password:
+    required: false
+    description: >
+      Mirror token/password. Populate via the job's `secrets:`
+      so the plaintext stays out of the log.
 
 examples:
+  - name: build behind a Docker Hub mirror
+    description: >
+      Route base-image pulls through an internal pull-through
+      mirror — FROM lines keep referencing docker.io images, the
+      builder resolves them via the mirror and falls back to the
+      Hub on miss. Pair with `cache: registry` so warm rebuilds
+      rarely pull bases at all.
+    yaml: |
+      secrets: [REGISTRY_USERNAME, REGISTRY_TOKEN]
+      docker: true
+      uses: ghcr.io/klinux/gocdnext-plugin-buildx@v1
+      with:
+        image: registry.example.com/org/app
+        tags: "${CI_COMMIT_SHORT_SHA}, latest"
+        mirror: registry.example.com/dockerhub
+        cache: registry
+        username: ${{ REGISTRY_USERNAME }}
+        password: ${{ REGISTRY_TOKEN }}
+
   - name: amd64 + arm64 release
     description: >
       Typical release shape — one job, two architectures, pushed
