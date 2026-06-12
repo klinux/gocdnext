@@ -29,6 +29,12 @@ type normalizedPush struct {
 	AuthorName  string
 	CommitMsg   string
 	CommittedAt time.Time
+	// ChangedFiles + FilesKnown drive `when.paths` filtering.
+	// FilesKnown=false (Bitbucket — payload has no file lists;
+	// truncated GitLab payloads) fails open: paths-gated pipelines
+	// still run.
+	ChangedFiles []string
+	FilesKnown   bool
 }
 
 // persistPush runs the common tail after a webhook has passed
@@ -69,6 +75,19 @@ func (h *Handler) persistPush(
 		h.log.Error(np.Provider+" webhook: material lookup failed",
 			"delivery", np.Delivery, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	materials, pathFiltered := filterMaterialsByPaths(
+		h.log, materials, np.ChangedFiles, np.FilesKnown, np.Provider, np.Delivery)
+	if len(materials) == 0 && pathFiltered > 0 {
+		rec.status = store.WebhookStatusIgnored
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"runs":              []any{},
+			"filtered_by_paths": pathFiltered,
+		})
 		return
 	}
 	if len(materials) == 0 {
@@ -249,16 +268,19 @@ func (h *Handler) HandleGitLab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	glFiles, glKnown := ev.ChangedFiles()
 	h.persistPush(w, r, rec, normalizedPush{
-		Provider:    "gitlab",
-		Delivery:    delivery,
-		CloneURL:    ev.Repository.CloneURL,
-		Branch:      ev.Branch,
-		After:       ev.After,
-		Body:        body,
-		AuthorName:  ev.HeadCommit.Author,
-		CommitMsg:   ev.HeadCommit.Message,
-		CommittedAt: ev.HeadCommit.Timestamp,
+		Provider:     "gitlab",
+		Delivery:     delivery,
+		CloneURL:     ev.Repository.CloneURL,
+		Branch:       ev.Branch,
+		After:        ev.After,
+		Body:         body,
+		AuthorName:   ev.HeadCommit.Author,
+		CommitMsg:    ev.HeadCommit.Message,
+		CommittedAt:  ev.HeadCommit.Timestamp,
+		ChangedFiles: glFiles,
+		FilesKnown:   glKnown,
 	})
 }
 
@@ -367,6 +389,10 @@ func (h *Handler) HandleBitbucket(w http.ResponseWriter, r *http.Request) {
 		AuthorName:  ev.HeadCommit.Author,
 		CommitMsg:   ev.HeadCommit.Message,
 		CommittedAt: ev.HeadCommit.Timestamp,
+		// Bitbucket Cloud push payloads carry no per-commit file
+		// lists — FilesKnown stays false and `when.paths` pipelines
+		// fail open (always run) on this provider.
+		FilesKnown: false,
 	})
 }
 

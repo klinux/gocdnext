@@ -280,7 +280,11 @@ func main() {
 
 	webhookHandler := webhook.NewHandler(st, logger).
 		WithConfigFetcher(gitHubFetcher).
-		WithChecksReporter(checksReporter)
+		WithChecksReporter(checksReporter).
+		// when.paths on pull_request events: PR payloads carry no
+		// file lists, so filtering needs the provider's files API —
+		// same credential machinery as the config fetcher.
+		WithPRFilesFetcher(&configsync.PRFiles{MultiFetcher: gitHubFetcher})
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
 		WithConfigFetcher(gitHubFetcher)

@@ -51,6 +51,10 @@ type Handler struct {
 	log      *slog.Logger
 	fetcher  ConfigFetcher
 	reporter *checks.Reporter
+	// prFiles resolves PR changed-file lists for `when.paths`
+	// filtering (push payloads embed the lists; PR payloads don't).
+	// Nil = PR path filtering fails open. See pathfilter.go.
+	prFiles PRFilesFetcher
 }
 
 // NewHandler builds the webhook handler. The Store must have a
@@ -302,6 +306,23 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// when.paths: drop materials whose globs don't match the push's
+	// changed files. Unknown set (truncated payload, force push with
+	// no embedded commits) fails open inside pathsMatch.
+	changedFiles, filesKnown := ev.ChangedFiles()
+	materials, pathFiltered := filterMaterialsByPaths(
+		h.log, materials, changedFiles, filesKnown, "github", delivery)
+	if len(materials) == 0 {
+		rec.status = store.WebhookStatusIgnored
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"runs":              []any{},
+			"filtered_by_paths": pathFiltered,
+		})
+		return
+	}
+
 	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
 		Materials:   materials,
 		Revision:    ev.After,
@@ -320,6 +341,9 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"runs":      runs,
 		"materials": len(materials),
+	}
+	if pathFiltered > 0 {
+		resp["filtered_by_paths"] = pathFiltered
 	}
 	if driftOutcome.Attempted {
 		resp["drift"] = map[string]any{

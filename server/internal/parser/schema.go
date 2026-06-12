@@ -435,6 +435,14 @@ type WhenDef struct {
 	Status []string `yaml:"status,omitempty"` // success|failure|always
 	Branch []string `yaml:"branch,omitempty"`
 	Event  []string `yaml:"event,omitempty"`
+	// Paths gates run creation on the changed-file set of the
+	// triggering push/PR: the pipeline fires only when at least one
+	// changed file matches one glob (doublestar grammar, same as
+	// artifacts). Empty = always fire. When the platform can't know
+	// the file set (Bitbucket pushes, truncated payloads, files-API
+	// failure) it FAILS OPEN — running on a docs-only change is
+	// noise; silently missing CI on a real change is an incident.
+	Paths []string `yaml:"paths,omitempty"`
 }
 
 // AgentDef binds a job to a named runner_profiles row at apply

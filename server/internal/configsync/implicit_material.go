@@ -77,6 +77,11 @@ func InjectImplicitProjectMaterial(pipelines []*domain.Pipeline, scm *store.SCMS
 					Branch:              branch,
 					Events:              append([]string(nil), events...),
 					AutoRegisterWebhook: true,
+					// when.paths lowers onto the implicit material the
+					// same way when.event does — the webhook filters
+					// materials by Paths against the delivery's
+					// changed-file set.
+					Paths: append([]string(nil), p.TriggerPaths...),
 				},
 			})
 		}

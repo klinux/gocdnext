@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -308,6 +309,52 @@ func TestNormaliseMRLabels(t *testing.T) {
 				if got[i] != tt.want[i] {
 					t.Errorf("[%d] %q, want %q", i, got[i], tt.want[i])
 				}
+			}
+		})
+	}
+}
+
+// ChangedFiles completeness contract: the file set is only "known"
+// when the payload PROVES it embeds every commit — total_commits_count
+// present AND <= len(commits). A missing counter must read as
+// unknown (fail open downstream), not as zero-means-complete.
+func TestParsePushEvent_ChangedFiles(t *testing.T) {
+	base := `{
+		"object_kind": "push",
+		"ref": "refs/heads/main",
+		"after": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		"repository": {"git_http_url": "https://gitlab.example.com/g/d.git"},
+		"commits": [{
+			"id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+			"message": "m",
+			"timestamp": "2026-06-12T10:00:00Z",
+			"author": {"name": "dev"},
+			"added": ["web/a.tsx"],
+			"modified": ["go.mod"],
+			"removed": []
+		}]%s
+	}`
+	tests := []struct {
+		name      string
+		extra     string
+		wantKnown bool
+		wantFiles int
+	}{
+		{"counter proves completeness", `, "total_commits_count": 1`, true, 2},
+		{"counter missing → unknown", ``, false, 0},
+		{"counter exceeds embedded → unknown", `, "total_commits_count": 30`, false, 0},
+		{"contradictory counter below embedded → unknown", `, "total_commits_count": 0`, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, err := ParsePushEvent([]byte(fmt.Sprintf(base, tt.extra)))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			files, known := ev.ChangedFiles()
+			if known != tt.wantKnown || len(files) != tt.wantFiles {
+				t.Fatalf("ChangedFiles() = (%d files, known=%v), want (%d, %v)",
+					len(files), known, tt.wantFiles, tt.wantKnown)
 			}
 		})
 	}
