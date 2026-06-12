@@ -11,9 +11,9 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func seedProject(t *testing.T, pool any, slug string) uuid.UUID {

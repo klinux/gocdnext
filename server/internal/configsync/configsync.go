@@ -22,13 +22,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
-	"github.com/gocdnext/gocdnext/server/internal/parser"
 	"github.com/gocdnext/gocdnext/server/internal/scm"
 	"github.com/gocdnext/gocdnext/server/internal/scm/bitbucket"
 	gh "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/scm/gitlab"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/parser"
 )
 
 // ErrFolderNotFound re-exports the scm-layer sentinel at this

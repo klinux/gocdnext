@@ -3,8 +3,8 @@ package store_test
 import (
 	"testing"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func TestNotificationTriggerMatches(t *testing.T) {

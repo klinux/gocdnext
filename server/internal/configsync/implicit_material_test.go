@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func TestInjectImplicitProjectMaterial_AddsWhenAbsent(t *testing.T) {

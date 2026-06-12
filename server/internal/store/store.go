@@ -16,8 +16,8 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/db"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // Sentinel errors callers can match with errors.Is.

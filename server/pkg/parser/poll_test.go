@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func TestParse_GitPollInterval(t *testing.T) {

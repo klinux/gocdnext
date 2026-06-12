@@ -11,14 +11,14 @@ import (
 //
 // Inputs:
 //   - cause:       the run's cause string (only "pull_request" can
-//                  carry PR labels; any other cause short-circuits
-//                  to baseline)
+//     carry PR labels; any other cause short-circuits
+//     to baseline)
 //   - causeDetail: raw JSONB of the run's cause_detail; expected
-//                  to carry `pr_labels: []string` when applicable
+//     to carry `pr_labels: []string` when applicable
 //   - baseRequired: the pipeline's declared approval.required
-//                   (already defaulted to 1 by the parser)
+//     (already defaulted to 1 by the parser)
 //   - overrides:   the job's approval.quorum_by_label map
-//                  (lowercased keys); nil/empty short-circuits
+//     (lowercased keys); nil/empty short-circuits
 //
 // Returns:
 //   - effectiveQuorum: the quorum the state-machine should see.

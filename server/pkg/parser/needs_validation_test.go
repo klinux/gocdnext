@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func TestValidateNeeds(t *testing.T) {

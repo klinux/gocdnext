@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // gitPipeline builds a minimal domain.Pipeline for apply tests.

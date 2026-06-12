@@ -15,10 +15,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // Reporter is the glue between a run's lifecycle and the GitHub

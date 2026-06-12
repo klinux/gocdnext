@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	bitbucketpkg "github.com/gocdnext/gocdnext/server/internal/webhook/bitbucket"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 	gitlabpkg "github.com/gocdnext/gocdnext/server/internal/webhook/gitlab"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // pullRequestEvent is the provider-uniform projection both
@@ -27,19 +27,19 @@ import (
 // equivalent so cause_detail and CI_PULL_REQUEST_* env vars
 // stay identical across providers.
 type pullRequestEvent struct {
-	Provider    string // "github" | "gitlab"
-	Action      string // provider-specific action (opened/synchronize/open/update/...)
-	Number      int
-	Title       string
-	Author      string
-	HTMLURL     string
-	HeadSHA     string
-	HeadRef     string
-	BaseRef     string
-	CloneURL    string
-	RepoLabel   string // for log diagnostics — github.FullName OR gitlab project path
-	At          time.Time
-	Labels      []string
+	Provider  string // "github" | "gitlab"
+	Action    string // provider-specific action (opened/synchronize/open/update/...)
+	Number    int
+	Title     string
+	Author    string
+	HTMLURL   string
+	HeadSHA   string
+	HeadRef   string
+	BaseRef   string
+	CloneURL  string
+	RepoLabel string // for log diagnostics — github.FullName OR gitlab project path
+	At        time.Time
+	Labels    []string
 }
 
 // handlePullRequest reacts to GitHub's pull_request webhook. Matching

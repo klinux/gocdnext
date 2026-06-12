@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // Sentinel error for read paths that need to distinguish "no row" from real
@@ -259,17 +259,17 @@ type PipelineEdge struct {
 }
 
 type JobDetail struct {
-	ID         uuid.UUID        `json:"id"`
-	StageRunID uuid.UUID        `json:"stage_run_id"`
-	Name       string           `json:"name"`
-	MatrixKey  string           `json:"matrix_key,omitempty"`
-	Image      string           `json:"image,omitempty"`
-	Status     string           `json:"status"`
-	ExitCode   *int32           `json:"exit_code,omitempty"`
-	Error      string           `json:"error,omitempty"`
-	StartedAt  *time.Time       `json:"started_at,omitempty"`
-	FinishedAt *time.Time       `json:"finished_at,omitempty"`
-	AgentID    *uuid.UUID       `json:"agent_id,omitempty"`
+	ID         uuid.UUID  `json:"id"`
+	StageRunID uuid.UUID  `json:"stage_run_id"`
+	Name       string     `json:"name"`
+	MatrixKey  string     `json:"matrix_key,omitempty"`
+	Image      string     `json:"image,omitempty"`
+	Status     string     `json:"status"`
+	ExitCode   *int32     `json:"exit_code,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	AgentID    *uuid.UUID `json:"agent_id,omitempty"`
 
 	// CancelRequestedAt is non-nil when the operator hit Cancel
 	// but the agent hasn't acknowledged yet (deferred cancel
@@ -299,10 +299,10 @@ type JobDetail struct {
 
 	// Approval gate fields. Populated only when approval_gate is
 	// true so regular jobs don't carry dead JSON on every response.
-	ApprovalGate        bool       `json:"approval_gate,omitempty"`
-	Approvers           []string   `json:"approvers,omitempty"`
-	ApprovalRequired    int        `json:"approval_required,omitempty"`
-	ApprovalDescription string     `json:"approval_description,omitempty"`
+	ApprovalGate        bool     `json:"approval_gate,omitempty"`
+	Approvers           []string `json:"approvers,omitempty"`
+	ApprovalRequired    int      `json:"approval_required,omitempty"`
+	ApprovalDescription string   `json:"approval_description,omitempty"`
 	// ApprovalQuorumLabel names the PR label whose quorum_by_label
 	// override fired when the gate was materialised. Empty (and
 	// omitted) when no override fired — the UI can then show

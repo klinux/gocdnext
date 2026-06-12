@@ -14,9 +14,9 @@ import (
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func newRunnerProfileHandler(t *testing.T) (*store.Store, *pgxpool.Pool, http.Handler) {
@@ -167,13 +167,13 @@ func TestRunnerProfiles_RejectsInvalidScheduling(t *testing.T) {
 		wantHint string
 	}{
 		{
-			name: "node_selector key has bad charset",
-			body: `{"name":"x","engine":"kubernetes","node_selector":{"bad key":"v"}}`,
+			name:     "node_selector key has bad charset",
+			body:     `{"name":"x","engine":"kubernetes","node_selector":{"bad key":"v"}}`,
 			wantHint: "node_selector key",
 		},
 		{
-			name: "node_selector prefix not DNS subdomain (uppercase)",
-			body: `{"name":"x","engine":"kubernetes","node_selector":{"BAD/name":"v"}}`,
+			name:     "node_selector prefix not DNS subdomain (uppercase)",
+			body:     `{"name":"x","engine":"kubernetes","node_selector":{"BAD/name":"v"}}`,
 			wantHint: "node_selector key",
 		},
 		{
@@ -181,78 +181,78 @@ func TestRunnerProfiles_RejectsInvalidScheduling(t *testing.T) {
 			// validator had — `..` between dot-separated subdomain labels
 			// is rejected by k8svalidation but slipped past the old
 			// `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$` shape.
-			name: "node_selector prefix has consecutive dots",
-			body: `{"name":"x","engine":"kubernetes","node_selector":{"a..b/name":"v"}}`,
+			name:     "node_selector prefix has consecutive dots",
+			body:     `{"name":"x","engine":"kubernetes","node_selector":{"a..b/name":"v"}}`,
 			wantHint: "node_selector key",
 		},
 		{
 			// `.-` between labels: same gap as `..`. apiserver rejects;
 			// hand-rolled regex would have accepted.
-			name: "node_selector prefix has dot-dash transition",
-			body: `{"name":"x","engine":"kubernetes","node_selector":{"a.-b/name":"v"}}`,
+			name:     "node_selector prefix has dot-dash transition",
+			body:     `{"name":"x","engine":"kubernetes","node_selector":{"a.-b/name":"v"}}`,
 			wantHint: "node_selector key",
 		},
 		{
 			// `-.`: mirror case. Same gap.
-			name: "node_selector prefix has dash-dot transition",
-			body: `{"name":"x","engine":"kubernetes","node_selector":{"a-.b/name":"v"}}`,
+			name:     "node_selector prefix has dash-dot transition",
+			body:     `{"name":"x","engine":"kubernetes","node_selector":{"a-.b/name":"v"}}`,
 			wantHint: "node_selector key",
 		},
 		{
-			name: "node_selector value too long",
-			body: `{"name":"x","engine":"kubernetes","node_selector":{"k":"` + strings.Repeat("a", 64) + `"}}`,
+			name:     "node_selector value too long",
+			body:     `{"name":"x","engine":"kubernetes","node_selector":{"k":"` + strings.Repeat("a", 64) + `"}}`,
 			wantHint: "node_selector[",
 		},
 		{
-			name: "toleration operator unknown",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"DoesNotEqual","effect":"NoSchedule"}]}`,
+			name:     "toleration operator unknown",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"DoesNotEqual","effect":"NoSchedule"}]}`,
 			wantHint: "operator",
 		},
 		{
-			name: "toleration effect unknown",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","effect":"Maybe"}]}`,
+			name:     "toleration effect unknown",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","effect":"Maybe"}]}`,
 			wantHint: "effect",
 		},
 		{
-			name: "toleration Exists with value",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Exists","value":"oops","effect":"NoSchedule"}]}`,
+			name:     "toleration Exists with value",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Exists","value":"oops","effect":"NoSchedule"}]}`,
 			wantHint: "Exists requires empty value",
 		},
 		{
-			name: "toleration_seconds negative",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"v","effect":"NoExecute","toleration_seconds":-1}]}`,
+			name:     "toleration_seconds negative",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"v","effect":"NoExecute","toleration_seconds":-1}]}`,
 			wantHint: "must be ≥ 0",
 		},
 		{
-			name: "toleration_seconds with wrong effect",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"v","effect":"NoSchedule","toleration_seconds":10}]}`,
+			name:     "toleration_seconds with wrong effect",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"v","effect":"NoSchedule","toleration_seconds":10}]}`,
 			wantHint: "only valid with effect=NoExecute",
 		},
 		{
-			name: "toleration with empty key + Equal",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
+			name:     "toleration with empty key + Equal",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
 			wantHint: "key required unless operator=Exists",
 		},
 		{
 			// IsQualifiedName rejects `^`, `=`, `@` — anything outside
 			// the apiserver taint-key charset. Without this gate, the
 			// profile would persist and only fail at pod admission.
-			name: "toleration key has forbidden chars",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"nospecialchars^=@","operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
+			name:     "toleration key has forbidden chars",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"nospecialchars^=@","operator":"Equal","value":"v","effect":"NoSchedule"}]}`,
 			wantHint: "tolerations[0].key",
 		},
 		{
 			// IsValidLabelValue rejects spaces (and other non-charset
 			// chars). The apiserver applies this to taint values when
 			// operator=Equal.
-			name: "toleration Equal value has space",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"bad value","effect":"NoSchedule"}]}`,
+			name:     "toleration Equal value has space",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"bad value","effect":"NoSchedule"}]}`,
 			wantHint: "tolerations[0].value",
 		},
 		{
 			// IsValidLabelValue caps at 63 chars. 64-a value fails.
-			name: "toleration Equal value too long",
-			body: `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"` + strings.Repeat("a", 64) + `","effect":"NoSchedule"}]}`,
+			name:     "toleration Equal value too long",
+			body:     `{"name":"x","engine":"kubernetes","tolerations":[{"key":"k","operator":"Equal","value":"` + strings.Repeat("a", 64) + `","effect":"NoSchedule"}]}`,
 			wantHint: "tolerations[0].value",
 		},
 	}

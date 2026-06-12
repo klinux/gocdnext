@@ -21,10 +21,10 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	ghscm "github.com/gocdnext/gocdnext/server/internal/scm/github"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // githubStub emulates the minimum GitHub API surface the reporter

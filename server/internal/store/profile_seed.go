@@ -35,8 +35,8 @@ type runnerProfileEntry struct {
 	// overwrite operator-set scheduling hints with `{}`/`[]` on
 	// every server boot. The values.yaml seed is then the
 	// declarative source of truth for both bounds AND scheduling.
-	NodeSelector map[string]string  `yaml:"node_selector"`
-	Tolerations  []seedToleration   `yaml:"tolerations"`
+	NodeSelector map[string]string `yaml:"node_selector"`
+	Tolerations  []seedToleration  `yaml:"tolerations"`
 	// Env carries plaintext, non-secret runtime config (bucket
 	// names, regions, GOCDNEXT_LAYER_CACHE_* defaults). Plain
 	// values.yaml is the right place — they're not credentials.

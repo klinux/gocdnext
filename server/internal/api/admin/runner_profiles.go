@@ -26,19 +26,19 @@ import (
 // each key so admins know a secret is configured without exposing
 // its value.
 type runnerProfileDTO struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Description       string            `json:"description"`
-	Engine            string            `json:"engine"`
-	DefaultImage      string            `json:"default_image"`
-	DefaultCPURequest string            `json:"default_cpu_request"`
-	DefaultCPULimit   string            `json:"default_cpu_limit"`
-	DefaultMemRequest string            `json:"default_mem_request"`
-	DefaultMemLimit   string            `json:"default_mem_limit"`
-	MaxCPU            string            `json:"max_cpu"`
-	MaxMem            string            `json:"max_mem"`
-	Tags              []string          `json:"tags"`
-	Config            map[string]any    `json:"config,omitempty"`
+	ID                string         `json:"id"`
+	Name              string         `json:"name"`
+	Description       string         `json:"description"`
+	Engine            string         `json:"engine"`
+	DefaultImage      string         `json:"default_image"`
+	DefaultCPURequest string         `json:"default_cpu_request"`
+	DefaultCPULimit   string         `json:"default_cpu_limit"`
+	DefaultMemRequest string         `json:"default_mem_request"`
+	DefaultMemLimit   string         `json:"default_mem_limit"`
+	MaxCPU            string         `json:"max_cpu"`
+	MaxMem            string         `json:"max_mem"`
+	Tags              []string       `json:"tags"`
+	Config            map[string]any `json:"config,omitempty"`
 	// NodeSelector pins job pods to nodes carrying these labels.
 	// Always present on read (UI iterates Object.entries; nil
 	// would crash). Empty map = no restriction.

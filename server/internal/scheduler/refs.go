@@ -292,9 +292,9 @@ var ErrNeedsRefUnresolved = errors.New("needs reference unresolved")
 //
 // Errors:
 //
-//	- 1-dim shortcut against a multi-dim upstream → ambiguous
-//	- explicit k=v where k not in dimNames → unknown dimension
-//	- repeated dimension in the selector → operator typo
+//   - 1-dim shortcut against a multi-dim upstream → ambiguous
+//   - explicit k=v where k not in dimNames → unknown dimension
+//   - repeated dimension in the selector → operator typo
 func canonicalMatrixKey(body string, dimNames []string) (string, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {

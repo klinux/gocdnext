@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	robfig "github.com/robfig/cron/v3"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // ProjectTicker fires project-level schedules. Unlike the
