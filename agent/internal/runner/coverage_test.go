@@ -172,3 +172,32 @@ func TestParseCoverage_LCOVStrictness(t *testing.T) {
 		})
 	}
 }
+
+// Phase 2: the fail_under gate. At-threshold passes (>= contract);
+// zero means "no gate"; below fails with both numbers in the reason.
+func TestCoverageGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		failUnder float64
+		covered   int64
+		total     int64
+		wantFail  bool
+	}{
+		{"no gate", 0, 1, 100, false},
+		{"below threshold fails", 80, 70, 100, true},
+		{"at threshold passes", 70, 70, 100, false},
+		{"above passes", 50, 70, 100, false},
+		{"empty total with gate fails", 80, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failed, reason := coverageGate(tt.failUnder, tt.covered, tt.total)
+			if failed != tt.wantFail {
+				t.Fatalf("gate = %v (%s), want %v", failed, reason, tt.wantFail)
+			}
+			if failed && !strings.Contains(reason, "fail_under") {
+				t.Fatalf("reason should cite the knob: %q", reason)
+			}
+		})
+	}
+}

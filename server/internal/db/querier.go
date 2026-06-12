@@ -161,6 +161,17 @@ type Querier interface {
 	CountTestResultsByJobRun(ctx context.Context, jobRunIds []pgtype.UUID) ([]CountTestResultsByJobRunRow, error)
 	// Pair for ListWebhookDeliveries so the UI can render "N of M".
 	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
+	// Latest coverage per series from MAINLINE runs, used as the delta
+	// baseline. Mainline = branch-head advancement: cause 'webhook'
+	// (push deliveries — the store default for branch pushes) and
+	// 'poll' (poll-discovered head moves). There is NO 'push' cause in
+	// the domain — review round caught the original filter matching
+	// nothing real. Tag/PR/manual/cron/upstream runs never baseline.
+	// Excludes the asking run so a mainline run compares against its
+	// predecessor, not itself. Branch is NOT filtered: pipelines that
+	// register multiple push branches mix them — acceptable v1,
+	// documented in the YAML reference.
+	CoverageBaselineByPipeline(ctx context.Context, arg CoverageBaselineByPipelineParams) ([]CoverageBaselineByPipelineRow, error)
 	CoverageByRun(ctx context.Context, runID pgtype.UUID) ([]CoverageByRunRow, error)
 	// Newest N points PER SERIES (job_name, matrix_key) — a global
 	// LIMIT would let one chatty job starve every other sparkline out

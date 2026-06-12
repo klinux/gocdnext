@@ -167,3 +167,90 @@ func TestCoverageTrend_PerSeriesWindow(t *testing.T) {
 		t.Fatalf("points = %+v — per-series window broken (one series starved)", points)
 	}
 }
+
+// Phase 2: PR runs get the latest MAINLINE (webhook/poll-cause)
+// measurement of the same series as baseline; runs without a
+// mainline predecessor get none.
+func TestCoverageByRun_BaselineFromMainline(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	// Run 1 = the mainline with 50% coverage. NO cause injection:
+	// the seed creates the run through the store path, which
+	// defaults branch pushes to cause='webhook' — the test must
+	// exercise the state production actually creates (review-round
+	// HIGH: the original test injected a fabricated cause='push'
+	// and masked a filter that matched nothing real).
+	jobID, agentID, runID := seedRunningAgentJob(t, pool)
+	var cause string
+	if err := pool.QueryRow(ctx, `SELECT cause FROM runs WHERE id=$1`, runID).Scan(&cause); err != nil || cause != "webhook" {
+		t.Fatalf("seed precondition: cause = %q (err=%v), want webhook — seed changed, revisit baseline semantics", cause, err)
+	}
+	if err := s.WriteCoverage(ctx, jobID, agentID, 0, store.CoverageIn{
+		Format: "go-cover", LinesCovered: 50, LinesTotal: 100,
+	}); err != nil {
+		t.Fatalf("WriteCoverage mainline: %v", err)
+	}
+
+	// Run 2 = the PR run, same pipeline + same job name, 70%.
+	var pipelineID, stageID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT pipeline_id FROM runs WHERE id=$1`, runID).Scan(&pipelineID); err != nil {
+		t.Fatalf("pipeline lookup: %v", err)
+	}
+	var jobName string
+	if err := pool.QueryRow(ctx,
+		`SELECT name, stage_run_id FROM job_runs WHERE id=$1`, jobID,
+	).Scan(&jobName, &stageID); err != nil {
+		t.Fatalf("job lookup: %v", err)
+	}
+	var run2 uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO runs (pipeline_id, counter, status, cause, revisions)
+		 VALUES ($1, 999, 'running', 'pull_request', '{}') RETURNING id`, pipelineID,
+	).Scan(&run2); err != nil {
+		t.Fatalf("seed run2: %v", err)
+	}
+	var stage2 uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO stage_runs (run_id, name, ordinal, status)
+		 VALUES ($1, 'test', 0, 'running') RETURNING id`, run2,
+	).Scan(&stage2); err != nil {
+		t.Fatalf("seed stage2: %v", err)
+	}
+	var job2 uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO job_runs (run_id, stage_run_id, name, status, agent_id, attempt)
+		 VALUES ($1, $2, $3, 'running', $4, 0) RETURNING id`,
+		run2, stage2, jobName, agentID,
+	).Scan(&job2); err != nil {
+		t.Fatalf("seed job2: %v", err)
+	}
+	if err := s.WriteCoverage(ctx, job2, agentID, 0, store.CoverageIn{
+		Format: "go-cover", LinesCovered: 70, LinesTotal: 100,
+	}); err != nil {
+		t.Fatalf("WriteCoverage pr: %v", err)
+	}
+
+	// PR run sees the mainline run as baseline.
+	rows, err := s.CoverageByRun(ctx, run2)
+	if err != nil {
+		t.Fatalf("CoverageByRun: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Baseline == nil {
+		t.Fatalf("rows = %+v — PR run should carry a baseline", rows)
+	}
+	if rows[0].Baseline.LinesCovered != 50 || rows[0].Baseline.RunID != runID {
+		t.Fatalf("baseline = %+v, want the mainline run's 50/100", rows[0].Baseline)
+	}
+
+	// The mainline run itself excludes itself — no other mainline
+	// run exists, so it gets NO baseline (never self-compares).
+	rows, err = s.CoverageByRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("CoverageByRun mainline: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Baseline != nil {
+		t.Fatalf("mainline rows = %+v — must not self-baseline", rows)
+	}
+}

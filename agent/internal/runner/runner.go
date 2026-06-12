@@ -372,7 +372,14 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// per-case tally persisted by the time JobResult lands and
 	// the cascade fires.
 	r.scanTestReports(ctx, scriptWorkDir, a, &seq)
-	r.scanCoverage(scriptWorkDir, a, &seq)
+	if gateFailed, reason := r.scanCoverage(scriptWorkDir, a, &seq); gateFailed {
+		// fail_under: the build is functionally green but the
+		// declared coverage floor wasn't met — the job fails like
+		// any other failed contract (no cache store, no artifacts,
+		// mirroring the task-failure path).
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason)
+		return
+	}
 
 	// Cache store runs after every task succeeded — there's no
 	// point caching a half-built node_modules from a failed

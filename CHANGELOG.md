@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.30.0 — 2026-06-12
+
+Coverage phase 2 — the actionable half of #36: the delta a PR
+reviewer reads, and the gate an operator opts into.
+
+### Added
+
+- **Delta vs main**: `/runs/{id}/coverage` rows now carry the
+  latest push-run measurement of the same (job, matrix) series as
+  `baseline`; the Coverage tab shows a `±N.Npp vs main` chip and
+  the GitHub check-run summary lists per-series percentages with
+  the same delta. Self-exclusion guaranteed: a push run never
+  baselines against itself. Baseline lookup is enrichment — a
+  failure degrades to "no delta", never an error.
+- **`coverage_report.fail_under` (opt-in gate, default off)**:
+  when set, the agent fails the job if total coverage lands below
+  the threshold (at-threshold passes). Bypass-proof by design:
+  with the gate set, a missing/oversized/unparsable coverage file
+  fails the job too — deleting the profile must not turn the gate
+  green. Gate failure skips cache store and artifact upload,
+  mirroring task-failure semantics in both workspace modes.
+
 ## v0.29.0 — 2026-06-12
 
 Coverage lands in the UI (#36) — the Tests tab's sibling. A

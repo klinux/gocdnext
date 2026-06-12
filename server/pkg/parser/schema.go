@@ -443,6 +443,11 @@ type RuleDef struct {
 type CoverageReportDef struct {
 	Path   string `yaml:"path"`
 	Format string `yaml:"format"` // go-cover | lcov | cobertura
+	// FailUnder, when > 0, fails the JOB if total coverage lands
+	// below this percentage. Opt-in by design: reporting must never
+	// gate by accident; the operator writes the threshold to ask
+	// for the gate.
+	FailUnder float64 `yaml:"fail_under,omitempty"`
 }
 
 type WhenDef struct {

@@ -76,6 +76,9 @@ func (s *Store) WriteCoverage(ctx context.Context, jobRunID, expectedAgentID uui
 }
 
 // CoverageRow is one job's summary as served to the run page.
+// Baseline carries the latest push-run (mainline) measurement of
+// the SAME series, when one exists — the UI derives the delta from
+// the two raw pairs so percentage rounding stays in one place.
 type CoverageRow struct {
 	JobRunID     uuid.UUID           `json:"job_run_id"`
 	JobName      string              `json:"job_name"`
@@ -85,13 +88,47 @@ type CoverageRow struct {
 	LinesTotal   int64               `json:"lines_total"`
 	Packages     []PackageCoverageIn `json:"packages,omitempty"`
 	CreatedAt    time.Time           `json:"created_at"`
+	Baseline     *CoverageBaseline   `json:"baseline,omitempty"`
 }
 
-// CoverageByRun lists every coverage summary of a run.
+// CoverageBaseline is the mainline comparison point for one series.
+type CoverageBaseline struct {
+	RunID        uuid.UUID `json:"run_id"`
+	LinesCovered int64     `json:"lines_covered"`
+	LinesTotal   int64     `json:"lines_total"`
+}
+
+// CoverageByRun lists every coverage summary of a run, each row
+// annotated with its series' mainline baseline (latest push-run
+// coverage, excluding this run) when one exists.
 func (s *Store) CoverageByRun(ctx context.Context, runID uuid.UUID) ([]CoverageRow, error) {
 	rows, err := s.q.CoverageByRun(ctx, pgUUID(runID))
 	if err != nil {
 		return nil, fmt.Errorf("store: coverage by run: %w", err)
+	}
+	baselines := map[string]CoverageBaseline{}
+	if len(rows) > 0 {
+		var pipelineID uuid.UUID
+		if err := s.pool.QueryRow(ctx,
+			`SELECT pipeline_id FROM runs WHERE id = $1`, runID,
+		).Scan(&pipelineID); err == nil {
+			if base, err := s.q.CoverageBaselineByPipeline(ctx, db.CoverageBaselineByPipelineParams{
+				PipelineID: pgUUID(pipelineID),
+				RunID:      pgUUID(runID),
+			}); err == nil {
+				for _, b := range base {
+					baselines[b.JobName+"\x00"+b.MatrixKey] = CoverageBaseline{
+						RunID:        fromPgUUID(b.RunID),
+						LinesCovered: b.LinesCovered,
+						LinesTotal:   b.LinesTotal,
+					}
+				}
+			} else {
+				// Baseline is enrichment, not the payload — a failed
+				// lookup degrades to "no delta", never to a 500.
+				_ = err
+			}
+		}
 	}
 	out := make([]CoverageRow, 0, len(rows))
 	for _, r := range rows {
@@ -108,6 +145,9 @@ func (s *Store) CoverageByRun(ctx context.Context, runID uuid.UUID) ([]CoverageR
 			// Defensive: a malformed JSONB row degrades to "no
 			// breakdown", never to a 500 on the run page.
 			_ = json.Unmarshal(r.Packages, &row.Packages)
+		}
+		if b, ok := baselines[r.JobName+"\x00"+r.MatrixKey]; ok {
+			row.Baseline = &b
 		}
 		out = append(out, row)
 	}

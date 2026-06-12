@@ -1071,9 +1071,12 @@ func (x *TestResult) GetSystemErr() string {
 // one workspace-relative file plus the format that decides which
 // agent parser runs (go-cover | lcov | cobertura).
 type CoverageReportSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
-	Format        string                 `protobuf:"bytes,2,opt,name=format,proto3" json:"format,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Path   string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Format string                 `protobuf:"bytes,2,opt,name=format,proto3" json:"format,omitempty"`
+	// fail_under > 0 turns the report into a gate: the agent fails
+	// the job when total coverage lands below this percentage.
+	FailUnder     float64 `protobuf:"fixed64,3,opt,name=fail_under,json=failUnder,proto3" json:"fail_under,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1120,6 +1123,13 @@ func (x *CoverageReportSpec) GetFormat() string {
 		return x.Format
 	}
 	return ""
+}
+
+func (x *CoverageReportSpec) GetFailUnder() float64 {
+	if x != nil {
+		return x.FailUnder
+	}
+	return 0
 }
 
 // CoverageSummary is the parsed result of one job's coverage file.
@@ -3220,10 +3230,12 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"system_out\x18\t \x01(\tR\tsystemOut\x12\x1d\n" +
 	"\n" +
 	"system_err\x18\n" +
-	" \x01(\tR\tsystemErr\"@\n" +
+	" \x01(\tR\tsystemErr\"_\n" +
 	"\x12CoverageReportSpec\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
-	"\x06format\x18\x02 \x01(\tR\x06format\"\xd7\x01\n" +
+	"\x06format\x18\x02 \x01(\tR\x06format\x12\x1d\n" +
+	"\n" +
+	"fail_under\x18\x03 \x01(\x01R\tfailUnder\"\xd7\x01\n" +
 	"\x0fCoverageSummary\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x16\n" +

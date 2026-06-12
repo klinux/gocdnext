@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -41,5 +42,15 @@ func toCoverageReport(jobName string, def *CoverageReportDef) (*domain.CoverageR
 	if _, ok := coverageFormats[def.Format]; !ok {
 		return nil, fmt.Errorf("job %s: coverage_report.format %q unknown (accepted: go-cover, lcov, cobertura)", jobName, def.Format)
 	}
-	return &domain.CoverageReportSpec{Path: def.Path, Format: def.Format}, nil
+	// math.IsNaN first: NaN compares false with EVERYTHING, so the
+	// range check below would wave it through and the agent's gate
+	// (`pct < failUnder`) would silently never fire — a declared
+	// gate that is structurally off (review-round MEDIUM).
+	if math.IsNaN(def.FailUnder) || math.IsInf(def.FailUnder, 0) {
+		return nil, fmt.Errorf("job %s: coverage_report.fail_under must be a finite number", jobName)
+	}
+	if def.FailUnder < 0 || def.FailUnder > 100 {
+		return nil, fmt.Errorf("job %s: coverage_report.fail_under %v out of range (0-100]", jobName, def.FailUnder)
+	}
+	return &domain.CoverageReportSpec{Path: def.Path, Format: def.Format, FailUnder: def.FailUnder}, nil
 }

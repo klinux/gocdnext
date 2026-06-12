@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { RunCoverage, pct, type CoverageRow, type CoverageTrendPoint } from "./run-coverage.client";
+import { RunCoverage, deltaPP, pct, type CoverageRow, type CoverageTrendPoint } from "./run-coverage.client";
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({
@@ -86,5 +86,37 @@ describe("RunCoverage", () => {
       <RunCoverage runId="r1" runStatus="success" pipelineId="p1" apiBaseURL="" />,
     );
     expect(await screen.findByText(/No coverage reported/)).toBeTruthy();
+  });
+});
+
+describe("deltaPP", () => {
+  const base = { run_id: "r0", lines_covered: 50, lines_total: 100 };
+  it("computes percentage-point movement vs baseline", () => {
+    expect(
+      deltaPP({ ...row, lines_covered: 70, lines_total: 100, baseline: base }),
+    ).toBeCloseTo(20);
+    expect(
+      deltaPP({ ...row, lines_covered: 40, lines_total: 100, baseline: base }),
+    ).toBeCloseTo(-10);
+  });
+  it("returns null without baseline or measurable lines", () => {
+    expect(deltaPP({ ...row, baseline: undefined })).toBeNull();
+    expect(
+      deltaPP({ ...row, lines_total: 0, baseline: base }),
+    ).toBeNull();
+  });
+});
+
+describe("DeltaChip rendering", () => {
+  it("shows the delta vs main on the card", async () => {
+    stubFetch(
+      [{ ...row, baseline: { run_id: "r0", lines_covered: 80, lines_total: 100 } }],
+      [],
+    );
+    renderWithQuery(
+      <RunCoverage runId="r1" runStatus="success" pipelineId="p1" apiBaseURL="" />,
+    );
+    // 70% now vs 80% main → −10.0pp.
+    expect(await screen.findByText("−10.0pp vs main")).toBeTruthy();
   });
 });

@@ -34,46 +34,65 @@ const maxCoverageFileBytes = 32 << 20
 const maxCoveragePackages = 200
 
 // scanCoverage is the shared-mode hook: read the declared file from
-// the workspace and ship the parsed summary. A declared-but-missing
-// file logs an ERROR line (the YAML promised coverage; silence
-// would hide a broken flag) but never fails the job — gating is a
-// future fail_under knob, not a side effect of reporting.
-func (r *Runner) scanCoverage(workDir string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) {
+// the workspace and ship the parsed summary. Returns the fail_under
+// gate verdict for the SUCCESS path to act on (failure paths ignore
+// it — the job already failed).
+//
+// With NO gate, a missing/oversized/unreadable file logs an error
+// and reports nothing. With fail_under > 0 those same conditions
+// FAIL the gate: a gate that silently passes when the profile is
+// deleted or corrupted is a bypass, not a gate.
+func (r *Runner) scanCoverage(workDir string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (bool, string) {
 	spec := a.GetCoverageReport()
 	if spec == nil {
-		return
+		return false, ""
 	}
+	gated := spec.GetFailUnder() > 0
 	full := filepath.Join(workDir, filepath.FromSlash(spec.GetPath()))
 	info, err := os.Stat(full)
 	if err != nil {
-		r.emitLog(a, seq, "stderr", fmt.Sprintf(
-			"coverage_report: %s not found — the job declared coverage output it didn't produce", spec.GetPath()))
-		return
+		msg := fmt.Sprintf("coverage_report: %s not found — the job declared coverage output it didn't produce", spec.GetPath())
+		r.emitLog(a, seq, "stderr", msg)
+		if gated {
+			return true, msg + " (fail_under gate cannot be evaluated)"
+		}
+		return false, ""
 	}
 	if info.Size() > maxCoverageFileBytes {
-		r.emitLog(a, seq, "stderr", fmt.Sprintf(
-			"coverage_report: %s is %d bytes (cap %d) — skipping", spec.GetPath(), info.Size(), maxCoverageFileBytes))
-		return
+		msg := fmt.Sprintf("coverage_report: %s is %d bytes (cap %d) — skipping", spec.GetPath(), info.Size(), maxCoverageFileBytes)
+		r.emitLog(a, seq, "stderr", msg)
+		if gated {
+			return true, msg + " (fail_under gate cannot be evaluated)"
+		}
+		return false, ""
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
-		r.emitLog(a, seq, "stderr", fmt.Sprintf("coverage_report: read %s: %v", spec.GetPath(), err))
-		return
+		msg := fmt.Sprintf("coverage_report: read %s: %v", spec.GetPath(), err)
+		r.emitLog(a, seq, "stderr", msg)
+		if gated {
+			return true, msg + " (fail_under gate cannot be evaluated)"
+		}
+		return false, ""
 	}
-	r.parseAndSendCoverage(spec, data, a, seq)
+	return r.parseAndSendCoverage(spec, data, a, seq)
 }
 
 // parseAndSendCoverage is the mode-agnostic tail shared with the
-// isolated-pod variant.
-func (r *Runner) parseAndSendCoverage(spec *gocdnextv1.CoverageReportSpec, data []byte, a *gocdnextv1.JobAssignment, seq *atomic.Int64) {
+// isolated-pod variant. Returns the fail_under verdict.
+func (r *Runner) parseAndSendCoverage(spec *gocdnextv1.CoverageReportSpec, data []byte, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (bool, string) {
 	sum, warns, err := parseCoverage(spec.GetFormat(), data)
 	for _, w := range warns {
 		r.emitLog(a, seq, "stderr", "coverage_report: "+w)
 	}
 	if err != nil {
-		r.emitLog(a, seq, "stderr", fmt.Sprintf("coverage_report: parse %s as %s: %v",
-			spec.GetPath(), spec.GetFormat(), err))
-		return
+		msg := fmt.Sprintf("coverage_report: parse %s as %s: %v",
+			spec.GetPath(), spec.GetFormat(), err)
+		r.emitLog(a, seq, "stderr", msg)
+		if spec.GetFailUnder() > 0 {
+			return true, msg + " (fail_under gate cannot be evaluated)"
+		}
+		return false, ""
 	}
 	sum.RunId = a.GetRunId()
 	sum.JobId = a.GetJobId()
@@ -88,6 +107,29 @@ func (r *Runner) parseAndSendCoverage(spec *gocdnextv1.CoverageReportSpec, data 
 	r.emitLog(a, seq, "stdout", fmt.Sprintf(
 		"coverage_report: %.1f%% (%d/%d lines, %d package(s))",
 		pct, sum.LinesCovered, sum.LinesTotal, len(sum.Packages)))
+	if failed, reason := coverageGate(spec.GetFailUnder(), sum.LinesCovered, sum.LinesTotal); failed {
+		r.emitLog(a, seq, "stderr", "coverage_report: "+reason)
+		return true, reason
+	}
+	return false, ""
+}
+
+// coverageGate decides the fail_under verdict. Zero threshold =
+// no gate. An empty total with a gate set fails — "no measurable
+// lines" cannot satisfy a declared minimum. At-threshold passes
+// (the operator wrote "fail UNDER X").
+func coverageGate(failUnder float64, covered, total int64) (bool, string) {
+	if failUnder <= 0 {
+		return false, ""
+	}
+	if total <= 0 {
+		return true, fmt.Sprintf("fail_under %.1f set but the report has no measurable lines", failUnder)
+	}
+	pct := 100 * float64(covered) / float64(total)
+	if pct < failUnder {
+		return true, fmt.Sprintf("coverage %.1f%% is below fail_under %.1f%%", pct, failUnder)
+	}
+	return false, ""
 }
 
 // parseCoverage dispatches on format and returns a summary whose

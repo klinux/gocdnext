@@ -574,6 +574,9 @@ type ArtifactDep struct {
 type CoverageReportSpec struct {
 	Path   string `json:"path"`
 	Format string `json:"format"`
+	// FailUnder > 0 turns the report into a gate: the agent fails
+	// the job when total coverage lands below this percentage.
+	FailUnder float64 `json:"fail_under,omitempty"`
 }
 
 type Task struct {

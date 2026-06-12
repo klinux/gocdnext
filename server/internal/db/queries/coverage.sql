@@ -43,3 +43,23 @@ JOIN LATERAL (
     LIMIT $2
 ) c ON TRUE
 ORDER BY c.created_at DESC;
+
+-- name: CoverageBaselineByPipeline :many
+-- Latest coverage per series from MAINLINE runs, used as the delta
+-- baseline. Mainline = branch-head advancement: cause 'webhook'
+-- (push deliveries — the store default for branch pushes) and
+-- 'poll' (poll-discovered head moves). There is NO 'push' cause in
+-- the domain — review round caught the original filter matching
+-- nothing real. Tag/PR/manual/cron/upstream runs never baseline.
+-- Excludes the asking run so a mainline run compares against its
+-- predecessor, not itself. Branch is NOT filtered: pipelines that
+-- register multiple push branches mix them — acceptable v1,
+-- documented in the YAML reference.
+SELECT DISTINCT ON (c.job_name, c.matrix_key)
+    c.job_name, c.matrix_key, c.lines_covered, c.lines_total, c.run_id, c.created_at
+FROM coverage_reports c
+JOIN runs r ON r.id = c.run_id
+WHERE c.pipeline_id = $1
+  AND c.run_id <> $2
+  AND r.cause IN ('webhook', 'poll')
+ORDER BY c.job_name, c.matrix_key, c.created_at DESC;

@@ -390,6 +390,7 @@ jobs:
     coverage_report:
       path: coverage.out
       format: go-cover          # go-cover | lcov | cobertura
+      fail_under: 70            # optional gate — see below
     artifacts:
       optional: [coverage.out]  # keep the raw file too, if you want it
 ```
@@ -405,9 +406,24 @@ trend sparkline per job across the pipeline's recent runs.
 Formats: `go-cover` (`go test -coverprofile`, counted in statements
 — the same unit `go tool cover -func` reports), `lcov`
 (vitest/jest/nyc), `cobertura` XML (jacoco's export, coverage.py).
-A declared-but-missing file logs an error line and reports nothing —
-it never fails the job; gating is a future `fail_under` knob, not a
-side effect of reporting.
+
+**Delta vs main**: every coverage card (and the GitHub check-run
+summary, when the Checks integration is on) shows the movement
+against the latest MAINLINE measurement of the same job series —
+mainline meaning branch-push (`webhook`) and poll-discovered runs;
+tag/PR/manual/cron runs never become baselines. `−1.2pp vs main`
+is the number a PR reviewer actually wants. The first run of a
+series has no baseline and shows none. Pipelines registering
+multiple push branches mix them in the baseline — single-branch
+mainlines (the common shape) are exact.
+
+**`fail_under` (optional gate, default off)**: when set (0–100],
+the JOB FAILS if total coverage lands below the threshold —
+at-threshold passes. Gating is bypass-proof: with `fail_under`
+set, a missing, oversized, or unparsable coverage file also fails
+the job (a gate that passes when its evidence is deleted is not a
+gate). Without `fail_under`, those same conditions log an error
+and report nothing — reporting never gates by accident.
 
 ## Parallel / matrix
 
