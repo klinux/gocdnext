@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/gocdnext/gocdnext/proto/cachekey"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // Poll interval bounds on the git material. 1-minute floor keeps

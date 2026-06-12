@@ -32,7 +32,7 @@ services:                   # pipeline-wide sibling service containers; all jobs
     image: postgres:16      # "Services" below
 
 variables:                  # env vars merged into every job
-  GOCACHE: /workspace/.go-cache
+  CGO_ENABLED: "0"
 
 concurrency: parallel       # "parallel" (default) or "serial"
 
@@ -311,6 +311,25 @@ cache:
 caches. Single-pass evaluation — the result is not re-expanded —
 and the glob is workspace-relative with no `..` traversal. Useful
 for lockfile-keyed caches:
+
+**Cache `paths:` are relative to the job's working directory** —
+which is the material's checkout subdirectory
+(`/workspace/src/<hash>`), NOT the workspace mount root. Tools
+whose cache env var demands an absolute path (Go's `GOCACHE` /
+`GOMODCACHE`) must derive it from the working dir at runtime:
+
+```yaml
+script:
+  - export GOMODCACHE="$PWD/.go-cache/mod" GOCACHE="$PWD/.go-cache/build"
+  - go test ./...
+cache:
+  - key: go-ci
+    paths: [.go-cache]
+```
+
+Pointing such variables at the mount root (`/workspace/.go-cache`)
+writes OUTSIDE what the tar captures — the bucket uploads empty
+(a few bytes) and every run re-downloads from scratch.
 
 ```yaml
 cache:

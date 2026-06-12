@@ -8,8 +8,8 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func newProfileCipher(t *testing.T) *crypto.Cipher {

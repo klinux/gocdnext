@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // seedApprovalPipeline applies a 2-stage pipeline with an

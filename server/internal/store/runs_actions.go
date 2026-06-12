@@ -158,18 +158,20 @@ func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]R
 //     Dispatched carries the (job_run, agent) pair the handler
 //     dispatches to.
 //
-//     - Dispatched populated + Dispatch SUCCESS → 202 canceling,
-//       signaled=true. Agent will report JobResult; row flips to
-//       canceled cleanly.
-//     - Dispatched populated + Dispatch FAILURE → 202 canceling,
-//       signaled=false, deferred=true. cancel_requested_at IS
-//       stamped; the replay path lands the cancel on the next
-//       Register, or the reaper finalises if the agent stays gone.
-//     - Dispatched is nil (running row but no agent_id yet —
-//       transient AssignJob→ack window) → 503 dispatch_failed.
-//       The stamp predicate requires agent_id NOT NULL so no
-//       intent was persisted; operator retries when agent_id is
-//       populated.
+//   - Dispatched populated + Dispatch SUCCESS → 202 canceling,
+//     signaled=true. Agent will report JobResult; row flips to
+//     canceled cleanly.
+//
+//   - Dispatched populated + Dispatch FAILURE → 202 canceling,
+//     signaled=false, deferred=true. cancel_requested_at IS
+//     stamped; the replay path lands the cancel on the next
+//     Register, or the reaper finalises if the agent stays gone.
+//
+//   - Dispatched is nil (running row but no agent_id yet —
+//     transient AssignJob→ack window) → 503 dispatch_failed.
+//     The stamp predicate requires agent_id NOT NULL so no
+//     intent was persisted; operator retries when agent_id is
+//     populated.
 //
 // Splitting "did the cancel land?" out of the result lets the
 // handler avoid the bug where a dispatch failure returned
@@ -203,6 +205,7 @@ type CancelJobRunResult struct {
 //     stopped, not when the operator clicked Cancel.
 //
 //   - any terminal status → ErrJobRunTerminal (HTTP 409).
+//
 //   - missing id → ErrJobRunNotFound (HTTP 404).
 //
 // Idempotent: re-cancelling an already-canceled job is a 409 by

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // DefaultConfigFolder is the convention applied when a caller

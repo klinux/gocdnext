@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // envNamePattern is the POSIX env-var charset. Compiled once —

@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // ErrPipelineNotFound signals the pipeline ID doesn't resolve to a

@@ -13,8 +13,8 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	"github.com/gocdnext/gocdnext/server/internal/api/runs"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // seedApprovalRun creates a project/pipeline with a single

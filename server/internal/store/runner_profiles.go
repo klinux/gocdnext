@@ -69,11 +69,11 @@ type RunnerProfile struct {
 	// with. Tolerations from the profile are APPENDED to the
 	// agent-level set (concat, no dedup on the engine side —
 	// kubelet ignores exact duplicates anyway).
-	Tolerations       []Toleration
-	Env               map[string]string
-	SecretKeys        []string // names only, sorted; values never decrypted on this path
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	Tolerations []Toleration
+	Env         map[string]string
+	SecretKeys  []string // names only, sorted; values never decrypted on this path
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Toleration mirrors corev1.Toleration in store-friendly form

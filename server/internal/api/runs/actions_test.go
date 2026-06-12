@@ -14,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // seedRunWithModification is a richer twin of seedRun: it also writes

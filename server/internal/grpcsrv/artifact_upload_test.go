@@ -20,9 +20,9 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // bootServerWithArtifacts returns a client + pool + live filesystem

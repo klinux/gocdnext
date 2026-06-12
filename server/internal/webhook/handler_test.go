@@ -21,9 +21,9 @@ import (
 
 	cryptopkg "github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 const testSecret = "it's-a-secret-to-everybody"

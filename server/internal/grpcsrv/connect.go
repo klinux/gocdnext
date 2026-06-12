@@ -15,10 +15,10 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 const offlineFlushTimeout = 2 * time.Second

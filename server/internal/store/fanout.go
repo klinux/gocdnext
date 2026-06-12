@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // CreateRunFromUpstreamInput captures the upstream context needed to spawn a

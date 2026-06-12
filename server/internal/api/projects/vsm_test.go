@@ -14,8 +14,8 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func vsmHandler(t *testing.T) (*projects.Handler, *pgxpool.Pool) {

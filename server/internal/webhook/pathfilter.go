@@ -7,8 +7,8 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // PRFilesFetcher resolves the changed-file list of a pull request via

@@ -1,6 +1,6 @@
 package parser
 
-import "github.com/gocdnext/gocdnext/server/internal/domain"
+import "github.com/gocdnext/gocdnext/server/pkg/domain"
 
 // resolvePluginRef is a thin parser-local alias of the canonical
 // resolver in domain. The domain copy has to exist because the

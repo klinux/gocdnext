@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/checks"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 const maxBodyBytes = 5 << 20 // 5 MiB — GitHub payloads are usually <1 MiB.

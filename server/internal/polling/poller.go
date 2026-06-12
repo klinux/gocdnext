@@ -26,8 +26,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // DefaultTick is how often the poller evaluates the pollable-

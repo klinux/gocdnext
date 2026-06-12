@@ -9,8 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/audit"
-	"github.com/gocdnext/gocdnext/server/internal/parser"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/parser"
 )
 
 // pollIntervalRequest is the wire shape for PUT

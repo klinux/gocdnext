@@ -15,8 +15,8 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/api/pipelines"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func newHandler(t *testing.T) (*pipelines.Handler, *store.Store) {

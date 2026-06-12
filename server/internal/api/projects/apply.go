@@ -18,10 +18,10 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
-	"github.com/gocdnext/gocdnext/server/internal/parser"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/parser"
 )
 
 const maxApplyBodyBytes = 5 << 20 // 5 MiB — room for large mono-repo configs.

@@ -42,7 +42,6 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
@@ -57,6 +56,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
 	"github.com/gocdnext/gocdnext/server/migrations"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // runMigrations opens a fresh database/sql handle (goose's own

@@ -1,8 +1,8 @@
 package configsync
 
 import (
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // InjectImplicitProjectMaterial adds a git material derived from the

@@ -196,14 +196,14 @@ const (
 // CI_PULL_REQUEST_* env vars.
 type MergeRequestEvent struct {
 	Action     string
-	Number     int       // GitLab's `iid` (project-scoped MR number, what shows in /merge_requests/<N>)
-	HTMLURL    string    // object_attributes.url
-	Title      string    // object_attributes.title
-	Author     string    // user.username
-	HeadSHA    string    // object_attributes.last_commit.id
-	HeadRef    string    // object_attributes.source_branch
-	BaseRef    string    // object_attributes.target_branch
-	Merged     bool      // state == "merged" (only when action=merge)
+	Number     int    // GitLab's `iid` (project-scoped MR number, what shows in /merge_requests/<N>)
+	HTMLURL    string // object_attributes.url
+	Title      string // object_attributes.title
+	Author     string // user.username
+	HeadSHA    string // object_attributes.last_commit.id
+	HeadRef    string // object_attributes.source_branch
+	BaseRef    string // object_attributes.target_branch
+	Merged     bool   // state == "merged" (only when action=merge)
 	Repository RepositoryRef
 	At         time.Time // object_attributes.updated_at, best proxy for "when this action happened"
 

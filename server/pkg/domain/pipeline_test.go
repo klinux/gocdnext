@@ -3,7 +3,7 @@ package domain_test
 import (
 	"testing"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // TestNormalizeGitURL_CanonicalisesSSHAndHTTPS locks in the cross-form

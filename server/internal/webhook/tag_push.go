@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/gocdnext/gocdnext/server/internal/domain"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // handleTagPush reacts to GitHub push events whose ref is `refs/tags/*`.
