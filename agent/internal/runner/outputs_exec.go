@@ -49,7 +49,7 @@ func (c *capBuf) Write(p []byte) (int, error) {
 	return c.buf.Write(p)
 }
 
-func (c *capBuf) Len() int           { return c.buf.Len() }
+func (c *capBuf) Len() int            { return c.buf.Len() }
 func (c *capBuf) AsReader() io.Reader { return bytes.NewReader(c.buf.Bytes()) }
 
 // ReadOutputsFromPod execs `cat -- <containerPath>` inside the
