@@ -167,6 +167,14 @@ type Pipeline struct {
 	// branch's push fingerprint matches a distinct row — same
 	// dispatch path as multi-explicit-material pipelines.
 	TriggerBranches []string
+	// TriggerPaths gates run creation on the changed-file set of the
+	// triggering push/PR (YAML `when.paths:`). Doublestar globs,
+	// repo-relative — the pipeline fires when at least one changed
+	// file matches one glob. Empty = always fire. Unknown file set
+	// (Bitbucket pushes, truncated payloads, files-API failure) =
+	// fail open. Lowered into the implicit material's Paths by
+	// configsync, same flow as TriggerEvents.
+	TriggerPaths []string
 	// Services are long-running sidecar containers (postgres, redis,
 	// localstack, …) that every job in the pipeline can reach by
 	// hostname. The agent brings them up on a job-scoped docker
@@ -334,6 +342,12 @@ type GitMaterial struct {
 	Events              []string `json:"events,omitempty"`
 	AutoRegisterWebhook bool     `json:"auto_register_webhook,omitempty"`
 	SecretRef           string   `json:"secret_ref,omitempty"`
+	// Paths gates this material's run creation on the triggering
+	// event's changed-file set (doublestar globs, repo-relative).
+	// Populated from the pipeline's `when.paths:` by the implicit-
+	// material injection. Empty = always fire; unknown file set =
+	// fail open (see webhook/pathfilter.go).
+	Paths []string `json:"paths,omitempty"`
 	// PollInterval triggers a server-side check of the branch
 	// HEAD every N duration. Zero (default) disables polling —
 	// the material only advances on webhook or explicit sync.

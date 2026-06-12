@@ -71,9 +71,41 @@ in the UI or `gocdnext run <pipeline>`. `event: [cron]` is set
 automatically by the project's cron schedule.
 
 The parser also accepts `when.status:` syntactically, but it's
-reserved — not consumed at pipeline level today. Path-based
-filtering and tag-name regexes aren't wired; use one pipeline per
-trigger shape if you need either.
+reserved — not consumed at pipeline level today. Tag-name regexes
+aren't wired; use one pipeline per trigger shape if you need them.
+
+### Path filtering (`when.paths`)
+
+```yaml
+when:
+  event: [push, pull_request]
+  paths:
+    - "**/*.go"
+    - "go.mod"
+    - "web/**"
+```
+
+The pipeline fires only when at least one changed file of the
+triggering event matches one glob (doublestar grammar — the same
+`artifacts:` uses; repo-relative, `**` crosses directories). Globs
+are validated at apply time. Monorepos use this to keep backend
+pushes from spinning frontend pipelines and vice versa.
+
+Where the changed-file set comes from, per event:
+
+| Event | Source | Caveat |
+|---|---|---|
+| push (GitHub/GitLab) | webhook payload commit file lists | payload caps at 20 commits — bigger pushes **fail open** |
+| push (Bitbucket) | — | payload has no file lists — always **fails open** |
+| pull_request (GitHub) | PR files API (paginated, up to 3000 files) | needs repo credentials (PAT or GitHub App); without them, **fails open** |
+| pull_request (GitLab/Bitbucket) | — | adapter not implemented yet — **fails open** |
+| tag / manual / cron / upstream | — | no changed-file concept — always runs |
+
+**Fail open** means the pipeline runs anyway: an unknown file set
+must never suppress a legitimate run — extra runs are noise,
+missing CI on a real change is an incident. A delivery whose
+pipelines were all filtered is acknowledged with
+`filtered_by_paths` in the response body and creates no run rows.
 
 ### Skipping CI from the commit message
 

@@ -265,6 +265,34 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 		return
 	}
 
+	// when.paths on PR events: the payload carries no file list, so
+	// the set comes from the provider's files API — fetched lazily,
+	// only when at least one surviving material actually declares
+	// paths (most deliveries shouldn't pay an API round-trip).
+	// No fetcher wired, fetch failure, or pagination cap → fail open.
+	if anyMaterialHasPaths(materials) {
+		var prFiles []string
+		prKnown := false
+		if h.prFiles != nil {
+			if scm, ok := h.driftLookup(r.Context(), ev.CloneURL); ok {
+				prFiles, prKnown = h.prFiles.PRChangedFiles(r.Context(), scm, ev.Number)
+			}
+		}
+		var pathFiltered int
+		materials, pathFiltered = filterMaterialsByPaths(
+			h.log, materials, prFiles, prKnown, ev.Provider, delivery)
+		if len(materials) == 0 {
+			rec.status = store.WebhookStatusIgnored
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"runs":              []any{},
+				"filtered_by_paths": pathFiltered,
+			})
+			return
+		}
+	}
+
 	detail := map[string]any{
 		"pr_number":   ev.Number,
 		"pr_title":    ev.Title,

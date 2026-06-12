@@ -50,6 +50,19 @@ type PushEvent struct {
 	Deleted    bool
 	Repository RepositoryRef
 	HeadCommit *Commit
+	// changedFiles unions commits[].added/modified/removed;
+	// filesKnown is true ONLY when total_commits_count is present
+	// AND equals len(commits) — truncated (counter > embedded),
+	// missing, or contradictory (counter < embedded) payloads all
+	// read as unknown so `when.paths` filtering fails open.
+	changedFiles []string
+	filesKnown   bool
+}
+
+// ChangedFiles mirrors github.PushEvent.ChangedFiles — union of the
+// payload commits' file lists, with `known=false` on truncation.
+func (ev *PushEvent) ChangedFiles() ([]string, bool) {
+	return ev.changedFiles, ev.filesKnown
 }
 
 type RepositoryRef struct {
@@ -85,7 +98,15 @@ func ParsePushEvent(body []byte) (*PushEvent, error) {
 				Name  string `json:"name"`
 				Email string `json:"email"`
 			} `json:"author"`
+			Added    []string `json:"added"`
+			Modified []string `json:"modified"`
+			Removed  []string `json:"removed"`
 		} `json:"commits"`
+		// Pointer on purpose: a MISSING counter must read as
+		// "completeness unproven" (→ fail open), never as zero —
+		// an int zero-value would certify any commits[] array as
+		// the full set (review-round HIGH).
+		TotalCommitsCount *int `json:"total_commits_count"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("gitlab: decode push: %w", err)
@@ -133,6 +154,20 @@ func ParsePushEvent(body []byte) (*PushEvent, error) {
 			Message:   tip.Message,
 			Author:    author,
 			Timestamp: ts,
+		}
+	}
+	if len(raw.Commits) > 0 && raw.TotalCommitsCount != nil && *raw.TotalCommitsCount == len(raw.Commits) {
+		ev.filesKnown = true
+		seen := make(map[string]struct{})
+		for _, c := range raw.Commits {
+			for _, lists := range [][]string{c.Added, c.Modified, c.Removed} {
+				for _, f := range lists {
+					if _, dup := seen[f]; !dup {
+						seen[f] = struct{}{}
+						ev.changedFiles = append(ev.changedFiles, f)
+					}
+				}
+			}
 		}
 	}
 	return ev, nil

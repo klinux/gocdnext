@@ -146,6 +146,12 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 	if f.When != nil && len(f.When.Branch) > 0 {
 		p.TriggerBranches = append([]string(nil), f.When.Branch...)
 	}
+	if f.When != nil && len(f.When.Paths) > 0 {
+		if err := validateTriggerPaths(f.When.Paths); err != nil {
+			return nil, fmt.Errorf("%s: when.paths: %w", name, err)
+		}
+		p.TriggerPaths = append([]string(nil), f.When.Paths...)
+	}
 
 	for _, sv := range f.Services {
 		svc, err := toService(sv)

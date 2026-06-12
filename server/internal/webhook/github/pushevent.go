@@ -37,6 +37,34 @@ type PushEvent struct {
 	Repository Repository
 	HeadCommit *Commit
 	Commits    []Commit
+	// Size is the payload's `size` field — the number of commits in
+	// the push. GitHub caps the embedded `commits` array (20), so
+	// Size > len(Commits) flags a truncated file list.
+	Size int
+}
+
+// ChangedFiles unions added/modified/removed across the payload's
+// commits. `known` is false when the set can't be trusted as
+// complete: no commits embedded (force-push payloads, some mirror
+// pushes) or the array was truncated against `size`. Callers MUST
+// fail open on !known — path filtering with a partial set silently
+// drops legitimate runs.
+func (ev PushEvent) ChangedFiles() (files []string, known bool) {
+	if len(ev.Commits) == 0 || ev.Size > len(ev.Commits) {
+		return nil, false
+	}
+	seen := make(map[string]struct{})
+	for _, c := range ev.Commits {
+		for _, lists := range [][]string{c.Added, c.Modified, c.Removed} {
+			for _, f := range lists {
+				if _, dup := seen[f]; !dup {
+					seen[f] = struct{}{}
+					files = append(files, f)
+				}
+			}
+		}
+	}
+	return files, true
 }
 
 // Repository is the subset of repo metadata used by the receiver.
@@ -54,6 +82,10 @@ type Commit struct {
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
 	Author    Author    `json:"author"`
+	// Per-commit changed files — drive `when.paths` filtering.
+	Added    []string `json:"added"`
+	Modified []string `json:"modified"`
+	Removed  []string `json:"removed"`
 }
 
 // Author captures the name/email fields present in GitHub push payloads.
@@ -78,6 +110,7 @@ func ParsePushEvent(body []byte) (PushEvent, error) {
 		Repository Repository `json:"repository"`
 		HeadCommit *Commit    `json:"head_commit"`
 		Commits    []Commit   `json:"commits"`
+		Size       int        `json:"size"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return PushEvent{}, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
@@ -98,6 +131,7 @@ func ParsePushEvent(body []byte) (PushEvent, error) {
 		Repository: raw.Repository,
 		HeadCommit: raw.HeadCommit,
 		Commits:    raw.Commits,
+		Size:       raw.Size,
 	}
 
 	switch {
