@@ -366,6 +366,17 @@ jobs:
         with:
           cosign-release: v2.4.1
 
+      # Contract tag comes from the plugin's own manifest (`image_tag:`,
+      # default v1). Before this step the workflow hardcoded v1 for every
+      # plugin while node's manifest declared image_tag: v2 — the docs
+      # catalog rendered `node@v2` examples against a tag that was never
+      # published (operator-reported ImagePullBackOff). The manifest is
+      # now the single source of truth for the contract channel.
+      - id: imgtag
+        run: |
+          TAG=$(grep -E '^image_tag:' "plugins/${{ matrix.plugin }}/plugin.yaml" | head -1 | awk '{print $2}' | tr -d '"' || true)
+          echo "tag=${TAG:-v1}" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -376,9 +387,11 @@ jobs:
           # only refresh :main and :sha-... so dev consumers have a HEAD
           # tracker without polluting the stable channel pinned by users.
           #
-          # NOTE: when the plugin contract bumps to v2, change the
-          # raw `value=v1` below to `value=v2`. Until then v1 = current
-          # stable contract regardless of gocdnext core version.
+          # v1 is ALWAYS published alongside the manifest's image_tag:
+          # node:v1 has carried the v2 contract since the v0.4.39 rewrite
+          # (the tag never bumped with the source), so freezing v1 now
+          # would silently strand anyone pinned to it. Both tags point at
+          # the same digest; image_tag is the documented channel.
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -393,6 +406,7 @@ jobs:
             type=sha,prefix=sha-,enable=${{ github.ref_type == 'branch' }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=v1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ steps.imgtag.outputs.tag }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - id: base-ref
         # Compute the BASE_IMAGE build-arg per consumer step.
