@@ -799,3 +799,39 @@ func equalSet(a, b []string) bool {
 	}
 	return true
 }
+
+// Housekeeper resources must carry EXPLICIT limits: it's the
+// container `tar -czf` runs in for cache/artifact upload, and a
+// populated Go/gradle cache is hundreds of MB to GBs. Without
+// explicit limits a cluster LimitRange can default the container to
+// something pathological (16Mi-ish memory, 100m CPU) and the tar
+// exec dies with exit 137 mid-upload (operator-reported).
+func TestIsolatedPod_HousekeeperHasExplicitLimits(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "run-A",
+		JobID:                "job-B",
+		Image:                "node:20",
+		Script:               "true",
+		WorkDir:              "/workspace",
+		AssignmentSecretName: "gocdnext-job-test01-assignment",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	hk := findContainer(pod.Spec.Containers, "housekeeper")
+	if hk == nil {
+		t.Fatal("no housekeeper container")
+	}
+	cpu := hk.Resources.Limits.Cpu()
+	mem := hk.Resources.Limits.Memory()
+	if cpu == nil || cpu.IsZero() {
+		t.Fatal("housekeeper has no CPU limit — LimitRange defaults would apply")
+	}
+	if mem == nil || mem.IsZero() {
+		t.Fatal("housekeeper has no memory limit — LimitRange defaults would apply")
+	}
+	if mem.Value() < 256<<20 {
+		t.Fatalf("housekeeper memory limit %s too small for tar+gzip of real caches", mem)
+	}
+}
