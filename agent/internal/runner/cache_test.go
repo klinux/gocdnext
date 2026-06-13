@@ -35,7 +35,8 @@ type fakeCache struct {
 	// before the task sees it).
 	fetchWrite func(workDir string) error
 
-	storeErr error
+	storeErr  error
+	storeSize int64 // bytes reported back from a successful Store
 
 	fetchCalls []cacheCall
 	storeCalls []cacheCall
@@ -62,11 +63,14 @@ func (f *fakeCache) Fetch(ctx context.Context, workDir, runID, jobID string, ent
 	return f.fetchFound, nil
 }
 
-func (f *fakeCache) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) error {
+func (f *fakeCache) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (int64, error) {
 	f.mu.Lock()
 	f.storeCalls = append(f.storeCalls, cacheCall{workDir, entry.GetKey(), entry.GetPaths()})
 	f.mu.Unlock()
-	return f.storeErr
+	if f.storeErr != nil {
+		return 0, f.storeErr
+	}
+	return f.storeSize, nil
 }
 
 // newRunnerWithCache is newRunner + an injected CacheClient. Kept
@@ -174,6 +178,31 @@ func TestExecute_CacheStoreRunsAfterSuccess(t *testing.T) {
 	}
 	if len(fc.storeCalls) != 1 || fc.storeCalls[0].Key != "pnpm-store" {
 		t.Errorf("store calls = %+v", fc.storeCalls)
+	}
+}
+
+func TestExecute_CacheStoreEmitsProgressWithSize(t *testing.T) {
+	// Operator-reported: a 2m51s cache store printed nothing, so a
+	// green job read as "stuck". The store phase must announce its
+	// START (so a long silent tar+upload isn't mistaken for a hang)
+	// and report the SIZE on completion (so the duration is
+	// explained — a big GOCACHE upload IS slow).
+	fc := &fakeCache{storeSize: 2_000_000} // 2.0 MB (decimal, matches cloud-console sizes)
+	r, c := newRunnerWithCache(t, fc)
+
+	r.Execute(context.Background(), assignmentWithCache(
+		[]*gocdnextv1.CacheEntry{{Key: "go-build", Paths: []string{".go-cache"}}},
+		"true",
+	))
+	if c.result == nil || c.result.Status != gocdnextv1.RunStatus_RUN_STATUS_SUCCESS {
+		t.Fatalf("job did not succeed: %+v", c.result)
+	}
+	log := c.allLogText()
+	if !strings.Contains(log, `cache "go-build": storing`) {
+		t.Errorf("missing store-start marker; got:\n%s", log)
+	}
+	if !strings.Contains(log, `cache "go-build": stored (2.0 MB`) {
+		t.Errorf("missing humanized size in stored marker; got:\n%s", log)
 	}
 }
 

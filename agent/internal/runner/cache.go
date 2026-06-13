@@ -26,7 +26,7 @@ import (
 // in isolated mode until job-scoped session tokens land.
 type IsolatedCacheClient interface {
 	ResolveGet(ctx context.Context, runID, jobID, key string) (url, sha string, found bool, err error)
-	StoreFromPod(ctx context.Context, exec engine.PodExecutor, podName, container, podWorkDir, runID, jobID string, entry *gocdnextv1.CacheEntry) error
+	StoreFromPod(ctx context.Context, exec engine.PodExecutor, podName, container, podWorkDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (int64, error)
 }
 
 // CacheClient is how the runner talks to the server-side cache
@@ -46,10 +46,12 @@ type CacheClient interface {
 
 	// Store tars + uploads `entry.Paths` under `entry.Key`, then
 	// calls MarkCacheReady so the next job on the same key can
-	// Fetch it. Best-effort: caller logs on error but does not
-	// fail the job — the build succeeded, the cache miss just
-	// costs the next run a cold rebuild.
-	Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) error
+	// Fetch it. Returns the uploaded blob size in bytes so the
+	// caller can report it (a big GOCACHE upload is slow; the size
+	// explains the duration). Best-effort: caller logs on error but
+	// does not fail the job — the build succeeded, the cache miss
+	// just costs the next run a cold rebuild.
+	Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (int64, error)
 }
 
 // fetchCaches runs before any task starts. For each declared
@@ -111,12 +113,33 @@ func (r *Runner) storeCaches(
 		if e.GetKey() == "" {
 			continue
 		}
-		if err := r.cfg.Cache.Store(ctx, workDir, a.GetRunId(), a.GetJobId(), e); err != nil {
+		// Announce the start: tar + upload of a large cache runs for
+		// minutes with no other output, which reads as a hung job.
+		r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: storing %d path(s)…", e.GetKey(), len(e.GetPaths())))
+		start := time.Now()
+		size, err := r.cfg.Cache.Store(ctx, workDir, a.GetRunId(), a.GetJobId(), e)
+		if err != nil {
 			r.emitLog(a, seq, "stderr", fmt.Sprintf("cache %q: store failed (%v) — next run will rebuild", e.GetKey(), err))
 			continue
 		}
-		r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: stored", e.GetKey()))
+		r.emitLog(a, seq, "stdout", fmt.Sprintf("cache %q: stored (%s in %s)", e.GetKey(), humanizeBytes(size), phaseDur(start)))
 	}
+}
+
+// humanizeBytes renders a byte count for log lines: "0 B", "512 B",
+// "2.0 KB", "234.5 MB". Decimal (1000-based) so the numbers line up
+// with what operators see in cloud-console object sizes, not 1024.
+func humanizeBytes(n int64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTPE"[exp])
 }
 
 // DownloadAndUntar is a helper the concrete CacheClient uses

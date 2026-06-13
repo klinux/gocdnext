@@ -114,14 +114,15 @@ func (c *CacheClient) ResolveGet(ctx context.Context, runID, jobID, key string) 
 //
 // If the probe shows that NO declared path actually exists
 // (cold start, conditionally-generated output that wasn't
-// produced this run, …), the entire RPC sequence is skipped —
-// RequestCachePut + MarkCacheReady on a 0-byte PUT would poison
-// the cache key (downstream Fetch would gzip-parse-fail). This
-// differs from shared mode, which still uploads a ~23-byte valid
-// empty tar.gz; the isolated path errs on the side of "don't
-// touch the row" because empty-ready entries are operationally
-// noisier than no entry at all.
+// produced this run, …), it uploads a valid ~23-byte empty
+// tar.gz and marks the key ready — mirroring shared-mode
+// TarGzPaths exactly (see storeEmptyCacheBlob). Refreshing the
+// row to an empty blob is deliberate: it prevents the next run
+// from restoring a stale tree left by an earlier run that DID
+// produce the path. The empty tar.gz is a valid archive, so
+// downstream Fetch untars it cleanly (no gzip-parse-fail).
 //
+// Returns the uploaded blob size so the runner can report it.
 // Best-effort like Store: callers log on error and continue.
 func (c *CacheClient) StoreFromPod(
 	ctx context.Context,
@@ -129,19 +130,19 @@ func (c *CacheClient) StoreFromPod(
 	podName, containerName, podWorkDir string,
 	runID, jobID string,
 	entry *gocdnextv1.CacheEntry,
-) error {
+) (int64, error) {
 	if len(entry.GetPaths()) == 0 {
-		return errors.New("cache: entry has no paths")
+		return 0, errors.New("cache: entry has no paths")
 	}
 	if exec == nil {
-		return errors.New("cache: nil executor")
+		return 0, errors.New("cache: nil executor")
 	}
 
 	// 1. Probe — list existing paths (defanged for leading-dash)
 	//    INSIDE the pod. Single round-trip per cache entry.
 	existing, err := c.probeCachePaths(ctx, exec, podName, containerName, podWorkDir, entry.GetPaths())
 	if err != nil {
-		return fmt.Errorf("probe paths: %w", err)
+		return 0, fmt.Errorf("probe paths: %w", err)
 	}
 	if len(existing) == 0 {
 		// Mirror shared-mode semantics: TarGzPaths(workDir, nil)
@@ -163,12 +164,12 @@ func (c *CacheClient) StoreFromPod(
 		Key:       entry.GetKey(),
 	})
 	if err != nil {
-		return fmt.Errorf("request cache put: %w", err)
+		return 0, fmt.Errorf("request cache put: %w", err)
 	}
 
 	tmp, err := os.CreateTemp("", "gocdnext-cache-pod-*.tar.gz")
 	if err != nil {
-		return fmt.Errorf("tempfile: %w", err)
+		return 0, fmt.Errorf("tempfile: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
@@ -189,7 +190,7 @@ func (c *CacheClient) StoreFromPod(
 	cmd := append([]string{"sh", "-c", tarScript, "_", podWorkDir}, existing...)
 	if err := exec.Exec(ctx, podName, containerName, cmd, nil, mw, io.Discard); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("exec tar %q: %w", entry.GetKey(), err)
+		return 0, fmt.Errorf("exec tar %q: %w", entry.GetKey(), err)
 	}
 
 	info, statErr := tmp.Stat()
@@ -197,30 +198,30 @@ func (c *CacheClient) StoreFromPod(
 		statErr = cerr
 	}
 	if statErr != nil {
-		return fmt.Errorf("stat tar tmp: %w", statErr)
+		return 0, fmt.Errorf("stat tar tmp: %w", statErr)
 	}
 	size := info.Size()
 
 	body, err := os.Open(tmpName)
 	if err != nil {
-		return fmt.Errorf("open tar: %w", err)
+		return 0, fmt.Errorf("open tar: %w", err)
 	}
 	defer func() { _ = body.Close() }()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, put.GetPutUrl(), body)
 	if err != nil {
-		return fmt.Errorf("build PUT: %w", err)
+		return 0, fmt.Errorf("build PUT: %w", err)
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/gzip")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("http PUT: %w", err)
+		return 0, fmt.Errorf("http PUT: %w", err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("PUT returned %s", resp.Status)
+		return 0, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 
 	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
@@ -229,9 +230,9 @@ func (c *CacheClient) StoreFromPod(
 		SizeBytes:     size,
 		ContentSha256: hex.EncodeToString(hasher.Sum(nil)),
 	}); err != nil {
-		return fmt.Errorf("mark cache ready: %w", err)
+		return 0, fmt.Errorf("mark cache ready: %w", err)
 	}
-	return nil
+	return size, nil
 }
 
 // storeEmptyCacheBlob uploads a valid-but-empty tar.gz under
@@ -243,11 +244,11 @@ func (c *CacheClient) StoreFromPod(
 //
 // runner.TarGzPaths is reused for the encoding so any sha/size
 // drift between the empty and non-empty paths stays impossible.
-func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key string) error {
+func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key string) (int64, error) {
 	var buf bytes.Buffer
 	sha, size, err := runner.TarGzPaths("", nil, &buf)
 	if err != nil {
-		return fmt.Errorf("empty tar: %w", err)
+		return 0, fmt.Errorf("empty tar: %w", err)
 	}
 
 	put, err := c.client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
@@ -257,23 +258,23 @@ func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key
 		Key:       key,
 	})
 	if err != nil {
-		return fmt.Errorf("request cache put: %w", err)
+		return 0, fmt.Errorf("request cache put: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, put.GetPutUrl(), bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		return fmt.Errorf("build PUT: %w", err)
+		return 0, fmt.Errorf("build PUT: %w", err)
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/gzip")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("http PUT: %w", err)
+		return 0, fmt.Errorf("http PUT: %w", err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("PUT returned %s", resp.Status)
+		return 0, fmt.Errorf("PUT returned %s", resp.Status)
 	}
 
 	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
@@ -282,9 +283,9 @@ func (c *CacheClient) storeEmptyCacheBlob(ctx context.Context, runID, jobID, key
 		SizeBytes:     size,
 		ContentSha256: sha,
 	}); err != nil {
-		return fmt.Errorf("mark cache ready: %w", err)
+		return 0, fmt.Errorf("mark cache ready: %w", err)
 	}
-	return nil
+	return size, nil
 }
 
 // probeCachePaths runs a quick `[ -e ]` test inside the pod for
@@ -345,14 +346,15 @@ func (c *CacheClient) probeCachePaths(
 	return result, nil
 }
 
-// Store implements runner.CacheClient.Store.
-func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) error {
+// Store implements runner.CacheClient.Store. Returns the uploaded
+// blob size so the runner can report it in the store log line.
+func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, entry *gocdnextv1.CacheEntry) (int64, error) {
 	if len(entry.GetPaths()) == 0 {
 		// A key with no paths has no tarball to upload. The parser
 		// already rejects this shape at pipeline apply time, but
 		// guard here too — defence in depth against a future
 		// assignment builder that forgets to copy paths through.
-		return errors.New("cache: entry has no paths")
+		return 0, errors.New("cache: entry has no paths")
 	}
 
 	put, err := c.client.RequestCachePut(ctx, &gocdnextv1.RequestCachePutRequest{
@@ -362,12 +364,12 @@ func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, e
 		Key:       entry.GetKey(),
 	})
 	if err != nil {
-		return fmt.Errorf("request cache put: %w", err)
+		return 0, fmt.Errorf("request cache put: %w", err)
 	}
 
 	sha, size, err := runner.TarAndUpload(ctx, c.http, put.GetPutUrl(), workDir, entry.GetPaths())
 	if err != nil {
-		return fmt.Errorf("tar+upload: %w", err)
+		return 0, fmt.Errorf("tar+upload: %w", err)
 	}
 
 	if _, err := c.client.MarkCacheReady(ctx, &gocdnextv1.MarkCacheReadyRequest{
@@ -376,7 +378,7 @@ func (c *CacheClient) Store(ctx context.Context, workDir, runID, jobID string, e
 		SizeBytes:     size,
 		ContentSha256: sha,
 	}); err != nil {
-		return fmt.Errorf("mark cache ready: %w", err)
+		return 0, fmt.Errorf("mark cache ready: %w", err)
 	}
-	return nil
+	return size, nil
 }

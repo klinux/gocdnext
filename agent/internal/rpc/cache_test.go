@@ -197,7 +197,7 @@ func TestStoreFromPod_HappyPath_TwoExecsAndFullRPC(t *testing.T) {
 	}
 	c := NewCacheClient(stub, "sess", nil)
 
-	err := c.StoreFromPod(context.Background(), exec,
+	_, err := c.StoreFromPod(context.Background(), exec,
 		"pod-1", "housekeeper", "/workspace",
 		"run-1", "job-1",
 		&gocdnextv1.CacheEntry{
@@ -296,7 +296,7 @@ func TestStoreFromPod_AllPathsMissing_UploadsValidEmptyTarGz(t *testing.T) {
 	}
 	c := NewCacheClient(stub, "sess", nil)
 
-	err := c.StoreFromPod(context.Background(), exec,
+	_, err := c.StoreFromPod(context.Background(), exec,
 		"pod-1", "housekeeper", "/workspace",
 		"run-1", "job-1",
 		&gocdnextv1.CacheEntry{
@@ -353,11 +353,16 @@ func TestStoreFromPod_DefangsLeadingDashPath(t *testing.T) {
 	}
 	c := NewCacheClient(stub, "sess", nil)
 
-	if err := c.StoreFromPod(context.Background(), exec,
+	size, err := c.StoreFromPod(context.Background(), exec,
 		"p", "hk", "/workspace", "r", "j",
-		&gocdnextv1.CacheEntry{Key: "k", Paths: []string{"-dist"}},
-	); err != nil {
+		&gocdnextv1.CacheEntry{Key: "k", Paths: []string{"-dist"}})
+	if err != nil {
 		t.Fatalf("store: %v", err)
+	}
+	// A real tarball was uploaded — the size must propagate back so
+	// the runner can report it in the store log line.
+	if size <= 0 {
+		t.Errorf("StoreFromPod size = %d, want > 0", size)
 	}
 
 	exec.mu.Lock()
@@ -374,7 +379,7 @@ func TestStoreFromPod_DefangsLeadingDashPath(t *testing.T) {
 
 func TestStoreFromPod_EmptyPathsRejected(t *testing.T) {
 	c := NewCacheClient(&stubCacheClient{}, "s", nil)
-	err := c.StoreFromPod(context.Background(), &recordingExecutor{},
+	_, err := c.StoreFromPod(context.Background(), &recordingExecutor{},
 		"p", "hk", "/workspace", "r", "j",
 		&gocdnextv1.CacheEntry{Key: "k", Paths: nil})
 	if err == nil {
@@ -384,7 +389,7 @@ func TestStoreFromPod_EmptyPathsRejected(t *testing.T) {
 
 func TestStoreFromPod_NilExecutorRejected(t *testing.T) {
 	c := NewCacheClient(&stubCacheClient{}, "s", nil)
-	err := c.StoreFromPod(context.Background(), nil,
+	_, err := c.StoreFromPod(context.Background(), nil,
 		"p", "hk", "/workspace", "r", "j",
 		&gocdnextv1.CacheEntry{Key: "k", Paths: []string{"x"}})
 	if err == nil {
