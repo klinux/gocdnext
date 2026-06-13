@@ -7,10 +7,10 @@ The `gocdnext` CLI is a thin client over the server's REST API
 plus a couple of break-glass ops commands that talk to Postgres
 directly. This page is the authoritative list of what's shipped.
 
-The CLI does **not** yet implement Bearer-token authentication.
-Use it against a deployment with `auth.enabled=false`, or via a
-local in-cluster connection, or in a dev environment. Wider
-production use waits on the planned token plumbing.
+Server-facing commands (`apply`, `secret`) authenticate with an
+API token: run `gocdnext login` once per server (interactive),
+or set `GOCDNEXT_TOKEN` (CI/bots). Against a deployment with
+`auth.enabled=false` no token is needed and the CLI works as-is.
 
 ## Install
 
@@ -25,6 +25,8 @@ Or download a prebuilt binary from the [release](https://github.com/klinux/gocdn
 
 ```
 gocdnext --version
+gocdnext login  --server <url>  [flags...]
+gocdnext logout --server <url>
 gocdnext validate [path]
 gocdnext run-local [file]
 gocdnext apply [path]   --slug <slug>     [flags...]
@@ -38,6 +40,38 @@ gocdnext admin reset-password --email <e> [flags...]
 There are no `run`, `runs`, `logs`, `rerun`, `cancel`, `approve`,
 or `profiles` subcommands today. Trigger runs, view logs, and
 manage profiles via the dashboard or via the HTTP API directly.
+
+## `login` / `logout` — authenticate the CLI
+
+Create an API token in the web UI (*Account → API tokens*, see
+[API tokens](/install/api-tokens/)), then:
+
+```bash
+# Interactive: silent TTY prompt, like sudo.
+gocdnext login --server https://ci.example.com
+
+# Piped / from a file — same contract as `secret set`.
+cat token.txt | gocdnext login --server https://ci.example.com
+gocdnext login --server https://ci.example.com --from-file ./token.txt
+```
+
+The token is **never accepted from a flag** (shell history, `ps`).
+It is validated against `GET /api/v1/me` before being saved to
+`~/.config/gocdnext/config.json` (mode `0600`), keyed by server URL
+— you can stay logged into several servers at once. Every
+server-facing command then sends it as `Authorization: Bearer`.
+
+Resolution order: `GOCDNEXT_TOKEN` env var → config file → none.
+The env var wins so CI jobs and bots never need a config file:
+
+```bash
+GOCDNEXT_TOKEN="$CI_API_TOKEN" gocdnext apply . --slug myapp --server https://ci.example.com
+```
+
+`gocdnext logout --server <url>` removes the local copy. It does
+**not** revoke the token — do that in the web UI.
+
+A `401` from any command prints a hint pointing back at `login`.
 
 ## `apply` — upload pipelines
 
@@ -187,12 +221,9 @@ parks there.
 
 | Var | Used by | Notes |
 |---|---|---|
-| `GOCDNEXT_SERVER_URL` | `apply`, `secret` | HTTP URL of the server. Defaults to `http://localhost:8153`. |
+| `GOCDNEXT_SERVER_URL` | `login`, `logout`, `apply`, `secret` | HTTP URL of the server. Defaults to `http://localhost:8153`. |
+| `GOCDNEXT_TOKEN` | `apply`, `secret` | API token for Bearer auth. Overrides the config file — use in CI/bots. |
 | `GOCDNEXT_DATABASE_URL` | `admin create-user`, `admin reset-password` | Postgres URL the server uses. Write access required. |
-
-There is no CLI-side token env yet. Pair Bearer-token usage with
-`curl` directly against `/api/v1/*` for authenticated calls until
-the CLI grows token plumbing.
 
 ## Exit codes
 
