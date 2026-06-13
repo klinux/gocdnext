@@ -11,6 +11,7 @@ import {
   History,
   KeyRound,
   Network,
+  Rocket,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -72,6 +73,12 @@ const tabs: Tab[] = [
     href: (slug) => `/projects/${slug}/runs` as Route,
     match: (path, slug) => path.startsWith(`/projects/${slug}/runs`),
     icon: History,
+  },
+  {
+    label: "Environments",
+    href: (slug) => `/projects/${slug}/environments` as Route,
+    match: (path, slug) => path.startsWith(`/projects/${slug}/environments`),
+    icon: Rocket,
   },
   {
     label: "Settings",
