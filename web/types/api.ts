@@ -704,3 +704,34 @@ export type OIDCKey = {
 };
 
 export type OIDCKeysList = { keys: OIDCKey[] };
+
+// Deployment tracking (#39). A DeploymentRecord is one recorded
+// deploy attempt against an environment. run_id is absent once the
+// run is garbage-collected (the record survives as an audit fact, so
+// the UI degrades the run link). `current` on an environment is the
+// newest successful deploy, or null when nothing has shipped there
+// yet. Same shape for "current" and history rows.
+export type DeploymentRecord = {
+  id: string;
+  run_id?: string;
+  attempt: number;
+  version: string;
+  status: "in_progress" | "success" | "failed";
+  is_rollback: boolean;
+  deployed_by?: string;
+  created_at: string;
+  finished_at?: string;
+};
+
+export type EnvironmentSummary = {
+  id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+  current: DeploymentRecord | null;
+};
+
+export type EnvironmentsList = { environments: EnvironmentSummary[] };
+
+export type DeploymentsList = { deployments: DeploymentRecord[] };

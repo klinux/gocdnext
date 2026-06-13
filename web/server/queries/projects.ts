@@ -10,6 +10,7 @@ import type {
   AgentSummary,
   CachesList,
   DashboardMetrics,
+  EnvironmentsList,
   GlobalRunSummary,
   PluginsList,
   ProjectDetail,
@@ -172,6 +173,17 @@ export async function listSecrets(slug: string): Promise<SecretsList> {
 export async function listCaches(slug: string): Promise<CachesList> {
   return readJSON<CachesList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/caches`,
+  );
+}
+
+// Environments tab (#39): each environment with its current deploy.
+// The per-environment history timeline is fetched lazily client-side
+// (see EnvironmentCard) so the tab load stays a single request.
+export async function listEnvironments(
+  slug: string,
+): Promise<EnvironmentsList> {
+  return readJSON<EnvironmentsList>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/environments`,
   );
 }
 
