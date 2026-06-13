@@ -56,6 +56,11 @@ type logSink interface {
 type pendingLine struct {
 	line    store.LogLine
 	attempt int32
+	// afterFlush, when non-nil, marks this entry as a BARRIER rather
+	// than a log line: the flusher drains every line queued before it
+	// (preserving recv-loop FIFO order) and only then runs the
+	// callback. line/attempt are unused for a barrier. See AfterFlush.
+	afterFlush func()
 }
 
 // logBatcher buffers per-stream log lines and flushes them in
@@ -153,6 +158,43 @@ func (b *logBatcher) Push(l store.LogLine, attempt int32) {
 		case <-time.After(50 * time.Millisecond):
 			b.log.Warn("log batcher backpressure, dropping line",
 				"job_run_id", l.JobRunID, "seq", l.Seq)
+		}
+	}
+}
+
+// AfterFlush enqueues a barrier on the same FIFO channel the log
+// lines travel: the flusher drains every line pushed before this call
+// and only then runs fn. This is how cold-archival is sequenced AFTER
+// a terminating job's final lines are durable — enqueueing the archive
+// straight from the JobResult handler raced the flush window (200ms)
+// and snapshotted log_lines without the trailing markers, which the
+// archiver then deleted, eating the job's last lines from the archive.
+//
+// Because the recv loop pushes a job's log lines (handleLogLine) before
+// it handles the JobResult (which calls this), the barrier is always
+// behind those lines in the channel — no timing assumption, no grace
+// window.
+//
+// In discard mode (session superseded) the barrier is dropped with the
+// pending lines: archiving a reclaimed attempt's truncated tail is
+// worse than letting the successor attempt re-archive cleanly. Under
+// sustained backpressure the barrier is dropped with a warn rather than
+// run inline (running it inline would reintroduce the very race it
+// closes); the job keeps its rows in log_lines and a future catch-up
+// pass can archive it.
+func (b *logBatcher) AfterFlush(fn func()) {
+	if b.discard.Load() {
+		return
+	}
+	entry := pendingLine{afterFlush: fn}
+	select {
+	case b.in <- entry:
+	default:
+		select {
+		case b.in <- entry:
+		case <-time.After(50 * time.Millisecond):
+			b.log.Warn("log batcher backpressure, dropping archive barrier " +
+				"(job keeps log_lines; not archived this pass)")
 		}
 	}
 }
@@ -257,6 +299,17 @@ func (b *logBatcher) run(ctx context.Context) {
 			if !ok {
 				flush()
 				return
+			}
+			if entry.afterFlush != nil {
+				// Barrier: persist everything queued before it, then
+				// run the callback. flush() already honors discard
+				// (drops the batch); mirror that for the callback so a
+				// superseded session never archives.
+				flush()
+				if !b.discard.Load() {
+					entry.afterFlush()
+				}
+				continue
 			}
 			batch = append(batch, entry)
 			if len(batch) >= b.batchSize {
