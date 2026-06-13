@@ -43,6 +43,38 @@ const (
 // match.
 var approvalLabelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 
+// deployEnvRE bounds a deploy environment name (#39). Starts with an
+// alphanumeric, then alphanumerics + `.` `_` `-`, max 64 chars. The
+// bound + charset keep the name safe in URLs, audit payloads, and the
+// unique (project_id, name) key — and reject shell metas/spaces that
+// a `deploy: {environment: "prod; rm -rf"}` typo would smuggle in.
+var deployEnvRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+// deployVersionRefRE extracts strict `${{ ... }}` tokens from a
+// deploy.version so we can validate their namespace at APPLY time
+// rather than letting an unresolvable ref wedge the job in `queued`
+// forever at dispatch (the scheduler retries config errors that
+// aren't ErrNeedsRefUnresolved). Bounded inner capture; non-greedy.
+var deployVersionRefRE = regexp.MustCompile(`\$\{\{\s*([^}]{1,256}?)\s*\}\}`)
+
+// deployVersionRefOK accepts the only namespaces deploy.version
+// resolves against at dispatch: upstream outputs (`needs.<job>.
+// outputs.<alias>`) and CI built-ins (`CI_*`). It deliberately
+// rejects `${{ MY_VAR }}` / `${{ SECRET }}` — variables aren't wired
+// for version, and a secret in a version would leak into the
+// deployment_revisions row + Environments UI.
+//
+// The needs branch MIRRORS the scheduler's needsRefPattern
+// (refs.go): job name is `[A-Za-z0-9_-]+` (no dot — job names have
+// none) and the alias is lowercase-leading kebab/snake, matching the
+// output-alias grammar. Keeping the shapes identical means a version
+// ref accepted here resolves at dispatch unless the upstream simply
+// didn't produce the alias — and even that case is now terminal
+// (ErrDeployVersionUnresolved), never a retry loop. Matrix-selector
+// needs refs (needs.X.matrix[..].outputs.Y) are NOT accepted in a
+// version — rare, and rejected loud at apply rather than silently.
+var deployVersionRefOK = regexp.MustCompile(`^(needs\.[A-Za-z0-9_-]+\.outputs\.[a-z][a-zA-Z0-9_-]*|CI_[A-Z0-9_]+)$`)
+
 // ParsePollInterval returns (duration, error) for a YAML-supplied
 // poll_interval string. Empty is (0, nil) — caller treats zero as
 // "polling disabled". Format is Go's time.ParseDuration ("5m",
@@ -612,9 +644,10 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		if len(jd.Script) > 0 || jd.Uses != "" || jd.Image != "" ||
 			jd.Settings != nil || jd.Artifacts != nil ||
 			len(jd.NeedsArtifacts) > 0 || len(jd.Cache) > 0 ||
-			jd.Docker || len(jd.IDTokens) > 0 {
+			jd.Docker || len(jd.IDTokens) > 0 || jd.Deploy != nil {
 			return domain.Job{}, fmt.Errorf(
-				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens — it only blocks on a human decision",
+				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens/deploy — it only blocks on a human decision. "+
+					"For a promote-then-deploy flow, put deploy: on a separate executable job with needs: [<this-gate>]",
 				name,
 			)
 		}
@@ -746,6 +779,47 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 				Settings: jd.Settings,
 			},
 		})
+	}
+
+	// Deploy marker (#39): tracking only — the job's tasks (set
+	// above) still perform the deploy. Validate AFTER task assembly
+	// so "executable" is a real check (len(Tasks) > 0), and reject a
+	// deploy on a job that runs nothing (a `deploy:` with no script/
+	// uses/plugin would record a revision for a deploy that never
+	// happened). Approval+deploy was already rejected above.
+	if jd.Deploy != nil {
+		if len(j.Tasks) == 0 {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: deploy: requires an executable job (script:, uses:, or image:+settings:) — the marker tracks a deploy the job performs, it does not perform one itself",
+				name)
+		}
+		env := strings.TrimSpace(jd.Deploy.Environment)
+		if env == "" {
+			return domain.Job{}, fmt.Errorf("job %q: deploy.environment is required", name)
+		}
+		if !deployEnvRE.MatchString(env) {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: deploy.environment %q has forbidden characters — start alphanumeric, then alphanumeric + . _ - (max 64)",
+				name, jd.Deploy.Environment)
+		}
+		version := strings.TrimSpace(jd.Deploy.Version)
+		// Validate strict-ref namespaces at apply time. Shell-style
+		// ${VAR} is left alone (soft-resolved at dispatch, literal on
+		// miss — never wedges the job); only `${{ }}` tokens can fail
+		// the strict pass and hang the dispatch, so those are what we
+		// gate here.
+		for _, m := range deployVersionRefRE.FindAllStringSubmatch(version, -1) {
+			if !deployVersionRefOK.MatchString(m[1]) {
+				return domain.Job{}, fmt.Errorf(
+					"job %q: deploy.version reference ${{ %s }} is not allowed — version accepts only ${{ needs.<job>.outputs.<alias> }} and ${{ CI_* }} "+
+						"(variables/secrets are rejected: the version is recorded and shown in the Environments UI)",
+					name, m[1])
+			}
+		}
+		j.Deploy = &domain.DeploySpec{
+			Environment: env,
+			Version:     version,
+		}
 	}
 
 	if jd.Parallel != nil && len(jd.Parallel.Matrix) > 0 {

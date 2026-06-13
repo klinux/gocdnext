@@ -858,6 +858,31 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// service restart.
 	a.maybeEnqueueArchive(ctx, log, batcher, comp.JobRunID)
 
+	// Deployment tracking (#39): if this job carried a `deploy:`
+	// marker, the dispatch path opened an in_progress revision.
+	// Finalise it to match the job's terminal outcome. Best-effort
+	// (a tracking-write failure must not affect the run cascade) and
+	// idempotent: 0 rows means the job had no deploy: block (the
+	// common case), and the status='in_progress' guard makes a
+	// re-delivered terminal result a no-op.
+	//
+	// KNOWN GAP (v1, accepted): CompleteJob already flipped the job
+	// terminal above; if the process crashes (or this write fails)
+	// before the finalise lands, the revision stays in_progress for a
+	// job that is actually done — the reaper/fence only cover attempts
+	// that DIED (requeue/fail-at-max), not "job terminal, revision
+	// in_progress". An in_progress row never reads as "current" (only
+	// success counts), so the worst case is a stale in_progress entry
+	// in the timeline. A lightweight reconciler (finalise in_progress
+	// revisions whose job_run is already terminal) is the post-v1 fix.
+	deployStatus := store.DeployStatusFailed
+	if status == string(domain.StatusSuccess) {
+		deployStatus = store.DeployStatusSuccess
+	}
+	if _, err := a.store.FinalizeDeploymentRevision(ctx, comp.JobRunID, expectedAttempt, deployStatus); err != nil {
+		log.Warn("deploy tracking: finalize revision", "job_id", comp.JobRunID, "err", err)
+	}
+
 	if comp.RunCompleted {
 		a.checksReporter.ReportRunCompleted(ctx, comp.RunID, comp.RunStatus)
 		// Run-scoped service teardown. Broadcast to EVERY agent
@@ -1034,6 +1059,19 @@ func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger
 	if ok == 0 {
 		log.Warn("cleanup run services: ALL dispatches failed; pods may leak until manual cleanup",
 			"run_id", runID, "targets", len(targets))
+	}
+}
+
+// failDeadDeployRevision marks the deploy revision of a fence-
+// reclaimed attempt as failed (#39) — same contract as the reaper's
+// finalizeDeadDeployRevision: the orphaned attempt's in_progress
+// revision is keyed by (job_run, attempt), so finalising it never
+// touches the fresh redispatch. Best-effort (a non-deploy job affects
+// 0 rows; an error is logged).
+func (a *AgentService) failDeadDeployRevision(ctx context.Context, jobRunID uuid.UUID, attempt int32) {
+	if _, err := a.store.FinalizeDeploymentRevision(ctx, jobRunID, attempt, store.DeployStatusFailed); err != nil {
+		a.log.Warn("deploy tracking: finalize dead revision (fence)",
+			"job_id", jobRunID, "attempt", attempt, "err", err)
 	}
 }
 

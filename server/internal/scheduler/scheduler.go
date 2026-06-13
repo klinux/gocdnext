@@ -518,7 +518,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs, idTokens)
+		assign, deployTarget, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs, idTokens)
 		if err != nil {
 			// Unresolved needs refs (issue #10) are CONFIGURATION
 			// errors — the next tick will see the exact same
@@ -529,6 +529,14 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			// so the run-log surfaces which ref + which alias.
 			if errors.Is(err, ErrNeedsRefUnresolved) {
 				s.failJobWithError(ctx, job, fmt.Sprintf("needs outputs: %v", err))
+				continue
+			}
+			// Deploy version that can't be resolved (empty default, or
+			// any unresolvable ref — CI var absent this run, needs shape
+			// that slipped the parser) is a per-run config error too —
+			// terminalise instead of retrying forever (#39).
+			if errors.Is(err, ErrDeployVersionEmpty) || errors.Is(err, ErrDeployVersionUnresolved) {
+				s.failJobWithError(ctx, job, err.Error())
 				continue
 			}
 			s.log.Warn("scheduler: build assignment", "job_id", job.ID, "err", err)
@@ -543,6 +551,20 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		if !ok {
 			// Lost optimistic race with another scheduler tick / replica.
 			continue
+		}
+
+		// Deployment tracking (#39): record the in_progress revision
+		// HERE — after AssignJob stamped (running, attempt) but BEFORE
+		// DispatchAssignment hands the job to the agent. This window is
+		// the only safe spot: the agent doesn't have the job yet, so no
+		// JobResult can race in and call FinalizeDeploymentRevision
+		// against a revision that doesn't exist (a fast job would
+		// otherwise finalise 0 rows, then this create would leave an
+		// orphan in_progress that never reads as "current"). If the
+		// dispatch below fails, we delete this revision in the rollback.
+		var deployRevID uuid.UUID
+		if deployTarget != nil {
+			deployRevID = s.recordDeployRevision(ctx, run, job.ID, assigned.Attempt, deployTarget)
 		}
 
 		msg := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{Assign: assign}}
@@ -563,6 +585,18 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			// NOTHING was incremented yet (JobsScheduled/JobsRunning
 			// fire only on successful dispatch below), so there's
 			// nothing to undo here.
+			//
+			// Also delete the deploy revision created just above — the
+			// frame never reached an agent, so no deploy happened, and
+			// leaving it would both ghost the timeline AND collide with
+			// the next dispatch's create on the (job_run, attempt)
+			// unique index when the retry re-uses the same attempt.
+			if deployRevID != uuid.Nil {
+				if derr := s.store.DeleteDeploymentRevision(ctx, deployRevID); derr != nil {
+					s.log.Warn("scheduler: delete deploy revision after dispatch failure",
+						"job_id", job.ID, "revision_id", deployRevID, "err", derr)
+				}
+			}
 			runIDForNotify, ok, undoErr := s.store.UnassignJob(ctx, job.ID, agentID, assigned.Attempt)
 			switch {
 			case undoErr != nil:
@@ -602,6 +636,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		s.log.Info("scheduler: dispatched",
 			"run_id", runID, "job_id", assigned.ID, "job_name", assigned.Name,
 			"agent_id", agentID)
+		// (Deploy revision was recorded above, before DispatchAssignment.)
 	}
 
 	if dispatched > 0 {
@@ -615,6 +650,39 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 // "try later" from real errors.
 func IsNoIdleAgent(err error) bool {
 	return errors.Is(err, grpcsrv.ErrNoSession)
+}
+
+// recordDeployRevision lazy-creates the target environment and writes
+// an in_progress deployment_revision for a job about to dispatch
+// (#39). Returns the new revision id (uuid.Nil on a tracking-write
+// failure) so the caller can delete it if the dispatch then fails.
+// Best-effort: a tracking-write failure is logged, never fatal — the
+// deploy still happens. The job's terminal result finalises this
+// revision (handleJobResult → FinalizeDeploymentRevision). deployed_by
+// is left empty for now; the promoting actor lives on the upstream
+// approval gate's decided_by and wiring it through is a later
+// refinement.
+func (s *Scheduler) recordDeployRevision(ctx context.Context, run store.RunForDispatch, jobID uuid.UUID, attempt int32, target *DeployTarget) uuid.UUID {
+	envID, err := s.store.EnsureEnvironment(ctx, run.ProjectID, target.Environment)
+	if err != nil {
+		s.log.Warn("scheduler: deploy tracking — ensure environment",
+			"run_id", run.ID, "job_id", jobID, "environment", target.Environment, "err", err)
+		return uuid.Nil
+	}
+	revID, err := s.store.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID,
+		RunID:         run.ID,
+		JobRunID:      jobID,
+		Attempt:       attempt,
+		Version:       target.Version,
+		IsRollback:    false,
+	})
+	if err != nil {
+		s.log.Warn("scheduler: deploy tracking — create revision",
+			"run_id", run.ID, "job_id", jobID, "environment", target.Environment, "err", err)
+		return uuid.Nil
+	}
+	return revID
 }
 
 // resolveProfile pulls the runner profile referenced by the job

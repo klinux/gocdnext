@@ -294,8 +294,10 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 					seenRuns[r.RunID] = struct{}{}
 					notifyRunIDs = append(notifyRunIDs, r.RunID)
 				}
+				a.failDeadDeployRevision(ctx, r.JobRunID, r.Attempt)
 			case r.Action == store.ReclaimActionFailed:
 				failed++
+				a.failDeadDeployRevision(ctx, r.JobRunID, r.Attempt)
 			default:
 				skipped++
 			}

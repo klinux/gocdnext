@@ -256,6 +256,9 @@ func (r *Reaper) Sweep(ctx context.Context) {
 				seenRuns[res.RunID] = struct{}{}
 				notifyRuns = append(notifyRuns, res.RunID)
 			}
+			// The dead attempt may have opened a deploy revision (#39)
+			// that no JobResult will ever finalise — mark it failed.
+			r.finalizeDeadDeployRevision(ctx, res.JobRunID, res.Attempt)
 		case res.Action == store.ReclaimActionFailed:
 			failed++
 			r.log.Warn("reaper: job failed at max attempts",
@@ -267,6 +270,7 @@ func (r *Reaper) Sweep(ctx context.Context) {
 			// gets a clean slate without a phantom-capacity entry
 			// lingering in the SessionStore.
 			addFenceTarget(res)
+			r.finalizeDeadDeployRevision(ctx, res.JobRunID, res.Attempt)
 		default:
 			skipped++
 		}
@@ -314,4 +318,20 @@ func (r *Reaper) Sweep(ctx context.Context) {
 		"fence_no_session", fenceNoSession,
 		"fence_skipped_generation_changed", fenceGenChanged,
 		"notified_runs", len(notifyRuns))
+}
+
+// finalizeDeadDeployRevision marks the deploy revision of a reclaimed
+// attempt as failed (#39). The attempt died (requeue or fail-at-max)
+// without a terminal JobResult, so its in_progress revision would
+// otherwise linger forever and clutter the environment timeline.
+// Keyed on (job_run, attempt) so it touches ONLY the dead attempt —
+// a fresh redispatch (attempt+1) records its own revision and is
+// untouched, which is exactly what keeps a later success from
+// colliding with this failed row. Best-effort: a non-deploy job
+// affects 0 rows; an error is logged, never fatal to the sweep.
+func (r *Reaper) finalizeDeadDeployRevision(ctx context.Context, jobRunID uuid.UUID, attempt int32) {
+	if _, err := r.store.FinalizeDeploymentRevision(ctx, jobRunID, attempt, store.DeployStatusFailed); err != nil {
+		r.log.Warn("reaper: finalize dead deploy revision",
+			"job_id", jobRunID, "attempt", attempt, "err", err)
+	}
 }

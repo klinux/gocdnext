@@ -240,6 +240,66 @@ type JobDef struct {
 	//	  VAULT_JWT:
 	//	    aud: [https://vault.example.com, https://vault-dr.example.com]
 	IDTokens map[string]IDTokenDef `yaml:"id_tokens,omitempty"`
+
+	// Deploy marks this job as a deployment to a named environment
+	// (#39). Tracking marker only — the job's `uses:`/`script:`
+	// still performs the deploy. Valid ONLY on an executable job;
+	// mutually exclusive with `approval:` (a gate executes nothing).
+	// See DeployDef.
+	Deploy *DeployDef `yaml:"deploy,omitempty"`
+}
+
+// DeployDef is the YAML shape of a job's `deploy:` block. Custom
+// UnmarshalYAML enforces the object form and rejects unknown keys
+// (the outer KnownFields(true) does not propagate into Node.Decode),
+// so a typo like `env:` for `environment:` fails loud instead of
+// silently producing a deploy with no environment.
+//
+//	deploy:
+//	  environment: production
+//	  version: ${{ needs.build.outputs.image-tag }}   # optional
+type DeployDef struct {
+	Environment string `yaml:"environment"`
+	// Version is optional; the raw string (refs allowed) recorded as
+	// the deployed version. Empty defaults to the commit short sha at
+	// dispatch.
+	Version string `yaml:"version,omitempty"`
+}
+
+// UnmarshalYAML enforces the object form and walks the mapping
+// manually so unknown keys fail loud. Mirrors IDTokenDef's pattern.
+func (d *DeployDef) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("deploy: must be an object with an `environment` key (line %d) — e.g. `deploy: {environment: production}`", node.Line)
+	}
+	if len(node.Content)%2 != 0 {
+		return fmt.Errorf("deploy: mapping has odd number of nodes (malformed YAML)")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i]
+		val := node.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			return fmt.Errorf("deploy: key at line %d is not a scalar", key.Line)
+		}
+		switch key.Value {
+		case "environment":
+			if val.Kind != yaml.ScalarNode {
+				return fmt.Errorf("deploy: `environment` at line %d must be a scalar", val.Line)
+			}
+			d.Environment = val.Value
+		case "version":
+			if val.Kind != yaml.ScalarNode {
+				return fmt.Errorf("deploy: `version` at line %d must be a scalar", val.Line)
+			}
+			d.Version = val.Value
+		default:
+			return fmt.Errorf(
+				"deploy: unknown key %q at line %d — accepted keys are `environment` (required) and `version` (optional). "+
+					"Common typo: `env` (use `environment`)",
+				key.Value, key.Line)
+		}
+	}
+	return nil
 }
 
 // IDTokenDef is one `id_tokens:` entry. Only `aud` exists today;
