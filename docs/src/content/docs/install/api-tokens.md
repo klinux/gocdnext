@@ -33,9 +33,17 @@ checks the header before falling back to the session cookie path.
 
 ### Use
 
-The token authenticates direct REST calls today. The bundled
-`gocdnext` CLI doesn't yet read this token (no Bearer plumbing
-shipped). Use `curl` or any HTTP client until the CLI grows it:
+The token authenticates the bundled CLI and direct REST calls.
+For the CLI, store it once with `gocdnext login` (interactive) or
+export `GOCDNEXT_TOKEN` (CI/bots) — details in the
+[CLI reference](/reference/cli/#login--logout--authenticate-the-cli):
+
+```bash
+gocdnext login --server https://ci.example.com   # silent TTY prompt
+gocdnext apply . --slug myapp --server https://ci.example.com
+```
+
+For raw REST, send it as a Bearer header:
 
 ```bash
 curl -H "Authorization: Bearer gnk_..." \

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/cli/internal/admin"
 	"github.com/gocdnext/gocdnext/cli/internal/apply"
+	"github.com/gocdnext/gocdnext/cli/internal/cliconfig"
 	"github.com/gocdnext/gocdnext/cli/internal/runlocal"
 	"github.com/gocdnext/gocdnext/cli/internal/secrets"
 	"github.com/gocdnext/gocdnext/cli/internal/validate"
@@ -41,6 +41,8 @@ func main() {
 		applyCmd(),
 		secretCmd(),
 		adminCmd(),
+		loginCmd(),
+		logoutCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -154,7 +156,7 @@ func applyCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			resp, err := apply.Post(ctx, &http.Client{Timeout: 30 * time.Second}, serverURL, apply.Request{
+			resp, err := apply.Post(ctx, cliconfig.HTTPClient(serverURL, 30*time.Second), serverURL, apply.Request{
 				Slug:        slug,
 				Name:        name,
 				Description: description,
@@ -163,7 +165,7 @@ func applyCmd() *cobra.Command {
 				SCMSource:   scm,
 			})
 			if err != nil {
-				return err
+				return authHint(err)
 			}
 
 			printResult(c.OutOrStdout(), resp)
@@ -259,10 +261,10 @@ shell history and out of 'ps'.
 			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			resp, err := secrets.Set(ctx, &http.Client{Timeout: 30 * time.Second}, serverURL, slug,
+			resp, err := secrets.Set(ctx, cliconfig.HTTPClient(serverURL, 30*time.Second), serverURL, slug,
 				secrets.SetRequest{Name: name, Value: value})
 			if err != nil {
-				return err
+				return authHint(err)
 			}
 			action := "updated"
 			if resp.Created {
@@ -298,9 +300,9 @@ func secretListCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			list, err := secrets.List(ctx, &http.Client{Timeout: 15 * time.Second}, serverURL, slug)
+			list, err := secrets.List(ctx, cliconfig.HTTPClient(serverURL, 15*time.Second), serverURL, slug)
 			if err != nil {
-				return err
+				return authHint(err)
 			}
 			if len(list) == 0 {
 				fmt.Fprintln(c.OutOrStdout(), "(no secrets)")
@@ -338,8 +340,8 @@ func secretRmCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			if err := secrets.Delete(ctx, &http.Client{Timeout: 15 * time.Second}, serverURL, slug, name); err != nil {
-				return err
+			if err := secrets.Delete(ctx, cliconfig.HTTPClient(serverURL, 15*time.Second), serverURL, slug, name); err != nil {
+				return authHint(err)
 			}
 			fmt.Fprintf(c.OutOrStdout(), "secret removed %s\n", name)
 			return nil
