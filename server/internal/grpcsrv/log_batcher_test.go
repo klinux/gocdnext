@@ -373,3 +373,74 @@ func TestLogBatcher_DrainOnStop(t *testing.T) {
 		t.Errorf("after Stop total = %d, want 7", total)
 	}
 }
+
+// TestLogBatcher_AfterFlushRunsAfterPriorLinesPersisted is the
+// regression for the cold-archive race: archival used to be enqueued
+// straight from the JobResult handler, which fired BEFORE the 200ms
+// batcher flush had written the job's final lines. The archiver then
+// snapshotted log_lines without them, deleted the rows, and the
+// trailing markers were lost from the archive (operator-reported
+// "post-job …" with no "done" and the cache-store eaten).
+//
+// The barrier travels the same FIFO channel as the lines, so by the
+// time the flusher reaches it every prior line is already in the
+// sink. The assertion captures the sink count AT THE MOMENT the
+// barrier runs — not after — so a flush-after-barrier ordering bug
+// would fail here.
+func TestLogBatcher_AfterFlushRunsAfterPriorLinesPersisted(t *testing.T) {
+	sink := &recordingSink{}
+	b := newLogBatcher(sink, silentLogger(), uuid.New())
+	b.flushEvery = 10 * time.Second // force the barrier (not the ticker) to drive the flush
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.Start(ctx)
+
+	const n = 7
+	for i := int64(0); i < n; i++ {
+		b.Push(makeLine(i), 1)
+	}
+
+	seenAtBarrier := make(chan int, 1)
+	b.AfterFlush(func() {
+		total := 0
+		for _, batch := range sink.snapshot() {
+			total += len(batch.Lines)
+		}
+		seenAtBarrier <- total
+	})
+
+	select {
+	case got := <-seenAtBarrier:
+		if got != n {
+			t.Fatalf("barrier saw %d persisted lines, want %d — flush did not precede the barrier", got, n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("barrier never ran")
+	}
+	b.Stop()
+}
+
+// TestLogBatcher_AfterFlushSkippedInDiscard pins that a superseded
+// session (Discard) drops the archive barrier with the pending
+// lines — archiving a reclaimed attempt's truncated tail would be
+// worse than letting the successor attempt re-archive cleanly.
+func TestLogBatcher_AfterFlushSkippedInDiscard(t *testing.T) {
+	sink := &recordingSink{}
+	b := newLogBatcher(sink, silentLogger(), uuid.New())
+	b.flushEvery = 10 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.Start(ctx)
+
+	b.Discard()
+	ran := make(chan struct{}, 1)
+	b.AfterFlush(func() { ran <- struct{}{} })
+
+	select {
+	case <-ran:
+		t.Fatal("barrier ran despite discard — would archive a superseded attempt")
+	case <-time.After(200 * time.Millisecond):
+		// expected: barrier dropped
+	}
+	b.Stop()
+}

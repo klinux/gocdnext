@@ -161,7 +161,7 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 		case *gocdnextv1.AgentMessage_Progress:
 			log.Debug("agent progress", "kind", kindName(msg))
 		case *gocdnextv1.AgentMessage_Result:
-			a.handleJobResult(stream.Context(), log, sess, kind.Result)
+			a.handleJobResult(stream.Context(), log, sess, batcher, kind.Result)
 		case *gocdnextv1.AgentMessage_TestResults:
 			// Same drop policy. WriteTestResults wipes-and-reinserts
 			// every test row for the job_run_id (see store.WriteTestResults),
@@ -694,7 +694,7 @@ const (
 //     revoked check is bypassed (e.g. a stale message hits at the
 //     exact tick a Revoke completes), the SQL won't match a reclaimed
 //     (agent_id=NULL) or redispatched (different agent) row.
-func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Session, r *gocdnextv1.JobResult) {
+func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Session, batcher *logBatcher, r *gocdnextv1.JobResult) {
 	if sess.revoked.Load() {
 		log.Warn("agent result: dropped — session revoked",
 			"session", sess.ID, "agent_uuid", sess.AgentID, "job_id", r.GetJobId())
@@ -856,7 +856,7 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// the rows. Per-project override is resolved live so an admin
 	// toggle takes effect on the next terminating job without a
 	// service restart.
-	a.maybeEnqueueArchive(ctx, log, comp.JobRunID)
+	a.maybeEnqueueArchive(ctx, log, batcher, comp.JobRunID)
 
 	if comp.RunCompleted {
 		a.checksReporter.ReportRunCompleted(ctx, comp.RunID, comp.RunStatus)
@@ -1037,7 +1037,7 @@ func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger
 	}
 }
 
-func (a *AgentService) maybeEnqueueArchive(ctx context.Context, log logger, jobRunID uuid.UUID) {
+func (a *AgentService) maybeEnqueueArchive(ctx context.Context, log logger, batcher *logBatcher, jobRunID uuid.UUID) {
 	if a.logArchiver == nil {
 		return
 	}
@@ -1048,9 +1048,18 @@ func (a *AgentService) maybeEnqueueArchive(ctx context.Context, log logger, jobR
 		// Continue with flag=nil so the resolver uses the global
 		// policy alone — better to archive than to silently skip.
 	}
-	if domain.EffectiveLogArchive(a.logArchivePolicy, flag, true) {
-		a.logArchiver.Submit(jobRunID)
+	if !domain.EffectiveLogArchive(a.logArchivePolicy, flag, true) {
+		return
 	}
+	// Sequence the archive submit BEHIND this job's final log lines:
+	// they were just pushed into the batcher (handleLogLine runs
+	// before handleJobResult on the recv loop) but may not have hit
+	// the 200ms flush yet. AfterFlush rides the same FIFO channel, so
+	// the archiver only reads log_lines once the trailing markers are
+	// durable — without this the archive snapshotted + deleted the
+	// rows before the last lines landed, eating a job's tail.
+	jobID := jobRunID
+	batcher.AfterFlush(func() { a.logArchiver.Submit(jobID) })
 }
 
 // confirmArtifacts walks the ArtifactRef list the agent reported, HEADs
