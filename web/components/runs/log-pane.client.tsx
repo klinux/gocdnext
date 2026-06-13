@@ -147,7 +147,12 @@ export function LogPane({
   }, [head, omitted, logs]);
 
   return (
-    <div className={cn("flex flex-col", className)}>
+    // Root owns the height budget: default cap matches the old
+    // viewer (max-h-96); a fill-height consumer (the job drawer)
+    // overrides via className with h-full + max-h-none and the
+    // flex-1 scroll area below stretches to whatever remains —
+    // no dead space under short logs, inner scroll for long ones.
+    <div className={cn("flex max-h-96 flex-col", className)}>
       <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -223,7 +228,7 @@ export function LogPane({
           ) : null}
         </div>
       </div>
-      <div ref={scrollRef} onScroll={onScroll} className="max-h-96 overflow-auto">
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto">
         <LogViewer
           logs={logs}
           head={head}

@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.31.1 — 2026-06-12
+
+### Fixed
+
+- **Job drawer log area no longer leaves dead space**
+  (operator-reported): the LogPane capped its scroll area at a
+  fixed height while the drawer hands it the full remaining
+  height — short logs left a large blank band inside the bordered
+  container. The pane root now owns the height budget (default cap
+  unchanged for run-page cards; fill-height consumers override)
+  and the scroll area stretches with flex. The drawer's old
+  jump-to-top/bottom buttons — which scrolled a wrapper that no
+  longer scrolls — were removed in favor of the pane's own.
+
 ## v0.31.0 — 2026-06-12
 
 The log experience train: where the time went, and a viewer that
