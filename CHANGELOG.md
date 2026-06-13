@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.32.2 — 2026-06-13
+
+### Changed
+
+- **Cache store reports progress and size instead of going silent**:
+  a large cache store (tar + upload of a multi-hundred-MB GOCACHE)
+  ran for minutes with no log output, so a green job read as "stuck"
+  (operator-reported 2m51s gap). Each store now announces its start
+  (`cache "go-lint": storing 1 path(s)…`) and reports the size +
+  duration on completion (`cache "go-lint": stored (234.5 MB in
+  2m51s)`), in both shared and isolated mode. Sizes are decimal
+  (1000-based) to match cloud-console object sizes.
+
 ## v0.32.1 — 2026-06-12
 
 ### Fixed
