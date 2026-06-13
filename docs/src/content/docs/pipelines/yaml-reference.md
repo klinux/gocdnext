@@ -70,8 +70,8 @@ when:
 in the UI or `gocdnext run <pipeline>`. `event: [cron]` is set
 automatically by the project's cron schedule.
 
-The parser also accepts `when.status:` syntactically, but it's
-reserved — not consumed at pipeline level today. Tag-name regexes
+`when.status:` is **rejected at parse** (it was reserved and
+unenforced — declaring it gated nothing; issue #40). Tag-name regexes
 aren't wired; use one pipeline per trigger shape if you need them.
 
 ### Path filtering (`when.paths`)
@@ -237,9 +237,6 @@ jobs:
       matrix:
         - GO_VERSION: ["1.24", "1.25"]
           OS: [ubuntu, alpine]
-    rules:
-      - if: "$CI_COMMIT_BRANCH == main"
-        when: on_success
     timeout: 30m
     retry: 2
     tags: [linux, x86_64]
@@ -277,7 +274,7 @@ Per-key:
 | `test_reports` | `[]string` | JUnit XML globs surfaced in the Tests tab |
 | `parallel.matrix` | list | expand the job into one cell per cartesian product |
 | `parallel.count` | int | run N identical copies (no matrix) |
-| `rules` | list | parsed; not enforced at dispatch today |
+| `rules` | — | **rejected at parse** — was accepted-but-unenforced; use `when.paths` / `approval:` (issue #40) |
 | `timeout` | duration | hard kill after — `30m`, `2h` |
 | `retry` | int | retry count on `failed` |
 | `tags` | `[]string` | extra constraints unioned with the agent profile |

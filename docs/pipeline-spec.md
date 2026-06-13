@@ -113,16 +113,15 @@ jobs:
       matrix:
         - OS: [linux, darwin]
           ARCH: [amd64, arm64]
-    rules:
-      - if: $CI_COMMIT_BRANCH == "main"
-      - if: $CI_PIPELINE_SOURCE == "pull_request"
-        when: manual
-    when:
-      status: [success, failure]
-      branch: [main, release/*]
     timeout: 30m
     retry: 2
 ```
+
+> **Removed keys** (rejected at parse since v0.32, issue #40):
+> job-level `rules:` and `when:` were accepted by earlier schemas
+> but enforced by nothing. For change-based triggering use
+> pipeline-level `when.paths`; for promotion gates use `approval:`;
+> for status-conditioned delivery use `notifications:`.
 
 ### Approval gates
 
@@ -219,9 +218,9 @@ Merge rules (GitLab-compatible):
 | Field type | Rule |
 |---|---|
 | Scalars (`image`, `stage`, `timeout`, `retry`, `docker`, `uses`) | Child wins when set |
-| Lists (`script`, `needs`, `secrets`, `tags`, `cache`, `rules`) | Child replaces parent when non-nil |
+| Lists (`script`, `needs`, `secrets`, `tags`, `cache`) | Child replaces parent when non-nil |
 | Maps (`settings`, `with`, `variables`) | Child keys overlay parent keys |
-| Structs (`artifacts`, `parallel`, `when`, `approval`) | Child wins whole |
+| Structs (`artifacts`, `parallel`, `approval`) | Child wins whole |
 
 `extends:` supports chains (`a → b → c`) with cycle detection. Cross-file
 inheritance (`include:` pulling templates from another file) is not yet
@@ -239,13 +238,16 @@ supported — it's on the roadmap.
 | `CI_PIPELINE_SOURCE`  | `webhook` / `upstream` / `manual`|
 | `CI_PR_NUMBER`        | `137` (only on PR events)        |
 
-## Rules reference
+## Rules (removed)
 
-Rules are evaluated top-to-bottom; first match wins.
+`rules:` never made it past the schema — no evaluator was ever
+wired, so a `rules:` block silently gated nothing. Since v0.32 the
+parser rejects it outright (issue #40). What each former field
+maps to today:
 
-| Field     | Meaning                                              |
-|-----------|------------------------------------------------------|
-| `if`      | CEL-like expression over CI_* vars. Truthy → match.  |
-| `changes` | Match if any path changed in the triggering commit.  |
-| `exists`  | Match if any path exists in the workspace.           |
-| `when`    | What to do when matched: `always` (default), `manual`, `never`, `on_success`, `on_failure`. |
+| Former field | Use instead |
+|--------------|-------------|
+| `if` on branch/event | pipeline-level `when.event` / `when.branch` |
+| `changes`    | pipeline-level `when.paths` (doublestar globs) |
+| `when: manual` | `approval:` gate on the job |
+| status conditions | pipeline-level `notifications: on:` |

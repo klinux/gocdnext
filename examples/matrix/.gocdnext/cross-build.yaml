@@ -5,7 +5,7 @@ materials:
   - git:
       url: https://github.com/org/cross-platform-cli
 
-stages: [test, release]
+stages: [test]
 
 jobs:
   test:
@@ -16,13 +16,17 @@ jobs:
         - OS: [linux, darwin]
           ARCH: [amd64, arm64]
     script:
+      # NOTE: $OS/$ARCH as standalone env vars depend on matrix
+      # decomposition (issue #42) — today the dispatch exposes the
+      # combined GOCDNEXT_MATRIX="ARCH=...,OS=..." only. This
+      # example is the target shape #42 makes real.
       - GOOS=$OS GOARCH=$ARCH go test ./...
 
-  release-notify:
-    stage: release
-    image: plugins/slack
-    settings:
+# Status-conditioned notification — the IMPLEMENTED mechanism for
+# "tell Slack how the run ended" (job-level `when.status` was an
+# unenforced key and the parser now rejects it; see issue #40).
+notifications:
+  - on: always
+    uses: ghcr.io/klinux/gocdnext-plugin-slack@v1
+    with:
       channel: "#releases"
-      template: "{{ .Pipeline }} #{{ .Counter }} finished: {{ .Status }}"
-    when:
-      status: [success, failure]
