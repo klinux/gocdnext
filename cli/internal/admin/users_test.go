@@ -3,7 +3,6 @@ package admin_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -177,5 +176,4 @@ func TestCreateOrUpdateLocalUser_DBUnreachable(t *testing.T) {
 	if !strings.Contains(err.Error(), "connect") && !strings.Contains(err.Error(), "refused") {
 		t.Logf("unexpected but acceptable error: %v", err)
 	}
-	_ = fmt.Sprint("ok")
 }

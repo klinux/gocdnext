@@ -67,8 +67,8 @@ jobs:
 	}
 	got := out.String()
 	for _, want := range []string{
-		"APPROVAL GATE",       // gate skipped loudly
-		"[consume] consumed",  // second stage saw first stage's file
+		"APPROVAL GATE",      // gate skipped loudly
+		"[consume] consumed", // second stage saw first stage's file
 		"2 job(s) green",
 	} {
 		if !strings.Contains(got, want) {

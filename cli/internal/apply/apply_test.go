@@ -32,10 +32,10 @@ func writeFolder(t *testing.T, files map[string]string) string {
 
 func TestReadFolder_PicksYamlIgnoresOthers(t *testing.T) {
 	root := writeFolder(t, map[string]string{
-		"build.yaml":  "name: build\n",
-		"deploy.yml":  "name: deploy\n",
-		"README.md":   "nope",
-		"notes.txt":   "nope",
+		"build.yaml": "name: build\n",
+		"deploy.yml": "name: deploy\n",
+		"README.md":  "nope",
+		"notes.txt":  "nope",
 	})
 
 	got, err := apply.ReadFolder(root)
