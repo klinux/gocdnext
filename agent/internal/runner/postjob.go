@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
 	"github.com/gocdnext/gocdnext/agent/internal/podfs"
@@ -150,9 +151,16 @@ func (r *Runner) PostJob(
 			if len(entry.GetPaths()) == 0 {
 				continue
 			}
-			if err := cfg.Cache.StoreFromPod(ctx, cfg.Executor,
+			// Announce the start: tar inside the housekeeper + PUT of
+			// a large cache runs for minutes with no other output,
+			// which reads as a hung job (operator-reported).
+			r.emitLog(a, seq, "stdout", fmt.Sprintf(
+				"cache %q: storing %d path(s)…", entry.GetKey(), len(entry.GetPaths())))
+			start := time.Now()
+			size, err := cfg.Cache.StoreFromPod(ctx, cfg.Executor,
 				cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
-				a.GetRunId(), a.GetJobId(), entry); err != nil {
+				a.GetRunId(), a.GetJobId(), entry)
+			if err != nil {
 				// Best-effort: log and continue. The build
 				// succeeded; the next run will simply rebuild
 				// instead of restoring.
@@ -162,7 +170,7 @@ func (r *Runner) PostJob(
 				continue
 			}
 			r.emitLog(a, seq, "stdout", fmt.Sprintf(
-				"cache %q: stored", entry.GetKey()))
+				"cache %q: stored (%s in %s)", entry.GetKey(), humanizeBytes(size), phaseDur(start)))
 		}
 	}
 
