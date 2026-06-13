@@ -108,10 +108,12 @@ Also Postgres-specific:
 
 The branch gate is **structural, not conditional**: the mutating
 pipeline's material listens to `push` only, so a pull-request run
-of it simply never exists. Don't reach for `rules:` as the safety
-rail here — `rules` is parsed but not enforced at dispatch today
-(see the [YAML reference](/pipelines/yaml-reference/)), and a
-guard that doesn't guard is worse than none.
+of it simply never exists. There is no `rules:` to reach for as
+the safety rail — it was an accepted-but-unenforced key and the
+parser rejects it since v0.32 (issue #40; see the
+[YAML reference](/pipelines/yaml-reference/)). A guard that
+doesn't guard is worse than none, which is exactly why it was
+removed.
 
 ```yaml
 # .gocdnext/db-verify.yaml — PRs and pushes; ZERO mutating

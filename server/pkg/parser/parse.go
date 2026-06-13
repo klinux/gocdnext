@@ -146,6 +146,10 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 	if f.When != nil && len(f.When.Branch) > 0 {
 		p.TriggerBranches = append([]string(nil), f.When.Branch...)
 	}
+	if f.When != nil && len(f.When.Status) > 0 {
+		return nil, fmt.Errorf(
+			"%s: when.status is reserved and not enforced — remove it (issue #40)", name)
+	}
 	if f.When != nil && len(f.When.Paths) > 0 {
 		if err := validateTriggerPaths(f.When.Paths); err != nil {
 			return nil, fmt.Errorf("%s: when.paths: %w", name, err)
@@ -777,12 +781,20 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		j.Matrix = flat
 	}
 
-	for _, r := range jd.Rules {
-		j.Rules = append(j.Rules, domain.Rule{
-			IfExpr:  r.If,
-			When:    r.When,
-			Changes: r.Changes,
-		})
+	// Unenforced keys are REJECTED, not silently parsed (#40): a
+	// `rules:` block that gates nothing is a safety rail that
+	// isn't there. domain.Rule stays for decoding definitions
+	// persisted before this version; new applies must drop the key.
+	if len(jd.Rules) > 0 {
+		return domain.Job{}, fmt.Errorf(
+			"job %s: rules: is not enforced at dispatch and would silently gate nothing — "+
+				"remove it; for change-based triggering use when.paths, for promotion gates use approval: "+
+				"(tracked in issue #40)", name)
+	}
+	if jd.When != nil {
+		return domain.Job{}, fmt.Errorf(
+			"job %s: job-level when: is accepted by the schema but not implemented — "+
+				"remove it; pipeline-level when: (event/branch/paths) is the working trigger gate", name)
 	}
 
 	return j, nil

@@ -31,5 +31,7 @@ jobs:
     settings:
       cluster: prod
       manifest: k8s/api.yaml
-    rules:
-      - if: $CI_COMMIT_BRANCH == "main"
+    # Branch gating lives UPSTREAM: build-core only fires on main
+    # (materials git branch: main), and this pipeline only fires
+    # when build-core.test passes — the fanout inherits the gate.
+    # (`rules:` was removed: the parser rejects unenforced keys.)
