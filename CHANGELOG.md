@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.32.1 — 2026-06-12
+
+### Fixed
+
+- **Cold-archival no longer eats a job's final log lines**
+  (operator-reported "post-job …" with no "done" marker, and the
+  cache-store output missing): the archiver was enqueued straight
+  from the JobResult handler, which fired BEFORE the 200ms log
+  batcher had flushed the job's trailing lines. The archiver then
+  snapshotted `log_lines` without them, uploaded that incomplete
+  archive, and deleted the rows — the late flush landed as orphan
+  rows the archive-first read path never shows. A job with a long
+  silent tail (e.g. a 2m51s cache store) was the perfect trigger:
+  the only lines in flight at completion were the trailing phase
+  markers, guaranteed to be in the unflushed window. The archive
+  submit now rides a FIFO barrier through the same log batcher
+  (`AfterFlush`), so it only reads `log_lines` once those final
+  lines are durable — no timing assumption, no grace window. As a
+  side effect the prior divergence between the UI (archive-first)
+  and the `log.txt` download (log_lines-first) for a freshly
+  archived job is gone.
+
 ## v0.32.0 — 2026-06-12
 
 CLI authentication (#38) and an honest parser (#40): the two
