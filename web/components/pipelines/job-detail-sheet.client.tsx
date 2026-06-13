@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { ChevronsDown, ChevronsUp, ExternalLink, Loader2 } from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -105,14 +105,6 @@ export function JobDetailSheet({
 function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true }> }) {
   const { job, run, stageName } = result;
   const logRef = useRef<HTMLDivElement>(null);
-  const jumpTo = (where: "top" | "bottom") => {
-    const el = logRef.current;
-    if (!el) return;
-    el.scrollTo({
-      top: where === "top" ? 0 : el.scrollHeight,
-      behavior: "smooth",
-    });
-  };
 
   return (
     <>
@@ -193,38 +185,9 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
             Recent logs
           </h4>
           <div className="flex items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    onClick={() => jumpTo("top")}
-                    aria-label="Jump to top of log"
-                  />
-                }
-              >
-                <ChevronsUp className="size-3.5" aria-hidden />
-              </TooltipTrigger>
-              <TooltipContent>Jump to top</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    onClick={() => jumpTo("bottom")}
-                    aria-label="Jump to bottom of log"
-                  />
-                }
-              >
-                <ChevronsDown className="size-3.5" aria-hidden />
-              </TooltipTrigger>
-              <TooltipContent>Jump to bottom</TooltipContent>
-            </Tooltip>
+            {/* Jump buttons live in the LogPane toolbar now — the
+                pane owns the scroll container; the old external
+                buttons scrolled a wrapper that no longer scrolls. */}
             <Link
               href={`/runs/${run.id}#job-${job.id}` as Route}
               className="ml-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
@@ -235,7 +198,7 @@ function JobDetailBody({ result }: { result: Extract<JobDetailResult, { ok: true
         </div>
         <div
           ref={logRef}
-          className="min-h-0 flex-1 overflow-auto rounded-md border border-border"
+          className="min-h-0 flex-1 overflow-hidden rounded-md border border-border"
         >
           <LogPane
             logs={job.logs ?? []}
