@@ -499,11 +499,44 @@ type Job struct {
 	// job would carry `"IDTokens":null` and the gate would never
 	// skip.
 	IDTokens map[string]IDTokenSpec `json:",omitempty"`
+
+	// Deploy, when non-nil, marks this (executable) job as a
+	// deployment to a named environment — a tracking marker the
+	// scheduler/result path turns into a deployment_revision. See
+	// DeploySpec. omitempty: the dispatch fast-path and the common
+	// non-deploy job never carry "Deploy":null.
+	Deploy *DeploySpec `json:",omitempty"`
 }
 
 // IDTokenSpec is the audience contract for one job id_token.
 type IDTokenSpec struct {
 	Aud []string
+}
+
+// DeploySpec marks an executable job as a deployment to a named
+// environment (#39). It is a TRACKING marker, NOT an executor: the
+// job's plugin/script still performs the deploy. On dispatch the
+// scheduler resolves Version (refs allowed; empty defaults to the
+// commit short sha) and records a deployment_revision against the
+// project's environment (lazy-created on first reference); on the
+// job's terminal result the revision finalises to success/failed.
+//
+// Version is opaque to gocdnext — whatever string identifies "what
+// was deployed" (image tag, chart version, git sha, app revision).
+// It is metadata only: the plugin reads its OWN refs in `with:`, so
+// rollback (re-running the deploy job of a past run) re-resolves the
+// old version for free from that run's immutable outputs.
+//
+// omitempty keeps the JSONB definition free of "Deploy":null on the
+// common (non-deploy) job, mirroring IDTokens.
+type DeploySpec struct {
+	// Environment is the deploy target name (production, staging,
+	// …), unique per project. Lazy-created on first reference.
+	Environment string
+	// Version is the raw (possibly ref-bearing) string recorded as
+	// the deployed version. Empty = default to commit short sha at
+	// dispatch.
+	Version string `json:",omitempty"`
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`

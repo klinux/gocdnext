@@ -122,6 +122,29 @@ type CronState struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type DeploymentRevision struct {
+	ID            pgtype.UUID
+	EnvironmentID pgtype.UUID
+	RunID         pgtype.UUID
+	JobRunID      pgtype.UUID
+	Attempt       int32
+	Version       string
+	Status        string
+	IsRollback    bool
+	DeployedBy    string
+	CreatedAt     pgtype.Timestamptz
+	FinishedAt    pgtype.Timestamptz
+}
+
+type Environment struct {
+	ID          pgtype.UUID
+	ProjectID   pgtype.UUID
+	Name        string
+	Description string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type GithubCheckRun struct {
 	RunID          pgtype.UUID
 	InstallationID int64

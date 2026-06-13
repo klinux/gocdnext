@@ -37,6 +37,19 @@ type revisionSnapshot struct {
 // project-secret values can override profile defaults. `profileMasks`
 // is the matching list of profile secret VALUES — same redaction
 // contract as job secrets.
+// DeployTarget is the resolved deploy marker for a dispatched job
+// (#39): the environment name and the version string, both ready to
+// record as a deployment_revision. nil when the job has no `deploy:`
+// block. The version is resolved here (not at result time) because
+// BuildAssignment already holds the needs.outputs + CI-var sources;
+// it is deliberately NOT resolved against secrets — the version lands
+// in deployment_revisions and the Environments UI, so it must stay
+// non-sensitive.
+type DeployTarget struct {
+	Environment string
+	Version     string
+}
+
 func BuildAssignment(
 	run store.RunForDispatch,
 	job store.DispatchableJob,
@@ -48,10 +61,10 @@ func BuildAssignment(
 	needsOutputs NeedsOutputs,
 	matrixNeedsOutputs MatrixNeedsOutputs,
 	idTokens map[string]string,
-) (*gocdnextv1.JobAssignment, error) {
+) (*gocdnextv1.JobAssignment, *DeployTarget, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
-		return nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
+		return nil, nil, fmt.Errorf("scheduler: decode pipeline: %w", err)
 	}
 
 	jobDef, ok := findJob(def.Jobs, job.Name)
@@ -65,11 +78,11 @@ func BuildAssignment(
 		if idx, isNotif := domain.NotificationIndexFromName(job.Name); isNotif {
 			n, ok := effectiveNotificationAtIndex(def.Notifications, run.ProjectNotifications, idx)
 			if !ok {
-				return nil, fmt.Errorf("scheduler: notification idx %d out of range", idx)
+				return nil, nil, fmt.Errorf("scheduler: notification idx %d out of range", idx)
 			}
 			image, err := domain.ResolvePluginRef(n.Uses)
 			if err != nil {
-				return nil, fmt.Errorf("scheduler: notification %d: %w", idx, err)
+				return nil, nil, fmt.Errorf("scheduler: notification %d: %w", idx, err)
 			}
 			jobDef = domain.Job{
 				Name:    job.Name,
@@ -79,14 +92,14 @@ func BuildAssignment(
 				Secrets: append([]string(nil), n.Secrets...),
 			}
 		} else {
-			return nil, fmt.Errorf("scheduler: job %q not in pipeline definition", job.Name)
+			return nil, nil, fmt.Errorf("scheduler: job %q not in pipeline definition", job.Name)
 		}
 	}
 
 	revs := map[string]revisionSnapshot{}
 	if len(run.Revisions) > 0 {
 		if err := json.Unmarshal(run.Revisions, &revs); err != nil {
-			return nil, fmt.Errorf("scheduler: decode revisions: %w", err)
+			return nil, nil, fmt.Errorf("scheduler: decode revisions: %w", err)
 		}
 	}
 
@@ -134,7 +147,7 @@ func BuildAssignment(
 			// Caller should have resolved every declared secret before
 			// calling BuildAssignment; anything missing here is a contract
 			// bug we surface as an error.
-			return nil, fmt.Errorf("scheduler: secret %q not resolved for job %s", name, job.Name)
+			return nil, nil, fmt.Errorf("scheduler: secret %q not resolved for job %s", name, job.Name)
 		}
 		env[name] = v
 		if v != "" {
@@ -268,7 +281,7 @@ func BuildAssignment(
 	// NeedsOutputs short-circuits the pre-pass for jobs with no
 	// needs (the common case).
 	if needsResolved, err := substituteNeedsRefsMap(env, needsOutputs, matrixNeedsOutputs, matrixDims); err != nil {
-		return nil, fmt.Errorf("scheduler: needs refs in env for job %s: %w", job.Name, err)
+		return nil, nil, fmt.Errorf("scheduler: needs refs in env for job %s: %w", job.Name, err)
 	} else {
 		env = needsResolved
 	}
@@ -282,9 +295,39 @@ func BuildAssignment(
 	// variables MAY NOT reference other plain variables.
 	resolvedEnv, err := substituteRefsMap(env, secrets, ciVars)
 	if err != nil {
-		return nil, fmt.Errorf("scheduler: env for job %s: %w", job.Name, err)
+		return nil, nil, fmt.Errorf("scheduler: env for job %s: %w", job.Name, err)
 	}
 	env = resolvedEnv
+
+	// Deploy marker (#39): resolve the recorded version with the SAME
+	// needs.outputs pre-pass + CI built-ins the env used — but NOT
+	// secrets, since the version is persisted in deployment_revisions
+	// and surfaced in the Environments UI (a secret-bearing version
+	// would leak). An empty version defaults to the commit short sha.
+	// The caller records the revision once the job actually dispatches.
+	var deployTarget *DeployTarget
+	if jobDef.Deploy != nil {
+		version := jobDef.Deploy.Version
+		if version == "" {
+			// Default: the commit short sha. buildCIVars omits the key
+			// entirely when the run has no git revision (manual run, no
+			// material), so an empty result here is a real config error
+			// for THIS run — fail terminally (ErrDeployVersionEmpty in
+			// the dispatcher) rather than recording a blank version.
+			version = ciVars["CI_COMMIT_SHORT_SHA"]
+		} else {
+			version, err = resolveDeployVersion(version, needsOutputs, matrixNeedsOutputs, matrixDims, ciVars)
+			if err != nil {
+				// Wrapped in ErrDeployVersionUnresolved — terminal.
+				return nil, nil, fmt.Errorf("scheduler: job %s: %w", job.Name, err)
+			}
+		}
+		if version == "" {
+			return nil, nil, fmt.Errorf("%w: job %s deploy.environment %q",
+				ErrDeployVersionEmpty, job.Name, jobDef.Deploy.Environment)
+		}
+		deployTarget = &DeployTarget{Environment: jobDef.Deploy.Environment, Version: version}
+	}
 
 	// Tasks: plugin Settings can pull from the resolved env (which
 	// carries variables + secrets + CI vars) PLUS the raw secrets
@@ -305,11 +348,11 @@ func BuildAssignment(
 			// Pre-pass on plugin settings too — same contract as env.
 			pluginSettings, err := substituteNeedsRefsMap(tk.Plugin.Settings, needsOutputs, matrixNeedsOutputs, matrixDims)
 			if err != nil {
-				return nil, fmt.Errorf("scheduler: needs refs in plugin %q settings: %w", tk.Plugin.Image, err)
+				return nil, nil, fmt.Errorf("scheduler: needs refs in plugin %q settings: %w", tk.Plugin.Image, err)
 			}
 			settings, err := substituteRefsMap(pluginSettings, secrets, env)
 			if err != nil {
-				return nil, fmt.Errorf("scheduler: plugin %q settings: %w", tk.Plugin.Image, err)
+				return nil, nil, fmt.Errorf("scheduler: plugin %q settings: %w", tk.Plugin.Image, err)
 			}
 			settings = substituteShellVarsMap(settings, secrets, env)
 			tasks = append(tasks, &gocdnextv1.TaskSpec{
@@ -404,7 +447,7 @@ func BuildAssignment(
 		Outputs:               copyStringMap(jobDef.Outputs),
 		NodeSelector:          copyStringMap(profile.NodeSelector),
 		Tolerations:           tolerationsToProto(profile.Tolerations),
-	}, nil
+	}, deployTarget, nil
 }
 
 // tolerationsToProto maps the store-side Toleration list (validated

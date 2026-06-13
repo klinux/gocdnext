@@ -179,6 +179,12 @@ type Querier interface {
 	// partition keeps each series complete; the per-series cap is the
 	// limit arg. Newest-first; caller flips for charting.
 	CoverageTrendByPipeline(ctx context.Context, arg CoverageTrendByPipelineParams) ([]CoverageTrendByPipelineRow, error)
+	// Recorded at dispatch with the resolved version, status in_progress,
+	// tagged with the dispatch attempt so retries don't collide.
+	CreateDeploymentRevision(ctx context.Context, arg CreateDeploymentRevisionParams) (pgtype.UUID, error)
+	// "What's deployed now": newest successful revision. Served straight
+	// off idx_deployment_revisions_current.
+	CurrentDeploymentByEnvironment(ctx context.Context, environmentID pgtype.UUID) (DeploymentRevision, error)
 	// Median run duration in seconds across the last 7 days. NULL when
 	// no finished runs.
 	DashboardP50DurationSec7d(ctx context.Context) (float64, error)
@@ -193,6 +199,10 @@ type Querier interface {
 	// 0 when no terminal runs in the window.
 	DashboardSuccessRate7d(ctx context.Context) (DashboardSuccessRate7dRow, error)
 	DeleteAuthProvider(ctx context.Context, id pgtype.UUID) error
+	// Removes a revision created at dispatch when the dispatch then failed
+	// to reach an agent (the frame never went out, so no deploy happened).
+	// Scoped to in_progress so it can never erase a finalized audit row.
+	DeleteDeploymentRevision(ctx context.Context, id pgtype.UUID) error
 	DeleteExpiredAuthStates(ctx context.Context) error
 	DeleteExpiredUserSessions(ctx context.Context) error
 	DeleteGlobalSecretByName(ctx context.Context, name string) (int64, error)
@@ -229,6 +239,9 @@ type Querier interface {
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
+	// Scope guard: confirm an environment id is owned by a project before
+	// serving its deployments through that project's URL.
+	EnvironmentBelongsToProject(ctx context.Context, arg EnvironmentBelongsToProjectParams) (bool, error)
 	// Keep-last policy: per pipeline, rank the runs that produced
 	// non-deleted artefacts by recency (run.created_at DESC); any run
 	// beyond position N has ALL its non-pinned artefacts stamped with
@@ -284,6 +297,13 @@ type Querier interface {
 	// Return columns mirror CompleteJobRun so the Go caller can
 	// reuse the same JobCompletion struct + cascade helper.
 	FailStaleJobAtMax(ctx context.Context, arg FailStaleJobAtMaxParams) (FailStaleJobAtMaxRow, error)
+	// Called on the job's terminal result (or by the reaper for a dead
+	// attempt): flips the in_progress revision of THIS (job_run, attempt)
+	// to success/failed and stamps finished_at. Keyed on attempt so a
+	// success on attempt 1 never finalises a stale attempt-0 row. Guarded
+	// on status='in_progress' so a re-delivered result is a no-op. Returns
+	// rows affected (0 = the job had no deploy: block, or already final).
+	FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDeploymentRevisionParams) (int64, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// Same shape as ListAgentsWithRunning but for one row — reused by
 	// the /agents/{id} page. Returns ErrNoRows when the UUID is not
@@ -665,6 +685,8 @@ type Querier interface {
 	// by `pipelines × cron_materials_per_pipeline`, typically a few
 	// dozen at most, so scanning in-process is fine.
 	ListCronMaterials(ctx context.Context) ([]ListCronMaterialsRow, error)
+	// Timeline for one environment, all statuses, newest first.
+	ListDeploymentHistory(ctx context.Context, arg ListDeploymentHistoryParams) ([]DeploymentRevision, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
 	// running work. The scheduler does needs-satisfaction checking in Go so the
 	// query stays readable; the stage gate is the only SQL-level constraint.
@@ -679,6 +701,19 @@ type Querier interface {
 	// Bootstrap + reload path: rows the registry should actually
 	// instantiate on startup.
 	ListEnabledVCSIntegrations(ctx context.Context) ([]VcsIntegration, error)
+	ListEnvironmentsByProject(ctx context.Context, projectID pgtype.UUID) ([]Environment, error)
+	// One row per environment with its CURRENT deployment (newest
+	// successful revision) attached via LEFT JOIN LATERAL — environments
+	// with nothing deployed yet still appear, with NULL current_* columns.
+	// The LATERAL probe lands straight on idx_deployment_revisions_current
+	// (one index hit per environment), so this is the single query behind
+	// the Environments tab — no N+1.
+	// current_id is the has-a-deployment discriminator (NULL = nothing
+	// deployed yet). version/is_rollback/deployed_by are COALESCEd because
+	// the LEFT JOIN yields NULL for an undeployed env and their base
+	// columns are NOT NULL (sqlc would type them non-nullable and the
+	// scan would fail on NULL); the caller gates on current_id.Valid.
+	ListEnvironmentsWithCurrentByProject(ctx context.Context, projectID pgtype.UUID) ([]ListEnvironmentsWithCurrentByProjectRow, error)
 	// Every type='git' material in the DB. Webhook tag-push routing
 	// pulls this set and filters Go-side: NormalizeGitURL on each
 	// config->>'url' matched against the canonical clone URL from the
@@ -1268,6 +1303,7 @@ type Querier interface {
 	// session tokens. The CAS only needs an epoch indicator — a
 	// counter carries exactly that signal with no auth power.
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) (int64, error)
+	UpdateEnvironmentDescription(ctx context.Context, arg UpdateEnvironmentDescriptionParams) error
 	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	// Dedicated password-only write. Used when an admin changes their
 	// own password from /settings/account — we never want to let the
@@ -1310,6 +1346,11 @@ type Querier interface {
 	// right after dispatching a run so a crashed server doesn't re-
 	// fire the same tick when it comes back.
 	UpsertCronFired(ctx context.Context, arg UpsertCronFiredParams) error
+	// Lazy-create: the first dispatch of a job with deploy:{environment:X}
+	// inserts the row; later dispatches just bump updated_at. Returns the
+	// id so the dispatch path can attach a revision regardless of which
+	// side of the conflict it hit.
+	UpsertEnvironment(ctx context.Context, arg UpsertEnvironmentParams) (pgtype.UUID, error)
 	// Called right after CreateCheckRun on GitHub responds; caller may
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.
