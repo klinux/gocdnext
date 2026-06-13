@@ -6,6 +6,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.33.0 — 2026-06-13
+
+First-class deployment tracking (#39, phases 1–2). A `deploy:` marker
+turns "some job ran a plugin" into "version X shipped to environment
+Y" — gocdnext records the deploy; your plugin (Argo/Helm/kubectl)
+still performs it.
+
+### Added
+
+- **`deploy:` marker on a job**: `deploy: {environment: <name>,
+  version: <string>}` on an executable job (mutually exclusive with
+  `approval:`). `version` is optional (defaults to the commit short
+  sha) and opaque — image tag, chart version, app revision, whatever
+  identifies what shipped. It only accepts `${{ needs.*.outputs.* }}`
+  and `${{ CI_* }}` refs (never secrets/variables — the version is
+  persisted and shown in the UI); anything else is rejected at apply.
+- **Environments registry + deployment history**: an environment is
+  lazy-created the first time a job deploys to it. Each successful
+  deploy records a revision (version, who, when, which run); the
+  current version is the newest successful revision. Deploy records
+  survive run retention as an audit fact.
+- **Environments tab** (per project): a card per environment showing
+  what's deployed now — version, status, deployer, run link — with a
+  lazily-loaded per-environment history timeline. Read-only in this
+  release; one-click rollback is phase 3.
+- **Read API**: `GET /api/v1/projects/{slug}/environments` and
+  `.../environments/{id}/deployments` (scope-guarded per project).
+
+### Notes
+
+- The promote-then-deploy pattern is two jobs: an `approval:` gate and
+  a separate executable job carrying `deploy:` with
+  `needs: [<gate>]`. The approval gate stays a pure gate (it executes
+  nothing); the deploy job is where the revision is recorded.
+- Retries/reaper-requeues are tracked per `(job_run, attempt)`, so a
+  retried deploy never produces a duplicate "current" or a ghost
+  in-progress entry.
+
 ## v0.32.2 — 2026-06-13
 
 ### Changed
