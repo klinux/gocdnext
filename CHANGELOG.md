@@ -6,6 +6,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.32.0 — 2026-06-12
+
+CLI authentication (#38) and an honest parser (#40): the two
+highest-leverage items from the improvement review.
+
+### Added
+
+- **CLI Bearer-token auth** (#38): `gocdnext login --server <url>`
+  reads an API token from stdin/file/TTY (never argv — same
+  contract as `secret set`), validates it against
+  `GET /api/v1/me`, and stores it in
+  `~/.config/gocdnext/config.json` (0600), keyed by server URL so
+  multiple servers coexist. Every server-facing command (`apply`,
+  `secret set/list/rm`) now sends `Authorization: Bearer`.
+  `GOCDNEXT_TOKEN` overrides the file for CI/bots. `gocdnext
+  logout` removes the local copy (revocation stays in the web UI).
+  A 401 from any command prints a hint pointing back at `login`.
+  No token configured → no header, so `auth.enabled=false`
+  deployments keep working unchanged. OAuth2 device flow stays a
+  phase-2 follow-up on #38.
+
+### Changed
+
+- **BREAKING — unenforced YAML keys are now parse errors** (#40):
+  `rules:` on a job, job-level `when:`, and pipeline-level
+  `when.status` were accepted by the schema but enforced by
+  nothing — a silent broken promise (a `rules:` block that gates
+  NOTHING almost shipped as a migration safety rail). The parser
+  now rejects them with errors naming the working alternative:
+  `when.paths` for change-based triggering, `approval:` for
+  promotion gates, `notifications:` for status-conditioned
+  delivery. Already-persisted definitions are unaffected (the keys
+  did nothing); only re-applying a file that declares them fails.
+  The repo's own examples taught two of these keys — fixed.
+
 ## v0.31.1 — 2026-06-12
 
 ### Fixed
