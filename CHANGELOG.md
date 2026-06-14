@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.35.0 — 2026-06-14
+
+### Added
+
+- **Matrix dimensions decompose into per-job env vars** (#42): a
+  `parallel.matrix:` job now sees each dimension as its own variable —
+  `OS: [linux]` exposes `$OS=linux` to `script:`, so
+  `GOOS=$OS GOARCH=$ARCH go build` works directly. The combined
+  `GOCDNEXT_MATRIX="ARCH=amd64,OS=linux"` key stays for back-compat.
+  A dimension is also referenceable as `${{ OS }}` in plugin `with:`
+  (not in `image:`, which is sent verbatim, nor in another
+  `variables:` entry). The parser rejects, at apply time, a dimension
+  whose name isn't a valid env identifier, uses the reserved
+  `CI_`/`GOCDNEXT_` prefix, or collides with a `variables:` /
+  `secrets:` / `id_tokens:` name; dimension values can't contain `,`
+  or `=` (the matrix-key separators).
+
 ## v0.34.0 — 2026-06-13
 
 Deployment rollback (#39, phase 3) — the operational half of the
