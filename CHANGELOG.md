@@ -6,6 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.37.0 — 2026-06-14
+
+### Added
+
+- **Log viewer phase folding** (#48): the job log now folds into
+  collapsible sections on the agent's `── ` phase markers, with each
+  phase's duration and status on its header. Successful phases collapse
+  by default; the running phase, failed phases, and any section holding
+  a search match or `#L<seq>` permalink stay open. Auto-collapse on
+  completion respects a paused operator — a phase you're reading while
+  follow is off isn't yanked shut. Search and permalinks force-open the
+  containing section before scrolling. Pure client work over the
+  existing log markers; no pipeline or contract change.
+
+### Changed
+
+- **Lint debt zeroed** (#46): golangci-lint (default linters) now
+  reports clean across server/agent/cli — including two tests that
+  looked like they tested but didn't (`Hash(body) != Hash(body)`,
+  an empty `if` branch) and a `tar.TypeRegA` deprecation. All
+  behaviour-preserving; server/agent are functionally identical to
+  v0.36.0.
+
+### Docs
+
+- Deployment primitive (#39) + matrix decompose built-in (#42) finally
+  documented; new plugin versioning & pinning policy (#47).
+
 ## v0.36.0 — 2026-06-14
 
 Internal refactor — no behavioural change to pipelines.
