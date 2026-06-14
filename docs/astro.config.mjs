@@ -87,6 +87,7 @@ export default defineConfig({
             { label: "Secrets", link: "/concepts/secrets/" },
             { label: "Cache strategies", link: "/concepts/cache/" },
             { label: "Approval gates", link: "/concepts/approvals/" },
+            { label: "Deployments & rollback", link: "/concepts/deployments/" },
             { label: "OIDC id_tokens", link: "/concepts/id-tokens/" },
             { label: "Database migrations", link: "/concepts/migrations/" },
             { label: "Services lifecycle", link: "/concepts/services/" },

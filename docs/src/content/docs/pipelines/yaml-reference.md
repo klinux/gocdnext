@@ -567,6 +567,7 @@ The agent injects these into every job's environment:
 | `CI_PROJECT_SLUG` | project slug |
 | `CI_JOB_NAME` | job name |
 | `CI_CAUSE` | trigger that created the run — `webhook`, `pull_request`, `tag`, `manual`, `upstream`, `schedule`, `poll` |
+| `GOCDNEXT_MATRIX` | matrix jobs only — the cell as `K=V,K=V` (dimensions lex-sorted). Each dimension is **also** injected as its own var, e.g. `$OS`, `$ARCH`. See [Parallel / matrix](#parallel--matrix). |
 
 ### Pull-request runs
 
@@ -694,6 +695,39 @@ or `artifacts:` — an approval job is a gate, not an executor.
 
 See [Approval gates](/gocdnext/docs/concepts/approvals/) for the
 deeper walk-through.
+
+## Deployments (`deploy:`)
+
+Mark an executable job as a deployment to a named environment. The
+job still runs your real deploy `script:` / `uses:` — `deploy:` is a
+**tracking marker**, not an executor. When the job succeeds, gocdnext
+records that this run shipped `version` to `environment` and surfaces
+it in the Environments tab (current version, history, one-click
+rollback).
+
+```yaml
+jobs:
+  ship-prod:
+    stage: deploy
+    image: google/cloud-sdk:slim
+    deploy:
+      environment: production
+      version: ${{ needs.build.outputs.image-tag }}
+    script:
+      - ./deploy.sh
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `environment` | string (required) | Target environment. Lazy-created on first deploy — no pre-registration. |
+| `version` | string (optional) | Version recorded as deployed. Refs allowed (`${{ needs.X.outputs.Y }}`, `${{ CI_* }}`, `${CI_*}`), resolved against CI vars **only, never secrets**. Omitted → defaults to `CI_COMMIT_SHORT_SHA`. A reference that can't resolve fails the job terminally at dispatch. |
+
+`deploy:` is rejected on an `approval:` job — a gate doesn't deploy.
+Gate a deploy with an approval on a *separate* upstream job. A deploy
+job's success IS the deployment's success.
+
+See [Deployments & rollback](/gocdnext/docs/concepts/deployments/) for
+the tracking model, environments, and rollback semantics.
 
 ## Job outputs (`outputs:`)
 
