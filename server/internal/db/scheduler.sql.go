@@ -191,7 +191,7 @@ WITH active_stage AS (
     FROM stage_runs s
     WHERE s.run_id = $1 AND s.status IN ('queued', 'running')
 )
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs, j.attempt
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs, j.attempt, j.deploy_rollback
 FROM job_runs j
 JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1
@@ -202,15 +202,16 @@ ORDER BY j.name, j.matrix_key NULLS FIRST
 `
 
 type ListDispatchableJobsRow struct {
-	ID         pgtype.UUID
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-	MatrixKey  *string
-	Image      *string
-	Status     string
-	Needs      []string
-	Attempt    int32
+	ID             pgtype.UUID
+	RunID          pgtype.UUID
+	StageRunID     pgtype.UUID
+	Name           string
+	MatrixKey      *string
+	Image          *string
+	Status         string
+	Needs          []string
+	Attempt        int32
+	DeployRollback bool
 }
 
 // Returns queued jobs in the lowest-ordinal stage that still has queued or
@@ -235,6 +236,7 @@ func (q *Queries) ListDispatchableJobs(ctx context.Context, runID pgtype.UUID) (
 			&i.Status,
 			&i.Needs,
 			&i.Attempt,
+			&i.DeployRollback,
 		); err != nil {
 			return nil, err
 		}

@@ -72,6 +72,12 @@ LEFT JOIN LATERAL (
 WHERE e.project_id = $1
 ORDER BY e.name;
 
+-- name: GetDeploymentRevision :one
+SELECT id, environment_id, run_id, job_run_id, attempt, version, status,
+       is_rollback, deployed_by, created_at, finished_at
+FROM deployment_revisions
+WHERE id = $1;
+
 -- name: EnvironmentBelongsToProject :one
 -- Scope guard: confirm an environment id is owned by a project before
 -- serving its deployments through that project's URL.

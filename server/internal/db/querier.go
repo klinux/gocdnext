@@ -350,6 +350,7 @@ type Querier interface {
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
 	GetAuthProviderByID(ctx context.Context, id pgtype.UUID) (AuthProvider, error)
+	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
 	// check (most common path: no App installed, or feature disabled).

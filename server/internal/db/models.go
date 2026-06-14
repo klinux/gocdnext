@@ -201,6 +201,7 @@ type JobRun struct {
 	Outputs             []byte
 	ApprovalQuorumLabel *string
 	CancelRequestedAt   pgtype.Timestamptz
+	DeployRollback      bool
 }
 
 type JobRunApproval struct {

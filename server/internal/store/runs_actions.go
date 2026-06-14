@@ -652,6 +652,13 @@ func (s *Store) TriggerManualRun(ctx context.Context, in TriggerManualRunInput) 
 type RerunJobInput struct {
 	JobRunID    uuid.UUID
 	TriggeredBy string
+	// IsRollback marks this rerun as a deployment rollback (#39
+	// phase 3): the deploy job of a past run is re-run so its
+	// immutable outputs re-resolve the old version. Stamped on the
+	// row as deploy_rollback so the scheduler opens the new
+	// deployment_revision with is_rollback=true. False for an
+	// ordinary rerun (which clears any stale flag from a prior one).
+	IsRollback bool
 }
 
 type RerunJobResult struct {
@@ -680,10 +687,18 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// FOR UPDATE locks the row for the life of the tx so the
+	// check-then-reset below is atomic against a concurrent
+	// rerun/rollback. Without it two callers could both read the job
+	// terminal and both reset it: at best a skipped attempt, at worst
+	// one resets a job the other already redispatched (running →
+	// queued), orphaning the in_progress deploy revision of the live
+	// attempt. The loser blocks here, then reads the now-queued status
+	// below and bails with ErrJobRunActive.
 	var runID, stageRunID uuid.UUID
 	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT run_id, stage_run_id, status FROM job_runs WHERE id = $1
+		SELECT run_id, stage_run_id, status FROM job_runs WHERE id = $1 FOR UPDATE
 	`, in.JobRunID).Scan(&runID, &stageRunID, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RerunJobResult{}, ErrJobRunNotFound
@@ -707,10 +722,11 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 			cancel_requested_at = NULL,
 			logs_archive_uri    = NULL,
 			logs_archived_at    = NULL,
+			deploy_rollback     = $2,
 			attempt             = attempt + 1
 		WHERE id = $1
 		RETURNING attempt
-	`, in.JobRunID).Scan(&attempt)
+	`, in.JobRunID, in.IsRollback).Scan(&attempt)
 	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reset: %w", err)
 	}

@@ -564,7 +564,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// dispatch below fails, we delete this revision in the rollback.
 		var deployRevID uuid.UUID
 		if deployTarget != nil {
-			deployRevID = s.recordDeployRevision(ctx, run, job.ID, assigned.Attempt, deployTarget)
+			deployRevID = s.recordDeployRevision(ctx, run, job, assigned.Attempt, deployTarget)
 		}
 
 		msg := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{Assign: assign}}
@@ -662,24 +662,28 @@ func IsNoIdleAgent(err error) bool {
 // is left empty for now; the promoting actor lives on the upstream
 // approval gate's decided_by and wiring it through is a later
 // refinement.
-func (s *Scheduler) recordDeployRevision(ctx context.Context, run store.RunForDispatch, jobID uuid.UUID, attempt int32, target *DeployTarget) uuid.UUID {
+func (s *Scheduler) recordDeployRevision(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, attempt int32, target *DeployTarget) uuid.UUID {
 	envID, err := s.store.EnsureEnvironment(ctx, run.ProjectID, target.Environment)
 	if err != nil {
 		s.log.Warn("scheduler: deploy tracking — ensure environment",
-			"run_id", run.ID, "job_id", jobID, "environment", target.Environment, "err", err)
+			"run_id", run.ID, "job_id", job.ID, "environment", target.Environment, "err", err)
 		return uuid.Nil
 	}
 	revID, err := s.store.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
 		EnvironmentID: envID,
 		RunID:         run.ID,
-		JobRunID:      jobID,
+		JobRunID:      job.ID,
 		Attempt:       attempt,
 		Version:       target.Version,
-		IsRollback:    false,
+		// A rollback re-runs the deploy job of a past run; the
+		// dispatch carries deploy_rollback so the new revision is
+		// flagged (it ships the SAME version that run originally
+		// deployed, re-resolved from its immutable outputs).
+		IsRollback: job.DeployRollback,
 	})
 	if err != nil {
 		s.log.Warn("scheduler: deploy tracking — create revision",
-			"run_id", run.ID, "job_id", jobID, "environment", target.Environment, "err", err)
+			"run_id", run.ID, "job_id", job.ID, "environment", target.Environment, "err", err)
 		return uuid.Nil
 	}
 	return revID

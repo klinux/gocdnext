@@ -134,6 +134,32 @@ func (q *Queries) FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDe
 	return result.RowsAffected(), nil
 }
 
+const getDeploymentRevision = `-- name: GetDeploymentRevision :one
+SELECT id, environment_id, run_id, job_run_id, attempt, version, status,
+       is_rollback, deployed_by, created_at, finished_at
+FROM deployment_revisions
+WHERE id = $1
+`
+
+func (q *Queries) GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error) {
+	row := q.db.QueryRow(ctx, getDeploymentRevision, id)
+	var i DeploymentRevision
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.RunID,
+		&i.JobRunID,
+		&i.Attempt,
+		&i.Version,
+		&i.Status,
+		&i.IsRollback,
+		&i.DeployedBy,
+		&i.CreatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const listDeploymentHistory = `-- name: ListDeploymentHistory :many
 SELECT id, environment_id, run_id, job_run_id, attempt, version, status,
        is_rollback, deployed_by, created_at, finished_at
