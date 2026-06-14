@@ -6,6 +6,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.34.0 — 2026-06-13
+
+Deployment rollback (#39, phase 3) — the operational half of the
+deployment primitive.
+
+### Added
+
+- **One-click rollback** from the Environments tab: each successful
+  deploy in an environment's history gets a roll-back action (offered
+  only while its run still exists). It re-runs the deploy job of that
+  run — whose outputs are immutable, so `${{ needs.*.outputs.* }}`
+  re-resolves the SAME version and the deploy ships it again — and
+  records a fresh revision flagged `is_rollback=true`. No version
+  override, no snapshot: the old version "freezes" for free.
+- `POST /api/v1/projects/{slug}/environments/{id}/rollback`
+  (`{to_revision_id}`), maintainer+, audited as `deploy.rollback`.
+  Returns 202 — the re-dispatch is async; follow the run to see it
+  land. Rejects a rollback to a non-successful deploy or to one whose
+  run was garbage-collected.
+
+### Fixed
+
+- **Concurrent rerun/rollback race**: `RerunJob` read a job's status
+  and reset it in separate statements, so two concurrent calls could
+  both reset a terminal job — at worst flipping a job another caller
+  had already redispatched (`running` → `queued`) and orphaning the
+  live attempt's in-progress deploy revision. The reset now takes a
+  `SELECT … FOR UPDATE` row lock, serializing the check-then-reset:
+  exactly one caller wins, the rest get "job still active".
+
 ## v0.33.0 — 2026-06-13
 
 First-class deployment tracking (#39, phases 1–2). A `deploy:` marker
