@@ -16,10 +16,9 @@ jobs:
         - OS: [linux, darwin]
           ARCH: [amd64, arm64]
     script:
-      # NOTE: $OS/$ARCH as standalone env vars depend on matrix
-      # decomposition (issue #42) — today the dispatch exposes the
-      # combined GOCDNEXT_MATRIX="ARCH=...,OS=..." only. This
-      # example is the target shape #42 makes real.
+      # Each matrix dimension is exposed as its own env var (#42):
+      # OS=linux → $OS, ARCH=amd64 → $ARCH. The combined key is also
+      # available as GOCDNEXT_MATRIX="ARCH=amd64,OS=linux" if you need it.
       - GOOS=$OS GOARCH=$ARCH go test ./...
 
 # Status-conditioned notification — the IMPLEMENTED mechanism for

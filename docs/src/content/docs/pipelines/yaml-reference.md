@@ -426,21 +426,41 @@ and report nothing — reporting never gates by accident.
 
 ```yaml
 jobs:
-  test:
+  build:
     parallel:
       matrix:
-        - GO_VERSION: ["1.24", "1.25"]
-          OS: [ubuntu, alpine]
-    image: golang:${{ GO_VERSION }}-${{ OS }}
+        - OS: [linux, darwin]
+          ARCH: [amd64, arm64]
+    image: golang:1.23
     script:
-      - go test ./...
+      - GOOS=$OS GOARCH=$ARCH go build ./...
 ```
 
 `parallel.matrix:` is a **list of objects**, each object mapping
-variable names to value lists. The cartesian product across all
-keys in all entries is expanded into one job per cell. Above: 2 × 2
-= 4 jobs. The matrix variable names become available as
-`${{ NAME }}` substitutions anywhere in the job spec.
+dimension names to value lists. The cartesian product across all keys
+in all entries is expanded into one job per cell. Above: 2 × 2 = 4
+jobs.
+
+Each dimension is injected into the cell's environment as its own
+variable — `OS: [linux]` exposes `$OS=linux` — plus a combined
+`GOCDNEXT_MATRIX="ARCH=amd64,OS=linux"` (dimensions sorted,
+`,`-joined). Where you can read them:
+
+- **`script:`** — directly at runtime: `GOOS=$OS GOARCH=$ARCH go build`.
+- **plugin `with:`** — via `${{ OS }}`; plugin settings resolve
+  variable refs, and a dimension is a variable.
+- **NOT another `variables:` entry** — one variable can't reference
+  another (matrix or not, by design); read the dimension as `$OS` at
+  runtime instead.
+- **NOT `image:`** — the image string is sent verbatim, no ref of any
+  kind is substituted there. To vary behaviour per cell, branch in
+  `script:` via `$OS` rather than templating the `image:` field.
+
+Constraints (rejected at apply): a dimension name must be a valid env
+identifier, must not use the reserved `CI_` / `GOCDNEXT_` prefix, and
+must not collide with a `variables:`, `secrets:`, or `id_tokens:` name
+(that would make `$NAME` ambiguous); values can't contain `,` or `=`
+(the matrix-key separators).
 
 Use `parallel.count: N` instead of `matrix:` to run N identical
 copies without per-cell substitution.
