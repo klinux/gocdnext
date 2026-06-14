@@ -631,10 +631,8 @@ func TestKubernetes_RunScript_DinDReturnsExitOnTaskCompletionEvenIfSidecarLive(t
 		t.Errorf("exit = %d, want 0", exit)
 	}
 	// Pod must have been deleted regardless of CleanupOnSuccess —
-	// otherwise dind would leak indefinitely.
-	if _, err := cli.CoreV1().Pods("gocdnext-tests").Get(context.Background(), "", metav1.GetOptions{}); err == nil {
-		// An empty name lookup always errors; walk the list to be sure.
-	}
+	// otherwise dind would leak indefinitely. Walk the list (an
+	// empty-name Get always errors, so it can't prove deletion).
 	list, _ := cli.CoreV1().Pods("gocdnext-tests").List(context.Background(), metav1.ListOptions{})
 	if len(list.Items) != 0 {
 		t.Errorf("pod not force-cleaned after DinD run: %d remaining", len(list.Items))

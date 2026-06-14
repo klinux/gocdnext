@@ -50,7 +50,7 @@ const DefaultListBufCap = 16 << 20
 // `Truncated()` is the public predicate; check it before consuming
 // the buffer when correctness depends on completeness.
 type CappedBuffer struct {
-	W *bytes.Buffer
+	W   *bytes.Buffer
 	Max int
 
 	overflowed bool

@@ -67,6 +67,13 @@ func NewGCSStore(ctx context.Context, cfg GCSConfig) (*GCSStore, error) {
 	case cfg.Endpoint != "":
 		opts = append(opts, option.WithEndpoint(cfg.Endpoint), option.WithoutAuthentication())
 	case len(credsJSON) > 0:
+		// WithCredentialsJSON is deprecated (in-memory creds risk), but
+		// the 1:1 replacement (google.CredentialsFromJSON + an explicit
+		// scope) changes the OAuth scope wiring and this path is
+		// untested locally — fake-gcs uses WithoutAuthentication above.
+		// The migration belongs in its own PR with a fake-gcs credential
+		// test rather than a blind sweep edit.
+		//nolint:staticcheck // SA1019: deprecation, not a bug; migration tracked separately
 		opts = append(opts, option.WithCredentialsJSON(credsJSON))
 	}
 

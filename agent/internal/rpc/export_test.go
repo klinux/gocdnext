@@ -81,11 +81,14 @@ func (c *Client) ProcessShutdownRaceItemForTest(runID string) {
 // were active — fine for most unit tests; only needed when the
 // test specifically wants to assert budget-fire propagation.
 func (c *Client) SetDrainBudgetForTest(ctx context.Context) {
-	if ctx == nil {
-		c.drainBudget.Store(nil)
-		return
-	}
 	c.drainBudget.Store(&ctx)
+}
+
+// ClearDrainBudgetForTest resets the drain budget to the default
+// (Background-rooted) behaviour. Tests defer this after installing a
+// budget with SetDrainBudgetForTest.
+func (c *Client) ClearDrainBudgetForTest() {
+	c.drainBudget.Store(nil)
 }
 
 // SetCleanupAckSendForTest installs (or clears, with nil) the

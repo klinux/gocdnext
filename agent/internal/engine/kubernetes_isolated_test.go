@@ -273,8 +273,8 @@ func TestBuildIsolatedJobPodSpec_MergesNodeSelectorWithProfileWinning(t *testing
 	k := newIsolatedTestEngine(t)
 	k.cfg.NodeSelector = map[string]string{"tier": "ci", "pool": "ci"}
 	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
-		RunID:                "r", JobID: "j",
-		Image:                "alpine:3.19", Script: "true",
+		RunID: "r", JobID: "j",
+		Image: "alpine:3.19", Script: "true",
 		WorkDir:              "/workspace",
 		AssignmentSecretName: "gocdnext-job-test01-assignment",
 		NodeSelector:         map[string]string{"pool": "gradle"},
@@ -293,8 +293,8 @@ func TestBuildIsolatedJobPodSpec_ConcatsTolerations(t *testing.T) {
 		{Key: "node.kubernetes.io/unschedulable", Operator: corev1.TolerationOpExists},
 	}
 	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
-		RunID:                "r", JobID: "j",
-		Image:                "alpine:3.19", Script: "true",
+		RunID: "r", JobID: "j",
+		Image: "alpine:3.19", Script: "true",
 		WorkDir:              "/workspace",
 		AssignmentSecretName: "gocdnext-job-test01-assignment",
 		Tolerations: []corev1.Toleration{

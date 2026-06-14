@@ -371,7 +371,7 @@ func TestCleanupWorker_BudgetAlreadyFired_NothingDrains(t *testing.T) {
 	budgetCtx, cancelBudget := context.WithCancel(context.Background())
 	cancelBudget()
 	c.SetDrainBudgetForTest(budgetCtx)
-	defer c.SetDrainBudgetForTest(nil)
+	defer c.ClearDrainBudgetForTest()
 
 	c.DrainCleanupQueueForTest()
 
@@ -405,7 +405,7 @@ func TestCleanupWorker_BudgetGenerous_AllItemsDrain(t *testing.T) {
 	budgetCtx, cancelBudget := context.WithTimeout(context.Background(), time.Hour)
 	defer cancelBudget()
 	c.SetDrainBudgetForTest(budgetCtx)
-	defer c.SetDrainBudgetForTest(nil)
+	defer c.ClearDrainBudgetForTest()
 
 	c.DrainCleanupQueueForTest()
 
@@ -435,7 +435,7 @@ func TestCleanupWorker_BudgetFiresMidFlight_CancelsInFlight(t *testing.T) {
 	// has reached the block point. No time.After dependence.
 	budgetCtx, cancelBudget := context.WithCancel(context.Background())
 	c.SetDrainBudgetForTest(budgetCtx)
-	defer c.SetDrainBudgetForTest(nil)
+	defer c.ClearDrainBudgetForTest()
 
 	drainDone := make(chan struct{})
 	go func() {

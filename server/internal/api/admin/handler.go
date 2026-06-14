@@ -304,7 +304,6 @@ func (h *Handler) Integrations(w http.ResponseWriter, r *http.Request) {
 			"required_scope":   "webhooks",
 		},
 	})
-	return
 }
 
 // webhookURL returns the public endpoint a provider will POST

@@ -90,17 +90,6 @@ func (r *recordingExecutor) Exec(_ context.Context, _, _ string, cmd []string, _
 	return nil
 }
 
-// lastCmd returns the argv of the most recent Exec call (helper
-// for the legacy single-call shape).
-func (r *recordingExecutor) lastCmd() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.cmds) == 0 {
-		return nil
-	}
-	return r.cmds[len(r.cmds)-1]
-}
-
 func TestResolveGet_FoundReturnsTicket(t *testing.T) {
 	stub := &stubCacheClient{
 		getResp: &gocdnextv1.RequestCacheGetResponse{

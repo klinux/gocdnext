@@ -294,7 +294,7 @@ func UntarGz(dest string, src io.Reader, wantSHA string) error {
 			if err := os.MkdirAll(full, 0o755); err != nil {
 				return fmt.Errorf("artifact: mkdir %q: %w", full, err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return fmt.Errorf("artifact: mkdir parent %q: %w", full, err)
 			}

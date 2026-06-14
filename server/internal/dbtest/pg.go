@@ -31,7 +31,6 @@ import (
 
 var (
 	sharedOnce   sync.Once
-	sharedCtr    *postgres.PostgresContainer
 	sharedDSN    string
 	sharedTables []string
 	sharedErr    error
@@ -98,7 +97,6 @@ func ensureContainer(t *testing.T) {
 			return
 		}
 
-		sharedCtr = ctr
 		sharedDSN = dsn
 		sharedTables = tables
 	})
