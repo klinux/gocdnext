@@ -101,6 +101,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "Plugin catalog", link: "/reference/plugins/" },
+            { label: "Plugin versioning & pinning", link: "/reference/plugin-versioning/" },
             { label: "Environment variables", link: "/reference/env-vars/" },
             { label: "CLI", link: "/reference/cli/" },
             { label: "HTTP API", link: "/reference/api/" },

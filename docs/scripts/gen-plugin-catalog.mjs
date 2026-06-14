@@ -133,6 +133,12 @@ function renderHeader(plugins) {
     "at every doc build. The schemas you see here are the ones the " +
     "control plane uses to validate `with:` blocks at apply time, " +
     "so what's written down matches what runs.\n\n";
+  s +=
+    "Each plugin's `uses:` example pins a channel (`@v1`, `@v2`, …). " +
+    "Before relying on one, read " +
+    "[Plugin versioning & pinning](/gocdnext/docs/reference/plugin-versioning/) " +
+    "— in particular, `@v1` tracks current content and is **not** a " +
+    "frozen major.\n\n";
   s += "## At a glance\n\n";
   for (const cat of cats) {
     s += `**${cat}** — `;
