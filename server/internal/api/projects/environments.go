@@ -10,6 +10,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -174,4 +176,84 @@ func (h *Handler) ListEnvironmentDeployments(w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(deploymentsListResponse{Deployments: out})
+}
+
+type rollbackRequest struct {
+	ToRevisionID string `json:"to_revision_id"`
+}
+
+// RollbackEnvironment handles
+// POST /api/v1/projects/{slug}/environments/{envID}/rollback with
+// body {to_revision_id} (#39 phase 3). Re-runs the deploy job of the
+// target revision's run, flagged as a rollback — that run's immutable
+// outputs re-resolve the SAME version, so the deploy ships it again
+// and a fresh revision is recorded with is_rollback=true. Gated to
+// maintainer+ at the router. Returns 202 (the re-dispatch is async).
+func (h *Handler) RollbackEnvironment(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	envID, err := uuid.Parse(chi.URLParam(r, "envID"))
+	if err != nil {
+		http.Error(w, "malformed environment id", http.StatusBadRequest)
+		return
+	}
+	var req rollbackRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	revID, err := uuid.Parse(req.ToRevisionID)
+	if err != nil {
+		http.Error(w, "malformed to_revision_id", http.StatusBadRequest)
+		return
+	}
+
+	detail, err := h.store.GetProjectDetail(r.Context(), slug, 1)
+	if err != nil {
+		if errors.Is(err, store.ErrProjectNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		h.log.Error("rollback: load project", "slug", slug, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	triggeredBy := ""
+	if u, ok := authapi.UserFromContext(r.Context()); ok {
+		triggeredBy = u.ID.String()
+	}
+
+	res, err := h.store.RollbackToRevision(r.Context(), store.RollbackInput{
+		ProjectID:     detail.Project.ID,
+		EnvironmentID: envID,
+		RevisionID:    revID,
+		TriggeredBy:   triggeredBy,
+	})
+	switch {
+	case err == nil:
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionDeployRollback, "environment", envID.String(),
+			map[string]any{"slug": slug, "to_revision_id": revID.String(), "rerun_job_run_id": res.JobRunID.String()})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_run_id": res.JobRunID.String(),
+			"run_id":     res.RunID.String(),
+			"attempt":    res.Attempt,
+		})
+	case errors.Is(err, store.ErrEnvironmentNotFound),
+		errors.Is(err, store.ErrRevisionNotFound),
+		errors.Is(err, store.ErrRevisionWrongEnvironment):
+		// All "the thing you named isn't here / isn't yours" → 404.
+		http.Error(w, "environment or revision not found", http.StatusNotFound)
+	case errors.Is(err, store.ErrRollbackNotSuccessful):
+		http.Error(w, "can only roll back to a successful deploy", http.StatusUnprocessableEntity)
+	case errors.Is(err, store.ErrRollbackRunGone):
+		http.Error(w, "the target deploy's run was garbage-collected; cannot roll back to it", http.StatusUnprocessableEntity)
+	case errors.Is(err, store.ErrJobRunActive):
+		http.Error(w, "the deploy job is still active — wait for it to finish", http.StatusConflict)
+	default:
+		h.log.Error("rollback", "slug", slug, "env_id", envID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
 }

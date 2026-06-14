@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1396,6 +1398,114 @@ func TestRerunJob_ClearsCancelRequestedAt(t *testing.T) {
 	if attempt != 1 {
 		t.Errorf("attempt = %d, want 1 (bumped from 0)", attempt)
 	}
+}
+
+// TestRerunJob_StampsDeployRollbackFlag pins the channel that carries
+// a rollback's intent from the endpoint to the scheduler (#39 phase
+// 3): a rerun marked IsRollback stamps deploy_rollback on the row, an
+// ordinary rerun clears it, and ListDispatchableJobs surfaces it so
+// the dispatch can open the revision with is_rollback=true.
+func TestRerunJob_StampsDeployRollbackFlag(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, runID := seedRunningAgentJob(t, pool)
+	mustMarkJobTerminal(t, pool, jobID)
+
+	// Rollback rerun stamps the flag.
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{
+		JobRunID: jobID, TriggeredBy: "user:alice", IsRollback: true,
+	}); err != nil {
+		t.Fatalf("RerunJob (rollback): %v", err)
+	}
+	if got := deployRollbackOf(t, s, runID, jobID); !got {
+		t.Fatal("deploy_rollback not set after a rollback rerun")
+	}
+
+	// An ordinary rerun must CLEAR it (the row is reused; a stale true
+	// would mislabel the next dispatch).
+	mustMarkJobTerminal(t, pool, jobID)
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{
+		JobRunID: jobID, TriggeredBy: "user:alice", IsRollback: false,
+	}); err != nil {
+		t.Fatalf("RerunJob (normal): %v", err)
+	}
+	if got := deployRollbackOf(t, s, runID, jobID); got {
+		t.Fatal("deploy_rollback survived an ordinary rerun — stale flag")
+	}
+}
+
+// TestRerunJob_ConcurrentIsSerialized is the regression for the
+// check-then-update race (review HIGH): N callers rerun the SAME
+// terminal job at once. The FOR UPDATE row lock serializes them, so
+// EXACTLY ONE wins (job → queued) and the rest see the now-queued row
+// and bail with ErrJobRunActive — the attempt is bumped once, never N
+// times, and a running redispatch is never reset back to queued.
+func TestRerunJob_ConcurrentIsSerialized(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+	mustMarkJobTerminal(t, pool, jobID)
+
+	const n = 8
+	var wg sync.WaitGroup
+	var okCount, activeCount atomic.Int32
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := s.RerunJob(ctx, store.RerunJobInput{JobRunID: jobID, TriggeredBy: "u"})
+			switch {
+			case err == nil:
+				okCount.Add(1)
+			case errors.Is(err, store.ErrJobRunActive):
+				activeCount.Add(1)
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if okCount.Load() != 1 {
+		t.Fatalf("concurrent reruns succeeded %d times, want exactly 1", okCount.Load())
+	}
+	if activeCount.Load() != n-1 {
+		t.Fatalf("got %d ErrJobRunActive, want %d", activeCount.Load(), n-1)
+	}
+	var attempt int32
+	_ = pool.QueryRow(ctx, `SELECT attempt FROM job_runs WHERE id=$1`, jobID).Scan(&attempt)
+	if attempt != 1 {
+		t.Fatalf("attempt = %d, want 1 (bumped once despite %d concurrent reruns)", attempt, n)
+	}
+}
+
+func mustMarkJobTerminal(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_runs SET status='success', finished_at=NOW(), agent_id=NULL WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("mark job terminal: %v", err)
+	}
+}
+
+// deployRollbackOf reads the flag the way the scheduler does — through
+// ListDispatchableJobs — so the test also covers the query plumbing.
+func deployRollbackOf(t *testing.T, s *store.Store, runID, jobID uuid.UUID) bool {
+	t.Helper()
+	jobs, err := s.ListDispatchableJobs(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListDispatchableJobs: %v", err)
+	}
+	for _, j := range jobs {
+		if j.ID == jobID {
+			return j.DeployRollback
+		}
+	}
+	t.Fatalf("job %s not dispatchable after rerun", jobID)
+	return false
 }
 
 // TestRetireArtifactsByJobRun_ClearsPinned — pinned artifacts that

@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -339,6 +340,89 @@ func TestEnvironmentBelongsToProject(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("env1 must NOT belong to p2 — scope guard broken")
+	}
+}
+
+func TestRollbackToRevision_HappyPath(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, _, _, jobID, _ := seedRunningJob(t, pool)
+	projectID := projectIDForRun(t, pool, runID)
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+
+	// A past successful deploy whose run still exists.
+	rev, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "1.40.old",
+	})
+	mustFinalizeAt(t, pool, rev, "success", "2026-06-13T10:00:00Z")
+	mustMarkJobTerminal(t, pool, jobID) // RerunJob requires a terminal row
+
+	res, err := s.RollbackToRevision(ctx, store.RollbackInput{
+		ProjectID: projectID, EnvironmentID: envID, RevisionID: rev, TriggeredBy: "user:alice",
+	})
+	if err != nil {
+		t.Fatalf("RollbackToRevision: %v", err)
+	}
+	if res.JobRunID != jobID {
+		t.Fatalf("re-ran job %s, want the deploy job %s of the target run", res.JobRunID, jobID)
+	}
+	// The deploy job is back to queued, flagged so the next dispatch
+	// records is_rollback=true.
+	if !deployRollbackOf(t, s, runID, jobID) {
+		t.Fatal("deploy_rollback not set after rollback")
+	}
+}
+
+func TestRollbackToRevision_Rejections(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, _, _, jobID, jobB := seedRunningJob(t, pool)
+	projectID := projectIDForRun(t, pool, runID)
+	otherProject := seedProject(t, s, "other")
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+	otherEnv, _ := s.EnsureEnvironment(ctx, projectID, "staging")
+
+	// in_progress revision (never finalised) → not successful.
+	inProgress, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "wip",
+	})
+	// success revision but its run was garbage-collected (job_run NULL).
+	runGone, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, Version: "orphan", // RunID/JobRunID left nil → NULL
+	})
+	mustFinalizeAt(t, pool, runGone, "success", "2026-06-13T09:00:00Z")
+	// success revision in a DIFFERENT environment.
+	wrongEnv, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: otherEnv, RunID: runID, JobRunID: jobB, Attempt: 0, Version: "2.0",
+	})
+	mustFinalizeAt(t, pool, wrongEnv, "success", "2026-06-13T09:30:00Z")
+
+	tests := []struct {
+		name      string
+		projectID uuid.UUID
+		envID     uuid.UUID
+		revID     uuid.UUID
+		want      error
+	}{
+		{"env not in project", otherProject, envID, inProgress, store.ErrEnvironmentNotFound},
+		{"revision not found", projectID, envID, uuid.New(), store.ErrRevisionNotFound},
+		{"revision wrong environment", projectID, envID, wrongEnv, store.ErrRevisionWrongEnvironment},
+		{"revision not successful", projectID, envID, inProgress, store.ErrRollbackNotSuccessful},
+		{"run garbage-collected", projectID, envID, runGone, store.ErrRollbackRunGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.RollbackToRevision(ctx, store.RollbackInput{
+				ProjectID: tt.projectID, EnvironmentID: tt.envID, RevisionID: tt.revID, TriggeredBy: "u",
+			})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+		})
 	}
 }
 

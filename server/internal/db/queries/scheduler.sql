@@ -91,7 +91,7 @@ WITH active_stage AS (
     FROM stage_runs s
     WHERE s.run_id = $1 AND s.status IN ('queued', 'running')
 )
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs, j.attempt
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.matrix_key, j.image, j.status, j.needs, j.attempt, j.deploy_rollback
 FROM job_runs j
 JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1

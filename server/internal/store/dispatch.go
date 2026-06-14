@@ -27,6 +27,10 @@ type DispatchableJob struct {
 	// the (NULL agent, current attempt) tuple instead of defaulting
 	// to attempt=0 (which races with a reaper-requeue that bumped it).
 	Attempt int32
+	// DeployRollback is true when this dispatch is a deployment
+	// rollback (#39): the scheduler opens the deployment_revision
+	// with is_rollback=true. Inert for non-deploy jobs.
+	DeployRollback bool
 }
 
 // AssignedJob is the result of a successful AssignJob (row matched by
@@ -196,14 +200,15 @@ func (s *Store) ListDispatchableJobs(ctx context.Context, runID uuid.UUID) ([]Di
 	out := make([]DispatchableJob, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, DispatchableJob{
-			ID:         fromPgUUID(r.ID),
-			RunID:      fromPgUUID(r.RunID),
-			StageRunID: fromPgUUID(r.StageRunID),
-			Name:       r.Name,
-			MatrixKey:  stringValue(r.MatrixKey),
-			Image:      stringValue(r.Image),
-			Needs:      append([]string(nil), r.Needs...),
-			Attempt:    r.Attempt,
+			ID:             fromPgUUID(r.ID),
+			RunID:          fromPgUUID(r.RunID),
+			StageRunID:     fromPgUUID(r.StageRunID),
+			Name:           r.Name,
+			MatrixKey:      stringValue(r.MatrixKey),
+			Image:          stringValue(r.Image),
+			Needs:          append([]string(nil), r.Needs...),
+			Attempt:        r.Attempt,
+			DeployRollback: r.DeployRollback,
 		})
 	}
 	return out, nil

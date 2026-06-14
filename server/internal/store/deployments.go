@@ -218,6 +218,68 @@ func (s *Store) CurrentDeployment(ctx context.Context, envID uuid.UUID) (Deploym
 	return revisionFromRow(row), true, nil
 }
 
+// Rollback sentinels — the endpoint maps each to an HTTP status.
+var (
+	ErrEnvironmentNotFound      = errors.New("environment not found")
+	ErrRevisionNotFound         = errors.New("deployment revision not found")
+	ErrRevisionWrongEnvironment = errors.New("revision belongs to a different environment")
+	ErrRollbackNotSuccessful    = errors.New("can only roll back to a successful deploy")
+	ErrRollbackRunGone          = errors.New("the deploy's run was garbage-collected; cannot roll back to it")
+)
+
+// RollbackInput points the rollback at one past revision of an
+// environment, on behalf of an actor (#39 phase 3).
+type RollbackInput struct {
+	ProjectID     uuid.UUID
+	EnvironmentID uuid.UUID
+	RevisionID    uuid.UUID
+	TriggeredBy   string
+}
+
+// RollbackToRevision re-runs the deploy job of the run that produced
+// the target revision, flagged as a rollback. The version "freezes"
+// for free: re-running that job re-resolves needs.outputs from its
+// run's immutable outputs, so the SAME version ships again, and the
+// dispatch records a fresh revision with is_rollback=true. Validates
+// the full chain (env owns by project, revision in env, revision is a
+// successful deploy whose run still exists) and returns a sentinel for
+// each failure so the endpoint maps it to the right HTTP status. The
+// underlying RerunJob may return ErrJobRunActive (the deploy job is
+// mid-run) — surfaced as-is.
+func (s *Store) RollbackToRevision(ctx context.Context, in RollbackInput) (RerunJobResult, error) {
+	owns, err := s.EnvironmentBelongsToProject(ctx, in.ProjectID, in.EnvironmentID)
+	if err != nil {
+		return RerunJobResult{}, err
+	}
+	if !owns {
+		return RerunJobResult{}, ErrEnvironmentNotFound
+	}
+
+	row, err := s.q.GetDeploymentRevision(ctx, pgUUID(in.RevisionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RerunJobResult{}, ErrRevisionNotFound
+	}
+	if err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rollback: get revision: %w", err)
+	}
+	rev := revisionFromRow(row)
+	if rev.EnvironmentID != in.EnvironmentID {
+		return RerunJobResult{}, ErrRevisionWrongEnvironment
+	}
+	if rev.Status != DeployStatusSuccess {
+		return RerunJobResult{}, ErrRollbackNotSuccessful
+	}
+	if rev.JobRunID == nil {
+		return RerunJobResult{}, ErrRollbackRunGone
+	}
+
+	return s.RerunJob(ctx, RerunJobInput{
+		JobRunID:    *rev.JobRunID,
+		TriggeredBy: in.TriggeredBy,
+		IsRollback:  true,
+	})
+}
+
 // EnvironmentBelongsToProject reports whether envID is owned by
 // projectID — the scope guard the read API uses before serving an
 // environment's deployments through a project-scoped URL.

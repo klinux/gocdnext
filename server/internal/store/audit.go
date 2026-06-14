@@ -29,6 +29,7 @@ const (
 	AuditActionRunCancel              = "run.cancel"
 	AuditActionRunRerun               = "run.rerun"
 	AuditActionJobRerun               = "job.rerun"
+	AuditActionDeployRollback         = "deploy.rollback"
 	AuditActionJobCancel              = "job.cancel"
 	AuditActionApprovalApprove        = "approval.approve"
 	AuditActionApprovalReject         = "approval.reject"

@@ -27,7 +27,18 @@ func environmentsRouter(t *testing.T) (http.Handler, *store.Store, *pgxpool.Pool
 	r := chi.NewRouter()
 	r.Get("/api/v1/projects/{slug}/environments", h.ListEnvironments)
 	r.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", h.ListEnvironmentDeployments)
+	r.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", h.RollbackEnvironment)
 	return r, s, pool
+}
+
+func postRollback(t *testing.T, router http.Handler, slug, envID, toRevision string) int {
+	t.Helper()
+	body := strings.NewReader(`{"to_revision_id":"` + toRevision + `"}`)
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/projects/"+slug+"/environments/"+envID+"/rollback", body)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr.Code
 }
 
 // mustMarkSuccess finalizes a revision to success directly — the
@@ -132,6 +143,45 @@ func TestListEnvironmentDeployments_CrossProject404(t *testing.T) {
 	router.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("cross-project read status = %d, want 404 (scope guard)", rr.Code)
+	}
+}
+
+func TestRollbackEnvironment_ErrorMapping(t *testing.T) {
+	router, s, pool := environmentsRouter(t)
+	ctx := t.Context()
+	projectID := seedProjectForEnv(t, s, "demo")
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+
+	// in_progress revision → 422 (not a successful deploy).
+	inProgress, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, Version: "wip",
+	})
+	// success revision but run garbage-collected (job_run NULL) → 422.
+	runGone, _ := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, Version: "orphan",
+	})
+	if _, err := pool.Exec(ctx,
+		`UPDATE deployment_revisions SET status='success', finished_at=NOW() WHERE id=$1`, runGone); err != nil {
+		t.Fatalf("mark success: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		envID string
+		rev   string
+		want  int
+	}{
+		{"not a deploy success", envID.String(), inProgress.String(), http.StatusUnprocessableEntity},
+		{"run garbage-collected", envID.String(), runGone.String(), http.StatusUnprocessableEntity},
+		{"unknown revision", envID.String(), uuid.NewString(), http.StatusNotFound},
+		{"malformed revision id", envID.String(), "not-a-uuid", http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := postRollback(t, router, "demo", tt.envID, tt.rev); got != tt.want {
+				t.Fatalf("status = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
