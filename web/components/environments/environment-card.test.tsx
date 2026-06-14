@@ -4,6 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EnvironmentCard } from "./environment-card.client";
 import type { EnvironmentSummary } from "@/types/api";
 
+// The history rows mount RollbackButton, which calls useRouter and
+// imports the rollback server action — stub both so the card tests
+// stay focused on the card's own behaviour.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
+vi.mock("@/server/actions/environments", () => ({
+  rollbackEnvironment: vi.fn(),
+}));
+
 const withCurrent: EnvironmentSummary = {
   id: "env-1",
   name: "production",

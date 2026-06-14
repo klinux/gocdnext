@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { RollbackButton } from "@/components/environments/rollback-button.client";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type { DeploymentRecord, DeploymentsList, EnvironmentSummary } from "@/types/api";
@@ -126,7 +127,14 @@ export function EnvironmentCard({ slug, environment, apiBaseURL }: Props) {
             )}
             History
           </Button>
-          {open ? <DeployHistory state={history} /> : null}
+          {open ? (
+            <DeployHistory
+              state={history}
+              slug={slug}
+              environmentId={environment.id}
+              environmentName={environment.name}
+            />
+          ) : null}
         </div>
       </CardContent>
     </Card>
@@ -158,7 +166,17 @@ function CurrentDeploy({ slug, current }: { slug: string; current: DeploymentRec
   );
 }
 
-function DeployHistory({ state }: { state: HistoryState }) {
+function DeployHistory({
+  state,
+  slug,
+  environmentId,
+  environmentName,
+}: {
+  state: HistoryState;
+  slug: string;
+  environmentId: string;
+  environmentName: string;
+}) {
   if (state.phase === "loading") {
     return <p className="mt-2 text-xs text-muted-foreground">Loading…</p>;
   }
@@ -184,6 +202,17 @@ function DeployHistory({ state }: { state: HistoryState }) {
             <StatusBadge status={d.status} className="text-[10px]" />
             <RelativeTime at={d.finished_at ?? d.created_at} fallback="—" />
             {d.run_id ? <RunLink runId={d.run_id} /> : null}
+            {/* Roll back is offered only for a successful deploy whose
+                run still exists (a GC'd run has no job to re-run). */}
+            {d.status === "success" && d.run_id ? (
+              <RollbackButton
+                slug={slug}
+                environmentId={environmentId}
+                environmentName={environmentName}
+                revisionId={d.id}
+                version={d.version}
+              />
+            ) : null}
           </span>
         </li>
       ))}
