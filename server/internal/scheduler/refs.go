@@ -6,161 +6,22 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/gocdnext/gocdnext/server/pkg/refs"
 )
 
-// refPattern matches GitHub-Actions / Drone-style references:
-// `${{ <body> }}`. The body is captured permissively (anything that
-// isn't a closing brace) and validated by identPattern below so a
-// value like `${{ secrets.X }}` matches as a REF and gets a clear
-// "unsupported expression" error instead of silently passing through
-// as a literal — which is what a too-strict character class would
-// have allowed.
-//
-// Anchored to the composite `${{ ... }}` so shell-style `${VAR}` and
-// template-style `{{ X }}` alone are NOT references.
-var refPattern = regexp.MustCompile(`\$\{\{\s*([^}]+?)\s*\}\}`)
-
-// identPattern validates the BODY of a `${{ ... }}` reference. Only
-// POSIX env-var identifiers (`[A-Za-z_][A-Za-z0-9_]*`) qualify;
-// anything else (dots, brackets, operators, function calls) is the
-// GitHub-Actions expression grammar that gocdnext does NOT implement,
-// and refusing it loudly avoids the silent-no-op trap.
-var identPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-// shellVarPattern matches `${VAR}` shell-style references — the form
-// CI built-ins use (`${CI_COMMIT_SHORT_SHA}`, `${CI_BRANCH}`, …) and
-// what every Drone / Woodpecker / GitLab plugin recipe expects. We
-// substitute these at dispatch time for plugin Settings (the agent
-// hands the literal value to the plugin's ENTRYPOINT, no shell
-// expansion happens at runtime) — but NOT for script env: a script
-// using `${HOME}` or `${PATH}` should still get the runtime
-// expansion bash provides natively.
-//
-// Only identifier names match — `${1}`, `${PATH:-/usr}` and other
-// bash parameter-expansion forms are ignored so legitimate shell
-// syntax in setting values doesn't get accidentally stomped.
-var shellVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-
-// substituteRefs replaces every `${{ NAME }}` token in s with the
-// corresponding value from sources. Sources are consulted in order:
-// the first hit wins (so a job-local override shadows the pipeline
-// variable that shadows the project secret, etc.).
-//
-// Errors when ANY reference resolves to no source. This is the
-// gocdnext contract: unresolved references must NOT silently pass
-// through to the container, because the operator would only catch
-// the failure inside the plugin (as we hit with v0.4.7 → buildx
-// "unauthorized: authentication required" when the literal
-// `${{ DOCKER_USERNAME }}` reached `docker login`). Failing fast at
-// dispatch surfaces the missing-declaration in the run log with the
-// reference name, not a downstream auth error.
-//
-// Single-pass on purpose: if a resolved value itself contains a
-// `${{ NAME }}` token, it lands in the output verbatim. Prevents
-// trivially-constructed recursion (`A=${{ B }}`, `B=${{ A }}`) and
-// keeps the function O(n) in the number of references.
-//
-// Security: error messages cite the unresolved NAME only — never
-// any other source's resolved value — so an exception text doesn't
-// become a side channel for the secret next to the typo.
-func substituteRefs(s string, sources ...map[string]string) (string, error) {
-	if !strings.Contains(s, "${{") {
-		// Fast path: no token possible, skip the regex pass. Most
-		// values in a typical assignment don't carry refs, and the
-		// scheduler runs this on every Plugin.Settings + Env value
-		// of every dispatched job.
-		return s, nil
-	}
-	var unresolved, invalid []string
-	out := refPattern.ReplaceAllStringFunc(s, func(match string) string {
-		body := refPattern.FindStringSubmatch(match)[1]
-		if !identPattern.MatchString(body) {
-			invalid = append(invalid, body)
-			return match
-		}
-		for _, src := range sources {
-			if v, ok := src[body]; ok {
-				return v
-			}
-		}
-		unresolved = append(unresolved, body)
-		return match // keep literal so context is visible if caller logs
-	})
-	switch {
-	case len(invalid) > 0:
-		return "", fmt.Errorf(
-			"unsupported reference expression(s): %s — gocdnext only supports "+
-				"plain identifier refs (`${{ NAME }}`), not the full Actions "+
-				"expression grammar (`secrets.X.Y`, function calls, operators)",
-			strings.Join(dedupeSorted(invalid), ", "))
-	case len(unresolved) > 0:
-		return "", fmt.Errorf(
-			"unresolved reference(s): %s — declare them under the job's `secrets:` list "+
-				"or the pipeline's `variables:` map",
-			strings.Join(dedupeSorted(unresolved), ", "))
-	}
-	return out, nil
-}
-
-// substituteShellVars replaces every `${VAR}` token whose name is
-// present in one of the sources. Unknown names are LEFT LITERAL —
-// the opposite of substituteRefs' hard-fail contract. The rationale:
-// `${VAR}` is shell syntax and may legitimately appear in plugin
-// settings as a runtime placeholder the operator wants the inner
-// shell to expand (e.g. `script: 'echo ${HOME}'` running on an
-// agent's container). Substituting at dispatch when we know the
-// value, leaving alone when we don't, lets both styles coexist.
-//
-// Strict mode (hard-fail) lives on `${{ NAME }}` because that form
-// is the gocdnext-specific contract: the operator MUST have
-// declared the name.
-func substituteShellVars(s string, sources ...map[string]string) string {
-	if !strings.Contains(s, "${") {
-		return s
-	}
-	return shellVarPattern.ReplaceAllStringFunc(s, func(match string) string {
-		name := shellVarPattern.FindStringSubmatch(match)[1]
-		for _, src := range sources {
-			if v, ok := src[name]; ok {
-				return v
-			}
-		}
-		return match
-	})
-}
-
-// substituteShellVarsMap is the map-valued lift of substituteShellVars.
-// Same fresh-map / nil-passes-through contract as substituteRefsMap.
-func substituteShellVarsMap(in map[string]string, sources ...map[string]string) map[string]string {
-	if len(in) == 0 {
-		return in
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = substituteShellVars(v, sources...)
-	}
-	return out
-}
-
-// substituteRefsMap is the map-valued lift of substituteRefs. Walks
-// values, leaves keys untouched (secret/variable NAMES are not
-// templated — only their CONSUMERS). Returns a fresh map so the
-// caller can swap it in without touching the original (which may be
-// shared with other goroutines or the cached pipeline definition).
-func substituteRefsMap(in map[string]string, sources ...map[string]string) (map[string]string, error) {
-	if len(in) == 0 {
-		return in, nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		resolved, err := substituteRefs(v, sources...)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", k, err)
-		}
-		out[k] = resolved
-	}
-	return out, nil
-}
+// The generic `${{ NAME }}` / `${VAR}` substitution core lives in
+// pkg/refs (#44) so the scheduler and the CLI's run-local simulator
+// resolve refs identically. These aliases keep the short names the
+// call sites and the needs-ref pass below already use.
+var (
+	refPattern             = refs.RefPattern
+	substituteRefs         = refs.SubstituteRefs
+	substituteShellVars    = refs.SubstituteShellVars
+	substituteRefsMap      = refs.SubstituteRefsMap
+	substituteShellVarsMap = refs.SubstituteShellVarsMap
+	dedupeSorted           = refs.DedupeSorted
+)
 
 // needsRefPattern matches the dotted `needs.<job>.outputs.<alias>`
 // form INSIDE a `${{ ... }}` wrapper. Each segment is validated
@@ -274,62 +135,6 @@ type MatrixNeedsOutputs map[string]map[string]map[string]string
 // run logs with the alias name instead of an operator wondering
 // "why is this job stuck?".
 var ErrNeedsRefUnresolved = errors.New("needs reference unresolved")
-
-// ErrDeployVersionEmpty is returned by BuildAssignment when a deploy
-// job's version resolves to empty — the version was omitted AND the
-// run has no commit short sha to default to (#39). Like
-// ErrNeedsRefUnresolved it is a per-run CONFIG error the dispatcher
-// terminalises (a retry would resolve to empty again forever).
-var ErrDeployVersionEmpty = errors.New("deploy.version omitted but CI_COMMIT_SHORT_SHA is unavailable for this run; set deploy.version explicitly")
-
-// ErrDeployVersionUnresolved wraps ANY failure resolving a non-empty
-// deploy.version (#39): a `${{ CI_* }}` the parser accepted by shape
-// but this run doesn't carry (CI_TAG_NAME on a non-tag run,
-// CI_COMMIT_SHORT_SHA with no git material), or a needs-ref shape that
-// slipped past the parser's allow-list. All are per-run config errors
-// — the dispatcher terminalises them so the job fails loud once
-// instead of retrying the identical failure forever.
-var ErrDeployVersionUnresolved = errors.New("deploy.version could not be resolved for this run")
-
-// resolveDeployVersion resolves a non-empty deploy.version through the
-// same pipeline the env uses — the `${{ needs.*.outputs.* }}` pre-pass,
-// the strict `${{ CI_* }}` pass, then the soft shell-style `${CI_*}`
-// pass for parity with plugin settings — but against CI vars ONLY,
-// never secrets (the version is persisted in deployment_revisions and
-// shown in the Environments UI). ANY resolution failure is wrapped in
-// ErrDeployVersionUnresolved so the dispatcher terminalises it rather
-// than retrying an identical failure forever (#39).
-func resolveDeployVersion(raw string, needs NeedsOutputs, matrix MatrixNeedsOutputs, dims MatrixDimNames, ciVars map[string]string) (string, error) {
-	v, err := substituteNeedsRefs(raw, needs, matrix, dims)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDeployVersionUnresolved, err)
-	}
-	v, err = substituteRefs(v, ciVars)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDeployVersionUnresolved, err)
-	}
-	// Soft shell-style pass for `1.${CI_RUN_COUNTER}.…` parity with
-	// plugin settings. For plugin settings an unresolved ${VAR} is left
-	// literal (a runtime shell may expand it) — but deploy.version is
-	// metadata persisted as-is, there is no later shell. A leftover
-	// ${CI_*} means a CI var absent from THIS run (e.g. ${CI_TAG_NAME}
-	// on a non-tag run); persisting it literally would be a lie. Catch
-	// it and terminalise rather than recording a bogus version.
-	v = substituteShellVars(v, ciVars)
-	if leftoverCIShellRE.MatchString(v) {
-		return "", fmt.Errorf("%w: unresolved ${CI_*} shell reference (CI var not present this run)", ErrDeployVersionUnresolved)
-	}
-	return v, nil
-}
-
-// leftoverCIShellRE detects a shell-style ${CI_...} that the soft pass
-// could not resolve — only the CI_ namespace, since a non-CI ${VAR}
-// in a version is the operator's literal choice, not a gocdnext ref.
-// The body is `[^}]*` (not just word chars) so shell modifier forms
-// substituteShellVars never touches — ${CI_TAG_NAME:-dev},
-// ${CI_TAG_NAME?missing} — are caught too, rather than persisting a
-// misleading literal in a field that has no later shell to expand it.
-var leftoverCIShellRE = regexp.MustCompile(`\$\{CI_[^}]*\}`)
 
 // canonicalMatrixKey takes a selector body (the bracketed
 // content of `matrix[...]`) and returns the lex-sorted
@@ -583,27 +388,4 @@ func substituteNeedsRefsMap(in map[string]string, needs NeedsOutputs, matrix Mat
 		out[k] = resolved
 	}
 	return out, nil
-}
-
-// dedupeSorted returns a deterministic deduplicated copy. The error
-// message in substituteRefs needs stable ordering so test fixtures
-// don't flap on regex-replace iteration order (Go's map iteration is
-// randomised but ReplaceAllStringFunc iterates left-to-right, so the
-// raw list is already stable — sort defends against future refactors
-// using a map-based scan).
-func dedupeSorted(in []string) []string {
-	if len(in) <= 1 {
-		return in
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	sort.Strings(out)
-	return out
 }

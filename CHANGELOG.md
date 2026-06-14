@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.36.0 — 2026-06-14
+
+Internal refactor — no behavioural change to pipelines.
+
+### Changed
+
+- **Reference substitution unified into one package** (#44): the
+  strict `${{ NAME }}` / soft `${VAR}` substitution — which the CLI's
+  `run-local` simulator carried as a byte-for-byte copy of the
+  scheduler's — now lives in a single `server/pkg/refs`, imported by
+  both. Removes the drift risk between what `run-local` previews and
+  what the server actually dispatches. The "unresolved reference"
+  error now folds the run-local hint inline; resolution behaviour is
+  otherwise identical. The needs-output (`${{ needs.X.outputs.Y }}`)
+  and deploy-version refs stay in the scheduler — they need
+  dispatch-only context the run-local path doesn't have.
+- **Oversized source files split** (#43): `parse.go`,
+  `scheduler.go`, `assignment.go` and `runner.go` (each 800–1170
+  lines) were split along cohesive seams — needs-resolution,
+  deploy-version resolution, job sub-steps, runner lifecycle — to the
+  ~400-line budget. Three files stay just above it because each is a
+  single irreducible function (`toJob`, `BuildAssignment`,
+  `dispatchRun`); splitting those would be a logic refactor, out of
+  scope here.
+
+### Removed
+
+- Dead `notificationAtIndex` helper, long superseded by
+  `effectiveNotificationAtIndex` (which adds the project-list
+  fallback precedence) — flagged by `staticcheck` during the split.
+
 ## v0.35.0 — 2026-06-14
 
 ### Added
