@@ -16,18 +16,6 @@ import (
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
-func seedProject(t *testing.T, pool any, slug string) uuid.UUID {
-	t.Helper()
-	p := pool.(interface {
-		// pgxpool.Pool satisfies this via interface embedding — we
-		// just need a "not *pgxpool" typed seat so the compiler is
-		// happy.
-	})
-	_ = p
-	// Create a project via store.ApplyProject — easiest way.
-	return uuid.Nil
-}
-
 // seedProjectStore uses the real store.ApplyProject to insert the
 // project row so GetProjectByID finds it.
 func seedProjectStore(t *testing.T, s *store.Store, slug string) uuid.UUID {

@@ -112,13 +112,12 @@ func TestUpload_DedupesPathsBeforeRPC(t *testing.T) {
 // packages can't share private types and the upload tests don't
 // need the same surface (no cat support).
 type fakeArtifactExec struct {
-	mu        sync.Mutex
-	findOut   string                  // newline-separated absolute paths
-	findErr   error                   // returned from `find` exec
-	tarBodies map[string]string       // path → response body the tar would emit
-	gotTars   [][]string              // recorded tar invocations (full argv)
-	gotFinds  int
-	allCalls  []string                // cmd[0] sequence for assertion
+	mu       sync.Mutex
+	findOut  string     // newline-separated absolute paths
+	findErr  error      // returned from `find` exec
+	gotTars  [][]string // recorded tar invocations (full argv)
+	gotFinds int
+	allCalls []string // cmd[0] sequence for assertion
 }
 
 var _ engine.PodExecutor = (*fakeArtifactExec)(nil)

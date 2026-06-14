@@ -174,7 +174,7 @@ func TestDockerEngine_JoinsProvisionedNetwork(t *testing.T) {
 	if out, err := exec.Command("docker", "network", "create", netName).CombinedOutput(); err != nil {
 		t.Fatalf("create network: %v (%s)", err, out)
 	}
-	defer exec.Command("docker", "network", "rm", netName).Run()
+	defer func() { _ = exec.Command("docker", "network", "rm", netName).Run() }()
 
 	// Service: alpine container sitting idle on the network with
 	// a "svc" alias. Scripts in the sibling container resolve
@@ -187,7 +187,7 @@ func TestDockerEngine_JoinsProvisionedNetwork(t *testing.T) {
 		"alpine:3.19", "sleep", "60").CombinedOutput(); err != nil {
 		t.Fatalf("start svc: %v (%s)", err, out)
 	}
-	defer exec.Command("docker", "rm", "-f", svcName).Run()
+	defer func() { _ = exec.Command("docker", "rm", "-f", svcName).Run() }()
 
 	d := engine.NewDocker(engine.DockerConfig{PullPolicy: "missing"}, nil)
 	cap := &captured{}

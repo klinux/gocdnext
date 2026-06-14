@@ -294,12 +294,11 @@ func (s *Store) ListReadyArtifactsByRunAndJob(ctx context.Context, runID uuid.UU
 	// Producer and consumer YAMLs may legitimately disagree on the
 	// trailing slash; we converge here so the operator never has to
 	// notice.
+	// make() returns a non-nil empty slice for empty paths, so the
+	// `Column3` array param is never NULL — no nil guard needed.
 	normalized := make([]string, len(paths))
 	for i, p := range paths {
 		normalized[i] = NormalizeArtifactPath(p)
-	}
-	if normalized == nil {
-		normalized = []string{}
 	}
 	rows, err := s.q.ListReadyArtifactsByRunAndJobName(ctx, db.ListReadyArtifactsByRunAndJobNameParams{
 		RunID:   pgUUID(runID),

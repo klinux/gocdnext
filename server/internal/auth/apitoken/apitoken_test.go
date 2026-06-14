@@ -88,7 +88,8 @@ func TestParse_UnknownPrefix(t *testing.T) {
 
 func TestHash_Deterministic(t *testing.T) {
 	body := "abcdefghij"
-	if Hash(body) != Hash(body) {
+	first, second := Hash(body), Hash(body)
+	if first != second {
 		t.Errorf("Hash should be deterministic across calls")
 	}
 }

@@ -119,7 +119,7 @@ func (d *Docker) CleanupRunServices(_ context.Context, _ string, _ func(ServiceL
 
 func (d *Docker) EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string), onLifecycle func(ServiceLifecycleEvent)) (ServicesWireup, error) {
 	_ = onLifecycle // docker stays per-job; lifecycle tracking ports along with the run-scoped rewrite
-	_ = runID // see docstring; docker engine stays per-job for now
+	_ = runID       // see docstring; docker engine stays per-job for now
 	noop := ServicesWireup{Cleanup: func() {}}
 	if len(services) == 0 {
 		return noop, nil

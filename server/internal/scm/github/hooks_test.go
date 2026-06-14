@@ -17,8 +17,7 @@ import (
 // everything else. Factored out because every hooks test needs both.
 func appClientWith(t *testing.T, handler http.HandlerFunc) (*github.AppClient, *httptest.Server) {
 	t.Helper()
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/access_tokens") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token":      "inst-tok",

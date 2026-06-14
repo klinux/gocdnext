@@ -2,7 +2,6 @@ package projects_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -361,6 +360,3 @@ func readBody(r *http.Response) string {
 	_, _ = b.ReadFrom(r.Body)
 	return b.String()
 }
-
-// context helper for tests not needing it explicitly
-func _ctx() context.Context { return context.Background() }
