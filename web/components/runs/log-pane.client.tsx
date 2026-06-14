@@ -17,6 +17,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LogViewer } from "@/components/runs/log-viewer";
+import {
+  buildLogBlocks,
+  defaultCollapsedIds,
+  sectionIdForSeq,
+} from "@/components/runs/log-sections";
 import { cn } from "@/lib/utils";
 import type { LogLine } from "@/types/api";
 
@@ -34,11 +39,11 @@ type Props = {
   className?: string;
 };
 
-// LogPane is the interactive shell around LogViewer (#37): smart
-// follow (tail -f that pauses when you scroll up), jump to top /
-// bottom, in-log search with n/N navigation, copy, download, and
-// #L<seq> permalinks. The viewer stays pure; everything stateful
-// lives here.
+// LogPane is the interactive shell around LogViewer (#37, #48): smart
+// follow, in-log search with n/N navigation, copy, download, #L<seq>
+// permalinks, AND phase folding on the agent's `── ` markers. The
+// viewer stays presentational; all fold STATE + coordination lives
+// here so it can be reconciled with follow / search / permalinks.
 export function LogPane({
   logs,
   head,
@@ -50,11 +55,7 @@ export function LogPane({
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(running);
-  // queued → running transition turns follow ON once (review LOW:
-  // useState(running) only samples mount time, so a card mounted
-  // while queued never started following). A manual pause AFTER
-  // the transition is respected — the effect only fires on the
-  // false→true edge.
+  // queued → running transition turns follow ON once.
   const wasRunning = useRef(running);
   useEffect(() => {
     if (running && !wasRunning.current) setFollow(true);
@@ -64,23 +65,115 @@ export function LogPane({
   const [matchIdx, setMatchIdx] = useState(0);
   const [copied, setCopied] = useState(false);
 
-  const allLines = useMemo(
-    () => [...(head ?? []), ...logs],
-    [head, logs],
+  // Phase blocks (#48). Recomputed as the log streams; ids are derived
+  // from real line seqs so fold state survives appends.
+  const blocks = useMemo(
+    () => buildLogBlocks(head ?? [], logs, omitted ?? 0),
+    [head, logs, omitted],
   );
+  // Search scans only the RENDERED output lines — the `── ` markers are
+  // absorbed into headers, so including them would inflate the count
+  // and let n/N land on a line that isn't in the DOM.
+  const renderedLines = useMemo(
+    () => blocks.flatMap((b) => (b.kind === "section" ? b.section.lines : [])),
+    [blocks],
+  );
+  const lastSectionId = useMemo(() => {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i];
+      if (b?.kind === "section" && b.section.foldable) return b.section.id;
+    }
+    return null;
+  }, [blocks]);
 
-  // Line-level matches: substring, case-insensitive. Highlighting is
-  // per LINE (not per substring) on purpose — the viewer renders
-  // ANSI spans and splicing a <mark> through them costs more than
-  // the signal is worth.
+  // Base fold state (user intent + per-section default). A section is
+  // defaulted ONCE, the first time it reaches a terminal status, so a
+  // manual toggle afterwards wins (decision 3). Running sections are
+  // never auto-collapsed.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => defaultCollapsedIds(blocks));
+  const defaulted = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    setCollapsed((prev) => {
+      let next = prev;
+      for (const b of blocks) {
+        if (b.kind !== "section") continue;
+        const s = b.section;
+        const terminal = s.status === "success" || s.status === "failed";
+        if (terminal && !defaulted.current.has(s.id)) {
+          defaulted.current.add(s.id);
+          // Auto-collapse a completed success phase — but NOT if the
+          // operator paused follow on a still-running job and may be
+          // reading it (decision #3). A finished job (!running) always
+          // tidies up; an actively-followed run folds as phases land.
+          if (s.status === "success" && s.foldable && (!running || follow)) {
+            if (next === prev) next = new Set(prev);
+            next.add(s.id);
+          }
+        }
+      }
+      return next;
+    });
+  }, [blocks, running, follow]);
+
+  // Permalink pins: sections force-opened to reveal a #L<seq> target.
+  const [pinnedOpen, setPinnedOpen] = useState<Set<string>>(new Set());
+
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q === "") return [];
-    return allLines
-      .filter((l) => l.text.toLowerCase().includes(q))
-      .map((l) => l.seq);
-  }, [allLines, query]);
-  const activeSeq = matches.length > 0 ? matches[Math.min(matchIdx, matches.length - 1)] : undefined;
+    return renderedLines.filter((l) => l.text.toLowerCase().includes(q)).map((l) => l.seq);
+  }, [renderedLines, query]);
+  const activeSeq =
+    matches.length > 0 ? matches[Math.min(matchIdx, matches.length - 1)] : undefined;
+
+  // Sections holding any match stay open while searching (decision 2).
+  const matchSectionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const seq of matches) {
+      const sid = sectionIdForSeq(blocks, seq);
+      if (sid) ids.add(sid);
+    }
+    return ids;
+  }, [matches, blocks]);
+
+  // Render state = base collapsed MINUS the always-open overrides:
+  // the followed current section, sections with a search match, and
+  // permalink-pinned sections. Overrides don't mutate `collapsed`, so
+  // clearing the search / pin restores the user's folds.
+  const effectiveCollapsed = useMemo(() => {
+    let e = collapsed;
+    const open = (id: string | null) => {
+      if (id && e.has(id)) {
+        if (e === collapsed) e = new Set(collapsed);
+        e.delete(id);
+      }
+    };
+    if (follow && running) open(lastSectionId);
+    for (const id of matchSectionIds) open(id);
+    for (const id of pinnedOpen) open(id);
+    return e;
+  }, [collapsed, follow, running, lastSectionId, matchSectionIds, pinnedOpen]);
+
+  const onToggleSection = useCallback(
+    (id: string) => {
+      // Collapsing the followed current section is an intent to stop
+      // following (decision 4).
+      if (follow && running && id === lastSectionId) setFollow(false);
+      setPinnedOpen((prev) => {
+        if (!prev.has(id)) return prev;
+        const n = new Set(prev);
+        n.delete(id);
+        return n;
+      });
+      setCollapsed((prev) => {
+        const n = new Set(prev);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        return n;
+      });
+    },
+    [follow, running, lastSectionId],
+  );
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -91,12 +184,8 @@ export function LogPane({
     if (el) el.scrollTop = 0;
   }, []);
 
-  // Smart follow: pin to the bottom as lines stream in; a manual
-  // scroll AWAY from the bottom pauses, returning to the bottom
-  // resumes. The pill mirrors + toggles the state.
   useEffect(() => {
     if (follow && running) scrollToBottom();
-    // logs.length is the streaming signal under the poll model.
   }, [logs.length, follow, running, scrollToBottom]);
 
   const onScroll = useCallback(() => {
@@ -106,18 +195,25 @@ export function LogPane({
     setFollow(atBottom);
   }, [running]);
 
-  // Permalink: honor #L<seq> on mount (deep links from PR comments
-  // or incident channels land on the line).
+  // Permalink: honor #L<seq> on mount — force-open its section, then
+  // scroll once the expand has rendered.
   useEffect(() => {
     const m = /^#L(\d+)$/.exec(window.location.hash);
     if (!m) return;
-    const target = document.getElementById(`L${m[1]}`);
-    if (target) target.scrollIntoView({ block: "center" });
+    const seq = Number(m[1]);
+    const sid = sectionIdForSeq(blocks, seq);
+    if (sid) setPinnedOpen(new Set([sid]));
+    const raf = requestAnimationFrame(() => {
+      const target = document.getElementById(`L${seq}`);
+      if (target) target.scrollIntoView({ block: "center" });
+    });
+    return () => cancelAnimationFrame(raf);
     // One-shot on mount by design.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Scroll the active search match into view.
+  // Scroll the active search match into view. Its section is already
+  // force-open via matchSectionIds, so the line is in the DOM.
   useEffect(() => {
     if (activeSeq === undefined) return;
     const target = document.getElementById(`L${activeSeq}`);
@@ -147,11 +243,6 @@ export function LogPane({
   }, [head, omitted, logs]);
 
   return (
-    // Root owns the height budget: default cap matches the old
-    // viewer (max-h-96); a fill-height consumer (the job drawer)
-    // overrides via className with h-full + max-h-none and the
-    // flex-1 scroll area below stretches to whatever remains —
-    // no dead space under short logs, inner scroll for long ones.
     <div className={cn("flex max-h-96 flex-col", className)}>
       <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
         <div className="relative">
@@ -236,6 +327,9 @@ export function LogPane({
           jobStartedAt={jobStartedAt}
           matchSeqs={matches.length > 0 ? new Set(matches) : undefined}
           activeSeq={activeSeq}
+          blocks={blocks}
+          collapsed={effectiveCollapsed}
+          onToggleSection={onToggleSection}
           className="max-h-none overflow-visible"
         />
       </div>

@@ -1,103 +1,79 @@
-import { Fragment, type ReactNode } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LogLine } from "@/types/api";
+import { ansiToReact } from "@/components/runs/log-format";
+import type { LogBlock, LogSection, SectionStatus } from "@/components/runs/log-sections";
+
+// Re-exported for existing importers (and the viewer test) — the ANSI
+// renderer moved to log-format.tsx to keep this file under budget.
+export { ansiToReact };
 
 type Props = {
   logs: LogLine[];
   // head, when provided, is rendered ABOVE the tail with a visual
   // divider between them showing `omitted` lines were trimmed.
-  // Used by the run-detail page to render long jobs as
-  // "first N + (X lines omitted) + last M" — the startup phase
-  // (which `logs` alone hides for 23k-line builds) survives.
   head?: LogLine[];
-  // omitted is the line count between head and tail. When > 0 the
-  // divider is rendered with the count; when 0 (head+tail covers
-  // everything, or no head requested) no divider appears.
   omitted?: number;
   // jobStartedAt anchors the per-line elapsed time displayed on the
-  // right (Woodpecker-style "0s", "2s", "6s"). When omitted, the
-  // grid drops the timing column gracefully — useful for log
-  // fragments rendered outside a job context (test fixtures, the
-  // archive viewer's per-file tail, etc).
+  // right (Woodpecker-style). When omitted, the timing column drops.
   jobStartedAt?: string;
-  // matchSeqs marks lines as search hits (line-level background);
-  // activeSeq is the focused hit (LogPane scrolls it into view).
+  // matchSeqs marks lines as search hits; activeSeq is the focused hit.
   matchSeqs?: Set<number>;
   activeSeq?: number;
+  // Folded mode (#48): when `blocks` is provided, render collapsible
+  // phase sections instead of the flat head/omitted/logs split.
+  // `collapsed` holds the folded section ids; `onToggleSection` toggles
+  // one. The component stays presentational — fold STATE lives in
+  // LogPane, which also force-opens sections for search / permalinks.
+  blocks?: LogBlock[];
+  collapsed?: Set<string>;
+  onToggleSection?: (id: string) => void;
   className?: string;
 };
 
-// Static server-rendered tail — good enough for a completed run. Live tailing
-// (SSE) is a later slice; keeping this component pure makes that drop-in easy:
-// the client variant just replaces `logs` with a streamed state.
-export function LogViewer({ logs, head, omitted, jobStartedAt, matchSeqs, activeSeq, className }: Props) {
+export function LogViewer({
+  logs,
+  head,
+  omitted,
+  jobStartedAt,
+  matchSeqs,
+  activeSeq,
+  blocks,
+  collapsed,
+  onToggleSection,
+  className,
+}: Props) {
   const hasHead = (head?.length ?? 0) > 0;
   const hasOmitted = (omitted ?? 0) > 0;
-  if (logs.length === 0 && !hasHead) {
+  const folded = blocks !== undefined;
+  // Empty state holds in both modes: folded mode always receives a
+  // `blocks` array, so a no-line job arrives here as `blocks=[]` — not
+  // covered by the flat (logs/head) check.
+  const isEmpty = folded ? blocks.length === 0 : logs.length === 0 && !hasHead;
+  if (isEmpty) {
     return (
       <p className="px-3 py-2 text-xs text-muted-foreground">No log lines captured.</p>
     );
   }
-  const start = jobStartedAt ? Date.parse(jobStartedAt) : Number.NaN;
-  const showElapsed = Number.isFinite(start);
-  // Elapsed second is shown ONLY when it differs from the previous
-  // rendered line — keeps consecutive same-second lines uncluttered
-  // (matches the Woodpecker right-aligned timing column). Tracked
-  // via a top-scope mutable; the map below runs synchronously in a
-  // single render so the implicit ordering is stable.
-  let lastShown = -1;
-  const renderLine = (line: LogLine) => {
-    const tone = classifyLine(line.text, line.stream);
-    let elapsedLabel: string | null = null;
-    if (showElapsed) {
-      const t = Date.parse(line.at);
-      if (Number.isFinite(t)) {
-        const sec = Math.max(0, Math.floor((t - start) / 1000));
-        if (sec !== lastShown) {
-          elapsedLabel = formatElapsed(sec);
-          lastShown = sec;
-        }
-      }
-    }
-    const cols = showElapsed
-      ? "grid grid-cols-[3rem_1fr_3.5rem] gap-3"
-      : "grid grid-cols-[3rem_1fr] gap-3";
-    const isMatch = matchSeqs?.has(line.seq) ?? false;
-    const isActive = activeSeq === line.seq;
-    return (
-      <div
-        key={line.seq}
-        id={`L${line.seq}`}
-        data-stream={line.stream}
-        data-tone={tone}
-        data-match={isMatch || undefined}
-        className={cn(
-          cols,
-          toneClass[tone],
-          isMatch && "bg-amber-500/10",
-          isActive && "bg-amber-500/25",
-        )}
-      >
-        {/* Line number doubles as the permalink anchor — click to
-            put #L<seq> in the URL for sharing. */}
-        <a
-          href={`#L${line.seq}`}
-          className="select-none text-right text-muted-foreground hover:text-foreground"
-        >
-          {line.seq}
-        </a>
-        <span className="whitespace-pre-wrap break-all">{ansiToReact(line.text)}</span>
-        {showElapsed && (
-          <span
-            className="select-none text-right text-muted-foreground tabular-nums"
-            aria-label={elapsedLabel ? `${elapsedLabel} elapsed` : undefined}
-          >
-            {elapsedLabel ?? ""}
-          </span>
-        )}
-      </div>
-    );
-  };
+
+  // Elapsed labels are computed across the FULL ordered line set so the
+  // "show the second only when it changes" dedup stays continuous
+  // across section boundaries (a collapsed section doesn't reset it).
+  const orderedLines = folded
+    ? (blocks ?? []).flatMap((b) => (b.kind === "section" ? b.section.lines : []))
+    : [...(head ?? []), ...logs];
+  const { show: showElapsed, labels } = computeElapsedLabels(orderedLines, jobStartedAt);
+
+  const renderLine = (line: LogLine) => (
+    <LogLineRow
+      key={line.seq}
+      line={line}
+      elapsedLabel={labels.get(line.seq) ?? null}
+      showElapsed={showElapsed}
+      isMatch={matchSeqs?.has(line.seq) ?? false}
+      isActive={activeSeq === line.seq}
+    />
+  );
 
   return (
     <pre
@@ -106,26 +82,183 @@ export function LogViewer({ logs, head, omitted, jobStartedAt, matchSeqs, active
         className,
       )}
     >
-      {hasHead && head?.map(renderLine)}
-      {hasHead && hasOmitted && (
-        <div
-          data-divider="omitted"
-          className="my-1 grid grid-cols-1 border-t border-b border-dashed border-muted-foreground/30 bg-muted/20 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-muted-foreground"
-          aria-label={`${omitted} log lines omitted between head and tail`}
-        >
-          · · · {omitted?.toLocaleString()} lines omitted · · ·
-        </div>
+      {folded ? (
+        (blocks ?? []).map((b, i) =>
+          b.kind === "omitted" ? (
+            <OmittedDivider key={`omitted-${i}`} count={b.count} />
+          ) : (
+            <Section
+              key={b.section.id}
+              section={b.section}
+              collapsed={collapsed?.has(b.section.id) ?? false}
+              onToggle={onToggleSection}
+              renderLine={renderLine}
+            />
+          ),
+        )
+      ) : (
+        <>
+          {hasHead && head?.map(renderLine)}
+          {hasHead && hasOmitted && <OmittedDivider count={omitted ?? 0} />}
+          {logs.map(renderLine)}
+        </>
       )}
-      {logs.map(renderLine)}
     </pre>
   );
 }
 
-// formatElapsed renders the cumulative seconds the way Woodpecker
-// does: small numbers stay in seconds, then minutes, then minutes
-// + seconds for the long tail. Keeps the right-aligned column
-// narrow (max 6 chars) — anything beyond ~99m is degenerate enough
-// that the grid widening is acceptable.
+function OmittedDivider({ count }: { count: number }) {
+  return (
+    <div
+      data-divider="omitted"
+      className="my-1 grid grid-cols-1 border-t border-b border-dashed border-muted-foreground/30 bg-muted/20 px-2 py-1 text-center text-[10px] uppercase tracking-wide text-muted-foreground"
+      aria-label={`${count} log lines omitted between head and tail`}
+    >
+      · · · {count.toLocaleString()} lines omitted · · ·
+    </div>
+  );
+}
+
+const statusDot: Record<SectionStatus, string> = {
+  success: "bg-emerald-500",
+  failed: "bg-red-500",
+  running: "bg-amber-500 animate-pulse",
+  plain: "bg-muted-foreground/40",
+};
+
+// Section renders one phase. A non-foldable section (the whole-log
+// plain block when there are no markers) renders its lines flat — no
+// header — so a marker-less log looks exactly like the pre-#48 view.
+function Section({
+  section,
+  collapsed,
+  onToggle,
+  renderLine,
+}: {
+  section: LogSection;
+  collapsed: boolean;
+  onToggle?: (id: string) => void;
+  renderLine: (line: LogLine) => React.ReactNode;
+}) {
+  if (!section.foldable) {
+    return <>{section.lines.map(renderLine)}</>;
+  }
+  // Only an actually-running phase reads "running". A terminal or plain
+  // section with no duration (e.g. "job setup", or a singleton whose
+  // text we couldn't parse) just omits the label rather than lying.
+  const dur =
+    section.durationSec !== null
+      ? formatElapsed(section.durationSec)
+      : section.status === "running"
+        ? "running"
+        : "";
+  return (
+    <div data-section={section.id} data-status={section.status}>
+      <button
+        type="button"
+        onClick={() => onToggle?.(section.id)}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-2 border-y border-border/40 bg-muted/30 px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted/60"
+      >
+        {collapsed ? (
+          <ChevronRight className="size-3 shrink-0" />
+        ) : (
+          <ChevronDown className="size-3 shrink-0" />
+        )}
+        <span className={cn("size-1.5 shrink-0 rounded-full", statusDot[section.status])} />
+        <span className="truncate font-semibold text-foreground/80">{section.label}</span>
+        <span className="ml-auto shrink-0 tabular-nums">{dur}</span>
+        {collapsed ? (
+          <span className="shrink-0 tabular-nums">{section.lines.length} lines</span>
+        ) : null}
+      </button>
+      {!collapsed && section.lines.map(renderLine)}
+    </div>
+  );
+}
+
+function LogLineRow({
+  line,
+  elapsedLabel,
+  showElapsed,
+  isMatch,
+  isActive,
+}: {
+  line: LogLine;
+  elapsedLabel: string | null;
+  showElapsed: boolean;
+  isMatch: boolean;
+  isActive: boolean;
+}) {
+  const tone = classifyLine(line.text, line.stream);
+  const cols = showElapsed
+    ? "grid grid-cols-[3rem_1fr_3.5rem] gap-3"
+    : "grid grid-cols-[3rem_1fr] gap-3";
+  return (
+    <div
+      id={`L${line.seq}`}
+      data-stream={line.stream}
+      data-tone={tone}
+      data-match={isMatch || undefined}
+      className={cn(
+        cols,
+        toneClass[tone],
+        isMatch && "bg-amber-500/10",
+        isActive && "bg-amber-500/25",
+      )}
+    >
+      {/* Line number doubles as the permalink anchor — click to put
+          #L<seq> in the URL for sharing. */}
+      <a
+        href={`#L${line.seq}`}
+        className="select-none text-right text-muted-foreground hover:text-foreground"
+      >
+        {line.seq}
+      </a>
+      <span className="whitespace-pre-wrap break-all">{ansiToReact(line.text)}</span>
+      {showElapsed && (
+        <span
+          className="select-none text-right text-muted-foreground tabular-nums"
+          aria-label={elapsedLabel ? `${elapsedLabel} elapsed` : undefined}
+        >
+          {elapsedLabel ?? ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// computeElapsedLabels pre-renders the right-aligned elapsed column.
+// The second is shown ONLY when it differs from the previously shown
+// line, matching the Woodpecker timing column. Returns a per-seq map
+// so the renderer is order-independent (sections render in document
+// order; the map carries the dedup result).
+function computeElapsedLabels(
+  lines: LogLine[],
+  jobStartedAt?: string,
+): { show: boolean; labels: Map<number, string | null> } {
+  const start = jobStartedAt ? Date.parse(jobStartedAt) : Number.NaN;
+  const show = Number.isFinite(start);
+  const labels = new Map<number, string | null>();
+  if (!show) return { show, labels };
+  let lastShown = -1;
+  for (const line of lines) {
+    const t = Date.parse(line.at);
+    if (Number.isFinite(t)) {
+      const sec = Math.max(0, Math.floor((t - start) / 1000));
+      if (sec !== lastShown) {
+        labels.set(line.seq, formatElapsed(sec));
+        lastShown = sec;
+        continue;
+      }
+    }
+    labels.set(line.seq, null);
+  }
+  return { show, labels };
+}
+
+// formatElapsed renders cumulative seconds the way Woodpecker does:
+// seconds, then minutes, then minutes + seconds for the long tail.
 function formatElapsed(sec: number): string {
   if (sec < 60) return `${sec}s`;
   const m = Math.floor(sec / 60);
@@ -135,60 +268,42 @@ function formatElapsed(sec: number): string {
 }
 
 // LogTone classifies a line into a semantic colour bucket. Priority
-// matters — the first matching rule wins so a specific signal
-// ("--- FAIL:") beats the generic "stderr fallback". Kept to a
-// small set: every extra category dilutes the scan-ability of the
-// log tail, which is the whole reason we're tinting in the first
-// place.
-type LogTone =
-  | "error"
-  | "warn"
-  | "success"
-  | "command"
-  | "muted"
-  | "default";
+// matters — the first matching rule wins so a specific signal beats
+// the generic "stderr fallback".
+type LogTone = "error" | "warn" | "success" | "command" | "muted" | "default";
 
 export function classifyLine(text: string, stream: string): LogTone {
   const t = text.trim();
   if (t === "") return "default";
 
-  // Command echoes: emitted by the agent as "$ <command>" lines.
-  // Bolded so the reader can visually skip over them or anchor to
-  // them while scanning for the actual command output underneath.
+  // Command echoes: "$ <command>" lines. Bolded so the reader can skip
+  // over them or anchor to them while scanning for output.
   if (t.startsWith("$ ")) return "command";
 
-  // Unicode status glyphs used by test runners / lint tools — direct
-  // signal, no ambiguity vs. natural language.
+  // Unicode status glyphs used by test runners / lint tools.
   if (/^(✓|✔|PASS\b|SUCCESS\b|OK\b)/.test(t)) return "success";
   if (/^(✗|✘|❌|✕)/.test(t)) return "error";
   if (/^(⚠)/.test(t)) return "warn";
 
-  // Go test structured output — `--- PASS: TestFoo` / `--- FAIL:` /
-  // standalone PASS/FAIL summary lines. Also `FAIL\tpkg` /
-  // `ok  \tpkg` package-level results.
+  // Go test structured output.
   if (/^---\s+(PASS|ok)\b/.test(t)) return "success";
   if (/^---\s+FAIL\b/.test(t)) return "error";
   if (/^(FAIL\s|FAIL$)/.test(t)) return "error";
   if (/^ok\s+\S/.test(t)) return "success";
 
   // Conventional log-level prefixes (case-sensitive to limit false
-  // positives — "error" as an English word inside a normal sentence
-  // shouldn't paint the whole line red).
+  // positives — "error" inside a normal sentence shouldn't paint red).
   if (/^(ERROR|FATAL|Error|Fatal|panic):/.test(t)) return "error";
   if (/^(WARN|WARNING|Warning|warning):/.test(t)) return "warn";
   if (/^(DEBUG|Debug|TRACE|Trace):/.test(t)) return "muted";
 
-  // Strong error markers anywhere in the line — panics, core dumps,
-  // and npm/pnpm-style "ERR!" prefixes.
+  // Strong error markers anywhere in the line.
   if (/\bpanic:\s/.test(t)) return "error";
   if (/\b(ERR!|FATAL!)\b/.test(t)) return "error";
   if (/\bsegmentation fault\b/i.test(t)) return "error";
 
   // stderr without a specific match stays red — better over-flag a
-  // benign stderr line than under-flag a real error. Downloads
-  // like `go mod` and `git clone --progress` write to stderr by
-  // convention, which is a known false positive accepted by every
-  // CI UI I've seen.
+  // benign stderr line than under-flag a real error.
   if (stream === "stderr") return "error";
 
   return "default";
@@ -202,138 +317,3 @@ const toneClass: Record<LogTone, string> = {
   muted: "text-muted-foreground",
   default: "text-foreground",
 };
-
-// ANSI rendering: parse SGR escape sequences emitted by tools like
-// gitleaks, trivy, go test (with `-v`) and turn them into React
-// spans with tailwind colour classes. Keeps the same palette as
-// classifyLine so colour semantics are consistent — "INF" green
-// from a tool matches our own success tint.
-//
-// Scope is intentionally narrow: foreground colours (30-37, 90-97),
-// bold (1), and reset (0). Backgrounds, italics, blink, underline
-// and 256-colour / truecolour are ignored — they'd dilute the
-// scan-ability of a build log without adding signal, and the
-// noisier sequences (\x1b]…\x07 OSC, \x1b[?…h DECSET) are simply
-// dropped.
-
-const ANSI_SGR_RE = /\[([\d;]*)m/g;
-
-type AnsiState = {
-  fg: string | null;
-  bold: boolean;
-};
-
-const fgClass: Record<number, string> = {
-  // Standard foreground (30–37). 30 (black) and 37 (white) map to
-  // semantic tokens so dark/light theme stays readable; the rest
-  // hit a saturated 500-tone that survives both themes.
-  30: "text-muted-foreground",
-  31: "text-red-500",
-  32: "text-emerald-500",
-  33: "text-amber-500",
-  34: "text-blue-500",
-  35: "text-fuchsia-500",
-  36: "text-cyan-500",
-  37: "text-foreground",
-  // Bright foreground (90–97). 90 is "bright black" = gray, used
-  // heavily by structured loggers (zerolog, logrus, trivy) for
-  // timestamps — keep it muted, not actual black, so it reads as
-  // secondary.
-  90: "text-muted-foreground",
-  91: "text-red-400",
-  92: "text-emerald-400",
-  93: "text-amber-400",
-  94: "text-blue-400",
-  95: "text-fuchsia-400",
-  96: "text-cyan-400",
-  97: "text-foreground",
-};
-
-function applyCodes(state: AnsiState, codes: number[]): AnsiState {
-  // Empty `\x1b[m` is shorthand for `\x1b[0m` — reset everything.
-  if (codes.length === 0) {
-    return { fg: null, bold: false };
-  }
-  let { fg, bold } = state;
-  for (const code of codes) {
-    if (code === 0) {
-      fg = null;
-      bold = false;
-    } else if (code === 1) {
-      bold = true;
-    } else if (code === 22) {
-      // 22 = reset bold/dim. Some tools emit it instead of full 0
-      // to clear just the weight.
-      bold = false;
-    } else if (code === 39) {
-      // 39 = default foreground (reset just the colour, leave bold).
-      fg = null;
-    } else if (fgClass[code] !== undefined) {
-      fg = fgClass[code] ?? null;
-    }
-    // Unknown / unsupported (backgrounds 40–47, 100–107, italics 3,
-    // underline 4, truecolour 38;2;…) silently ignored. Keeping the
-    // surrounding text uncoloured is better than a half-applied
-    // style.
-  }
-  return { fg, bold };
-}
-
-function styleClass(state: AnsiState): string {
-  return cn(state.fg, state.bold && "font-semibold");
-}
-
-export function ansiToReact(text: string): ReactNode {
-  if (text === "") return null;
-  // Fast path: no escape byte → return as-is (no React span wrap)
-  // so the typical plain-text line stays as a single text node.
-  if (!text.includes("")) return text;
-
-  const out: ReactNode[] = [];
-  let state: AnsiState = { fg: null, bold: false };
-  let cursor = 0;
-  // Stable key per emitted segment — index suffices because the
-  // segments are produced in order from a deterministic parse;
-  // no reordering happens after render.
-  let key = 0;
-
-  ANSI_SGR_RE.lastIndex = 0;
-  let match: RegExpExecArray | null = ANSI_SGR_RE.exec(text);
-  while (match !== null) {
-    const start = match.index;
-    if (start > cursor) {
-      const chunk = text.slice(cursor, start);
-      const cls = styleClass(state);
-      if (cls === "") {
-        out.push(<Fragment key={key++}>{chunk}</Fragment>);
-      } else {
-        out.push(
-          <span key={key++} className={cls}>
-            {chunk}
-          </span>,
-        );
-      }
-    }
-    const codes = match[1] === "" ? [] : (match[1] ?? "")
-      .split(";")
-      .map((s) => Number.parseInt(s, 10))
-      .filter((n) => !Number.isNaN(n));
-    state = applyCodes(state, codes);
-    cursor = start + match[0].length;
-    match = ANSI_SGR_RE.exec(text);
-  }
-  if (cursor < text.length) {
-    const chunk = text.slice(cursor);
-    const cls = styleClass(state);
-    if (cls === "") {
-      out.push(<Fragment key={key++}>{chunk}</Fragment>);
-    } else {
-      out.push(
-        <span key={key++} className={cls}>
-          {chunk}
-        </span>,
-      );
-    }
-  }
-  return out;
-}
