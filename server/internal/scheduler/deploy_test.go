@@ -172,6 +172,73 @@ func TestBuildAssignment_DeployTarget_UnresolvedShellCIVarIsTerminal(t *testing.
 	}
 }
 
+func TestBuildAssignment_MatrixDecomposesIntoEnvVars(t *testing.T) {
+	// #42: a matrix job sees both the combined GOCDNEXT_MATRIX key and
+	// one env var per dimension ($OS, $ARCH), so `go build GOOS=$OS`
+	// works directly. The dimension vars win over a pipeline/job
+	// variable of a DIFFERENT name (no collision — parser rejects same
+	// names), and the combined key stays for back-compat.
+	def := domain.Pipeline{
+		Jobs: []domain.Job{{
+			Name:      "build",
+			Variables: map[string]string{"GO_VERSION": "1.23"},
+			Matrix:    map[string][]string{"OS": {"linux"}, "ARCH": {"amd64"}},
+			Tasks:     []domain.Task{{Script: "GOOS=$OS GOARCH=$ARCH go build"}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "build", MatrixKey: "ARCH=amd64,OS=linux"}
+
+	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	env := got.GetEnv()
+	if env["OS"] != "linux" {
+		t.Errorf("$OS = %q, want linux", env["OS"])
+	}
+	if env["ARCH"] != "amd64" {
+		t.Errorf("$ARCH = %q, want amd64", env["ARCH"])
+	}
+	if env["GOCDNEXT_MATRIX"] != "ARCH=amd64,OS=linux" {
+		t.Errorf("GOCDNEXT_MATRIX = %q, want the combined key", env["GOCDNEXT_MATRIX"])
+	}
+	if env["GO_VERSION"] != "1.23" {
+		t.Errorf("unrelated variable lost: GO_VERSION = %q", env["GO_VERSION"])
+	}
+}
+
+func TestBuildAssignment_MatrixDimResolvesInPluginSettings(t *testing.T) {
+	// Doc claim (#42): a matrix dimension is referenceable as
+	// `${{ OS }}` in plugin with:, because plugin settings resolve
+	// against the env (which the decomposition populated). Pins it.
+	def := domain.Pipeline{
+		Jobs: []domain.Job{{
+			Name:   "publish",
+			Matrix: map[string][]string{"OS": {"linux"}},
+			Tasks: []domain.Task{{
+				Plugin: &domain.PluginStep{
+					Image:    "ghcr.io/x/publish:v1",
+					Settings: map[string]string{"target": "${{ OS }}"},
+				},
+			}},
+		}},
+	}
+	defJSON, _ := json.Marshal(def)
+	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
+	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", MatrixKey: "OS=linux"}
+
+	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAssignment: %v", err)
+	}
+	plug := got.Tasks[0].GetPlugin()
+	if plug == nil || plug.Settings["target"] != "linux" {
+		t.Fatalf("plugin setting target = %q, want linux (matrix dim resolved)", plug.GetSettings()["target"])
+	}
+}
+
 func TestBuildAssignment_NoDeployTargetForPlainJob(t *testing.T) {
 	def := domain.Pipeline{Jobs: []domain.Job{{
 		Name:  "test",

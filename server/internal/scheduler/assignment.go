@@ -50,6 +50,27 @@ type DeployTarget struct {
 	Version     string
 }
 
+// decomposeMatrixKey splits a matrix_key ("ARCH=amd64,OS=linux",
+// built by store.matrixKey: sorted dims, `,`-joined, `=`-paired) into
+// its per-dimension map for env injection (#42). The parser guarantees
+// names/values are clean; a malformed pair (only possible on a
+// pre-#42 persisted definition) is skipped rather than panicking.
+func decomposeMatrixKey(key string) map[string]string {
+	if key == "" {
+		return nil
+	}
+	parts := strings.Split(key, ",")
+	out := make(map[string]string, len(parts))
+	for _, pair := range parts {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok || k == "" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 func BuildAssignment(
 	run store.RunForDispatch,
 	job store.DispatchableJob,
@@ -122,9 +143,19 @@ func BuildAssignment(
 		env[k] = v
 	}
 	if job.MatrixKey != "" {
-		// Expose the matrix key so scripts can branch on it. Full matrix
-		// variable decomposition (OS=linux → $OS) is deferred.
+		// Expose the combined matrix key (GOCDNEXT_MATRIX="ARCH=...,OS=...")
+		// AND decompose it into one env var per dimension (#42): OS=linux
+		// → $OS=linux, so scripts read `$OS` directly. The parser
+		// validated the names (valid identifier, no reserved prefix, no
+		// collision with variables/secrets) and values (no ,/= which are
+		// the key separators), so the split below is unambiguous. Lands
+		// AFTER pipeline/job variables (a matrix dim is the per-row axis,
+		// more specific) and BEFORE secrets (a secret of the same name —
+		// only possible on a pre-#42 persisted definition — still wins).
 		env["GOCDNEXT_MATRIX"] = job.MatrixKey
+		for k, v := range decomposeMatrixKey(job.MatrixKey) {
+			env[k] = v
+		}
 	}
 
 	// Secrets: layer on top of the pipeline-declared env. A secret with the
