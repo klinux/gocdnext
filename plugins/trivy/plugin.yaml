@@ -49,6 +49,15 @@ inputs:
     description: >
       When "true", CVEs without an upstream fix are skipped —
       reduces noise on libraries you can't patch anyway.
+  skip-dirs:
+    required: false
+    description: >
+      Comma-separated directories/globs to exclude from an fs/repo
+      scan (e.g. "node_modules,vendor"). Use it to skip build-time
+      dependency trees that never reach the runtime image, so their
+      CVEs don't fail a source scan — pair with a separate
+      `scan-type: image` job to cover what actually ships. Forwarded
+      verbatim as trivy's `--skip-dirs`.
   format:
     required: false
     default: table

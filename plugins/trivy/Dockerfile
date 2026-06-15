@@ -21,6 +21,11 @@
 #                                      available. Default "true" — reduces
 #                                      noise on libraries the upstream
 #                                      hasn't patched yet.
+#   PLUGIN_SKIP_DIRS       (optional)  comma-separated dirs/globs to
+#                                      exclude from an fs/repo scan
+#                                      (e.g. "node_modules,vendor" —
+#                                      build-time deps that never ship).
+#                                      Forwarded as trivy --skip-dirs.
 #   PLUGIN_FORMAT          (optional)  table | json | sarif | template.
 #                                      Default table for human logs.
 #   PLUGIN_OUTPUT          (optional)  write report to this path (relative
