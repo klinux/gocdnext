@@ -801,6 +801,78 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen run: %w", err)
 	}
 
+	// Revive downstream work an earlier fail-fast canceled. When this
+	// job failed before, cascadeAfterJobCompletion canceled every queued
+	// stage/job AFTER it (CancelQueuedStagesInRun + CancelQueuedJobsInRun)
+	// — including awaiting approval gates. Reopening only THIS job's own
+	// stage (above) isn't enough: a successful rerun would re-finalize
+	// the run with those rows stuck 'canceled', so the promote gate never
+	// reappears and production is silently skipped. (Observed live: a
+	// release whose deploy failed on a missing secret, was fixed + rerun,
+	// and completed 'success' with the prod gate dead in 'canceled'.)
+	//
+	// Scope: strictly downstream stages (ordinal greater than the rerun
+	// job's stage) whose rows the SYSTEM canceled — cancel_requested_at
+	// IS NULL leaves a user's explicit cancel-kill intact. Non-gate jobs
+	// go back to 'queued'. Gates go straight back to 'awaiting_approval'
+	// (re-stamping awaiting_since) because the dispatch query only sees
+	// 'queued' rows: a gate revived as 'queued' would either be picked up
+	// as a task-less job OR never re-arm. The scheduler's needs-gate
+	// re-culls any revived job whose upstream is still failed, so reviving
+	// the whole tail is self-correcting.
+	if _, err := tx.Exec(ctx, `
+		UPDATE job_runs
+		SET status = 'queued', agent_id = NULL, started_at = NULL,
+		    finished_at = NULL, exit_code = NULL, error = NULL
+		WHERE run_id = $1
+		  AND status = 'canceled'
+		  AND cancel_requested_at IS NULL
+		  AND approval_gate = false
+		  AND stage_run_id IN (
+		      SELECT id FROM stage_runs
+		      WHERE run_id = $1
+		        AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
+		  )
+	`, runID, stageRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: revive downstream jobs: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE job_runs
+		SET status = 'awaiting_approval', awaiting_since = NOW(),
+		    agent_id = NULL, started_at = NULL, finished_at = NULL,
+		    exit_code = NULL, error = NULL,
+		    decided_by = NULL, decided_at = NULL, decision = NULL
+		WHERE run_id = $1
+		  AND status = 'canceled'
+		  AND cancel_requested_at IS NULL
+		  AND approval_gate = true
+		  AND stage_run_id IN (
+		      SELECT id FROM stage_runs
+		      WHERE run_id = $1
+		        AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
+		  )
+	`, runID, stageRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: re-arm downstream gates: %w", err)
+	}
+	// Reopen the stages that just got a job back so GetRunProgress counts
+	// them as unfinished again (it keys on queued/running). A downstream
+	// stage whose jobs were ALL user-canceled gets no revived job and
+	// correctly stays 'canceled'.
+	if _, err := tx.Exec(ctx, `
+		UPDATE stage_runs
+		SET status = 'queued', started_at = NULL, finished_at = NULL
+		WHERE run_id = $1
+		  AND status = 'canceled'
+		  AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
+		  AND EXISTS (
+		      SELECT 1 FROM job_runs jr
+		      WHERE jr.stage_run_id = stage_runs.id
+		        AND jr.status IN ('queued', 'awaiting_approval')
+		  )
+	`, runID, stageRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen downstream stages: %w", err)
+	}
+
 	// Notify the scheduler the same way a fresh run does — it'll
 	// pick up the newly-queued job on its next LISTEN tick.
 	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, RunQueuedChannel, runID.String()); err != nil {
