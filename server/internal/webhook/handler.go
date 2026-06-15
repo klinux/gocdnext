@@ -306,6 +306,40 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// when.event: the fingerprint match (URL+branch) authorizes the
+	// repo, but a pipeline only fires on push if its events include
+	// "push". A pipeline declaring [tag] / [manual] keeps an implicit
+	// material on this branch; without this filter it fans out on every
+	// push. Symmetric with the tag-push / pull_request paths. Runs AFTER
+	// drift (config-sync still observes the push) and BEFORE when.paths
+	// (paths only matter once the event is eligible).
+	eventCandidates := len(materials)
+	materials, eventFiltered := filterMaterialsByEvent(h.log, materials, "push", "github", delivery)
+	if len(materials) == 0 {
+		h.log.Info("github webhook: fingerprint matched but no push-listening material",
+			"delivery", delivery, "branch", branch,
+			"material_candidates", eventCandidates, "filtered_by_event", eventFiltered, "event", "push")
+		// Config sync may still have observed this push even though no
+		// pipeline fires — surface it as Accepted + the drift block so
+		// the delivery doesn't read as a plain "ignored".
+		resp := map[string]any{"runs": []any{}, "filtered_by_event": eventFiltered}
+		status := http.StatusOK
+		rec.status = store.WebhookStatusIgnored
+		if driftOutcome.Attempted {
+			resp["drift"] = map[string]any{
+				"applied":  driftOutcome.Applied,
+				"error":    driftOutcome.Error,
+				"revision": driftOutcome.Revision,
+			}
+			status = http.StatusAccepted
+			rec.status = store.WebhookStatusAccepted
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
 	// when.paths: drop materials whose globs don't match the push's
 	// changed files. Unknown set (truncated payload, force push with
 	// no embedded commits) fails open inside pathsMatch.
@@ -344,6 +378,9 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	}
 	if pathFiltered > 0 {
 		resp["filtered_by_paths"] = pathFiltered
+	}
+	if eventFiltered > 0 {
+		resp["filtered_by_event"] = eventFiltered
 	}
 	if driftOutcome.Attempted {
 		resp["drift"] = map[string]any{
