@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.39.2 — 2026-06-15
+
+### Fixed
+
+- **Re-running a failed job left downstream approval gates stuck
+  `canceled`** (HIGH): when a stage fails, the cascade fail-fast-cancels
+  every queued downstream stage/job — including awaiting approval gates
+  and the production stage behind them. `RerunJob` reopened only the
+  rerun job's own stage + the run, so a successful rerun re-finalized
+  the run as `success` with the gate dead in `canceled` and production
+  silently skipped. (Hit live: a release whose `deploy-stage` failed on
+  a missing `ARGOCD_SERVER` secret, was fixed and rerun, completed
+  green with the prod gate unreachable.) `RerunJob` now revives the
+  system-canceled downstream — non-gate jobs back to `queued`, gates
+  back to `awaiting_approval` (re-stamping `awaiting_since`) — scoped to
+  stages after the rerun job and skipping rows a user explicitly
+  cancel-killed (`cancel_requested_at` set). The needs-gate re-culls any
+  revived job whose upstream is still failed.
+- **`argocd` plugin deploy step produced no log output** (LOW): `argocd
+  app set` is silent on success, so a CMP deploy finished in seconds
+  with nothing in the log — reading as "it talked to nothing". The
+  plugin now echoes the resolved `==> argocd …` invocation before
+  running it (auth token stays in the env, never on argv). Additive
+  (stays `v1`).
+
 ## v0.39.1 — 2026-06-15
 
 ### Fixed
