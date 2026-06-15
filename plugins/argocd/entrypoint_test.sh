@@ -56,4 +56,13 @@ if PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="tok" \
     fail "plugin_env with a newline was accepted"
 fi
 
+# ── 4. the resolved invocation is echoed (visibility) and the auth
+#       token never leaks into that line — `app set` is silent, so the
+#       echo is the only signal a deploy step produces. ──
+rm -f "$TMP/args"
+out="$(PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="s3cr3t-tok" \
+  PLUGIN_COMMAND="app set my-app" PLUGIN_GRPC_WEB="true" run)"
+echo "$out" | grep -qE '^==> argocd .*app set my-app' || fail "resolved command not echoed for visibility"
+echo "$out" | grep -q "s3cr3t-tok" && fail "auth token leaked into the echoed command"
+
 echo "PASS: argocd entrypoint"
