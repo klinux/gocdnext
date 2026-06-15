@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.38.1 — 2026-06-15
+
+### Fixed
+
+- **Branch push fanned out to non-push pipelines** (HIGH): a webhook
+  branch push triggered every pipeline whose implicit material matched
+  the repo+branch fingerprint, without checking `when.event`. A
+  pipeline declaring `when.event: [tag]` or `[manual]` keeps an
+  implicit material on the default branch, so it fired on every
+  unrelated push — breaking the anti-loop contract of the
+  tag-driven release flow. The branch-push path now filters materials
+  by `events` containing `"push"`, symmetric with the tag-push and
+  pull_request paths, in both the GitHub (`handler.go`) and
+  GitLab/Bitbucket (`multi.go` `persistPush`) handlers. The filter runs
+  after drift (config sync still observes the push) and before
+  `when.paths`. A `manual`-only pipeline now never fires from any
+  webhook event. Empty `events` defaults to `["push"]` (back-compat).
+
 ## v0.38.0 — 2026-06-15
 
 ### Added
