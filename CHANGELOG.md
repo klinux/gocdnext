@@ -6,6 +6,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.38.0 — 2026-06-15
+
+### Added
+
+- **`release-pr` plugin**: opens (or updates) a curated release PR for
+  a gated delivery flow. Bumps a `VERSION` file on a `release/<ver>`
+  branch cut from the base, opens the PR via `gh` for peer sign-off;
+  merging it (which touches `VERSION`) is the signal a downstream tag
+  pipeline keys on. Version selection stays in `semver-bump` upstream;
+  curation + approval stay in git/GitHub. Hardened on review: SemVer
+  validation (bare or `v`-prefixed), path guards on the version/notes
+  files (a `notes_file` like `/proc/self/environ` can't leak the
+  token into the PR body), branch cut from base (never the triggering
+  checkout), `GIT_ASKPASS` auth (token never on argv), and
+  `--force-with-lease` pinned to the remote sha so a concurrent cut
+  fails loud instead of clobbering.
+
+### Changed
+
+- **`argocd` plugin: `plugin_env` input** for Argo apps backed by a
+  config-management plugin. It forwards a single `--plugin-env
+  NAME=value` as one argument, so a multi-token Helm CMP value
+  (`HELM_ARGS=--set image.tag=X -f values.yaml`) survives intact — the
+  free-form `command` word-split it before. Additive (stays `v1`).
+  Also corrected the `&&`-chained `app set` example, which never
+  worked (`exec` passes `&&` as a literal arg, not a shell operator).
+- Plugin CI (`plugins.yml`) now runs each plugin's `entrypoint_test.sh`
+  (a mock-PATH shell unit test, no new dependency) before the image
+  build.
+
 ## v0.37.0 — 2026-06-14
 
 ### Added
