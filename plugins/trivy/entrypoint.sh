@@ -89,6 +89,14 @@ if [ "${IGNORE_UNFIXED}" = "true" ]; then
   args+=("--ignore-unfixed")
 fi
 
+# --skip-dirs: comma-separated dirs/globs to exclude from an fs/repo
+# scan (e.g. "node_modules,vendor" — build-time deps that never reach
+# the runtime image, so their CVEs are noise on a source scan). trivy
+# treats the value as a comma-separated list, so it rides as one arg.
+if [ -n "${PLUGIN_SKIP_DIRS:-}" ]; then
+  args+=("--skip-dirs" "${PLUGIN_SKIP_DIRS}")
+fi
+
 if [ -n "${PLUGIN_OUTPUT:-}" ]; then
   args+=("--output" "${PLUGIN_OUTPUT}")
 fi
