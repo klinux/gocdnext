@@ -1,7 +1,9 @@
 -- name: GetRunForAction :one
 -- Thin row used by cancel/rerun handlers to check status + find the
--- pipeline + revisions without pulling the whole detail query.
-SELECT id, pipeline_id, status, revisions
+-- pipeline + revisions without pulling the whole detail query. cause +
+-- cause_detail let RerunRun reproduce the original run's CI-var context
+-- (CI_TAG_NAME, CI_CAUSE, PR metadata) instead of demoting it to manual.
+SELECT id, pipeline_id, status, revisions, cause, cause_detail
 FROM runs
 WHERE id = $1;
 
