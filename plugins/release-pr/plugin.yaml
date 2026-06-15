@@ -1,0 +1,119 @@
+name: release-pr
+category: release
+image_tag: v1
+description: >
+  Open (or update) a curated release PR. A release manager runs this
+  from a manual pipeline; it bumps a VERSION file on a
+  release/<version> branch and opens a PR for peer sign-off. Merging
+  that PR — which touches VERSION — is the signal a downstream
+  `on: push, paths: [VERSION]` pipeline keys on to cut the git tag,
+  which then drives build + deploy. Curation and approval live in
+  git/GitHub; this plugin only prepares the PR, it never deploys.
+
+  Version selection is the caller's job — pass the computed version
+  in (typically `${{ needs.bump.outputs.next }}` from a semver-bump
+  step). The release is "everything on the base up to the cut"; to
+  hold a merged change back, revert it on the base branch rather than
+  cherry-picking.
+
+inputs:
+  version:
+    required: true
+    description: >
+      The release version — bare ("1.3.0") or prefixed ("v1.3.0").
+      A leading `tag_prefix` is stripped and the result validated as
+      SemVer, so wiring `${{ needs.bump.outputs.next }}` from a
+      semver-bump step with `prefix: v` (which emits "v1.3.0") works
+      without double-prefixing. The VERSION file is written bare.
+  token:
+    required: true
+    description: >
+      GitHub token with contents:write + pull-requests:write. Used
+      both for the branch push (via GIT_ASKPASS) and `gh` (GH_TOKEN).
+      Pipe via the job's secrets: list.
+  repo:
+    required: false
+    description: >
+      "owner/name". Optional — gh infers it from the workspace git
+      remote when omitted.
+  base:
+    required: false
+    default: main
+    description: >
+      Base branch the release PR targets. The release branch is cut
+      FROM this (fetched fresh), not from whatever ref the manual run
+      checked out — so the PR carries only the VERSION bump on top of
+      base, never stray commits from a wrong-branch trigger.
+  version_file:
+    required: false
+    default: VERSION
+    description: >
+      File the version is written into. This is both the release
+      marker and the path the downstream tag pipeline filters on, so
+      keep it in sync with that pipeline's `when.paths`.
+  notes_file:
+    required: false
+    description: >
+      Path to a changelog/notes file used as the PR body (e.g. a
+      release-notes step's artifact). Falls back to a one-line body
+      when unset or missing.
+  label:
+    required: false
+    default: release
+    description: >
+      Label applied to the PR. Pairs well with approval
+      `quorum_by_label:` to gate sign-off by this label. The label
+      must already exist in the repo.
+  title:
+    required: false
+    description: 'PR title. Defaults to "Release <tag_prefix><version>".'
+  branch_prefix:
+    required: false
+    default: "release/"
+    description: Prefix for the bot branch (branch = prefix + tag).
+  tag_prefix:
+    required: false
+    default: v
+    description: >
+      Prefix joined to the version for the release name + branch
+      (v1.3.0). Keep it equal to the semver-bump / tag step's prefix.
+
+examples:
+  - name: open a curated release PR
+    description: >
+      Manual pipeline a release manager triggers. semver-bump
+      computes the next version, release-notes builds the changelog,
+      and release-pr opens the PR. Peers approve it in GitHub;
+      merging it (touching VERSION) fires the tag pipeline.
+    yaml: |
+      when:
+        event: [manual]
+      stages: [prepare, propose]
+      jobs:
+        bump:
+          stage: prepare
+          uses: ghcr.io/klinux/gocdnext-plugin-semver-bump@v1
+          with: { prefix: v }
+          outputs: { next: NEXT }
+        notes:
+          stage: prepare
+          uses: ghcr.io/klinux/gocdnext-plugin-release-notes@v1
+          with:
+            format: conventional
+            output: CHANGELOG-NEXT.md
+          artifacts:
+            paths: [CHANGELOG-NEXT.md]
+        open-pr:
+          stage: propose
+          needs: [bump, notes]
+          needs_artifacts:
+            - from_job: notes
+              paths: [CHANGELOG-NEXT.md]
+          uses: ghcr.io/klinux/gocdnext-plugin-release-pr@v1
+          with:
+            version: ${{ needs.bump.outputs.next }}
+            repo: acme-org/web
+            base: main
+            notes_file: CHANGELOG-NEXT.md
+            token: ${{ RELEASE_TOKEN }}
+          secrets: [RELEASE_TOKEN]
