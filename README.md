@@ -28,18 +28,28 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
 - **Value Stream Map (VSM)** — visualize the graph of pipelines + materials.
 - **Webhook-first**, polling only as fallback. **Auto-register webhook** on
   GitHub / GitLab / Bitbucket when you create a git material.
-- **Plugin catalog** — 40+ reference plugins (build/test/scan/sign/deploy/
-  notify), each shipped as a versioned container image with a typed input
-  contract.
+- **Plugin catalog** — 60+ reference plugins (build/test/scan/sign/deploy/
+  migrate/notify), each shipped as a versioned container image with a typed
+  input contract.
 - **Kubernetes-native runtime** — pod-per-job execution with runner profiles
-  (K1–K4), or classic Docker on the agent host.
+  (K1–K4), `node_selector`/`tolerations` scheduling, or classic Docker on
+  the agent host.
+- **Keyless cloud auth** — jobs mint short-lived OIDC `id_tokens:` (with
+  JWKS discovery) and exchange them for cloud credentials via workload
+  identity federation — no static service-account keys in secrets.
+- **Deployment tracking + rollback** — `deploy:` markers record
+  version-per-environment with history, plus **one-click rollback** that
+  reuses the prior revision's immutable outputs.
 - **Pipeline services** — sibling service containers (postgres,
   redis, etc.) declared in YAML, reachable by every job via DNS
   alias, and rendered as nodes in the pipeline graph.
 - **RBAC + audit log** — admin/maintainer/viewer hierarchy, every mutation
   recorded in `audit_events`.
-- **Approval gates** — gate stages on approver groups with quorum, with full
-  audit trail.
+- **Approval gates** — gate stages on approver groups with quorum (incl.
+  PR-label-driven `quorum_by_label`), full audit trail, and zero compute
+  held while a gate waits — it's pure DB state.
+- **Run it locally** — `gocdnext run-local` executes a pipeline on your
+  machine before you push.
 
 ## Screenshots
 
@@ -79,10 +89,10 @@ Differentiators vs. GitHub Actions / Tekton / Woodpecker:
 ```
 server/      Go control plane: HTTP API, gRPC for agents, scheduler, webhooks
 agent/       Go agent: pulls jobs, runs containers (docker or k8s), streams logs
-cli/         gocdnext CLI: validate, apply, admin
+cli/         gocdnext CLI: validate, run-local, apply, secret, login, admin
 web/         Next.js 15 UI (App Router, RSC, Server Actions, shadcn)
 proto/       gRPC / protobuf contracts (managed by buf)
-plugins/     Reference plugins — 40+ images (build/test/scan/sign/deploy/notify)
+plugins/     Reference plugins — 60+ images (build/test/scan/sign/deploy/migrate/notify)
 charts/      Helm chart (server + agents, single-host Ingress / Gateway API)
 examples/    Sample .gocdnext/ pipeline files
 docs/        Starlight docs site (concepts, recipes, reference, operate guide)
@@ -193,7 +203,7 @@ your tooling prefers.
 ```bash
 helm repo add gocdnext https://klinux.github.io/gocdnext
 helm repo update
-helm install gocd gocdnext/gocdnext --version 0.8.0 \
+helm install gocd gocdnext/gocdnext --version 0.39.3 \
   --set devDatabase.enabled=true \
   --set agent.tokenSecret.value="$(openssl rand -hex 32)" \
   --set webhookToken.value="$(openssl rand -hex 32)" \
@@ -204,7 +214,7 @@ helm install gocd gocdnext/gocdnext --version 0.8.0 \
 **OCI** (Helm 3.8+):
 
 ```bash
-helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.8.0 \
+helm install gocd oci://ghcr.io/klinux/charts/gocdnext --version 0.39.3 \
   --set devDatabase.enabled=true \
   ...
 ```
@@ -234,34 +244,53 @@ See [docs/architecture.md](docs/architecture.md) for the design. TL;DR:
                            └────────────┘
 ```
 
-## What's shipped (v0.8.0)
+## What's shipped (v0.39.3)
 
 - **Pipeline core** — `.gocdnext/` folder, stage/job/needs/matrix, materials
   (git + upstream), webhook-first ingest with polling fallback.
+- **Multi-provider triggers** — push / tag / `pull_request` (GitHub) +
+  merge request (GitLab) + PR (Bitbucket) webhooks, with
+  `when.event`/`when.paths`/`when.branch` filtering, `[skip ci]` markers,
+  and `auto_register_webhook`.
 - **Plugin runtime** — versioned container plugins, typed `plugin.yaml`
   contracts, secret-aware env propagation (NAME-only on argv).
-- **Plugin catalog** — 40+ reference plugins covering build (node/go/maven/
-  gradle/python/rust), container (buildx/kaniko/docker-push/cosign/trivy),
-  cloud (aws/gcloud/kubectl/helm/kustomize/argocd/terraform), quality
-  (sonar/codecov/coveralls/lighthouse-ci/gitleaks/golangci-lint), and
+- **Plugin catalog** — 60+ reference plugins: build (node/go/maven/gradle/
+  python/rust), container (buildx/kaniko/docker-push/cosign/trivy), cloud
+  (aws/gcloud/kubectl/helm/kustomize/argocd/terraform), DB migrations
+  (flyway/liquibase/goose), quality (sonar/codecov/coveralls/lighthouse-ci/
+  gitleaks/golangci-lint), release (release-pr/release-notes/tag), and
   notify (slack/discord/teams/email/matrix).
 - **Runtimes** — Docker on the agent host **or** Kubernetes pod-per-job
-  with runner profiles (K1–K4).
+  with runner profiles (K1–K4), `node_selector`/`tolerations` scheduling,
+  and a DinD sidecar for `docker: true` jobs.
+- **Keyless cloud auth** — OIDC token issuer: jobs mint short-lived
+  `id_tokens:` (RS256, JWKS at `/.well-known/`), exchangeable for cloud
+  credentials via workload identity federation (GCP/AWS/Azure/Vault) — no
+  static service-account keys.
+- **Deployment tracking** — `deploy:` markers record version-per-environment,
+  an Environments tab with history, and **one-click rollback** that re-runs
+  with the prior revision's immutable outputs.
+- **Gated delivery** — release-train flow: a curated release PR (sign-off
+  gate) cuts a tag that drives build → stage → **approval gate (promote)** →
+  production. Approval gates are pure DB state (approver groups + quorum +
+  `quorum_by_label` + audit) — no container held while a gate waits.
 - **Artifact + cache** — pluggable storage backends (configurable from
   `/settings/storage`), TTL + per-project + global quotas, container
   layer cache with buildx `cache: bucket` shorthand.
-- **Approval gates** — approver groups + quorum, audit trail.
+- **Coverage** — per-job coverage reports with `fail_under` gating and a
+  delta vs the mainline baseline.
+- **CLI** — `validate` + `run-local` (run a pipeline on your machine),
+  plus `apply`, `secret`, `login`, and admin commands.
 - **RBAC + audit** — admin/maintainer/viewer, `audit_events` table,
   `/settings/users` and `/settings/audit` UI.
+- **Supply chain** — cosign keyless image signing + SBOM/SLSA provenance
+  attestation in the release path.
 - **Operability** — VSM, single-host Ingress / Gateway API in the Helm
   chart, OpenTelemetry traces, Prometheus `/metrics`, `slog` with
-  `trace_id`/`span_id` correlation.
+  `trace_id`/`span_id` correlation, phase-marked logs + full-log streaming.
 
 ## What's open
 
-- **Pipeline deployment primitive** — Argo-style helm/kustomize/manifests
-  with env history + rollback (concept doc in
-  [docs/concepts/trunk-based-release/](https://klinux.github.io/gocdnext/docs/concepts/trunk-based-release/)).
 - **Per-project agent scope / lock** — deferred from the k8s runtime
   rollout.
 - **`isolation: per-stage`** — share workspace across jobs in the same
