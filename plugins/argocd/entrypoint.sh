@@ -59,6 +59,15 @@ if [ -n "${PLUGIN_PLUGIN_ENV:-}" ]; then
     extra+=("--plugin-env" "${PLUGIN_PLUGIN_ENV}")
 fi
 
+# Echo the resolved invocation so the job log shows what actually ran.
+# `argocd app set` is silent on success, so without this a deploy step
+# reads as "nothing happened" (the job finishes in seconds with no
+# output). The auth token is NOT here — it rides ARGOCD_AUTH_TOKEN in
+# the env, never on argv — so this line is safe to log. Note a CMP
+# `app set` only updates the app's parameters; the rollout itself is
+# Argo's auto-sync reacting to the change.
+echo "==> argocd ${flags[*]} ${PLUGIN_COMMAND} ${extra[*]}"
+
 # PLUGIN_COMMAND is intentionally unquoted (word-split into argv); the
 # plugin-env value above is the one piece that must NOT be split.
 # shellcheck disable=SC2086
