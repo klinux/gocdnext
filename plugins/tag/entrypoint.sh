@@ -49,28 +49,43 @@ else
     git tag "${force_args[@]}" "${name}" "${revision}"
 fi
 
-# Resolve the remote URL and rewrite to include the token. Doing
-# this per-invocation (vs. a persistent credential helper) keeps
-# the secret out of any config file that might get checked in.
+# Auth via GIT_ASKPASS so the token never lands on argv (/proc/<pid>/
+# cmdline, ps) or in git's URL-embedding error output.
+ASKPASS="$(mktemp)"
+trap 'rm -f "${ASKPASS}"' EXIT
+cat > "${ASKPASS}" <<'EOF'
+#!/bin/sh
+case "$1" in
+    Username*) echo "${GIT_PUSH_USERNAME}" ;;
+    *)         echo "${GIT_PUSH_TOKEN}" ;;
+esac
+EOF
+chmod 700 "${ASKPASS}"
+export GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0
+export GIT_PUSH_USERNAME="${username}" GIT_PUSH_TOKEN="${PLUGIN_TOKEN}"
+
+# Push to the origin URL with any embedded clone-token creds STRIPPED.
+# The agent clones private repos as https://x-access-token:CLONE@host/…
+# so a naive `https://user:token@${remote_url#https://}` would double
+# the creds — git then reads the second token as a port ("Port number
+# was not a decimal number"). Strip the `user:token@` and let
+# GIT_ASKPASS supply the push credential.
 remote_url=$(git remote get-url "${remote}")
 case "${remote_url}" in
-    https://*)
-        stripped="${remote_url#https://}"
-        auth_url="https://${username}:${PLUGIN_TOKEN}@${stripped}"
-        ;;
-    http://*)
-        stripped="${remote_url#http://}"
-        auth_url="http://${username}:${PLUGIN_TOKEN}@${stripped}"
-        ;;
+    https://*) scheme="https://" ;;
+    http://*)  scheme="http://" ;;
     *)
         echo "gocdnext/tag: remote ${remote} is not https (${remote_url}); SSH auth isn't supported in v1" >&2
         exit 2
         ;;
 esac
+hostpath="${remote_url#"${scheme}"}"
+hostpath="${hostpath#*@}"
+clean_url="${scheme}${hostpath}"
 
-echo "==> git push ${remote} ${name}"
+echo "==> git push ${remote} refs/tags/${name}"
 # Push the single ref rather than `--tags`: `--tags` pushes every
 # tag in the local repo, which might include stale locals the
 # agent cloned from a shallow checkout. Named push is precise.
-git push "${force_args[@]}" "${auth_url}" "refs/tags/${name}"
+git push "${force_args[@]}" "${clean_url}" "refs/tags/${name}"
 echo "==> pushed"
