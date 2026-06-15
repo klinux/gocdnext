@@ -519,8 +519,12 @@ func TestRerun_Success(t *testing.T) {
 	_ = pool.QueryRow(context.Background(),
 		`SELECT cause, COALESCE(triggered_by, '') FROM runs WHERE id = $1`, got.RunID,
 	).Scan(&cause, &triggeredBy)
-	if cause != "manual" {
-		t.Fatalf("cause = %q want manual", cause)
+	// A rerun preserves the ORIGINAL run's cause so CI vars derived from
+	// it (CI_TAG_NAME, CI_CAUSE, PR metadata) resolve identically on the
+	// rerun. The seeded run is a webhook push, so the rerun stays
+	// 'webhook' rather than being demoted to 'manual'.
+	if cause != "webhook" {
+		t.Fatalf("cause = %q want webhook (rerun preserves original cause)", cause)
 	}
 	if triggeredBy != "klinux" {
 		t.Fatalf("triggered_by = %q", triggeredBy)
