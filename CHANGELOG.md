@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.39.0 — 2026-06-15
+
+### Added
+
+- **`trivy` plugin: `skip-dirs` input** — forwards a comma-separated
+  dir/glob list as trivy's `--skip-dirs` on fs/repo scans. Lets a
+  source scan exclude build-time dependency trees
+  (`skip-dirs: "node_modules,vendor"`) that never reach the runtime
+  image, so their CVEs don't fail the gate; pair with a
+  `scan-type: image` job to cover what actually ships. Additive
+  (stays `v1`).
+
 ## v0.38.1 — 2026-06-15
 
 ### Fixed
