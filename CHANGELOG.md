@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.39.3 — 2026-06-15
+
+### Fixed
+
+- **Re-running a tag/PR run lost its CI vars (`CI_TAG_NAME` etc.)**
+  (HIGH): `RerunRun` hardcoded `cause="manual"` with only `rerun_of` in
+  cause_detail, discarding the original run's `tag_name` / PR metadata.
+  On rerun `addTagVars`/`addPullRequestVars` then emitted nothing, so a
+  `deploy.version: ${CI_TAG_NAME}` (or any `${CI_*}` shell reference)
+  failed to resolve at dispatch — `deploy.version could not be resolved
+  for this run: unresolved ${CI_*} shell reference`. Rerun now carries
+  the original `cause` + the semantic cause_detail keys
+  (`tag_name`/`tag_message`/`tagger`, `pr_number`/`pr_labels`, …)
+  forward, stamping `rerun_of` and refilling fresh
+  provider/delivery/material/modification bookkeeping. A manual *Run*
+  (not Rerun) of a tag pipeline still has no tag context by design —
+  use Rerun to reproduce a tagged release.
+
 ## v0.39.2 — 2026-06-15
 
 ### Fixed
