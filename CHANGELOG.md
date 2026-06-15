@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.39.1 — 2026-06-15
+
+### Fixed
+
+- **`tag` plugin failed to push on private repos** (HIGH): the agent
+  clones private repos with a token embedded in the origin URL, and the
+  tag plugin prepended a second `user:token@` instead of stripping the
+  existing creds — producing `https://user:TOKEN@x-access-token:CLONE@host/…`
+  that git parses as `host:port` ("Port number was not a decimal
+  number"), failing the tag push (exit 128). Now strips any embedded
+  `user:token@` and pushes the clean URL, authenticating via
+  `GIT_ASKPASS` (token off argv) — same pattern as `release-pr`.
+
 ## v0.39.0 — 2026-06-15
 
 ### Added
