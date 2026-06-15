@@ -78,6 +78,37 @@ func (h *Handler) persistPush(
 		return
 	}
 
+	// when.event — same guard the GitHub branch-push path applies: a
+	// fingerprint match authorizes the repo, but only push-listening
+	// pipelines fire on a push (tag/manual keep an implicit material on
+	// this branch). After drift, before when.paths.
+	eventCandidates := len(materials)
+	materials, eventFiltered := filterMaterialsByEvent(h.log, materials, "push", np.Provider, np.Delivery)
+	if len(materials) == 0 && eventFiltered > 0 {
+		h.log.Info(np.Provider+" webhook: fingerprint matched but no push-listening material",
+			"delivery", np.Delivery, "branch", np.Branch,
+			"material_candidates", eventCandidates, "filtered_by_event", eventFiltered, "event", "push")
+		// Config sync may still have observed this push even though no
+		// pipeline fires — surface it as Accepted + the drift block so
+		// the delivery doesn't read as a plain "ignored".
+		resp := map[string]any{"runs": []any{}, "filtered_by_event": eventFiltered}
+		status := http.StatusOK
+		rec.status = store.WebhookStatusIgnored
+		if driftOutcome.Attempted {
+			resp["drift"] = map[string]any{
+				"applied":  driftOutcome.Applied,
+				"error":    driftOutcome.Error,
+				"revision": driftOutcome.Revision,
+			}
+			status = http.StatusAccepted
+			rec.status = store.WebhookStatusAccepted
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
 	materials, pathFiltered := filterMaterialsByPaths(
 		h.log, materials, np.ChangedFiles, np.FilesKnown, np.Provider, np.Delivery)
 	if len(materials) == 0 && pathFiltered > 0 {
@@ -130,6 +161,12 @@ func (h *Handler) persistPush(
 	resp := map[string]any{
 		"runs":      runs,
 		"materials": len(materials),
+	}
+	if pathFiltered > 0 {
+		resp["filtered_by_paths"] = pathFiltered
+	}
+	if eventFiltered > 0 {
+		resp["filtered_by_event"] = eventFiltered
 	}
 	if driftOutcome.Attempted {
 		resp["drift"] = map[string]any{
