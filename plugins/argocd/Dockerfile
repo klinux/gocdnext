@@ -22,6 +22,13 @@
 #                                     when Argo is behind an L7
 #                                     reverse proxy that doesn't
 #                                     speak HTTP/2 to backends).
+#   PLUGIN_PLUGIN_ENV     (optional)  a single config-management
+#                                     plugin env, forwarded as one
+#                                     `--plugin-env NAME=value` arg
+#                                     so a multi-token Helm CMP value
+#                                     ("HELM_ARGS=--set x -f y")
+#                                     survives intact. Pairs with
+#                                     `command: app set <app>`.
 #
 # The CLI auths via the token in env (ARGOCD_AUTH_TOKEN) — no
 # config file persistence needed, every run is fresh.

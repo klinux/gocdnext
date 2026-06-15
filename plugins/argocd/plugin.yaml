@@ -43,6 +43,19 @@ inputs:
       "true" → `--grpc-web`. Use when Argo CD sits behind a
       reverse proxy that doesn't speak HTTP/2 to its backend
       (common with cloud LBs + ingress controllers).
+  plugin_env:
+    required: false
+    description: >
+      A single `--plugin-env NAME=value` passed to the command —
+      for Argo apps backed by a config-management plugin (a Helm
+      CMP, kustomize CMP, etc). The whole value is forwarded as ONE
+      argument, so a multi-token Helm invocation survives intact:
+      `HELM_ARGS=--set global.image.tag=1.2.3 -f values-prod.yaml`.
+      This is why a CMP `app set` needs its own input — folding it
+      into `command:` would word-split the spaces and Argo would
+      see only the first token. Pairs with `command: app set <app>`;
+      auto-sync apps redeploy on the parameter change, otherwise add
+      a `command: app sync <app>` job after.
 
 examples:
   - name: sync after push
@@ -90,10 +103,11 @@ examples:
 
   - name: parameterised image tag
     description: >
-      Set the image tag on the Argo Application before sync so
-      the new commit gets deployed without modifying the
-      manifest repo. Kustomize image overrides + helm value
-      overrides both work the same way via `app set`.
+      Set the image tag on the Argo Application so the new commit
+      deploys without touching the manifest repo. One subcommand per
+      job — an app with an automated sync policy redeploys on the
+      parameter change; otherwise add a `command: app sync api-prod`
+      job after this one.
     yaml: |
       jobs:
         deploy:
@@ -102,11 +116,32 @@ examples:
           with:
             server: https://argocd.corp
             auth_token: ${{ ARGOCD_TOKEN }}
-            command: |
-              app set api-prod -p image.tag=${CI_COMMIT_SHORT_SHA} && \
-              argocd app sync api-prod && \
-              argocd app wait api-prod --health
+            command: app set api-prod -p image.tag=${CI_COMMIT_SHORT_SHA}
           secrets: [ARGOCD_TOKEN]
+
+  - name: Helm config-management-plugin (HELM_ARGS)
+    description: >
+      Apps whose Argo source is a Helm CMP take their values via a
+      `--plugin-env HELM_ARGS=...`. The value has spaces (`--set` +
+      `-f`), so it can't ride inside `command:` (it'd word-split) —
+      pass it through the dedicated `plugin_env:` input, which
+      forwards it as one argument. A `deploy:` marker records the
+      version per environment.
+    yaml: |
+      jobs:
+        deploy-prod:
+          stage: deploy
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
+          with:
+            server: ${{ ARGOCD_SERVER }}
+            auth_token: ${{ ARGOCD_TOKEN }}
+            grpc_web: "true"
+            command: app set katools-production
+            plugin_env: "HELM_ARGS=--set global.image.tag=1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA} -f ../../platform/configs/values-prod.yaml"
+          deploy:
+            environment: production
+            version: ${CI_TAG_NAME}
+          secrets: [ARGOCD_SERVER, ARGOCD_TOKEN]
 
   - name: rollback after failure
     description: >

@@ -329,6 +329,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Shell-mock unit test for plugins that ship one (entrypoint_test.sh).
+      # Runs before the image build so a logic regression fails fast and
+      # cheap, without needing the built image or a live backend.
+      - name: plugin unit test (if present)
+        run: |
+          t="plugins/${{ matrix.plugin }}/entrypoint_test.sh"
+          if [ -x "$t" ]; then
+            echo "==> $t"
+            bash "$t"
+          else
+            echo "no entrypoint_test.sh for ${{ matrix.plugin }} — skipping"
+          fi
+
       # arm64 builds disabled while we stabilise — see release.yml
       # for the rationale. Restore docker/setup-qemu-action@v3 and
       # the linux/arm64 entry below when multi-arch returns.
