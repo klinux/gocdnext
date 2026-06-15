@@ -143,20 +143,24 @@ func (q *Queries) GetLatestModificationForPipeline(ctx context.Context, pipeline
 }
 
 const getRunForAction = `-- name: GetRunForAction :one
-SELECT id, pipeline_id, status, revisions
+SELECT id, pipeline_id, status, revisions, cause, cause_detail
 FROM runs
 WHERE id = $1
 `
 
 type GetRunForActionRow struct {
-	ID         pgtype.UUID
-	PipelineID pgtype.UUID
-	Status     string
-	Revisions  []byte
+	ID          pgtype.UUID
+	PipelineID  pgtype.UUID
+	Status      string
+	Revisions   []byte
+	Cause       string
+	CauseDetail []byte
 }
 
 // Thin row used by cancel/rerun handlers to check status + find the
-// pipeline + revisions without pulling the whole detail query.
+// pipeline + revisions without pulling the whole detail query. cause +
+// cause_detail let RerunRun reproduce the original run's CI-var context
+// (CI_TAG_NAME, CI_CAUSE, PR metadata) instead of demoting it to manual.
 func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunForActionRow, error) {
 	row := q.db.QueryRow(ctx, getRunForAction, id)
 	var i GetRunForActionRow
@@ -165,6 +169,8 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 		&i.PipelineID,
 		&i.Status,
 		&i.Revisions,
+		&i.Cause,
+		&i.CauseDetail,
 	)
 	return i, err
 }

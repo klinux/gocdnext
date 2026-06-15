@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -107,6 +109,79 @@ func TestRerunJob_RevivesFailFastCanceledGate(t *testing.T) {
 		WHERE j.id = $1`, gateJobID)
 	if stageStatus != "queued" && stageStatus != "running" {
 		t.Errorf("gate stage status = %q, want queued/running", stageStatus)
+	}
+}
+
+// TestRerunRun_PreservesTagCauseForCIVars is the regression for the
+// vanishing CI_TAG_NAME: a tag-triggered release run rerun via RerunRun
+// used to be demoted to cause="manual" with no tag_name, so
+// addTagVars emitted nothing and a `deploy.version: ${CI_TAG_NAME}`
+// (or any ${CI_*} shell ref) failed to resolve at dispatch ("CI var
+// not present this run"). The rerun must carry the original cause +
+// tag_name forward — with rerun_of stamped and fresh bookkeeping.
+func TestRerunRun_PreservesTagCauseForCIVars(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	mod, err := s.InsertModification(ctx, store.Modification{
+		MaterialID:  materialID,
+		Revision:    "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1",
+		Branch:      "v1.2.3",
+		Author:      "tagger",
+		Message:     "Release v1.2.3",
+		Payload:     json.RawMessage(`{"ref":"refs/tags/v1.2.3"}`),
+		CommittedAt: time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("InsertModification: %v", err)
+	}
+
+	// Original run: cause=tag with tag_name in cause_detail — exactly
+	// what the tag-push webhook stamps.
+	tagDetail, _ := json.Marshal(map[string]any{
+		"tag_name": "v1.2.3", "tagger": "Kleber", "tag_message": "Release v1.2.3",
+	})
+	orig, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID, ModificationID: mod.ID,
+		Revision: "d8f8c1eab2a2c0a4e6c4b5e8a1d0e9f7b6c3d2e1", Branch: "v1.2.3",
+		Provider: "github", Delivery: "orig-delivery", TriggeredBy: "system:webhook",
+		Cause: "tag", CauseDetail: tagDetail,
+	})
+	if err != nil {
+		t.Fatalf("create original tag run: %v", err)
+	}
+
+	rerun, err := s.RerunRun(ctx, store.RerunRunInput{RunID: orig.RunID, TriggeredBy: "user:test"})
+	if err != nil {
+		t.Fatalf("RerunRun: %v", err)
+	}
+
+	var cause string
+	var detailRaw []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT cause, cause_detail FROM runs WHERE id=$1`, rerun.RunID,
+	).Scan(&cause, &detailRaw); err != nil {
+		t.Fatalf("query rerun: %v", err)
+	}
+	if cause != "tag" {
+		t.Errorf("rerun cause = %q, want tag (preserved so CI_CAUSE/CI_TAG_* resolve)", cause)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(detailRaw, &detail); err != nil {
+		t.Fatalf("decode cause_detail: %v", err)
+	}
+	if detail["tag_name"] != "v1.2.3" {
+		t.Errorf("rerun tag_name = %v, want v1.2.3 (preserved → CI_TAG_NAME resolves)", detail["tag_name"])
+	}
+	if detail["rerun_of"] != orig.RunID.String() {
+		t.Errorf("rerun_of = %v, want %s", detail["rerun_of"], orig.RunID)
+	}
+	// Bookkeeping is the rerun's own, not the original run's — the
+	// stripped keys are refilled by CreateRunFromModification's base.
+	if detail["delivery"] != "rerun-"+orig.RunID.String() {
+		t.Errorf("delivery = %v, want rerun-<orig> (fresh bookkeeping, not original)", detail["delivery"])
 	}
 }
 

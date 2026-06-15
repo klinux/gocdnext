@@ -530,7 +530,30 @@ func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, err
 		triggeredBy = "rerun:" + in.RunID.String()
 	}
 
-	causeDetail, _ := json.Marshal(map[string]any{"rerun_of": in.RunID.String()})
+	// Preserve the original run's cause + cause_detail so CI vars derived
+	// from them resolve identically on the rerun. Without this a rerun of
+	// a tag run was demoted to cause="manual" with no tag_name, so
+	// CI_TAG_NAME vanished and a `deploy.version: ${CI_TAG_NAME}` (or any
+	// ${CI_*} shell ref) failed to resolve at dispatch ("CI var not
+	// present this run"). Strip the bookkeeping keys — the rerun gets its
+	// own provider/delivery/material_id/modification_id from
+	// CreateRunFromModification's base — and stamp rerun_of. The semantic
+	// keys (tag_name/tag_message/tagger, pr_number/pr_labels, …) carry
+	// through so addTagVars / addPullRequestVars rebuild the same CI_* set.
+	detail := map[string]any{}
+	if len(row.CauseDetail) > 0 {
+		_ = json.Unmarshal(row.CauseDetail, &detail)
+	}
+	for _, k := range []string{"provider", "delivery", "material_id", "modification_id"} {
+		delete(detail, k)
+	}
+	detail["rerun_of"] = in.RunID.String()
+	causeDetail, _ := json.Marshal(detail)
+
+	cause := row.Cause
+	if cause == "" {
+		cause = "manual"
+	}
 	return s.CreateRunFromModification(ctx, CreateRunFromModificationInput{
 		PipelineID:     fromPgUUID(row.PipelineID),
 		MaterialID:     materialID,
@@ -540,7 +563,7 @@ func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, err
 		Provider:       "api",
 		Delivery:       "rerun-" + in.RunID.String(),
 		TriggeredBy:    triggeredBy,
-		Cause:          "manual",
+		Cause:          cause,
 		CauseDetail:    causeDetail,
 	})
 }
