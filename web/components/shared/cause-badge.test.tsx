@@ -8,11 +8,13 @@ describe("CauseBadge", () => {
   // the plain `cause` string ("pull_request") was ambiguous in the UI.
   it.each([
     ["push", "Push"],
+    ["webhook", "Push"],
     ["pull_request", "PR"],
     ["tag", "Tag"],
     ["manual", "Manual"],
     ["schedule", "Schedule"],
     ["cron", "Schedule"],
+    ["poll", "Poll"],
     ["upstream", "Upstream"],
   ])("renders cause %s as label %s", (cause, label) => {
     render(<CauseBadge cause={cause} />);
@@ -20,7 +22,7 @@ describe("CauseBadge", () => {
   });
 
   it("falls back to the raw cause for an unknown value (forward-compatible)", () => {
-    render(<CauseBadge cause="webhook" />);
-    expect(screen.getByText("webhook")).toBeTruthy();
+    render(<CauseBadge cause="future_cause" />);
+    expect(screen.getByText("future_cause")).toBeTruthy();
   });
 });

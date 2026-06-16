@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   // The run's trigger cause, as stored on runs.cause: push /
-  // pull_request / tag / manual / cron|schedule / upstream.
+  // webhook / pull_request / tag / manual / schedule / poll / upstream.
   cause: string;
   className?: string;
 };
@@ -25,6 +25,7 @@ type Props = {
 function causeMeta(cause: string): { label: string; Icon: LucideIcon | null } {
   switch (cause) {
     case "push":
+    case "webhook":
       return { label: "Push", Icon: GitCommit };
     case "pull_request":
       return { label: "PR", Icon: GitPullRequest };
@@ -37,6 +38,8 @@ function causeMeta(cause: string): { label: string; Icon: LucideIcon | null } {
       return { label: "Schedule", Icon: Clock };
     case "upstream":
       return { label: "Upstream", Icon: ArrowRight };
+    case "poll":
+      return { label: "Poll", Icon: GitCommit };
     default:
       return { label: cause, Icon: null };
   }
