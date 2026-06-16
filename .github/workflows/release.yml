@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    # Skip the per-main-push :latest rebuild for docs-only / README
+    # changes (mirrors ci.yml). MUST mirror ci.yml: if ci.yml skips a
+    # docs commit but release.yml didn't, verify-ci-green would poll
+    # for a CI run that never ran and fail the (pointless) Release.
+    # Tags are safe — a release commit bumps CHANGELOG.md (not docs/ or
+    # README.md), so it isn't ignored and verify-ci-green still finds
+    # the changelog commit's green CI run.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
   workflow_dispatch:
 
 permissions:
