@@ -3,6 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    # Docs-site content and the root README never affect the Go/web
+    # build or tests — don't burn a full CI run (or force a manual
+    # [skip ci]) on a docs-only push. Deliberately NOT '**.md':
+    # CHANGELOG.md MUST still trigger CI, because the release gate
+    # (release.yml verify-ci-green) polls the tagged changelog commit's
+    # SHA for a green CI run. pull_request stays unfiltered so a docs
+    # PR's check still reports (no required-check deadlock).
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
   pull_request:
 
 jobs:
