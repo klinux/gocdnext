@@ -184,6 +184,54 @@ func TestApproveGate_HappyPathFlipsToSuccessAndPromotes(t *testing.T) {
 	}
 }
 
+func TestApproveGate_MatchesApproverByEmail(t *testing.T) {
+	// #51: under OIDC the deciding user's display Name (User) is the
+	// `name` claim (e.g. "Alice Display"), but a gate commonly lists
+	// the stable email. The allow-list must match the email too — not
+	// just User — or the gate is unapprovable for that user.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	// Gate lists an EMAIL, not a display name.
+	pipelineID, materialID := seedApprovalPipeline(t, pool, "gate-email", []string{"alice@corp.com"})
+	_, gateJobID := triggerApprovalRun(t, pool, pipelineID, materialID)
+
+	// User (display name) is NOT in the list; UserEmail IS.
+	if _, err := s.ApproveGate(context.Background(), store.ApprovalDecision{
+		JobRunID:  gateJobID,
+		User:      "Alice Display",
+		UserEmail: "alice@corp.com",
+	}); err != nil {
+		t.Fatalf("approve by email: %v", err)
+	}
+
+	var status, decision string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status, COALESCE(decision, '') FROM job_runs WHERE id = $1`, gateJobID,
+	).Scan(&status, &decision); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if status != "success" || decision != "approved" {
+		t.Errorf("gate status=%q decision=%q, want success/approved (matched by email)", status, decision)
+	}
+}
+
+func TestApproveGate_RejectsWhenNeitherUserNorEmailMatches(t *testing.T) {
+	// Guard: the email OR-match must not over-permit. A user whose
+	// neither display name nor email is in the list is still refused.
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	pipelineID, materialID := seedApprovalPipeline(t, pool, "gate-deny", []string{"alice@corp.com"})
+	_, gateJobID := triggerApprovalRun(t, pool, pipelineID, materialID)
+
+	if _, err := s.ApproveGate(context.Background(), store.ApprovalDecision{
+		JobRunID:  gateJobID,
+		User:      "Mallory",
+		UserEmail: "mallory@corp.com",
+	}); !errors.Is(err, store.ErrApproverNotAllowed) {
+		t.Fatalf("err = %v, want ErrApproverNotAllowed", err)
+	}
+}
+
 func TestRejectGate_HappyPathFlipsToFailed(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

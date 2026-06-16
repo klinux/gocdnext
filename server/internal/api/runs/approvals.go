@@ -72,6 +72,10 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		if decision.User == "" {
 			decision.User = u.Email
 		}
+		// Also carry the email so the gate's approvers list can match
+		// it directly — under OIDC `User` is the display name, not the
+		// stable email/username an operator would list (#51).
+		decision.UserEmail = u.Email
 	}
 
 	var (

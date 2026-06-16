@@ -41,9 +41,16 @@ type ApprovalDecision struct {
 	// still records who (the prod HTTP path never passes nil).
 	UserID uuid.UUID
 	// User is the display label for audit trails — name preferred,
-	// email as fallback. Matched against the gate's approvers
-	// array (string-compare), distinct from UserID.
+	// email as fallback. Recorded as the vote's user_label and
+	// matched against the gate's approvers array (string-compare),
+	// distinct from UserID.
 	User string
+	// UserEmail is the authenticated user's email, matched against the
+	// gate's approvers array IN ADDITION to User. Under OIDC the `name`
+	// claim becomes User (e.g. "Kleber Rocha"), so a gate listing the
+	// stable email/username would never match if we only compared User
+	// (#51). Empty in anonymous/dev mode.
+	UserEmail string
 	// Comment is optional — "LGTM, merging after 2pm" etc. Shown
 	// in the detail trail alongside the vote.
 	Comment string
@@ -147,7 +154,13 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	// same as the pre-groups era). Group intersection requires a
 	// second read, skipped when the gate lists no groups.
 	if len(approvers) > 0 || len(approverGroups) > 0 {
-		allowed := d.User != "" && slices.Contains(approvers, d.User)
+		// Match the approvers list against EITHER the display label
+		// (User — name-preferred) OR the email. Under OIDC the `name`
+		// claim wins as User, so a gate listing the stable email would
+		// never match on User alone (#51). Groups (UserID) below stay
+		// the most robust path, immune to name/email string drift.
+		allowed := (d.User != "" && slices.Contains(approvers, d.User)) ||
+			(d.UserEmail != "" && slices.Contains(approvers, d.UserEmail))
 		if !allowed && len(approverGroups) > 0 && d.UserID != uuid.Nil {
 			q := s.q.WithTx(tx)
 			names, err := q.ListUserGroupNames(ctx, pgUUID(d.UserID))

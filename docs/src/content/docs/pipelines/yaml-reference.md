@@ -684,8 +684,8 @@ jobs:
 | Key | Type | Notes |
 |---|---|---|
 | `description` | string | shown in the approval modal |
-| `approvers` | `[]string` | explicit list of usernames; empty = "any authenticated user" |
-| `approver_groups` | `[]string` | gate on group membership; union with `approvers` |
+| `approvers` | `[]string` | explicit allow-list; each entry is matched against the deciding user's display **name** OR **email**; empty = "any authenticated user" |
+| `approver_groups` | `[]string` | gate on group membership (matched by user id — robust to name/email changes); union with `approvers` |
 | `required` | int | quorum (default `1`) — distinct allowed approvers needed before the gate passes |
 
 Approval jobs park at `awaiting_approval` until the quorum is met.

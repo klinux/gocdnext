@@ -79,6 +79,12 @@ approval:
   required: 1
 ```
 
+Each `approvers:` entry is matched against the deciding user's display
+**name** or **email**, so either works (handy under OIDC, where the
+identity is an email but the display name is a full name). For lists
+that should survive a name/email change, prefer `approver_groups:` —
+those match by user id.
+
 `approvers:` and `approver_groups:` union — anyone in either list
 counts toward the `required:` quorum.
 
