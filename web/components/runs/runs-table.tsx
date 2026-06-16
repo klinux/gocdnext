@@ -9,8 +9,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { StatusBadge } from "@/components/shared/status-badge";
+import { CauseBadge } from "@/components/shared/cause-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
+import { StatusBadge } from "@/components/shared/status-badge";
 import { durationBetween, formatDurationSeconds } from "@/lib/format";
 import type { GlobalRunSummary, RunSummary } from "@/types/api";
 
@@ -100,8 +101,8 @@ export function RunsTable({
                   </Link>
                 </TableCell>
                 <TableCell className="font-semibold">#{r.counter}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {r.cause}
+                <TableCell>
+                  <CauseBadge cause={r.cause} />
                 </TableCell>
                 <TableCell>
                   <RelativeTime at={r.started_at ?? r.created_at} />

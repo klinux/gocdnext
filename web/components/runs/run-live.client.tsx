@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, GitBranch, Radio } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { CauseBadge } from "@/components/shared/cause-badge";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
@@ -294,9 +295,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           <span>·</span>
           <RelativeTime at={data.started_at ?? data.created_at} fallback="—" />
           <span>·</span>
-          <span>
-            cause <span className="font-mono text-foreground">{data.cause}</span>
-          </span>
+          <CauseBadge cause={data.cause} />
           {data.triggered_by ? (
             <>
               <span>·</span>
