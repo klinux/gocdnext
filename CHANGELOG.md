@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## v0.40.0 — 2026-06-16
+
+### Added
+
+- **Cause-aware run badge** (#49) — run lists and the run-detail header now
+  show *how* a run was triggered with a distinct icon + label per cause
+  (PR / Push / Tag / Manual / Schedule / Poll / Upstream) instead of the
+  bare `cause` string, so a pull-request run reads differently from a push
+  at a glance. `webhook` (the stored branch-push cause) and `poll` render
+  as Push/Poll; unknown causes fall back to the raw string.
+
+### Fixed
+
+- **Approval gate: match approvers by email, not just display name** (#51)
+  — the allow-list compared the user's display Name (email only as a
+  fallback when Name was empty). Under OIDC the `name` claim is always set,
+  so a gate listing the stable email never matched and was silently
+  unapprovable (403, no audit event). Each `approvers:` entry now matches
+  the deciding user's name OR email; `approver_groups` (matched by user id)
+  stays the most robust path. Backward-compatible.
+
 ## v0.39.3 — 2026-06-15
 
 ### Fixed
