@@ -139,11 +139,22 @@ web/src/
 - **Granular `Suspense`** around a page section with a slow fetch, not at the root of the layout.
 - **Avoid `"use client"` at the top of the tree** — push the boundary as deep as possible.
 
-## Lint and formatter
+## Lint and type check
 
-- **Biome** (single toolchain). Config in `biome.json`.
-- **TypeScript check in CI**: `tsc --noEmit`. Errors = red CI.
-- **Pre-commit**: `biome check --apply` + `tsc --noEmit` on the affected files.
+- **ESLint 9 flat config** (`eslint.config.mjs`, extends `eslint-config-next`
+  — Next core-web-vitals + TypeScript + React Compiler rules). Run with
+  `pnpm lint` (`eslint .`); autofix with `pnpm lint:fix`. CI runs it on
+  every non-docs push.
+- **TypeScript check**: `pnpm typecheck` (`tsc --noEmit`). Errors = red CI.
+- **No dedicated formatter is wired** (no Prettier/Biome). Match the
+  surrounding style (2-space indent, double quotes, semicolons, trailing
+  commas); ESLint catches the rules that matter.
+- **Pre-commit**: `pnpm lint` + `pnpm typecheck` on the affected files.
+- A justified `// eslint-disable-next-line <rule> -- <reason>` is acceptable
+  for the React Compiler advisories (`set-state-in-effect`, `refs`) when the
+  flagged pattern is genuinely correct (hydration mount flags, browser-only
+  APIs, prop-change resets) and a refactor would change behavior — always
+  with an inline reason. `rules-of-hooks` is a real bug, never disabled.
 
 ## Before opening a PR (web-specific)
 
