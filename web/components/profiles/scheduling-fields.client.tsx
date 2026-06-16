@@ -51,7 +51,7 @@ function NodeSelectorEditor({
         Node selector
       </legend>
       <p className="text-xs text-muted-foreground">
-        Profile values <em>win</em> over the agent's default on key collisions.
+        Profile values <em>win</em> over the agent&apos;s default on key collisions.
         Keys + values follow Kubernetes label rules.
       </p>
       {rows.map((row, i) => (
@@ -107,7 +107,7 @@ function TolerationsEditor({
         Tolerations
       </legend>
       <p className="text-xs text-muted-foreground">
-        Appended to the agent's tolerations. <code>toleration_seconds</code>{" "}
+        Appended to the agent&apos;s tolerations. <code>toleration_seconds</code>{" "}
         is honoured only when <code>effect</code> is <code>NoExecute</code>.
       </p>
       {rows.map((row, i) => (

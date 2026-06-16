@@ -12,7 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import type { ComponentType } from "react";
+import { createElement, type ComponentType } from "react";
 
 import { cn } from "@/lib/utils";
 import { LiveDuration } from "@/components/shared/live-duration";
@@ -384,12 +384,14 @@ function isDim(status: string): boolean {
 // --- status glyph ---
 
 function StatusGlyph({ status, className }: { status: string; className?: string }) {
-  const Icon = iconFor(status);
   const cls = cn(
     className,
     status === "running" && "animate-spin",
   );
-  return <Icon className={cls} />;
+  // createElement (not <Icon/>) because iconFor() returns a component
+  // chosen at runtime — binding it to a local JSX tag trips
+  // react-hooks/static-components. The element is identical either way.
+  return createElement(iconFor(status), { className: cls });
 }
 
 function iconFor(status: string): ComponentType<{ className?: string }> {

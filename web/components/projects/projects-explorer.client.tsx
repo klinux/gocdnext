@@ -56,6 +56,7 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
 
   useEffect(() => {
     const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is client-only; reading it in a lazy initializer would diverge from the server's "grid" render and cause a hydration mismatch, so the persisted choice can only be applied here after mount
     if (stored === "grid" || stored === "list") setView(stored);
   }, []);
 

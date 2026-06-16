@@ -252,7 +252,7 @@ export function VCSIntegrationsAdminView({ integrations, active }: Props) {
               {integrations.length === 0 && envOnly.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
-                    No integrations yet. Click "Add integration" to configure one.
+                    No integrations yet. Click &quot;Add integration&quot; to configure one.
                   </TableCell>
                 </TableRow>
               ) : null}

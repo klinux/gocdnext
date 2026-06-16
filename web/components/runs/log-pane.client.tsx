@@ -64,6 +64,7 @@ export function LogPane({
   const [query, setQuery] = useState("");
   const [matchIdx, setMatchIdx] = useState(0);
   const [copied, setCopied] = useState(false);
+  const hashHandledRef = useRef(false);
 
   // Phase blocks (#48). Recomputed as the log streams; ids are derived
   // from real line seqs so fold state survives appends.
@@ -196,21 +197,27 @@ export function LogPane({
   }, [running]);
 
   // Permalink: honor #L<seq> on mount — force-open its section, then
-  // scroll once the expand has rendered.
+  // scroll once the expand has rendered. If logs arrive after mount,
+  // keep trying until the target exists, then stop so user fold intent wins.
   useEffect(() => {
+    if (hashHandledRef.current) return;
     const m = /^#L(\d+)$/.exec(window.location.hash);
-    if (!m) return;
+    if (!m) {
+      hashHandledRef.current = true;
+      return;
+    }
     const seq = Number(m[1]);
     const sid = sectionIdForSeq(blocks, seq);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot mount reaction to window.location.hash (client-only, unknowable during render): force-open the permalinked #L<seq> section before scrolling to it
     if (sid) setPinnedOpen(new Set([sid]));
     const raf = requestAnimationFrame(() => {
       const target = document.getElementById(`L${seq}`);
-      if (target) target.scrollIntoView({ block: "center" });
+      if (!target) return;
+      hashHandledRef.current = true;
+      target.scrollIntoView({ block: "center" });
     });
     return () => cancelAnimationFrame(raf);
-    // One-shot on mount by design.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [blocks]);
 
   // Scroll the active search match into view. Its section is already
   // force-open via matchSectionIds, so the line is in the DOM.

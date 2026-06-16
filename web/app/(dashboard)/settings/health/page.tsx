@@ -150,7 +150,7 @@ export default async function HealthPage() {
             <div className="flex items-center gap-2">
               <HelpCircle className="size-4 text-muted-foreground" aria-hidden />
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                What's checked
+                What&apos;s checked
               </CardTitle>
             </div>
           </CardHeader>

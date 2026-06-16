@@ -20,6 +20,7 @@ export function ThemeToggle() {
   // server emits a stable placeholder and only the client swaps
   // to the right icon after mount.
   const [mounted, setMounted] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- mount flag must start false on SSR/first paint and flip only after hydration; computing it during render would reintroduce the hydration mismatch this guards against
   useEffect(() => setMounted(true), []);
   const Icon = !mounted ? Sun : resolvedTheme === "dark" ? Moon : Sun;
 

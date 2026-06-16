@@ -61,6 +61,7 @@ export function JobDetailSheet({
 
   useEffect(() => {
     if (!open || result) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- lazy fetch fired on the open transition: the loading flag must flip synchronously alongside kicking off the one-shot request, so it can't be derived during render
     setLoading(true);
     fetchJobDetail({ runId, jobId, logLines: 80 })
       .then(setResult)

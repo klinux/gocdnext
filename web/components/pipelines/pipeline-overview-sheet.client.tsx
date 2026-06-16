@@ -389,6 +389,7 @@ function ArtifactsPanel({
     // runId missing = pipeline has never run, skip entirely.
     if (!active || !runId) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- lazy fetch fired when the tab becomes active: the loading state must flip synchronously alongside kicking off the one-shot request, so it can't be derived during render
     setState({ kind: "loading" });
     fetch(
       `/api/v1/runs/${encodeURIComponent(runId)}/artifacts`,

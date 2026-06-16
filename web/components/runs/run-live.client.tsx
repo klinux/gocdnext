@@ -149,8 +149,17 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
   }, [apiBaseURL, runId, data.status]);
 
   const mergedData = useMemo<RunDetail>(() => {
+    // The merge buffers are intentionally refs, not state: they
+    // accumulate log deltas across both the 2s poll and the SSE
+    // stream (see logsByJobRef / prevStatusRef above). Reading
+    // `.current` here is deterministic per render because every
+    // mutation is paired with a state update (`data` from useQuery
+    // or `sseRev` from the SSE handler) that drives this recompute.
+    // Lifting them to state would change the documented dedupe/cursor
+    // semantics, so the render-phase read is deliberate.
     const map = logsByJobRef.current;
     const prevStatus = prevStatusRef.current;
+    // eslint-disable-next-line react-hooks/refs -- intentional cross-poll/SSE merge buffer; both ref reads above are paired with state updates (data / sseRev) that drive this memo, so the render-phase read is deterministic (see comment block above)
     const stages = data.stages.map((stage) => ({
       ...stage,
       jobs: stage.jobs.map((job) => {
@@ -182,7 +191,11 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
     return { ...data, stages };
     // sseRev deliberately listed so a stream-delivered line forces
     // the flatten pass to re-run — the ref mutation alone doesn't
-    // trigger a React update.
+    // trigger a React update. The linter flags it as "unused inside
+    // the memo", which is true by value but wrong by intent: it's the
+    // recompute trigger. Dropping it would delay SSE lines until the
+    // next 2s poll, a liveness regression.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sseRev is the intentional recompute trigger for SSE-delivered lines that mutate logsByJobRef in place
   }, [data, sseRev]);
 
   const upstream =

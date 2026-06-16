@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Copy, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -39,6 +39,7 @@ export function UserTokensManager({ initial }: Props) {
   const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
   const [showOnce, setShowOnce] = useState<CreateTokenResponse | null>(null);
+  const now = useMinuteNow();
 
   return (
     <div className="space-y-4">
@@ -95,7 +96,7 @@ export function UserTokensManager({ initial }: Props) {
                 </TableCell>
               </TableRow>
             ) : (
-              initial.map((t) => <TokenRow key={t.id} token={t} />)
+              initial.map((t) => <TokenRow key={t.id} token={t} now={now} />)
             )}
           </TableBody>
         </Table>
@@ -104,7 +105,7 @@ export function UserTokensManager({ initial }: Props) {
   );
 }
 
-function TokenRow({ token }: { token: APIToken }) {
+function TokenRow({ token, now }: { token: APIToken; now: number }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const onRevoke = () => {
@@ -121,7 +122,7 @@ function TokenRow({ token }: { token: APIToken }) {
   };
   const status = token.revoked_at
     ? "revoked"
-    : token.expires_at && new Date(token.expires_at).getTime() < Date.now()
+    : token.expires_at && new Date(token.expires_at).getTime() < now
       ? "expired"
       : "active";
   const statusClass = {
@@ -162,6 +163,19 @@ function TokenRow({ token }: { token: APIToken }) {
       </TableCell>
     </TableRow>
   );
+}
+
+function useMinuteNow() {
+  // Keep "now" in state instead of reading Date.now() during render
+  // (render must stay pure). Minute cadence is enough for token
+  // expiry badges and avoids a stale active→expired label on long-
+  // lived settings tabs.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
 }
 
 function CreateDialog({

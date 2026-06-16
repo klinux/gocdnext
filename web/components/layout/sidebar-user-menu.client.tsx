@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import type { Route } from "next";
 import { ChevronsUpDown, LogOut, Settings, ShieldCheck, User as UserIcon } from "lucide-react";
@@ -123,17 +124,22 @@ function Avatar({ url, initials }: { url?: string; initials: string }) {
   const [mounted, setMounted] = useState(false);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount flag must start false on SSR/first paint and flip only after mount so ad blockers / Dark Reader can't trip React's hydration diff (see comment above); it is not derivable during render
     setMounted(true);
   }, []);
 
   if (mounted && url && !failed) {
     return (
       <span className="inline-flex size-8 shrink-0 overflow-hidden rounded-md border bg-muted">
-        <img
+        <Image
           src={url}
           alt=""
           width={32}
           height={32}
+          // Arbitrary external OAuth provider host with no images.remotePatterns
+          // configured — unoptimized keeps the plain <img> behavior (and avatar
+          // size) intact instead of routing through the optimizer.
+          unoptimized
           className="size-full object-cover"
           onError={() => setFailed(true)}
         />
