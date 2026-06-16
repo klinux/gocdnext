@@ -123,6 +123,11 @@ canonical names). The dashboard surfaces them as “Groups” and
 field.</p>
 <p>You can also pin individual approvers without a group:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">approval</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">description</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#9B504E">Sign-off needed</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">approvers</span><span style="--0:#D6DEEB;--1:#403F53">: [</span><span style="--0:#ECC48D;--1:#3C63B3">alice@example.com</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#ECC48D;--1:#3C63B3">bob@example.com</span><span style="--0:#D6DEEB;--1:#403F53">]</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">required</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#F78C6C;--1:#AA0982">1</span></div></div></code></pre><div class="copy"><button title="Copy to clipboard" data-copied="Copied!" data-code="approval:  description: &#x22;Sign-off needed&#x22;  approvers: [alice@example.com, bob@example.com]  required: 1"><div></div></button></div></figure></div>
+<p>Each <code dir="auto">approvers:</code> entry is matched against the deciding user’s display
+<strong>name</strong> or <strong>email</strong>, so either works (handy under OIDC, where the
+identity is an email but the display name is a full name). For lists
+that should survive a name/email change, prefer <code dir="auto">approver_groups:</code> —
+those match by user id.</p>
 <p><code dir="auto">approvers:</code> and <code dir="auto">approver_groups:</code> union — anyone in either list
 counts toward the <code dir="auto">required:</code> quorum.</p>
 <h2 id="pr-label-driven-quorum">PR-label-driven quorum</h2>
