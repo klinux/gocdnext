@@ -441,7 +441,9 @@ type Querier interface {
 	// list means "explicit opt-out" and we skip this entirely).
 	GetProjectNotifications(ctx context.Context, id pgtype.UUID) ([]byte, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
-	// pipeline + revisions without pulling the whole detail query.
+	// pipeline + revisions without pulling the whole detail query. cause +
+	// cause_detail let RerunRun reproduce the original run's CI-var context
+	// (CI_TAG_NAME, CI_CAUSE, PR metadata) instead of demoting it to manual.
 	GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunForActionRow, error)
 	// project_notifications tags along so the dispatcher can resolve
 	// synth notification jobs that inherited their spec from the
