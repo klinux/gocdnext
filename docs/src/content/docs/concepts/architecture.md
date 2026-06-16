@@ -9,39 +9,7 @@ extend without reading the whole codebase.
 
 ## Components
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Control plane (server)                  │
-│  ┌────────────┐  ┌────────────┐  ┌──────────────────────┐   │
-│  │ HTTP API   │  │ gRPC stream│  │ Scheduler goroutine  │   │
-│  │ :8153      │  │ :8154      │  │ LISTEN run_queued    │   │
-│  └────────────┘  └────────────┘  └──────────────────────┘   │
-│         │              │                      │              │
-│         └──────────────┴──────────────────────┘              │
-│                        │                                     │
-│              ┌─────────────────────┐                         │
-│              │   Postgres          │                         │
-│              │   pgxpool +         │                         │
-│              │   LISTEN/NOTIFY     │                         │
-│              └─────────────────────┘                         │
-└─────────────────────────────────────────────────────────────┘
-                        ▲                       ▲
-                        │ HTTP + Postgres TLS   │ gRPC bidi stream
-                        │                       │
-        ┌───────────────┴───────┐       ┌───────┴────────────┐
-        │  web (Next.js)        │       │  agent (Go)        │
-        │  Server Actions       │       │  Docker / K8s      │
-        │  RSC fetch            │       │  runtime engine    │
-        └───────────────────────┘       └────────────────────┘
-                                                 │
-                                                 │ runs jobs as
-                                                 ▼
-                                        ┌────────────────────┐
-                                        │  plugin container  │
-                                        │  (gocdnext/go,     │
-                                        │   /node, /helm…)   │
-                                        └────────────────────┘
-```
+![gocdnext architecture deep-dive](/gocdnext/docs/imgs/deep-architecture.png)
 
 ### `server` — the control plane
 
