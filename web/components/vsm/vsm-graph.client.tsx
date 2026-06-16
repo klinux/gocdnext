@@ -35,6 +35,13 @@ export function VSMGraph({ vsm }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<string, HTMLDivElement>());
   const [paths, setPaths] = useState<EdgePath[]>([]);
+  // SVG overlay dimensions, measured from the container's scroll
+  // size in the same effect that computes the edge paths. Kept in
+  // state (not read from the ref during render) so the size tracks
+  // the same ResizeObserver/resize cadence as the arrows.
+  const [svgSize, setSvgSize] = useState<{ width: number; height: number } | null>(
+    null,
+  );
 
   const renderableEdges = useMemo(
     () =>
@@ -148,6 +155,11 @@ export function VSMGraph({ vsm }: Props) {
 
   useLayoutEffect(() => {
     if (renderableEdges.length === 0 && implicitEdges.length === 0) {
+      // Clear stale arrows when the vsm prop changes to one with no
+      // drawable edges. This is a reset-derived-state-on-input-change
+      // effect, not a render-phase setState — it can't be a lazy
+      // initializer because it must react to later prop changes.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset derived path state when edges disappear; must run in effect to track prop changes
       setPaths([]);
       return;
     }
@@ -156,6 +168,10 @@ export function VSMGraph({ vsm }: Props) {
       const container = containerRef.current;
       if (!container) return;
       const cRect = container.getBoundingClientRect();
+      setSvgSize({
+        width: container.scrollWidth,
+        height: container.scrollHeight,
+      });
       const next: EdgePath[] = [];
       // anchorFor picks exit/entry points on each card that sit
       // on the axis where the two cards are most separated. In
@@ -261,8 +277,8 @@ export function VSMGraph({ vsm }: Props) {
             aria-hidden
             className="pointer-events-none absolute inset-0"
             style={{
-              width: containerRef.current?.scrollWidth ?? "100%",
-              height: containerRef.current?.scrollHeight ?? "100%",
+              width: svgSize?.width ?? "100%",
+              height: svgSize?.height ?? "100%",
             }}
           >
             <defs>

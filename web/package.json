@@ -9,10 +9,11 @@
     "dev:turbo": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

@@ -16,32 +16,30 @@ type Props = {
 // which differs between the SSR pass and the client's first
 // paint — without care, hydration produces a "23s vs 24s" mismatch
 // on every F5 mid-run. Strategy:
-//   - compute once on the server and embed that as the initial
-//     text (so the SSR HTML is stable);
+//   - compute from props during render so startedAt/finishedAt
+//     changes show immediately;
 //   - suppress hydration warning on the text element only, because
-//     the client's first-paint compute can legitimately differ by
-//     a second;
-//   - after mount, tick every second while `finishedAt` is missing
-//     so the label stays live without needing a server refresh.
+//     time can legitimately differ by a second between SSR and the
+//     client's first paint;
+//   - while `finishedAt` is missing, tick every second so the label
+//     stays live without needing a server refresh.
 export function LiveDuration({
   startedAt,
   finishedAt,
   fallback = "—",
   className,
 }: Props) {
-  if (!startedAt) return <span className={className}>{fallback}</span>;
-
-  const server = formatDurationSeconds(durationBetween(startedAt, finishedAt));
-  const [label, setLabel] = useState(server);
+  const [, bump] = useState(0);
 
   useEffect(() => {
-    setLabel(formatDurationSeconds(durationBetween(startedAt, finishedAt)));
+    if (!startedAt) return;
     if (finishedAt) return; // terminal → no ticking needed
-    const id = setInterval(() => {
-      setLabel(formatDurationSeconds(durationBetween(startedAt, finishedAt)));
-    }, 1000);
+    const id = setInterval(() => bump((n) => n + 1), 1000);
     return () => clearInterval(id);
   }, [startedAt, finishedAt]);
+
+  if (!startedAt) return <span className={className}>{fallback}</span>;
+  const label = formatDurationSeconds(durationBetween(startedAt, finishedAt));
 
   return (
     <span className={className} suppressHydrationWarning>

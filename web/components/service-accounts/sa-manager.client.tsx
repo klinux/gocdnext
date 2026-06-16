@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Bot,
@@ -268,6 +268,7 @@ function ServiceAccountCard({
 }
 
 function SATokensList({ saID, tokens }: { saID: string; tokens: APIToken[] }) {
+  const now = useMinuteNow();
   if (tokens.length === 0) {
     return (
       <p className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
@@ -290,7 +291,7 @@ function SATokensList({ saID, tokens }: { saID: string; tokens: APIToken[] }) {
         </TableHeader>
         <TableBody>
           {tokens.map((t) => (
-            <SATokenRow key={t.id} saID={saID} token={t} />
+            <SATokenRow key={t.id} saID={saID} token={t} now={now} />
           ))}
         </TableBody>
       </Table>
@@ -298,7 +299,15 @@ function SATokensList({ saID, tokens }: { saID: string; tokens: APIToken[] }) {
   );
 }
 
-function SATokenRow({ saID, token }: { saID: string; token: APIToken }) {
+function SATokenRow({
+  saID,
+  token,
+  now,
+}: {
+  saID: string;
+  token: APIToken;
+  now: number;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const onRevoke = () => {
@@ -315,7 +324,7 @@ function SATokenRow({ saID, token }: { saID: string; token: APIToken }) {
   };
   const status = token.revoked_at
     ? "revoked"
-    : token.expires_at && new Date(token.expires_at).getTime() < Date.now()
+    : token.expires_at && new Date(token.expires_at).getTime() < now
       ? "expired"
       : "active";
   const statusClass = {
@@ -355,6 +364,19 @@ function SATokenRow({ saID, token }: { saID: string; token: APIToken }) {
       </TableCell>
     </TableRow>
   );
+}
+
+function useMinuteNow() {
+  // Keep "now" in state instead of reading Date.now() during render
+  // (render must stay pure). Minute cadence is enough for token
+  // expiry badges and avoids a stale active→expired label on long-
+  // lived settings tabs.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
 }
 
 function CreateSADialog({ onCreated }: { onCreated: () => void }) {

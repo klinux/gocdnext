@@ -71,6 +71,7 @@ export function StorageForm({ initial }: Props) {
   // a fresh "Replace credentials" intent shouldn't survive a backend
   // switch (different field set).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset reacting to a config/backend change after mount: a stale "Replace credentials" intent must not survive a backend switch (different field set)
     setReplaceCreds(false);
   }, [config.source, config.backend, draft.backend]);
 

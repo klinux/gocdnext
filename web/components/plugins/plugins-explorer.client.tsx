@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { createElement, useMemo, useState } from "react";
 import {
   Box,
   ClipboardList,
@@ -55,6 +55,15 @@ const CATEGORY_ORDER = [
   "notifications",
   "quality",
 ] as const;
+
+// PluginIcon resolves a plugin name to its Lucide icon and renders
+// it. Hoisted to module scope so it's a stable component; using
+// createElement (not <Icon/>) because iconFor() returns a component
+// chosen at runtime — binding it to a local JSX tag inside a render
+// body trips react-hooks/static-components. The element is identical.
+function PluginIcon({ name, className }: { name: string; className?: string }) {
+  return createElement(iconFor(name), { className });
+}
 
 // iconFor maps a plugin name to a semantically-fitting Lucide
 // icon. Unknown names fall back to the generic plug icon.
@@ -262,7 +271,6 @@ function PluginCard({
   plugin: PluginSummary;
   onOpen: () => void;
 }) {
-  const Icon = iconFor(plugin.name);
   const tone = plugin.category ? CATEGORY_TONE[plugin.category] : null;
 
   return (
@@ -281,7 +289,7 @@ function PluginCard({
             )}
             aria-hidden
           >
-            <Icon className="size-5" />
+            <PluginIcon name={plugin.name} className="size-5" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -339,7 +347,6 @@ function PluginSheet({
     );
   }
 
-  const Icon = iconFor(plugin.name);
   const tone = plugin.category ? CATEGORY_TONE[plugin.category] : null;
   const required = plugin.inputs.filter((i) => i.required);
   const optional = plugin.inputs.filter((i) => !i.required);
@@ -364,7 +371,7 @@ function PluginSheet({
               )}
               aria-hidden
             >
-              <Icon className="size-5" />
+              <PluginIcon name={plugin.name} className="size-5" />
             </div>
             <div className="min-w-0 flex-1">
               <SheetTitle className="font-mono">

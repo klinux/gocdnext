@@ -157,7 +157,7 @@ export function AuthProvidersAdminView({ enabled, providers, envOnly }: Props) {
             <CardDescription>
               Set <code className="font-mono">GOCDNEXT_AUTH_ENABLED=true</code>{" "}
               and restart the server to enforce sessions. Providers can still
-              be configured here — they'll activate once enforcement is on.
+              be configured here — they&apos;ll activate once enforcement is on.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -199,7 +199,7 @@ export function AuthProvidersAdminView({ enabled, providers, envOnly }: Props) {
               {providers.length === 0 && envOnly.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
-                    No providers yet. Click "Add provider" to configure one.
+                    No providers yet. Click &quot;Add provider&quot; to configure one.
                   </TableCell>
                 </TableRow>
               ) : null}
