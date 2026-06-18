@@ -8,7 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
-## v0.43.0 — 2026-06-18
+## v0.44.0 — 2026-06-18
+
+### Added
+
+- **Cluster registry: "Test connection"** (#52) — an on-demand button in
+  *Settings → Clusters* probes a registered deploy target from the
+  control plane (`GET <api_server>/version` with the stored credential)
+  and reports ok / unauthorized / unreachable / skipped, so an operator
+  can validate a cluster's reachability + credential **before** a deploy
+  runs. The credential is resolved inside the store and never crosses the
+  API boundary or appears in the result. Hardening: the probe never
+  follows a redirect (a 3xx is an error — no replaying a bearer/client
+  cert to another host); the server URL must be `https://` with a host
+  and no userinfo (re-checked at probe time, defence in depth for legacy
+  rows); a kubeconfig is parsed strictly (current-context must resolve;
+  exec auth, file-path certs/CA/token, and credential-less configs are
+  rejected with a clear message rather than a misleading result); and
+  `in_cluster` is reported as skipped (the agent pod's ServiceAccount
+  isn't reachable from the control plane). The button is a credential/CA
+  check, not an end-to-end network proof — a deploy runs from the agent,
+  whose network path may differ.
 
 ### Added
 
