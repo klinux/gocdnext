@@ -6,6 +6,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/),
 versions follow [SemVer](https://semver.org/) (with the v0.x.y
 convention that minor bumps may carry breaking changes until 1.0).
 
+## [Unreleased]
+
+## v0.41.0 — 2026-06-18
+
+### Added
+
+- **Cluster registry — register a Kubernetes deploy target once, reference
+  it by name** (#52) — an admin registers a deploy-target cluster (name,
+  auth, governance) in *Settings → Clusters*; a job names it with
+  `cluster: prod-gke` and the scheduler injects that cluster's kubeconfig
+  as `PLUGIN_KUBECONFIG` at dispatch (masked in logs), so kubectl / helm /
+  kustomize jobs authenticate with no pasted kubeconfig and no
+  per-pipeline `*_KUBECONFIG_B64` secret — retiring the GoCD
+  kubeconfig-in-the-step antipattern. Three auth types: `kubeconfig` (full
+  kubeconfig, injected verbatim), `token` (bearer token + `api_server` +
+  `ca_cert`, from which a kubeconfig is synthesised), and `in_cluster` (no
+  stored credential — the job pod's mounted agent-namespace ServiceAccount
+  is used; Kubernetes isolated runtime only). Governance: admin-only to
+  register/rotate/delete (every mutation audited), plus a per-cluster
+  `allowed_projects` allow-list of project IDs (empty = any project).
+  Existence is validated at apply (fail-loud, naming the cluster);
+  authorization (`allowed_projects`) is enforced at dispatch.
+
+  Security posture (hardened in review):
+  - **Credentials are write-only**; the CA cert (a public certificate) is
+    echoed back so the editor prefills it on edit. The resolved kubeconfig
+    is masked the moment it's injected, and — because the agent redacts
+    logs line-by-line — the mask set also carries every **sensitive scalar
+    extracted recursively** from the kubeconfig (bearer token,
+    `client-key-data`, `password`, `client-secret`,
+    `auth-provider.config.{access,refresh,id}-token`, at any depth) plus
+    the raw `token`-auth bearer token, deduplicated.
+  - **`token` auth requires a `ca_cert`** — never an
+    `insecure-skip-tls-verify` fallback — and `api_server` must be a
+    parseable `https://` URL with a host and no embedded userinfo (a typo
+    or `http://` can't ship the token in cleartext).
+  - **`cluster:` is the single source** of `PLUGIN_KUBECONFIG`: the parser
+    rejects a job that also sets `with.kubeconfig` or defines
+    `PLUGIN_KUBECONFIG` via `variables` / `secrets` / `id_tokens` / a
+    `parallel.matrix` dimension, and an `approval` gate can't declare
+    `cluster:`.
+  - **The cluster name is immutable** (it's the dispatch-time identity of
+    every reference — rename = delete + recreate, guarded by the
+    usage-check), and **exec-auth kubeconfigs are rejected at registration**
+    (the auth binaries aren't shipped and `exec` can hide secrets in
+    argv/env beyond the masker's reach).
+
+  Docs: [Cluster registry](docs/src/content/docs/concepts/clusters.md) +
+  `cluster:` in the [YAML
+  reference](docs/src/content/docs/pipelines/yaml-reference.md).
+
 ## v0.40.0 — 2026-06-16
 
 ### Added
