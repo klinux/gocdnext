@@ -218,6 +218,95 @@ cluster-wide `*`. If the deploy spans namespaces, use a
 `ClusterRole` + `ClusterRoleBinding` instead, but keep the rules
 tight.
 
+## Setting up a ServiceAccount token (for `token` auth)
+
+`token` auth is how you reach a cluster the agent does **not** run in:
+you register a bearer token minted from a ServiceAccount in the
+*target* cluster, plus that cluster's API server URL and CA. The token
+carries exactly the SA's RBAC, so scope it tight — a leaked or
+over-broad token is the whole blast radius.
+
+**1. Create the SA and bind it to deploy permissions** in the target
+cluster (same verb-scoping discipline as the in-cluster example above —
+a `Role`/`RoleBinding` per namespace, or a `ClusterRole`/
+`ClusterRoleBinding` when the deploy spans namespaces):
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gocdnext-deployer
+  namespace: gocdnext-deploy        # a dedicated namespace for the deploy identity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gocdnext-deployer
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gocdnext-deployer
+subjects:
+  - kind: ServiceAccount
+    name: gocdnext-deployer
+    namespace: gocdnext-deploy
+roleRef:
+  kind: ClusterRole
+  name: gocdnext-deployer
+  apiGroup: rbac.authorization.k8s.io
+```
+
+**2. Mint a long-lived token.** Kubernetes 1.24+ no longer auto-creates
+a token Secret, and `kubectl create token` issues a *short-lived* one
+(TokenRequest) that would expire under a registry that stores it
+statically. Create a bound token Secret so the registry holds a durable
+credential:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gocdnext-deployer-token
+  namespace: gocdnext-deploy
+  annotations:
+    kubernetes.io/service-account.name: gocdnext-deployer
+type: kubernetes.io/service-account-token
+```
+
+(`kubectl create token gocdnext-deployer -n gocdnext-deploy --duration=24h`
+is fine for a quick manual test, but it expires — prefer the Secret for
+a registered cluster, and rotate on your own cadence.)
+
+**3. Extract the three values** the registry needs:
+
+```bash
+NS=gocdnext-deploy
+SECRET=gocdnext-deployer-token
+
+# bearer token  → paste into the `token` field
+kubectl -n "$NS" get secret "$SECRET" -o jsonpath='{.data.token}' | base64 -d
+
+# CA cert (PEM) → paste into `ca_cert`
+kubectl -n "$NS" get secret "$SECRET" -o jsonpath='{.data.ca\.crt}' | base64 -d
+
+# API server URL → paste into `api_server`
+kubectl config view --minify --flatten -o jsonpath='{.clusters[0].cluster.server}'
+```
+
+**4. Register** in *Settings → Clusters → New cluster*, `auth_type: token`,
+pasting the API server, CA, and token. The token is encrypted at rest
+and masked in logs; the CA is a public cert (echoed back on edit).
+**Rotate** by minting a new token and editing the cluster record — the
+name stays (it's immutable), so every `cluster:` reference keeps working.
+
 ## Example: a kustomize deploy pipeline
 
 A single deploy job that renders and applies a kustomization against
