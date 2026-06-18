@@ -55,7 +55,37 @@ YAML
     : >"$TMP/calls"
 }
 
-run() { GIO_CALLS="$TMP/calls" PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh"; }
+run() {
+    GIO_CALLS="$TMP/calls" \
+    GOCDNEXT_GRAVITEE_VALIDATOR="$HERE/gravitee_validate.py" \
+    PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh"
+}
+
+# A path-based fixture exercising the method/auth gates:
+#   /open    rule with NO methods   → method check flags it; mock = safe
+#            for the auth check (terminating, never proxies).
+#   /secured explicit methods + oauth2 → clean.
+#   /leaky   explicit GET + transform-headers only → auth check flags GET.
+setup_paths_fx() {
+    FX="$(mktemp -d "$TMP/fx.XXXX")"
+    cat >"$FX/api.yml" <<'YAML'
+name: ${API_NAME}
+context_path: /orders
+paths:
+  /open:
+    - mock:
+        status: "404"
+  /secured:
+    - methods: [GET, POST]
+      oauth2:
+        oauthResource: KC
+  /leaky:
+    - methods: [GET]
+      transform-headers: {}
+YAML
+    echo '# template placeholder' >"$FX/tmpl.j2"
+    : >"$TMP/calls"
+}
 
 # ── 1. create path: no existing API → create --with-start, lint runs,
 #       defaults merged + ${API_NAME} substituted, token never on argv ──
@@ -228,5 +258,80 @@ grep -q -- '-L' "$TMP/curlargs"                        && fail "curl followed re
 grep -q 'Authorization: token cfg-tok' "$TMP/cfgdump"  || fail "config_token not sent via the config file"
 grep -q 'version: "9"' "$FX/Graviteeio.yml"            || fail "fetched defaults not merged"
 rm -f "$TMP/curl"
+
+# ── 11. method_policy=block fails on a rule without explicit methods;
+#        warn logs /open but still applies ──
+setup_paths_fx
+if GIO_FAKE_LIST_JSON='[]' PLUGIN_METHOD_POLICY="block" \
+     PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="t" \
+     PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run >/dev/null 2>&1; then
+    fail "method_policy=block did not fail on a methodless rule"
+fi
+setup_paths_fx
+out="$(GIO_FAKE_LIST_JSON='[]' PLUGIN_METHOD_POLICY="warn" \
+     PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="t" \
+     PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run 2>&1)" || fail "method warn should not fail: $out"
+echo "$out" | grep -qi 'WARNING.*/open' || fail "method warn did not flag /open"
+grep -q 'definition create' "$TMP/calls" || fail "method warn should still apply"
+
+# ── 12. auth_policy=block fails on an unauthenticated method; mock-only
+#        path is treated as safe (no auth finding for /open) ──
+setup_paths_fx
+if GIO_FAKE_LIST_JSON='[]' PLUGIN_METHOD_POLICY="off" PLUGIN_AUTH_POLICY="block" \
+     PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="t" \
+     PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run >/dev/null 2>&1; then
+    fail "auth_policy=block did not fail on an unauthenticated method"
+fi
+setup_paths_fx
+out="$(GIO_FAKE_LIST_JSON='[]' PLUGIN_METHOD_POLICY="off" PLUGIN_AUTH_POLICY="warn" \
+     PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="t" \
+     PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run 2>&1)" || fail "auth warn should not fail"
+echo "$out" | grep -qi 'WARNING.*/leaky.*GET' || fail "auth warn did not flag /leaky GET"
+echo "$out" | grep -qi 'WARNING.*/open' && fail "mock-only /open should not be auth-flagged"
+
+# ── 13. invalid policy level is rejected ──
+setup_fx
+if PLUGIN_METHOD_POLICY="loud" PLUGIN_API_NAME="x" PLUGIN_URL="https://gv.test" \
+     PLUGIN_TOKEN="t" PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run >/dev/null 2>&1; then
+    fail "invalid method_policy level was accepted"
+fi
+
+# ── 14. a DISABLED auth rule does not count as coverage: GET has a
+#        disabled oauth2 + an enabled transform-headers → auth=block must
+#        still flag GET ──
+setup_paths_fx
+cat >"$FX/api.yml" <<'YAML'
+name: ${API_NAME}
+paths:
+  /g:
+    - methods: [GET]
+      enabled: false
+      oauth2:
+        oauthResource: KC
+    - methods: [GET]
+      enabled: true
+      transform-headers: {}
+YAML
+: >"$TMP/calls"
+if GIO_FAKE_LIST_JSON='[]' PLUGIN_METHOD_POLICY="off" PLUGIN_AUTH_POLICY="block" \
+     PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="t" \
+     PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run >/dev/null 2>&1; then
+    fail "a disabled oauth2 rule was wrongly counted as auth coverage"
+fi
+
+# ── 15. an empty rule list (no rule matches → all methods open) is
+#        flagged by the methods check ──
+setup_paths_fx
+cat >"$FX/api.yml" <<'YAML'
+name: ${API_NAME}
+paths:
+  /empty: []
+YAML
+: >"$TMP/calls"
+if GIO_FAKE_LIST_JSON='[]' PLUGIN_METHOD_POLICY="block" \
+     PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="t" \
+     PLUGIN_PATH="$FX" PLUGIN_TEMPLATE="$FX/tmpl.j2" run >/dev/null 2>&1; then
+    fail "empty rule list (/empty: []) was not flagged as open"
+fi
 
 echo "PASS: gravitee entrypoint"

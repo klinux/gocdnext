@@ -89,6 +89,32 @@ inputs:
       SUBSCRIPTIONS. Plans are best managed out-of-band; only enable
       this when the payload's plans exactly match production. Ignored on
       first create (a new API has no plans to endanger).
+  method_policy:
+    required: false
+    default: warn
+    description: >
+      Security gate for the keyless path-based model — off | warn |
+      block. Flags an enabled path rule without an explicit `methods`
+      list (applies to ALL methods by default), and a path with no
+      enabled rules / an empty list (nothing matches → everything reaches
+      the backend). Disabled rules (`enabled: false`) are ignored. warn
+      (default) logs each finding; block fails the run before touching
+      the Management API; off disables the check.
+  auth_policy:
+    required: false
+    default: "off"
+    description: >
+      Security gate — off | warn | block. Flags methods a path serves
+      that have NO auth policy (see auth_policies), i.e. reachable
+      unauthenticated under the keyless plan. `mock` rules count as safe
+      (they terminate, never proxy). Heuristic — intentionally-public
+      paths may flag, so it's opt-in (default off); start with warn.
+  auth_policies:
+    required: false
+    default: oauth2,jwt,api-key
+    description: >
+      Comma-separated policy names that count as authentication for the
+      auth_policy check.
   org:
     required: false
     default: DEFAULT
