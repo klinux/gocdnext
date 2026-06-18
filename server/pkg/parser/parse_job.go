@@ -19,6 +19,18 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		Secrets:   jd.Secrets,
 		Tags:      jd.Tags,
 		Docker:    jd.Docker,
+		Cluster:   jd.Cluster,
+	}
+	if jd.Cluster != "" {
+		if !jobClusterRE.MatchString(jd.Cluster) {
+			return domain.Job{}, fmt.Errorf("job %q: cluster name %q invalid (lowercase alnum, '-'/'_', start with alnum, ≤63 chars)", name, jd.Cluster)
+		}
+		// One source of truth for the kubeconfig: a managed cluster
+		// injects PLUGIN_KUBECONFIG itself, so a `with: {kubeconfig: …}`
+		// on the same job would be ambiguous.
+		if jd.With["kubeconfig"] != "" {
+			return domain.Job{}, fmt.Errorf("job %q: set either cluster: or with.kubeconfig, not both", name)
+		}
 	}
 	if jd.Agent != nil {
 		j.Profile = jd.Agent.Profile

@@ -48,6 +48,11 @@ var approvalLabelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 // a `deploy: {environment: "prod; rm -rf"}` typo would smuggle in.
 var deployEnvRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
+// jobClusterRE bounds a `cluster:` reference — must match the store's
+// clusterNameRE so a name that parses also resolves. Lowercase
+// DNS-ish; keeps it safe in the jsonpath usage query + log lines.
+var jobClusterRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
 // deployVersionRefRE extracts strict `${{ ... }}` tokens from a
 // deploy.version so we can validate their namespace at APPLY time
 // rather than letting an unresolvable ref wedge the job in `queued`

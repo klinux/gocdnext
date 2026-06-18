@@ -401,6 +401,12 @@ type Job struct {
 	// Profile names a runner_profiles row resolved at apply time.
 	// Empty = "any agent, any defaults" (legacy behaviour).
 	Profile string
+	// Cluster names a clusters-registry row (k8s deploy target).
+	// Resolved + authorized at apply; its kubeconfig is injected as
+	// PLUGIN_KUBECONFIG at dispatch. Empty = no managed cluster.
+	// JSON field name "Cluster" is the jsonpath the delete-guard +
+	// usage queries match (CountClusterUsage).
+	Cluster string `json:",omitempty"`
 	// Resources is the user-declared compute envelope. Profile
 	// defaults fill the empty fields; profile.max caps non-empty
 	// fields; values surviving validation flow into the runtime
