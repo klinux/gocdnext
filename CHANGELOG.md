@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.42.0 — 2026-06-18
+
+### Added
+
+- **Gravitee API gateway plugin** (#53) — `uses: ghcr.io/klinux/gocdnext-plugin-gravitee@v1`
+  configures a Gravitee.io API definition through the graviteeio-cli
+  (`gio`): merges a base values file with the per-API values, renders the
+  Jinja template, lints, then create-or-updates the API on the Management
+  API (idempotent by name) and optionally deploys it — replacing the
+  hand-rolled GoCD Makefile (`yq` merge + `envsubst` + `gio`) with one
+  step. `defaults`/`template` are path-or-URL (pin a tag + `config_token`
+  for a private base-config repo); `mode` is `merge`/`overwrite`.
+  Security posture: the bearer token rides `GIO_APIM_TOKEN` in the env,
+  never argv or the echoed command; env substitution is ALLOWLIST-only
+  (`envsubst_vars`, default just `${API_NAME}`) so a job secret can't leak
+  into the payload, and credential-looking var names are refused; `url`
+  and any fetch URL must be `https://` with a host and no userinfo;
+  `config_token` rides a `0600` `curl --config` file (never argv, no
+  redirect-follow); a duplicate API name is refused rather than updating
+  the wrong one; and `manage_plans_on_update` defaults **false** so an
+  update never reconciles plans (which could break active subscriptions)
+  — enabling it warns loudly. The image pins gio + a checksum-verified
+  yq; a fork can be supplied at build time via `--build-arg
+  GRAVITEE_CLI_SPEC` without leaking its URL into the public manifest.
+
 ## v0.41.0 — 2026-06-18
 
 ### Added
