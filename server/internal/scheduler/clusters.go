@@ -9,32 +9,33 @@ import (
 )
 
 // resolveClusterKubeconfig resolves a job's `cluster:` reference into a
-// kubeconfig string to inject as PLUGIN_KUBECONFIG. Returns "" when the
-// job names no cluster OR the cluster is in_cluster (the job pod's
-// mounted SA is used — nothing to inject). A declared-but-unresolvable
+// kubeconfig string to inject as PLUGIN_KUBECONFIG plus the log masks
+// that credential demands. Returns ("", nil, nil) when the job names no
+// cluster OR the cluster is in_cluster (the job pod's mounted SA is used
+// — nothing to inject, nothing to mask). A declared-but-unresolvable
 // cluster (deleted, or the project not in allowed_projects) returns an
 // error the caller turns into failJobWithError — never a silent
 // dispatch without the credential the pipeline asked for, same contract
 // as secrets / id_tokens.
-func (s *Scheduler) resolveClusterKubeconfig(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob) (string, error) {
+func (s *Scheduler) resolveClusterKubeconfig(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob) (string, []string, error) {
 	// Cheap gate: pipelines with no `cluster:` (the majority) skip the
 	// decode. `"Cluster"` only appears in the definition JSONB when the
 	// field is non-empty (omitempty). A false positive (the literal in
 	// a script string) just pays the decode and finds no name.
 	if !bytes.Contains(run.Definition, []byte(`"Cluster"`)) {
-		return "", nil
+		return "", nil, nil
 	}
 	name := clusterNameForJob(run.Definition, job.Name)
 	if name == "" {
-		return "", nil
+		return "", nil, nil
 	}
-	// in_cluster yields ("", true, nil) — authorization still enforced,
-	// nothing injected.
-	kubeconfig, _, err := s.store.ResolveClusterForDispatch(ctx, run.ProjectID, name)
+	// in_cluster yields ("", true, nil, nil) — authorization still
+	// enforced, nothing injected, nothing to mask.
+	kubeconfig, _, masks, err := s.store.ResolveClusterForDispatch(ctx, run.ProjectID, name)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return kubeconfig, nil
+	return kubeconfig, masks, nil
 }
 
 // clusterNameForJob extracts ONLY the Cluster of one job from the

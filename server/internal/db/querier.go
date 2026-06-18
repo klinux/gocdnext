@@ -1328,7 +1328,11 @@ type Querier interface {
 	// session tokens. The CAS only needs an epoch indicator — a
 	// counter carries exactly that signal with no auth power.
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) (int64, error)
-	UpdateCluster(ctx context.Context, arg UpdateClusterParams) error
+	// name is intentionally NOT updatable: a `cluster:` reference in a
+	// stored pipeline definition resolves by name at dispatch, so a rename
+	// would silently break every pipeline pointing at it. Renaming = delete
+	// + recreate (the delete-guard then surfaces any live dependents).
+	UpdateCluster(ctx context.Context, arg UpdateClusterParams) (int64, error)
 	UpdateEnvironmentDescription(ctx context.Context, arg UpdateEnvironmentDescriptionParams) error
 	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	// Dedicated password-only write. Used when an admin changes their

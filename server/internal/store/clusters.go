@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,10 +81,49 @@ func validateClusterInput(in ClusterInput, isUpdate bool) error {
 	}
 	switch in.AuthType {
 	case ClusterAuthKubeconfig, ClusterAuthToken:
-		// Credential required on insert; on update the preserve
-		// sentinel stands in for "keep the existing one".
-		if in.Credential == "" && !(isUpdate) {
+		// Credential required on insert AND update. On update the
+		// preserve sentinel (a non-empty marker) stands in for "keep
+		// the existing one"; a bare-empty credential is rejected on
+		// both paths so a direct API update can't seal an empty value
+		// and silently break the deploy / synthesize a token-less
+		// kubeconfig.
+		if in.Credential == "" {
 			return fmt.Errorf("store: cluster %q: auth_type %q needs a credential", in.Name, in.AuthType)
+		}
+		if !isUpdate && in.Credential == SecretPreserveSentinel {
+			return fmt.Errorf("store: cluster %q: the preserve sentinel is only valid on update", in.Name)
+		}
+		if in.AuthType == ClusterAuthToken {
+			// token auth must verify TLS against a CA — never a silent
+			// insecure-skip-tls-verify fallback. The CA is a public cert,
+			// so it's required outright (re-sent on every update; the API
+			// surfaces it). For a self-signed/insecure dev cluster, use a
+			// full kubeconfig with the flag set explicitly instead.
+			if len(in.CACert) == 0 {
+				return fmt.Errorf("store: cluster %q: token auth requires a ca_cert (no insecure TLS fallback)", in.Name)
+			}
+			// The api_server is interpolated into the synthesized
+			// kubeconfig and the bearer token rides this connection — so
+			// it must be a parseable https:// URL with no embedded
+			// userinfo. http:// would put the token on the wire in
+			// cleartext; an unparseable value would only blow up at
+			// deploy time, far from the typo.
+			if err := validateAPIServerURL(in.APIServer); err != nil {
+				return fmt.Errorf("store: cluster %q: %w", in.Name, err)
+			}
+		}
+		// A full kubeconfig with an `exec:` user runs an external
+		// credential binary (gke-gcloud-auth-plugin, aws-iam-authenticator,
+		// …) that gocdnext's plugin images don't ship — it's unsupported
+		// (see docs) and its secrets can hide in argv/env where the log
+		// masker can't reach them. Reject it at the cadastro instead of
+		// failing opaquely at deploy. Only checkable when the kubeconfig
+		// is actually present (not the preserve sentinel).
+		if in.AuthType == ClusterAuthKubeconfig &&
+			in.Credential != "" && in.Credential != SecretPreserveSentinel {
+			if err := rejectUnsupportedKubeconfig(in.Credential); err != nil {
+				return fmt.Errorf("store: cluster %q: %w", in.Name, err)
+			}
 		}
 	case ClusterAuthInCluster:
 		if in.Credential != "" && in.Credential != SecretPreserveSentinel {
@@ -124,6 +165,7 @@ func (s *Store) GetCluster(ctx context.Context, id uuid.UUID) (Cluster, error) {
 // InsertCluster seals the credential (kubeconfig/token) with the cipher
 // and persists. Plaintext never reaches the DB. in_cluster stores nil.
 func (s *Store) InsertCluster(ctx context.Context, cipher *crypto.Cipher, in ClusterInput) (Cluster, error) {
+	in.APIServer = strings.TrimSpace(in.APIServer)
 	if err := validateClusterInput(in, false); err != nil {
 		return Cluster{}, err
 	}
@@ -152,6 +194,7 @@ func (s *Store) InsertCluster(ctx context.Context, cipher *crypto.Cipher, in Clu
 // SecretPreserveSentinel re-seals the existing ciphertext so a
 // metadata-only edit doesn't force re-entering the kubeconfig.
 func (s *Store) UpdateCluster(ctx context.Context, cipher *crypto.Cipher, id uuid.UUID, in ClusterInput) error {
+	in.APIServer = strings.TrimSpace(in.APIServer)
 	if err := validateClusterInput(in, true); err != nil {
 		return err
 	}
@@ -172,17 +215,23 @@ func (s *Store) UpdateCluster(ctx context.Context, cipher *crypto.Cipher, id uui
 			return err
 		}
 	}
-	if err := s.q.UpdateCluster(ctx, db.UpdateClusterParams{
+	rows, err := s.q.UpdateCluster(ctx, db.UpdateClusterParams{
 		ID:              pgUUID(id),
-		Name:            in.Name,
 		Description:     in.Description,
 		AuthType:        in.AuthType,
 		ApiServer:       in.APIServer,
 		CaCert:          in.CACert,
 		CredentialEnc:   credEnc,
 		AllowedProjects: normalizeProjectIDs(in.AllowedProjects),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("store: update cluster %s: %w", id, err)
+	}
+	if rows == 0 {
+		// A missing id affects zero rows — surface it consistently
+		// (the preserve-sentinel path 404s via its lookup; this covers
+		// the non-preserve / in_cluster paths too).
+		return ErrClusterNotFound
 	}
 	return nil
 }
@@ -228,42 +277,215 @@ func (s *Store) CountClusterUsage(ctx context.Context, name string) (ClusterUsag
 // ResolveClusterForDispatch is the scheduler's dispatch-time resolver:
 // it authorizes the project against allowed_projects, then returns a
 // ready-to-use kubeconfig (decrypted, or synthesized from a token) for
-// injection as PLUGIN_KUBECONFIG. in_cluster returns ("", true, nil) —
-// no kubeconfig; the job pod's mounted SA is used. Uses the store's
-// authCipher (runtime path), not a passed cipher.
-func (s *Store) ResolveClusterForDispatch(ctx context.Context, projectID uuid.UUID, name string) (kubeconfig string, inCluster bool, err error) {
+// injection as PLUGIN_KUBECONFIG, plus the set of log masks that must
+// be redacted. in_cluster returns ("", true, nil, nil) — no kubeconfig;
+// the job pod's mounted SA is used. Uses the store's authCipher
+// (runtime path), not a passed cipher.
+//
+// masks intentionally carries more than the whole kubeconfig blob: the
+// agent redacts logs LINE-BY-LINE, so a multiline kubeconfig as a whole
+// would never match a log line. The sensitive scalars inside it (bearer
+// token, client key, password) — and, for token auth, the raw token —
+// are single-line values that DO survive line-based redaction, so they
+// are returned individually.
+func (s *Store) ResolveClusterForDispatch(ctx context.Context, projectID uuid.UUID, name string) (kubeconfig string, inCluster bool, masks []string, err error) {
 	r, err := s.q.GetClusterForDispatch(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, ErrClusterNotFound
+		return "", false, nil, ErrClusterNotFound
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("store: resolve cluster %q: %w", name, err)
+		return "", false, nil, fmt.Errorf("store: resolve cluster %q: %w", name, err)
 	}
 	if !projectAllowed(r.AllowedProjects, projectID) {
-		return "", false, fmt.Errorf("store: project not authorized for cluster %q", name)
+		return "", false, nil, fmt.Errorf("store: project not authorized for cluster %q", name)
 	}
 	switch r.AuthType {
 	case ClusterAuthInCluster:
-		return "", true, nil
+		return "", true, nil, nil
 	case ClusterAuthKubeconfig:
 		dec, err := s.decryptCredential(r.CredentialEnc, name)
 		if err != nil {
-			return "", false, err
+			return "", false, nil, err
 		}
-		return string(dec), false, nil
+		kc := string(dec)
+		return kc, false, clusterMasks(kc, ""), nil
 	case ClusterAuthToken:
 		tok, err := s.decryptCredential(r.CredentialEnc, name)
 		if err != nil {
-			return "", false, err
+			return "", false, nil, err
 		}
 		kc, err := synthesizeKubeconfig(r.ApiServer, r.CaCert, string(tok))
 		if err != nil {
-			return "", false, fmt.Errorf("store: cluster %q: build kubeconfig: %w", name, err)
+			return "", false, nil, fmt.Errorf("store: cluster %q: build kubeconfig: %w", name, err)
 		}
-		return kc, false, nil
+		return kc, false, clusterMasks(kc, string(tok)), nil
 	default:
-		return "", false, fmt.Errorf("store: cluster %q: unknown auth_type %q", name, r.AuthType)
+		return "", false, nil, fmt.Errorf("store: cluster %q: unknown auth_type %q", name, r.AuthType)
 	}
+}
+
+// clusterMasks is the log-redaction set for a resolved cluster: the
+// whole kubeconfig blob (best effort for single-line cases), every
+// sensitive scalar inside it, and — for token auth — the raw bearer
+// token (which appears standalone, not only inside the kubeconfig).
+// Deduplicated: the same value can surface in more than one field (the
+// token path repeats the bearer token inside the synthesized config),
+// and there's no reason to redact it twice.
+func clusterMasks(kubeconfig, rawToken string) []string {
+	masks := make([]string, 0, 4)
+	if kubeconfig != "" {
+		masks = append(masks, kubeconfig)
+		masks = append(masks, sensitiveKubeconfigValues(kubeconfig)...)
+	}
+	if rawToken != "" {
+		masks = append(masks, rawToken)
+	}
+	seen := make(map[string]struct{}, len(masks))
+	out := masks[:0]
+	for _, m := range masks {
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	return out
+}
+
+// sensitiveMinLen avoids masking trivially-short scalars (a 4-char
+// value would blank unrelated log text).
+const sensitiveMinLen = 8
+
+// sensitiveKubeconfigKeys are the field names that carry a usable
+// credential, matched case-insensitively at ANY depth. A "full
+// kubeconfig" can nest a token well below users[].user.token — under
+// auth-provider.config.{access-token,refresh-token,id-token} (OIDC),
+// for instance — so the walk is recursive, not a fixed path. (exec-auth
+// kubeconfigs are rejected at the cadastro, so their argv/env secrets
+// never reach here.)
+var sensitiveKubeconfigKeys = map[string]struct{}{
+	"token":           {},
+	"client-key-data": {},
+	"password":        {},
+	"client-secret":   {},
+	"access-token":    {},
+	"refresh-token":   {},
+	"id-token":        {},
+	"id_token":        {},
+}
+
+// sensitiveKubeconfigValues recursively walks a kubeconfig and returns
+// every sensitive scalar (by key name, any depth). These are single-line
+// values, so they survive the agent's line-by-line log redaction even
+// when the multiline kubeconfig as a whole would not. Best-effort: a
+// kubeconfig that doesn't parse yields no extra masks (the whole-blob
+// mask still applies).
+func sensitiveKubeconfigValues(kubeconfig string) []string {
+	var root any
+	if err := yaml.Unmarshal([]byte(kubeconfig), &root); err != nil {
+		return nil
+	}
+	var out []string
+	walkSensitive(root, &out)
+	return out
+}
+
+// walkSensitive descends maps and slices, collecting string values whose
+// key is in sensitiveKubeconfigKeys. Handles both map shapes yaml.v3 can
+// produce for an untyped decode.
+func walkSensitive(node any, out *[]string) {
+	collect := func(k string, child any) {
+		if _, hit := sensitiveKubeconfigKeys[strings.ToLower(k)]; hit {
+			if s, ok := child.(string); ok && len(s) >= sensitiveMinLen {
+				*out = append(*out, s)
+			}
+		}
+		walkSensitive(child, out)
+	}
+	switch v := node.(type) {
+	case map[string]any:
+		for k, child := range v {
+			collect(k, child)
+		}
+	case map[any]any:
+		for k, child := range v {
+			ks, _ := k.(string)
+			collect(ks, child)
+		}
+	case []any:
+		for _, child := range v {
+			walkSensitive(child, out)
+		}
+	}
+}
+
+// validateAPIServerURL enforces that a token cluster's api_server is a
+// safe, parseable endpoint: https only (a bearer token over http is
+// cleartext), with a host and no embedded userinfo (credentials belong
+// in the token field, never in the URL).
+func validateAPIServerURL(raw string) error {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return errors.New("token auth requires an api_server URL")
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("api_server is not a valid URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("api_server must be an https:// URL (got scheme %q) — a bearer token over http would be cleartext", u.Scheme)
+	}
+	if u.Host == "" {
+		return errors.New("api_server must include a host")
+	}
+	if u.User != nil {
+		return errors.New("api_server must not embed userinfo (user:pass@host) — put credentials in the token field")
+	}
+	return nil
+}
+
+// rejectUnsupportedKubeconfig refuses a kubeconfig that relies on an
+// `exec:` credential plugin — unsupported (gocdnext's plugin images
+// don't ship the auth binaries) and a masking blind spot. Best-effort:
+// a kubeconfig that doesn't parse is left to fail loudly at dispatch.
+func rejectUnsupportedKubeconfig(kubeconfig string) error {
+	var root any
+	if err := yaml.Unmarshal([]byte(kubeconfig), &root); err != nil {
+		return nil
+	}
+	if hasKey(root, "exec") {
+		return errors.New("exec-based kubeconfig auth is not supported (the credential plugin isn't shipped) — use a static token/cert kubeconfig")
+	}
+	return nil
+}
+
+// hasKey reports whether a decoded YAML tree contains the given map key
+// anywhere (case-insensitive).
+func hasKey(node any, key string) bool {
+	switch v := node.(type) {
+	case map[string]any:
+		for k, child := range v {
+			if strings.EqualFold(k, key) || hasKey(child, key) {
+				return true
+			}
+		}
+	case map[any]any:
+		for k, child := range v {
+			if ks, ok := k.(string); ok && strings.EqualFold(ks, key) {
+				return true
+			}
+			if hasKey(child, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if hasKey(child, key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Store) decryptCredential(enc []byte, name string) ([]byte, error) {
@@ -297,14 +519,18 @@ func sealClusterCredential(cipher *crypto.Cipher, authType, credential string) (
 }
 
 // synthesizeKubeconfig builds a minimal single-context kubeconfig from
-// a server URL, an optional CA PEM, and a bearer token. Marshalled via
-// yaml.v3 so values are escaped safely (no string interpolation).
+// a server URL, a CA PEM, and a bearer token. Marshalled via yaml.v3 so
+// values are escaped safely (no string interpolation). A CA is
+// mandatory — token auth NEVER falls back to insecure-skip-tls-verify
+// (validateClusterInput already rejects a CA-less token cluster; this
+// is the same invariant enforced again at synthesis, defense in depth).
 func synthesizeKubeconfig(server string, caPEM []byte, token string) (string, error) {
-	clusterCfg := map[string]any{"server": server}
-	if len(caPEM) > 0 {
-		clusterCfg["certificate-authority-data"] = base64.StdEncoding.EncodeToString(caPEM)
-	} else {
-		clusterCfg["insecure-skip-tls-verify"] = true
+	if len(caPEM) == 0 {
+		return "", errors.New("token auth requires a ca_cert (refusing insecure-skip-tls-verify)")
+	}
+	clusterCfg := map[string]any{
+		"server":                     server,
+		"certificate-authority-data": base64.StdEncoding.EncodeToString(caPEM),
 	}
 	cfg := map[string]any{
 		"apiVersion":      "v1",

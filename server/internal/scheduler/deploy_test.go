@@ -30,7 +30,7 @@ func TestBuildAssignment_DeployTarget_ResolvesVersionFromNeedsOutputs(t *testing
 	job := store.DispatchableJob{ID: uuid.New(), Name: "sync-prod", Needs: []string{"build"}}
 	needs := scheduler.NeedsOutputs{"build": {"image-tag": "1.42.abc"}}
 
-	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs, nil, nil, "")
+	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, needs, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestBuildAssignment_DeployTarget_DefaultsToCommitShortSha(t *testing.T) {
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON, Revisions: revs}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "ship"}
 
-	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestBuildAssignment_DeployTarget_ShellStyleCIVars(t *testing.T) {
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Counter: 7, Definition: defJSON, Revisions: revs}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "ship"}
 
-	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestBuildAssignment_DeployTarget_EmptyVersionIsTerminal(t *testing.T) {
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON} // no Revisions
 	job := store.DispatchableJob{ID: uuid.New(), Name: "ship"}
 
-	_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if !errors.Is(err, scheduler.ErrDeployVersionEmpty) {
 		t.Fatalf("err = %v, want ErrDeployVersionEmpty", err)
 	}
@@ -136,7 +136,7 @@ func TestBuildAssignment_DeployTarget_UnresolvableCIVarIsTerminal(t *testing.T) 
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON, Revisions: revs}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "ship"}
 
-	_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if !errors.Is(err, scheduler.ErrDeployVersionUnresolved) {
 		t.Fatalf("err = %v, want ErrDeployVersionUnresolved", err)
 	}
@@ -165,7 +165,7 @@ func TestBuildAssignment_DeployTarget_UnresolvedShellCIVarIsTerminal(t *testing.
 		run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON, Revisions: revs}
 		job := store.DispatchableJob{ID: uuid.New(), Name: "ship"}
 
-		_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+		_, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 		if !errors.Is(err, scheduler.ErrDeployVersionUnresolved) {
 			t.Fatalf("version %q: err = %v, want ErrDeployVersionUnresolved", version, err)
 		}
@@ -190,7 +190,7 @@ func TestBuildAssignment_MatrixDecomposesIntoEnvVars(t *testing.T) {
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "build", MatrixKey: "ARCH=amd64,OS=linux"}
 
-	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestBuildAssignment_MatrixDimResolvesInPluginSettings(t *testing.T) {
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "publish", MatrixKey: "OS=linux"}
 
-	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestBuildAssignment_NoDeployTargetForPlainJob(t *testing.T) {
 	run := store.RunForDispatch{ID: uuid.New(), PipelineID: uuid.New(), Definition: defJSON}
 	job := store.DispatchableJob{ID: uuid.New(), Name: "test"}
 
-	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "")
+	_, target, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}

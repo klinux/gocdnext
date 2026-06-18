@@ -46,15 +46,18 @@ INSERT INTO clusters (
 RETURNING id, name, description, auth_type, api_server, ca_cert,
           allowed_projects, created_by, created_at, updated_at;
 
--- name: UpdateCluster :exec
+-- name: UpdateCluster :execrows
+-- name is intentionally NOT updatable: a `cluster:` reference in a
+-- stored pipeline definition resolves by name at dispatch, so a rename
+-- would silently break every pipeline pointing at it. Renaming = delete
+-- + recreate (the delete-guard then surfaces any live dependents).
 UPDATE clusters
-SET name = $2,
-    description = $3,
-    auth_type = $4,
-    api_server = $5,
-    ca_cert = $6,
-    credential_enc = $7,
-    allowed_projects = $8,
+SET description = $2,
+    auth_type = $3,
+    api_server = $4,
+    ca_cert = $5,
+    credential_enc = $6,
+    allowed_projects = $7,
     updated_at = NOW()
 WHERE id = $1;
 
