@@ -161,6 +161,24 @@ func TestClusters_NameUnique_And_ResolveMissing(t *testing.T) {
 	}
 }
 
+func TestResolveClusters_ApplyExistence(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	if _, err := s.InsertCluster(ctx, nil, store.ClusterInput{
+		Name: "prod", AuthType: store.ClusterAuthInCluster,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	ok := []*domain.Pipeline{{Name: "p", Jobs: []domain.Job{{Name: "deploy", Cluster: "prod"}}}}
+	if err := s.ResolveClusters(ctx, ok); err != nil {
+		t.Fatalf("known cluster rejected: %v", err)
+	}
+	bad := []*domain.Pipeline{{Name: "p", Jobs: []domain.Job{{Name: "deploy", Cluster: "ghost"}}}}
+	err := s.ResolveClusters(ctx, bad)
+	if err == nil || !strings.Contains(err.Error(), "ghost") || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("unknown cluster err = %v, want one naming 'ghost'/'not registered'", err)
+	}
+}
+
 func TestClusters_DeleteGuard_Usage(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
