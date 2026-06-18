@@ -1,0 +1,151 @@
+name: gravitee
+category: deploy
+description: >
+  Configure a Gravitee.io API definition through the graviteeio-cli
+  (`gio`): merge a base values file with the per-API values, render the
+  Jinja template, lint, then create-or-update the API on the Management
+  API (idempotent by name) and optionally deploy it. The bearer token
+  rides the environment, never argv, and is masked in logs.
+
+inputs:
+  api_name:
+    required: true
+    description: >
+      API name in Gravitee. Used to look the API up (create vs update),
+      offered to the template as ${API_NAME}, and shown in the log line.
+      Must not contain quotes or newlines. If more than one API shares
+      the name the plugin refuses to guess (disambiguate in Gravitee).
+  url:
+    required: true
+    description: >
+      Gravitee Management API base URL (GIO_APIM_URL). Must be https://
+      with a host and no userinfo — the bearer token rides this
+      connection and is never sent over cleartext http.
+  token:
+    required: true
+    description: >
+      Management API bearer token. Reference a secret —
+      `token: ${{ GRAVITEE_TOKEN }}` — so it's resolved and masked; the
+      plugin passes it to gio via the environment, never on argv.
+  path:
+    required: false
+    default: "."
+    description: >
+      The API config folder (gio's "def-path"): holds the per-API values
+      file plus the `settings/` and `templates/` folders gio expects.
+      Defaults to the workspace root.
+  values_file:
+    required: false
+    default: api.yml
+    description: Per-API values file (relative to `path`), overlaid on `defaults`.
+  envsubst_vars:
+    required: false
+    description: >
+      Extra environment variables (space/comma separated) allowed to be
+      substituted into the rendered config alongside ${API_NAME}.
+      Substitution is ALLOWLIST-only: a ${VAR} not named here (or the
+      always-allowed API_NAME) is left literal, so a job secret in the
+      environment can never leak into the payload sent to Gravitee. List
+      only NON-secret vars (e.g. GO_PIPELINE_GROUP_NAME). Credential-looking
+      names (that are, or end in, TOKEN/SECRET/PASSWORD/KEY/CREDENTIAL) are
+      rejected. Each must be a valid env var name.
+  defaults:
+    required: false
+    description: >
+      Base values file shared across APIs — a workspace path OR an
+      https:// URL (auto-detected; http:// is refused). For a URL, pin a
+      tag/ref for reproducibility and pass `config_token` if the host is
+      private. Omit to use `values_file` as-is.
+  template:
+    required: false
+    description: >
+      The api_config.yml.j2 Jinja template — a workspace path OR an
+      https:// URL (http:// is refused). Omit when
+      `path/templates/api_config.yml.j2` already exists.
+  mode:
+    required: false
+    default: merge
+    description: >
+      How `defaults` and `values_file` combine: `merge` (deep, arrays
+      concatenated) or `overwrite` (deep, arrays replaced).
+  deploy:
+    required: false
+    default: "true"
+    description: Deploy after applying (--with-deploy, or --with-start on create).
+  lint:
+    required: false
+    default: "true"
+    description: Run `gio … definition lint` before writing to the Management API.
+  manage_plans_on_update:
+    required: false
+    default: "false"
+    description: >
+      DANGER — leave this false unless you fully understand it. On
+      UPDATE, false (default) strips `plans` from the payload so the
+      import never touches existing plans, keeping every active
+      subscription intact. true sends plans on update and lets Gravitee
+      reconcile them — which can duplicate, alter, close, or remove a
+      plan, and a plan that changes or disappears BREAKS ITS ACTIVE
+      SUBSCRIPTIONS. Plans are best managed out-of-band; only enable
+      this when the payload's plans exactly match production. Ignored on
+      first create (a new API has no plans to endanger).
+  org:
+    required: false
+    default: DEFAULT
+    description: Gravitee organization (GIO_APIM_ORG).
+  env:
+    required: false
+    default: DEFAULT
+    description: Gravitee environment (GIO_APIM_ENV).
+  ssl_verify:
+    required: false
+    default: "true"
+    description: >
+      TLS verification (GIO_SSL_VERIFY): `true`, `false`, or a CA path.
+      Prefer `ca_bundle` to pin a CA over disabling verification.
+  ca_bundle:
+    required: false
+    description: >
+      Management-API CA certificate, PEM or base64 (auto-detected).
+      Written to a file and used to verify TLS. Reference a secret.
+  config_token:
+    required: false
+    description: >
+      Bearer token for fetching `defaults`/`template` from a private URL
+      (sent as an Authorization header). Reference a secret.
+
+examples:
+  - name: API defined in the repo, base config from a pinned URL
+    description: >
+      The per-API api.yml lives in the pipeline repo; the shared base
+      values and template come from a versioned config repo by URL
+      (pinned to a tag for reproducibility).
+    yaml: |
+      secrets:
+        - GRAVITEE_TOKEN
+      uses: ghcr.io/klinux/gocdnext-plugin-gravitee@v1
+      with:
+        api_name: orders
+        url: https://gravitee.example.com/management
+        token: ${{ GRAVITEE_TOKEN }}
+        path: gravitee/apis/orders
+        defaults: https://raw.githubusercontent.com/acme-org/gravitee-base/v1.4.0/values-default-stage.yml
+        template: https://raw.githubusercontent.com/acme-org/gravitee-base/v1.4.0/api_config.yml.j2
+
+  - name: everything in the repo, CA pinned via a secret
+    description: >
+      api.yml, settings/ and templates/ all checked in; the Management
+      API CA is pinned with a secret instead of disabling TLS verify.
+    yaml: |
+      secrets:
+        - GRAVITEE_TOKEN
+        - GRAVITEE_CA
+      uses: ghcr.io/klinux/gocdnext-plugin-gravitee@v1
+      with:
+        api_name: payments
+        url: https://gravitee.example.com/management
+        token: ${{ GRAVITEE_TOKEN }}
+        path: gravitee/apis/payments
+        defaults: gravitee/base/values-default-prod.yml
+        mode: overwrite
+        ca_bundle: ${{ GRAVITEE_CA }}
