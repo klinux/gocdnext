@@ -23,6 +23,14 @@ parse_bool() {
     esac
 }
 
+# parse_level validates a tri-state security gate (off|warn|block).
+parse_level() {
+    case "$1" in
+        off | warn | block) printf '%s' "$1" ;;
+        *) die "$2 must be 'off', 'warn', or 'block' (got '$1')" ;;
+    esac
+}
+
 # require_https enforces an https:// URL with a host and no userinfo: a
 # bearer token must never ride cleartext http, and a config/template URL
 # must not smuggle credentials in the authority or be tamperable. Uses a
@@ -79,6 +87,12 @@ lint="$(parse_bool "${PLUGIN_LINT:-true}" lint)"
 # subscriptions). true lets Gravitee reconcile plans on update, which
 # can alter/close/remove a plan and break its ACTIVE SUBSCRIPTIONS.
 manage_plans="$(parse_bool "${PLUGIN_MANAGE_PLANS_ON_UPDATE:-false}" manage_plans_on_update)"
+# Security gates for the keyless path-based model (see plugin.yaml).
+# method_policy defaults to warn (surface open methods everywhere); the
+# heuristic auth_policy check is opt-in (off) to avoid false-positives on
+# intentionally-public paths.
+method_policy="$(parse_level "${PLUGIN_METHOD_POLICY:-warn}" method_policy)"
+auth_policy="$(parse_level "${PLUGIN_AUTH_POLICY:-off}" auth_policy)"
 
 [ -d "$path_dir" ] || die "path '$path_dir' is not a directory"
 cd "$path_dir"
@@ -192,6 +206,22 @@ shell_format=""
 for v in "${allow_vars[@]}"; do shell_format+="\${${v}} "; done
 API_NAME="$PLUGIN_API_NAME" envsubst "$shell_format" <"$merged" >Graviteeio.yml
 rm -f "$merged"
+
+# ── security gate: open methods under the keyless default plan ──
+# Convert the rendered definition to JSON (the validator is stdlib-only)
+# and run the two checks at their configured levels. block → fail here,
+# before anything is written to the Management API.
+if [ "$method_policy" != "off" ] || [ "$auth_policy" != "off" ]; then
+    validator="${GOCDNEXT_GRAVITEE_VALIDATOR:-/usr/local/bin/gravitee-validate}"
+    defn_json="$(mktemp)"
+    yq -o=json '.' Graviteeio.yml >"$defn_json"
+    if ! python3 "$validator" --methods "$method_policy" --auth "$auth_policy" \
+        --auth-policies "${PLUGIN_AUTH_POLICIES:-oauth2,jwt,api-key}" "$defn_json"; then
+        rm -f "$defn_json"
+        die "method/auth policy validation failed (see ERROR lines above)"
+    fi
+    rm -f "$defn_json"
+fi
 
 # ── lint (apply lints internally too; the explicit pass surfaces it
 #    early, before any write to the Management API) ──

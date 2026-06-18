@@ -16,6 +16,13 @@
 #                                 reconcile plans on update (can break
 #                                 active subscriptions). Default false =
 #                                 strip plans from the payload (safe).
+#   PLUGIN_METHOD_POLICY (opt,warn) off|warn|block — gate paths whose rules
+#                                 don't declare explicit methods (open under
+#                                 the keyless plan).
+#   PLUGIN_AUTH_POLICY   (opt,off)  off|warn|block — gate methods with no
+#                                 auth policy (reachable unauthenticated).
+#   PLUGIN_AUTH_POLICIES (opt)     csv of policy names that count as auth
+#                                 (default oauth2,jwt,api-key).
 #   PLUGIN_ORG/PLUGIN_ENV (opt)   GIO_APIM_ORG / GIO_APIM_ENV.
 #   PLUGIN_SSL_VERIFY (opt,true)  GIO_SSL_VERIFY (true/false/path).
 #   PLUGIN_CA_BUNDLE  (opt)       PEM/base64 CA -> pinned TLS verify.
@@ -52,7 +59,8 @@ RUN set -eux; \
     gio --version
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-gravitee
-RUN chmod +x /usr/local/bin/gocdnext-gravitee
+COPY gravitee_validate.py /usr/local/bin/gravitee-validate
+RUN chmod +x /usr/local/bin/gocdnext-gravitee /usr/local/bin/gravitee-validate
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/gocdnext-gravitee"]
