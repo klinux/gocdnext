@@ -26,6 +26,7 @@ func BuildAssignment(
 	needsOutputs NeedsOutputs,
 	matrixNeedsOutputs MatrixNeedsOutputs,
 	idTokens map[string]string,
+	clusterKubeconfig string,
 ) (*gocdnextv1.JobAssignment, *DeployTarget, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
@@ -141,6 +142,17 @@ func BuildAssignment(
 		if token != "" {
 			masks = append(masks, token)
 		}
+	}
+
+	// Managed cluster kubeconfig (pre-resolved by the caller from the
+	// clusters registry). Injected as PLUGIN_KUBECONFIG — the same input
+	// the kubectl/helm plugins already consume — so a `cluster:` job
+	// authenticates without a pasted kubeconfig secret. Empty when the
+	// job names no cluster, or names an in_cluster one (the pod's SA is
+	// used). It's a bearer credential → always masked.
+	if clusterKubeconfig != "" {
+		env["PLUGIN_KUBECONFIG"] = clusterKubeconfig
+		masks = append(masks, clusterKubeconfig)
 	}
 
 	// Outputs (issue #10): values resolved from upstream
