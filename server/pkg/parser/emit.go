@@ -150,6 +150,7 @@ func jobToDef(j domain.Job) JobDef {
 		Secrets:   j.Secrets,
 		Tags:      j.Tags,
 		Docker:    j.Docker,
+		Cluster:   j.Cluster,
 	}
 	if j.Profile != "" {
 		// Round-trip emits the profile under `agent.profile`; the

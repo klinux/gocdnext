@@ -167,6 +167,11 @@ type JobDef struct {
 	// job (socket mount / DinD sidecar). Pair with `image:` to spawn
 	// sibling containers for testcontainers / docker compose.
 	Docker bool `yaml:"docker,omitempty"`
+	// Cluster names a k8s cluster registered in the admin clusters
+	// registry. Resolved at apply (must exist + project authorized)
+	// and injected as PLUGIN_KUBECONFIG at dispatch, so kubectl/helm
+	// jobs target it without a pasted kubeconfig secret.
+	Cluster string `yaml:"cluster,omitempty"`
 	// Approval flags this job as a manual gate. When set the job
 	// never dispatches to an agent — it parks in awaiting_approval
 	// and transitions via the approve/reject HTTP endpoints. No
