@@ -102,6 +102,20 @@ type Cach struct {
 	LastAccessedAt pgtype.Timestamptz
 }
 
+type Cluster struct {
+	ID              pgtype.UUID
+	Name            string
+	Description     string
+	AuthType        string
+	ApiServer       string
+	CaCert          []byte
+	CredentialEnc   []byte
+	AllowedProjects []string
+	CreatedBy       string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type CoverageReport struct {
 	ID           int64
 	JobRunID     pgtype.UUID
