@@ -206,6 +206,33 @@ func (h *Handler) UpdateCluster(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// TestCluster handles POST /api/v1/admin/clusters/{id}/test — an
+// on-demand connectivity probe against the registered deploy target.
+// Returns the probe result ({status, message}); the credential is
+// resolved inside the store and never crosses this boundary.
+func (h *Handler) TestCluster(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, ok := parseClusterID(w, r)
+	if !ok {
+		return
+	}
+	res, err := h.store.ProbeCluster(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrClusterNotFound) {
+			http.Error(w, "cluster not found", http.StatusNotFound)
+			return
+		}
+		h.log.Error("admin clusters: probe", "id", id, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, res)
+}
+
 // DeleteCluster handles DELETE /api/v1/admin/clusters/{id}. Refuses
 // to delete a cluster any pipeline still names or any queued/running
 // run is bound to — the dispatcher would fail to resolve it

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -42,6 +44,7 @@ func newClusterHandler(t *testing.T) (*store.Store, *pgxpool.Pool, http.Handler)
 		t.Fatalf("cipher: %v", err)
 	}
 	h.SetCipher(c)
+	s.SetAuthCipher(c) // ProbeCluster decrypts the credential via the store cipher
 	return s, pool, mount(h)
 }
 
@@ -305,6 +308,62 @@ func TestClusters_DeleteNotFound(t *testing.T) {
 	rr := request(srv, http.MethodDelete, "/api/v1/admin/clusters/00000000-0000-0000-0000-000000000000", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestClusters_TestConnection registers a token cluster pointing at a
+// stand-in TLS API server, then exercises POST /{id}/test → the probe
+// reports ok with the version, and the token never crosses the wire.
+func TestClusters_TestConnection(t *testing.T) {
+	_, _, srv := newClusterHandler(t)
+
+	const tok = "probe-token-xyz"
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version" && r.Header.Get("Authorization") == "Bearer "+tok {
+			_, _ = w.Write([]byte(`{"gitVersion":"v1.29.0"}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw})
+
+	// Create via the API so the credential is sealed with the handler's
+	// cipher (the same one ProbeCluster decrypts with).
+	body, _ := json.Marshal(map[string]string{
+		"name": "probe-me", "auth_type": "token",
+		"api_server": ts.URL, "ca_cert": string(ca), "credential": tok,
+	})
+	rr := request(srv, http.MethodPost, "/api/v1/admin/clusters", bytes.NewBuffer(body))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	rr = request(srv, http.MethodPost, "/api/v1/admin/clusters/"+created.ID+"/test", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("test status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), tok) {
+		t.Fatalf("token leaked into test response: %s", rr.Body.String())
+	}
+	var res struct{ Status, Message string }
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode test result: %v", err)
+	}
+	if res.Status != "ok" || !strings.Contains(res.Message, "v1.29.0") {
+		t.Fatalf("probe result = %+v, want ok + version", res)
+	}
+
+	// A missing id → 404.
+	rr = request(srv, http.MethodPost, "/api/v1/admin/clusters/00000000-0000-0000-0000-000000000000/test", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("test missing status = %d, want 404", rr.Code)
 	}
 }
 
