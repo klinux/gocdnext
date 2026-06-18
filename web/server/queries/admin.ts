@@ -208,6 +208,37 @@ export async function listAdminRunnerProfiles(): Promise<{
   );
 }
 
+// AdminCluster mirrors the GET /api/v1/admin/clusters row shape. The
+// credential (kubeconfig blob / bearer token) is write-only and NEVER
+// crosses the wire — the editor starts it blank and sends the preserve
+// sentinel to keep the stored value on update. The CA cert, by
+// contrast, is a PUBLIC certificate (no private key): the endpoint DOES
+// echo it (`ca_cert`) so the editor can prefill it on edit and re-send
+// it, instead of silently dropping it and degrading token auth to
+// insecure TLS. `has_ca` is the cheap boolean for list rendering.
+export type AdminCluster = {
+  id: string;
+  name: string;
+  description: string;
+  auth_type: "kubeconfig" | "token" | "in_cluster";
+  api_server: string;
+  has_ca: boolean;
+  ca_cert: string;
+  // Project IDs allowed to target this cluster. Always emitted as an
+  // array by the server (never null) so the editor iterates without a
+  // nil-check.
+  allowed_projects: string[];
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+// The endpoint returns a bare array (no envelope), so we read it as
+// AdminCluster[] directly.
+export async function listAdminClusters(): Promise<AdminCluster[]> {
+  return readJSON<AdminCluster[]>("/api/v1/admin/clusters");
+}
+
 export async function listAdminGroupMembers(
   groupID: string,
 ): Promise<{ members: AdminGroupMember[] }> {
