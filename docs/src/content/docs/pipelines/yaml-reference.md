@@ -221,6 +221,8 @@ jobs:
         paths: [node_modules]
         dest: ./
     docker: true               # mounts docker socket / DinD sidecar
+    cluster: prod-gke          # registered deploy-target cluster; injects
+                               # its kubeconfig as PLUGIN_KUBECONFIG
     variables:
       MY_VAR: hello
     secrets: [SLACK_TOKEN]
@@ -267,6 +269,7 @@ Per-key:
 | `needs` | `[]string` | other jobs in the same stage that must finish first |
 | `needs_artifacts` | list | tar of upstream job's artefacts restored before run |
 | `docker` | bool | mount docker socket / DinD — for testcontainers, buildx, etc. |
+| `cluster` | string | names a [registered deploy-target cluster](#cluster-target-cluster); injects its kubeconfig as `PLUGIN_KUBECONFIG` (masked). Mutually exclusive with `with.kubeconfig`. |
 | `variables` | map | env vars merged into the job's environment |
 | `secrets` | `[]string` | project/global secrets injected as env, masked in logs |
 | `cache` | list | tar paths between runs, keyed by template string |
@@ -728,6 +731,37 @@ job's success IS the deployment's success.
 
 See [Deployments & rollback](/gocdnext/docs/concepts/deployments/) for
 the tracking model, environments, and rollback semantics.
+
+## Cluster target (`cluster:`)
+
+Name a registered Kubernetes deploy-target cluster. At dispatch the
+scheduler resolves the name to its stored kubeconfig and injects it
+as `PLUGIN_KUBECONFIG` (masked in logs), so the kubectl / helm /
+kustomize plugins authenticate without a pasted kubeconfig.
+
+```yaml
+jobs:
+  deploy-prod:
+    stage: ship
+    uses: ghcr.io/klinux/gocdnext-plugin-kubectl@v1
+    with:
+      command: "apply -k k8s/"
+    cluster: prod-gke
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `cluster` | string | name of a cluster registered by an admin (*Settings → Clusters*). Injects that cluster's kubeconfig as `PLUGIN_KUBECONFIG`, masked. The **single source** of `PLUGIN_KUBECONFIG` — the parser rejects a job that also sets `with.kubeconfig` or otherwise defines `PLUGIN_KUBECONFIG` (via `variables`, `secrets`, `id_tokens`, or a `parallel.matrix` dimension). Not allowed on an `approval` gate (a gate dispatches nothing). |
+
+The cluster must exist at **apply** time — `cluster: prod-gke`
+naming an unregistered cluster fails the apply with a message citing
+`prod-gke`. Whether *this project* may use the cluster (the
+per-cluster `allowed_projects` allow-list) is enforced at
+**dispatch**. Both errors name the cluster, never its credential.
+
+See [Cluster registry](/gocdnext/docs/concepts/clusters/) for the
+three auth types (`kubeconfig` / `token` / `in_cluster`), governance,
+and the in-cluster ServiceAccount setup.
 
 ## Job outputs (`outputs:`)
 

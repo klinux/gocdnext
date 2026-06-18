@@ -91,6 +91,7 @@ export default defineConfig({
             { label: "OIDC id_tokens", link: "/concepts/id-tokens/" },
             { label: "Database migrations", link: "/concepts/migrations/" },
             { label: "Services lifecycle", link: "/concepts/services/" },
+            { label: "Cluster registry", link: "/concepts/clusters/" },
             { label: "Kubernetes runtime", link: "/concepts/kubernetes-runtime/" },
             { label: "Trunk-based release flow", link: "/concepts/trunk-based-release/" },
             { label: "Value Stream Map (VSM)", link: "/concepts/vsm/" },
