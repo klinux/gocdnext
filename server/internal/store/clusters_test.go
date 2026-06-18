@@ -40,7 +40,7 @@ func TestClusters_Kubeconfig_RoundTripAndPreserve(t *testing.T) {
 
 	// Cipher round-trip: dispatch resolver decrypts back to the exact
 	// kubeconfig. (Get does NOT expose the credential — write-only.)
-	kc, inCluster, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "prod-gke")
+	kc, inCluster, masks, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "prod-gke")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -49,6 +49,11 @@ func TestClusters_Kubeconfig_RoundTripAndPreserve(t *testing.T) {
 	}
 	if kc != sampleKubeconfig {
 		t.Fatalf("kubeconfig round-trip mismatch: %q", kc)
+	}
+	// The whole blob is always masked; sampleKubeconfig has no sensitive
+	// scalar, so that's the only entry.
+	if len(masks) == 0 || masks[0] != sampleKubeconfig {
+		t.Fatalf("masks = %v, want the kubeconfig blob first", masks)
 	}
 
 	// Update with the preserve sentinel + a metadata change keeps the
@@ -59,7 +64,7 @@ func TestClusters_Kubeconfig_RoundTripAndPreserve(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update preserve: %v", err)
 	}
-	kc2, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "prod-gke")
+	kc2, _, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "prod-gke")
 	if err != nil {
 		t.Fatalf("resolve after preserve: %v", err)
 	}
@@ -86,7 +91,7 @@ func TestClusters_Token_SynthesizesKubeconfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert token: %v", err)
 	}
-	kc, inCluster, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "tok")
+	kc, inCluster, masks, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "tok")
 	if err != nil {
 		t.Fatalf("resolve token: %v", err)
 	}
@@ -101,6 +106,140 @@ func TestClusters_Token_SynthesizesKubeconfig(t *testing.T) {
 	if !strings.Contains(kc, "certificate-authority-data") {
 		t.Fatalf("expected CA embedded, got:\n%s", kc)
 	}
+	// HIGH 4: the raw bearer token must be masked on its own — the agent
+	// redacts logs line-by-line, so the multiline kubeconfig blob alone
+	// would not catch the token if a plugin echoed it standalone.
+	if !containsMask(masks, "sa-bearer-token-xyz") {
+		t.Fatalf("raw token absent from masks %v — it would leak in a line-by-line redacted log", masks)
+	}
+	if !containsMask(masks, kc) {
+		t.Fatalf("whole kubeconfig absent from masks %v", masks)
+	}
+	// The token path repeats the bearer token (raw + embedded in the
+	// synthesized config) — masks must be deduplicated.
+	seen := map[string]int{}
+	for _, m := range masks {
+		seen[m]++
+		if seen[m] > 1 {
+			t.Fatalf("duplicate mask %q in %v", m, masks)
+		}
+	}
+}
+
+func containsMask(masks []string, want string) bool {
+	for _, m := range masks {
+		if m == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestClusters_Token_RequiresCA pins HIGH 3: token auth must never fall
+// back to insecure-skip-tls-verify. A CA-less token cluster is rejected
+// at insert (validateClusterInput) — synthesis never even runs.
+func TestClusters_Token_RequiresCA(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	_, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "no-ca", AuthType: store.ClusterAuthToken,
+		APIServer: "https://k8s.example.com:6443", Credential: "tok-without-ca",
+	})
+	if err == nil || !strings.Contains(err.Error(), "ca_cert") {
+		t.Fatalf("CA-less token insert = %v, want a ca_cert error", err)
+	}
+}
+
+// TestClusters_Token_RejectsBadAPIServer pins the api_server hardening:
+// token auth needs a parseable https:// URL, no embedded userinfo, so a
+// typo or http:// can't ship the bearer token in cleartext or create a
+// cluster that only fails at deploy.
+func TestClusters_Token_RejectsBadAPIServer(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	ca := []byte("-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n")
+	tests := []struct {
+		name      string
+		apiServer string
+	}{
+		{"http scheme", "http://k8s.example.com:6443"},
+		{"no scheme", "k8s.example.com:6443"},
+		{"embedded userinfo", "https://user:pass@k8s.example.com:6443"},
+		{"blank", "   "},
+		{"garbage", "://::"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+				Name: "bad-srv", AuthType: store.ClusterAuthToken,
+				APIServer: tt.apiServer, CACert: ca, Credential: "sa-token-value",
+			})
+			if err == nil || !strings.Contains(err.Error(), "api_server") {
+				t.Fatalf("api_server %q = %v, want an api_server error", tt.apiServer, err)
+			}
+		})
+	}
+}
+
+// TestClusters_RejectsExecKubeconfig pins the exec rejection: an
+// exec-credential kubeconfig is unsupported (no auth binary shipped) and
+// a masking blind spot, so it's refused at the cadastro, not at deploy.
+func TestClusters_RejectsExecKubeconfig(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	const execKC = `apiVersion: v1
+kind: Config
+users:
+- name: gke
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: gke-gcloud-auth-plugin
+`
+	_, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "exec-kc", AuthType: store.ClusterAuthKubeconfig, Credential: execKC,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exec-based") {
+		t.Fatalf("exec kubeconfig insert = %v, want an exec-based rejection", err)
+	}
+}
+
+// TestClusters_MasksNestedCredentials pins the recursive masker: a full
+// kubeconfig can hide tokens deep under auth-provider.config.* — those
+// nested scalars must still land in the mask set (the agent redacts
+// line-by-line, so the multiline blob alone would not catch them).
+func TestClusters_MasksNestedCredentials(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	const accessTok = "access-token-aaaaaaaaaaaa"
+	const refreshTok = "refresh-token-rrrrrrrrrrrr"
+	const idTok = "id-token-iiiiiiiiiiiiiiii"
+	kc := `apiVersion: v1
+kind: Config
+users:
+- name: oidc
+  user:
+    auth-provider:
+      name: oidc
+      config:
+        access-token: ` + accessTok + `
+        refresh-token: ` + refreshTok + `
+        id-token: ` + idTok + `
+`
+	if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "oidc-kc", AuthType: store.ClusterAuthKubeconfig, Credential: kc,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	_, _, masks, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "oidc-kc")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	for _, want := range []string{accessTok, refreshTok, idTok} {
+		if !containsMask(masks, want) {
+			t.Errorf("nested credential %q absent from masks %v — it would leak", want, masks)
+		}
+	}
 }
 
 func TestClusters_InCluster_NoCredential(t *testing.T) {
@@ -110,12 +249,12 @@ func TestClusters_InCluster_NoCredential(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert in_cluster: %v", err)
 	}
-	kc, inCluster, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "agent-local")
+	kc, inCluster, masks, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "agent-local")
 	if err != nil {
 		t.Fatalf("resolve in_cluster: %v", err)
 	}
-	if !inCluster || kc != "" {
-		t.Fatalf("in_cluster resolve = (%q, %v), want (\"\", true)", kc, inCluster)
+	if !inCluster || kc != "" || len(masks) != 0 {
+		t.Fatalf("in_cluster resolve = (%q, %v, %v), want (\"\", true, nil)", kc, inCluster, masks)
 	}
 	// in_cluster must reject a credential.
 	if _, err := s.InsertCluster(ctx, nil, store.ClusterInput{
@@ -135,10 +274,10 @@ func TestClusters_AllowedProjects_Scoping(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert scoped: %v", err)
 	}
-	if _, _, err := s.ResolveClusterForDispatch(ctx, projA, "scoped"); err != nil {
+	if _, _, _, err := s.ResolveClusterForDispatch(ctx, projA, "scoped"); err != nil {
 		t.Fatalf("authorized project rejected: %v", err)
 	}
-	if _, _, err := s.ResolveClusterForDispatch(ctx, projB, "scoped"); err == nil {
+	if _, _, _, err := s.ResolveClusterForDispatch(ctx, projB, "scoped"); err == nil {
 		t.Fatal("expected unauthorized project to be refused")
 	}
 }
@@ -156,7 +295,7 @@ func TestClusters_NameUnique_And_ResolveMissing(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected unique-name violation")
 	}
-	if _, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "ghost"); !errors.Is(err, store.ErrClusterNotFound) {
+	if _, _, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "ghost"); !errors.Is(err, store.ErrClusterNotFound) {
 		t.Fatalf("resolve missing = %v, want ErrClusterNotFound", err)
 	}
 }
@@ -176,6 +315,76 @@ func TestResolveClusters_ApplyExistence(t *testing.T) {
 	err := s.ResolveClusters(ctx, bad)
 	if err == nil || !strings.Contains(err.Error(), "ghost") || !strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("unknown cluster err = %v, want one naming 'ghost'/'not registered'", err)
+	}
+}
+
+func TestClusters_UpdateMissing_NotFound(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	err := s.UpdateCluster(ctx, nil, uuid.New(), store.ClusterInput{
+		Name: "ghost", AuthType: store.ClusterAuthInCluster,
+	})
+	if !errors.Is(err, store.ErrClusterNotFound) {
+		t.Fatalf("update missing cluster = %v, want ErrClusterNotFound", err)
+	}
+}
+
+// TestClusters_Update_RejectsEmptyCredential pins MED 1: a bare-empty
+// credential on update is rejected (only the preserve sentinel keeps the
+// existing one) so a direct API call can't silently seal an empty value
+// and break the deploy.
+func TestClusters_Update_RejectsEmptyCredential(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	c, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "kc", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	err = s.UpdateCluster(ctx, cipher, c.ID, store.ClusterInput{
+		Name: "kc", AuthType: store.ClusterAuthKubeconfig, Credential: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "needs a credential") {
+		t.Fatalf("empty-credential update = %v, want a 'needs a credential' error", err)
+	}
+	// The sealed credential survives the rejected update.
+	kc, _, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "kc")
+	if err != nil || kc != sampleKubeconfig {
+		t.Fatalf("credential after rejected update = (%q, %v), want it preserved", kc, err)
+	}
+}
+
+// TestClusters_Name_Immutable pins MED 4: the name is the dispatch-time
+// identity of a `cluster:` reference, so an update can never change it
+// (a rename would silently break every pipeline pointing at the cluster).
+func TestClusters_Name_Immutable(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	c, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "stable", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Attempt a rename via update — the store ignores the name field.
+	if err := s.UpdateCluster(ctx, cipher, c.ID, store.ClusterInput{
+		Name: "renamed", AuthType: store.ClusterAuthKubeconfig, Credential: store.SecretPreserveSentinel,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := s.GetCluster(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "stable" {
+		t.Fatalf("name = %q, want it unchanged (immutable)", got.Name)
+	}
+	// The original name still resolves; the attempted new name does not.
+	if _, _, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "stable"); err != nil {
+		t.Fatalf("original name stopped resolving: %v", err)
+	}
+	if _, _, _, err := s.ResolveClusterForDispatch(ctx, uuid.New(), "renamed"); !errors.Is(err, store.ErrClusterNotFound) {
+		t.Fatalf("renamed-to name resolved = %v, want ErrClusterNotFound", err)
 	}
 }
 

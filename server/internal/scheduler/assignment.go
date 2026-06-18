@@ -27,6 +27,7 @@ func BuildAssignment(
 	matrixNeedsOutputs MatrixNeedsOutputs,
 	idTokens map[string]string,
 	clusterKubeconfig string,
+	clusterMasks []string,
 ) (*gocdnextv1.JobAssignment, *DeployTarget, error) {
 	var def domain.Pipeline
 	if err := json.Unmarshal(run.Definition, &def); err != nil {
@@ -149,11 +150,14 @@ func BuildAssignment(
 	// the kubectl/helm plugins already consume — so a `cluster:` job
 	// authenticates without a pasted kubeconfig secret. Empty when the
 	// job names no cluster, or names an in_cluster one (the pod's SA is
-	// used). It's a bearer credential → always masked.
+	// used). The resolver returns the full mask set (whole blob + each
+	// sensitive scalar + raw token) so the agent's line-by-line log
+	// redaction catches the credential even though the kubeconfig is
+	// multiline — see store.ResolveClusterForDispatch.
 	if clusterKubeconfig != "" {
 		env["PLUGIN_KUBECONFIG"] = clusterKubeconfig
-		masks = append(masks, clusterKubeconfig)
 	}
+	masks = append(masks, clusterMasks...)
 
 	// Outputs (issue #10): values resolved from upstream
 	// `${{ needs.X.outputs.Y }}` refs flow into env/plugin

@@ -242,22 +242,20 @@ func (q *Queries) ListClusters(ctx context.Context) ([]ListClustersRow, error) {
 	return items, nil
 }
 
-const updateCluster = `-- name: UpdateCluster :exec
+const updateCluster = `-- name: UpdateCluster :execrows
 UPDATE clusters
-SET name = $2,
-    description = $3,
-    auth_type = $4,
-    api_server = $5,
-    ca_cert = $6,
-    credential_enc = $7,
-    allowed_projects = $8,
+SET description = $2,
+    auth_type = $3,
+    api_server = $4,
+    ca_cert = $5,
+    credential_enc = $6,
+    allowed_projects = $7,
     updated_at = NOW()
 WHERE id = $1
 `
 
 type UpdateClusterParams struct {
 	ID              pgtype.UUID
-	Name            string
 	Description     string
 	AuthType        string
 	ApiServer       string
@@ -266,10 +264,13 @@ type UpdateClusterParams struct {
 	AllowedProjects []string
 }
 
-func (q *Queries) UpdateCluster(ctx context.Context, arg UpdateClusterParams) error {
-	_, err := q.db.Exec(ctx, updateCluster,
+// name is intentionally NOT updatable: a `cluster:` reference in a
+// stored pipeline definition resolves by name at dispatch, so a rename
+// would silently break every pipeline pointing at it. Renaming = delete
+// + recreate (the delete-guard then surfaces any live dependents).
+func (q *Queries) UpdateCluster(ctx context.Context, arg UpdateClusterParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCluster,
 		arg.ID,
-		arg.Name,
 		arg.Description,
 		arg.AuthType,
 		arg.ApiServer,
@@ -277,5 +278,8 @@ func (q *Queries) UpdateCluster(ctx context.Context, arg UpdateClusterParams) er
 		arg.CredentialEnc,
 		arg.AllowedProjects,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

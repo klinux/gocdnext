@@ -31,6 +31,31 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		if jd.With["kubeconfig"] != "" {
 			return domain.Job{}, fmt.Errorf("job %q: set either cluster: or with.kubeconfig, not both", name)
 		}
+		// …and nothing else may define PLUGIN_KUBECONFIG either. A
+		// variable / secret / id_token / matrix dimension with that
+		// exact name would fight the injected credential (last-writer-
+		// wins is non-deterministic across the dispatch assembly), and a
+		// deploy that silently authenticates against the wrong cluster is
+		// the worst possible failure. Reject the collision at parse.
+		const injected = "PLUGIN_KUBECONFIG"
+		if _, ok := jd.Variables[injected]; ok {
+			return domain.Job{}, fmt.Errorf("job %q: cluster: injects %s — remove the conflicting variables.%s", name, injected, injected)
+		}
+		for _, s := range jd.Secrets {
+			if s == injected {
+				return domain.Job{}, fmt.Errorf("job %q: cluster: injects %s — remove the conflicting secret %q", name, injected, injected)
+			}
+		}
+		if _, ok := jd.IDTokens[injected]; ok {
+			return domain.Job{}, fmt.Errorf("job %q: cluster: injects %s — remove the conflicting id_tokens.%s", name, injected, injected)
+		}
+		if jd.Parallel != nil {
+			for _, dim := range jd.Parallel.Matrix {
+				if _, ok := dim[injected]; ok {
+					return domain.Job{}, fmt.Errorf("job %q: cluster: injects %s — remove the conflicting parallel.matrix dimension %q", name, injected, injected)
+				}
+			}
+		}
 	}
 	if jd.Agent != nil {
 		j.Profile = jd.Agent.Profile
@@ -187,9 +212,10 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		if len(jd.Script) > 0 || jd.Uses != "" || jd.Image != "" ||
 			jd.Settings != nil || jd.Artifacts != nil ||
 			len(jd.NeedsArtifacts) > 0 || len(jd.Cache) > 0 ||
-			jd.Docker || len(jd.IDTokens) > 0 || jd.Deploy != nil {
+			jd.Docker || len(jd.IDTokens) > 0 || jd.Deploy != nil ||
+			jd.Cluster != "" {
 			return domain.Job{}, fmt.Errorf(
-				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens/deploy — it only blocks on a human decision. "+
+				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens/deploy/cluster — it only blocks on a human decision. "+
 					"For a promote-then-deploy flow, put deploy: on a separate executable job with needs: [<this-gate>]",
 				name,
 			)

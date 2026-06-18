@@ -61,6 +61,9 @@ const (
 	AuditActionRunnerProfileCreate    = "runner_profile.create"
 	AuditActionRunnerProfileUpdate    = "runner_profile.update"
 	AuditActionRunnerProfileDelete    = "runner_profile.delete"
+	AuditActionClusterCreate          = "cluster.create"
+	AuditActionClusterUpdate          = "cluster.update"
+	AuditActionClusterDelete          = "cluster.delete"
 	AuditActionPlatformSettingSet     = "platform_setting.set"
 	AuditActionPlatformSettingDel     = "platform_setting.delete"
 )
