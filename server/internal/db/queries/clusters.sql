@@ -25,6 +25,12 @@ FROM clusters
 WHERE name = $1
 LIMIT 1;
 
+-- name: ClusterExists :one
+-- Apply-time existence check for a `cluster:` reference (cheap, no
+-- credential). Authorization (allowed_projects) is enforced later at
+-- dispatch where the run's project is known.
+SELECT EXISTS(SELECT 1 FROM clusters WHERE name = $1);
+
 -- name: GetClusterCredentialEnc :one
 -- Used by Update's preserve-sentinel path to re-seal the existing
 -- credential when the operator edits a cluster without re-entering it.

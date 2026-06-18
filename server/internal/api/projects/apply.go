@@ -282,6 +282,12 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	// `cluster:` references must resolve to a registered cluster —
+	// reject a typo/stale name at apply, not at dispatch.
+	if err := h.store.ResolveClusters(r.Context(), pipelines); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        req.Slug,

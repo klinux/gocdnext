@@ -98,6 +98,10 @@ type Querier interface {
 	// by terminal-transition paths so a canceled-while-queued run doesn't
 	// carry a stale "waiting on #N" message in the runs list.
 	ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
+	// Apply-time existence check for a `cluster:` reference (cheap, no
+	// credential). Authorization (allowed_projects) is enforced later at
+	// dispatch where the run's project is known.
+	ClusterExists(ctx context.Context, name string) (bool, error)
 	// Flips a queued or running job to its terminal state, IF the caller's
 	// expected agent_id snapshot still matches what's on the row.
 	// Idempotent: matches only non-terminal rows.

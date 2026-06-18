@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clusterExists = `-- name: ClusterExists :one
+SELECT EXISTS(SELECT 1 FROM clusters WHERE name = $1)
+`
+
+// Apply-time existence check for a `cluster:` reference (cheap, no
+// credential). Authorization (allowed_projects) is enforced later at
+// dispatch where the run's project is known.
+func (q *Queries) ClusterExists(ctx context.Context, name string) (bool, error) {
+	row := q.db.QueryRow(ctx, clusterExists, name)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const deleteCluster = `-- name: DeleteCluster :exec
 DELETE FROM clusters WHERE id = $1
 `

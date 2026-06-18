@@ -123,6 +123,10 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		out.Error = fmt.Sprintf("resolve profiles: %v", err)
 		return out
 	}
+	if err := h.store.ResolveClusters(ctx, pipelines); err != nil {
+		out.Error = fmt.Sprintf("resolve clusters: %v", err)
+		return out
+	}
 
 	if _, err := h.store.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug:        project.Slug,
