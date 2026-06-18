@@ -8,7 +8,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
-## v0.42.0 — 2026-06-18
+## v0.43.0 — 2026-06-18
+
+### Added
+
+- **Gravitee plugin: open-method / missing-auth gates** (#53) — two
+  opt-in security checks on the rendered path-based definition, run
+  before anything is written to the Management API. Under the keyless
+  default plan a method that matches no rule falls through to the backend
+  unauthenticated, so: `method_policy` (off|warn|block, default **warn**)
+  flags an enabled path rule with no explicit `methods` (applies to all
+  by default), a path with no enabled rules, an empty rule list, or a
+  non-list value; `auth_policy` (off|warn|block, default **off** —
+  heuristic, intentionally-public paths may flag) flags a method served
+  with no auth policy (`auth_policies`, default `oauth2,jwt,api-key`),
+  treating `mock` rules as terminating/safe. Disabled rules
+  (`enabled: false`) are ignored by both checks. `block` fails the run;
+  `warn` logs and proceeds. Implemented as a stdlib-only Python validator
+  (the rendered YAML is converted via `yq -o=json`).
 
 ### Added
 
