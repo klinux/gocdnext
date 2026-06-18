@@ -199,6 +199,10 @@ type Querier interface {
 	// 0 when no terminal runs in the window.
 	DashboardSuccessRate7d(ctx context.Context) (DashboardSuccessRate7dRow, error)
 	DeleteAuthProvider(ctx context.Context, id pgtype.UUID) error
+	// Caller MUST check no pipeline definition references this cluster
+	// name first (the scheduler resolves clusters by name at dispatch and
+	// a missing name fails the run loudly).
+	DeleteCluster(ctx context.Context, id pgtype.UUID) error
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
@@ -350,6 +354,15 @@ type Querier interface {
 	// ErrNoRows if the agent invented a key or the row was swept.
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
 	GetAuthProviderByID(ctx context.Context, id pgtype.UUID) (AuthProvider, error)
+	GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow, error)
+	// Used by Update's preserve-sentinel path to re-seal the existing
+	// credential when the operator edits a cluster without re-entering it.
+	GetClusterCredentialEnc(ctx context.Context, id pgtype.UUID) ([]byte, error)
+	// Scheduler dispatch path: looks up by name (the stable YAML id) and
+	// DOES pull credential_enc — this is the one query allowed to read the
+	// sealed credential, decrypted in-process and injected as
+	// PLUGIN_KUBECONFIG. allowed_projects re-checked by the caller.
+	GetClusterForDispatch(ctx context.Context, name string) (GetClusterForDispatchRow, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
@@ -536,6 +549,7 @@ type Querier interface {
 	// doesn't re-order events inside a single tick.
 	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (AuditEvent, error)
 	InsertAuthState(ctx context.Context, arg InsertAuthStateParams) error
+	InsertCluster(ctx context.Context, arg InsertClusterParams) (InsertClusterRow, error)
 	InsertGroup(ctx context.Context, arg InsertGroupParams) (Group, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Records one vote on a gate. Unique (job_run_id, user_id) —
@@ -682,6 +696,10 @@ type Querier interface {
 	// the boolean so admins can see disabled providers they can re-
 	// enable later.
 	ListAuthProviders(ctx context.Context) ([]AuthProvider, error)
+	// Admin UI hot path. Sorted by name so the table reads alphabetical.
+	// credential_enc is intentionally NOT selected — the list/detail
+	// surface is write-only, the credential never leaves the server.
+	ListClusters(ctx context.Context) ([]ListClustersRow, error)
 	// Loads every cron material in the system alongside its pipeline
 	// / project id and its last-fired timestamp (NULL when never
 	// fired). The ticker walks this list on every tick; N is bounded
@@ -1306,6 +1324,7 @@ type Querier interface {
 	// session tokens. The CAS only needs an epoch indicator — a
 	// counter carries exactly that signal with no auth power.
 	UpdateAgentOnRegister(ctx context.Context, arg UpdateAgentOnRegisterParams) (int64, error)
+	UpdateCluster(ctx context.Context, arg UpdateClusterParams) error
 	UpdateEnvironmentDescription(ctx context.Context, arg UpdateEnvironmentDescriptionParams) error
 	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	// Dedicated password-only write. Used when an admin changes their
