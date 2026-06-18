@@ -299,7 +299,17 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
-		assign, deployTarget, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs, idTokens)
+		// Managed cluster: resolve the kubeconfig to inject as
+		// PLUGIN_KUBECONFIG. A declared-but-unresolvable cluster
+		// (deleted / project not authorized) fails the dispatch rather
+		// than shipping a deploy at the wrong (or no) cluster.
+		clusterKubeconfig, clErr := s.resolveClusterKubeconfig(ctx, run, job)
+		if clErr != nil {
+			s.failJobWithError(ctx, job, fmt.Sprintf("cluster: %v", clErr))
+			continue
+		}
+
+		assign, deployTarget, err := BuildAssignment(run, job, materials, secretValues, downloads, profile, cloneTokens, needsOutputs, matrixNeedsOutputs, idTokens, clusterKubeconfig)
 		if err != nil {
 			// Unresolved needs refs (issue #10) are CONFIGURATION
 			// errors — the next tick will see the exact same

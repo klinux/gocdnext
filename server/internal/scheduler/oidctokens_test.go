@@ -60,7 +60,7 @@ func TestBuildAssignment_IDTokensInEnvAndMasks(t *testing.T) {
 		"GCP_TOKEN":   "eyJhbGciOiJSUzI1NiJ9.gcp-payload.sig1",
 		"VAULT_TOKEN": "eyJhbGciOiJSUzI1NiJ9.vault-payload.sig2",
 	}
-	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, idTokens)
+	got, _, err := scheduler.BuildAssignment(run, job, nil, nil, nil, store.ResolvedProfile{}, nil, nil, nil, idTokens, "")
 	if err != nil {
 		t.Fatalf("BuildAssignment: %v", err)
 	}
