@@ -702,6 +702,7 @@ func main() {
 		p.Get("/api/v1/admin/clusters", adminHandler.Clusters)
 		p.Post("/api/v1/admin/clusters", adminHandler.CreateCluster)
 		p.Put("/api/v1/admin/clusters/{id}", adminHandler.UpdateCluster)
+		p.Post("/api/v1/admin/clusters/{id}/test", adminHandler.TestCluster)
 		p.Delete("/api/v1/admin/clusters/{id}", adminHandler.DeleteCluster)
 		p.Get("/api/v1/admin/auth/providers", authProvidersHandler.List)
 		p.Post("/api/v1/admin/auth/providers", authProvidersHandler.Upsert)

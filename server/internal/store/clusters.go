@@ -424,22 +424,29 @@ func walkSensitive(node any, out *[]string) {
 // cleartext), with a host and no embedded userinfo (credentials belong
 // in the token field, never in the URL).
 func validateAPIServerURL(raw string) error {
+	return validateHTTPSURL(raw, "api_server")
+}
+
+// validateHTTPSURL is the shared https-only, host-present, no-userinfo
+// check (used for the token api_server and the kubeconfig server before
+// a connectivity probe). `field` names the offending input in the error.
+func validateHTTPSURL(raw, field string) error {
 	s := strings.TrimSpace(raw)
 	if s == "" {
-		return errors.New("token auth requires an api_server URL")
+		return fmt.Errorf("%s URL is required", field)
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return fmt.Errorf("api_server is not a valid URL: %w", err)
+		return fmt.Errorf("%s is not a valid URL: %w", field, err)
 	}
 	if u.Scheme != "https" {
-		return fmt.Errorf("api_server must be an https:// URL (got scheme %q) — a bearer token over http would be cleartext", u.Scheme)
+		return fmt.Errorf("%s must be an https:// URL (got scheme %q) — a credential over http would be cleartext", field, u.Scheme)
 	}
 	if u.Host == "" {
-		return errors.New("api_server must include a host")
+		return fmt.Errorf("%s must include a host", field)
 	}
 	if u.User != nil {
-		return errors.New("api_server must not embed userinfo (user:pass@host) — put credentials in the token field")
+		return fmt.Errorf("%s must not embed userinfo (user:pass@host)", field)
 	}
 	return nil
 }

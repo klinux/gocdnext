@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Pencil, Plus, PlugZap, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -27,6 +27,7 @@ import { CREDENTIAL_PRESERVE_SENTINEL } from "@/lib/clusters";
 import {
   createCluster,
   deleteCluster,
+  testCluster,
   updateCluster,
 } from "@/server/actions/clusters";
 import type { AdminCluster } from "@/server/queries/admin";
@@ -152,6 +153,21 @@ export function ClustersManager({ initial, projects }: Props) {
     });
   };
 
+  const handleTest = (c: AdminCluster) => {
+    startTransition(async () => {
+      const res = await testCluster({ id: c.id });
+      if (!res.ok) {
+        toast.error(`${c.name}: ${res.error}`);
+        return;
+      }
+      // ok / skipped are not failures; everything else is.
+      const { status, message } = res.probe;
+      if (status === "ok") toast.success(`${c.name}: ${message}`);
+      else if (status === "skipped") toast.info(`${c.name}: ${message}`);
+      else toast.error(`${c.name}: ${message}`);
+    });
+  };
+
   return (
     <>
       <div className="flex items-center justify-between gap-4">
@@ -233,6 +249,16 @@ export function ClustersManager({ initial, projects }: Props) {
                       aria-label={`Edit ${c.name}`}
                     >
                       <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleTest(c)}
+                      disabled={pending}
+                      aria-label={`Test connection ${c.name}`}
+                      title="Test connection"
+                    >
+                      <PlugZap className="h-4 w-4" />
                     </Button>
                     <Button
                       variant="ghost"

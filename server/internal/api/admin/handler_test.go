@@ -206,6 +206,7 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Get("/api/v1/admin/clusters", h.Clusters)
 	r.Post("/api/v1/admin/clusters", h.CreateCluster)
 	r.Put("/api/v1/admin/clusters/{id}", h.UpdateCluster)
+	r.Post("/api/v1/admin/clusters/{id}/test", h.TestCluster)
 	r.Delete("/api/v1/admin/clusters/{id}", h.DeleteCluster)
 	r.Get("/api/v1/admin/storage", h.Storage)
 	r.Put("/api/v1/admin/storage", h.SetStorage)

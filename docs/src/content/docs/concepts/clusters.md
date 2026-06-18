@@ -172,6 +172,28 @@ The synthesised-`token` path masks the bearer token too, not just
 the assembled kubeconfig — a `kubectl config view` that prints the
 token still redacts.
 
+## Testing connectivity
+
+Each registered cluster has a **Test connection** button in *Settings →
+Clusters*. It runs a control-plane probe — `GET <api_server>/version`
+with the stored credential — and reports the outcome without echoing the
+credential:
+
+- **ok** — reachable, TLS verified against the CA, and the credential is
+  accepted (a `403` also counts: the credential is valid, RBAC is just
+  scoped).
+- **unauthorized** — the token/cert was rejected (`401`).
+- **unreachable** — the API server didn't answer, or TLS failed to
+  verify against the CA.
+- **skipped** — `in_cluster` targets use the agent pod's ServiceAccount,
+  which the control plane can't reach; those are verified at job runtime.
+
+The probe runs from the **control plane**, so it confirms the credential
+and the CA, but a deploy runs from the **agent** — if a firewall or
+network policy only blocks the agent's path, the button can read ok while
+a deploy still fails. Treat it as a credential/CA check, not a full
+network proof.
+
 ## Setting up an in-cluster ServiceAccount
 
 `in_cluster` mode delegates authorization entirely to Kubernetes

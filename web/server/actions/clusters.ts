@@ -43,10 +43,16 @@ const writeSchema = z.object({
 
 const updateSchema = writeSchema.extend({ id: z.string().min(1) });
 const deleteSchema = z.object({ id: z.string().min(1) });
+const testSchema = z.object({ id: z.string().min(1) });
 
 export type ClusterWriteInput = z.infer<typeof writeSchema>;
 export type ClusterUpdateInput = z.infer<typeof updateSchema>;
 export type ActionResult = { ok: true } | { ok: false; error: string };
+// ClusterProbe mirrors the server's connectivity-probe result.
+export type ClusterProbe = { status: string; message: string };
+export type TestResult =
+  | { ok: true; probe: ClusterProbe }
+  | { ok: false; error: string };
 
 async function apiFetch(path: string, init: RequestInit): Promise<Response> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
@@ -105,6 +111,29 @@ export async function updateCluster(
     if (!res.ok) return errorResult(res, await res.text());
     revalidatePath("/admin/clusters");
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// testCluster runs the server-side connectivity probe (GET
+// <api_server>/version with the stored credential) and returns the
+// result. Not a mutation — no revalidation.
+export async function testCluster(
+  input: z.infer<typeof testSchema>,
+): Promise<TestResult> {
+  const parsed = testSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  try {
+    const res = await apiFetch(
+      `/api/v1/admin/clusters/${encodeURIComponent(parsed.data.id)}/test`,
+      { method: "POST" },
+    );
+    if (!res.ok) return errorResult(res, await res.text());
+    const probe = (await res.json()) as ClusterProbe;
+    return { ok: true, probe };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

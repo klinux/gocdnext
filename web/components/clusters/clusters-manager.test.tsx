@@ -18,15 +18,20 @@ const updateCluster = vi.fn(async (_input: Record<string, unknown>) => ({
 const deleteCluster = vi.fn(async (_input: Record<string, unknown>) => ({
   ok: true as const,
 }));
+const testCluster = vi.fn(async (_input: Record<string, unknown>) => ({
+  ok: true as const,
+  probe: { status: "ok", message: "connected — Kubernetes v1.30.0" },
+}));
 
 vi.mock("@/server/actions/clusters", () => ({
   createCluster: (input: Record<string, unknown>) => createCluster(input),
   updateCluster: (input: Record<string, unknown>) => updateCluster(input),
   deleteCluster: (input: Record<string, unknown>) => deleteCluster(input),
+  testCluster: (input: Record<string, unknown>) => testCluster(input),
 }));
 
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 const TOKEN_CA = "-----BEGIN CERTIFICATE-----\nMOCKCA==\n-----END CERTIFICATE-----";
@@ -206,5 +211,23 @@ describe("ClustersManager", () => {
     expect(createCluster).toHaveBeenCalled();
     const arg = createCluster.mock.calls.at(-1)![0];
     expect(arg.allowed_projects).toEqual(["proj-2"]);
+  });
+
+  it("the test-connection button probes the cluster by id", async () => {
+    const { toast } = await import("sonner");
+    render(<ClustersManager initial={sample} projects={projects} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /test connection prod-us-east/i }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(testCluster).toHaveBeenCalledTimes(1);
+    expect(testCluster.mock.calls[0]![0]).toEqual({ id: "c1" });
+    // status "ok" → success toast carrying the probe message.
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringContaining("Kubernetes v1.30.0"),
+    );
   });
 });
