@@ -8,6 +8,7 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -42,6 +43,24 @@ func NewGCPBackend(ctx context.Context, cfg GCPConfig) (*GCPBackend, error) {
 }
 
 func (b *GCPBackend) Name() string { return "gcp" }
+
+// Close releases the underlying gRPC client. Called when the registry rebuilds
+// the backend after a config change so connections don't leak.
+func (b *GCPBackend) Close() error { return b.client.Close() }
+
+// HealthCheck lists one secret in the project to validate ADC/workload-
+// identity reach the Secret Manager API (no secret value involved). An empty
+// project (iterator.Done) is a healthy "reachable, nothing to list".
+func (b *GCPBackend) HealthCheck(ctx context.Context) error {
+	it := b.client.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{
+		Parent:   fmt.Sprintf("projects/%s", b.project),
+		PageSize: 1,
+	})
+	if _, err := it.Next(); err != nil && err != iterator.Done {
+		return fmt.Errorf("gcp: health check: %w", err)
+	}
+	return nil
+}
 
 // gcpResourceName builds the version resource name accessed by Fetch. path may
 // be a bare secret id ("gh-token") or a full/partial resource name

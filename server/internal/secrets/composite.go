@@ -24,20 +24,51 @@ import (
 // scheduler's diff reports them); a referenced-but-unconfigured backend, a
 // db-without-cipher, or any decrypt/fetch error fails loud — citing the secret
 // NAME, never a value.
+// ErrBackendNotConfigured signals that a secret references an external source
+// (vault/gcp/aws) that isn't enabled on this server. The resolver turns it
+// into a loud, name-citing dispatch error (config drift, fail-closed) — never
+// a silent omission.
+var ErrBackendNotConfigured = errors.New("secrets: external backend not configured")
+
+// backendProvider hands the resolver the live backend client for a source plus
+// a fingerprint of the backend's config. The SecretBackendRegistry implements
+// it (DB-configured, hot-reloaded); staticBackends wraps a fixed map for
+// env-only deployments and tests. The fingerprint changes when the backend's
+// connection config changes, so the resolver can fold it into the value-cache
+// key — a config change can't serve a value cached from the old backend.
+type backendProvider interface {
+	Backend(ctx context.Context, source string) (external.Backend, string, error)
+}
+
+// staticBackends is a fixed source→client map (no hot-reload). Used for
+// env-only wiring and tests; its fingerprint is constant.
+type staticBackends map[string]external.Backend
+
+func (s staticBackends) Backend(_ context.Context, source string) (external.Backend, string, error) {
+	b, ok := s[source]
+	if !ok {
+		return nil, "", ErrBackendNotConfigured
+	}
+	return b, "static", nil
+}
+
 type CompositeResolver struct {
 	store    *store.Store
 	cipher   *crypto.Cipher // may be nil (pure-external deployment)
-	backends map[string]external.Backend
+	backends backendProvider
 	cache    *external.TTLCache
 	timeout  time.Duration      // per-lookup deadline (0 disables)
 	sf       singleflight.Group // dedupes concurrent misses on the same {source,path,key}
 	log      *slog.Logger
 }
 
-// CompositeConfig wires the resolver.
+// CompositeConfig wires the resolver. Supply EITHER Provider (the registry,
+// for DB-configured hot-reloadable backends) OR Backends (a fixed map, for
+// env-only/tests). Provider wins when both are set.
 type CompositeConfig struct {
 	Store    *store.Store
 	Cipher   *crypto.Cipher
+	Provider backendProvider
 	Backends map[string]external.Backend
 	Cache    *external.TTLCache
 	// Timeout bounds a single external lookup so a hung Vault/AWS/GCP can't
@@ -51,8 +82,12 @@ func NewCompositeResolver(cfg CompositeConfig) (*CompositeResolver, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("secrets: composite resolver needs a store")
 	}
-	if len(cfg.Backends) == 0 {
-		return nil, errors.New("secrets: composite resolver needs at least one external backend")
+	provider := cfg.Provider
+	if provider == nil {
+		if len(cfg.Backends) == 0 {
+			return nil, errors.New("secrets: composite resolver needs a backend provider or at least one backend")
+		}
+		provider = staticBackends(cfg.Backends)
 	}
 	log := cfg.Log
 	if log == nil {
@@ -61,7 +96,7 @@ func NewCompositeResolver(cfg CompositeConfig) (*CompositeResolver, error) {
 	return &CompositeResolver{
 		store:    cfg.Store,
 		cipher:   cfg.Cipher,
-		backends: cfg.Backends,
+		backends: provider,
 		cache:    cfg.Cache,
 		timeout:  cfg.Timeout,
 		log:      log,
@@ -88,11 +123,17 @@ func (r *CompositeResolver) Resolve(ctx context.Context, projectID uuid.UUID, na
 			continue
 		}
 
-		backend, ok := r.backends[e.Source]
-		if !ok {
+		backend, fingerprint, berr := r.backends.Backend(ctx, e.Source)
+		if errors.Is(berr, ErrBackendNotConfigured) {
 			return nil, fmt.Errorf("secrets: %q references backend %q which is not configured on this server", e.Name, e.Source)
 		}
-		key := external.CacheKey(e.Source, e.RefPath, e.RefKey)
+		if berr != nil {
+			return nil, fmt.Errorf("secrets: backend %q for %q: %w", e.Source, e.Name, berr)
+		}
+		// Fold the backend fingerprint into the cache key: a config change
+		// (new addr/project/region/creds) yields a new key, so a value cached
+		// from the old backend is never served — hot-reload stays immediate.
+		key := fingerprint + "\x00" + external.CacheKey(e.Source, e.RefPath, e.RefKey)
 		if v, hit := r.cache.Get(key); hit {
 			out[e.Name] = v
 			continue

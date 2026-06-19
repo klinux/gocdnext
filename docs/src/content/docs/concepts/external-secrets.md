@@ -36,10 +36,24 @@ S3_DEPLOY_KEY → aws     prod/deploy  # access_key
 LEGACY_TOKEN  → db      ••••• (stored, encrypted)
 ```
 
-## Backends & auth
+## Configuring a backend
 
-A reference picks a backend that must be **configured on the server** (env).
-Any combination can be enabled at once.
+A reference picks a backend that must be **enabled on the server**. Two ways,
+and you can mix them:
+
+- **Settings → Secret backends** (admin UI) — enable/configure Vault, GCP, or
+  AWS, with a **Test connection** button to validate credentials before you
+  rely on them. Config is stored encrypted in the database and **takes effect
+  immediately** (no restart) — including rotating a Vault AppRole `secret_id`.
+- **Environment variables** (below) — the baseline/default. The UI config
+  **overlays** env per backend; delete a UI entry to fall back to env. Env is
+  handy for GitOps/bootstrap. The two are the same set of settings.
+
+Any combination of backends can be enabled at once.
+
+## Backends & auth (env baseline)
+
+The env vars below are the baseline the Settings UI overlays.
 
 - **Vault** — `GOCDNEXT_SECRET_VAULT_ENABLED=true` + `_ADDR`. Auth is
   **AppRole** (`_ROLE_ID` + `_SECRET_ID`, the primary), `kubernetes` (the
@@ -68,6 +82,13 @@ Any combination can be enabled at once.
   the secret **name**, never a value). A secret that simply doesn't exist in
   the backend is treated as "not set" — the run fails with
   `secrets not set on project: [...]`, exactly like a missing db secret.
+- **Test connection vs least privilege.** The *Test connection* probe checks
+  reachability + credentials, which can need broader read access than a job's
+  dispatch (dispatch only needs `GetSecretValue` / `AccessSecretVersion` on the
+  *referenced* secret). AWS uses STS `GetCallerIdentity` (no Secrets Manager
+  permission required). GCP lists secrets, so it needs `secretmanager.secrets.list`
+  on the project — a policy that grants only version access will dispatch fine
+  but report the probe as unauthorized.
 - **Cached briefly, deduped, bounded.** External lookups are cached
   (`GOCDNEXT_SECRET_CACHE_TTL`, default 60s; `0` disables) so a fan-out of jobs
   on the same path hits the backend once; concurrent cold-cache misses on the

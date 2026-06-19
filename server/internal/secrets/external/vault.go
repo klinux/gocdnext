@@ -18,8 +18,8 @@ const (
 	VaultAuthKubernetes = "kubernetes"
 	VaultAuthToken      = "token"
 
-	defaultVaultMount   = "secret"
-	defaultK8sJWTPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // well-known mount path, not a credential
+	defaultVaultMount = "secret"
+	defaultK8sJWTPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // well-known mount path, not a credential
 )
 
 // VaultConfig is the connection + auth config (server-level env).
@@ -71,6 +71,25 @@ func NewVaultBackend(ctx context.Context, cfg VaultConfig) (*VaultBackend, error
 }
 
 func (b *VaultBackend) Name() string { return "vault" }
+
+// HealthCheck validates the backend is reachable and the current token is
+// usable via auth/token/lookup-self (no KV permission needed). A 403 triggers
+// the same re-auth-and-retry as Fetch, so a lapsed token self-heals.
+func (b *VaultBackend) HealthCheck(ctx context.Context) error {
+	_, err := b.client.Logical().ReadWithContext(ctx, "auth/token/lookup-self")
+	if err != nil && isVaultForbidden(err) {
+		b.mu.Lock()
+		reauthErr := b.authenticate(ctx)
+		b.mu.Unlock()
+		if reauthErr == nil {
+			_, err = b.client.Logical().ReadWithContext(ctx, "auth/token/lookup-self")
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("vault: health check: %w", err)
+	}
+	return nil
+}
 
 func (b *VaultBackend) authenticate(ctx context.Context) error {
 	switch b.cfg.AuthMethod {

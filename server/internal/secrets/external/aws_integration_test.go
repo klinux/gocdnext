@@ -21,7 +21,7 @@ func startSecretsManager(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	ctr, err := localstack.Run(ctx, "localstack/localstack:3.8",
-		testcontainers.WithEnv(map[string]string{"SERVICES": "secretsmanager"}))
+		testcontainers.WithEnv(map[string]string{"SERVICES": "secretsmanager,sts"}))
 	if err != nil {
 		t.Skipf("localstack unavailable: %v", err)
 	}
@@ -65,6 +65,11 @@ func TestAWSBackend(t *testing.T) {
 	}
 	if b.Name() != "aws" {
 		t.Fatalf("name = %q", b.Name())
+	}
+
+	// HealthCheck (Test-connection path) validates creds + region reach SM.
+	if err := b.HealthCheck(ctx); err != nil {
+		t.Fatalf("health check: %v", err)
 	}
 
 	// whole secret (empty key)

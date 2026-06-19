@@ -183,10 +183,12 @@ func main() {
 	}
 
 	var resolver secrets.Resolver = secrets.NopResolver{}
-	// External secret sources configured on this server — threaded to the
-	// secrets handlers so the UI source dropdown + write validation know
-	// which backends a reference may point at.
-	var configuredSecretSources []string
+	// secretBackendRegistry is the live source of truth for which external
+	// backends are enabled + their clients (env baseline overlaid by
+	// platform_settings, hot-reloaded via LISTEN/NOTIFY). nil for the
+	// kubernetes whole-backend mode. Threaded to the handlers for the UI's
+	// configured_sources and used as the composite resolver's provider.
+	var secretBackendRegistry *secrets.SecretBackendRegistry
 	switch cfg.SecretBackend {
 	case "kubernetes":
 		if cfg.SecretK8sNamespace == "" {
@@ -208,79 +210,64 @@ func main() {
 			"backend", "kubernetes",
 			"namespace", cfg.SecretK8sNamespace)
 	case "db", "":
-		// External secret backends (#54): build whichever are enabled.
-		// fail-fast at boot (each dials + authenticates once).
-		bootCtx, cancelBoot := context.WithTimeout(context.Background(), 15*time.Second)
-		extBackends := map[string]external.Backend{}
-		if cfg.SecretVaultEnabled {
-			b, err := external.NewVaultBackend(bootCtx, external.VaultConfig{
+		// Reference-model secrets (#54): a registry holds the env baseline
+		// overlaid by platform_settings (UI-managed), hot-reloaded via
+		// LISTEN/NOTIFY. The composite resolver uses it as its backend
+		// provider and also serves db-stored secrets via the cipher.
+		secretBackendRegistry = secrets.NewSecretBackendRegistry(st, cipher, secrets.RegistryConfig{
+			VaultEnabled: cfg.SecretVaultEnabled,
+			Vault: external.VaultConfig{
 				Addr: cfg.SecretVaultAddr, KVMount: cfg.SecretVaultKVMount, AuthMethod: cfg.SecretVaultAuth,
 				Role: cfg.SecretVaultRole, RoleID: cfg.SecretVaultRoleID, SecretID: cfg.SecretVaultSecretID,
 				Token: cfg.SecretVaultToken, JWTPath: cfg.SecretVaultJWTPath, Namespace: cfg.SecretVaultNamespace,
-			})
-			if err != nil {
-				cancelBoot()
-				logger.Error("secrets: vault backend init", "err", err)
-				os.Exit(1)
-			}
-			extBackends[store.SecretSourceVault] = b
-			configuredSecretSources = append(configuredSecretSources, "vault")
-		}
-		if cfg.SecretGCPEnabled {
-			b, err := external.NewGCPBackend(bootCtx, external.GCPConfig{Project: cfg.SecretGCPProject})
-			if err != nil {
-				cancelBoot()
-				logger.Error("secrets: gcp backend init", "err", err)
-				os.Exit(1)
-			}
-			extBackends[store.SecretSourceGCP] = b
-			configuredSecretSources = append(configuredSecretSources, "gcp")
-		}
-		if cfg.SecretAWSEnabled {
-			b, err := external.NewAWSBackend(bootCtx, external.AWSConfig{Region: cfg.SecretAWSRegion, Endpoint: cfg.SecretAWSEndpoint})
-			if err != nil {
-				cancelBoot()
-				logger.Error("secrets: aws backend init", "err", err)
-				os.Exit(1)
-			}
-			extBackends[store.SecretSourceAWS] = b
-			configuredSecretSources = append(configuredSecretSources, "aws")
+			},
+			GCPEnabled: cfg.SecretGCPEnabled,
+			GCP:        external.GCPConfig{Project: cfg.SecretGCPProject},
+			AWSEnabled: cfg.SecretAWSEnabled,
+			AWS:        external.AWSConfig{Region: cfg.SecretAWSRegion, Endpoint: cfg.SecretAWSEndpoint},
+		}, logger)
+		// Prime: env-configured backends fail-fast (v0.45.0 contract); a
+		// DB-configured one that's broken is non-fatal (surfaces in the UI).
+		bootCtx, cancelBoot := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := secretBackendRegistry.Prime(bootCtx); err != nil {
+			cancelBoot()
+			logger.Error("secrets: backend registry init", "err", err)
+			os.Exit(1)
 		}
 		cancelBoot()
 
-		switch {
-		case len(extBackends) > 0:
-			r, err := secrets.NewCompositeResolver(secrets.CompositeConfig{
-				Store:    st,
-				Cipher:   cipher, // may be nil — db-source dispatch then errors loud
-				Backends: extBackends,
-				Cache:    external.NewTTLCache(cfg.SecretExternalCacheTTL, 4096),
-				Timeout:  cfg.SecretExternalTimeout,
-				Log:      logger,
-			})
-			if err != nil {
-				logger.Error("secrets resolver", "err", err)
-				os.Exit(1)
-			}
-			resolver = r
-			logger.Info("secrets subsystem enabled", "backend", "composite",
-				"external", strings.Join(configuredSecretSources, ","),
-				"cache_ttl", cfg.SecretExternalCacheTTL.String(),
-				"fetch_timeout", cfg.SecretExternalTimeout.String())
-		case cipher != nil:
-			r, err := secrets.NewDBResolver(st, cipher)
-			if err != nil {
-				logger.Error("secrets resolver", "err", err)
-				os.Exit(1)
-			}
-			resolver = r
-			logger.Info("secrets subsystem enabled", "backend", "db")
-		default:
-			logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503 and jobs that declare secrets will fail at dispatch")
+		r, err := secrets.NewCompositeResolver(secrets.CompositeConfig{
+			Store:    st,
+			Cipher:   cipher, // may be nil — db-source dispatch then errors loud
+			Provider: secretBackendRegistry,
+			Cache:    external.NewTTLCache(cfg.SecretExternalCacheTTL, 4096),
+			Timeout:  cfg.SecretExternalTimeout,
+			Log:      logger,
+		})
+		if err != nil {
+			logger.Error("secrets resolver", "err", err)
+			os.Exit(1)
+		}
+		resolver = r
+		srcs := secretBackendRegistry.ConfiguredSources()
+		logger.Info("secrets subsystem enabled", "backend", "composite",
+			"external", strings.Join(srcs, ","),
+			"cache_ttl", cfg.SecretExternalCacheTTL.String(),
+			"fetch_timeout", cfg.SecretExternalTimeout.String())
+		if cipher == nil && len(srcs) == 0 {
+			logger.Warn("GOCDNEXT_SECRET_KEY not set and no external backend; /secrets endpoints return 503 until a backend is configured")
 		}
 	default:
 		logger.Error("secrets: unknown backend", "backend", cfg.SecretBackend)
 		os.Exit(1)
+	}
+
+	// secretSourcesFn reports the backends a secret write may point at, live
+	// (DB-enabled, hot-reloaded). nil registry (kubernetes whole-backend mode)
+	// → no external sources offered.
+	secretSourcesFn := func() []string { return nil }
+	if secretBackendRegistry != nil {
+		secretSourcesFn = secretBackendRegistry.ConfiguredSources
 	}
 
 	// Runtime override: when the admin saved storage config via the
@@ -351,7 +338,7 @@ func main() {
 		WithPRFilesFetcher(&configsync.PRFiles{MultiFetcher: gitHubFetcher})
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
-		WithSecretSources(configuredSecretSources).
+		WithSecretSources(secretSourcesFn).
 		WithConfigFetcher(gitHubFetcher)
 	if artifactStore != nil {
 		projectsHandler = projectsHandler.WithArtifactStore(artifactStore)
@@ -498,12 +485,38 @@ func main() {
 		GCSEnsureBucket:       cfg.ArtifactsGCSEnsureBucket,
 		GCSCredsPresent:       cfg.ArtifactsGCSCredentialsFile != "" || cfg.ArtifactsGCSCredentialsJSON != "",
 	})
+	// Env baseline for the external secret backends, surfaced by
+	// /admin/secret-backends as the "source: env" snapshot (no secret values).
+	adminHandler.SetSecretBackendsEnv(adminapi.SecretBackendsEnvSnapshot{
+		Vault: adminapi.SecretBackendEnv{
+			Enabled: cfg.SecretVaultEnabled,
+			Value: map[string]any{
+				"addr": cfg.SecretVaultAddr, "kv_mount": cfg.SecretVaultKVMount, "auth": cfg.SecretVaultAuth,
+				"role": cfg.SecretVaultRole, "role_id": cfg.SecretVaultRoleID, "jwt_path": cfg.SecretVaultJWTPath,
+				"namespace": cfg.SecretVaultNamespace,
+			},
+			HasCreds: cfg.SecretVaultSecretID != "" || cfg.SecretVaultToken != "",
+		},
+		GCP: adminapi.SecretBackendEnv{
+			Enabled: cfg.SecretGCPEnabled,
+			Value:   map[string]any{"project": cfg.SecretGCPProject},
+		},
+		AWS: adminapi.SecretBackendEnv{
+			Enabled: cfg.SecretAWSEnabled,
+			Value:   map[string]any{"region": cfg.SecretAWSRegion, "endpoint": cfg.SecretAWSEndpoint},
+		},
+	})
+	// Converge this replica's registry the instant it writes a backend config
+	// (other replicas converge via the commit-gated NOTIFY).
+	if secretBackendRegistry != nil {
+		adminHandler.SetSecretBackendInvalidator(secretBackendRegistry.Invalidate)
+	}
 	// authProvidersHandler + vcsIntegrationsHandler are wired
 	// later (after the cipher + auth registry are ready). Declared
 	// here so the router block can reference them.
 	var authProvidersHandler *adminapi.AuthProvidersHandler
 	var vcsIntegrationsHandler *adminapi.VCSIntegrationsHandler
-	globalSecretsHandler := adminapi.NewGlobalSecretsHandler(st, cipher, configuredSecretSources, logger)
+	globalSecretsHandler := adminapi.NewGlobalSecretsHandler(st, cipher, secretSourcesFn, logger)
 
 	// DB-backed providers need the same AES cipher used for /secrets.
 	// Wire it here so the admin UI can create/edit provider rows and
@@ -742,6 +755,10 @@ func main() {
 		p.Get("/api/v1/admin/storage", adminHandler.Storage)
 		p.Put("/api/v1/admin/storage", adminHandler.SetStorage)
 		p.Delete("/api/v1/admin/storage", adminHandler.DeleteStorage)
+		p.Get("/api/v1/admin/secret-backends", adminHandler.SecretBackends)
+		p.Put("/api/v1/admin/secret-backends/{source}", adminHandler.SetSecretBackend)
+		p.Delete("/api/v1/admin/secret-backends/{source}", adminHandler.DeleteSecretBackend)
+		p.Post("/api/v1/admin/secret-backends/{source}/test", adminHandler.TestSecretBackend)
 		p.Get("/api/v1/admin/scm-credentials", adminHandler.SCMCredentials)
 		p.Post("/api/v1/admin/scm-credentials", adminHandler.UpsertSCMCredential)
 		p.Delete("/api/v1/admin/scm-credentials/{id}", adminHandler.DeleteSCMCredential)
@@ -831,6 +848,15 @@ func main() {
 	// precise contract.
 	if oidcIss != nil {
 		go oidcissuer.ListenForRotations(ctx, cfg.DatabaseURL, oidcIss, logger)
+	}
+
+	// Secret backend registry: a refresh loop (TTL backstop) + a LISTEN
+	// listener that converges every replica's config on an admin write
+	// (commit-gated NOTIFY) — so enabling/rotating a backend in the UI takes
+	// effect without a restart.
+	if secretBackendRegistry != nil {
+		go secretBackendRegistry.Run(ctx)
+		go secrets.ListenForBackendChanges(ctx, cfg.DatabaseURL, secretBackendRegistry, logger)
 	}
 
 	go func() {

@@ -10,18 +10,23 @@ export function Field({
   label,
   hint,
   required,
+  htmlFor,
   className,
   children,
 }: {
   label: string;
   hint?: string;
   required?: boolean;
+  // htmlFor associates the label with a control by id so
+  // getByLabelText (and screen readers) resolve it. Optional — the
+  // storage panels pre-date it and don't pass one.
+  htmlFor?: string;
   className?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className={className}>
-      <Label className="text-xs">
+      <Label htmlFor={htmlFor} className="text-xs">
         {label}
         {required ? (
           <span className="ml-1 text-destructive" aria-hidden>

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -19,28 +18,37 @@ import (
 const maxGlobalSecretBytes = 64 << 10 // 64 KiB — same cap as project secrets.
 
 // GlobalSecretsHandler owns /api/v1/admin/secrets. Gated on role=admin by the
-// router. `sources` is the set of external secret backends configured on this
-// server (for the source dropdown + write validation); a db secret needs the
-// cipher, an external reference needs its backend configured.
+// router. sourcesFn reports the external secret backends enabled on this
+// server, live (hot-reloaded) — for the source dropdown + write validation; a
+// db secret needs the cipher, an external reference needs its backend enabled.
 type GlobalSecretsHandler struct {
 	store     *store.Store
 	cipher    *crypto.Cipher
-	sources   []string        // sorted, for the response
-	sourceSet map[string]bool // for validation
+	sourcesFn func() []string
 	log       *slog.Logger
 }
 
-func NewGlobalSecretsHandler(s *store.Store, cipher *crypto.Cipher, sources []string, log *slog.Logger) *GlobalSecretsHandler {
+func NewGlobalSecretsHandler(s *store.Store, cipher *crypto.Cipher, sourcesFn func() []string, log *slog.Logger) *GlobalSecretsHandler {
 	if log == nil {
 		log = slog.Default()
 	}
-	set := make(map[string]bool, len(sources))
-	for _, x := range sources {
-		set[x] = true
+	if sourcesFn == nil {
+		sourcesFn = func() []string { return nil }
 	}
-	sorted := append([]string(nil), sources...)
-	sort.Strings(sorted)
-	return &GlobalSecretsHandler{store: s, cipher: cipher, sources: sorted, sourceSet: set, log: log}
+	return &GlobalSecretsHandler{store: s, cipher: cipher, sourcesFn: sourcesFn, log: log}
+}
+
+// configuredSources is the live enabled external-backend set.
+func (h *GlobalSecretsHandler) configuredSources() []string { return h.sourcesFn() }
+
+// sourceSet is the lookup form for write validation.
+func (h *GlobalSecretsHandler) sourceSet() map[string]bool {
+	srcs := h.sourcesFn()
+	set := make(map[string]bool, len(srcs))
+	for _, s := range srcs {
+		set[s] = true
+	}
+	return set
 }
 
 type secretRefInput struct {
@@ -84,7 +92,7 @@ func (h *GlobalSecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source, refPath, refKey := normalizeSecretWrite(req.Source, req.Ref)
-	if err := store.ValidateSecretRef(source, refPath, refKey, h.sourceSet); err != nil {
+	if err := store.ValidateSecretRef(source, refPath, refKey, h.sourceSet()); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -144,11 +152,12 @@ func (h *GlobalSecretsHandler) List(w http.ResponseWriter, r *http.Request) {
 // UI uses it to gate the source selector so it never offers db on an
 // external-only deployment (which the server would 503).
 func (h *GlobalSecretsHandler) writableSources() []string {
-	out := make([]string, 0, len(h.sources)+1)
+	srcs := h.configuredSources()
+	out := make([]string, 0, len(srcs)+1)
 	if h.cipher != nil {
 		out = append(out, store.SecretSourceDB)
 	}
-	return append(out, h.sources...)
+	return append(out, srcs...)
 }
 
 // Delete handles DELETE /api/v1/admin/secrets/{name}. 404 when no match.
@@ -179,7 +188,7 @@ func (h *GlobalSecretsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // ensureConfigured allows the endpoint when the server can store a db secret
 // (cipher set) OR resolve an external one (a backend configured).
 func (h *GlobalSecretsHandler) ensureConfigured(w http.ResponseWriter) bool {
-	if h.cipher == nil && len(h.sources) == 0 {
+	if h.cipher == nil && len(h.configuredSources()) == 0 {
 		http.Error(w,
 			"secrets disabled: set GOCDNEXT_SECRET_KEY or enable an external backend",
 			http.StatusServiceUnavailable)

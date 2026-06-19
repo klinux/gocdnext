@@ -24,4 +24,8 @@ type Backend interface {
 	Fetch(ctx context.Context, path, key string) (string, error)
 	// Name is the source token this backend serves: "vault" | "gcp" | "aws".
 	Name() string
+	// HealthCheck does a lightweight reachability+auth probe (no secret
+	// value involved) so the admin "Test connection" flow can validate a
+	// backend's config/credentials before a job depends on it. nil = ok.
+	HealthCheck(ctx context.Context) error
 }
