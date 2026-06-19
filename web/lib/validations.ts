@@ -29,3 +29,58 @@ export const projectSlugSchema = z
     /^[a-z][a-z0-9-]*$/,
     "lowercase letters, digits and dashes; must start with a letter",
   );
+
+// secretValueSchema mirrors the server's 64 KiB cap on stored values.
+export const secretValueSchema = z
+  .string()
+  .min(1, "value cannot be empty")
+  .max(64 * 1024);
+
+// secretPayloadSchema is the discriminated union the set actions accept,
+// keyed on `source`. The DB variant carries an inline value; external
+// variants carry a backend `ref` and never a value. Vault additionally
+// requires `ref.key` because a Vault path holds a map of keys. The
+// server re-validates this shape and returns a 400 on a bad combination
+// (or an unconfigured source) — the client schema just keeps the obvious
+// mistakes out of the round-trip.
+const dbVariant = z.object({
+  source: z.literal("db"),
+  name: secretNameSchema,
+  value: secretValueSchema,
+});
+
+const externalRef = z.object({
+  path: z.string().min(1, "path is required").max(1024),
+  key: z.string().max(256).optional(),
+});
+
+const externalRefWithKey = externalRef.extend({
+  key: z.string().min(1, "key is required for Vault").max(256),
+});
+
+const vaultVariant = z.object({
+  source: z.literal("vault"),
+  name: secretNameSchema,
+  ref: externalRefWithKey,
+});
+
+const gcpVariant = z.object({
+  source: z.literal("gcp"),
+  name: secretNameSchema,
+  ref: externalRef,
+});
+
+const awsVariant = z.object({
+  source: z.literal("aws"),
+  name: secretNameSchema,
+  ref: externalRef,
+});
+
+export const secretPayloadSchema = z.discriminatedUnion("source", [
+  dbVariant,
+  vaultVariant,
+  gcpVariant,
+  awsVariant,
+]);
+
+export type SecretPayload = z.infer<typeof secretPayloadSchema>;

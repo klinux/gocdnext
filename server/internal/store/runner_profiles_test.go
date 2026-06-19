@@ -677,10 +677,10 @@ func TestRunnerProfile_SecretTemplate_ResolvesAgainstGlobals(t *testing.T) {
 	cipher := newProfileCipher(t)
 
 	// Seed a global secret the profile will reference.
-	if _, err := s.SetGlobalSecret(ctx, cipher, "AWS_ACCESS_KEY_ID", []byte("AKIA-FROM-GLOBAL")); err != nil {
+	if _, err := s.SetGlobalSecret(ctx, cipher, store.SecretSet{Name: "AWS_ACCESS_KEY_ID", Value: []byte("AKIA-FROM-GLOBAL")}); err != nil {
 		t.Fatalf("seed global: %v", err)
 	}
-	if _, err := s.SetGlobalSecret(ctx, cipher, "AWS_SECRET_ACCESS_KEY", []byte("super-secret-global")); err != nil {
+	if _, err := s.SetGlobalSecret(ctx, cipher, store.SecretSet{Name: "AWS_SECRET_ACCESS_KEY", Value: []byte("super-secret-global")}); err != nil {
 		t.Fatalf("seed global 2: %v", err)
 	}
 
@@ -741,6 +741,36 @@ func TestRunnerProfile_SecretTemplate_MissingGlobalFailsClosed(t *testing.T) {
 	}
 	if !contains(err.Error(), "DOES_NOT_EXIST") {
 		t.Errorf("error %q does not name the missing global", err)
+	}
+}
+
+func TestRunnerProfile_SecretTemplate_ExternalGlobalFailsClosed(t *testing.T) {
+	s, ctx := newProfileStore(t)
+	cipher := newProfileCipher(t)
+
+	// A global that resolves from Vault (per-job at dispatch), not a db value.
+	if _, err := s.SetGlobalSecret(ctx, cipher, store.SecretSet{
+		Name: "VAULT_GLOBAL", Source: store.SecretSourceVault, RefPath: "secret/x", RefKey: "k",
+	}); err != nil {
+		t.Fatalf("seed external global: %v", err)
+	}
+	// Profile {{secret:...}} interpolation expands inline at config time and
+	// supports db-stored globals only — referencing the external one must fail
+	// closed with a precise message (not the misleading "unknown").
+	if _, err := s.InsertRunnerProfile(ctx, cipher, store.RunnerProfileInput{
+		Name:    "external-ref",
+		Engine:  "kubernetes",
+		Secrets: map[string]string{"X": "{{secret:VAULT_GLOBAL}}"},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, err := s.ResolveProfileByName(ctx, cipher, "external-ref")
+	if err == nil {
+		t.Fatal("expected error for an external-reference global in a profile template")
+	}
+	if !contains(err.Error(), "VAULT_GLOBAL") || !contains(err.Error(), "external reference") {
+		t.Errorf("error %q should name VAULT_GLOBAL and explain it's an external reference", err)
 	}
 }
 

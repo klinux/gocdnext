@@ -52,6 +52,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/retention"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
+	"github.com/gocdnext/gocdnext/server/internal/secrets/external"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/vcs"
 	"github.com/gocdnext/gocdnext/server/internal/webhook"
@@ -182,6 +183,10 @@ func main() {
 	}
 
 	var resolver secrets.Resolver = secrets.NopResolver{}
+	// External secret sources configured on this server — threaded to the
+	// secrets handlers so the UI source dropdown + write validation know
+	// which backends a reference may point at.
+	var configuredSecretSources []string
 	switch cfg.SecretBackend {
 	case "kubernetes":
 		if cfg.SecretK8sNamespace == "" {
@@ -203,7 +208,66 @@ func main() {
 			"backend", "kubernetes",
 			"namespace", cfg.SecretK8sNamespace)
 	case "db", "":
-		if cipher != nil {
+		// External secret backends (#54): build whichever are enabled.
+		// fail-fast at boot (each dials + authenticates once).
+		bootCtx, cancelBoot := context.WithTimeout(context.Background(), 15*time.Second)
+		extBackends := map[string]external.Backend{}
+		if cfg.SecretVaultEnabled {
+			b, err := external.NewVaultBackend(bootCtx, external.VaultConfig{
+				Addr: cfg.SecretVaultAddr, KVMount: cfg.SecretVaultKVMount, AuthMethod: cfg.SecretVaultAuth,
+				Role: cfg.SecretVaultRole, RoleID: cfg.SecretVaultRoleID, SecretID: cfg.SecretVaultSecretID,
+				Token: cfg.SecretVaultToken, JWTPath: cfg.SecretVaultJWTPath, Namespace: cfg.SecretVaultNamespace,
+			})
+			if err != nil {
+				cancelBoot()
+				logger.Error("secrets: vault backend init", "err", err)
+				os.Exit(1)
+			}
+			extBackends[store.SecretSourceVault] = b
+			configuredSecretSources = append(configuredSecretSources, "vault")
+		}
+		if cfg.SecretGCPEnabled {
+			b, err := external.NewGCPBackend(bootCtx, external.GCPConfig{Project: cfg.SecretGCPProject})
+			if err != nil {
+				cancelBoot()
+				logger.Error("secrets: gcp backend init", "err", err)
+				os.Exit(1)
+			}
+			extBackends[store.SecretSourceGCP] = b
+			configuredSecretSources = append(configuredSecretSources, "gcp")
+		}
+		if cfg.SecretAWSEnabled {
+			b, err := external.NewAWSBackend(bootCtx, external.AWSConfig{Region: cfg.SecretAWSRegion, Endpoint: cfg.SecretAWSEndpoint})
+			if err != nil {
+				cancelBoot()
+				logger.Error("secrets: aws backend init", "err", err)
+				os.Exit(1)
+			}
+			extBackends[store.SecretSourceAWS] = b
+			configuredSecretSources = append(configuredSecretSources, "aws")
+		}
+		cancelBoot()
+
+		switch {
+		case len(extBackends) > 0:
+			r, err := secrets.NewCompositeResolver(secrets.CompositeConfig{
+				Store:    st,
+				Cipher:   cipher, // may be nil — db-source dispatch then errors loud
+				Backends: extBackends,
+				Cache:    external.NewTTLCache(cfg.SecretExternalCacheTTL, 4096),
+				Timeout:  cfg.SecretExternalTimeout,
+				Log:      logger,
+			})
+			if err != nil {
+				logger.Error("secrets resolver", "err", err)
+				os.Exit(1)
+			}
+			resolver = r
+			logger.Info("secrets subsystem enabled", "backend", "composite",
+				"external", strings.Join(configuredSecretSources, ","),
+				"cache_ttl", cfg.SecretExternalCacheTTL.String(),
+				"fetch_timeout", cfg.SecretExternalTimeout.String())
+		case cipher != nil:
 			r, err := secrets.NewDBResolver(st, cipher)
 			if err != nil {
 				logger.Error("secrets resolver", "err", err)
@@ -211,7 +275,7 @@ func main() {
 			}
 			resolver = r
 			logger.Info("secrets subsystem enabled", "backend", "db")
-		} else {
+		default:
 			logger.Warn("GOCDNEXT_SECRET_KEY not set; /secrets endpoints will return 503 and jobs that declare secrets will fail at dispatch")
 		}
 	default:
@@ -287,6 +351,7 @@ func main() {
 		WithPRFilesFetcher(&configsync.PRFiles{MultiFetcher: gitHubFetcher})
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
+		WithSecretSources(configuredSecretSources).
 		WithConfigFetcher(gitHubFetcher)
 	if artifactStore != nil {
 		projectsHandler = projectsHandler.WithArtifactStore(artifactStore)
@@ -438,7 +503,7 @@ func main() {
 	// here so the router block can reference them.
 	var authProvidersHandler *adminapi.AuthProvidersHandler
 	var vcsIntegrationsHandler *adminapi.VCSIntegrationsHandler
-	globalSecretsHandler := adminapi.NewGlobalSecretsHandler(st, cipher, logger)
+	globalSecretsHandler := adminapi.NewGlobalSecretsHandler(st, cipher, configuredSecretSources, logger)
 
 	// DB-backed providers need the same AES cipher used for /secrets.
 	// Wire it here so the admin UI can create/edit provider rows and

@@ -85,6 +85,7 @@ export default defineConfig({
           items: [
             { label: "Materials", link: "/concepts/materials/" },
             { label: "Secrets", link: "/concepts/secrets/" },
+            { label: "External secret backends", link: "/concepts/external-secrets/" },
             { label: "Cache strategies", link: "/concepts/cache/" },
             { label: "Approval gates", link: "/concepts/approvals/" },
             { label: "Deployments & rollback", link: "/concepts/deployments/" },

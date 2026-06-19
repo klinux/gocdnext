@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countGlobalSecrets = `-- name: CountGlobalSecrets :one
+SELECT count(*) FROM secrets WHERE project_id IS NULL
+`
+
+func (q *Queries) CountGlobalSecrets(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countGlobalSecrets)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSecretsByProject = `-- name: CountSecretsByProject :one
+SELECT count(*) FROM secrets WHERE project_id = $1
+`
+
+func (q *Queries) CountSecretsByProject(ctx context.Context, projectID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countSecretsByProject, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteGlobalSecretByName = `-- name: DeleteGlobalSecretByName :execrows
 DELETE FROM secrets WHERE project_id IS NULL AND name = $1
 `
@@ -40,31 +62,37 @@ func (q *Queries) DeleteSecretByName(ctx context.Context, arg DeleteSecretByName
 	return result.RowsAffected(), nil
 }
 
-const getGlobalSecretValues = `-- name: GetGlobalSecretValues :many
-SELECT name, value_enc
+const getGlobalSecretEntries = `-- name: GetGlobalSecretEntries :many
+SELECT name, value_enc, source, ref_path, ref_key
 FROM secrets
 WHERE project_id IS NULL AND name = ANY($1::text[])
 `
 
-type GetGlobalSecretValuesRow struct {
+type GetGlobalSecretEntriesRow struct {
 	Name     string
 	ValueEnc []byte
+	Source   string
+	RefPath  *string
+	RefKey   *string
 }
 
-// Resolver fallback: after GetSecretValuesByProject, names still
-// missing are looked up as globals. Kept as a separate call so
-// the resolver can short-circuit when every name was already
-// covered at project scope.
-func (q *Queries) GetGlobalSecretValues(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretValuesRow, error) {
-	rows, err := q.db.Query(ctx, getGlobalSecretValues, dollar_1)
+// Resolver fallback for names still missing at project scope.
+func (q *Queries) GetGlobalSecretEntries(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretEntriesRow, error) {
+	rows, err := q.db.Query(ctx, getGlobalSecretEntries, dollar_1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GetGlobalSecretValuesRow{}
+	items := []GetGlobalSecretEntriesRow{}
 	for rows.Next() {
-		var i GetGlobalSecretValuesRow
-		if err := rows.Scan(&i.Name, &i.ValueEnc); err != nil {
+		var i GetGlobalSecretEntriesRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.ValueEnc,
+			&i.Source,
+			&i.RefPath,
+			&i.RefKey,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -75,34 +103,44 @@ func (q *Queries) GetGlobalSecretValues(ctx context.Context, dollar_1 []string) 
 	return items, nil
 }
 
-const getSecretValuesByProject = `-- name: GetSecretValuesByProject :many
-SELECT name, value_enc
+const getSecretEntriesByProject = `-- name: GetSecretEntriesByProject :many
+SELECT name, value_enc, source, ref_path, ref_key
 FROM secrets
 WHERE project_id = $1 AND name = ANY($2::text[])
 `
 
-type GetSecretValuesByProjectParams struct {
+type GetSecretEntriesByProjectParams struct {
 	ProjectID pgtype.UUID
 	Column2   []string
 }
 
-type GetSecretValuesByProjectRow struct {
+type GetSecretEntriesByProjectRow struct {
 	Name     string
 	ValueEnc []byte
+	Source   string
+	RefPath  *string
+	RefKey   *string
 }
 
-// Used by the scheduler when a job declares `secrets: [FOO, BAR]`. Returns
-// the encrypted blobs; the caller decrypts and injects as env vars.
-func (q *Queries) GetSecretValuesByProject(ctx context.Context, arg GetSecretValuesByProjectParams) ([]GetSecretValuesByProjectRow, error) {
-	rows, err := q.db.Query(ctx, getSecretValuesByProject, arg.ProjectID, arg.Column2)
+// Dispatch path: a job declared `secrets: [FOO, BAR]`. Returns the full
+// entry (value_enc for db rows, source+ref for external rows); the
+// CompositeResolver decrypts or fetches per source.
+func (q *Queries) GetSecretEntriesByProject(ctx context.Context, arg GetSecretEntriesByProjectParams) ([]GetSecretEntriesByProjectRow, error) {
+	rows, err := q.db.Query(ctx, getSecretEntriesByProject, arg.ProjectID, arg.Column2)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GetSecretValuesByProjectRow{}
+	items := []GetSecretEntriesByProjectRow{}
 	for rows.Next() {
-		var i GetSecretValuesByProjectRow
-		if err := rows.Scan(&i.Name, &i.ValueEnc); err != nil {
+		var i GetSecretEntriesByProjectRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.ValueEnc,
+			&i.Source,
+			&i.RefPath,
+			&i.RefKey,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -114,7 +152,7 @@ func (q *Queries) GetSecretValuesByProject(ctx context.Context, arg GetSecretVal
 }
 
 const listGlobalSecrets = `-- name: ListGlobalSecrets :many
-SELECT name, created_at, updated_at
+SELECT name, source, ref_path, ref_key, created_at, updated_at
 FROM secrets
 WHERE project_id IS NULL
 ORDER BY name
@@ -122,12 +160,15 @@ ORDER BY name
 
 type ListGlobalSecretsRow struct {
 	Name      string
+	Source    string
+	RefPath   *string
+	RefKey    *string
 	CreatedAt pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
 }
 
 // Admin-only listing of every global (unscoped) secret. Same
-// "names + timestamps, never values" contract as project secrets.
+// "names + source/ref, never values" contract.
 func (q *Queries) ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow, error) {
 	rows, err := q.db.Query(ctx, listGlobalSecrets)
 	if err != nil {
@@ -137,7 +178,63 @@ func (q *Queries) ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow
 	items := []ListGlobalSecretsRow{}
 	for rows.Next() {
 		var i ListGlobalSecretsRow
-		if err := rows.Scan(&i.Name, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&i.Name,
+			&i.Source,
+			&i.RefPath,
+			&i.RefKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGlobalSecretsPaged = `-- name: ListGlobalSecretsPaged :many
+SELECT name, source, ref_path, ref_key, created_at, updated_at
+FROM secrets
+WHERE project_id IS NULL
+ORDER BY name
+LIMIT $1 OFFSET $2
+`
+
+type ListGlobalSecretsPagedParams struct {
+	Limit  int32
+	Offset int32
+}
+
+type ListGlobalSecretsPagedRow struct {
+	Name      string
+	Source    string
+	RefPath   *string
+	RefKey    *string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListGlobalSecretsPaged(ctx context.Context, arg ListGlobalSecretsPagedParams) ([]ListGlobalSecretsPagedRow, error) {
+	rows, err := q.db.Query(ctx, listGlobalSecretsPaged, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGlobalSecretsPagedRow{}
+	for rows.Next() {
+		var i ListGlobalSecretsPagedRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.Source,
+			&i.RefPath,
+			&i.RefKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -149,7 +246,7 @@ func (q *Queries) ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow
 }
 
 const listSecretsByProject = `-- name: ListSecretsByProject :many
-SELECT name, created_at, updated_at
+SELECT name, source, ref_path, ref_key, created_at, updated_at
 FROM secrets
 WHERE project_id = $1
 ORDER BY name
@@ -157,12 +254,15 @@ ORDER BY name
 
 type ListSecretsByProjectRow struct {
 	Name      string
+	Source    string
+	RefPath   *string
+	RefKey    *string
 	CreatedAt pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
 }
 
-// Lists names + timestamps only — values never leave the DB without going
-// through GetSecretValuesByProject below.
+// Names + source/ref + timestamps only — values never leave the DB except
+// via the resolver. Used for the unpaginated inherited-globals panel.
 func (q *Queries) ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error) {
 	rows, err := q.db.Query(ctx, listSecretsByProject, projectID)
 	if err != nil {
@@ -172,7 +272,66 @@ func (q *Queries) ListSecretsByProject(ctx context.Context, projectID pgtype.UUI
 	items := []ListSecretsByProjectRow{}
 	for rows.Next() {
 		var i ListSecretsByProjectRow
-		if err := rows.Scan(&i.Name, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&i.Name,
+			&i.Source,
+			&i.RefPath,
+			&i.RefKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSecretsByProjectPaged = `-- name: ListSecretsByProjectPaged :many
+SELECT name, source, ref_path, ref_key, created_at, updated_at
+FROM secrets
+WHERE project_id = $1
+ORDER BY name
+LIMIT $2 OFFSET $3
+`
+
+type ListSecretsByProjectPagedParams struct {
+	ProjectID pgtype.UUID
+	Limit     int32
+	Offset    int32
+}
+
+type ListSecretsByProjectPagedRow struct {
+	Name      string
+	Source    string
+	RefPath   *string
+	RefKey    *string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+// Paginated project listing (admin/project secrets page). ORDER BY name so
+// offset paging is stable. Companion count in CountSecretsByProject.
+func (q *Queries) ListSecretsByProjectPaged(ctx context.Context, arg ListSecretsByProjectPagedParams) ([]ListSecretsByProjectPagedRow, error) {
+	rows, err := q.db.Query(ctx, listSecretsByProjectPaged, arg.ProjectID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSecretsByProjectPagedRow{}
+	for rows.Next() {
+		var i ListSecretsByProjectPagedRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.Source,
+			&i.RefPath,
+			&i.RefKey,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -184,10 +343,13 @@ func (q *Queries) ListSecretsByProject(ctx context.Context, projectID pgtype.UUI
 }
 
 const upsertGlobalSecret = `-- name: UpsertGlobalSecret :one
-INSERT INTO secrets (project_id, name, value_enc)
-VALUES (NULL, $1, $2)
+INSERT INTO secrets (project_id, name, value_enc, source, ref_path, ref_key)
+VALUES (NULL, $1, $2, $3, $4, $5)
 ON CONFLICT (name) WHERE project_id IS NULL DO UPDATE SET
     value_enc  = EXCLUDED.value_enc,
+    source     = EXCLUDED.source,
+    ref_path   = EXCLUDED.ref_path,
+    ref_key    = EXCLUDED.ref_key,
     updated_at = NOW()
 RETURNING id, name, created_at, updated_at, (xmax = 0) AS created
 `
@@ -195,6 +357,9 @@ RETURNING id, name, created_at, updated_at, (xmax = 0) AS created
 type UpsertGlobalSecretParams struct {
 	Name     string
 	ValueEnc []byte
+	Source   string
+	RefPath  *string
+	RefKey   *string
 }
 
 type UpsertGlobalSecretRow struct {
@@ -205,12 +370,17 @@ type UpsertGlobalSecretRow struct {
 	Created   bool
 }
 
-// Global scope: project_id = NULL, shadowed by a same-name project
-// secret at resolution time. Targets the partial UNIQUE index
-// secrets_global_name_idx — Postgres can't infer partial indexes
-// from ON CONFLICT (name) alone, so we spell out the predicate.
+// Global scope: project_id = NULL, shadowed by a same-name project secret
+// at resolution time. Targets the partial UNIQUE index
+// secrets_global_name_idx (predicate spelled out so Postgres picks it).
 func (q *Queries) UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecretParams) (UpsertGlobalSecretRow, error) {
-	row := q.db.QueryRow(ctx, upsertGlobalSecret, arg.Name, arg.ValueEnc)
+	row := q.db.QueryRow(ctx, upsertGlobalSecret,
+		arg.Name,
+		arg.ValueEnc,
+		arg.Source,
+		arg.RefPath,
+		arg.RefKey,
+	)
 	var i UpsertGlobalSecretRow
 	err := row.Scan(
 		&i.ID,
@@ -223,10 +393,13 @@ func (q *Queries) UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecret
 }
 
 const upsertSecret = `-- name: UpsertSecret :one
-INSERT INTO secrets (project_id, name, value_enc)
-VALUES ($1, $2, $3)
+INSERT INTO secrets (project_id, name, value_enc, source, ref_path, ref_key)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (project_id, name) WHERE project_id IS NOT NULL DO UPDATE SET
     value_enc  = EXCLUDED.value_enc,
+    source     = EXCLUDED.source,
+    ref_path   = EXCLUDED.ref_path,
+    ref_key    = EXCLUDED.ref_key,
     updated_at = NOW()
 RETURNING id, project_id, name, created_at, updated_at, (xmax = 0) AS created
 `
@@ -235,6 +408,9 @@ type UpsertSecretParams struct {
 	ProjectID pgtype.UUID
 	Name      string
 	ValueEnc  []byte
+	Source    string
+	RefPath   *string
+	RefKey    *string
 }
 
 type UpsertSecretRow struct {
@@ -246,16 +422,20 @@ type UpsertSecretRow struct {
 	Created   bool
 }
 
-// Upserts a (project_id, name) -> value_enc pair. updated_at always bumps on
-// update because the ciphertext changes (random nonce) even for identical
-// plaintext, making a "was this changed" diff unreliable; we bump
-// unconditionally on write.
-//
-// Targets the partial UNIQUE index secrets_project_name_idx (rows
-// where project_id IS NOT NULL). The global twin lives in
-// UpsertGlobalSecret below.
+// Upserts a (project_id, name) entry. A db-source secret carries value_enc;
+// an external reference carries source + ref_path[/ref_key] and NULL value.
+// updated_at always bumps on update (ciphertext nonce changes even for an
+// identical plaintext, so a "was this changed" diff is unreliable).
+// Targets the partial UNIQUE index secrets_project_name_idx.
 func (q *Queries) UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error) {
-	row := q.db.QueryRow(ctx, upsertSecret, arg.ProjectID, arg.Name, arg.ValueEnc)
+	row := q.db.QueryRow(ctx, upsertSecret,
+		arg.ProjectID,
+		arg.Name,
+		arg.ValueEnc,
+		arg.Source,
+		arg.RefPath,
+		arg.RefKey,
+	)
 	var i UpsertSecretRow
 	err := row.Scan(
 		&i.ID,

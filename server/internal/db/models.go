@@ -395,6 +395,9 @@ type Secret struct {
 	ValueEnc  []byte
 	CreatedAt pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
+	Source    string
+	RefPath   *string
+	RefKey    *string
 }
 
 type ServiceAccount struct {

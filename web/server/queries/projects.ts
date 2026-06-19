@@ -164,9 +164,22 @@ export async function getAgentDetail(id: string): Promise<AgentDetail> {
   return readJSON<AgentDetail>(`/api/v1/agents/${encodeURIComponent(id)}`);
 }
 
-export async function listSecrets(slug: string): Promise<SecretsList> {
+// SecretsQuery is the pagination window for the secrets list. Both
+// fields optional so callers that don't paginate (the CLI-parity
+// happy path) keep working with the server defaults.
+export type SecretsQuery = {
+  limit?: number;
+  offset?: number;
+};
+
+export async function listSecrets(
+  slug: string,
+  opts: SecretsQuery = {},
+): Promise<SecretsList> {
+  const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
+  if (opts.offset) qs.set("offset", String(opts.offset));
   return readJSON<SecretsList>(
-    `/api/v1/projects/${encodeURIComponent(slug)}/secrets`,
+    `/api/v1/projects/${encodeURIComponent(slug)}/secrets?${qs.toString()}`,
   );
 }
 

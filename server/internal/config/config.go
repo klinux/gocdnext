@@ -144,6 +144,29 @@ type Config struct {
 	SecretK8sTemplate   string // default "gocdnext-secrets-{slug}"
 	SecretK8sKubeconfig string // empty = in-cluster
 
+	// External secret backends (#54, reference model). Any combination
+	// may be enabled at once; a per-secret reference picks one by source
+	// token. The composite resolver replaces the plain DB resolver when
+	// at least one is enabled. Sensitive values (Vault secret_id/token)
+	// are never logged.
+	SecretExternalCacheTTL time.Duration // GOCDNEXT_SECRET_CACHE_TTL (default 60s; 0 disables)
+	SecretExternalTimeout  time.Duration // GOCDNEXT_SECRET_FETCH_TIMEOUT (default 10s; 0 disables) — per-lookup deadline so a hung backend can't stall dispatch
+	SecretVaultEnabled     bool
+	SecretVaultAddr        string
+	SecretVaultKVMount     string // default "secret"
+	SecretVaultAuth        string // approle | kubernetes | token
+	SecretVaultRole        string // kubernetes auth role
+	SecretVaultRoleID      string // approle
+	SecretVaultSecretID    string // approle (sensitive)
+	SecretVaultToken       string // static token (sensitive, dev)
+	SecretVaultJWTPath     string // kubernetes SA token path
+	SecretVaultNamespace   string
+	SecretGCPEnabled       bool
+	SecretGCPProject       string // auth via ADC / workload identity / GOOGLE_APPLICATION_CREDENTIALS
+	SecretAWSEnabled       bool
+	SecretAWSRegion        string
+	SecretAWSEndpoint      string // optional (LocalStack)
+
 	// Auth (UI.6): GOCDNEXT_AUTH_ENABLED=true turns on session
 	// enforcement + /auth routes. When disabled (the default) the
 	// API stays open so existing dev workflows keep working.
@@ -337,6 +360,43 @@ func Load() (*Config, error) {
 	c.SecretK8sNamespace = env("GOCDNEXT_SECRET_K8S_NAMESPACE", "")
 	c.SecretK8sTemplate = env("GOCDNEXT_SECRET_K8S_NAME_TEMPLATE", "")
 	c.SecretK8sKubeconfig = env("GOCDNEXT_SECRET_K8S_KUBECONFIG", "")
+
+	// External secret backends (#54).
+	c.SecretVaultEnabled = strings.EqualFold(env("GOCDNEXT_SECRET_VAULT_ENABLED", "false"), "true")
+	c.SecretVaultAddr = env("GOCDNEXT_SECRET_VAULT_ADDR", "")
+	c.SecretVaultKVMount = env("GOCDNEXT_SECRET_VAULT_KV_MOUNT", "")
+	c.SecretVaultAuth = strings.ToLower(env("GOCDNEXT_SECRET_VAULT_AUTH", "approle"))
+	c.SecretVaultRole = env("GOCDNEXT_SECRET_VAULT_ROLE", "")
+	c.SecretVaultRoleID = env("GOCDNEXT_SECRET_VAULT_ROLE_ID", "")
+	c.SecretVaultSecretID = env("GOCDNEXT_SECRET_VAULT_SECRET_ID", "")
+	c.SecretVaultToken = env("GOCDNEXT_SECRET_VAULT_TOKEN", "")
+	c.SecretVaultJWTPath = env("GOCDNEXT_SECRET_VAULT_JWT_PATH", "")
+	c.SecretVaultNamespace = env("GOCDNEXT_SECRET_VAULT_NAMESPACE", "")
+	c.SecretGCPEnabled = strings.EqualFold(env("GOCDNEXT_SECRET_GCP_ENABLED", "false"), "true")
+	c.SecretGCPProject = env("GOCDNEXT_SECRET_GCP_PROJECT", "")
+	c.SecretAWSEnabled = strings.EqualFold(env("GOCDNEXT_SECRET_AWS_ENABLED", "false"), "true")
+	c.SecretAWSRegion = env("GOCDNEXT_SECRET_AWS_REGION", "")
+	c.SecretAWSEndpoint = env("GOCDNEXT_SECRET_AWS_ENDPOINT", "")
+	// Cache TTL and fetch timeout are security/availability knobs — a typo
+	// must fail fast at boot, never silently fall back to the default (a
+	// silent fallback would, e.g., turn a meant-to-be-disabled cache back
+	// on). A negative value is rejected for the same reason.
+	c.SecretExternalCacheTTL = 60 * time.Second
+	if raw := env("GOCDNEXT_SECRET_CACHE_TTL", ""); raw != "" {
+		d, derr := time.ParseDuration(raw)
+		if derr != nil || d < 0 {
+			return nil, fmt.Errorf("GOCDNEXT_SECRET_CACHE_TTL %q is not a valid non-negative duration (e.g. 60s, 0): %v", raw, derr)
+		}
+		c.SecretExternalCacheTTL = d
+	}
+	c.SecretExternalTimeout = 10 * time.Second
+	if raw := env("GOCDNEXT_SECRET_FETCH_TIMEOUT", ""); raw != "" {
+		d, derr := time.ParseDuration(raw)
+		if derr != nil || d < 0 {
+			return nil, fmt.Errorf("GOCDNEXT_SECRET_FETCH_TIMEOUT %q is not a valid non-negative duration (e.g. 10s, 0): %v", raw, derr)
+		}
+		c.SecretExternalTimeout = d
+	}
 
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("GOCDNEXT_DATABASE_URL is required")

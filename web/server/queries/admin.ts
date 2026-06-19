@@ -95,15 +95,24 @@ export async function listVCSIntegrations(): Promise<VCSIntegrationsAdmin> {
   return readJSON<VCSIntegrationsAdmin>("/api/v1/admin/integrations/vcs");
 }
 
-// listGlobalSecrets fetches the names + timestamps of every global
-// (unscoped) secret. Values never cross the wire — the runtime
-// resolver is the only reader. Returns [] when the subsystem is
-// up and no globals exist yet; the 503 path (GOCDNEXT_SECRET_KEY
-// unset) propagates as an error so the page can render a distinct
-// "subsystem disabled" state.
-export async function listGlobalSecrets(): Promise<SecretsList["secrets"]> {
-  const { secrets } = await readJSON<SecretsList>("/api/v1/admin/secrets");
-  return secrets;
+// SecretsQuery is the pagination window for the global secrets list.
+export type SecretsQuery = {
+  limit?: number;
+  offset?: number;
+};
+
+// listGlobalSecrets fetches the names + source + timestamps of every
+// global (unscoped) secret. Values never cross the wire — the runtime
+// resolver is the only reader. Returns an envelope with total=0 when
+// the subsystem is up and no globals exist yet; the 503 path
+// (GOCDNEXT_SECRET_KEY unset) propagates as an error so the page can
+// render a distinct "subsystem disabled" state.
+export async function listGlobalSecrets(
+  opts: SecretsQuery = {},
+): Promise<SecretsList> {
+  const qs = new URLSearchParams({ limit: String(opts.limit ?? 50) });
+  if (opts.offset) qs.set("offset", String(opts.offset));
+  return readJSON<SecretsList>(`/api/v1/admin/secrets?${qs.toString()}`);
 }
 
 // StorageConfig is what the /api/v1/admin/storage GET returns.

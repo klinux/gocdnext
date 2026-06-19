@@ -20,9 +20,13 @@ export default async function RunnerProfilesPage() {
   // hiccup just means the secrets picker has nothing to offer; the
   // editor still works for literal values. The error path is rare
   // enough that swallowing it preserves the UX over reporting it.
+  // The picker only needs the first page of names — a runner profile
+  // referencing a global beyond the first 200 is well past the point
+  // where a typeahead beats a dropdown, and the secret is still usable
+  // by typing its name.
   const [{ profiles }, globalSecrets] = await Promise.all([
     listAdminRunnerProfiles(),
-    listGlobalSecrets().catch(() => []),
+    listGlobalSecrets({ limit: 200 }).then((r) => r.secrets).catch(() => []),
   ]);
   const globalSecretNames = globalSecrets.map((s) => s.name).sort();
 
