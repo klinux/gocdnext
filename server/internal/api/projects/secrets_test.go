@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -138,5 +139,159 @@ func TestDeleteSecret_Removes(t *testing.T) {
 	router.ServeHTTP(rr2, req)
 	if rr2.Code != http.StatusNotFound {
 		t.Fatalf("status on missing = %d", rr2.Code)
+	}
+}
+
+// TestListSecrets_InheritedExcludesShadowAcrossPages: the inherited-globals
+// panel must filter against ALL of the project's local names, not just the
+// current page — otherwise a local secret that lands on a later page would let
+// its global twin show up as "inherited" on page 1, which is a lie.
+func TestListSecrets_InheritedExcludesShadowAcrossPages(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	c, err := crypto.NewCipherFromHex(strings.Repeat("ab", 32))
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	ctx := t.Context()
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "demo", Name: "Demo"})
+	if err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	// Globals: one shadowed by a local, one genuinely inherited.
+	if _, err := s.SetGlobalSecret(ctx, c, store.SecretSet{Name: "ZZZ_SHADOW", Value: []byte("g1")}); err != nil {
+		t.Fatalf("global 1: %v", err)
+	}
+	if _, err := s.SetGlobalSecret(ctx, c, store.SecretSet{Name: "GLB_ONLY", Value: []byte("g2")}); err != nil {
+		t.Fatalf("global 2: %v", err)
+	}
+	// Locals: AAA/BBB sort first; ZZZ_SHADOW shadows the global but, under
+	// ORDER BY name + limit=1, never appears on page 1.
+	for _, n := range []string{"AAA", "BBB", "ZZZ_SHADOW"} {
+		if _, err := s.SetSecret(ctx, c, store.SecretSet{ProjectID: applied.ProjectID, Name: n, Value: []byte("v")}); err != nil {
+			t.Fatalf("local %s: %v", n, err)
+		}
+	}
+
+	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).WithCipher(c)
+	r := chi.NewRouter()
+	r.Get("/api/v1/projects/{slug}/secrets", h.ListSecrets)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo/secrets?limit=1&offset=0", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Secrets   []store.Secret `json:"secrets"`
+		Inherited []store.Secret `json:"inherited"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Secrets) != 1 || resp.Secrets[0].Name != "AAA" {
+		t.Fatalf("page 1 = %+v, want exactly [AAA]", resp.Secrets)
+	}
+	inh := map[string]bool{}
+	for _, g := range resp.Inherited {
+		inh[g.Name] = true
+	}
+	if inh["ZZZ_SHADOW"] {
+		t.Fatalf("inherited leaked a shadowed global not on the current page: %+v", resp.Inherited)
+	}
+	if !inh["GLB_ONLY"] {
+		t.Fatalf("inherited dropped a genuinely-inherited global: %+v", resp.Inherited)
+	}
+}
+
+// TestListSecrets_ConfiguredSourcesGatesDB: the server is authoritative on
+// which sources a write may pick — db only when a cipher is configured, plus
+// each enabled backend. An external-only deployment must not advertise db
+// (the UI would offer it and the write would 503).
+func TestListSecrets_ConfiguredSourcesGatesDB(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	if _, err := s.ApplyProject(t.Context(), store.ApplyProjectInput{Slug: "demo", Name: "Demo"}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	sources := func(withCipher bool, ext []string) []string {
+		h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if withCipher {
+			c, _ := crypto.NewCipherFromHex(strings.Repeat("ab", 32))
+			h = h.WithCipher(c)
+		}
+		h = h.WithSecretSources(ext)
+		r := chi.NewRouter()
+		r.Get("/api/v1/projects/{slug}/secrets", h.ListSecrets)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo/secrets", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			ConfiguredSources []string `json:"configured_sources"`
+		}
+		_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+		return resp.ConfiguredSources
+	}
+
+	if got := sources(true, []string{"vault"}); !slices.Contains(got, "db") || !slices.Contains(got, "vault") {
+		t.Fatalf("cipher+vault: configured_sources=%v, want db+vault", got)
+	}
+	got := sources(false, []string{"vault"})
+	if slices.Contains(got, "db") {
+		t.Fatalf("external-only: configured_sources=%v must not include db", got)
+	}
+	if !slices.Contains(got, "vault") {
+		t.Fatalf("external-only: configured_sources=%v should include vault", got)
+	}
+}
+
+// TestSetSecret_TrimsSourceAndRef: a stray copy-paste space in source/path/key
+// must be trimmed server-side, so it can't silently become a different
+// reference + cache key than what the operator intended.
+func TestSetSecret_TrimsSourceAndRef(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	c, err := crypto.NewCipherFromHex(strings.Repeat("ab", 32))
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	if _, err := s.ApplyProject(t.Context(), store.ApplyProjectInput{Slug: "demo", Name: "Demo"}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithCipher(c).WithSecretSources([]string{"vault"})
+	r := chi.NewRouter()
+	r.Post("/api/v1/projects/{slug}/secrets", h.SetSecret)
+	r.Get("/api/v1/projects/{slug}/secrets", h.ListSecrets)
+
+	rr := postSecret(t, r, "demo", map[string]any{
+		"name":   "GH_TOKEN",
+		"source": " vault ",
+		"ref":    map[string]string{"path": "  secret/ci/gh  ", "key": " token "},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo/secrets", nil)
+	gr := httptest.NewRecorder()
+	r.ServeHTTP(gr, req)
+	var resp struct {
+		Secrets []store.Secret `json:"secrets"`
+	}
+	if err := json.Unmarshal(gr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Secrets) != 1 || resp.Secrets[0].Ref == nil {
+		t.Fatalf("secrets = %+v", resp.Secrets)
+	}
+	if got := resp.Secrets[0]; got.Source != "vault" || got.Ref.Path != "secret/ci/gh" || got.Ref.Key != "token" {
+		t.Fatalf("not trimmed: source=%q ref=%+v", got.Source, got.Ref)
 	}
 }

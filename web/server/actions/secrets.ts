@@ -4,12 +4,14 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { env } from "@/lib/env";
-import { secretNameSchema } from "@/lib/validations";
+import { secretNameSchema, secretPayloadSchema } from "@/lib/validations";
 
+// Project-scoped set carries the slug alongside the secret payload.
+// `slug` is split out before the discriminated-union parse so the
+// union stays scope-agnostic (the global action reuses it verbatim).
 const setSchema = z.object({
   slug: z.string().min(1),
-  name: secretNameSchema,
-  value: z.string().min(1, "value cannot be empty").max(64 * 1024),
+  payload: secretPayloadSchema,
 });
 
 const deleteSchema = z.object({
@@ -21,16 +23,27 @@ export type ActionResult =
   | { ok: true; created?: boolean }
   | { ok: false; error: string };
 
+// requestBody turns a parsed payload into the wire shape the server
+// accepts: { name, value?, source?, ref? }. The DB variant sends the
+// inline value and lets source default server-side; external variants
+// send source + ref and never a value.
+function requestBody(payload: z.infer<typeof secretPayloadSchema>): Record<string, unknown> {
+  if (payload.source === "db") {
+    return { name: payload.name, value: payload.value };
+  }
+  return { name: payload.name, source: payload.source, ref: payload.ref };
+}
+
 export async function setSecret(input: z.infer<typeof setSchema>): Promise<ActionResult> {
   const parsed = setSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
   }
   try {
-    const res = await postJSON(`/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/secrets`, {
-      name: parsed.data.name,
-      value: parsed.data.value,
-    });
+    const res = await postJSON(
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/secrets`,
+      requestBody(parsed.data.payload),
+    );
     revalidatePath(`/projects/${parsed.data.slug}/secrets`);
     return { ok: true, created: res.created ?? false };
   } catch (err) {
@@ -67,27 +80,19 @@ export async function deleteSecret(input: z.infer<typeof deleteSchema>): Promise
   }
 }
 
-const globalSetSchema = z.object({
-  name: secretNameSchema,
-  value: z.string().min(1, "value cannot be empty").max(64 * 1024),
-});
-
 const globalDeleteSchema = z.object({
   name: secretNameSchema,
 });
 
 export async function setGlobalSecret(
-  input: z.infer<typeof globalSetSchema>,
+  input: z.infer<typeof secretPayloadSchema>,
 ): Promise<ActionResult> {
-  const parsed = globalSetSchema.safeParse(input);
+  const parsed = secretPayloadSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
   }
   try {
-    const res = await postJSON(`/api/v1/admin/secrets`, {
-      name: parsed.data.name,
-      value: parsed.data.value,
-    });
+    const res = await postJSON(`/api/v1/admin/secrets`, requestBody(parsed.data));
     revalidatePath(`/admin/secrets`);
     return { ok: true, created: res.created ?? false };
   } catch (err) {

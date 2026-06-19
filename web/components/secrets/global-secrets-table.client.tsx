@@ -16,27 +16,23 @@ import {
 import { RelativeTime } from "@/components/shared/relative-time";
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
 import { DeleteSecretButton } from "@/components/secrets/delete-secret-button.client";
-
-type Secret = {
-  name: string;
-  created_at: string;
-  updated_at: string;
-};
+import { secretSourceSummary } from "@/lib/secrets";
+import type { Secret } from "@/types/api";
 
 type Props = {
   secrets: Secret[];
+  // External backends the server reports enabled, threaded into the
+  // rotate dialog so an operator can repoint a secret's source.
+  configuredSources: string[];
 };
 
-// GlobalSecretsTable wraps the admin list with a client-side
-// filter input. Global secret counts can grow past the "scroll
-// is fine" threshold (easily 50+ in orgs with multiple shared
-// credentials per cloud region), so a substring filter beats
-// hitting Ctrl-F every time.
-//
-// Filter is client-side because the whole list already lands
-// server-side at page render — refiltering is free and gives
-// instant feedback.
-export function GlobalSecretsTable({ secrets }: Props) {
+// GlobalSecretsTable wraps one page of the admin list with a
+// client-side filter input. The list is server-paginated now (the
+// page renders <Pagination> below this table), so the filter is
+// SCOPED TO THE CURRENT PAGE — it narrows the rows already on screen,
+// it doesn't search across pages. The "of N" counter reflects the
+// page, not the absolute total, to keep that distinction honest.
+export function GlobalSecretsTable({ secrets, configuredSources }: Props) {
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(() => {
@@ -56,7 +52,7 @@ export function GlobalSecretsTable({ secrets }: Props) {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Filter by name (${secrets.length} total)`}
+            placeholder={`Filter this page (${secrets.length})`}
             className="pl-8"
           />
         </div>
@@ -75,6 +71,7 @@ export function GlobalSecretsTable({ secrets }: Props) {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Source</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Updated</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -84,6 +81,9 @@ export function GlobalSecretsTable({ secrets }: Props) {
               {filtered.map((s) => (
                 <TableRow key={s.name}>
                   <TableCell className="font-mono">{s.name}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {secretSourceSummary(s)}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">
                     <RelativeTime at={s.created_at} />
                   </TableCell>
@@ -96,6 +96,7 @@ export function GlobalSecretsTable({ secrets }: Props) {
                         scope="global"
                         mode="rotate"
                         name={s.name}
+                        configuredSources={configuredSources}
                         trigger={
                           <Button variant="ghost" size="sm">
                             Rotate

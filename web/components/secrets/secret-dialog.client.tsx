@@ -16,24 +16,66 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { secretNameSchema } from "@/lib/validations";
+import { secretNameSchema, type SecretPayload } from "@/lib/validations";
 import { setGlobalSecret, setSecret } from "@/server/actions/secrets";
+import {
+  SecretSourceFields,
+  gateSources,
+  vaultRequiresKey,
+} from "@/components/secrets/secret-source-fields.client";
+import type { SecretSource } from "@/types/api";
 
 // Discriminated on scope so the caller can't accidentally pass a
 // slug to a global secret or forget the slug on a project one. The
-// shared `mode`/`name`/`trigger` props live in a base type so the
-// two variants stay thin.
+// shared `mode`/`name`/`trigger`/`configuredSources` props live in a
+// base type so the two variants stay thin.
 type SharedProps = {
   mode?: "create" | "rotate";
   name?: string;
   trigger?: ReactElement;
+  // The sources the server reports writable on this deployment (db
+  // present only when a cipher is set, plus each enabled external
+  // backend). The selector is gated to exactly this list. Default
+  // ["db"] keeps the dialog db-only when a caller doesn't pass it
+  // (the common single-node case / standalone tests).
+  configuredSources?: string[];
 };
 
 type Props =
   | (SharedProps & { scope?: "project"; slug: string })
   | (SharedProps & { scope: "global" });
+
+// buildPayload assembles the discriminated-union payload the set
+// actions accept. Returns a string on a pre-flight failure so the
+// error lands next to the form instead of after a server round-trip.
+function buildPayload(
+  source: SecretSource,
+  name: string,
+  value: string,
+  path: string,
+  refKey: string,
+): SecretPayload | string {
+  const nameCheck = secretNameSchema.safeParse(name);
+  if (!nameCheck.success) {
+    return nameCheck.error.issues[0]?.message ?? "invalid name";
+  }
+  if (source === "db") {
+    if (value.length === 0) return "value cannot be empty";
+    return { source: "db", name, value };
+  }
+  if (path.trim().length === 0) return "path is required";
+  const key = refKey.trim();
+  if (vaultRequiresKey(source) && key.length === 0) {
+    return "key is required for Vault";
+  }
+  const ref = key.length > 0 ? { path, key } : { path };
+  if (source === "vault") {
+    // Narrowed above: vault always has a non-empty key here.
+    return { source: "vault", name, ref: { path, key } };
+  }
+  return { source, name, ref };
+}
 
 // SecretDialog handles both creating a new secret (trigger = "New secret"
 // button) and rotating an existing value (trigger = "Rotate" on a row).
@@ -43,10 +85,26 @@ type Props =
 export function SecretDialog(props: Props) {
   const isGlobal = props.scope === "global";
   const slug = isGlobal ? "" : props.slug;
-  const { mode = "create", name = "", trigger } = props;
+  const {
+    mode = "create",
+    name = "",
+    trigger,
+    configuredSources = ["db"],
+  } = props;
+  const gated = gateSources(configuredSources);
+  // Fall back to db only if the server somehow reported nothing writable —
+  // the list endpoint 503s when neither cipher nor a backend is configured,
+  // so in practice `gated` is always non-empty. The default source is the
+  // first offered one, so an external-only deployment opens on Vault, not db.
+  const sources: SecretSource[] = gated.length > 0 ? gated : ["db"];
+  const defaultSource = sources[0] ?? "db";
+
   const [open, setOpen] = useState(false);
   const [formName, setFormName] = useState(name);
+  const [source, setSource] = useState<SecretSource>(defaultSource);
   const [value, setValue] = useState("");
+  const [path, setPath] = useState("");
+  const [refKey, setRefKey] = useState("");
   const [clientError, setClientError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -54,7 +112,10 @@ export function SecretDialog(props: Props) {
 
   function resetAndClose() {
     setFormName(name);
+    setSource(defaultSource);
     setValue("");
+    setPath("");
+    setRefKey("");
     setClientError(null);
     setOpen(false);
   }
@@ -63,22 +124,16 @@ export function SecretDialog(props: Props) {
     e.preventDefault();
     setClientError(null);
 
-    // Re-check the name here so the error lands next to the field instead of
-    // in a toast — better UX than waiting for the server round-trip.
-    const nameCheck = secretNameSchema.safeParse(formName);
-    if (!nameCheck.success) {
-      setClientError(nameCheck.error.issues[0]?.message ?? "invalid name");
-      return;
-    }
-    if (value.length === 0) {
-      setClientError("value cannot be empty");
+    const payload = buildPayload(source, formName, value, path, refKey);
+    if (typeof payload === "string") {
+      setClientError(payload);
       return;
     }
 
     startTransition(async () => {
       const res = isGlobal
-        ? await setGlobalSecret({ name: formName, value })
-        : await setSecret({ slug, name: formName, value });
+        ? await setGlobalSecret(payload)
+        : await setSecret({ slug, payload });
       if (!res.ok) {
         toast.error(`set secret: ${res.error}`);
         return;
@@ -121,8 +176,8 @@ export function SecretDialog(props: Props) {
           </DialogTitle>
           <DialogDescription>
             {rotating
-              ? "Set a new value for this secret. The old value is replaced immediately."
-              : "Values are encrypted at rest (AES-256-GCM) and never echoed back by the API."}
+              ? "Set a new value (or reference) for this secret. The old one is replaced immediately."
+              : "Store a value in-app or reference one from an external backend (Vault, GCP, AWS)."}
           </DialogDescription>
         </DialogHeader>
 
@@ -145,35 +200,17 @@ export function SecretDialog(props: Props) {
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="secret-value">Value</Label>
-            {/*
-              break-all: wraps long single-line values (kubeconfigs,
-              long base64 tokens) so they don't blow the dialog out
-              of the viewport. wrap="soft": explicit so future
-              shadcn updates can't flip it. max-h + overflow-y-auto:
-              very long pastes scroll inside the textarea instead of
-              pushing the footer buttons off-screen. maxLength:
-              matches the server-side cap so the wire round-trip
-              fails the same way locally.
-            */}
-            <Textarea
-              id="secret-value"
-              name="value"
-              autoComplete="off"
-              spellCheck={false}
-              wrap="soft"
-              maxLength={64 * 1024}
-              rows={4}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              className="w-full font-mono text-sm break-all resize-y max-h-[40vh] overflow-y-auto"
-              placeholder="ghp_..."
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Multi-line values (PEM keys, etc.) are OK. Not visible after saving.
-            </p>
-          </div>
+          <SecretSourceFields
+            source={source}
+            sources={sources}
+            onSourceChange={setSource}
+            value={value}
+            onValueChange={setValue}
+            path={path}
+            onPathChange={setPath}
+            refKey={refKey}
+            onRefKeyChange={setRefKey}
+          />
 
           {clientError ? (
             <div

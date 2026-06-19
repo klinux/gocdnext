@@ -140,6 +140,7 @@ type Querier interface {
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	CountGlobalSecrets(ctx context.Context) (int64, error)
 	// Quorum check: how many approved votes (excluding rejects)
 	// has this gate accumulated?
 	CountJobRunApprovals(ctx context.Context, jobRunID pgtype.UUID) (int32, error)
@@ -158,6 +159,7 @@ type Querier interface {
 	// same filter args. Returned as bigint to fit any table; UI only
 	// needs int32 but this avoids cast noise.
 	CountRunsGlobal(ctx context.Context, arg CountRunsGlobalParams) (int64, error)
+	CountSecretsByProject(ctx context.Context, projectID pgtype.UUID) (int64, error)
 	// One aggregate row per job_run covering all statuses — drives
 	// the pill on each job card ("42 passed · 1 failed") without
 	// pulling the full case list. Empty when the job didn't produce
@@ -372,11 +374,8 @@ type Querier interface {
 	// run finishes. Returns ErrNoRows when the run didn't produce a
 	// check (most common path: no App installed, or feature disabled).
 	GetGithubCheckRun(ctx context.Context, runID pgtype.UUID) (GithubCheckRun, error)
-	// Resolver fallback: after GetSecretValuesByProject, names still
-	// missing are looked up as globals. Kept as a separate call so
-	// the resolver can short-circuit when every name was already
-	// covered at project scope.
-	GetGlobalSecretValues(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretValuesRow, error)
+	// Resolver fallback for names still missing at project scope.
+	GetGlobalSecretEntries(ctx context.Context, dollar_1 []string) ([]GetGlobalSecretEntriesRow, error)
 	GetGroup(ctx context.Context, id pgtype.UUID) (Group, error)
 	// Used on approve: gate carries group NAMES (not ids) so renames
 	// propagate cleanly. Lookup translates name → id → members.
@@ -505,9 +504,10 @@ type Querier interface {
 	// has no secret configured yet (the caller then answers 401 —
 	// "no webhook secret registered for this repo").
 	GetScmSourceWebhookSecretByURL(ctx context.Context, url string) (GetScmSourceWebhookSecretByURLRow, error)
-	// Used by the scheduler when a job declares `secrets: [FOO, BAR]`. Returns
-	// the encrypted blobs; the caller decrypts and injects as env vars.
-	GetSecretValuesByProject(ctx context.Context, arg GetSecretValuesByProjectParams) ([]GetSecretValuesByProjectRow, error)
+	// Dispatch path: a job declared `secrets: [FOO, BAR]`. Returns the full
+	// entry (value_enc for db rows, source+ref for external rows); the
+	// CompositeResolver decrypts or fetches per source.
+	GetSecretEntriesByProject(ctx context.Context, arg GetSecretEntriesByProjectParams) ([]GetSecretEntriesByProjectRow, error)
 	GetServiceAccountByID(ctx context.Context, id pgtype.UUID) (ServiceAccount, error)
 	// Counts jobs still working vs already-failed within a stage — the numbers
 	// the caller uses to decide whether to promote the stage. `awaiting_approval`
@@ -758,8 +758,9 @@ type Querier interface {
 	// column if larger deployments observe latency.
 	ListGitMaterials(ctx context.Context) ([]Material, error)
 	// Admin-only listing of every global (unscoped) secret. Same
-	// "names + timestamps, never values" contract as project secrets.
+	// "names + source/ref, never values" contract.
 	ListGlobalSecrets(ctx context.Context) ([]ListGlobalSecretsRow, error)
+	ListGlobalSecretsPaged(ctx context.Context, arg ListGlobalSecretsPagedParams) ([]ListGlobalSecretsPagedRow, error)
 	// Join against users so the UI renders name/email without a
 	// second round-trip. Orders by the user's display name so the
 	// admin UI reads alphabetically.
@@ -943,9 +944,12 @@ type Querier interface {
 	// along because admins who can read this table already hold the
 	// keys; the decrypt step lives in the store layer.
 	ListSCMCredentials(ctx context.Context) ([]ScmCredential, error)
-	// Lists names + timestamps only — values never leave the DB without going
-	// through GetSecretValuesByProject below.
+	// Names + source/ref + timestamps only — values never leave the DB except
+	// via the resolver. Used for the unpaginated inherited-globals panel.
 	ListSecretsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListSecretsByProjectRow, error)
+	// Paginated project listing (admin/project secrets page). ORDER BY name so
+	// offset paging is stable. Companion count in CountSecretsByProject.
+	ListSecretsByProjectPaged(ctx context.Context, arg ListSecretsByProjectPagedParams) ([]ListSecretsByProjectPagedRow, error)
 	// Newest first. Disabled SAs included; the UI dims them so admins
 	// see the full picture without filtering.
 	ListServiceAccounts(ctx context.Context) ([]ServiceAccount, error)
@@ -1385,10 +1389,9 @@ type Querier interface {
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.
 	UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubCheckRunParams) error
-	// Global scope: project_id = NULL, shadowed by a same-name project
-	// secret at resolution time. Targets the partial UNIQUE index
-	// secrets_global_name_idx — Postgres can't infer partial indexes
-	// from ON CONFLICT (name) alone, so we spell out the predicate.
+	// Global scope: project_id = NULL, shadowed by a same-name project secret
+	// at resolution time. Targets the partial UNIQUE index
+	// secrets_global_name_idx (predicate spelled out so Postgres picks it).
 	UpsertGlobalSecret(ctx context.Context, arg UpsertGlobalSecretParams) (UpsertGlobalSecretRow, error)
 	// Create/update a local account. Called from the CLI and the
 	// admin self-service change-password endpoint. external_id is
@@ -1426,14 +1429,11 @@ type Querier interface {
 	// doesn't wipe the stored one. Rotation is explicit — callers
 	// pass the new value to overwrite.
 	UpsertScmSource(ctx context.Context, arg UpsertScmSourceParams) (UpsertScmSourceRow, error)
-	// Upserts a (project_id, name) -> value_enc pair. updated_at always bumps on
-	// update because the ciphertext changes (random nonce) even for identical
-	// plaintext, making a "was this changed" diff unreliable; we bump
-	// unconditionally on write.
-	//
-	// Targets the partial UNIQUE index secrets_project_name_idx (rows
-	// where project_id IS NOT NULL). The global twin lives in
-	// UpsertGlobalSecret below.
+	// Upserts a (project_id, name) entry. A db-source secret carries value_enc;
+	// an external reference carries source + ref_path[/ref_key] and NULL value.
+	// updated_at always bumps on update (ciphertext nonce changes even for an
+	// identical plaintext, so a "was this changed" diff is unreliable).
+	// Targets the partial UNIQUE index secrets_project_name_idx.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
 	// Upsert the service tracking row for a (run_id, name) tuple.
 	// Idempotent: re-issuing the same status is a no-op besides

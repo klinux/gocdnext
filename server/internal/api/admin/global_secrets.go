@@ -5,6 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -15,37 +18,53 @@ import (
 
 const maxGlobalSecretBytes = 64 << 10 // 64 KiB — same cap as project secrets.
 
-// GlobalSecretsHandler owns /api/v1/admin/secrets. Gated on role=admin
-// by the router; the handler itself assumes the caller is authorized.
-//
-// Kept separate from Handler (the read-only admin handler) so the
-// cipher dependency stays scoped: other admin endpoints don't need
-// encryption and shouldn't carry the field around.
+// GlobalSecretsHandler owns /api/v1/admin/secrets. Gated on role=admin by the
+// router. `sources` is the set of external secret backends configured on this
+// server (for the source dropdown + write validation); a db secret needs the
+// cipher, an external reference needs its backend configured.
 type GlobalSecretsHandler struct {
-	store  *store.Store
-	cipher *crypto.Cipher
-	log    *slog.Logger
+	store     *store.Store
+	cipher    *crypto.Cipher
+	sources   []string        // sorted, for the response
+	sourceSet map[string]bool // for validation
+	log       *slog.Logger
 }
 
-func NewGlobalSecretsHandler(s *store.Store, cipher *crypto.Cipher, log *slog.Logger) *GlobalSecretsHandler {
+func NewGlobalSecretsHandler(s *store.Store, cipher *crypto.Cipher, sources []string, log *slog.Logger) *GlobalSecretsHandler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &GlobalSecretsHandler{store: s, cipher: cipher, log: log}
+	set := make(map[string]bool, len(sources))
+	for _, x := range sources {
+		set[x] = true
+	}
+	sorted := append([]string(nil), sources...)
+	sort.Strings(sorted)
+	return &GlobalSecretsHandler{store: s, cipher: cipher, sources: sorted, sourceSet: set, log: log}
+}
+
+type secretRefInput struct {
+	Path string `json:"path"`
+	Key  string `json:"key"`
 }
 
 type setGlobalSecretRequest struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name   string          `json:"name"`
+	Value  string          `json:"value"`
+	Source string          `json:"source"`
+	Ref    *secretRefInput `json:"ref"`
 }
 
 type globalSecretsListResponse struct {
-	Secrets []store.Secret `json:"secrets"`
+	Secrets           []store.Secret `json:"secrets"`
+	Total             int64          `json:"total"`
+	Limit             int32          `json:"limit"`
+	Offset            int32          `json:"offset"`
+	ConfiguredSources []string       `json:"configured_sources"`
 }
 
-// Set handles POST /api/v1/admin/secrets. Creates or overwrites a
-// global secret. Returns 201 Created on insert, 200 on update.
-// 503 when the server has no cipher (GOCDNEXT_SECRET_KEY unset).
+// Set handles POST /api/v1/admin/secrets — create/overwrite a global secret
+// (db value or external reference). 201 on insert, 200 on update.
 func (h *GlobalSecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureConfigured(w) {
 		return
@@ -64,47 +83,75 @@ func (h *GlobalSecretsHandler) Set(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	source, refPath, refKey := normalizeSecretWrite(req.Source, req.Ref)
+	if err := store.ValidateSecretRef(source, refPath, refKey, h.sourceSet); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if source == store.SecretSourceDB && h.cipher == nil {
+		http.Error(w, "secrets disabled: GOCDNEXT_SECRET_KEY must be set for db-stored secrets", http.StatusServiceUnavailable)
+		return
+	}
 
-	created, err := h.store.SetGlobalSecret(r.Context(), h.cipher, req.Name, []byte(req.Value))
+	created, err := h.store.SetGlobalSecret(r.Context(), h.cipher, store.SecretSet{
+		Name:    req.Name,
+		Source:  source,
+		Value:   []byte(req.Value),
+		RefPath: refPath,
+		RefKey:  refKey,
+	})
 	if err != nil {
 		h.log.Error("set global secret", "name", req.Name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	h.log.Info("global secret set", "name", req.Name, "created", created)
+	h.log.Info("global secret set", "name", req.Name, "source", source, "created", created)
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionGlobalSecretSet, "global_secret", req.Name,
-		map[string]any{"name": req.Name, "created": created})
+		map[string]any{"name": req.Name, "source": source, "created": created})
 
 	w.Header().Set("Content-Type", "application/json")
 	if created {
 		w.WriteHeader(http.StatusCreated)
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"name":    req.Name,
-		"created": created,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"name": req.Name, "created": created})
 }
 
-// List handles GET /api/v1/admin/secrets. Returns names + timestamps
-// for every global secret. Values never cross the wire — the runtime
-// resolver is the only reader.
+// List handles GET /api/v1/admin/secrets — paginated, value-free.
 func (h *GlobalSecretsHandler) List(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureConfigured(w) {
 		return
 	}
-	secrets, err := h.store.ListGlobalSecrets(r.Context())
+	limit, offset := parseLimitOffset(r)
+	page, err := h.store.ListGlobalSecretsPaged(r.Context(), limit, offset)
 	if err != nil {
 		h.log.Error("list global secrets", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(globalSecretsListResponse{Secrets: secrets})
+	_ = json.NewEncoder(w).Encode(globalSecretsListResponse{
+		Secrets:           page.Secrets,
+		Total:             page.Total,
+		Limit:             page.Limit,
+		Offset:            page.Offset,
+		ConfiguredSources: h.writableSources(),
+	})
 }
 
-// Delete handles DELETE /api/v1/admin/secrets/{name}. 404 when the
-// name doesn't match any global row.
+// writableSources is the set of sources a write may pick on THIS server: db
+// only when a cipher is configured, plus every enabled external backend. The
+// UI uses it to gate the source selector so it never offers db on an
+// external-only deployment (which the server would 503).
+func (h *GlobalSecretsHandler) writableSources() []string {
+	out := make([]string, 0, len(h.sources)+1)
+	if h.cipher != nil {
+		out = append(out, store.SecretSourceDB)
+	}
+	return append(out, h.sources...)
+}
+
+// Delete handles DELETE /api/v1/admin/secrets/{name}. 404 when no match.
 func (h *GlobalSecretsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureConfigured(w) {
 		return
@@ -129,15 +176,45 @@ func (h *GlobalSecretsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ensureConfigured short-circuits with 503 when the cipher isn't
-// wired. Mirrors the project secrets handler's gate so operators
-// see the same error regardless of scope.
+// ensureConfigured allows the endpoint when the server can store a db secret
+// (cipher set) OR resolve an external one (a backend configured).
 func (h *GlobalSecretsHandler) ensureConfigured(w http.ResponseWriter) bool {
-	if h.cipher == nil {
+	if h.cipher == nil && len(h.sources) == 0 {
 		http.Error(w,
-			"secrets disabled: GOCDNEXT_SECRET_KEY must be set",
+			"secrets disabled: set GOCDNEXT_SECRET_KEY or enable an external backend",
 			http.StatusServiceUnavailable)
 		return false
 	}
 	return true
+}
+
+// normalizeSecretWrite trims source/path/key (a stray copy-paste space would
+// otherwise become a different reference + cache key that's hard to spot),
+// defaults an empty source to db, and flattens the optional ref.
+func normalizeSecretWrite(source string, ref *secretRefInput) (string, string, string) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = store.SecretSourceDB
+	}
+	if ref == nil {
+		return source, "", ""
+	}
+	return source, strings.TrimSpace(ref.Path), strings.TrimSpace(ref.Key)
+}
+
+// parseLimitOffset reads ?limit (default 50, 1..200) + ?offset (>=0), the
+// audit/webhooks pagination convention.
+func parseLimitOffset(r *http.Request) (int32, int32) {
+	limit := int32(50)
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		if v > 200 {
+			v = 200
+		}
+		limit = int32(v)
+	}
+	offset := int32(0)
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v > 0 {
+		offset = int32(v)
+	}
+	return limit, offset
 }

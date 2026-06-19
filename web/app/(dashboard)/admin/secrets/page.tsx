@@ -3,19 +3,31 @@ import { KeyRound, Lock } from "lucide-react";
 
 import { GlobalSecretsTable } from "@/components/secrets/global-secrets-table.client";
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
+import { Pagination } from "@/components/shared/pagination";
 import { listGlobalSecrets } from "@/server/queries/admin";
 
 export const metadata: Metadata = { title: "Global secrets — gocdnext" };
 
 export const dynamic = "force-dynamic";
 
+const PAGE_SIZE = 50;
+
+type SearchParams = Promise<{ offset?: string }>;
+
 // Global secrets are admin-only at the API layer. The /settings
 // shell already gates on role=admin before this page renders, so
 // additional client-side checks would just duplicate the guard.
-export default async function GlobalSecretsPage() {
-  let secrets;
+export default async function GlobalSecretsPage({
+  searchParams,
+}: {
+  searchParams: SearchParams;
+}) {
+  const { offset: offsetParam } = await searchParams;
+  const offset = offsetParam ? Math.max(0, Number.parseInt(offsetParam, 10)) : 0;
+
+  let data;
   try {
-    secrets = await listGlobalSecrets();
+    data = await listGlobalSecrets({ limit: PAGE_SIZE, offset });
   } catch (err) {
     // 503 from the API means GOCDNEXT_SECRET_KEY is unset. Surface
     // that specifically — otherwise the operator would see a
@@ -27,6 +39,8 @@ export default async function GlobalSecretsPage() {
     }
     throw err;
   }
+
+  const { secrets, total, configured_sources } = data;
 
   return (
     <section className="space-y-6">
@@ -41,13 +55,24 @@ export default async function GlobalSecretsPage() {
             takes precedence — useful for overriding a shared default.
           </p>
         </div>
-        <SecretDialog scope="global" />
+        <SecretDialog scope="global" configuredSources={configured_sources} />
       </header>
 
-      {secrets.length === 0 ? (
+      {total === 0 ? (
         <EmptyState />
       ) : (
-        <GlobalSecretsTable secrets={secrets} />
+        <>
+          <GlobalSecretsTable
+            secrets={secrets}
+            configuredSources={configured_sources}
+          />
+          <Pagination
+            offset={offset}
+            total={total}
+            pageSize={PAGE_SIZE}
+            basePath="/admin/secrets"
+          />
+        </>
       )}
     </section>
   );

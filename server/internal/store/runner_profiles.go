@@ -489,12 +489,23 @@ func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto
 	for n := range refs {
 		names = append(names, n)
 	}
-	rows, err := s.q.GetGlobalSecretValues(ctx, names)
+	rows, err := s.q.GetGlobalSecretEntries(ctx, names)
 	if err != nil {
 		return fmt.Errorf("store: fetch globals for profile %q: %w", profileName, err)
 	}
 	resolved := make(map[string]string, len(rows))
+	isExternal := make(map[string]bool)
 	for _, r := range rows {
+		// Profile `{{secret:NAME}}` interpolation is, by design, db-stored
+		// globals only: it expands the value inline into the profile's env at
+		// config time, whereas external references are resolved per-job at
+		// dispatch (the CompositeResolver path). An external global is recorded
+		// here so the fail-closed check below rejects it with a precise message
+		// rather than the misleading "unknown".
+		if r.Source != SecretSourceDB {
+			isExternal[r.Name] = true
+			continue
+		}
 		plain, err := cipher.Decrypt(r.ValueEnc)
 		if err != nil {
 			return fmt.Errorf("store: decrypt global secret %q: %w", r.Name, err)
@@ -504,9 +515,13 @@ func (s *Store) expandProfileSecretTemplates(ctx context.Context, cipher *crypto
 	// Validate all references resolved before mutating anything —
 	// fail closed and atomic, no half-expanded values shipped.
 	for n := range refs {
-		if _, ok := resolved[n]; !ok {
-			return fmt.Errorf("store: profile %q references unknown global secret %q", profileName, n)
+		if _, ok := resolved[n]; ok {
+			continue
 		}
+		if isExternal[n] {
+			return fmt.Errorf("store: profile %q references global secret %q, which is an external reference — profile {{secret:...}} interpolation supports db-stored secrets only", profileName, n)
+		}
+		return fmt.Errorf("store: profile %q references unknown global secret %q", profileName, n)
 	}
 	for k, v := range secrets {
 		secrets[k] = profileSecretTemplate.ReplaceAllStringFunc(v, func(match string) string {

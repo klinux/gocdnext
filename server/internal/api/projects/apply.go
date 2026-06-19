@@ -35,6 +35,12 @@ type Handler struct {
 	artifactStore artifacts.Store
 	pluginCatalog *plugins.Catalog
 
+	// External secret sources configured on this server (#54), for the
+	// project secrets UI dropdown + write validation. secretSourceSet is
+	// the lookup form; secretSources is the sorted slice for the response.
+	secretSources   []string
+	secretSourceSet map[string]bool
+
 	// Cold-archive surface: surfaced to the project-settings UI so
 	// it can render a resolved-state hint without an admin RPC.
 	// hasArtifactBackend doubles as the operational gate — even an

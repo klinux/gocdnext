@@ -13,7 +13,9 @@ import {
 import { RelativeTime } from "@/components/shared/relative-time";
 import { SecretDialog } from "@/components/secrets/secret-dialog.client";
 import { DeleteSecretButton } from "@/components/secrets/delete-secret-button.client";
+import { Pagination } from "@/components/shared/pagination";
 import { Button } from "@/components/ui/button";
+import { secretSourceSummary } from "@/lib/secrets";
 import {
   GocdnextAPIError,
   getProjectDetail,
@@ -21,6 +23,9 @@ import {
 } from "@/server/queries/projects";
 
 type Params = { slug: string };
+type SearchParams = Promise<{ offset?: string }>;
+
+const PAGE_SIZE = 50;
 
 export async function generateMetadata({
   params,
@@ -35,10 +40,14 @@ export const dynamic = "force-dynamic";
 
 export default async function SecretsPage({
   params,
+  searchParams,
 }: {
   params: Promise<Params>;
+  searchParams: SearchParams;
 }) {
   const { slug } = await params;
+  const { offset: offsetParam } = await searchParams;
+  const offset = offsetParam ? Math.max(0, Number.parseInt(offsetParam, 10)) : 0;
 
   // 404 early if the project is missing — avoids the secrets fetch returning
   // a useless 503/404 chain.
@@ -51,7 +60,7 @@ export default async function SecretsPage({
 
   let data;
   try {
-    data = await listSecrets(slug);
+    data = await listSecrets(slug, { limit: PAGE_SIZE, offset });
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 503) {
       return <SubsystemDisabled slug={slug} />;
@@ -59,61 +68,77 @@ export default async function SecretsPage({
     throw err;
   }
   const secrets = data.secrets;
+  const total = data.total;
   const inherited = data.inherited ?? [];
+  const configuredSources = data.configured_sources;
 
   return (
     <section className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">
-          Encrypted at rest and never echoed back. Reference by name from a job&apos;s{" "}
+          Stored in-app or referenced from an external backend, then resolved at
+          runtime. Reference by name from a job&apos;s{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">secrets:</code> list.
         </p>
-        <SecretDialog slug={slug} />
+        <SecretDialog slug={slug} configuredSources={configuredSources} />
       </div>
 
-      {secrets.length === 0 ? (
+      {total === 0 ? (
         <EmptyState slug={slug} />
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Updated</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {secrets.map((s) => (
-                <TableRow key={s.name}>
-                  <TableCell className="font-mono">{s.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    <RelativeTime at={s.created_at} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    <RelativeTime at={s.updated_at} />
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="inline-flex items-center gap-1">
-                      <SecretDialog
-                        slug={slug}
-                        mode="rotate"
-                        name={s.name}
-                        trigger={
-                          <Button variant="ghost" size="sm">
-                            Rotate
-                          </Button>
-                        }
-                      />
-                      <DeleteSecretButton slug={slug} name={s.name} />
-                    </div>
-                  </TableCell>
+        <>
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead>Updated</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {secrets.map((s) => (
+                  <TableRow key={s.name}>
+                    <TableCell className="font-mono">{s.name}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {secretSourceSummary(s)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <RelativeTime at={s.created_at} />
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <RelativeTime at={s.updated_at} />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="inline-flex items-center gap-1">
+                        <SecretDialog
+                          slug={slug}
+                          mode="rotate"
+                          name={s.name}
+                          configuredSources={configuredSources}
+                          trigger={
+                            <Button variant="ghost" size="sm">
+                              Rotate
+                            </Button>
+                          }
+                        />
+                        <DeleteSecretButton slug={slug} name={s.name} />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <Pagination
+            offset={offset}
+            total={total}
+            pageSize={PAGE_SIZE}
+            basePath={`/projects/${slug}/secrets`}
+          />
+        </>
       )}
 
       {inherited.length > 0 ? (
@@ -139,6 +164,7 @@ export default async function SecretsPage({
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  <TableHead>Source</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead>Updated</TableHead>
                   <TableHead className="text-right">Scope</TableHead>
@@ -148,6 +174,9 @@ export default async function SecretsPage({
                 {inherited.map((s) => (
                   <TableRow key={`inh-${s.name}`}>
                     <TableCell className="font-mono">{s.name}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {secretSourceSummary(s)}
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       <RelativeTime at={s.created_at} />
                     </TableCell>

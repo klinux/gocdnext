@@ -264,18 +264,44 @@ export type RunDetail = RunSummary & {
   stages: StageDetail[];
 };
 
+// SecretSource names where a secret's value comes from at runtime.
+// "db" is the encrypted-at-rest value managed in-app; the others are
+// external backends the server resolves on demand (the value never
+// touches our DB). `ref` is present only for external sources.
+export type SecretSource = "db" | "vault" | "gcp" | "aws";
+
+export type SecretRef = {
+  path: string;
+  // key is required for Vault (a path holds a map of keys) and
+  // optional for the others (the path addresses a single value).
+  key?: string;
+};
+
 export type Secret = {
   name: string;
+  source: SecretSource;
+  // Present only for external sources — the address in the backend.
+  ref?: SecretRef;
   created_at: string;
   updated_at: string;
 };
 
 export type SecretsList = {
   secrets: Secret[];
+  // Pagination envelope: the server echoes the absolute total +
+  // the limit/offset it applied so the UI can render pagination
+  // controls without a follow-up count query.
+  total: number;
+  limit: number;
+  offset: number;
   // Globals the project will resolve at runtime because no
   // same-name local secret shadows them. Read-only on the
   // project page — editing lives in /settings/secrets (admin).
   inherited?: Secret[];
+  // External backends the server has enabled. The dialog gates its
+  // source options on ["db", ...configured_sources] so an operator
+  // can't pick a backend the control plane can't resolve.
+  configured_sources: string[];
 };
 
 export type CacheSummary = {
