@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -26,18 +25,20 @@ func (h *Handler) WithCipher(c *crypto.Cipher) *Handler {
 	return h
 }
 
-// WithSecretSources records the external secret backends configured on this
-// server, so the UI can offer them and writes can be validated.
-func (h *Handler) WithSecretSources(sources []string) *Handler {
-	set := make(map[string]bool, len(sources))
-	for _, s := range sources {
-		set[s] = true
-	}
-	sorted := append([]string(nil), sources...)
-	sort.Strings(sorted)
-	h.secretSources = sorted
-	h.secretSourceSet = set
+// WithSecretSources records a live accessor for the external secret backends
+// enabled on this server, so the UI can offer them and writes can be validated
+// (hot-reloaded — the func is called per request, not snapshotted).
+func (h *Handler) WithSecretSources(fn func() []string) *Handler {
+	h.secretSourcesFn = fn
 	return h
+}
+
+// configuredSources returns the enabled external backends (nil-safe).
+func (h *Handler) configuredSources() []string {
+	if h.secretSourcesFn == nil {
+		return nil
+	}
+	return h.secretSourcesFn()
 }
 
 type secretRefInput struct {
@@ -97,7 +98,7 @@ func (h *Handler) SetSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source, refPath, refKey := normalizeProjectSecretWrite(req)
-	if err := store.ValidateSecretRef(source, refPath, refKey, h.secretSourceSet); err != nil {
+	if err := store.ValidateSecretRef(source, refPath, refKey, h.sourceSet()); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -217,13 +218,25 @@ func (h *Handler) ListSecrets(w http.ResponseWriter, r *http.Request) {
 
 // writableSources is the set of sources a write may pick on THIS server, so
 // the UI never offers one the server will reject: db only when a cipher is
-// configured, plus every enabled external backend.
+// configured, plus every enabled external backend (live).
 func (h *Handler) writableSources() []string {
-	out := make([]string, 0, len(h.secretSources)+1)
+	srcs := h.configuredSources()
+	out := make([]string, 0, len(srcs)+1)
 	if h.cipher != nil {
 		out = append(out, store.SecretSourceDB)
 	}
-	return append(out, h.secretSources...)
+	return append(out, srcs...)
+}
+
+// sourceSet is the lookup form of the live external backends, for write
+// validation.
+func (h *Handler) sourceSet() map[string]bool {
+	srcs := h.configuredSources()
+	set := make(map[string]bool, len(srcs))
+	for _, s := range srcs {
+		set[s] = true
+	}
+	return set
 }
 
 // DeleteSecret handles DELETE /api/v1/projects/{slug}/secrets/{name}.
@@ -270,7 +283,7 @@ func (h *Handler) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 // ensureSecretsConfigured allows the endpoint when the server can store a db
 // secret (cipher set) OR resolve an external one (a backend configured).
 func (h *Handler) ensureSecretsConfigured(w http.ResponseWriter) bool {
-	if h.cipher == nil && len(h.secretSources) == 0 {
+	if h.cipher == nil && len(h.configuredSources()) == 0 {
 		http.Error(w, "secrets subsystem not configured (set GOCDNEXT_SECRET_KEY or enable an external backend)", http.StatusServiceUnavailable)
 		return false
 	}

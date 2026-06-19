@@ -211,6 +211,10 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Get("/api/v1/admin/storage", h.Storage)
 	r.Put("/api/v1/admin/storage", h.SetStorage)
 	r.Delete("/api/v1/admin/storage", h.DeleteStorage)
+	r.Get("/api/v1/admin/secret-backends", h.SecretBackends)
+	r.Put("/api/v1/admin/secret-backends/{source}", h.SetSecretBackend)
+	r.Delete("/api/v1/admin/secret-backends/{source}", h.DeleteSecretBackend)
+	r.Post("/api/v1/admin/secret-backends/{source}/test", h.TestSecretBackend)
 	return r
 }
 

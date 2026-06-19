@@ -68,6 +68,11 @@ func TestVaultBackend_KVv2(t *testing.T) {
 		t.Fatalf("name = %q", b.Name())
 	}
 
+	// HealthCheck (Test-connection path) validates token + reachability.
+	if err := b.HealthCheck(ctx); err != nil {
+		t.Fatalf("health check: %v", err)
+	}
+
 	got, err := b.Fetch(ctx, "myapp", "PASSWORD")
 	if err != nil || got != "s3cr3t-pw" {
 		t.Fatalf("fetch PASSWORD = %q, %v", got, err)

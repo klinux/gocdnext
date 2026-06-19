@@ -304,6 +304,38 @@ export type SecretsList = {
   configured_sources: string[];
 };
 
+// SecretBackendSource is the subset of SecretSource that has an
+// admin-configurable backend connection (db is in-app, no backend).
+export type SecretBackendSource = "vault" | "gcp" | "aws";
+
+// SecretBackend mirrors a row from GET /api/v1/admin/secret-backends.
+// `value` carries only NON-secret connection config (addr, region,
+// project, …). Credential VALUES never cross the wire —
+// `credential_keys` is ["configured"] when a credential is stored
+// (render a "•••• stored" badge), else []. `source_origin`
+// distinguishes a saved DB override ("db", editable/deletable) from
+// the env baseline ("env").
+export type SecretBackend = {
+  source: SecretBackendSource;
+  enabled: boolean;
+  value: Record<string, unknown>;
+  credential_keys: string[];
+  source_origin: "db" | "env";
+  updated_at?: string;
+};
+
+export type SecretBackendsList = {
+  // Always three entries (vault, gcp, aws) regardless of config state.
+  backends: SecretBackend[];
+};
+
+// SecretBackendProbeResult is the POST .../test response. Always HTTP
+// 200; `status` carries the outcome and `message` an optional detail.
+export type SecretBackendProbeResult = {
+  status: "ok" | "unauthorized" | "unreachable" | "error";
+  message?: string;
+};
+
 export type CacheSummary = {
   id: string;
   key: string;

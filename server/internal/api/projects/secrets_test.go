@@ -223,7 +223,7 @@ func TestListSecrets_ConfiguredSourcesGatesDB(t *testing.T) {
 			c, _ := crypto.NewCipherFromHex(strings.Repeat("ab", 32))
 			h = h.WithCipher(c)
 		}
-		h = h.WithSecretSources(ext)
+		h = h.WithSecretSources(func() []string { return ext })
 		r := chi.NewRouter()
 		r.Get("/api/v1/projects/{slug}/secrets", h.ListSecrets)
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/demo/secrets", nil)
@@ -265,7 +265,7 @@ func TestSetSecret_TrimsSourceAndRef(t *testing.T) {
 		t.Fatalf("seed project: %v", err)
 	}
 	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil))).
-		WithCipher(c).WithSecretSources([]string{"vault"})
+		WithCipher(c).WithSecretSources(func() []string { return []string{"vault"} })
 	r := chi.NewRouter()
 	r.Post("/api/v1/projects/{slug}/secrets", h.SetSecret)
 	r.Get("/api/v1/projects/{slug}/secrets", h.ListSecrets)

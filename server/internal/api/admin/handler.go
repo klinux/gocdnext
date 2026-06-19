@@ -59,6 +59,23 @@ type ArtifactsEnvSnapshot struct {
 	GCSCredsPresent       bool
 }
 
+// SecretBackendEnv is the env-derived config for one external secret backend,
+// surfaced by /admin/secret-backends as the "source: env" snapshot when no DB
+// override exists. Value holds only non-secret fields; HasCreds flags that env
+// supplied a credential (vault secret_id/token) without exposing it.
+type SecretBackendEnv struct {
+	Enabled  bool
+	Value    map[string]any
+	HasCreds bool
+}
+
+// SecretBackendsEnvSnapshot is the env baseline for all three backends.
+type SecretBackendsEnvSnapshot struct {
+	Vault SecretBackendEnv
+	GCP   SecretBackendEnv
+	AWS   SecretBackendEnv
+}
+
 // Handler owns the /api/v1/admin/* routes.
 type Handler struct {
 	store   *store.Store
@@ -70,6 +87,15 @@ type Handler struct {
 	// /admin/storage handler can surface it as the "source: env"
 	// fallback. Wired post-construction via SetArtifactsEnv.
 	artifacts ArtifactsEnvSnapshot
+	// secretBackendsEnv is the env baseline for the external secret
+	// backends, surfaced by /admin/secret-backends as the "source: env"
+	// snapshot. Wired post-construction via SetSecretBackendsEnv.
+	secretBackendsEnv SecretBackendsEnvSnapshot
+	// secretBackendInvalidator refreshes the local registry the moment this
+	// replica writes a backend config — so convergence doesn't depend on this
+	// replica's own LISTEN being connected (NOTIFY still fans out to the
+	// others). Nil-safe. Wired via SetSecretBackendInvalidator.
+	secretBackendInvalidator func(source string)
 	// cipher is wired post-construction via SetCipher so the
 	// existing test harness (which builds Handler with NewHandler
 	// and never touches secrets) keeps compiling. Endpoints that
@@ -105,6 +131,20 @@ func NewHandler(s *store.Store, sweeper *retention.Sweeper, vcsRegistry *vcs.Reg
 // during boot after parsing config.
 func (h *Handler) SetArtifactsEnv(s ArtifactsEnvSnapshot) {
 	h.artifacts = s
+}
+
+// SetSecretBackendsEnv records the env baseline for the external secret
+// backends so /admin/secret-backends can surface "source: env" when no DB
+// override exists. Call once during boot after parsing config.
+func (h *Handler) SetSecretBackendsEnv(s SecretBackendsEnvSnapshot) {
+	h.secretBackendsEnv = s
+}
+
+// SetSecretBackendInvalidator wires a callback that refreshes the local secret
+// backend registry immediately after a write on this replica (other replicas
+// converge via the commit-gated NOTIFY). Call once during boot.
+func (h *Handler) SetSecretBackendInvalidator(fn func(source string)) {
+	h.secretBackendInvalidator = fn
 }
 
 // SetCipher attaches the AEAD used to encrypt runner profile

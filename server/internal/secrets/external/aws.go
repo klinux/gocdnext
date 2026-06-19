@@ -10,6 +10,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 // AWSConfig is the connection config. Credentials come from the default
@@ -25,6 +26,7 @@ type AWSConfig struct {
 // that field from a JSON secret (the common "one secret, many fields" shape).
 type AWSBackend struct {
 	client *secretsmanager.Client
+	sts    *sts.Client
 }
 
 // NewAWSBackend builds the client (fail-fast at boot).
@@ -44,13 +46,29 @@ func NewAWSBackend(ctx context.Context, cfg AWSConfig) (*AWSBackend, error) {
 		return nil, errors.New("aws: no region resolved — set GOCDNEXT_SECRET_AWS_REGION (or AWS_REGION)")
 	}
 	var smOpts []func(*secretsmanager.Options)
+	var stsOpts []func(*sts.Options)
 	if cfg.Endpoint != "" {
 		smOpts = append(smOpts, func(o *secretsmanager.Options) { o.BaseEndpoint = aws.String(cfg.Endpoint) })
+		stsOpts = append(stsOpts, func(o *sts.Options) { o.BaseEndpoint = aws.String(cfg.Endpoint) })
 	}
-	return &AWSBackend{client: secretsmanager.NewFromConfig(awsCfg, smOpts...)}, nil
+	return &AWSBackend{
+		client: secretsmanager.NewFromConfig(awsCfg, smOpts...),
+		sts:    sts.NewFromConfig(awsCfg, stsOpts...),
+	}, nil
 }
 
 func (b *AWSBackend) Name() string { return "aws" }
+
+// HealthCheck validates the credential chain + region via STS GetCallerIdentity
+// — which requires NO IAM permission, so a least-privilege policy that grants
+// only GetSecretValue on the job's secrets still tests "ok" (no false
+// "unauthorized" from a denied ListSecrets).
+func (b *AWSBackend) HealthCheck(ctx context.Context) error {
+	if _, err := b.sts.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}); err != nil {
+		return fmt.Errorf("aws: health check: %w", err)
+	}
+	return nil
+}
 
 // Fetch gets the secret by id (path). Empty key → whole string; non-empty
 // key → JSON field. A non-JSON secret with a key requested fails loud (so a

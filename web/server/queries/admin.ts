@@ -15,6 +15,8 @@ import type {
   OIDCKeysList,
   RetentionSnapshot,
   SCMCredentialsList,
+  SecretBackend,
+  SecretBackendsList,
   SecretsList,
   UsersList,
   VCSIntegrationsAdmin,
@@ -131,6 +133,18 @@ export type StorageConfig = {
 
 export async function getStorageConfig(): Promise<StorageConfig> {
   return readJSON<StorageConfig>("/api/v1/admin/storage");
+}
+
+// listSecretBackends fetches the three admin-configurable external
+// secret backends (vault, gcp, aws). Credential VALUES never cross the
+// wire — `credential_keys` is a presence marker only. The endpoint
+// always returns all three entries regardless of config state, so the
+// editor renders one panel per backend without a follow-up call.
+export async function listSecretBackends(): Promise<SecretBackend[]> {
+  const list = await readJSON<SecretBackendsList>(
+    "/api/v1/admin/secret-backends",
+  );
+  return list.backends;
 }
 
 export async function listAdminUsers(): Promise<UsersList> {

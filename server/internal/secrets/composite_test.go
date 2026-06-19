@@ -27,7 +27,8 @@ type countingBackend struct {
 	delay time.Duration
 }
 
-func (b *countingBackend) Name() string { return b.name }
+func (b *countingBackend) Name() string                        { return b.name }
+func (b *countingBackend) HealthCheck(_ context.Context) error { return nil }
 func (b *countingBackend) Fetch(ctx context.Context, _, _ string) (string, error) {
 	b.calls.Add(1)
 	if b.delay > 0 {
@@ -48,7 +49,8 @@ type fakeBackend struct {
 	err   error
 }
 
-func (f *fakeBackend) Name() string { return f.name }
+func (f *fakeBackend) Name() string                        { return f.name }
+func (f *fakeBackend) HealthCheck(_ context.Context) error { return f.err }
 func (f *fakeBackend) Fetch(_ context.Context, path, key string) (string, error) {
 	f.calls++
 	if f.err != nil {
