@@ -8,6 +8,38 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.46.0 — 2026-06-19
+
+### Added
+
+- **Manage external secret backends from the UI** (*Settings → Secret
+  backends*) — Vault, GCP Secret Manager, and AWS Secrets Manager can now be
+  enabled/configured in the admin UI instead of only via environment
+  variables. Config is stored encrypted in the database (Vault `secret_id`/
+  `token` sealed with the server cipher, never returned on read) and **takes
+  effect immediately, no restart** — including rotating a Vault AppRole
+  `secret_id`. Each backend has a **Test connection** button, and the
+  per-secret source selector lights up the moment a backend is enabled. This
+  removes the need to wire the backend env vars into the Helm chart.
+  - **Hot-reload**: a `SecretBackendRegistry` holds the live config (env
+    baseline overlaid by the database), caches each backend client by a
+    config **fingerprint** (rotating a credential rebuilds the client and
+    releases the old one), and converges across replicas via Postgres
+    `LISTEN/NOTIFY` (a short TTL is the backstop). The fingerprint is folded
+    into the resolver's value-cache key, so a config change can't serve a
+    value cached from the old backend.
+  - **Test connection** validates reachability + credentials: Vault
+    `auth/token/lookup-self`, AWS STS `GetCallerIdentity` (needs no Secrets
+    Manager permission, so a least-privilege policy doesn't false-negative),
+    GCP secret list. The credential never appears in the result.
+  - **Env stays the baseline**: env-configured backends still work (and still
+    fail-fast at boot); a UI entry overlays env per backend, and deleting it
+    falls back to env. Saving a database override requires (re-)entering the
+    credential — an env credential can't be copied into the database — and the
+    persisted credential is validated against the selected auth method
+    (switching Vault auth without supplying the matching credential is
+    rejected; switching to `kubernetes` clears the now-unused credential).
+
 ## v0.45.0 — 2026-06-19
 
 ### Added
