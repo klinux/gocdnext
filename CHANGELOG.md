@@ -8,6 +8,52 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.45.0 — 2026-06-19
+
+### Added
+
+- **External secret backends: HashiCorp Vault, GCP Secret Manager, AWS
+  Secrets Manager** (#54) — a project (or global) secret can now be a
+  **reference** to an external secret manager instead of a value stored
+  in gocdnext. A secret gains a `source` (`db` | `vault` | `gcp` | `aws`);
+  `db` keeps the encrypted value (unchanged), an external source stores
+  only a `{path, key}` pointer and **no value** — the value lives in the
+  backend and is fetched at dispatch by a composite resolver. Pipelines
+  are unchanged: `secrets: [NAME]` resolves the same way regardless of
+  source, and a resolved external value is masked in logs exactly like a
+  db-stored one. db-stored and externally-referenced secrets coexist in
+  the same project; a project secret still shadows a global of the same
+  name.
+  - **Vault** — AppRole (primary), kubernetes (pod ServiceAccount, keyless),
+    or token auth; KV v1/v2 auto-detected; re-auth + retry once on 403.
+  - **GCP Secret Manager** — Application Default Credentials / workload
+    identity; `path` is a bare secret id or a full resource name, with
+    `_PROJECT` enforced as a tenancy boundary (a cross-project reference
+    is rejected).
+  - **AWS Secrets Manager** — default credential chain / IRSA; whole-secret
+    or JSON-field extraction; region required at boot; a binary secret is
+    a loud error, not a silent miss.
+  - **Security/availability**: fail-closed (an unconfigured-backend
+    reference, a db row without a cipher, or any decrypt/fetch error fails
+    loud citing the secret **name**, never a value); a genuinely-absent
+    secret is treated as "not set" (the existing missing-secret diff).
+    Lookups are cached briefly (`GOCDNEXT_SECRET_CACHE_TTL`, default 60s,
+    `0` disables), concurrent cold-cache misses are collapsed via
+    singleflight, and each lookup is bounded by a per-fetch timeout
+    (`GOCDNEXT_SECRET_FETCH_TIMEOUT`, default 10s) so a hung backend can't
+    stall dispatch. Invalid duration env vars fail fast at boot.
+- **Pagination on the secrets pages** — *Settings → Secrets* and a project's
+  *Secrets* tab now paginate (`?limit&offset`, default 50, cap 200), the
+  audit/webhooks convention. The inherited-globals panel filters against
+  **all** of a project's local names, not just the current page.
+
+### Changed
+
+- The secrets API list responses now report `configured_sources` — the
+  sources a write may pick on this deployment (db only when a cipher is
+  configured, plus each enabled external backend) — and the UI source
+  selector is gated to exactly that set.
+
 ## v0.44.0 — 2026-06-18
 
 ### Added
