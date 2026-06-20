@@ -4,13 +4,17 @@ import type { Metadata } from "next";
 import { DocRenderer } from "@/components/docs/doc-renderer";
 import { readDoc } from "@/server/queries/docs";
 
-type Params = { slug: string };
+type Params = { slug: string[] };
 
-// force-dynamic so the doc reads land at request time. Static
-// prerendering would run at build time when docs/ isn't yet at
-// the runtime path (the standalone container mounts docs/ as a
-// sibling of /app — only visible at request time).
+// force-dynamic so the doc reads land at request time. Static prerendering
+// would run at build time when the content dir isn't yet at the runtime path
+// (the standalone container mounts docs/ as a sibling of /app — only visible
+// at request time).
 export const dynamic = "force-dynamic";
+
+function clean(slug: string[]): string[] {
+  return (slug ?? []).filter((s) => s.length > 0);
+}
 
 export async function generateMetadata({
   params,
@@ -18,7 +22,7 @@ export async function generateMetadata({
   params: Promise<Params>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const doc = await readDoc(slug);
+  const doc = await readDoc(clean(slug));
   if (!doc) return { title: "Not found — gocdnext docs" };
   return { title: `${doc.title} — gocdnext docs` };
 }
@@ -29,7 +33,7 @@ export default async function DocPage({
   params: Promise<Params>;
 }) {
   const { slug } = await params;
-  const doc = await readDoc(slug);
+  const doc = await readDoc(clean(slug));
   if (!doc) notFound();
 
   return <DocRenderer markdown={doc.markdown} />;

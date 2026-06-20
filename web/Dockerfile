@@ -24,12 +24,12 @@ ENV HOSTNAME=0.0.0.0
 RUN addgroup -S -g 1001 nextjs && adduser -S -u 1001 -G nextjs nextjs
 COPY --from=build --chown=nextjs:nextjs /src/.next/standalone ./
 COPY --from=build --chown=nextjs:nextjs /src/.next/static ./.next/static
-# Ship the repo's root-level markdown docs alongside the standalone
-# server so the in-app /docs page reads them at runtime. listDocs()
-# resolves `<cwd>/../docs`, and cwd is /app — so the markdowns land
-# at /docs (sibling to /app), matching the dev layout where cwd is
-# /repo/web and parent has /repo/docs.
-COPY --chown=nextjs:nextjs docs/*.md /docs/
+# Ship the docs site's markdown (same content the public Starlight site uses)
+# alongside the standalone server so the in-app /docs page reads it at runtime.
+# listDocs() resolves `<cwd>/../docs/src/content/docs`, and cwd is /app — so the
+# content lands at /docs/src/content/docs (sibling to /app), matching dev where
+# cwd is /repo/web and parent has /repo/docs/src/content/docs.
+COPY --chown=nextjs:nextjs docs/src/content/docs /docs/src/content/docs
 USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]

@@ -113,12 +113,15 @@ export function BackendFields({ source, draft, setDraft, credConfigured }: Props
               }))
             }
             className={cn(
-              "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm",
-              "outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+              // bg-background (a theme token), not bg-transparent: a native
+              // select with a transparent background renders default-white in
+              // dark mode. Mirrors the cluster-form / secret dialog selects.
+              "h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             )}
           >
             {VAULT_AUTHS.map((a) => (
-              <option key={a.value} value={a.value}>
+              <option key={a.value} value={a.value} className="bg-background text-foreground">
                 {a.label}
               </option>
             ))}

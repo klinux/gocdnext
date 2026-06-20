@@ -119,8 +119,8 @@ during development — key for exercising the `auto_register_webhook`
     port in VS Code). The post-create already sets
     `GOCDNEXT_PUBLIC_BASE` to the workspace URL.
 
-See [docs/cloud-dev.md](docs/cloud-dev.md) for the full workflow,
-port map, cost budgets, and troubleshooting.
+See the [Local dev guide](https://klinux.github.io/gocdnext/docs/install/local-dev/)
+for the full workflow.
 
 ## Quick start (dev)
 
@@ -153,8 +153,8 @@ GOCDNEXT_SERVER_ADDR=localhost:8154 GOCDNEXT_AGENT_TOKEN=dev-token ./bin/gocdnex
 ## Pipeline spec
 
 Pipelines live in a **`.gocdnext/` folder** at the repo root. One file per
-pipeline, multiple pipelines per repo. See [docs/pipeline-spec.md](docs/pipeline-spec.md)
-for the full reference.
+pipeline, multiple pipelines per repo. See the [YAML reference](https://klinux.github.io/gocdnext/docs/pipelines/yaml-reference/)
+for every field.
 
 ```
 your-repo/
@@ -228,7 +228,7 @@ plus `vX.Y.Z` / `X.Y` / `X` on tag releases.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for the design.
+See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts/architecture/) for the design.
 
 ![Architecture](docs/public/imgs/architecture.png)
 
