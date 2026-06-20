@@ -8,7 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
-## v0.46.0 — 2026-06-19
+## v0.46.1 — 2026-06-20
+
+### Fixed
+
+- **Secret backends form: dark-mode select.** The Vault "Auth method"
+  dropdown used a transparent background, which a native `<select>` renders
+  default-white in dark mode (text invisible). Now uses the theme token
+  (`bg-background`), matching the cluster/secret-dialog selects.
+
+### Changed
+
+- **In-app `/docs` now serves the maintained docs site content.** The
+  in-product docs page previously rendered a separate, stale set of top-level
+  `docs/*.md` design notes (last meaningfully updated months ago, missing most
+  shipped features). It now reads the same Markdown as the public docs site
+  (`docs/src/content/docs/**`) — a single source of truth that can't drift —
+  grouped by section, with frontmatter/asides/internal-links normalised for the
+  in-app renderer. The seven orphaned legacy design notes were removed (their
+  public-facing content is covered, more completely, by the docs site; the
+  internal design/roadmap notes remain in git history).
 
 ### Added
 
