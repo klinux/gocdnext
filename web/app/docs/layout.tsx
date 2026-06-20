@@ -2,21 +2,22 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { BookOpen } from "lucide-react";
 
-import { listDocs } from "@/server/queries/docs";
+import { docSections, listDocs } from "@/server/queries/docs";
 import { Logo, Wordmark } from "@/components/brand/logo";
 import { DocsNav } from "@/components/docs/docs-nav.client";
 
 // Docs live outside the dashboard on purpose — they're public
-// reading material (architecture, pipeline spec, design system,
-// etc.) that a drive-by visitor or a fresh hire should be able
-// to browse without signing in. The layout deliberately doesn't
-// pull session state; auth wiring stays in (dashboard).
+// reading material (concepts, pipeline spec, install, reference)
+// that a drive-by visitor or a fresh hire should be able to browse
+// without signing in. Content is the same markdown as the public
+// docs site (docs/src/content/docs), so the in-app docs can't drift.
+// The layout deliberately doesn't pull session state.
 export default async function DocsLayout({
   children,
 }: {
   children: ReactNode;
 }) {
-  const docs = await listDocs();
+  const sections = docSections(await listDocs());
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-6 backdrop-blur">
@@ -41,7 +42,7 @@ export default async function DocsLayout({
               <BookOpen className="size-3.5" aria-hidden />
               Contents
             </h2>
-            <DocsNav docs={docs} />
+            <DocsNav sections={sections} />
           </nav>
         </aside>
 
