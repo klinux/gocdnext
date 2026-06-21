@@ -3,11 +3,18 @@ import type { Metadata } from "next";
 
 import { ProjectPollSettings } from "@/components/projects/project-poll-settings.client";
 import { ProjectLogArchiveSettings } from "@/components/projects/project-log-archive-settings.client";
+import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
 import {
   GocdnextAPIError,
   getProjectDetail,
   getProjectLogArchive,
 } from "@/server/queries/projects";
+import {
+  getProjectFrameworks,
+  listComplianceFrameworks,
+  type ComplianceFramework,
+} from "@/server/queries/admin";
+import { resolveAuthState } from "@/server/queries/auth";
 
 type Params = { slug: string };
 
@@ -47,6 +54,31 @@ export default async function ProjectSettingsPage({
     archive = null;
   }
 
+  // Compliance framework assignment is admin-only (the API routes are
+  // RoleAdmin). Resolve the viewer's role and, when admin, load the framework
+  // catalog + this project's current set. Failures degrade to hiding the card.
+  const auth = await resolveAuthState();
+  // auth "disabled" = single-user/dev mode where the server's admin middleware
+  // lets every request through — so the assignment card must show too, matching
+  // the backend (RequireMinRole is a no-op when auth is disabled).
+  const isAdmin =
+    auth.mode === "disabled" ||
+    (auth.mode === "authenticated" && auth.user.role === "admin");
+  let allFrameworks: ComplianceFramework[] = [];
+  let assignedIDs: string[] = [];
+  if (isAdmin) {
+    try {
+      const [all, assigned] = await Promise.all([
+        listComplianceFrameworks(),
+        getProjectFrameworks(slug),
+      ]);
+      allFrameworks = all;
+      assignedIDs = assigned.map((f) => f.id);
+    } catch {
+      allFrameworks = [];
+    }
+  }
+
   return (
     <section className="space-y-6">
       <div className="space-y-1">
@@ -69,6 +101,14 @@ export default async function ProjectSettingsPage({
           initialEnabled={archive.enabled}
           globalPolicy={archive.global_policy ?? "auto"}
           hasArtifactBackend={archive.has_artifact_backend}
+        />
+      ) : null}
+
+      {isAdmin ? (
+        <ProjectComplianceCard
+          slug={slug}
+          frameworks={allFrameworks}
+          assignedIDs={assignedIDs}
         />
       ) : null}
     </section>
