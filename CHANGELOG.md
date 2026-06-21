@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.47.0 — 2026-06-20
+
+### Changed
+
+- **All dropdowns now use the shadcn Select component.** Every screen that
+  had a native `<select>` (secrets source, secret-backend auth method,
+  toleration operator/effect, user role + role filter, new-user role, group
+  add-member, notification trigger, project SCM provider, auth-provider kind,
+  cluster auth type — 13 in total) was migrated to the shadcn `Select` built
+  on `@base-ui/react`. This makes them theme-aware (no more white-on-white in
+  dark mode), keyboard-accessible, and visually consistent with the rest of
+  the UI. The standalone dark-mode fix from v0.46.1 is now covered by the
+  shared component.
+
+### Added
+
+- **`components/ui/select.tsx`** — the shadcn Select primitive, plus a shared
+  test helper (`test/select.ts`) that drives it via `@testing-library/user-event`.
+
+### Fixed
+
+- **Select popup alignment.** The base-ui overlay (selected item lands on top
+  of the trigger) is aligned by matching the item and trigger horizontal
+  padding, so the popup no longer opens offset from the field.
+
 ## v0.46.1 — 2026-06-20
 
 ### Fixed
