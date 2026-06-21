@@ -25,6 +25,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -56,6 +63,9 @@ type FormState = {
   github_api_base: string;
   enabled: boolean;
 };
+
+// base-ui's Select.Value renders the raw value unless `items` maps it.
+const KIND_LABELS: Record<string, string> = { oidc: "oidc", github: "github" };
 
 const EMPTY: FormState = {
   name: "",
@@ -340,16 +350,23 @@ function ProviderDialog({
               />
             </Field>
             <Field label="Kind">
-              <select
+              <Select
+                items={KIND_LABELS}
                 value={form.kind}
-                onChange={(e) =>
-                  setForm({ ...form, kind: e.target.value as FormState["kind"] })
-                }
-                className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                onValueChange={(v) => {
+                  if (typeof v === "string") {
+                    setForm({ ...form, kind: v as FormState["kind"] });
+                  }
+                }}
               >
-                <option value="oidc">oidc</option>
-                <option value="github">github</option>
-              </select>
+                <SelectTrigger aria-label="Kind" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="oidc">oidc</SelectItem>
+                  <SelectItem value="github">github</SelectItem>
+                </SelectContent>
+              </Select>
             </Field>
           </div>
 

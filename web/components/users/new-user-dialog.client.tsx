@@ -17,9 +17,22 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { createLocalUser } from "@/server/actions/users";
 
 type Role = "admin" | "maintainer" | "viewer";
+// base-ui's Select.Value renders the raw value unless `items` maps it.
+const ROLE_LABELS: Record<string, string> = {
+  viewer: "viewer",
+  maintainer: "maintainer",
+  admin: "admin",
+};
 
 export function NewUserDialog() {
   const router = useRouter();
@@ -106,17 +119,27 @@ export function NewUserDialog() {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="new-user-role">Role</Label>
-            <select
-              id="new-user-role"
+            <Select
+              items={ROLE_LABELS}
               value={role}
-              onChange={(e) => setRole(e.target.value as Role)}
               disabled={pending}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              onValueChange={(v) => {
+                if (typeof v === "string") setRole(v as Role);
+              }}
             >
-              <option value="viewer">viewer</option>
-              <option value="maintainer">maintainer</option>
-              <option value="admin">admin</option>
-            </select>
+              <SelectTrigger
+                id="new-user-role"
+                aria-label="Role"
+                className="w-full"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="viewer">viewer</SelectItem>
+                <SelectItem value="maintainer">maintainer</SelectItem>
+                <SelectItem value="admin">admin</SelectItem>
+              </SelectContent>
+            </Select>
             <p className="text-xs text-muted-foreground">
               admin ≥ maintainer ≥ viewer. Promote later from the table.
             </p>

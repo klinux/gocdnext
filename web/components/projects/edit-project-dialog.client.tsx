@@ -16,9 +16,24 @@ import {
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { createProject } from "@/server/actions/projects";
 import type { ProjectSCMInfo, ProjectSummary } from "@/types/api";
+
+// SCM providers for the repository-binding fieldset. Labels equal
+// values; the map drives the base-ui Select trigger (which renders the
+// raw value otherwise).
+const SCM_PROVIDERS = ["github", "gitlab", "bitbucket", "manual"] as const;
+const SCM_PROVIDER_LABELS: Record<string, string> = Object.fromEntries(
+  SCM_PROVIDERS.map((p) => [p, p]),
+);
 
 type Props = {
   project: ProjectSummary;
@@ -177,18 +192,26 @@ export function EditProjectDialog({ project, scmSource }: Props) {
               <div className="mt-3 space-y-3">
                 <div className="grid grid-cols-3 gap-3">
                   <Field label="Provider">
-                    <select
+                    <Select
+                      items={SCM_PROVIDER_LABELS}
                       value={provider}
-                      onChange={(e) =>
-                        setProvider(e.target.value as ProjectSCMInfo["provider"])
-                      }
-                      className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                      onValueChange={(v) => {
+                        if (typeof v === "string") {
+                          setProvider(v as ProjectSCMInfo["provider"]);
+                        }
+                      }}
                     >
-                      <option value="github">github</option>
-                      <option value="gitlab">gitlab</option>
-                      <option value="bitbucket">bitbucket</option>
-                      <option value="manual">manual</option>
-                    </select>
+                      <SelectTrigger aria-label="Provider" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SCM_PROVIDERS.map((p) => (
+                          <SelectItem key={p} value={p}>
+                            {p}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </Field>
                   <Field label="Default branch" className="col-span-2">
                     <Input

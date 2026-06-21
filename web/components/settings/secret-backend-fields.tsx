@@ -1,7 +1,13 @@
 import type React from "react";
 
-import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { SecretBackendSource } from "@/types/api";
 
 import { Field } from "./storage-form-fields";
@@ -22,6 +28,12 @@ const VAULT_AUTHS: { value: BackendDraft["auth"]; label: string }[] = [
   { value: "kubernetes", label: "Kubernetes" },
   { value: "token", label: "Token" },
 ];
+
+// Label lookup for the Select trigger — base-ui renders the raw value
+// unless `items` maps it to the human label.
+const VAULT_AUTH_LABELS: Record<string, string> = Object.fromEntries(
+  VAULT_AUTHS.map((a) => [a.value, a.label]),
+);
 
 // credentialHint reflects whether a Vault credential is already stored.
 function credentialHint(configured: boolean): string {
@@ -102,30 +114,30 @@ export function BackendFields({ source, draft, setDraft, credConfigured }: Props
           />
         </Field>
         <Field label="Auth method" htmlFor={id("auth")}>
-          <select
-            id={id("auth")}
-            aria-label="Auth method"
+          <Select
+            items={VAULT_AUTH_LABELS}
             value={draft.auth}
-            onChange={(e) =>
-              setDraft((d) => ({
-                ...d,
-                auth: e.target.value as BackendDraft["auth"],
-              }))
-            }
-            className={cn(
-              // bg-background (a theme token), not bg-transparent: a native
-              // select with a transparent background renders default-white in
-              // dark mode. Mirrors the cluster-form / secret dialog selects.
-              "h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            )}
+            onValueChange={(v) => {
+              if (typeof v === "string") {
+                setDraft((d) => ({ ...d, auth: v as BackendDraft["auth"] }));
+              }
+            }}
           >
-            {VAULT_AUTHS.map((a) => (
-              <option key={a.value} value={a.value} className="bg-background text-foreground">
-                {a.label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              id={id("auth")}
+              aria-label="Auth method"
+              className="w-full"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {VAULT_AUTHS.map((a) => (
+                <SelectItem key={a.value} value={a.value}>
+                  {a.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
       </div>
 

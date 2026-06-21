@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SecretBackend, SecretBackendProbeResult } from "@/types/api";
 import { SecretBackendsForm } from "./secret-backends-form.client";
+import { selectOption } from "@/test/select";
 
 // Server actions mocked at module level — the form dispatches them on
 // save/test/delete; a unit test must never fire a real fetch. Each mock
@@ -84,6 +86,25 @@ describe("SecretBackendsForm rendering", () => {
     // approle is the default → role_id + secret_id credential visible.
     expect(p.getByLabelText(/Role ID/)).toBeTruthy();
     expect(p.getByLabelText(/AppRole secret_id/i)).toBeTruthy();
+  });
+
+  it("swaps the credential fields when the Auth method select changes", async () => {
+    const user = userEvent.setup();
+    render(<SecretBackendsForm initial={threeBackends} />);
+    const p = panel(/HashiCorp Vault/);
+    fireEvent.click(p.getByLabelText(/Enable HashiCorp Vault/));
+
+    // approle default → role_id present, no Vault role / Token.
+    expect(p.getByLabelText(/Role ID/)).toBeTruthy();
+    expect(p.queryByLabelText(/Vault role/)).toBeNull();
+
+    await selectOption(user, p.getByLabelText(/Auth method/), "Kubernetes");
+    expect(p.getByLabelText(/Vault role/)).toBeTruthy();
+    expect(p.queryByLabelText(/Role ID/)).toBeNull();
+
+    await selectOption(user, p.getByLabelText(/Auth method/), "Token");
+    expect(p.getByLabelText(/^Token/)).toBeTruthy();
+    expect(p.queryByLabelText(/Vault role/)).toBeNull();
   });
 
   it("shows a 'from env' badge for env origin and no delete button", () => {

@@ -1,8 +1,14 @@
 "use client";
 
-import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { SecretSource } from "@/types/api";
 
@@ -85,27 +91,30 @@ export function SecretSourceFields({
     <>
       <div className="space-y-2">
         <Label htmlFor="secret-source">Source</Label>
-        <select
-          id="secret-source"
-          aria-label="Source"
+        <Select
+          items={SOURCE_LABELS}
           value={source}
           disabled={disabledSource}
-          onChange={(e) => {
-            const next = e.target.value;
-            if (isSecretSource(next)) onSourceChange(next);
+          onValueChange={(next) => {
+            // base-ui passes the value directly (null when cleared, which
+            // this non-clearable select never emits). Narrow before
+            // forwarding so an unexpected string can't slip through.
+            if (typeof next === "string" && isSecretSource(next)) {
+              onSourceChange(next);
+            }
           }}
-          className={cn(
-            "h-9 w-full rounded-md border border-input bg-background px-2 text-sm",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            disabledSource && "cursor-not-allowed opacity-60",
-          )}
         >
-          {sources.map((s) => (
-            <option key={s} value={s}>
-              {SOURCE_LABELS[s]}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id="secret-source" aria-label="Source" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {sources.map((s) => (
+              <SelectItem key={s} value={s}>
+                {SOURCE_LABELS[s]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <p className="text-[11px] text-muted-foreground">
           {external
             ? "The value stays in the external backend — gocdnext stores only the reference and resolves it at runtime."

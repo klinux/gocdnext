@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SecretDialog } from "./secret-dialog.client";
+import { openSelect, selectOption } from "@/test/select";
 
 // Server actions mocked at module level — the dialog dispatches them
 // on submit; a unit test must never fire a real fetch. Each mock takes
@@ -31,7 +33,8 @@ beforeEach(() => {
 });
 
 // openDialog clicks the trigger and returns once the source selector
-// (always present) is on screen.
+// (always present) is on screen. The selector is now a base-ui Select
+// trigger (a button), so findByLabelText resolves the trigger button.
 async function openDialog() {
   fireEvent.click(screen.getByRole("button", { name: /new secret/i }));
   return screen.findByLabelText("Source");
@@ -50,10 +53,11 @@ describe("SecretDialog source fields", () => {
   });
 
   it("swaps to path/key for an external source and hides the value field", async () => {
+    const user = userEvent.setup();
     render(<SecretDialog slug="demo" configuredSources={["db", "vault"]} />);
     const select = await openDialog();
 
-    fireEvent.change(select, { target: { value: "vault" } });
+    await selectOption(user, select, "HashiCorp Vault");
 
     expect(screen.queryByLabelText("Value")).toBeNull();
     expect(screen.getByLabelText(/^Path/)).toBeTruthy();
@@ -62,32 +66,41 @@ describe("SecretDialog source fields", () => {
   });
 
   it("only offers backends the server reports as configured", async () => {
+    const user = userEvent.setup();
     render(<SecretDialog slug="demo" configuredSources={["db", "gcp"]} />);
-    const select = (await openDialog()) as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
+    const listbox = await openSelect(user, await openDialog());
+    const names = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent);
     // The server reported db + gcp; vault/aws are not configured.
-    expect(values).toContain("db");
-    expect(values).toContain("gcp");
-    expect(values).not.toContain("vault");
-    expect(values).not.toContain("aws");
+    expect(names).toContain("Stored value");
+    expect(names).toContain("GCP Secret Manager");
+    expect(names).not.toContain("HashiCorp Vault");
+    expect(names).not.toContain("AWS Secrets Manager");
   });
 
   it("omits db and defaults to the first backend on an external-only server", async () => {
     // No cipher → the server omits db from configured_sources; the
     // selector must not offer it (a db write would 503), and the dialog
     // opens on the first external backend, not db.
+    const user = userEvent.setup();
     render(<SecretDialog slug="demo" configuredSources={["vault"]} />);
-    const select = (await openDialog()) as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["vault"]);
+    const select = await openDialog();
+    // Defaults to vault (the only backend) → external fields shown, no value.
     expect(screen.queryByLabelText("Value")).toBeNull();
     expect(screen.getByLabelText(/^Path/)).toBeTruthy();
+    const listbox = await openSelect(user, select);
+    const names = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(names).toEqual(["HashiCorp Vault"]);
   });
 
   it("blocks submit when Vault has no key (no action dispatched)", async () => {
+    const user = userEvent.setup();
     render(<SecretDialog slug="demo" configuredSources={["db", "vault"]} />);
     const select = await openDialog();
-    fireEvent.change(select, { target: { value: "vault" } });
+    await selectOption(user, select, "HashiCorp Vault");
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "GH_TOKEN" },
@@ -106,9 +119,10 @@ describe("SecretDialog source fields", () => {
 
 describe("SecretDialog dispatch", () => {
   it("forwards source + ref on a project external secret", async () => {
+    const user = userEvent.setup();
     render(<SecretDialog slug="demo" configuredSources={["db", "vault"]} />);
     const select = await openDialog();
-    fireEvent.change(select, { target: { value: "vault" } });
+    await selectOption(user, select, "HashiCorp Vault");
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "GH_TOKEN" },
@@ -156,7 +170,8 @@ describe("SecretDialog dispatch", () => {
   it("routes a global secret to setGlobalSecret with no slug", async () => {
     render(<SecretDialog scope="global" configuredSources={["aws"]} />);
     const select = await openDialog();
-    fireEvent.change(select, { target: { value: "aws" } });
+    // aws is the only backend → already the default; no need to reselect.
+    void select;
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "SHARED" },

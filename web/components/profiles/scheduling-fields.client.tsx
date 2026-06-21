@@ -4,8 +4,30 @@ import { Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { AdminToleration } from "@/server/queries/admin";
+
+// Label maps so the Select trigger renders the human label — base-ui's
+// Select.Value shows the raw value otherwise. The empty-string key on
+// EFFECT_LABELS is a real, selectable value ("any effect"); base-ui
+// treats only `null` as "no selection", never "".
+const OPERATOR_LABELS: Record<string, string> = {
+  Equal: "Equal",
+  Exists: "Exists",
+};
+const EFFECT_LABELS: Record<string, string> = {
+  "": "any effect",
+  NoSchedule: "NoSchedule",
+  PreferNoSchedule: "PreferNoSchedule",
+  NoExecute: "NoExecute",
+};
 
 // NodeSelectorRow + TolerationRow are the editor-local shapes:
 // rows carry an optional empty pair the user is editing into. The
@@ -165,17 +187,24 @@ function TolerationEditorRow({
           className="font-mono text-xs sm:col-span-4"
           aria-label="Toleration key"
         />
-        <select
+        <Select
+          items={OPERATOR_LABELS}
           value={row.operator}
-          onChange={(e) =>
-            onChange({ operator: e.target.value as "Equal" | "Exists" })
-          }
-          className="rounded-md border border-input bg-background px-2 text-xs sm:col-span-2"
-          aria-label="Toleration operator"
+          onValueChange={(v) => {
+            if (v === "Equal" || v === "Exists") onChange({ operator: v });
+          }}
         >
-          <option value="Equal">Equal</option>
-          <option value="Exists">Exists</option>
-        </select>
+          <SelectTrigger
+            aria-label="Toleration operator"
+            className="w-full text-xs sm:col-span-2"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Equal">Equal</SelectItem>
+            <SelectItem value="Exists">Exists</SelectItem>
+          </SelectContent>
+        </Select>
         <Input
           value={row.value ?? ""}
           placeholder={isExists ? "(must be empty)" : "value"}
@@ -187,19 +216,26 @@ function TolerationEditorRow({
           )}
           aria-label="Toleration value"
         />
-        <select
+        <Select
+          items={EFFECT_LABELS}
           value={row.effect ?? ""}
-          onChange={(e) =>
-            onChange({ effect: e.target.value as TolerationRow["effect"] })
+          onValueChange={(v) =>
+            onChange({ effect: (v ?? "") as TolerationRow["effect"] })
           }
-          className="rounded-md border border-input bg-background px-2 text-xs sm:col-span-2"
-          aria-label="Toleration effect"
         >
-          <option value="">any effect</option>
-          <option value="NoSchedule">NoSchedule</option>
-          <option value="PreferNoSchedule">PreferNoSchedule</option>
-          <option value="NoExecute">NoExecute</option>
-        </select>
+          <SelectTrigger
+            aria-label="Toleration effect"
+            className="w-full text-xs sm:col-span-2"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">any effect</SelectItem>
+            <SelectItem value="NoSchedule">NoSchedule</SelectItem>
+            <SelectItem value="PreferNoSchedule">PreferNoSchedule</SelectItem>
+            <SelectItem value="NoExecute">NoExecute</SelectItem>
+          </SelectContent>
+        </Select>
         <Button
           type="button"
           size="icon"

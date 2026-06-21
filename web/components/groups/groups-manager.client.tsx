@@ -17,6 +17,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -452,24 +459,46 @@ export function GroupsManager({ initial, users, membersByGroup }: Props) {
               Add member
             </Label>
             <div className="flex items-center gap-2">
-              <select
-                id="add-member"
-                className="flex h-9 flex-1 rounded-md border bg-background px-2 text-sm"
+              <Select
+                items={[
+                  {
+                    value: "",
+                    label:
+                      availableUsers.length === 0
+                        ? "All users already in this group"
+                        : "Pick a user…",
+                  },
+                  ...availableUsers.map((u) => ({
+                    value: u.id,
+                    label: `${u.name || u.email} (${u.email})`,
+                  })),
+                ]}
                 value={addingUser}
-                onChange={(e) => setAddingUser(e.target.value)}
                 disabled={pending || availableUsers.length === 0}
+                onValueChange={(v) => {
+                  if (typeof v === "string") setAddingUser(v);
+                }}
               >
-                <option value="">
-                  {availableUsers.length === 0
-                    ? "All users already in this group"
-                    : "Pick a user…"}
-                </option>
-                {availableUsers.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name || u.email} ({u.email})
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  id="add-member"
+                  aria-label="Add member"
+                  className="flex-1"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">
+                    {availableUsers.length === 0
+                      ? "All users already in this group"
+                      : "Pick a user…"}
+                  </SelectItem>
+                  {availableUsers.map((u) => (
+                    <SelectItem key={u.id} value={u.id}>
+                      {u.name || u.email} ({u.email})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
                 onClick={addMember}
                 disabled={pending || !addingUser}
