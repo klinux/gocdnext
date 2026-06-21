@@ -54,10 +54,12 @@ func (q *Queries) ListPipelinesByProject(ctx context.Context, projectID pgtype.U
 }
 
 const upsertPipeline = `-- name: UpsertPipeline :one
-INSERT INTO pipelines (project_id, name, definition, config_repo, config_path)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO pipelines (project_id, name, definition, config_repo, config_path, definition_raw, system_managed)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (project_id, name) DO UPDATE SET
     definition = EXCLUDED.definition,
+    definition_raw = EXCLUDED.definition_raw,
+    system_managed = EXCLUDED.system_managed,
     definition_version = CASE
         WHEN pipelines.definition = EXCLUDED.definition THEN pipelines.definition_version
         ELSE pipelines.definition_version + 1
@@ -75,11 +77,13 @@ RETURNING id, project_id, name, definition_version, config_path, created_at, upd
 `
 
 type UpsertPipelineParams struct {
-	ProjectID  pgtype.UUID
-	Name       string
-	Definition []byte
-	ConfigRepo *string
-	ConfigPath string
+	ProjectID     pgtype.UUID
+	Name          string
+	Definition    []byte
+	ConfigRepo    *string
+	ConfigPath    string
+	DefinitionRaw []byte
+	SystemManaged bool
 }
 
 type UpsertPipelineRow struct {
@@ -93,6 +97,9 @@ type UpsertPipelineRow struct {
 	Created           bool
 }
 
+// definition is the EFFECTIVE (post-compliance-merge) snapshot everything
+// reads; definition_raw is the parsed repo YAML kept for policy recomputation.
+// system_managed marks the server-owned synthetic compliance pipeline.
 func (q *Queries) UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error) {
 	row := q.db.QueryRow(ctx, upsertPipeline,
 		arg.ProjectID,
@@ -100,6 +107,8 @@ func (q *Queries) UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) 
 		arg.Definition,
 		arg.ConfigRepo,
 		arg.ConfigPath,
+		arg.DefinitionRaw,
+		arg.SystemManaged,
 	)
 	var i UpsertPipelineRow
 	err := row.Scan(
