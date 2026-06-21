@@ -17,6 +17,7 @@ import {
   Package,
   Server,
   Settings,
+  ShieldCheck,
   Users,
   UsersRound,
 } from "lucide-react";
@@ -82,6 +83,7 @@ const adminNav: NavItem[] = [
   { label: "Groups", href: "/admin/groups", icon: UsersRound },
   { label: "Profiles", href: "/admin/profiles", icon: Cpu },
   { label: "Clusters", href: "/admin/clusters", icon: Cloud },
+  { label: "Compliance", href: "/admin/compliance", icon: ShieldCheck },
   { label: "Audit", href: "/admin/audit", icon: ClipboardList },
   { label: "Secrets", href: "/admin/secrets", icon: KeyRound },
   { label: "Service accounts", href: "/admin/service-accounts", icon: Bot },

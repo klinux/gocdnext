@@ -10,6 +10,14 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Compliance pipelines — admin UI** (*Admin → Compliance*). Manage compliance
+  **frameworks** and **policies** from the web: a policies tab (YAML editor, mode
+  inject/override, priority, applies-to-all, framework targeting, stage
+  positioning, enable/disable) and a frameworks tab (with a delete guard that
+  surfaces "in use" conflicts). Per-project framework assignment lives on the
+  project **Settings** page (admin-only). Built on shadcn/Base UI (adds a `Switch`
+  component). Phase 2 of the compliance feature.
+
 - **Compliance pipelines (backend + enforcement)** — GitLab-style, framework-scoped
   mandatory pipeline policies. Admins define **compliance frameworks** (labels) and
   assign them to projects, plus **compliance policies** (authored in the normal
