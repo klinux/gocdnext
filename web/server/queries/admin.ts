@@ -299,3 +299,60 @@ export async function listAuditEvents(
   const suffix = q.toString() ? `?${q.toString()}` : "";
   return readJSON<AuditEventsList>(`/api/v1/admin/audit${suffix}`);
 }
+
+// --- Compliance (frameworks + policies) -----------------------------------
+// Types mirror the admin REST DTOs (server/internal/api/admin/compliance.go).
+// Co-located with the queries, same as the other admin read surfaces.
+
+export type ComplianceFramework = {
+  id: string;
+  name: string;
+  description: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CompliancePolicy = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  mode: "inject" | "override";
+  priority: number;
+  applies_to_all: boolean;
+  position_before: string;
+  position_after: string;
+  // framework_ids + config_yaml are populated by GET /{id}; the list endpoint
+  // returns them empty (metadata only).
+  framework_ids: string[];
+  config_yaml: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listComplianceFrameworks(): Promise<ComplianceFramework[]> {
+  return readJSON<ComplianceFramework[]>("/api/v1/admin/compliance/frameworks");
+}
+
+// listCompliancePolicies returns metadata only (framework_ids/config_yaml empty);
+// fetch the full policy with getCompliancePolicy for editing.
+export async function listCompliancePolicies(): Promise<CompliancePolicy[]> {
+  return readJSON<CompliancePolicy[]>("/api/v1/admin/compliance/policies");
+}
+
+export async function getCompliancePolicy(id: string): Promise<CompliancePolicy> {
+  return readJSON<CompliancePolicy>(
+    `/api/v1/admin/compliance/policies/${encodeURIComponent(id)}`,
+  );
+}
+
+// getProjectFrameworks lists the frameworks assigned to a project (by slug).
+export async function getProjectFrameworks(
+  slug: string,
+): Promise<ComplianceFramework[]> {
+  return readJSON<ComplianceFramework[]>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/frameworks`,
+  );
+}
