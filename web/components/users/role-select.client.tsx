@@ -3,11 +3,25 @@
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
-import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { setUserRole } from "@/server/actions/users";
 
 type Role = "admin" | "maintainer" | "viewer";
 const ROLES: Role[] = ["admin", "maintainer", "viewer"];
+// base-ui's Select.Value renders the raw value unless `items` maps it;
+// role labels happen to equal their values, but the map keeps the
+// trigger label-driven instead of value-driven.
+const ROLE_LABELS: Record<string, string> = {
+  admin: "admin",
+  maintainer: "maintainer",
+  viewer: "viewer",
+};
 
 type Props = {
   userID: string;
@@ -19,10 +33,9 @@ type Props = {
   self?: boolean;
 };
 
-// Minimal native <select> styled like shadcn. Kept simple because
-// three fixed options don't justify the full shadcn Select UX
-// (search, virtualisation, etc.). Optimistic update: we flip the
-// value locally, fire the action, revert + toast on failure.
+// shadcn Select (base-ui) for the three fixed roles. Optimistic
+// update: we flip the value locally, fire the action, revert + toast
+// on failure.
 export function RoleSelect({ userID, email, currentRole, self }: Props) {
   const [value, setValue] = useState<string>(currentRole);
   const [pending, startTransition] = useTransition();
@@ -43,22 +56,24 @@ export function RoleSelect({ userID, email, currentRole, self }: Props) {
   }
 
   return (
-    <select
+    <Select
+      items={ROLE_LABELS}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
       disabled={self || pending}
-      aria-label={`Role for ${email}`}
-      className={cn(
-        "h-8 rounded-md border border-input bg-background px-2 text-sm",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        "disabled:cursor-not-allowed disabled:opacity-60",
-      )}
+      onValueChange={(v) => {
+        if (typeof v === "string") onChange(v);
+      }}
     >
-      {ROLES.map((r) => (
-        <option key={r} value={r}>
-          {r}
-        </option>
-      ))}
-    </select>
+      <SelectTrigger aria-label={`Role for ${email}`} className="w-32">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {ROLES.map((r) => (
+          <SelectItem key={r} value={r}>
+            {r}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

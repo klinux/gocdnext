@@ -1,8 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ClustersManager } from "./clusters-manager.client";
 import { CREDENTIAL_PRESERVE_SENTINEL } from "@/lib/clusters";
+import { selectOption } from "@/test/select";
 import type { AdminCluster } from "@/server/queries/admin";
 
 // Server actions are mocked at module level — the manager dispatches
@@ -86,11 +88,12 @@ describe("ClustersManager", () => {
     expect(screen.getByText(/No clusters registered yet/i)).toBeTruthy();
   });
 
-  it("auth_type select toggles which credential fields render", () => {
+  it("auth_type select toggles which credential fields render", async () => {
+    const user = userEvent.setup();
     render(<ClustersManager initial={[]} projects={projects} />);
     fireEvent.click(screen.getByRole("button", { name: /new cluster/i }));
 
-    const authSelect = screen.getByLabelText("Auth type") as HTMLSelectElement;
+    const authSelect = screen.getByLabelText("Auth type");
 
     // Default is kubeconfig → a single kubeconfig textarea, no api server.
     expect(screen.getByLabelText("Kubeconfig")).toBeTruthy();
@@ -100,7 +103,7 @@ describe("ClustersManager", () => {
     // token → api server + CA cert + bearer token, no kubeconfig. The
     // "API server" label carries a "*" on create (required), so match
     // by regex rather than the exact string.
-    fireEvent.change(authSelect, { target: { value: "token" } });
+    await selectOption(user, authSelect, "token");
     expect(screen.getByLabelText(/API server/)).toBeTruthy();
     // CA certificate is required (carries a "*") → match by regex.
     expect(screen.getByLabelText(/CA certificate/)).toBeTruthy();
@@ -108,7 +111,7 @@ describe("ClustersManager", () => {
     expect(screen.queryByLabelText("Kubeconfig")).toBeNull();
 
     // in_cluster → no credential fields, an explanatory note instead.
-    fireEvent.change(authSelect, { target: { value: "in_cluster" } });
+    await selectOption(user, authSelect, "in-cluster");
     expect(screen.queryByLabelText("Kubeconfig")).toBeNull();
     expect(screen.queryByLabelText(/API server/)).toBeNull();
     expect(screen.getByText(/in-cluster ServiceAccount/i)).toBeTruthy();
@@ -153,9 +156,7 @@ describe("ClustersManager", () => {
     render(<ClustersManager initial={[]} projects={projects} />);
     fireEvent.click(screen.getByRole("button", { name: /new cluster/i }));
 
-    fireEvent.change(screen.getByLabelText("Auth type"), {
-      target: { value: "kubeconfig" },
-    });
+    // kubeconfig is the default auth type → no need to select it.
     fireEvent.change(screen.getByLabelText(/^Name/i), {
       target: { value: "new-cluster" },
     });

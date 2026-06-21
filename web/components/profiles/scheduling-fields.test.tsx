@@ -1,11 +1,70 @@
+import { useState } from "react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect } from "vitest";
 
 import {
   collectNodeSelector,
   collectTolerations,
+  SchedulingFields,
   type NodeSelectorRow,
   type TolerationRow,
 } from "./scheduling-fields.client";
+import { selectOption } from "@/test/select";
+
+// Stateful harness — SchedulingFields is fully controlled, so the test
+// owns the rows and lets the component drive them through setRows.
+function Harness({ initial }: { initial: TolerationRow[] }) {
+  const [tolerations, setTolerations] = useState<TolerationRow[]>(initial);
+  const [nodeSelector, setNodeSelector] = useState<NodeSelectorRow[]>([]);
+  return (
+    <SchedulingFields
+      nodeSelector={nodeSelector}
+      setNodeSelector={setNodeSelector}
+      tolerations={tolerations}
+      setTolerations={setTolerations}
+    />
+  );
+}
+
+describe("TolerationEditorRow selects", () => {
+  it("operator → Exists disables and clears the value field", async () => {
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initial={[{ key: "spot", operator: "Equal", value: "true", effect: "" }]}
+      />,
+    );
+
+    const value = screen.getByLabelText("Toleration value") as HTMLInputElement;
+    expect(value.value).toBe("true");
+    expect(value.disabled).toBe(false);
+
+    await selectOption(user, screen.getByLabelText("Toleration operator"), "Exists");
+
+    // Cross-field invariant: Exists forces an empty value and the input
+    // is disabled (kubelet rejects a value with operator=Exists).
+    expect(value.disabled).toBe(true);
+    expect(value.value).toBe("");
+  });
+
+  it("effect → NoExecute enables the toleration_seconds field", async () => {
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initial={[{ key: "spot", operator: "Exists", value: "", effect: "" }]}
+      />,
+    );
+
+    const seconds = screen.getByLabelText(
+      /Toleration seconds/,
+    ) as HTMLInputElement;
+    expect(seconds.disabled).toBe(true);
+
+    await selectOption(user, screen.getByLabelText("Toleration effect"), "NoExecute");
+    expect(seconds.disabled).toBe(false);
+  });
+});
 
 describe("collectNodeSelector", () => {
   it("drops empty-key rows and trims keys", () => {

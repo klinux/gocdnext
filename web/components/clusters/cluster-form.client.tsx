@@ -6,6 +6,13 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { clusterAuthTypes, type ClusterAuthType } from "@/lib/clusters";
 import type { AdminCluster } from "@/server/queries/admin";
@@ -145,24 +152,30 @@ export function ClusterForm({
         htmlFor="cluster-auth-type"
         hint="kubeconfig: full kubeconfig · token: API server + CA + bearer token · in-cluster: agent ServiceAccount"
       >
-        <select
-          id="cluster-auth-type"
+        <Select
+          items={AUTH_LABELS}
           value={form.auth_type}
-          onChange={(e) =>
-            setForm({ ...form, auth_type: e.target.value as ClusterAuthType })
-          }
-          aria-label="Auth type"
-          className={cn(
-            "h-9 rounded-md border border-input bg-background px-2 text-sm",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          )}
+          onValueChange={(v) => {
+            if (typeof v === "string") {
+              setForm({ ...form, auth_type: v as ClusterAuthType });
+            }
+          }}
         >
-          {clusterAuthTypes.map((t) => (
-            <option key={t} value={t}>
-              {AUTH_LABELS[t]}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            id="cluster-auth-type"
+            aria-label="Auth type"
+            className="w-full"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {clusterAuthTypes.map((t) => (
+              <SelectItem key={t} value={t}>
+                {AUTH_LABELS[t]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </Field>
 
       {form.auth_type === "kubeconfig" ? (

@@ -5,6 +5,13 @@ import { Search } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -15,6 +22,15 @@ import {
 import { RelativeTime } from "@/components/shared/relative-time";
 import { RoleSelect } from "@/components/users/role-select.client";
 import type { AdminUser } from "@/types/api";
+
+// Label map for the role filter — base-ui's Select.Value renders the
+// raw value otherwise ("all" instead of "All roles").
+const ROLE_FILTER_LABELS: Record<string, string> = {
+  all: "All roles",
+  admin: "admin",
+  maintainer: "maintainer",
+  viewer: "viewer",
+};
 
 type Props = {
   users: AdminUser[];
@@ -65,17 +81,23 @@ export function UsersTable({ users, currentID, action }: Props) {
             className="pl-8"
           />
         </div>
-        <select
+        <Select
+          items={ROLE_FILTER_LABELS}
           value={roleFilter}
-          onChange={(e) => setRoleFilter(e.target.value)}
-          className="h-9 rounded-md border bg-background px-2 text-sm"
-          aria-label="Filter by role"
+          onValueChange={(v) => {
+            if (typeof v === "string") setRoleFilter(v);
+          }}
         >
-          <option value="all">All roles</option>
-          <option value="admin">admin</option>
-          <option value="maintainer">maintainer</option>
-          <option value="viewer">viewer</option>
-        </select>
+          <SelectTrigger aria-label="Filter by role" className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All roles</SelectItem>
+            <SelectItem value="admin">admin</SelectItem>
+            <SelectItem value="maintainer">maintainer</SelectItem>
+            <SelectItem value="viewer">viewer</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
           {filtered.length} of {users.length}
         </span>

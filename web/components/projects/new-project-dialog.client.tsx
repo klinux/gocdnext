@@ -10,6 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -25,6 +32,14 @@ import { createProject } from "@/server/actions/projects";
 import { WebhookSecretDialog } from "@/components/projects/webhook-secret-dialog.client";
 
 type Mode = "repo" | "template" | "empty";
+
+// SCM providers offered by the connect-repo flow. Labels equal values;
+// the map drives the base-ui Select trigger (which renders the raw
+// value otherwise).
+const SCM_PROVIDERS = ["github", "gitlab", "bitbucket", "manual"] as const;
+const SCM_PROVIDER_LABELS: Record<string, string> = Object.fromEntries(
+  SCM_PROVIDERS.map((p) => [p, p]),
+);
 
 // slugify produces the kebab-case form of a free-text project
 // name. Strips accents + non-word chars, collapses whitespace,
@@ -314,18 +329,26 @@ export function NewProjectDialog() {
                 </p>
                 <div className="grid grid-cols-3 gap-3">
                   <Field label="Provider">
-                    <select
+                    <Select
+                      items={SCM_PROVIDER_LABELS}
                       value={scmProvider}
-                      onChange={(e) =>
-                        setScmProvider(e.target.value as typeof scmProvider)
-                      }
-                      className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                      onValueChange={(v) => {
+                        if (typeof v === "string") {
+                          setScmProvider(v as typeof scmProvider);
+                        }
+                      }}
                     >
-                      <option value="github">github</option>
-                      <option value="gitlab">gitlab</option>
-                      <option value="bitbucket">bitbucket</option>
-                      <option value="manual">manual</option>
-                    </select>
+                      <SelectTrigger aria-label="Provider" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SCM_PROVIDERS.map((p) => (
+                          <SelectItem key={p} value={p}>
+                            {p}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </Field>
                   <Field label="Default branch" className="col-span-2">
                     <Input

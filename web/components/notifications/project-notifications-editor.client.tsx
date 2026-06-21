@@ -6,6 +6,13 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -34,6 +41,12 @@ const TRIGGERS: ProjectNotification["on"][] = [
   "always",
   "canceled",
 ];
+
+// Label map so the Select trigger renders the trigger name — base-ui's
+// Select.Value shows the raw value otherwise. Labels equal values here.
+const TRIGGER_LABELS: Record<string, string> = Object.fromEntries(
+  TRIGGERS.map((t) => [t, t]),
+);
 
 // ProjectNotificationsEditor renders the project-level list as a
 // stack of cards (one per entry) plus add/remove buttons. Save
@@ -172,24 +185,26 @@ function EntryCard({
           <Label htmlFor={`on-${idx}`} className="text-xs">
             On
           </Label>
-          {/* Native <select> keeps this screen dependency-free
-              (no shadcn Select component installed here); the
-              closed set of 4 triggers doesn't need search/combo
-              UX. */}
-          <select
-            id={`on-${idx}`}
+          <Select
+            items={TRIGGER_LABELS}
             value={entry.on}
-            onChange={(ev) =>
-              onChange({ on: ev.target.value as DraftEntry["on"] })
-            }
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            onValueChange={(v) => {
+              if (typeof v === "string") {
+                onChange({ on: v as DraftEntry["on"] });
+              }
+            }}
           >
-            {TRIGGERS.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger id={`on-${idx}`} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TRIGGERS.map((t) => (
+                <SelectItem key={t} value={t}>
+                  {t}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor={`uses-${idx}`} className="text-xs">
