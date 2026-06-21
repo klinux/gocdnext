@@ -55,8 +55,8 @@ func seedTerminalJob(t *testing.T, pool *pgxpool.Pool, s *store.Store, finishedA
 		`INSERT INTO projects (id, slug, name) VALUES ($1, $2, $3)`,
 		projectID, slug, "test")
 	mustExec(t, pool, ctx,
-		`INSERT INTO pipelines (id, project_id, name, definition)
-		 VALUES ($1, $2, 'p', '{}'::jsonb)`,
+		`INSERT INTO pipelines (id, project_id, name, definition, definition_raw)
+		 VALUES ($1, $2, 'p', '{}'::jsonb, '{}'::jsonb)`,
 		pipelineID, projectID)
 	mustExec(t, pool, ctx,
 		`INSERT INTO runs (id, pipeline_id, counter, status, cause, revisions)

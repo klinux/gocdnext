@@ -86,7 +86,7 @@ func TestStore_FindMaterialsByFingerprint_FanOut(t *testing.T) {
 	for _, name := range []string{"ci-core", "ci-web", "security"} {
 		var pipelineID uuid.UUID
 		if err := pool.QueryRow(ctx,
-			`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, $2, $3) RETURNING id`,
+			`INSERT INTO pipelines (project_id, name, definition, definition_raw) VALUES ($1, $2, $3, $3) RETURNING id`,
 			projectID, name, []byte(`{}`),
 		).Scan(&pipelineID); err != nil {
 			t.Fatalf("seed pipeline %s: %v", name, err)
@@ -215,7 +215,7 @@ func seedMaterial(t *testing.T, pool *pgxpool.Pool, fingerprint string) uuid.UUI
 
 	var pipelineID uuid.UUID
 	err = pool.QueryRow(ctx,
-		`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO pipelines (project_id, name, definition, definition_raw) VALUES ($1, $2, $3, $3) RETURNING id`,
 		projectID, "test-pipeline", []byte(`{}`),
 	).Scan(&pipelineID)
 	if err != nil {

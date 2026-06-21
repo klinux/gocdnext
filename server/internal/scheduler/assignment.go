@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/compliance"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -74,6 +76,13 @@ func BuildAssignment(
 	// `${{ NAME }}` refs against the same pool variables+secrets
 	// land in. Pre-fix, settings shipped to the agent verbatim and
 	// the literal `${{ DOCKER_USERNAME }}` reached `docker login`.
+	// Compliance jobs (reserved `_compliance_` prefix, injected by a policy)
+	// run ISOLATED from repo-controlled context: a project's pipeline-level
+	// variables and services must not leak into an enforced compliance job, or
+	// a developer could influence the mandatory step from their own YAML. Only
+	// operator profile env + the policy's own job variables apply.
+	isCompliance := strings.HasPrefix(job.Name, compliance.ReservedPrefix)
+
 	env := map[string]string{}
 	// Profile env first — operator-level defaults that pipeline/job
 	// vars can override below. Profile secrets are pre-decrypted by
@@ -82,8 +91,10 @@ func BuildAssignment(
 	for k, v := range profile.Env {
 		env[k] = v
 	}
-	for k, v := range def.Variables {
-		env[k] = v
+	if !isCompliance {
+		for k, v := range def.Variables {
+			env[k] = v
+		}
 	}
 	for k, v := range jobDef.Variables {
 		env[k] = v
@@ -368,7 +379,7 @@ func BuildAssignment(
 	// same as omission — so engines that don't support services
 	// keep their current fast path.
 	var services []*gocdnextv1.ServiceSpec
-	if len(def.Services) > 0 {
+	if len(def.Services) > 0 && !isCompliance {
 		services = make([]*gocdnextv1.ServiceSpec, 0, len(def.Services))
 		for _, s := range def.Services {
 			services = append(services, &gocdnextv1.ServiceSpec{

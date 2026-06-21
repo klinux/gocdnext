@@ -215,6 +215,17 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Put("/api/v1/admin/secret-backends/{source}", h.SetSecretBackend)
 	r.Delete("/api/v1/admin/secret-backends/{source}", h.DeleteSecretBackend)
 	r.Post("/api/v1/admin/secret-backends/{source}/test", h.TestSecretBackend)
+	r.Get("/api/v1/admin/compliance/frameworks", h.ComplianceFrameworks)
+	r.Post("/api/v1/admin/compliance/frameworks", h.CreateComplianceFramework)
+	r.Put("/api/v1/admin/compliance/frameworks/{id}", h.UpdateComplianceFramework)
+	r.Delete("/api/v1/admin/compliance/frameworks/{id}", h.DeleteComplianceFramework)
+	r.Get("/api/v1/admin/compliance/policies", h.CompliancePolicies)
+	r.Post("/api/v1/admin/compliance/policies", h.CreateCompliancePolicy)
+	r.Get("/api/v1/admin/compliance/policies/{id}", h.CompliancePolicy)
+	r.Put("/api/v1/admin/compliance/policies/{id}", h.UpdateCompliancePolicy)
+	r.Delete("/api/v1/admin/compliance/policies/{id}", h.DeleteCompliancePolicy)
+	r.Get("/api/v1/admin/projects/{slug}/frameworks", h.ProjectFrameworks)
+	r.Put("/api/v1/admin/projects/{slug}/frameworks", h.SetProjectFrameworks)
 	return r
 }
 

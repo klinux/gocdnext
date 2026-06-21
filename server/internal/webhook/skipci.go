@@ -1,12 +1,34 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// repoIsGoverned reports whether the repo's bound project is subject to
+// compliance policies — in which case `[skip ci]` must NOT skip run creation
+// (enforced policies are unbypassable).
+//
+// A repo with no SCM binding is genuinely not governed → false. But once the
+// repo IS bound to a project and the governance lookup errors, we fail CLOSED
+// (return true → ignore the marker): a transient DB blip must not reopen a
+// `[skip ci]` bypass on a possibly-governed project.
+func (h *Handler) repoIsGoverned(ctx context.Context, cloneURL string) bool {
+	scm, ok := h.driftLookup(ctx, cloneURL)
+	if !ok {
+		return false
+	}
+	governed, err := h.store.ProjectHasCompliancePolicies(ctx, scm.ProjectID)
+	if err != nil {
+		h.log.Warn("webhook: compliance governance check failed; failing closed (not skipping)", "err", err)
+		return true
+	}
+	return governed
+}
 
 // skipCIMarkers are the platform-agnostic commit-message markers that
 // suppress run creation, in priority order for logging. Deliberately

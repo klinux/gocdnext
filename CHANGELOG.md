@@ -8,6 +8,50 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Compliance pipelines (backend + enforcement)** — GitLab-style, framework-scoped
+  mandatory pipeline policies. Admins define **compliance frameworks** (labels) and
+  assign them to projects, plus **compliance policies** (authored in the normal
+  pipeline YAML schema) that target frameworks. The server **merges** a policy's
+  stages/jobs/approval-gates into a project's *effective* pipeline definition at
+  apply time, so mandatory steps run on every targeted project and **repo authors
+  cannot remove or bypass them**. Modes: `inject` (append) and `override` (replace);
+  injected stages can be positioned `before`/`after` an existing stage (default:
+  prepend). Enforced via a reserved `_compliance_` namespace the repo YAML may not
+  use, with the merge done server-side after parsing the repo. Admin-only
+  (separation of duties) and fully audited. New REST endpoints under
+  `/api/v1/admin/compliance/*` and `/api/v1/admin/projects/{slug}/frameworks`.
+  Zero per-run overhead (the effective definition is materialised in the DB and read
+  fresh by every replica). UI lands in a follow-up.
+
+  Enforcement hardening (closes bypasses found in review):
+  - **Always runs** — a governed project that ships no pipeline of its own gets a
+    server-owned synthetic `_compliance` pipeline (policy jobs as its definition),
+    created/torn-down as governance changes on both the apply and admin paths, so
+    policies run even with no repo CI. A governed project with neither a pipeline
+    nor a repo binding is refused rather than left toothless.
+  - **Non-suppressible trigger** — every governed pipeline gets a compliance-owned
+    default-branch push material; the override is MERGED onto any existing repo
+    material so credentials (`secret_ref`), poll interval and extra events (`tag`,
+    `pull_request`) survive while path/branch narrowing of the compliance push is
+    dropped. A repo's `when.event/branch/paths` can't stop enforcement from
+    firing; `[skip ci]` is likewise ignored on a governed project (fail-closed if
+    governance can't be determined). Governance requires a registered SCM source —
+    a governed project without one is refused rather than left unenforceable.
+  - **No shadowing** — the reserved `_compliance_` namespace is sanitised on every
+    merge path (apply *and* recompute, covering legacy backfilled rows); the
+    `_compliance` pipeline name is reserved from repo configs; policy-vs-policy
+    name collisions are rejected at create/update.
+  - **Isolation** — compliance jobs run without the repo's pipeline variables or
+    services.
+  - **Consistency** — a global compliance **advisory lock** (shared on apply /
+    exclusive on policy & framework mutations) closes the apply-vs-mutation race
+    that could persist a stale effective definition.
+
+  Known follow-up: batched/generation-based recompute for very large
+  `applies_to_all` fleets (today the recompute is synchronous under the lock).
+
 ## v0.47.0 — 2026-06-20
 
 ### Changed

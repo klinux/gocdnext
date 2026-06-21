@@ -66,6 +66,14 @@ const (
 	AuditActionClusterDelete          = "cluster.delete"
 	AuditActionPlatformSettingSet     = "platform_setting.set"
 	AuditActionPlatformSettingDel     = "platform_setting.delete"
+
+	AuditActionComplianceFrameworkCreate = "compliance_framework.create"
+	AuditActionComplianceFrameworkUpdate = "compliance_framework.update"
+	AuditActionComplianceFrameworkDelete = "compliance_framework.delete"
+	AuditActionProjectFrameworksSet      = "project.frameworks_set"
+	AuditActionCompliancePolicyCreate    = "compliance_policy.create"
+	AuditActionCompliancePolicyUpdate    = "compliance_policy.update"
+	AuditActionCompliancePolicyDelete    = "compliance_policy.delete"
 )
 
 // AuditEvent is what the audit log surfaces to callers. Metadata

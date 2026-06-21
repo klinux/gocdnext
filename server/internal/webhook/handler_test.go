@@ -181,7 +181,7 @@ func TestGitHubWebhook_PushFansOutToEveryPipeline(t *testing.T) {
 	for _, name := range []string{"ci-web", "security"} {
 		var pipelineID uuid.UUID
 		if err := pool.QueryRow(ctx,
-			`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, $2, $3) RETURNING id`,
+			`INSERT INTO pipelines (project_id, name, definition, definition_raw) VALUES ($1, $2, $3, $3) RETURNING id`,
 			projectID, name, []byte(`{"name":"`+name+`","stages":["build"],"jobs":[{"name":"compile","stage":"build","script":"true"}]}`),
 		).Scan(&pipelineID); err != nil {
 			t.Fatalf("seed pipeline %s: %v", name, err)

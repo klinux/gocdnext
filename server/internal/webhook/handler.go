@@ -249,8 +249,13 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	// just doesn't trigger pipelines. Never applied to pull_request
 	// events (see skipci.go for the security rationale).
 	if marker, ok := skipCIMarker(ev.HeadCommit.Message); ok {
-		h.respondSkipCI(w, rec, "github", delivery, ev.Ref, marker)
-		return
+		if h.repoIsGoverned(r.Context(), ev.Repository.CloneURL) {
+			h.log.Info("github webhook: [skip ci] ignored — project governed by compliance policies",
+				"delivery", delivery, "ref", ev.Ref)
+		} else {
+			h.respondSkipCI(w, rec, "github", delivery, ev.Ref, marker)
+			return
+		}
 	}
 
 	normalizedURL := domain.NormalizeGitURL(ev.Repository.CloneURL)

@@ -63,8 +63,13 @@ func (h *Handler) persistPush(
 	// Same placement as the GitHub handler: after drift (config sync
 	// still observes the push), before any run is materialised.
 	if marker, ok := skipCIMarker(np.CommitMsg); ok {
-		h.respondSkipCI(w, rec, np.Provider, np.Delivery, np.Branch, marker)
-		return
+		if h.repoIsGoverned(r.Context(), np.CloneURL) {
+			h.log.Info(np.Provider+" webhook: [skip ci] ignored — project governed by compliance policies",
+				"delivery", np.Delivery, "ref", np.Branch)
+		} else {
+			h.respondSkipCI(w, rec, np.Provider, np.Delivery, np.Branch, marker)
+			return
+		}
 	}
 
 	fp := store.FingerprintFor(np.CloneURL, np.Branch)

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
+	"github.com/gocdnext/gocdnext/server/pkg/compliance"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -105,6 +106,13 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 
 	q := s.q.WithTx(tx)
 
+	// Shared compliance lock: serialise against policy/framework mutations so
+	// the effective definition this apply writes can't drop a policy that
+	// committed concurrently (it either fully precedes or follows that change).
+	if err := lockComplianceShared(ctx, tx); err != nil {
+		return ApplyProjectResult{}, err
+	}
+
 	proj, err := q.UpsertProject(ctx, db.UpsertProjectParams{
 		Slug:        in.Slug,
 		Name:        in.Name,
@@ -139,11 +147,18 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 		wanted[p.Name] = p
 	}
 
-	existing, err := q.ListPipelinesByProject(ctx, proj.ID)
+	existing, err := q.ListPipelineKindsByProject(ctx, proj.ID)
 	if err != nil {
 		return ApplyProjectResult{}, fmt.Errorf("store: list pipelines: %w", err)
 	}
 	for _, row := range existing {
+		// The server-owned synthetic pipeline is not part of the repo's
+		// declared set — skip it here so it isn't delete+recreated (which would
+		// churn its id and cascade away its run history). reconcileGovernance
+		// owns its lifecycle.
+		if row.SystemManaged {
+			continue
+		}
 		if _, keep := wanted[row.Name]; keep {
 			continue
 		}
@@ -153,16 +168,41 @@ func (s *Store) ApplyProject(ctx context.Context, in ApplyProjectInput) (ApplyPr
 		result.PipelinesRemoved = append(result.PipelinesRemoved, row.Name)
 	}
 
+	// Resolve the compliance policies for this project ONCE (same tx) and
+	// merge them into each pipeline's effective definition, so mandatory jobs
+	// / approval gates are enforced unbypassably from the repo side.
+	policies, err := policiesForProject(ctx, q, proj.ID)
+	if err != nil {
+		return ApplyProjectResult{}, err
+	}
+
+	// The `_compliance` pipeline name is reserved for the server-owned
+	// synthetic pipeline — repo configs may not use it (or a developer could
+	// impersonate / pre-empt the enforced pipeline).
+	for _, p := range in.Pipelines {
+		if compliance.IsReservedPipelineName(p.Name) {
+			return ApplyProjectResult{}, fmt.Errorf(
+				"store: pipeline name %q is reserved for compliance", p.Name)
+		}
+	}
+
 	// Pipelines inherit the project's persisted config_path (what
 	// the upsert just wrote) so a drift re-apply without an
 	// explicit ConfigPath still stamps the right value on each
 	// pipeline row.
 	for _, p := range in.Pipelines {
-		status, err := applyPipeline(ctx, q, proj.ID, p, in.ConfigRepo, proj.ConfigPath)
+		status, err := applyPipeline(ctx, q, proj.ID, p, in.ConfigRepo, proj.ConfigPath, policies)
 		if err != nil {
 			return ApplyProjectResult{}, err
 		}
 		result.Pipelines = append(result.Pipelines, status)
+	}
+
+	// Reconcile the enforced surface: synthesize the `_compliance` pipeline
+	// when a governed project has none of its own, make governed triggers
+	// non-suppressible, and refuse to leave a governed project unenforceable.
+	if err := reconcileGovernance(ctx, q, proj.ID, proj.ConfigPath, policies); err != nil {
+		return ApplyProjectResult{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -267,21 +307,36 @@ func newWebhookSecret() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func applyPipeline(ctx context.Context, q *db.Queries, projectID pgtype.UUID, p *domain.Pipeline, configRepo, configPath string) (PipelineApplyStatus, error) {
-	definition, err := marshalPipelineDefinition(p)
+func applyPipeline(ctx context.Context, q *db.Queries, projectID pgtype.UUID, p *domain.Pipeline, configRepo, configPath string, policies []compliance.Policy) (PipelineApplyStatus, error) {
+	// Repo guard: a project's own YAML must not use the reserved compliance
+	// namespace, so it can neither fake nor shadow an enforced job.
+	if err := compliance.RejectReservedNames(*p); err != nil {
+		return PipelineApplyStatus{}, fmt.Errorf("store: pipeline %s: %w", p.Name, err)
+	}
+
+	// definition_raw is the parsed repo pipeline; definition is the effective
+	// (post-policy-merge) snapshot that materialisation + dispatch read.
+	rawDef, err := marshalPipelineDefinition(p)
 	if err != nil {
 		return PipelineApplyStatus{}, fmt.Errorf("store: marshal pipeline %s: %w", p.Name, err)
+	}
+	effective := compliance.ApplyPolicies(*p, policies)
+	effDef, err := marshalPipelineDefinition(&effective)
+	if err != nil {
+		return PipelineApplyStatus{}, fmt.Errorf("store: marshal effective pipeline %s: %w", p.Name, err)
 	}
 
 	if configPath == "" {
 		configPath = ".gocdnext"
 	}
 	row, err := q.UpsertPipeline(ctx, db.UpsertPipelineParams{
-		ProjectID:  projectID,
-		Name:       p.Name,
-		Definition: definition,
-		ConfigRepo: nullableString(configRepo),
-		ConfigPath: configPath,
+		ProjectID:     projectID,
+		Name:          p.Name,
+		Definition:    effDef,
+		DefinitionRaw: rawDef,
+		ConfigRepo:    nullableString(configRepo),
+		ConfigPath:    configPath,
+		SystemManaged: false,
 	})
 	if err != nil {
 		return PipelineApplyStatus{}, fmt.Errorf("store: upsert pipeline %s: %w", p.Name, err)

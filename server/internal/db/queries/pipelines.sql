@@ -1,8 +1,13 @@
 -- name: UpsertPipeline :one
-INSERT INTO pipelines (project_id, name, definition, config_repo, config_path)
-VALUES ($1, $2, $3, $4, $5)
+-- definition is the EFFECTIVE (post-compliance-merge) snapshot everything
+-- reads; definition_raw is the parsed repo YAML kept for policy recomputation.
+-- system_managed marks the server-owned synthetic compliance pipeline.
+INSERT INTO pipelines (project_id, name, definition, config_repo, config_path, definition_raw, system_managed)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (project_id, name) DO UPDATE SET
     definition = EXCLUDED.definition,
+    definition_raw = EXCLUDED.definition_raw,
+    system_managed = EXCLUDED.system_managed,
     definition_version = CASE
         WHEN pipelines.definition = EXCLUDED.definition THEN pipelines.definition_version
         ELSE pipelines.definition_version + 1

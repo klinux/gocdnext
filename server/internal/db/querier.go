@@ -140,6 +140,9 @@ type Querier interface {
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	// Delete-guard: how many projects carry the framework and how many policies
+	// target it. A framework still in use must not be silently dropped.
+	CountFrameworkUsage(ctx context.Context, frameworkID pgtype.UUID) (CountFrameworkUsageRow, error)
 	CountGlobalSecrets(ctx context.Context) (int64, error)
 	// Quorum check: how many approved votes (excluding rejects)
 	// has this gate accumulated?
@@ -209,6 +212,8 @@ type Querier interface {
 	// name first (the scheduler resolves clusters by name at dispatch and
 	// a missing name fails the run loudly).
 	DeleteCluster(ctx context.Context, id pgtype.UUID) error
+	DeleteComplianceFramework(ctx context.Context, id pgtype.UUID) error
+	DeleteCompliancePolicy(ctx context.Context, id pgtype.UUID) error
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
@@ -225,12 +230,14 @@ type Querier interface {
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	// Removes a setting; the boot path then falls back to env config.
 	DeletePlatformSetting(ctx context.Context, key string) error
+	DeletePolicyFrameworks(ctx context.Context, policyID pgtype.UUID) error
 	// Returns the number of project rows deleted (0 or 1). ON DELETE
 	// CASCADE on every foreign key that points at projects carries
 	// the children (pipelines → materials → runs → artifacts, secrets,
 	// scm_sources, etc.), so this single statement is enough.
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
+	DeleteProjectFrameworks(ctx context.Context, projectID pgtype.UUID) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.
@@ -369,6 +376,8 @@ type Querier interface {
 	// sealed credential, decrypted in-process and injected as
 	// PLUGIN_KUBECONFIG. allowed_projects re-checked by the caller.
 	GetClusterForDispatch(ctx context.Context, name string) (GetClusterForDispatchRow, error)
+	GetComplianceFramework(ctx context.Context, id pgtype.UUID) (ComplianceFramework, error)
+	GetCompliancePolicy(ctx context.Context, id pgtype.UUID) (CompliancePolicy, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
@@ -554,6 +563,8 @@ type Querier interface {
 	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (AuditEvent, error)
 	InsertAuthState(ctx context.Context, arg InsertAuthStateParams) error
 	InsertCluster(ctx context.Context, arg InsertClusterParams) (InsertClusterRow, error)
+	InsertComplianceFramework(ctx context.Context, arg InsertComplianceFrameworkParams) (ComplianceFramework, error)
+	InsertCompliancePolicy(ctx context.Context, arg InsertCompliancePolicyParams) (InsertCompliancePolicyRow, error)
 	InsertGroup(ctx context.Context, arg InsertGroupParams) (Group, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Records one vote on a gate. Unique (job_run_id, user_id) —
@@ -592,7 +603,9 @@ type Querier interface {
 	// the backend's object key are decoupled — makes it safe to retry without
 	// ending up with orphan objects keyed off a stale PK.
 	InsertPendingArtifact(ctx context.Context, arg InsertPendingArtifactParams) (InsertPendingArtifactRow, error)
+	InsertPolicyFramework(ctx context.Context, arg InsertPolicyFrameworkParams) error
 	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
+	InsertProjectFramework(ctx context.Context, arg InsertProjectFrameworkParams) error
 	// has_services is a snapshot of `pipeline.Services` non-emptiness
 	// (migration 00036). Stamped here so the run-terminal cleanup
 	// cascade can decide whether to broadcast CleanupRunServices
@@ -674,6 +687,7 @@ type Querier interface {
 	// LEFT JOIN + FILTER gives 0 for idle agents without needing a
 	// second roundtrip.
 	ListAgentsWithRunning(ctx context.Context) ([]ListAgentsWithRunningRow, error)
+	ListAllProjectIDs(ctx context.Context) ([]pgtype.UUID, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.
@@ -704,6 +718,12 @@ type Querier interface {
 	// credential_enc is intentionally NOT selected — the list/detail
 	// surface is write-only, the credential never leaves the server.
 	ListClusters(ctx context.Context) ([]ListClustersRow, error)
+	// Compliance frameworks: admin-defined labels assigned to projects.
+	ListComplianceFrameworks(ctx context.Context) ([]ComplianceFramework, error)
+	// Compliance policies.
+	// Admin list: metadata only (the compiled config + source YAML are fetched
+	// per-policy on Get).
+	ListCompliancePolicies(ctx context.Context) ([]ListCompliancePoliciesRow, error)
 	// Loads every cron material in the system alongside its pipeline
 	// / project id and its last-fired timestamp (NULL when never
 	// fired). The ticker walks this list on every tick; N is bounded
@@ -739,6 +759,9 @@ type Querier interface {
 	// columns are NOT NULL (sqlc would type them non-nullable and the
 	// scan would fail on NULL); the caller gates on current_id.Valid.
 	ListEnvironmentsWithCurrentByProject(ctx context.Context, projectID pgtype.UUID) ([]ListEnvironmentsWithCurrentByProjectRow, error)
+	ListFrameworkIDsByPolicy(ctx context.Context, policyID pgtype.UUID) ([]pgtype.UUID, error)
+	// Project ↔ framework assignment.
+	ListFrameworksByProject(ctx context.Context, projectID pgtype.UUID) ([]ComplianceFramework, error)
 	// Every type='git' material in the DB. Webhook tag-push routing
 	// pulls this set and filters Go-side: NormalizeGitURL on each
 	// config->>'url' matched against the canonical clone URL from the
@@ -861,11 +884,23 @@ type Querier interface {
 	// index-only on the WHERE clause makes this a sub-millisecond
 	// lookup even on a job_runs table in the millions.
 	ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error)
+	// Governance reconciliation: each pipeline's id/name plus whether it is the
+	// server-owned synthetic pipeline (system_managed). Repo pipelines are those
+	// with system_managed = false. Ordered by name so the apply path's
+	// PipelinesRemoved list stays deterministic.
+	ListPipelineKindsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelineKindsByProjectRow, error)
+	// Recompute support: the stored raw (pre-policy) definitions for a project,
+	// re-merged with current policies to refresh the effective definition.
+	ListPipelineRawByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelineRawByProjectRow, error)
 	ListPipelinesByProject(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesByProjectRow, error)
 	// Returns definition alongside metadata so the card can pull
 	// stage names from the YAML when the pipeline has never run
 	// (no stage_runs yet → no history to render from).
 	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
+	// Used at create/update to detect job/stage name collisions across policies
+	// (two policies must not both own `_compliance_scan` — they would produce
+	// duplicate job_runs). Pass uuid.Nil on create to compare against all.
+	ListPolicyConfigsExcept(ctx context.Context, id pgtype.UUID) ([]ListPolicyConfigsExceptRow, error)
 	// Every git material in the system + the project-level scm_source
 	// context (provider, url, auth_ref, default_branch) the poller
 	// needs to resolve branch HEAD, plus the per-material poll state.
@@ -881,6 +916,8 @@ type Querier interface {
 	// UI: list schedules bound to one project, newest first so
 	// recently-added shows at the top.
 	ListProjectCronsByProject(ctx context.Context, projectID pgtype.UUID) ([]ProjectCron, error)
+	// Recompute fan-out: every project carrying any of the given frameworks.
+	ListProjectIDsByFrameworks(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
 	// Projects whose total live artefact bytes (pending + ready, non-
 	// deleted, non-pinned) exceed the configured soft cap. Returned once
 	// per tick so the sweeper can ExpireOldestInProjectByExcess against
@@ -1171,6 +1208,10 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
+	// The apply-time hot path: every enabled policy that applies to a project —
+	// global (applies_to_all) or targeting a framework the project carries —
+	// with its compiled config + merge metadata, ordered deterministically.
+	ResolvePoliciesForProject(ctx context.Context, projectID pgtype.UUID) ([]ResolvePoliciesForProjectRow, error)
 	// Graceful rotation: the key stops signing but stays in the JWKS
 	// until retired_at + overlap (ListOIDCJWKSKeys cutoff).
 	RetireActiveOIDCKey(ctx context.Context) (int64, error)
@@ -1337,12 +1378,15 @@ type Querier interface {
 	// would silently break every pipeline pointing at it. Renaming = delete
 	// + recreate (the delete-guard then surfaces any live dependents).
 	UpdateCluster(ctx context.Context, arg UpdateClusterParams) (int64, error)
+	UpdateComplianceFramework(ctx context.Context, arg UpdateComplianceFrameworkParams) (int64, error)
+	UpdateCompliancePolicy(ctx context.Context, arg UpdateCompliancePolicyParams) (int64, error)
 	UpdateEnvironmentDescription(ctx context.Context, arg UpdateEnvironmentDescriptionParams) error
 	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	// Dedicated password-only write. Used when an admin changes their
 	// own password from /settings/account — we never want to let the
 	// admin also flip their role through that surface.
 	UpdateLocalUserPassword(ctx context.Context, arg UpdateLocalUserPasswordParams) error
+	UpdatePipelineEffectiveDefinition(ctx context.Context, arg UpdatePipelineEffectiveDefinitionParams) (int64, error)
 	// Sets the per-project log_archive_enabled override. NULL value
 	// means "inherit global" — explicitly clearing the row by writing
 	// a NULL works through the same path.
@@ -1407,6 +1451,9 @@ type Querier interface {
 	// stable across transient provider blips — operators see the
 	// last-known-good SHA alongside the error rather than a blank.
 	UpsertMaterialPollState(ctx context.Context, arg UpsertMaterialPollStateParams) error
+	// definition is the EFFECTIVE (post-compliance-merge) snapshot everything
+	// reads; definition_raw is the parsed repo YAML kept for policy recomputation.
+	// system_managed marks the server-owned synthetic compliance pipeline.
 	UpsertPipeline(ctx context.Context, arg UpsertPipelineParams) (UpsertPipelineRow, error)
 	// Idempotent write. Replaces value + credentials_enc on key
 	// collision. updated_at refreshes on every write so audit / UI

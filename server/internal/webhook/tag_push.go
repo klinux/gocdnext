@@ -43,8 +43,13 @@ func (h *Handler) handleTagPush(w http.ResponseWriter, r *http.Request, body []b
 	// the tag fires normally — same caveat GitHub Actions has.
 	if ev.HeadCommit != nil {
 		if marker, ok := skipCIMarker(ev.HeadCommit.Message); ok {
-			h.respondSkipCI(w, rec, "github", delivery, ev.Ref, marker)
-			return
+			if h.repoIsGoverned(r.Context(), ev.Repository.CloneURL) {
+				h.log.Info("github webhook: tag [skip ci] ignored — project governed by compliance policies",
+					"delivery", delivery, "ref", ev.Ref)
+			} else {
+				h.respondSkipCI(w, rec, "github", delivery, ev.Ref, marker)
+				return
+			}
 		}
 	}
 

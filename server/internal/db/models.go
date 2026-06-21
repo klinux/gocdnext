@@ -116,6 +116,32 @@ type Cluster struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
+type ComplianceFramework struct {
+	ID          pgtype.UUID
+	Name        string
+	Description string
+	CreatedBy   string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type CompliancePolicy struct {
+	ID             pgtype.UUID
+	Name           string
+	Description    string
+	Enabled        bool
+	Mode           string
+	Priority       int32
+	AppliesToAll   bool
+	PositionBefore string
+	PositionAfter  string
+	ConfigYaml     string
+	Config         []byte
+	CreatedBy      string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type CoverageReport struct {
 	ID           int64
 	JobRunID     pgtype.UUID
@@ -286,6 +312,8 @@ type Pipeline struct {
 	ConfigPath        string
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
+	DefinitionRaw     []byte
+	SystemManaged     bool
 }
 
 type PlatformSetting struct {
@@ -294,6 +322,11 @@ type PlatformSetting struct {
 	CredentialsEnc []byte
 	UpdatedAt      pgtype.Timestamptz
 	UpdatedBy      pgtype.UUID
+}
+
+type PolicyFramework struct {
+	PolicyID    pgtype.UUID
+	FrameworkID pgtype.UUID
 }
 
 type Project struct {
@@ -319,6 +352,12 @@ type ProjectCron struct {
 	CreatedBy   pgtype.UUID
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+}
+
+type ProjectFramework struct {
+	ProjectID   pgtype.UUID
+	FrameworkID pgtype.UUID
+	CreatedAt   pgtype.Timestamptz
 }
 
 type Run struct {
