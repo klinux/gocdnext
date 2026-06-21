@@ -5,8 +5,15 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { env } from "@/lib/env";
+import type {
+  ComplianceFramework,
+  CompliancePolicy,
+} from "@/server/queries/admin";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
+// Create returns the persisted DTO so the client can use the real id (and full
+// row) immediately, instead of inventing an optimistic placeholder.
+export type CreatedResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
 const frameworkSchema = z.object({
   name: z.string().min(1, "name is required"),
@@ -60,7 +67,7 @@ function fail(err: unknown): { ok: false; error: string } {
 
 export async function createComplianceFramework(
   input: z.infer<typeof frameworkSchema>,
-): Promise<ActionResult> {
+): Promise<CreatedResult<ComplianceFramework>> {
   const parsed = frameworkSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
@@ -71,8 +78,9 @@ export async function createComplianceFramework(
       body: JSON.stringify(parsed.data),
     });
     if (!res.ok) return errorResult(res, await res.text());
+    const data = (await res.json()) as ComplianceFramework;
     revalidatePath("/admin/compliance");
-    return { ok: true };
+    return { ok: true, data };
   } catch (err) {
     return fail(err);
   }
@@ -117,7 +125,7 @@ export async function deleteComplianceFramework(id: string): Promise<ActionResul
 
 export async function createCompliancePolicy(
   input: z.infer<typeof policySchema>,
-): Promise<ActionResult> {
+): Promise<CreatedResult<CompliancePolicy>> {
   const parsed = policySchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
@@ -128,8 +136,9 @@ export async function createCompliancePolicy(
       body: JSON.stringify(parsed.data),
     });
     if (!res.ok) return errorResult(res, await res.text());
+    const data = (await res.json()) as CompliancePolicy;
     revalidatePath("/admin/compliance");
-    return { ok: true };
+    return { ok: true, data };
   } catch (err) {
     return fail(err);
   }

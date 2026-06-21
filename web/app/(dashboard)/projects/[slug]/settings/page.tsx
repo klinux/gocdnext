@@ -58,7 +58,12 @@ export default async function ProjectSettingsPage({
   // RoleAdmin). Resolve the viewer's role and, when admin, load the framework
   // catalog + this project's current set. Failures degrade to hiding the card.
   const auth = await resolveAuthState();
-  const isAdmin = auth.mode === "authenticated" && auth.user.role === "admin";
+  // auth "disabled" = single-user/dev mode where the server's admin middleware
+  // lets every request through — so the assignment card must show too, matching
+  // the backend (RequireMinRole is a no-op when auth is disabled).
+  const isAdmin =
+    auth.mode === "disabled" ||
+    (auth.mode === "authenticated" && auth.user.role === "admin");
   let allFrameworks: ComplianceFramework[] = [];
   let assignedIDs: string[] = [];
   if (isAdmin) {

@@ -5,7 +5,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PoliciesManager } from "./policies-manager.client";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
 
-const createPolicy = vi.fn(async (_i: Record<string, unknown>) => ({ ok: true as const }));
+const createPolicy = vi.fn(async (i: Record<string, unknown>) => ({
+  ok: true as const,
+  data: {
+    id: "new-pol",
+    name: i.name as string,
+    description: (i.description as string) ?? "",
+    enabled: (i.enabled as boolean) ?? true,
+    mode: (i.mode as "inject" | "override") ?? "inject",
+    priority: (i.priority as number) ?? 0,
+    applies_to_all: (i.applies_to_all as boolean) ?? false,
+    position_before: (i.position_before as string) ?? "",
+    position_after: (i.position_after as string) ?? "",
+    framework_ids: (i.framework_ids as string[]) ?? [],
+    config_yaml: (i.config_yaml as string) ?? "",
+    created_by: "",
+    created_at: "",
+    updated_at: "",
+  },
+}));
 const updatePolicy = vi.fn(async (_i: Record<string, unknown>) => ({ ok: true as const }));
 const deletePolicy = vi.fn(async (_id: string) => ({ ok: true as const }));
 
@@ -39,7 +57,7 @@ beforeEach(() => {
 
 describe("PoliciesManager", () => {
   it("renders policies with scope + status", () => {
-    render(<PoliciesManager policies={policies} frameworks={frameworks} />);
+    render(<PoliciesManager policies={policies} setPolicies={() => {}} frameworks={frameworks} />);
     expect(screen.getByText("pci-scan")).toBeTruthy();
     expect(screen.getByText("enabled")).toBeTruthy();
     // Framework id resolved to its name in the scope column.
@@ -47,13 +65,13 @@ describe("PoliciesManager", () => {
   });
 
   it("shows the empty state", () => {
-    render(<PoliciesManager policies={[]} frameworks={frameworks} />);
+    render(<PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} />);
     expect(screen.getByText(/No policies yet/i)).toBeTruthy();
   });
 
   it("creates a policy with a selected framework and config", async () => {
     const user = userEvent.setup();
-    render(<PoliciesManager policies={[]} frameworks={frameworks} />);
+    render(<PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} />);
     fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "global-scan" } });
@@ -75,7 +93,7 @@ describe("PoliciesManager", () => {
 
   it("blocks save when config YAML is empty", () => {
     const { container } = render(
-      <PoliciesManager policies={[]} frameworks={frameworks} />,
+      <PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "x" } });

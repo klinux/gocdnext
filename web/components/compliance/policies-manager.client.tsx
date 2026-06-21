@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { type Dispatch, type SetStateAction, useMemo, useState, useTransition } from "react";
 import { Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,12 +37,13 @@ import {
 
 export function PoliciesManager({
   policies,
+  setPolicies,
   frameworks,
 }: {
   policies: CompliancePolicy[];
+  setPolicies: Dispatch<SetStateAction<CompliancePolicy[]>>;
   frameworks: ComplianceFramework[];
 }) {
-  const [items, setItems] = useState(policies);
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState<PolicyDraft | null>(null);
   const [pending, startTransition] = useTransition();
@@ -55,13 +56,13 @@ export function PoliciesManager({
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
+    if (!q) return policies;
+    return policies.filter(
       (p) =>
         p.name.toLowerCase().includes(q) ||
         p.description.toLowerCase().includes(q),
     );
-  }, [items, filter]);
+  }, [policies, filter]);
 
   function save() {
     if (!draft) return;
@@ -73,51 +74,48 @@ export function PoliciesManager({
       toast.error("Policy config (YAML) is required");
       return;
     }
+    const body = {
+      name: draft.name.trim(),
+      description: draft.description,
+      enabled: draft.enabled,
+      mode: draft.mode,
+      priority: draft.priority,
+      applies_to_all: draft.appliesToAll,
+      position_before: draft.positionBefore,
+      position_after: draft.positionAfter,
+      framework_ids: draft.appliesToAll ? [] : draft.frameworkIds,
+      config_yaml: draft.configYaml,
+    };
     startTransition(async () => {
-      const body = {
-        name: draft.name.trim(),
-        description: draft.description,
-        enabled: draft.enabled,
-        mode: draft.mode,
-        priority: draft.priority,
-        applies_to_all: draft.appliesToAll,
-        position_before: draft.positionBefore,
-        position_after: draft.positionAfter,
-        framework_ids: draft.appliesToAll ? [] : draft.frameworkIds,
-        config_yaml: draft.configYaml,
-      };
-      const res = draft.id
-        ? await updateCompliancePolicy({ ...body, id: draft.id })
-        : await createCompliancePolicy(body);
-      if (!res.ok) {
-        toast.error(res.error);
-        return;
+      if (draft.id) {
+        const res = await updateCompliancePolicy({ ...body, id: draft.id });
+        if (!res.ok) {
+          toast.error(res.error);
+          return;
+        }
+        const id = draft.id;
+        setPolicies((prev) =>
+          prev.map((p) =>
+            p.id === id
+              ? { ...p, ...body, id, framework_ids: body.framework_ids }
+              : p,
+          ),
+        );
+        toast.success("Policy updated");
+      } else {
+        const res = await createCompliancePolicy(body);
+        if (!res.ok) {
+          toast.error(res.error);
+          return;
+        }
+        // Use the persisted DTO (real id) so the row is immediately editable.
+        setPolicies((prev) =>
+          [...prev, res.data].sort(
+            (a, b) => a.priority - b.priority || a.name.localeCompare(b.name),
+          ),
+        );
+        toast.success("Policy created");
       }
-      toast.success(draft.id ? "Policy updated" : "Policy created");
-      const now = new Date().toISOString();
-      const next: CompliancePolicy = {
-        id: draft.id ?? `__opt_${now}`,
-        name: body.name,
-        description: body.description,
-        enabled: body.enabled,
-        mode: body.mode,
-        priority: body.priority,
-        applies_to_all: body.applies_to_all,
-        position_before: body.position_before,
-        position_after: body.position_after,
-        framework_ids: body.framework_ids,
-        config_yaml: body.config_yaml,
-        created_by: "",
-        created_at: now,
-        updated_at: now,
-      };
-      setItems((prev) =>
-        draft.id
-          ? prev.map((p) => (p.id === draft.id ? { ...next, id: p.id } : p))
-          : [...prev, next].sort(
-              (a, b) => a.priority - b.priority || a.name.localeCompare(b.name),
-            ),
-      );
       setDraft(null);
     });
   }
@@ -131,7 +129,7 @@ export function PoliciesManager({
         return;
       }
       toast.success("Policy deleted");
-      setItems((prev) => prev.filter((x) => x.id !== p.id));
+      setPolicies((prev) => prev.filter((x) => x.id !== p.id));
     });
   }
 
@@ -170,7 +168,7 @@ export function PoliciesManager({
                   colSpan={5}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
-                  {items.length === 0
+                  {policies.length === 0
                     ? "No policies yet — create one to enforce mandatory jobs."
                     : "No policies match the filter."}
                 </TableCell>

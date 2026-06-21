@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { type Dispatch, type SetStateAction, useMemo, useState, useTransition } from "react";
 import { Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,23 +37,24 @@ function blank(): Draft {
 
 export function FrameworksManager({
   frameworks,
+  setFrameworks,
 }: {
   frameworks: ComplianceFramework[];
+  setFrameworks: Dispatch<SetStateAction<ComplianceFramework[]>>;
 }) {
-  const [items, setItems] = useState(frameworks);
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [pending, startTransition] = useTransition();
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
+    if (!q) return frameworks;
+    return frameworks.filter(
       (f) =>
         f.name.toLowerCase().includes(q) ||
         f.description.toLowerCase().includes(q),
     );
-  }, [items, filter]);
+  }, [frameworks, filter]);
 
   function save() {
     if (!draft) return;
@@ -63,29 +64,39 @@ export function FrameworksManager({
       return;
     }
     startTransition(async () => {
-      const body = { name, description: draft.description };
-      const res = draft.id
-        ? await updateComplianceFramework({ ...body, id: draft.id })
-        : await createComplianceFramework(body);
-      if (!res.ok) {
-        toast.error(res.error);
-        return;
+      if (draft.id) {
+        const res = await updateComplianceFramework({
+          id: draft.id,
+          name,
+          description: draft.description,
+        });
+        if (!res.ok) {
+          toast.error(res.error);
+          return;
+        }
+        const id = draft.id;
+        setFrameworks((prev) =>
+          prev.map((f) =>
+            f.id === id ? { ...f, name, description: draft.description } : f,
+          ),
+        );
+        toast.success("Framework updated");
+      } else {
+        const res = await createComplianceFramework({
+          name,
+          description: draft.description,
+        });
+        if (!res.ok) {
+          toast.error(res.error);
+          return;
+        }
+        // Use the persisted DTO (real id) so the new row is immediately
+        // editable/deletable and visible to the Policies tab.
+        setFrameworks((prev) =>
+          [...prev, res.data].sort((a, b) => a.name.localeCompare(b.name)),
+        );
+        toast.success("Framework created");
       }
-      toast.success(draft.id ? "Framework updated" : "Framework created");
-      const now = new Date().toISOString();
-      const next: ComplianceFramework = {
-        id: draft.id ?? `__opt_${now}`,
-        name,
-        description: draft.description,
-        created_by: "",
-        created_at: now,
-        updated_at: now,
-      };
-      setItems((prev) =>
-        draft.id
-          ? prev.map((f) => (f.id === draft.id ? { ...f, ...next, id: f.id } : f))
-          : [...prev, next].sort((a, b) => a.name.localeCompare(b.name)),
-      );
       setDraft(null);
     });
   }
@@ -100,7 +111,7 @@ export function FrameworksManager({
         return;
       }
       toast.success("Framework deleted");
-      setItems((prev) => prev.filter((x) => x.id !== f.id));
+      setFrameworks((prev) => prev.filter((x) => x.id !== f.id));
     });
   }
 
@@ -137,7 +148,7 @@ export function FrameworksManager({
                   colSpan={3}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
-                  {items.length === 0
+                  {frameworks.length === 0
                     ? "No frameworks yet — create one to start enforcing policies."
                     : "No frameworks match the filter."}
                 </TableCell>
