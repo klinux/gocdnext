@@ -654,7 +654,7 @@ func seedOrphanedRunningJobForAgent(t *testing.T, pool *pgxpool.Pool, agentName 
 		t.Fatalf("orphan seed: project: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
-		`INSERT INTO pipelines (project_id, name, definition) VALUES ($1, 'p', '{}'::jsonb) RETURNING id`,
+		`INSERT INTO pipelines (project_id, name, definition, definition_raw) VALUES ($1, 'p', '{}'::jsonb, '{}'::jsonb) RETURNING id`,
 		projectID,
 	).Scan(&pipelineID); err != nil {
 		t.Fatalf("orphan seed: pipeline: %v", err)

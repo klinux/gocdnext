@@ -133,6 +133,12 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		// without risking a webhook rotation.
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrComplianceWouldDropEnforcement) {
+			// Folder deleted under a governed project: refuse and keep the
+			// previously-enforced pipelines (the tx rolled back).
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		h.log.Error("sync: apply project", "slug", slug, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

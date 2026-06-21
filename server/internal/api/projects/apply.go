@@ -304,6 +304,10 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		SCMSource:   scm,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrComplianceWouldDropEnforcement) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		h.log.Error("apply project", "slug", req.Slug, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
