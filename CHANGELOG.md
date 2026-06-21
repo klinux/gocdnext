@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.48.0 — 2026-06-21
+
 ### Added
 
 - **Compliance pipelines — admin UI** (*Admin → Compliance*). Manage compliance
