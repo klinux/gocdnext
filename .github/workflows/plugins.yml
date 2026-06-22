@@ -61,9 +61,15 @@ jobs:
             picks=$all
           else
             base="${{ github.event.before }}"
-            if [[ -z "$base" ]] || [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
-              # First commit on a branch / orphan ref — diff against
-              # the merge-base with origin/main so we still trim.
+            # Fall back to the merge-base with main when the recorded base
+            # is missing, the all-zero sentinel (first push to a branch),
+            # OR no longer present in the repo — a force-push (amend/rebase,
+            # which we do every review round) leaves event.before pointing
+            # at a now-unreachable commit, and `git diff <gone> HEAD` would
+            # die with "bad object" under set -e.
+            if [[ -z "$base" ]] \
+               || [[ "$base" == 0000000000000000000000000000000000000000 ]] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
               base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-list --max-parents=0 HEAD)
             fi
             changed=$(git diff --name-only "$base" HEAD -- plugins/ \
