@@ -992,6 +992,277 @@ paths:
             X-Gocdnext-Restart-Required:
               schema: { type: string, enum: ["true"] }
 
+  # -------------------- admin (compliance) --------------------
+  /api/v1/admin/compliance/frameworks:
+    get:
+      tags: [admin]
+      summary: List compliance frameworks (admin only).
+      description: |
+        Frameworks are admin-defined labels (`PCI`, `SOC2`, …) assigned to
+        projects and targeted by policies. See the
+        [compliance concept](https://klinux.github.io/gocdnext/docs/concepts/compliance/).
+      responses:
+        "200":
+          description: frameworks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ComplianceFramework" }
+    post:
+      tags: [admin]
+      summary: Create a compliance framework (admin only).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ComplianceFrameworkWrite" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComplianceFramework" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/admin/compliance/frameworks/{id}:
+    put:
+      tags: [admin]
+      summary: Rename / update a compliance framework (admin only).
+      description: |
+        A rename doesn't touch any effective definition (policies match
+        frameworks by id), so no recompute is triggered.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ComplianceFrameworkWrite" }
+      responses:
+        "204":
+          description: updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [admin]
+      summary: Delete a compliance framework (admin only).
+      description: |
+        Blocked (409) while the framework is still assigned to a project or
+        targeted by a policy — unassign / retarget first.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: framework still in use
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: "framework in use" }
+                  projects: { type: integer, example: 3 }
+                  policies: { type: integer, example: 1 }
+
+  /api/v1/admin/compliance/policies:
+    get:
+      tags: [admin]
+      summary: List compliance policies (admin only).
+      description: |
+        Metadata only — `framework_ids` and `config_yaml` come back empty
+        here; fetch a single policy to get its full body.
+      responses:
+        "200":
+          description: policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CompliancePolicy" }
+    post:
+      tags: [admin]
+      summary: Create a compliance policy (admin only).
+      description: |
+        `config_yaml` is authored in the normal pipeline schema; every
+        stage / job it declares must carry the reserved `_compliance_`
+        prefix (rejected otherwise). Creating an enabled policy that would
+        govern a project with no SCM source is refused (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompliancePolicyWrite" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompliancePolicy" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: would govern a project that can't be enforced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/compliance/policies/{id}:
+    get:
+      tags: [admin]
+      summary: Get a compliance policy with its full body (admin only).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: policy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompliancePolicy" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [admin]
+      summary: Update a compliance policy (admin only).
+      description: |
+        Full replace. Recomputes the effective definition of every project
+        in the union of the old and new targeting.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompliancePolicyWrite" }
+      responses:
+        "204":
+          description: updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: would govern a project that can't be enforced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [admin]
+      summary: Delete a compliance policy (admin only).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/projects/{slug}/frameworks:
+    get:
+      tags: [admin]
+      summary: List the frameworks assigned to a project (admin only).
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: assigned frameworks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ComplianceFramework" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [admin]
+      summary: Replace a project's framework assignment (admin only).
+      description: |
+        Full replace. Recomputes the project's effective pipelines in the
+        same transaction. Refused (409) if it would govern a project with
+        no registered SCM source (enforcement is push-triggered).
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectFrameworksWrite" }
+      responses:
+        "204":
+          description: assignment saved
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: would drop compliance enforcement (no SCM source)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/projects/{slug}/effective-pipeline:
+    get:
+      tags: [admin]
+      summary: Preview a project's effective (post-policy) pipelines (admin only).
+      description: |
+        Read-only. For each pipeline of the project returns its pre-policy
+        (`raw`) and post-merge (`effective`) definition. Without
+        `frameworks` it reads the stored effective definition (what runs
+        today). With `frameworks` it recomputes a what-if for that
+        hypothetical framework set — nothing is persisted; refused (409) if
+        that governance couldn't be enforced (no SCM source), mirroring a
+        real save.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: query
+          name: frameworks
+          required: false
+          schema: { type: string }
+          description: |
+            Comma-separated framework UUIDs for a what-if recompute. Absent
+            = stored preview; present-but-empty = "no frameworks".
+      responses:
+        "200":
+          description: per-pipeline raw + effective definitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EffectivePipelinePreview" }
+        "400":
+          description: malformed framework id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: would drop compliance enforcement (no SCM source)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # -------------------- webhooks --------------------
   /api/webhooks/github:
     post:
@@ -1679,3 +1950,129 @@ components:
             env-provided credentials (IRSA, Workload Identity,
             mounted SA file). Keys: s3 uses `access_key` and
             `secret_key`; gcs uses `service_account_json`.
+
+    # -------------------- compliance --------------------
+    ComplianceFramework:
+      type: object
+      required: [id, name, description, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: "PCI" }
+        description: { type: string }
+        created_by: { type: string, description: "Email of the admin that created it." }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ComplianceFrameworkWrite:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, example: "PCI" }
+        description: { type: string }
+
+    CompliancePolicy:
+      type: object
+      required: [id, name, mode, priority, enabled, applies_to_all]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: "pci-scan" }
+        description: { type: string }
+        enabled: { type: boolean }
+        mode:
+          type: string
+          enum: [inject, override]
+          description: |
+            `inject` appends the policy's stages/jobs (default prepend, or
+            anchored via position_before/after); `override` replaces the
+            repo's stages/jobs entirely.
+        priority:
+          type: integer
+          description: Merge order, ascending (ties broken by name).
+        applies_to_all:
+          type: boolean
+          description: When true the policy governs every project, ignoring framework_ids.
+        position_before:
+          type: string
+          description: |
+            For `inject`: anchor injected stages before this existing stage.
+            Mutually exclusive with position_after.
+        position_after:
+          type: string
+          description: "For `inject`: anchor injected stages after this existing stage."
+        framework_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: |
+            Frameworks this policy targets. Empty on the list endpoint
+            (metadata only) and when applies_to_all is true.
+        config_yaml:
+          type: string
+          description: |
+            The mandatory pipeline content, in the normal pipeline YAML
+            schema. Every stage/job name must carry the reserved
+            `_compliance_` prefix. Empty on the list endpoint.
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CompliancePolicyWrite:
+      type: object
+      required: [name, config_yaml]
+      properties:
+        name: { type: string, example: "pci-scan" }
+        description: { type: string }
+        enabled: { type: boolean, default: true }
+        mode: { type: string, enum: [inject, override], default: inject }
+        priority: { type: integer, default: 0 }
+        applies_to_all: { type: boolean, default: false }
+        position_before: { type: string }
+        position_after: { type: string }
+        framework_ids:
+          type: array
+          items: { type: string, format: uuid }
+        config_yaml:
+          type: string
+          description: Pipeline-schema body; all stage/job names must use the `_compliance_` prefix.
+
+    ProjectFrameworksWrite:
+      type: object
+      required: [framework_ids]
+      properties:
+        framework_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: The full set of frameworks to assign (full-replace).
+
+    PipelineDefView:
+      type: object
+      required: [stages, jobs]
+      description: |
+        Minimal pipeline shape the preview renders (not the full internal
+        definition). Empty collections are `[]`, never null.
+      properties:
+        stages:
+          type: array
+          items: { type: string }
+        jobs:
+          type: array
+          items:
+            type: object
+            required: [name, stage]
+            properties:
+              name: { type: string }
+              stage: { type: string }
+
+    EffectivePipelinePreview:
+      type: object
+      required: [name, system_managed, raw, effective]
+      properties:
+        name: { type: string }
+        system_managed:
+          type: boolean
+          description: True for the server-owned synthetic `_compliance` pipeline.
+        raw:
+          allOf: [{ $ref: "#/components/schemas/PipelineDefView" }]
+          description: The pre-policy definition (as authored in the repo).
+        effective:
+          allOf: [{ $ref: "#/components/schemas/PipelineDefView" }]
+          description: The post-merge definition every run uses.
