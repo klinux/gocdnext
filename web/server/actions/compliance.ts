@@ -8,6 +8,7 @@ import { env } from "@/lib/env";
 import type {
   ComplianceFramework,
   CompliancePolicy,
+  EffectivePipelinePreview,
 } from "@/server/queries/admin";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -197,6 +198,42 @@ export async function setProjectFrameworks(
     if (!res.ok) return errorResult(res, await res.text());
     revalidatePath(`/projects/${slug}/settings`);
     return { ok: true };
+  } catch (err) {
+    return fail(err);
+  }
+}
+
+// ---- effective-pipeline what-if preview ----------------------------------
+
+const previewSchema = z.object({
+  slug: z.string().min(1),
+  // The hypothetical framework set to preview. An empty array means "no
+  // frameworks" (only global applies-to-all policies apply).
+  framework_ids: z.array(z.string()).default([]),
+});
+
+// previewEffectivePipeline is a read used by the client to compute a WHAT-IF
+// effective pipeline for a hypothetical framework set. Nothing is persisted —
+// the control plane recomputes on the fly. The stored ("what runs today")
+// preview is server-rendered via getEffectivePipelinePreview, so this action
+// always sends the `frameworks` query param.
+export async function previewEffectivePipeline(
+  input: z.infer<typeof previewSchema>,
+): Promise<CreatedResult<EffectivePipelinePreview[]>> {
+  const parsed = previewSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  const { slug, framework_ids } = parsed.data;
+  const qs = `?frameworks=${framework_ids.map(encodeURIComponent).join(",")}`;
+  try {
+    const res = await apiFetch(
+      `/api/v1/admin/projects/${encodeURIComponent(slug)}/effective-pipeline${qs}`,
+      { method: "GET" },
+    );
+    if (!res.ok) return errorResult(res, await res.text());
+    const data = (await res.json()) as EffectivePipelinePreview[];
+    return { ok: true, data };
   } catch (err) {
     return fail(err);
   }
