@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.49.0 — 2026-06-22
+
 ### Added
 
 - **Compliance pipelines — visibility (Phase 3).** See what enforced compliance
@@ -37,6 +39,8 @@ convention that minor bumps may carry breaking changes until 1.0).
   project but no service-account JSON) returned `credential_keys` as JSON `null`,
   crashing the *Settings → Secret backends* panel. The panel now treats a null
   credential list as "none".
+- **Artifact storage UI:** the same null `credential_keys` crash on the
+  *Settings → Storage* panel for a DB override saved without a credential.
 
 ## v0.48.0 — 2026-06-21
 
