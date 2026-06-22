@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
+	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -22,6 +23,17 @@ func newComplianceHandler(t *testing.T) http.Handler {
 func newComplianceHandlerStore(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	s := store.New(dbtest.SetupPool(t))
+	// ApplyProject seals an scm_source's webhook secret, so the store needs an
+	// auth cipher (deterministic key keeps secret round-trips flake-free).
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	c, err := crypto.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	s.SetAuthCipher(c)
 	h := adminapi.NewHandler(s, nil, nil, adminapi.WiringState{}, quietLogger())
 	return mount(h), s
 }

@@ -226,6 +226,7 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Delete("/api/v1/admin/compliance/policies/{id}", h.DeleteCompliancePolicy)
 	r.Get("/api/v1/admin/projects/{slug}/frameworks", h.ProjectFrameworks)
 	r.Put("/api/v1/admin/projects/{slug}/frameworks", h.SetProjectFrameworks)
+	r.Get("/api/v1/admin/projects/{slug}/effective-pipeline", h.EffectivePipelinePreview)
 	return r
 }
 
