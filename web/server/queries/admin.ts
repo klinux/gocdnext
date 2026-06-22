@@ -356,3 +356,31 @@ export async function getProjectFrameworks(
     `/api/v1/admin/projects/${encodeURIComponent(slug)}/frameworks`,
   );
 }
+
+// PipelineDefView is the subset of a pipeline definition the preview renders.
+// The endpoint returns an explicit lower-case DTO (not the raw Go
+// domain.Pipeline); empty collections come back as `[]`, never null.
+export type PipelineDefView = {
+  stages: string[];
+  jobs: { name: string; stage: string }[];
+};
+
+// EffectivePipelinePreview is one pipeline's pre-policy (raw) and post-merge
+// (effective) definition. system_managed flags the server-owned synthetic
+// `_compliance` pipeline.
+export type EffectivePipelinePreview = {
+  name: string;
+  system_managed: boolean;
+  raw: PipelineDefView;
+  effective: PipelineDefView;
+};
+
+// getEffectivePipelinePreview returns the stored effective definition for every
+// pipeline of a project (what runs today) — a plain read, no recompute.
+export async function getEffectivePipelinePreview(
+  slug: string,
+): Promise<EffectivePipelinePreview[]> {
+  return readJSON<EffectivePipelinePreview[]>(
+    `/api/v1/admin/projects/${encodeURIComponent(slug)}/effective-pipeline`,
+  );
+}
