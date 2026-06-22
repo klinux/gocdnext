@@ -18,8 +18,8 @@ func TestListFrameworks_PathAndDecode(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]compliance.Framework{
-			{Name: "PCI", Description: "card data"},
-			{Name: "SOC2"},
+			{ID: "fw-1", Name: "PCI", Description: "card data"},
+			{ID: "fw-2", Name: "SOC2"},
 		})
 	}))
 	defer srv.Close()
@@ -28,7 +28,7 @@ func TestListFrameworks_PathAndDecode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFrameworks: %v", err)
 	}
-	if len(got) != 2 || got[0].Name != "PCI" {
+	if len(got) != 2 || got[0].Name != "PCI" || got[0].ID != "fw-1" {
 		t.Fatalf("got = %+v", got)
 	}
 }
@@ -110,10 +110,10 @@ func TestEffectivePipeline_WhatIfEmptyStillSendsParam(t *testing.T) {
 
 func TestEffectivePipeline_DecodesEnforcedJobs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Capitalised keys: the control plane marshals Go domain.Pipeline.
+		// Explicit lower-case preview DTO from the endpoint.
 		_, _ = w.Write([]byte(`[{"name":"_compliance","system_managed":true,
-		  "raw":{"Stages":null,"Jobs":null},
-		  "effective":{"Stages":["_compliance_scan"],"Jobs":[{"Name":"_compliance_scan","Stage":"_compliance_scan"}]}}]`))
+		  "raw":{"stages":[],"jobs":[]},
+		  "effective":{"stages":["_compliance_scan"],"jobs":[{"name":"_compliance_scan","stage":"_compliance_scan"}]}}]`))
 	}))
 	defer srv.Close()
 

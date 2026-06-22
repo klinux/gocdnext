@@ -60,8 +60,10 @@ func complianceFrameworksListCmd() *cobra.Command {
 				fmt.Fprintln(c.OutOrStdout(), "(no frameworks)")
 				return nil
 			}
+			// id first: it's what `effective-pipeline --frameworks` consumes.
+			fmt.Fprintln(c.OutOrStdout(), "ID\tNAME\tDESCRIPTION")
 			for _, f := range fws {
-				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\n", f.Name, f.Description)
+				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\t%s\n", f.ID, f.Name, f.Description)
 			}
 			return nil
 		},

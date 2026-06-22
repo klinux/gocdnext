@@ -16,8 +16,10 @@ import (
 	"time"
 )
 
-// Framework mirrors the admin frameworkDTO.
+// Framework mirrors the admin frameworkDTO. ID is surfaced so the user can feed
+// it to `effective-pipeline --frameworks` (which keys off ids, not names).
 type Framework struct {
+	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	CreatedBy   string `json:"created_by"`
@@ -36,14 +38,14 @@ type Policy struct {
 	PositionAfter  string `json:"position_after"`
 }
 
-// PipelineDef is the subset of a pipeline definition the preview prints. The
-// control plane serialises the Go domain.Pipeline with capitalised keys.
+// PipelineDef is the subset of a pipeline definition the preview prints,
+// matching the endpoint's explicit lower-case DTO.
 type PipelineDef struct {
-	Stages []string `json:"Stages"`
+	Stages []string `json:"stages"`
 	Jobs   []struct {
-		Name  string `json:"Name"`
-		Stage string `json:"Stage"`
-	} `json:"Jobs"`
+		Name  string `json:"name"`
+		Stage string `json:"stage"`
+	} `json:"jobs"`
 }
 
 // PipelineView is one pipeline's raw + effective definition. SystemManaged
