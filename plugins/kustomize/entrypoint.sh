@@ -149,8 +149,17 @@ case "${action}" in
         ;;
 
     apply)
-        echo "--- rendered manifests ---"
-        emit
+        # Echo the rendered manifest for traceability — but NOT when
+        # envsubst is active. The runner's log masker handles single-line
+        # values ≥4 chars, yet a multi-line PEM/cert or a short value can
+        # slip through, so a resolved secret could land in the log. kubectl
+        # still receives the real manifest over the pipe below.
+        if [ -n "${PLUGIN_ENVSUBST:-}" ] && [ "${PLUGIN_ENVSUBST}" != "false" ]; then
+            echo "--- rendered manifests omitted (envsubst enabled — avoids logging injected secrets) ---"
+        else
+            echo "--- rendered manifests ---"
+            emit
+        fi
         echo "--- applying ---"
 
         if [ "${PLUGIN_ENSURE_NAMESPACE:-false}" = "true" ]; then

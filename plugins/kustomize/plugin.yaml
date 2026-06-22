@@ -49,6 +49,10 @@ inputs:
       git). Both modes substitute ONLY set variables, so an unset ${...}
       survives untouched. Only files under path are processed — a base
       outside path is not.
+      SECURITY: with action=apply the rendered manifest is NOT echoed to
+      the log while envsubst is on, so a resolved secret can't leak there.
+      But action=build and action=diff print the rendered output by
+      definition — do NOT combine those with substituted secrets.
   wait:
     required: false
     default: "false"

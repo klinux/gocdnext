@@ -229,4 +229,29 @@ PLUGIN_PATH="$TMP/overlay" PLUGIN_WAIT=true run >/dev/null 2>&1 || fail "wait (m
 grep -q "rollout status Deployment/web --namespace othns" "$TMP/kubectl.log" \
     || fail "rollout didn't use the manifest's metadata.namespace"
 
+# ── 17. apply + envsubst must NOT echo the resolved secret to the log
+#        (rendered-manifest dump is suppressed), yet kubectl still gets it ──
+if command -v envsubst >/dev/null 2>&1; then
+    cat >"$TMP/overlay/deployment.yaml" <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web }
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          env:
+            - name: TOKEN
+              value: "${MYSECRET}"
+EOF
+    reset
+    secret="s3cr3t-value-xyz"
+    out="$(PLUGIN_PATH="$TMP/overlay" MYSECRET="$secret" PLUGIN_ENVSUBST="MYSECRET" run 2>&1)" \
+        || fail "apply+envsubst run failed"
+    printf '%s' "$out" | grep -q "$secret" && fail "resolved secret leaked to the log"
+    printf '%s' "$out" | grep -q "omitted (envsubst enabled" || fail "missing the omitted-render notice"
+    grep -q "$secret" "$TMP/kubectl.stdin" || fail "apply didn't receive the resolved manifest"
+fi
+
 echo "PASS: kustomize entrypoint"
