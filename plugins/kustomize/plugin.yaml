@@ -1,124 +1,160 @@
 name: kustomize
 category: deploy
 description: >
-  Render a kustomization tree and (optionally) apply or diff it
-  against a cluster. Bundles the official `kustomize` binary +
-  `kubectl` so operators don't pipe between containers — pick an
-  action and the plugin does the rest. Kubeconfig discovery
-  mirrors the kubectl + helm plugins (path / inline / base64),
-  so all three deploy plugins share one convention.
+  Render a kustomization tree and apply / build / diff / validate it
+  against a cluster. Bundles `kustomize` + `kubectl` so operators don't
+  pipe between containers. Beyond a plain apply it can set image tags
+  (deploy the freshly built image), substitute ${VAR} placeholders from
+  the job env (inject project secrets without committing them), and wait
+  for the rollout to become healthy so a green deploy means "rolled out",
+  not just "submitted". Kubeconfig discovery mirrors the kubectl + helm
+  plugins (path / inline / base64), and the cluster-registry `cluster:`
+  key feeds it — all three deploy plugins share one convention.
 
 inputs:
   path:
     required: true
     description: >
-      Workspace-relative path to the kustomization root (folder
-      with kustomization.yaml). Example: deploy/overlays/prod.
+      Workspace-relative path to the kustomization root (folder with
+      kustomization.yaml). Example: deploy/overlays/prod.
   action:
     required: false
     default: apply
     description: >
-      apply | build | diff. apply renders + kubectl apply; build
-      renders to stdout only; diff renders + kubectl diff (exit
-      1 on differences is not a failure — only ≥2 fails the job).
-  kubeconfig:
+      apply | build | diff | validate.
+      apply renders + kubectl apply (+ optional wait);
+      build renders to stdout only;
+      diff renders + kubectl diff (exit 1 on differences is not a
+      failure — only ≥2 fails the job);
+      validate renders + kubectl apply --dry-run=server (catches
+      schema/admission errors without touching the cluster).
+  images:
     required: false
     description: >
-      Kubeconfig source: path under /workspace, raw YAML, or
-      base64-encoded YAML. Auto-detected. Empty defers to the
-      agent's in-cluster service account.
+      Image overrides applied with `kustomize edit set image` before
+      render. Newline- or comma-separated, each "name=registry/img:tag"
+      or "name=registry/img@sha256:...". The idiomatic CD use: pin the
+      freshly built tag, e.g. app=ghcr.io/org/app:${CI_COMMIT_SHORT_SHA},
+      so the committed overlay holds only a placeholder tag.
+  envsubst:
+    required: false
+    description: >
+      Substitute ${VAR} placeholders from the job env, in place on the
+      source *.yaml under path, BEFORE kustomize build (so source quoting
+      is preserved — a secret with YAML-special chars stays valid). "true"
+      substitutes every variable currently set in the env; a comma/space
+      list ("DB_PASSWORD,API_TOKEN") restricts to those names — the
+      recommended form for injecting project secrets (the value lives in
+      the masked job env + the source holds ${NAME}, so it never enters
+      git). Both modes substitute ONLY set variables, so an unset ${...}
+      survives untouched. Only files under path are processed — a base
+      outside path is not.
+  wait:
+    required: false
+    default: "false"
+    description: >
+      "true" → after apply, `kubectl rollout status` each Deployment /
+      StatefulSet / DaemonSet — the workload list (and each one's
+      namespace) is parsed from the already-rendered manifests, offline
+      (no server roundtrip); the manifest's metadata.namespace wins, else
+      namespace, else the context default. On failure the job dumps recent
+      events + a describe and fails. Makes deploy-success mean "rolled
+      out", not "submitted".
+  wait_timeout:
+    required: false
+    default: "120s"
+    description: Per-workload rollout timeout (Go duration, e.g. 180s, 5m).
+  ensure_namespace:
+    required: false
+    default: "false"
+    description: >
+      "true" → create `namespace` if it doesn't exist before apply
+      (deploy to an ephemeral / fresh namespace). Requires namespace.
   namespace:
     required: false
     description: >
-      Default namespace passed as `--namespace`. Manifests with
-      an explicit `metadata.namespace` win.
+      Default namespace passed as `--namespace`. Manifests with an
+      explicit metadata.namespace win.
+  server_side:
+    required: false
+    default: "false"
+    description: '"true" → kubectl apply --server-side (field-manager apply).'
+  enable_helm:
+    required: false
+    default: "false"
+    description: '"true" → `kustomize build --enable-helm` (inflate helmCharts: entries).'
   prune:
     required: false
     default: "false"
     description: >
-      "true" enables `kubectl apply --prune` so resources removed
-      from the kustomization are deleted from the cluster.
-      Requires prune_label.
+      "true" enables `kubectl apply --prune` so resources removed from
+      the kustomization are deleted from the cluster. Requires prune_label.
   prune_label:
     required: false
     description: >
       Label selector used with prune (e.g.
-      `app.kubernetes.io/managed-by=gocdnext`). Required when
-      prune=true.
+      app.kubernetes.io/managed-by=gocdnext). Required when prune=true.
+  kubeconfig:
+    required: false
+    description: >
+      Kubeconfig source: path under /workspace, raw YAML, or base64 YAML.
+      Auto-detected. Empty defers to the agent's in-cluster service
+      account. Usually supplied by the cluster registry (`cluster:`).
   extra_args:
     required: false
     description: >
-      Forwarded verbatim to `kubectl apply` (e.g.
-      `--server-side --force-conflicts`).
+      Forwarded verbatim to `kubectl apply` (e.g. --force-conflicts).
 
 examples:
-  - name: deploy prod overlay
+  - name: deploy a freshly built image and wait for rollout
     description: >
-      Typical CD shape — render the prod overlay and apply.
-      Kubeconfig comes from a project secret; namespace pinned
-      so manifests without ns inherit it.
+      The canonical CD shape — set the image tag from the build, apply
+      the overlay to the registered cluster, and block until the rollout
+      is healthy. Kubeconfig comes from the cluster registry.
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
+      cluster: prod
       with:
         path: deploy/overlays/prod
-        kubeconfig: ${{ KUBECONFIG_PROD }}
-        namespace: api
-      secrets: [KUBECONFIG_PROD]
+        namespace: apps
+        # `with:` values are strings — one image per line (or comma-separated).
+        images: |
+          app=ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
+        wait: "true"
+        wait_timeout: 180s
 
-  - name: dry-run diff before apply
+  - name: inject a project secret without committing it
     description: >
-      Two-step canary deploy: first render + diff so reviewers
-      see what's about to change, then a separate apply step
-      gated by an approval. Diff exits 0 even when there are
-      differences (kubectl exit 1 is not a job failure).
-    yaml: |
-      jobs:
-        diff-prod:
-          stage: review
-          uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
-          with:
-            path: deploy/overlays/prod
-            action: diff
-            kubeconfig: ${{ KUBECONFIG_PROD }}
-          secrets: [KUBECONFIG_PROD]
-
-        approve-prod:
-          stage: deploy
-          approval:
-            approvers: [release-managers]
-            description: "Promote ${CI_COMMIT_SHORT_SHA} to prod?"
-
-        apply-prod:
-          stage: deploy
-          needs: [approve-prod]
-          uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
-          with:
-            path: deploy/overlays/prod
-            kubeconfig: ${{ KUBECONFIG_PROD }}
-          secrets: [KUBECONFIG_PROD]
-
-  - name: prune dropped resources
-    description: >
-      Apply with prune so a manifest deleted from the kustomization
-      gets cleaned up from the cluster. The label selector is
-      what `apply --prune` uses to know which existing resources
-      to consider for deletion — set it on every kustomization
-      via a `commonLabels:` block so additions/removals stay in
-      sync.
+      The overlay holds `${DB_PASSWORD}` placeholders; the value
+      is a masked project secret in the job env. envsubst (restricted to
+      the named vars) resolves them at deploy — nothing sensitive lands
+      in git.
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
+      cluster: staging
+      secrets: [DB_PASSWORD, API_TOKEN]
       with:
         path: deploy/overlays/staging
-        kubeconfig: ${{ KUBECONFIG_STAGING }}
-        prune: "true"
-        prune_label: "app.kubernetes.io/managed-by=gocdnext"
-      secrets: [KUBECONFIG_STAGING]
+        namespace: apps
+        images: "app=ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}"
+        envsubst: "DB_PASSWORD,API_TOKEN"
+        wait: "true"
 
-  - name: render to artifacts (no apply)
+  - name: validate manifests on a PR (no cluster mutation)
     description: >
-      Use the build action when the rendered YAML is the output
-      itself — for review pipelines that publish the manifests
-      as an artifact rather than applying them.
+      Server dry-run catches schema + admission errors before merge.
+      Pair with diff to show reviewers what would change.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
+      cluster: staging
+      with:
+        path: deploy/overlays/staging
+        action: validate
+
+  - name: render to an artifact (no apply)
+    description: >
+      Use build when the rendered YAML is the output — for review
+      pipelines that publish manifests rather than applying them.
     yaml: |
       uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
       with:
@@ -126,3 +162,17 @@ examples:
         action: build
       artifacts:
         paths: [rendered.yaml]
+
+  - name: prune dropped resources
+    description: >
+      Apply with prune so a manifest deleted from the kustomization gets
+      cleaned up. The label selector is what `apply --prune` uses to know
+      which existing resources to consider — set it via a commonLabels:
+      block on every kustomization.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-kustomize@v1
+      cluster: prod
+      with:
+        path: deploy/overlays/prod
+        prune: "true"
+        prune_label: "app.kubernetes.io/managed-by=gocdnext"
