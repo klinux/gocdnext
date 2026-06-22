@@ -134,6 +134,36 @@ ORDER BY p.priority, p.name;
 -- re-merged with current policies to refresh the effective definition.
 SELECT id, definition_raw FROM pipelines WHERE project_id = $1;
 
+-- name: ListPipelinesForPreview :many
+-- Admin "preview effective pipeline": both the pre-policy (raw) and post-merge
+-- (effective) definitions for every pipeline of a project, server-owned
+-- synthetic pipeline first, then repo pipelines by name — a stable order for
+-- the preview panel.
+SELECT name, system_managed, definition_raw, definition
+FROM pipelines
+WHERE project_id = $1
+ORDER BY system_managed DESC, name;
+
+-- name: ResolvePoliciesByFrameworks :many
+-- What-if preview: every enabled policy that WOULD apply to a project carrying
+-- the given framework set — global (applies_to_all) or targeting any of them.
+-- An empty array yields only global policies (a project with no frameworks).
+-- Mirrors ResolvePoliciesForProject but keys off a hypothetical framework set
+-- instead of the project's stored assignment, and never reads project_frameworks.
+SELECT DISTINCT p.id, p.name, p.mode, p.priority,
+       p.position_before, p.position_after, p.config
+FROM compliance_policies p
+WHERE p.enabled = TRUE
+  AND (
+    p.applies_to_all = TRUE
+    OR EXISTS (
+      SELECT 1
+      FROM policy_frameworks pf
+      WHERE pf.policy_id = p.id AND pf.framework_id = ANY($1::uuid[])
+    )
+  )
+ORDER BY p.priority, p.name;
+
 -- name: ListPipelineKindsByProject :many
 -- Governance reconciliation: each pipeline's id/name plus whether it is the
 -- server-owned synthetic pipeline (system_managed). Repo pipelines are those

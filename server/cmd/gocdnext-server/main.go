@@ -799,6 +799,7 @@ func main() {
 		p.Delete("/api/v1/admin/compliance/policies/{id}", adminHandler.DeleteCompliancePolicy)
 		p.Get("/api/v1/admin/projects/{slug}/frameworks", adminHandler.ProjectFrameworks)
 		p.Put("/api/v1/admin/projects/{slug}/frameworks", adminHandler.SetProjectFrameworks)
+		p.Get("/api/v1/admin/projects/{slug}/effective-pipeline", adminHandler.EffectivePipelinePreview)
 		p.Get("/api/v1/admin/auth/providers", authProvidersHandler.List)
 		p.Post("/api/v1/admin/auth/providers", authProvidersHandler.Upsert)
 		p.Delete("/api/v1/admin/auth/providers/{id}", authProvidersHandler.Delete)

@@ -491,6 +491,49 @@ func (q *Queries) ListPipelineRawByProject(ctx context.Context, projectID pgtype
 	return items, nil
 }
 
+const listPipelinesForPreview = `-- name: ListPipelinesForPreview :many
+SELECT name, system_managed, definition_raw, definition
+FROM pipelines
+WHERE project_id = $1
+ORDER BY system_managed DESC, name
+`
+
+type ListPipelinesForPreviewRow struct {
+	Name          string
+	SystemManaged bool
+	DefinitionRaw []byte
+	Definition    []byte
+}
+
+// Admin "preview effective pipeline": both the pre-policy (raw) and post-merge
+// (effective) definitions for every pipeline of a project, server-owned
+// synthetic pipeline first, then repo pipelines by name — a stable order for
+// the preview panel.
+func (q *Queries) ListPipelinesForPreview(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesForPreviewRow, error) {
+	rows, err := q.db.Query(ctx, listPipelinesForPreview, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPipelinesForPreviewRow{}
+	for rows.Next() {
+		var i ListPipelinesForPreviewRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.SystemManaged,
+			&i.DefinitionRaw,
+			&i.Definition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPolicyConfigsExcept = `-- name: ListPolicyConfigsExcept :many
 SELECT id, name, config FROM compliance_policies WHERE id <> $1
 `
@@ -544,6 +587,65 @@ func (q *Queries) ListProjectIDsByFrameworks(ctx context.Context, dollar_1 []pgt
 			return nil, err
 		}
 		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const resolvePoliciesByFrameworks = `-- name: ResolvePoliciesByFrameworks :many
+SELECT DISTINCT p.id, p.name, p.mode, p.priority,
+       p.position_before, p.position_after, p.config
+FROM compliance_policies p
+WHERE p.enabled = TRUE
+  AND (
+    p.applies_to_all = TRUE
+    OR EXISTS (
+      SELECT 1
+      FROM policy_frameworks pf
+      WHERE pf.policy_id = p.id AND pf.framework_id = ANY($1::uuid[])
+    )
+  )
+ORDER BY p.priority, p.name
+`
+
+type ResolvePoliciesByFrameworksRow struct {
+	ID             pgtype.UUID
+	Name           string
+	Mode           string
+	Priority       int32
+	PositionBefore string
+	PositionAfter  string
+	Config         []byte
+}
+
+// What-if preview: every enabled policy that WOULD apply to a project carrying
+// the given framework set — global (applies_to_all) or targeting any of them.
+// An empty array yields only global policies (a project with no frameworks).
+// Mirrors ResolvePoliciesForProject but keys off a hypothetical framework set
+// instead of the project's stored assignment, and never reads project_frameworks.
+func (q *Queries) ResolvePoliciesByFrameworks(ctx context.Context, dollar_1 []pgtype.UUID) ([]ResolvePoliciesByFrameworksRow, error) {
+	rows, err := q.db.Query(ctx, resolvePoliciesByFrameworks, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ResolvePoliciesByFrameworksRow{}
+	for rows.Next() {
+		var i ResolvePoliciesByFrameworksRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Mode,
+			&i.Priority,
+			&i.PositionBefore,
+			&i.PositionAfter,
+			&i.Config,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
