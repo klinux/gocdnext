@@ -92,7 +92,9 @@ export function StorageForm({ initial }: Props) {
     );
   }, [config.source]);
 
-  const credsConfigured = config.credential_keys.length > 0;
+  // credential_keys can be null (Go nil []string for a DB row with no credential
+  // blob) — coalesce so a no-credential override doesn't crash the form.
+  const credsConfigured = (config.credential_keys ?? []).length > 0;
   const credsEditable = !credsConfigured || replaceCreds;
   const dbBacked = config.source === "db";
 

@@ -119,13 +119,15 @@ export async function listGlobalSecrets(
 
 // StorageConfig is what the /api/v1/admin/storage GET returns.
 // `value` carries non-secret backend config; `credential_keys`
-// is a name-only list (server never echoes credential VALUES).
-// `source` distinguishes the DB override from the env fallback —
-// the UI shows a different banner per source.
+// is a name-only list (server never echoes credential VALUES). It
+// may be `null`: the field is a Go []string and a DB row with no
+// credential blob marshals nil as JSON null — readers must treat
+// null as "none". `source` distinguishes the DB override from the
+// env fallback — the UI shows a different banner per source.
 export type StorageConfig = {
   backend: "filesystem" | "s3" | "gcs";
   value: Record<string, unknown>;
-  credential_keys: string[];
+  credential_keys: string[] | null;
   updated_at?: string;
   updated_by?: string;
   source: "db" | "env";
