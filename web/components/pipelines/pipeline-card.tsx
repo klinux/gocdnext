@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Clock,
   GitBranch,
+  ShieldCheck,
 } from "lucide-react";
 
 import { EntityChip } from "@/components/shared/entity-chip";
@@ -20,6 +21,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Badge } from "@/components/ui/badge";
+import { isCompliancePipeline } from "@/lib/compliance";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
 import { PipelineStageStrip } from "@/components/pipelines/pipeline-stage-strip";
 import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-sheet.client";
@@ -153,6 +156,21 @@ export function PipelineCard({
                 Open pipeline overview
               </TooltipContent>
             </Tooltip>
+            {isCompliancePipeline(pipeline.name) ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Badge variant="secondary" className="shrink-0 gap-1">
+                      <ShieldCheck className="size-3" aria-hidden />
+                      compliance
+                    </Badge>
+                  }
+                />
+                <TooltipContent>
+                  Server-managed compliance pipeline — runs enforced policy jobs
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
             {bottleneck ? (
               <BottleneckPill bottleneck={bottleneck} />
             ) : null}

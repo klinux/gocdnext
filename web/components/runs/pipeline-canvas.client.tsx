@@ -9,6 +9,7 @@ import {
   Loader2,
   MinusCircle,
   Server,
+  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -19,6 +20,7 @@ import { LiveDuration } from "@/components/shared/live-duration";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchServices } from "@/components/runs/run-services.client";
 import { isTerminalStatus } from "@/lib/status";
+import { isComplianceEntry } from "@/lib/compliance";
 import type { JobDetail, RunService, StageDetail } from "@/types/api";
 
 type Props = {
@@ -340,6 +342,12 @@ function JobPill({ job }: { job: JobDetail }) {
       title={job.error || undefined}
     >
       <StatusGlyph status={job.status} className={cn("size-3.5", tone.glyph)} />
+      {isComplianceEntry(job.name) ? (
+        <ShieldCheck
+          className="size-3 shrink-0 text-primary"
+          aria-label="Enforced by a compliance policy"
+        />
+      ) : null}
       <span className={cn("flex-1 truncate font-mono", tone.text)}>{label}</span>
       <LiveDuration
         startedAt={job.started_at}

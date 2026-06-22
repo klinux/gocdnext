@@ -85,3 +85,17 @@ describe("JobCard — Canceling badge", () => {
     expect(screen.queryByText(/Canceling/i)).toBeNull();
   });
 });
+
+describe("JobCard — compliance enforced badge", () => {
+  // A policy-injected job (reserved `_compliance_` prefix) is badged "enforced"
+  // so a dev can tell it apart from the repo's own jobs.
+  it("badges a `_compliance_`-prefixed job as enforced", () => {
+    render(<JobCard job={makeJob({ name: "_compliance_scan" })} runID="run-1" />);
+    expect(screen.getByText(/enforced/i)).toBeTruthy();
+  });
+
+  it("does not badge a repo-authored job", () => {
+    render(<JobCard job={makeJob({ name: "compile" })} runID="run-1" />);
+    expect(screen.queryByText(/enforced/i)).toBeNull();
+  });
+});
