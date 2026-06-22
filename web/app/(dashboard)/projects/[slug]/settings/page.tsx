@@ -122,7 +122,14 @@ export default async function ProjectSettingsPage({
       ) : null}
 
       {isAdmin ? (
+        // Reset the preview's internal state when the assignment changes: saving
+        // frameworks above revalidates this page, so a new assignment streams
+        // fresh `assignedIDs` + `initial`. Keying on the assignment remounts the
+        // preview so it reflects the just-saved governance (and any in-progress
+        // what-if for the OLD set is correctly discarded). An unrelated
+        // revalidation keeps the same key, preserving an active what-if.
         <ProjectCompliancePreview
+          key={[...assignedIDs].sort().join(",")}
           slug={slug}
           frameworks={allFrameworks}
           assignedIDs={assignedIDs}

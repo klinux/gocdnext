@@ -154,9 +154,9 @@ export function ProjectCompliancePreview({
 }
 
 function PipelinePreview({ view }: { view: EffectivePipelinePreview }) {
-  const stages = view.effective.Stages ?? [];
-  const jobs = view.effective.Jobs ?? [];
-  const enforcedJobs = jobs.filter((j) => isComplianceEntry(j.Name)).length;
+  const stages = view.effective.stages;
+  const jobs = view.effective.jobs;
+  const enforcedJobs = jobs.filter((j) => isComplianceEntry(j.name)).length;
 
   return (
     <div className="space-y-2 rounded-md border p-3">
@@ -190,11 +190,11 @@ function PipelinePreview({ view }: { view: EffectivePipelinePreview }) {
       {jobs.length > 0 ? (
         <ul className="space-y-1 text-sm">
           {jobs.map((j) => {
-            const enforced = isComplianceEntry(j.Name);
+            const enforced = isComplianceEntry(j.name);
             return (
-              <li key={j.Name} className="flex items-center gap-2">
-                <span className={cn(enforced && "font-medium")}>{j.Name}</span>
-                <span className="text-xs text-muted-foreground">({j.Stage})</span>
+              <li key={j.name} className="flex items-center gap-2">
+                <span className={cn(enforced && "font-medium")}>{j.name}</span>
+                <span className="text-xs text-muted-foreground">({j.stage})</span>
                 {enforced ? (
                   <Badge variant="default" className="gap-1">
                     <ShieldCheck className="size-3" />

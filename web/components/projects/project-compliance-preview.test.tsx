@@ -30,12 +30,12 @@ const stored: EffectivePipelinePreview[] = [
   {
     name: "main",
     system_managed: false,
-    raw: { Stages: ["build"], Jobs: [{ Name: "compile", Stage: "build" }] },
+    raw: { stages: ["build"], jobs: [{ name: "compile", stage: "build" }] },
     effective: {
-      Stages: ["_compliance_scan", "build"],
-      Jobs: [
-        { Name: "_compliance_scan", Stage: "_compliance_scan" },
-        { Name: "compile", Stage: "build" },
+      stages: ["_compliance_scan", "build"],
+      jobs: [
+        { name: "_compliance_scan", stage: "_compliance_scan" },
+        { name: "compile", stage: "build" },
       ],
     },
   },
@@ -45,10 +45,10 @@ const whatIfResult: EffectivePipelinePreview[] = [
   {
     name: "_compliance",
     system_managed: true,
-    raw: { Stages: null, Jobs: null },
+    raw: { stages: [], jobs: [] },
     effective: {
-      Stages: ["_compliance_scan"],
-      Jobs: [{ Name: "_compliance_scan", Stage: "_compliance_scan" }],
+      stages: ["_compliance_scan"],
+      jobs: [{ name: "_compliance_scan", stage: "_compliance_scan" }],
     },
   },
 ];

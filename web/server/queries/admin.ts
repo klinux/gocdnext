@@ -358,12 +358,11 @@ export async function getProjectFrameworks(
 }
 
 // PipelineDefView is the subset of a pipeline definition the preview renders.
-// The control plane serialises the Go domain.Pipeline with capitalised keys
-// (no JSON tags), so these match the wire shape exactly. Stages/Jobs are
-// nullable because an empty definition marshals them as null.
+// The endpoint returns an explicit lower-case DTO (not the raw Go
+// domain.Pipeline); empty collections come back as `[]`, never null.
 export type PipelineDefView = {
-  Stages: string[] | null;
-  Jobs: { Name: string; Stage: string }[] | null;
+  stages: string[];
+  jobs: { name: string; stage: string }[];
 };
 
 // EffectivePipelinePreview is one pipeline's pre-policy (raw) and post-merge
