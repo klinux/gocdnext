@@ -108,6 +108,9 @@ inputs:
     required: false
     description: >
       Forwarded verbatim to `kubectl apply` (e.g. --force-conflicts).
+      SECURITY: with envsubst on, don't pass args that print the applied
+      object (e.g. -o yaml / -o json) — kubectl would echo the resolved
+      secret back to the log.
 
 examples:
   - name: deploy a freshly built image and wait for rollout
