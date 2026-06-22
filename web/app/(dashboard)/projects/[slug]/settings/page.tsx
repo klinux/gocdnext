@@ -4,15 +4,18 @@ import type { Metadata } from "next";
 import { ProjectPollSettings } from "@/components/projects/project-poll-settings.client";
 import { ProjectLogArchiveSettings } from "@/components/projects/project-log-archive-settings.client";
 import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
+import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
 import {
   GocdnextAPIError,
   getProjectDetail,
   getProjectLogArchive,
 } from "@/server/queries/projects";
 import {
+  getEffectivePipelinePreview,
   getProjectFrameworks,
   listComplianceFrameworks,
   type ComplianceFramework,
+  type EffectivePipelinePreview,
 } from "@/server/queries/admin";
 import { resolveAuthState } from "@/server/queries/auth";
 
@@ -66,14 +69,20 @@ export default async function ProjectSettingsPage({
     (auth.mode === "authenticated" && auth.user.role === "admin");
   let allFrameworks: ComplianceFramework[] = [];
   let assignedIDs: string[] = [];
+  // Stored ("what runs today") preview is server-rendered; the what-if recompute
+  // is interactive (client → action). Defaults to empty so a fetch failure just
+  // hides the preview rather than breaking the page.
+  let preview: EffectivePipelinePreview[] = [];
   if (isAdmin) {
     try {
-      const [all, assigned] = await Promise.all([
+      const [all, assigned, effective] = await Promise.all([
         listComplianceFrameworks(),
         getProjectFrameworks(slug),
+        getEffectivePipelinePreview(slug),
       ]);
       allFrameworks = all;
       assignedIDs = assigned.map((f) => f.id);
+      preview = effective;
     } catch {
       allFrameworks = [];
     }
@@ -109,6 +118,15 @@ export default async function ProjectSettingsPage({
           slug={slug}
           frameworks={allFrameworks}
           assignedIDs={assignedIDs}
+        />
+      ) : null}
+
+      {isAdmin ? (
+        <ProjectCompliancePreview
+          slug={slug}
+          frameworks={allFrameworks}
+          assignedIDs={assignedIDs}
+          initial={preview}
         />
       ) : null}
     </section>
