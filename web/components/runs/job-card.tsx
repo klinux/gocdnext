@@ -6,12 +6,14 @@ import {
   Gavel,
   Loader2,
   Minus,
+  ShieldCheck,
   TriangleAlert,
   X,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
+import { isComplianceEntry } from "@/lib/compliance";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { LogPane } from "@/components/runs/log-pane.client";
@@ -54,6 +56,9 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
   const decided = job.approval_gate && !!job.decision;
   const isNotify = job.name.startsWith(SYNTH_NOTIFY_PREFIX);
   const displayName = isNotify ? job.notify_uses || job.name : job.name;
+  // Policy-injected job (reserved `_compliance_` prefix): enforced, can't be
+  // removed from the repo — badge it so devs distinguish it from their own.
+  const isCompliance = isComplianceEntry(job.name);
   // Cancel intent landed but agent hasn't acknowledged yet — the
   // server keeps status="running" until the JobResult arrives.
   // We render the badge in BOTH the running case (operator-facing
@@ -107,6 +112,16 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
           <span className="font-mono text-[11px] text-muted-foreground">
             [{job.matrix_key}]
           </span>
+        ) : null}
+        {isCompliance ? (
+          <Badge
+            variant="default"
+            className="gap-1"
+            title="Enforced by a compliance policy — can't be removed from the repo"
+          >
+            <ShieldCheck className="size-3" aria-hidden />
+            enforced
+          </Badge>
         ) : null}
         {isCanceling ? (
           <Badge
