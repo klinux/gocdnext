@@ -2017,11 +2017,16 @@ components:
 
     CompliancePolicyWrite:
       type: object
-      required: [name, config_yaml]
+      required: [name, config_yaml, enabled]
       properties:
         name: { type: string, example: "pci-scan" }
         description: { type: string }
-        enabled: { type: boolean, default: true }
+        enabled:
+          type: boolean
+          description: |
+            Required — the server applies no default. Omitting it creates the
+            policy DISABLED (the Go zero value is false), so callers must set it
+            explicitly. Unlike `mode`, this field is not normalised server-side.
         mode: { type: string, enum: [inject, override], default: inject }
         priority: { type: integer, default: 0 }
         applies_to_all: { type: boolean, default: false }
