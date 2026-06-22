@@ -88,6 +88,7 @@ export default defineConfig({
             { label: "External secret backends", link: "/concepts/external-secrets/" },
             { label: "Cache strategies", link: "/concepts/cache/" },
             { label: "Approval gates", link: "/concepts/approvals/" },
+            { label: "Compliance pipelines", link: "/concepts/compliance/" },
             { label: "Deployments & rollback", link: "/concepts/deployments/" },
             { label: "OIDC id_tokens", link: "/concepts/id-tokens/" },
             { label: "Database migrations", link: "/concepts/migrations/" },
