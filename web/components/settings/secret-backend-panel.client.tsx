@@ -63,7 +63,7 @@ export function SecretBackendPanel({ backend }: Props) {
   const label = SOURCE_LABELS[source];
   const [origin, setOrigin] = useState(backend.source_origin);
   const [credConfigured, setCredConfigured] = useState(
-    backend.credential_keys.length > 0,
+    (backend.credential_keys ?? []).length > 0,
   );
   const [draft, setDraft] = useState<BackendDraft>(() => draftFrom(backend));
   const [probe, setProbe] = useState<SecretBackendProbeResult | null>(null);
@@ -166,7 +166,10 @@ export function SecretBackendPanel({ backend }: Props) {
         return;
       }
       setOrigin(res.data.source_origin);
-      setCredConfigured(res.data.credential_keys.length > 0);
+      // credential_keys is a Go []string: a save with no credential (e.g. GCP
+      // with project only) marshals it as null, not []. Guard so the client
+      // doesn't crash on null/undefined.
+      setCredConfigured((res.data.credential_keys ?? []).length > 0);
       setDraft((d) => ({ ...d, secretId: "", token: "" }));
       setProbe(null);
       toast.success(`${label} saved`);
