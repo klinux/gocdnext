@@ -8,6 +8,36 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Compliance pipelines — visibility (Phase 3).** See what enforced compliance
+  actually adds to a project, without running anything (builds on the Phase 1/2
+  enforcement shipped in v0.48.0):
+  - **Effective-pipeline preview (API + UI).** A read-only admin endpoint,
+    `GET /api/v1/admin/projects/{slug}/effective-pipeline`, returns each
+    pipeline's pre-policy (`raw`) and post-merge (`effective`) definition.
+    `?frameworks=a,b` previews a hypothetical framework set ("what-if") without
+    persisting anything (refused when that governance couldn't be enforced, e.g.
+    no SCM source). Surfaced as an *Effective pipeline preview* card on a
+    project's Settings page with a what-if toggle.
+  - **Enforced / synthetic badges.** Policy-injected jobs are badged *enforced*
+    in the run view (job card + pipeline canvas), and the server-managed
+    synthetic `_compliance` pipeline is badged in the pipeline list — so
+    developers can tell mandatory steps apart from their own.
+  - **Docs.** New *Compliance pipelines* concept page (frameworks, policies,
+    inject/override, enforcement guarantees, authoring) with a worked how-to,
+    and the compliance admin REST API documented in the OpenAPI spec.
+  - **CLI.** Read-only `gocdnext compliance frameworks list`,
+    `gocdnext compliance policies list`, and
+    `gocdnext compliance effective-pipeline <slug> [--frameworks …]`.
+
+### Fixed
+
+- **Secret backends UI:** a backend saved with no credential (e.g. GCP with a
+  project but no service-account JSON) returned `credential_keys` as JSON `null`,
+  crashing the *Settings → Secret backends* panel. The panel now treats a null
+  credential list as "none".
+
 ## v0.48.0 — 2026-06-21
 
 ### Added
