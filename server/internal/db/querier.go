@@ -897,6 +897,11 @@ type Querier interface {
 	// stage names from the YAML when the pipeline has never run
 	// (no stage_runs yet → no history to render from).
 	ListPipelinesByProjectSlug(ctx context.Context, slug string) ([]ListPipelinesByProjectSlugRow, error)
+	// Admin "preview effective pipeline": both the pre-policy (raw) and post-merge
+	// (effective) definitions for every pipeline of a project, server-owned
+	// synthetic pipeline first, then repo pipelines by name — a stable order for
+	// the preview panel.
+	ListPipelinesForPreview(ctx context.Context, projectID pgtype.UUID) ([]ListPipelinesForPreviewRow, error)
 	// Used at create/update to detect job/stage name collisions across policies
 	// (two policies must not both own `_compliance_scan` — they would produce
 	// duplicate job_runs). Pass uuid.Nil on create to compare against all.
@@ -1208,6 +1213,12 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
+	// What-if preview: every enabled policy that WOULD apply to a project carrying
+	// the given framework set — global (applies_to_all) or targeting any of them.
+	// An empty array yields only global policies (a project with no frameworks).
+	// Mirrors ResolvePoliciesForProject but keys off a hypothetical framework set
+	// instead of the project's stored assignment, and never reads project_frameworks.
+	ResolvePoliciesByFrameworks(ctx context.Context, dollar_1 []pgtype.UUID) ([]ResolvePoliciesByFrameworksRow, error)
 	// The apply-time hot path: every enabled policy that applies to a project —
 	// global (applies_to_all) or targeting a framework the project carries —
 	// with its compiled config + merge metadata, ordered deterministically.
