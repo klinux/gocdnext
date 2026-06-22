@@ -8,6 +8,36 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.50.0 — 2026-06-22
+
+### Added
+
+- **`kustomize` plugin — structured deploy.** Grows the plugin from
+  render+apply into a complete deploy step (backward-compatible — every new
+  input is optional):
+  - **`images`** pins one or more image tags/digests (`kustomize edit set
+    image`) before render, so a job deploys the image it just built without
+    committing the tag.
+  - **`envsubst`** substitutes `${VAR}` placeholders from the (masked) job
+    env in place, *before* build — the recommended way to inject a project
+    secret into a manifest without committing it. Only set variables are
+    substituted (an unset `${...}` survives); a listed-but-unset var fails
+    loud. With `action=apply` the rendered manifest is **not** echoed to the
+    log while envsubst is on, so a resolved secret can't leak there.
+  - **`wait` / `wait_timeout`** run `kubectl rollout status` on each
+    Deployment/StatefulSet/DaemonSet (parsed offline from the rendered
+    manifests, each in the namespace it was applied to) so deploy-success
+    means *rolled out*, not *submitted*.
+  - **`action: validate`** (server dry-run), **`ensure_namespace`**,
+    **`server_side`**, and **`enable_helm`**.
+
+### Fixed
+
+- **Plugin CI:** the `changed` job that picks which plugins to rebuild died
+  with `bad object` when a PR branch was force-pushed (amend/rebase) — the
+  recorded base SHA became unreachable. It now falls back to the merge-base
+  with `main` when the base is missing.
+
 ## v0.49.0 — 2026-06-22
 
 ### Added
