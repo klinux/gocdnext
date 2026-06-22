@@ -40,6 +40,7 @@ func main() {
 		runLocalCmd(),
 		applyCmd(),
 		secretCmd(),
+		complianceCmd(),
 		adminCmd(),
 		loginCmd(),
 		logoutCmd(),

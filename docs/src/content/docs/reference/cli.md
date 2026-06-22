@@ -33,6 +33,9 @@ gocdnext apply [path]   --slug <slug>     [flags...]
 gocdnext secret set <NAME>  --slug <slug> [flags...]
 gocdnext secret list        --slug <slug> [flags...]
 gocdnext secret rm  <NAME>  --slug <slug> [flags...]
+gocdnext compliance frameworks list           [--server <url>]
+gocdnext compliance policies list             [--server <url>]
+gocdnext compliance effective-pipeline <slug> [--frameworks a,b] [--server <url>]
 gocdnext admin create-user    --email <e> [flags...]
 gocdnext admin reset-password --email <e> [flags...]
 ```
@@ -128,6 +131,38 @@ history or `ps auxww`.
 Global (cross-project) secrets are managed from the dashboard at
 `/admin/secrets`. There is no CLI flow for global secrets today.
 
+## `compliance` — inspect frameworks, policies, effective pipeline
+
+Read-only inspection of the [compliance pipelines](/concepts/compliance/)
+surface. Authoring frameworks and policies stays in the dashboard
+(admin-only, separation of duties); the CLI only lists and previews.
+All three commands are admin-gated and use the same auth as `apply` /
+`secret` (`--server` / `GOCDNEXT_SERVER_URL`, bearer token from
+`gocdnext login` or `GOCDNEXT_TOKEN`).
+
+```bash
+# Framework catalogue. The first column is the id — feed it to --frameworks.
+gocdnext compliance frameworks list
+
+# Policies (metadata: mode, priority, targeting, enabled).
+gocdnext compliance policies list
+
+# Effective (post-merge) pipeline for a project. Jobs/stages a policy
+# injected are marked [enforced]; the synthetic pipeline [server-managed].
+gocdnext compliance effective-pipeline payments
+```
+
+Without `--frameworks`, `effective-pipeline` shows what runs today (the
+stored effective definition). With `--frameworks <id,id>` it is a
+**what-if** recompute for that hypothetical framework set — nothing is
+persisted, and (mirroring a real save) it is refused if that governance
+couldn't be enforced, e.g. a project with no SCM source:
+
+```bash
+# Preview what assigning PCI + SOC2 would enforce, before assigning them.
+gocdnext compliance effective-pipeline payments --frameworks 4f1c…,9ab2…
+```
+
 ## `admin create-user` — bootstrap local user
 
 Break-glass: writes directly to the Postgres `users` table. Use
@@ -221,8 +256,8 @@ parks there.
 
 | Var | Used by | Notes |
 |---|---|---|
-| `GOCDNEXT_SERVER_URL` | `login`, `logout`, `apply`, `secret` | HTTP URL of the server. Defaults to `http://localhost:8153`. |
-| `GOCDNEXT_TOKEN` | `apply`, `secret` | API token for Bearer auth. Overrides the config file — use in CI/bots. |
+| `GOCDNEXT_SERVER_URL` | `login`, `logout`, `apply`, `secret`, `compliance` | HTTP URL of the server. Defaults to `http://localhost:8153`. |
+| `GOCDNEXT_TOKEN` | `apply`, `secret`, `compliance` | API token for Bearer auth. Overrides the config file — use in CI/bots. |
 | `GOCDNEXT_DATABASE_URL` | `admin create-user`, `admin reset-password` | Postgres URL the server uses. Write access required. |
 
 ## Exit codes
