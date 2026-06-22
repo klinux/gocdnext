@@ -312,14 +312,16 @@ export type SecretBackendSource = "vault" | "gcp" | "aws";
 // `value` carries only NON-secret connection config (addr, region,
 // project, …). Credential VALUES never cross the wire —
 // `credential_keys` is ["configured"] when a credential is stored
-// (render a "•••• stored" badge), else []. `source_origin`
-// distinguishes a saved DB override ("db", editable/deletable) from
-// the env baseline ("env").
+// (render a "•••• stored" badge), else []. It may also be `null`: the
+// server field is a Go []string and a backend saved with no credential
+// (e.g. GCP with project only) marshals nil as JSON null — readers must
+// treat null as "none". `source_origin` distinguishes a saved DB
+// override ("db", editable/deletable) from the env baseline ("env").
 export type SecretBackend = {
   source: SecretBackendSource;
   enabled: boolean;
   value: Record<string, unknown>;
-  credential_keys: string[];
+  credential_keys: string[] | null;
   source_origin: "db" | "env";
   updated_at?: string;
 };

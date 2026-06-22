@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 
 import type { SecretBackend, SecretBackendProbeResult } from "@/types/api";
 import { SecretBackendsForm } from "./secret-backends-form.client";
@@ -10,9 +11,18 @@ import { selectOption } from "@/test/select";
 // save/test/delete; a unit test must never fire a real fetch. Each mock
 // takes the action's single input arg so `.mock.calls[i][0]` is the
 // dispatched payload we assert on.
+// Default response mirrors a real save with no credential: the server returns
+// credential_keys as null (Go nil []string), which is exactly the shape that
+// used to crash the panel. Tests that assert a stored credential override this.
 const setSecretBackend = vi.fn(async (_input: Record<string, unknown>) => ({
   ok: true as const,
-  data: {} as SecretBackend,
+  data: {
+    source: "gcp",
+    enabled: true,
+    value: {},
+    credential_keys: null,
+    source_origin: "db",
+  } satisfies SecretBackend,
 }));
 const deleteSecretBackend = vi.fn(async (_input: Record<string, unknown>) => ({
   ok: true as const,
@@ -59,6 +69,8 @@ beforeEach(() => {
   setSecretBackend.mockClear();
   deleteSecretBackend.mockClear();
   testSecretBackend.mockClear();
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.error).mockClear();
 });
 
 // panel returns the section for a given backend display name, scoped so
@@ -257,6 +269,10 @@ describe("SecretBackendsForm dispatch", () => {
     expect(arg.value).toMatchObject({ project: "my-project" });
     expect(arg.credentials).toBeUndefined();
     expect(arg.preserve_credentials).toBeUndefined();
+    // Regression: the server returns credential_keys: null for a no-credential
+    // save. The handler must complete (success toast) rather than throw on
+    // null.length. (vi.mock("sonner") makes toast.success a spy.)
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
   });
 
   it("saves AWS with region and no credentials field", async () => {
