@@ -179,6 +179,46 @@ func TestPreviewEffective_UnknownProject(t *testing.T) {
 	}
 }
 
+// The what-if preview must refuse a hypothetical governance the real save would
+// reject — a governed project with no SCM source can't be enforced (the trigger
+// is push-driven). Otherwise the preview would show a state assignment rejects.
+func TestPreviewEffective_WhatIfRefusesRepoPipelineWithoutSCM(t *testing.T) {
+	s, ctx := newComplianceStore(t)
+	// A project WITH a pipeline but NO scm binding. Ungoverned at apply time
+	// (the framework below isn't assigned), so ApplyProject succeeds.
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "nobind", Name: "nobind",
+		Pipelines: []*domain.Pipeline{{
+			Name: "main", Stages: []string{"build"},
+			Jobs: []domain.Job{{Name: "compile", Stage: "build"}},
+		}},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	fw := mustFramework(t, s, ctx, "PCI")
+	mustPolicy(t, s, ctx, "pci-scan", []string{fw.ID})
+
+	whatIf := []string{fw.ID}
+	if _, err := s.PreviewEffectivePipelines(ctx, "nobind", &whatIf); !errors.Is(err, store.ErrComplianceWouldDropEnforcement) {
+		t.Fatalf("want ErrComplianceWouldDropEnforcement, got %v", err)
+	}
+}
+
+func TestPreviewEffective_WhatIfRefusesPipelinelessWithoutSCM(t *testing.T) {
+	s, ctx := newComplianceStore(t)
+	// Empty project, no scm binding, ungoverned → ApplyProject succeeds.
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "empty", Name: "empty"}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	fw := mustFramework(t, s, ctx, "PCI")
+	mustPolicy(t, s, ctx, "pci-scan", []string{fw.ID})
+
+	whatIf := []string{fw.ID}
+	if _, err := s.PreviewEffectivePipelines(ctx, "empty", &whatIf); !errors.Is(err, store.ErrComplianceWouldDropEnforcement) {
+		t.Fatalf("want ErrComplianceWouldDropEnforcement, got %v", err)
+	}
+}
+
 // --- small builders kept local to the preview suite ---
 
 func mustFramework(t *testing.T, s *store.Store, ctx context.Context, name string) store.ComplianceFramework {

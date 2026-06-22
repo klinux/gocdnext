@@ -88,6 +88,25 @@ func (s *Store) previewWhatIf(ctx context.Context, projectID pgtype.UUID, rows [
 	if err != nil {
 		return nil, err
 	}
+	// Mirror reconcileGovernance: a governed project (any applicable policy) can
+	// only be enforced with a registered SCM source (enforcement is
+	// push-triggered). The real save refuses otherwise, so the what-if must too —
+	// else the preview would show a merged state the assignment would reject, or
+	// silently render "no pipelines" for a pipeline-less project the save would
+	// loudly refuse. Resolved once and reused for the synthetic pipeline below.
+	var scmURL, branch string
+	if len(policies) > 0 {
+		var hasSCM bool
+		scmURL, branch, hasSCM, err = scmForProject(ctx, s.q, projectID)
+		if err != nil {
+			return nil, err
+		}
+		if !hasSCM {
+			return nil, fmt.Errorf(
+				"%w: a governed project requires a registered SCM source (push-triggered enforcement)",
+				ErrComplianceWouldDropEnforcement)
+		}
+	}
 	out := make([]EffectivePipelineView, 0, len(rows)+1)
 	repoCount := 0
 	for _, r := range rows {
@@ -105,20 +124,13 @@ func (s *Store) previewWhatIf(ctx context.Context, projectID pgtype.UUID, rows [
 		})
 	}
 	// A governed project with no pipeline of its own runs policies via the
-	// synthetic pipeline. Only show it when the project actually has an SCM
-	// binding (push-triggered enforcement requires one — see reconcileGovernance).
+	// synthetic pipeline (SCM presence already verified above).
 	if repoCount == 0 && len(policies) > 0 {
-		scmURL, branch, hasSCM, err := scmForProject(ctx, s.q, projectID)
-		if err != nil {
-			return nil, err
-		}
-		if hasSCM {
-			raw := compliance.SyntheticPipeline(scmURL, branch)
-			out = append(out, EffectivePipelineView{
-				Name: compliance.PipelineName, SystemManaged: true,
-				Raw: raw, Effective: compliance.ApplyPolicies(raw, policies),
-			})
-		}
+		raw := compliance.SyntheticPipeline(scmURL, branch)
+		out = append(out, EffectivePipelineView{
+			Name: compliance.PipelineName, SystemManaged: true,
+			Raw: raw, Effective: compliance.ApplyPolicies(raw, policies),
+		})
 	}
 	return out, nil
 }

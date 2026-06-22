@@ -63,10 +63,10 @@ func TestEffectivePipelinePreviewHTTP_Stored(t *testing.T) {
 		Name          string `json:"name"`
 		SystemManaged bool   `json:"system_managed"`
 		Raw           struct {
-			Jobs []domain.Job `json:"Jobs"`
+			Jobs []previewJob `json:"jobs"`
 		} `json:"raw"`
 		Effective struct {
-			Jobs []domain.Job `json:"Jobs"`
+			Jobs []previewJob `json:"jobs"`
 		} `json:"effective"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &views); err != nil {
@@ -119,7 +119,13 @@ func TestEffectivePipelinePreviewHTTP_InvalidFrameworkIs400(t *testing.T) {
 	}
 }
 
-func hasJobNamed(jobs []domain.Job, name string) bool {
+// previewJob decodes one job from the lower-cased preview DTO.
+type previewJob struct {
+	Name  string `json:"name"`
+	Stage string `json:"stage"`
+}
+
+func hasJobNamed(jobs []previewJob, name string) bool {
 	for _, j := range jobs {
 		if j.Name == name {
 			return true

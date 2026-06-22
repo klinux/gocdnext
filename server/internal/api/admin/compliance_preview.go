@@ -15,16 +15,44 @@ import (
 // (post-merge) definition for the preview panel. SystemManaged flags the
 // server-owned synthetic `_compliance` pipeline.
 type effectivePipelineDTO struct {
-	Name          string          `json:"name"`
-	SystemManaged bool            `json:"system_managed"`
-	Raw           domain.Pipeline `json:"raw"`
-	Effective     domain.Pipeline `json:"effective"`
+	Name          string         `json:"name"`
+	SystemManaged bool           `json:"system_managed"`
+	Raw           pipelineDefDTO `json:"raw"`
+	Effective     pipelineDefDTO `json:"effective"`
+}
+
+// pipelineDefDTO is the minimal pipeline shape the preview renders: the stage
+// order plus each job's name + stage. Deliberately NOT domain.Pipeline — the
+// admin API shouldn't leak the internal Go struct's capitalised field names or
+// its full surface, and the preview only needs these fields. Empty collections
+// serialise as `[]`, not `null`, so clients need no null handling.
+type pipelineDefDTO struct {
+	Stages []string         `json:"stages"`
+	Jobs   []pipelineJobDTO `json:"jobs"`
+}
+
+type pipelineJobDTO struct {
+	Name  string `json:"name"`
+	Stage string `json:"stage"`
 }
 
 func toEffectivePipelineDTO(v store.EffectivePipelineView) effectivePipelineDTO {
 	return effectivePipelineDTO{
-		Name: v.Name, SystemManaged: v.SystemManaged, Raw: v.Raw, Effective: v.Effective,
+		Name:          v.Name,
+		SystemManaged: v.SystemManaged,
+		Raw:           toPipelineDefDTO(v.Raw),
+		Effective:     toPipelineDefDTO(v.Effective),
 	}
+}
+
+func toPipelineDefDTO(p domain.Pipeline) pipelineDefDTO {
+	stages := make([]string, 0, len(p.Stages))
+	stages = append(stages, p.Stages...)
+	jobs := make([]pipelineJobDTO, 0, len(p.Jobs))
+	for _, j := range p.Jobs {
+		jobs = append(jobs, pipelineJobDTO{Name: j.Name, Stage: j.Stage})
+	}
+	return pipelineDefDTO{Stages: stages, Jobs: jobs}
 }
 
 // EffectivePipelinePreview handles
