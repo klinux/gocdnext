@@ -261,6 +261,14 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	r.log.Info("checks: updated",
 		"run_id", runID, "check_run_id", link.CheckRunID,
 		"status", status, "conclusion", conclusion)
+	// Record that this check run is now terminal so a later rerun recreates
+	// it instead of reusing it — GitHub won't cleanly reopen a completed
+	// check (completed_at is set-once). Best-effort: on failure the next
+	// rerun reuses (the old behaviour), which is degraded, not broken.
+	if err := r.store.MarkGithubCheckRunCompleted(ctx, runID); err != nil {
+		r.log.Warn("checks: mark completed failed",
+			"run_id", runID, "check_run_id", link.CheckRunID, "err", err)
+	}
 	return nil
 }
 
@@ -301,6 +309,19 @@ func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
 		}
 	case err != nil:
 		return err
+	case link.Completed:
+		// GitHub never cleanly re-opens a check run that already completed —
+		// completed_at is set-once, so PATCHing it back to in_progress leaves
+		// the PR showing the prior conclusion for the whole rerun (looks like
+		// "only reports at the end"). Create a FRESH check run instead (clean
+		// in_progress); CreateCheck re-links run→new check and resets the
+		// completed flag to FALSE. The per-run lock serialises concurrent
+		// job-reruns: the first recreates, the rest then see completed=FALSE
+		// and take the reuse PATCH below — so no check run is orphaned.
+		if err := r.CreateCheck(ctx, runID); err != nil {
+			return err
+		}
+		r.log.Info("checks: reopened (new check run)", "run_id", runID)
 	default:
 		if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
 			Owner:      link.Owner,

@@ -194,6 +194,7 @@ type GithubCheckRun struct {
 	HeadSha        string
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	Completed      bool
 }
 
 type Group struct {
