@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.52.0 — 2026-06-23
+
+### Added
+
+- **JaCoCo coverage reports.** `coverage_report.format` now accepts `jacoco`
+  alongside `go-cover`, `lcov`, and `cobertura` — so JVM/Kotlin builds
+  (Gradle/Maven) get a parsed coverage summary (per-package breakdown,
+  delta-vs-main, `fail_under` gate, check-run line), not just a raw artifact.
+  Counts come from each `<package>`'s aggregate `<counter type="LINE">`
+  (JaCoCo's own "Lines" metric); nested class/sourcefile counters are not
+  double-counted, the root must be `<report>`, and the DOCTYPE is parsed
+  without fetching the external DTD (no XXE). With this, the four major
+  ecosystems are covered: Go (`go-cover`), JS/TS (`lcov`), Python/.NET
+  (`cobertura`), JVM (`jacoco`). (#80)
+
 ## v0.51.1 — 2026-06-23
 
 ### Fixed
