@@ -393,6 +393,74 @@ func TestReopenCheck_ReusesExistingCheckInProgress(t *testing.T) {
 	}
 }
 
+// Once a check has COMPLETED, GitHub won't cleanly reopen it (completed_at is
+// set-once), so a rerun must CREATE a fresh check run rather than PATCH the
+// stale one back to in_progress. This is the fix for "a rerun only reports the
+// result at the end, never that it's running again".
+func TestReopenCheck_RecreatesWhenPriorCheckCompleted(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// The run finished and the check was completed — completeCheckLocked
+	// flips the link's completed flag.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='failed', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusFailed)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	before, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link before: %v", err)
+	}
+	if !before.Completed {
+		t.Fatal("precondition: CompleteCheck must mark the link completed")
+	}
+
+	// User reruns: run back to running, and watch for a fresh create vs a
+	// reuse PATCH.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='running', finished_at=NULL WHERE id=$1`, runID); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	stub.createdBody.Store(nil)
+	stub.updatedBody.Store(nil)
+	// Hand the recreate a distinct id so we can prove the link is
+	// re-pointed at the NEW check run, not just that a POST happened.
+	stub.nextCheckID = 777
+
+	if err := r.ReopenCheck(ctx, runID); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	// A completed check must be RECREATED (POST), not reused (PATCH).
+	if stub.createdBody.Load() == nil {
+		t.Error("rerun of a completed check must create a fresh check run (no POST seen)")
+	}
+	if stub.updatedBody.Load() != nil {
+		t.Errorf("must not PATCH a completed check back to in_progress, got %v",
+			*stub.updatedBody.Load())
+	}
+	after, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link after: %v", err)
+	}
+	if after.CheckRunID != 777 || after.CheckRunID == before.CheckRunID {
+		t.Errorf("link must re-point to the new check run: before=%d after=%d (want 777)",
+			before.CheckRunID, after.CheckRunID)
+	}
+	if after.Completed {
+		t.Error("recreated check must reset completed=false")
+	}
+}
+
 // The fire-and-forget reopen races ReportRunCompleted. When the rerun
 // reaches terminal before/while we re-open, the self-heal must close the
 // check instead of leaving GitHub hung at in_progress. (The handler spy
