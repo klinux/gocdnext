@@ -404,37 +404,65 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	taskExit, err := k.WaitForTaskTerminated(ctx, podName)
 	<-taskDone
 	if err != nil {
+		// The wait failed — most often the pod vanished mid-run
+		// (evicted/preempted/node reclaimed). Classify so the operator
+		// gets the real reason instead of a raw poll error.
+		term := k.TaskPodTermination(ctx, podName)
 		msg := "wait for task: " + err.Error()
+		if term.PodGone || term.Disrupted {
+			msg = disruptionMessage(term)
+		}
 		r.emitLog(a, &seq, "stderr", msg)
-		// Even on terminal wait error the housekeeper may still be
-		// alive (only the task container terminated) — try to scan
-		// test_reports so the Tests tab carries data the operator
-		// can use to diagnose a borked job. Best-effort; failures
-		// emit warnings via emitLog and never fail the job.
-		r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
-		r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+		// When the pod is gone, the housekeeper sidecar is gone too —
+		// scanning would only emit "container not found" noise. Skip it.
+		// When only the task container died, the housekeeper may still be
+		// alive, so scan test_reports for diagnostic signal (best-effort).
+		if !(term.PodGone || term.Disrupted) {
+			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+		}
 		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
 	if taskExit != 0 {
 		log.Info("runner: task exited non-zero (isolated)", "exit", taskExit)
-		r.emitPhase(a, &seq, fmt.Sprintf("task failed after %s (exit %d)", phaseDur(taskStart), taskExit))
-		// Post-task work (artifact upload) requires the
-		// housekeeper sidecar to be alive. If the task failed but
-		// housekeeper is still around, we COULD still attempt
-		// optional artifact upload — but v0.5.0 keeps things
-		// simple: failure = no post-task upload.
-		//
-		// test_reports DO get scanned on failure though — that's
-		// exactly when the Tests tab carries the highest signal
-		// (which assertion failed, which stack trace). Mirrors
-		// shared-mode behaviour (runner.go::Execute calls
-		// scanTestReports on the non-zero-exit path too).
-		r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
-		r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit),
-			fmt.Sprintf("task exited with %d", taskExit))
+
+		// exit 143 == 128+SIGTERM: the task was terminated EXTERNALLY,
+		// not by its own logic — usually node preemption/eviction or a
+		// cancel. Classify via the pod so the result names the real
+		// cause instead of a bare "exited with 143". Other non-zero
+		// exits are ordinary task failures and keep the old shape.
+		resultMsg := fmt.Sprintf("task exited with %d", taskExit)
+		phaseMsg := fmt.Sprintf("task failed after %s (exit %d)", phaseDur(taskStart), taskExit)
+		skipScans := false
+		if taskExit == 143 {
+			term := k.TaskPodTermination(ctx, podName)
+			if term.PodGone || term.Disrupted {
+				// Platform reclaimed the pod. The housekeeper is gone, so
+				// scanning would only emit "container not found" — skip it.
+				resultMsg = disruptionMessage(term)
+				phaseMsg = resultMsg
+				skipScans = true
+			} else {
+				// Pod + housekeeper still alive: a process inside the job
+				// took SIGTERM on its own. Name it, but KEEP the scans —
+				// the test reports may still carry useful signal.
+				phaseMsg = fmt.Sprintf("task terminated by SIGTERM (exit 143) after %s", phaseDur(taskStart))
+			}
+		}
+		r.emitPhase(a, &seq, phaseMsg)
+
+		// test_reports DO get scanned on a failed task — that's exactly
+		// when the Tests tab carries the highest signal (which assertion
+		// failed, which stack trace). Mirrors shared-mode behaviour
+		// (runner.go::Execute). Skipped only when the pod is gone.
+		// (Post-task artifact upload still doesn't run on failure.)
+		if !skipScans {
+			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+		}
+		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit), resultMsg)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
@@ -589,4 +617,19 @@ func toUpperEnv(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// disruptionMessage renders a clear, operator-facing reason for a pod the
+// platform reclaimed (eviction / node preemption / node loss / deletion),
+// in place of a bare "exited with 143" or a "container not found" scan
+// error. Falls back to a generic line when the pod couldn't be classified.
+func disruptionMessage(t engine.TaskTermination) string {
+	msg := "job pod terminated externally"
+	if t.Reason != "" {
+		msg += " (" + t.Reason + ")"
+	}
+	if t.Message != "" {
+		msg += ": " + t.Message
+	}
+	return msg + " — likely node preemption/eviction or cancellation; rerun to retry"
 }
