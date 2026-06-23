@@ -126,6 +126,17 @@ when both have, and depend on the sentinel.
 ACROSS runs in different pipelines. Different scopes; both exist
 because both problems are real.
 
+**Coming from another CI?** A `depends_on` / `needs` that orders steps
+inside one run maps to gocdnext's **`needs:`** — same run, fail-fast.
+If your other tool splits one event across several pipeline *files* and
+orders them (e.g. Woodpecker's workflow-level `depends_on`), model that
+as **stages + `needs:` in a single pipeline** — gocdnext keeps one run
+in one file. `materials.upstream` is a *different* thing: it **triggers
+a separate run** when another pipeline succeeds (the value-stream
+chain), which a same-run `depends_on` does not do. So don't reach for
+`upstream` just to order things — reach for it when you genuinely want a
+new, independently-tracked run kicked off by an upstream success.
+
 ## Cron material
 
 Cron schedules are declared in the project settings UI (*Settings
