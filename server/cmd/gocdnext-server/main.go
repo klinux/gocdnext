@@ -387,6 +387,13 @@ func main() {
 	runsHandler := runsapi.NewHandler(st, logger).
 		WithConfigFetcher(gitHubFetcher).
 		WithLogBroker(logBroker)
+	if checksReporter != nil {
+		// Wire only when present so the handler field stays a true nil
+		// interface when the GitHub App is off — the rerun re-open guard
+		// is then an honest `if h.checks != nil`, not a typed-nil that
+		// leans on the reporter's nil-receiver check.
+		runsHandler = runsHandler.WithChecksReporter(checksReporter)
+	}
 	if artifactStore != nil {
 		runsHandler = runsHandler.WithArtifactStore(artifactStore)
 	}

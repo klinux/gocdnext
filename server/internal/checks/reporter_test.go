@@ -273,6 +273,12 @@ func TestCompleteCheck_UpdatesExistingRow(t *testing.T) {
 	if err := r.CreateCheck(ctx, runID); err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	// CompleteCheck reads the run's CURRENT status, so the run must be
+	// terminal for it to PATCH.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
 	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -326,6 +332,12 @@ func TestCompleteCheck_StatusMapping(t *testing.T) {
 			if err := r.CreateCheck(ctx, runID); err != nil {
 				t.Fatalf("create: %v", err)
 			}
+			// CompleteCheck derives the conclusion from the run's current
+			// status, so set it to the case under test.
+			if _, err := pool.Exec(ctx,
+				`UPDATE runs SET status=$2, finished_at=NOW() WHERE id=$1`, runID, tt.status); err != nil {
+				t.Fatalf("finish run: %v", err)
+			}
 			if err := r.CompleteCheck(ctx, runID, tt.status); err != nil {
 				t.Fatalf("complete: %v", err)
 			}
@@ -334,5 +346,114 @@ func TestCompleteCheck_StatusMapping(t *testing.T) {
 				t.Errorf("conclusion = %v, want %v", body["conclusion"], tt.want)
 			}
 		})
+	}
+}
+
+// A rerun re-opens the SAME check run (PATCH → in_progress, no
+// conclusion) and reuses the link — no new check run, no churn. This is
+// the multi-job-rerun consistency the review flagged: two reruns on one
+// run must not orphan check runs.
+func TestReopenCheck_ReusesExistingCheckInProgress(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A rerun just put the run back to running (non-terminal).
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status='running' WHERE id=$1`, runID); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	before, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link before: %v", err)
+	}
+
+	if err := r.ReopenCheck(ctx, runID); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	body := *stub.updatedBody.Load()
+	if body["status"] != "in_progress" {
+		t.Errorf("status = %v, want in_progress", body["status"])
+	}
+	if _, ok := body["conclusion"]; ok {
+		t.Errorf("re-open must not set a conclusion, got %v", body["conclusion"])
+	}
+	after, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link after: %v", err)
+	}
+	if after.CheckRunID != before.CheckRunID {
+		t.Errorf("check_run_id changed %d -> %d (re-open must reuse, not recreate)",
+			before.CheckRunID, after.CheckRunID)
+	}
+}
+
+// The fire-and-forget reopen races ReportRunCompleted. When the rerun
+// reaches terminal before/while we re-open, the self-heal must close the
+// check instead of leaving GitHub hung at in_progress. (The handler spy
+// test can't see this — the spy is synchronous.)
+func TestReopenCheck_SelfHealsWhenRunAlreadyTerminal(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// The rerun finished (failed) before the async reopen landed.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='failed', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+
+	if err := r.ReopenCheck(ctx, runID); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	// Last PATCH must be the self-heal completion, not the in_progress
+	// re-open — otherwise the check hangs while the run is terminal.
+	body := *stub.updatedBody.Load()
+	if body["status"] != "completed" {
+		t.Errorf("status = %v, want completed (self-heal)", body["status"])
+	}
+	if body["conclusion"] != "failure" {
+		t.Errorf("conclusion = %v, want failure", body["conclusion"])
+	}
+}
+
+// The inverse race: the original run's terminal fires async, then the user
+// re-runs a job (re-opening the same check). The late, STALE completion
+// must not re-close the live rerun — CompleteCheck re-reads and no-ops
+// while the run is running.
+func TestCompleteCheck_SkipsStaleCompletionWhenRunReopened(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A rerun is in flight: run back to running, check already re-opened.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='running', finished_at=NULL WHERE id=$1`, runID); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	stub.updatedBody.Store(nil) // watch only for an (unwanted) stale PATCH
+
+	// The original run's terminal lands late with a stale 'failed'.
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusFailed)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if got := stub.updatedBody.Load(); got != nil {
+		t.Errorf("stale completion patched a re-opened run's check: %v", *got)
 	}
 }
