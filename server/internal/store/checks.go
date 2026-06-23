@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -16,6 +17,42 @@ import (
 // state for runs that don't produce a check (no App, no install,
 // non-GitHub material, manual/upstream cause).
 var ErrCheckRunNotFound = errors.New("store: github check run not found")
+
+// checkLockNamespace namespaces the per-run check advisory lock apart
+// from every other advisory lock (compliance, etc.) — the (classid,
+// objid) two-key space is disjoint from the single-bigint space those use.
+const checkLockNamespace int32 = 0x43484B // "CHK"
+
+func runCheckLockKey(runID uuid.UUID) int32 {
+	return int32(binary.BigEndian.Uint32(runID[0:4]))
+}
+
+// WithRunCheckLock serializes GitHub check updates for a single run
+// across replicas via a SESSION-level Postgres advisory lock. Reopen and
+// complete both read the run status then PATCH GitHub; without
+// serialization a stale completion can land between a concurrent reopen's
+// read and PATCH and hang the check. Holding the lock across the whole
+// read+PATCH critical section closes that window. Session-scoped (not a
+// transaction) so it can span the external GitHub call without pinning a
+// long-running tx; the lock is released explicitly and again when the
+// pooled connection is returned.
+func (s *Store) WithRunCheckLock(ctx context.Context, runID uuid.UUID, fn func() error) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire conn for check lock: %w", err)
+	}
+	defer conn.Release()
+	key := runCheckLockKey(runID)
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1, $2)`, checkLockNamespace, key); err != nil {
+		return fmt.Errorf("store: acquire check lock: %w", err)
+	}
+	defer func() {
+		// Best-effort: a fresh ctx so unlock still runs if the work's ctx
+		// expired. Releasing the connection also drops the session lock.
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1, $2)`, checkLockNamespace, key)
+	}()
+	return fn()
+}
 
 // GithubCheckRun is the full shape; reporter uses it to issue the
 // PATCH against GitHub's API on run completion.

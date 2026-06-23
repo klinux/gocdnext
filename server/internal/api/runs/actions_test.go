@@ -788,3 +788,70 @@ func doPost(h interface {
 	r.ServeHTTP(rr, req)
 	return rr
 }
+
+// spyChecksReporter records ReportRunReopened calls so the rerun tests can
+// assert the GitHub check gets re-opened. The handler calls it
+// synchronously, so no locking is needed. (The reporter-level race/self-
+// heal behaviour is covered in server/internal/checks/reporter_test.go.)
+type spyChecksReporter struct{ created []uuid.UUID }
+
+func (s *spyChecksReporter) ReportRunReopened(_ context.Context, id uuid.UUID) {
+	s.created = append(s.created, id)
+}
+
+// A full-run rerun must re-open the check for the NEW run, so a PR shows
+// the rerun in progress instead of the prior conclusion.
+func TestRerun_ReopensGithubCheckForNewRun(t *testing.T) {
+	h, pool := handler(t)
+	spy := &spyChecksReporter{}
+	h = h.WithChecksReporter(spy)
+	runID, _ := seedRunWithModification(t, pool)
+
+	rr := doPost(h, "/api/v1/runs/"+runID.String()+"/rerun", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		RunID string `json:"run_id"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(spy.created) != 1 || spy.created[0].String() != got.RunID {
+		t.Fatalf("ReportRunCreated = %v, want [%s] (the new run)", spy.created, got.RunID)
+	}
+}
+
+// A single-job rerun puts the SAME run back to running, so its check must
+// be re-opened — the gap the user hit: rerunning a job left GitHub stuck
+// on the old "failed" status.
+func TestRerunJob_ReopensGithubCheckForSameRun(t *testing.T) {
+	h, pool := handler(t)
+	spy := &spyChecksReporter{}
+	h = h.WithChecksReporter(spy)
+	runID, _ := seedRunWithModification(t, pool)
+
+	ctx := context.Background()
+	var jobID, stageID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`UPDATE job_runs SET status='failed', started_at=NOW()-interval '1m',
+		                     finished_at=NOW(), exit_code=1, error='boom'
+		 WHERE run_id=$1 RETURNING id, stage_run_id`, runID).
+		Scan(&jobID, &stageID); err != nil {
+		t.Fatalf("fail job: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE stage_runs SET status='failed', finished_at=NOW() WHERE id=$1`, stageID); err != nil {
+		t.Fatalf("fail stage: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='failed', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+
+	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/rerun", nil)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(spy.created) != 1 || spy.created[0] != runID {
+		t.Fatalf("ReportRunCreated = %v, want [%s] (same run)", spy.created, runID)
+	}
+}

@@ -49,12 +49,24 @@ type CancelDispatcher interface {
 	AllAgentIDs(engineFilter string) []uuid.UUID
 }
 
+// checksReporter re-opens a run's GitHub check when the run is re-run,
+// so a PR reflects the in-progress rerun instead of the stale prior
+// conclusion. Satisfied by *checks.Reporter; left unset (a true nil
+// interface) when the feature is off — main.go only wires it when a
+// reporter exists — so the rerun handlers' `if h.checks != nil` guard is
+// the honest gate. Kept as a local interface so this package doesn't
+// import the checks package just for the type, and so tests inject a spy.
+type checksReporter interface {
+	ReportRunReopened(ctx context.Context, runID uuid.UUID)
+}
+
 type Handler struct {
 	store         *store.Store
 	artifactStore artifacts.Store
 	fetcher       configsync.Fetcher
 	dispatcher    CancelDispatcher
 	logBroker     *logstream.Broker
+	checks        checksReporter
 	log           *slog.Logger
 }
 
@@ -71,6 +83,15 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 // the handler falls back to "DB-only" cancel — the pre-C6 behaviour.
 func (h *Handler) WithCancelDispatcher(d CancelDispatcher) *Handler {
 	h.dispatcher = d
+	return h
+}
+
+// WithChecksReporter wires the GitHub Checks reporter so a rerun
+// (full run or single job) re-opens the run's check as in_progress.
+// Without it, GitHub keeps showing the prior (failed) conclusion while
+// the rerun runs — the check only re-creates on a fresh webhook trigger.
+func (h *Handler) WithChecksReporter(r checksReporter) *Handler {
+	h.checks = r
 	return h
 }
 
