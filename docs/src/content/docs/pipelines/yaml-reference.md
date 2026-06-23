@@ -389,7 +389,7 @@ jobs:
     script: ["go test -coverprofile=coverage.out ./..."]
     coverage_report:
       path: coverage.out
-      format: go-cover          # go-cover | lcov | cobertura
+      format: go-cover          # go-cover | lcov | cobertura | jacoco
       fail_under: 70            # optional gate — see below
     artifacts:
       optional: [coverage.out]  # keep the raw file too, if you want it
@@ -405,7 +405,9 @@ trend sparkline per job across the pipeline's recent runs.
 
 Formats: `go-cover` (`go test -coverprofile`, counted in statements
 — the same unit `go tool cover -func` reports), `lcov`
-(vitest/jest/nyc), `cobertura` XML (jacoco's export, coverage.py).
+(vitest/jest/nyc), `cobertura` XML (coverage.py, .NET coverlet),
+`jacoco` XML (JVM — Gradle/Maven Java/Kotlin; counted in lines, the
+JaCoCo "Lines" metric).
 
 **Delta vs main**: every coverage card (and the GitHub check-run
 summary, when the Checks integration is on) shows the movement
