@@ -82,6 +82,17 @@ inputs:
       this run (recommended on `deploy` runs to avoid publishing
       a cache-hit artefact). Empty leaves the extension's own
       default in place.
+  color:
+    required: false
+    default: "true"
+    description: >
+      Force ANSI colour in Maven output (BUILD SUCCESS green,
+      BUILD FAILURE + errors red). Defaults to "true" →
+      `-Dstyle.color=always`, because CI has no TTY and the plugin
+      runs `--batch-mode`, so Maven would otherwise print
+      everything uncoloured. "false" → `-Dstyle.color=never`;
+      "auto" leaves it to Maven's own detection (effectively off
+      under batch mode).
   jdk:
     required: false
     default: "21"

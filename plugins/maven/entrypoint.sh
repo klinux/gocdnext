@@ -95,6 +95,23 @@ if [ -n "${PLUGIN_BUILD_CACHE:-}" ]; then
     fi
 fi
 
+# Colour — force ANSI so BUILD SUCCESS/FAILURE + errors show in
+# colour. CI has no TTY and we pass --batch-mode, so Maven's `auto`
+# default prints everything white. Default "true" → always; "false"
+# → never; "auto" → leave it to Maven. -Dstyle.color=always wins
+# over --batch-mode's implicit off.
+color_args=()
+color_val=$(printf '%s' "${PLUGIN_COLOR:-true}" | tr '[:upper:]' '[:lower:]')
+case "$color_val" in
+    true|1|yes|on)   color_args+=("-Dstyle.color=always") ;;
+    false|0|no|off)  color_args+=("-Dstyle.color=never") ;;
+    auto)            ;; # leave to Maven's own detection
+    *)
+        echo "gocdnext/maven: color accepts true|false|auto (got '${PLUGIN_COLOR:-}')" >&2
+        exit 2
+        ;;
+esac
+
 settings_arg=()
 if [ -n "${PLUGIN_SETTINGS:-}" ]; then
     # Operator-provided settings.xml wins — they probably
@@ -147,6 +164,7 @@ echo "==> mvn ${PLUGIN_COMMAND} (repo.local=${MAVEN_LOCAL_REPO}${PLUGIN_PARALLEL
 # Standard CI hygiene; pairs with --batch-mode.
 # shellcheck disable=SC2086
 exec mvn --batch-mode --no-transfer-progress \
+    "${color_args[@]}" \
     "${local_repo_arg[@]}" \
     "${parallel_args[@]}" \
     "${build_cache_args[@]}" \

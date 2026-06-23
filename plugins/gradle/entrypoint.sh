@@ -134,6 +134,20 @@ if [ -n "${PLUGIN_CONFIGURATION_CACHE:-}" ]; then
     fi
 fi
 
+# Console mode — drives output COLOUR. Default `rich`: CI has no
+# TTY, so Gradle's own `auto` would render plain (everything white,
+# the failure/success colours lost). `rich`/`verbose` force ANSI;
+# `plain` drops colour + progress; `auto` = Gradle's native detect.
+# Typos fail loud rather than silently shipping a bad --console arg.
+console_val=$(printf '%s' "${PLUGIN_CONSOLE:-rich}" | tr '[:upper:]' '[:lower:]')
+case "$console_val" in
+    auto|plain|rich|verbose) console_flag="--console=${console_val}" ;;
+    *)
+        echo "gocdnext/gradle: console accepts auto|plain|rich|verbose (got '${PLUGIN_CONSOLE:-}')" >&2
+        exit 2
+        ;;
+esac
+
 # JVM args: GRADLE_OPTS controls the launcher JVM (which spawns
 # the daemon, even in --no-daemon mode); the JIT + heap defaults
 # fit ~80% of projects, but big builds need more.
@@ -203,13 +217,14 @@ if [ -n "${testcontainers_tool_opts# }" ]; then
     echo "gocdnext/gradle: bridged TESTCONTAINERS_* env vars to JAVA_TOOL_OPTIONS so they reach test forks"
 fi
 
-echo "==> ${CLI} ${daemon_flag} ${build_cache_flag} ${parallel_flag} ${config_cache_flag} ${PLUGIN_COMMAND} ${extra_args}"
+echo "==> ${CLI} ${daemon_flag} ${console_flag} ${build_cache_flag} ${parallel_flag} ${config_cache_flag} ${PLUGIN_COMMAND} ${extra_args}"
 # Unquoted expansion so empty flags (tri-state "no flag" cases)
 # disappear via word-splitting instead of landing as empty
 # positional args that gradle would reject.
 # shellcheck disable=SC2086
 exec "${CLI}" \
     ${daemon_flag} \
+    ${console_flag} \
     ${build_cache_flag} \
     ${parallel_flag} \
     ${config_cache_flag} \
