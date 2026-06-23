@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Route } from "next";
-import { Clock, GitBranch } from "lucide-react";
+import { Clock, GitBranch, GitPullRequest } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { statusTone, type StatusTone } from "@/lib/status";
@@ -53,7 +53,17 @@ export function ProjectCard({ project }: Props) {
 
         {primary && (meta?.branch || latestStatus || primary.latest_run_at) ? (
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px]">
-            {meta?.branch ? (
+            {meta?.cause === "pull_request" && meta?.pr_number ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                title={`Pull request #${meta.pr_number}${meta.branch ? ` (${meta.branch})` : ""}`}
+              >
+                <GitPullRequest className="size-3" aria-hidden />
+                <span className="max-w-[160px] truncate">
+                  PR #{meta.pr_number}
+                </span>
+              </span>
+            ) : meta?.branch ? (
               <span
                 className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
                 title={`Ref: ${meta.branch}`}

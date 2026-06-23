@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Clock,
   GitBranch,
+  GitPullRequest,
   ShieldCheck,
 } from "lucide-react";
 
@@ -174,7 +175,22 @@ export function PipelineCard({
             {bottleneck ? (
               <BottleneckPill bottleneck={bottleneck} />
             ) : null}
-            {meta?.branch ? (
+            {meta?.cause === "pull_request" && meta?.pr_number ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="inline-flex max-w-[160px] items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground" />
+                  }
+                >
+                  <GitPullRequest className="size-3" aria-hidden />
+                  <span className="truncate">PR #{meta.pr_number}</span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Pull request #{meta.pr_number}
+                  {meta.branch ? ` (${meta.branch})` : ""}
+                </TooltipContent>
+              </Tooltip>
+            ) : meta?.branch ? (
               <Tooltip>
                 <TooltipTrigger
                   render={
