@@ -70,6 +70,17 @@ inputs:
       phase (build.gradle.kts parse + task graph) across runs;
       breaks on legacy plugins that haven't migrated, so adopt
       incrementally.
+  console:
+    required: false
+    default: rich
+    description: >
+      Gradle console mode: auto | plain | rich | verbose. Defaults
+      to `rich` so build output is COLOURISED in the gocdnext log
+      (BUILD SUCCESSFUL green, BUILD FAILED + failing tests red).
+      CI has no TTY, so Gradle's own `auto` default falls back to
+      plain — everything white. `rich`/`verbose` also draw a live
+      progress area; use `plain` to drop both colour and progress,
+      or `auto` for Gradle's native (TTY-detected) behaviour.
   args:
     required: false
     description: >
