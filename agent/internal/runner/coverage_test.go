@@ -60,6 +60,34 @@ const coberturaFixture = `<?xml version="1.0"?>
 </coverage>
 `
 
+// Real-shaped JaCoCo report: DOCTYPE present (must be skipped, no DTD
+// fetch), and the cart package repeats its LINE counter inside <class>
+// and <sourcefile> as well as at the package level — the parser must
+// count ONLY the package-level aggregate, not triple it.
+const jacocoFixture = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd">
+<report name="card">
+  <sessioninfo id="abc" start="1" dump="2"/>
+  <package name="com/acme/cart">
+    <class name="com/acme/cart/Cart" sourcefilename="Cart.kt">
+      <counter type="INSTRUCTION" missed="3" covered="7"/>
+      <counter type="LINE" missed="1" covered="2"/>
+    </class>
+    <sourcefile name="Cart.kt">
+      <line nr="1" mi="0" ci="2"/>
+      <counter type="LINE" missed="1" covered="2"/>
+    </sourcefile>
+    <counter type="INSTRUCTION" missed="3" covered="7"/>
+    <counter type="LINE" missed="1" covered="2"/>
+  </package>
+  <package name="com/acme/pay">
+    <counter type="LINE" missed="3" covered="4"/>
+    <counter type="BRANCH" missed="0" covered="0"/>
+  </package>
+  <counter type="LINE" missed="4" covered="6"/>
+</report>
+`
+
 func TestParseCoverage(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -75,6 +103,9 @@ func TestParseCoverage(t *testing.T) {
 		{"lcov", "lcov", lcovFixture, 3, 4, 2},
 		// cobertura: summed from <line> elements: (2/3)+(4/7) = 6/10.
 		{"cobertura", "cobertura", coberturaFixture, 6, 10, 2},
+		// jacoco: package-level LINE counters only: cart 2/(1+2)=2/3,
+		// pay 4/(3+4)=4/7 → 6/10 (nested class/sourcefile counters ignored).
+		{"jacoco", "jacoco", jacocoFixture, 6, 10, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,6 +147,12 @@ func TestParseCoverage_Malformed(t *testing.T) {
 		{"go-cover empty", "go-cover", "mode: set\n"},
 		{"lcov empty", "lcov", "TN:\n"},
 		{"cobertura not xml", "cobertura", "{json?}"},
+		{"jacoco not xml", "jacoco", "{json?}"},
+		// A cobertura report (root <coverage>) declared as jacoco must be
+		// rejected by the <report> root check, not silently 0%.
+		{"jacoco wrong root", "jacoco", coberturaFixture},
+		// Packages present but no LINE counters (e.g. branch-only) → reject.
+		{"jacoco no line counter", "jacoco", `<report name="x"><package name="p"><counter type="BRANCH" missed="0" covered="1"/></package></report>`},
 		{"unknown format", "gcov", "anything"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -123,6 +160,25 @@ func TestParseCoverage_Malformed(t *testing.T) {
 				t.Fatalf("expected error for %s", tt.name)
 			}
 		})
+	}
+}
+
+func TestParseCoverage_JacocoSkipsBranchOnlyPackage(t *testing.T) {
+	// A package with no LINE counter (branch-only) must NOT appear in the
+	// breakdown as 0/0 — only LINE packages count toward total + listing.
+	const data = `<report name="x">
+  <package name="p.with.lines"><counter type="LINE" missed="1" covered="3"/></package>
+  <package name="p.branch.only"><counter type="BRANCH" missed="0" covered="2"/></package>
+</report>`
+	sum, _, err := parseCoverage("jacoco", []byte(data))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if sum.LinesCovered != 3 || sum.LinesTotal != 4 {
+		t.Fatalf("covered/total = %d/%d, want 3/4", sum.LinesCovered, sum.LinesTotal)
+	}
+	if len(sum.Packages) != 1 || sum.Packages[0].Name != "p.with.lines" {
+		t.Fatalf("packages = %+v, want only [p.with.lines]", sum.Packages)
 	}
 }
 

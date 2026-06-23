@@ -1,8 +1,8 @@
 // Package runner — coverage.go parses the job's declared coverage
-// file (go-cover | lcov | cobertura) after tasks succeed and ships
-// ONLY the summary back on the agent stream (CoverageSummary). The
-// raw file never crosses the control plane — operators that want it
-// declare it under artifacts.optional.
+// file (go-cover | lcov | cobertura | jacoco) after tasks succeed and
+// ships ONLY the summary back on the agent stream (CoverageSummary).
+// The raw file never crosses the control plane — operators that want
+// it declare it under artifacts.optional.
 package runner
 
 import (
@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -143,6 +144,8 @@ func parseCoverage(format string, data []byte) (*gocdnextv1.CoverageSummary, []s
 		return parseLCOV(data)
 	case "cobertura":
 		return parseCobertura(data)
+	case "jacoco":
+		return parseJacoco(data)
 	default:
 		return nil, nil, fmt.Errorf("unknown format %q", format)
 	}
@@ -368,6 +371,82 @@ func parseCobertura(data []byte) (*gocdnextv1.CoverageSummary, []string, error) 
 				}
 			}
 		}
+	}
+	pkgs, warns := capPackages(perPkg)
+	sum.Packages = pkgs
+	return sum, warns, nil
+}
+
+// jacocoXML is the subset of the JaCoCo report DTD we consume. Each
+// <package> carries aggregate <counter> children (one per metric);
+// we read the LINE counter (missed+covered = lines, covered = hit).
+// The nested per-class / per-sourcefile counters are NOT collected:
+// xml:"counter" matches only the package's DIRECT children, which are
+// JaCoCo's package-level aggregates. Go's encoding/xml skips the
+// DOCTYPE and never fetches the external DTD (no XXE), so the
+// report's `<!DOCTYPE report PUBLIC ...>` is harmless.
+type jacocoXML struct {
+	XMLName  xml.Name `xml:"report"`
+	Packages []struct {
+		Name     string `xml:"name,attr"`
+		Counters []struct {
+			Type    string `xml:"type,attr"`
+			Missed  int64  `xml:"missed,attr"`
+			Covered int64  `xml:"covered,attr"`
+		} `xml:"counter"`
+	} `xml:"package"`
+}
+
+// parseJacoco reads a JaCoCo XML report (Gradle/Maven JVM builds). Unit
+// is LINES — JaCoCo's own "Lines" metric, where a line counts as
+// covered when any instruction on it ran. Counts come from each
+// package's aggregate `<counter type="LINE">` (exact integers), not the
+// lossy percentage shown in the HTML report.
+func parseJacoco(data []byte) (*gocdnextv1.CoverageSummary, []string, error) {
+	var doc jacocoXML
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	// Strict (default) so a non-jacoco/HTML blob errors instead of
+	// half-parsing. XMLName forces the root to be <report>, which
+	// rejects e.g. a cobertura file (root <coverage>) declared as jacoco.
+	if err := dec.Decode(&doc); err != nil {
+		return nil, nil, fmt.Errorf("decode jacoco xml: %w", err)
+	}
+	if len(doc.Packages) == 0 {
+		return nil, nil, fmt.Errorf("no <package> elements — not a jacoco report")
+	}
+	sum := &gocdnextv1.CoverageSummary{}
+	perPkg := map[string]*gocdnextv1.PackageCoverage{}
+	sawLine := false
+	for _, p := range doc.Packages {
+		for _, c := range p.Counters {
+			if c.Type != "LINE" {
+				continue
+			}
+			// Negative or overflowing counters are a malformed report —
+			// reject rather than emit a >100% (or int64-wrapped) package.
+			if c.Missed < 0 || c.Covered < 0 {
+				return nil, nil, fmt.Errorf("package %s: negative LINE counter (missed=%d covered=%d)", p.Name, c.Missed, c.Covered)
+			}
+			if c.Missed > math.MaxInt64-c.Covered {
+				return nil, nil, fmt.Errorf("package %s: LINE counter overflows int64 (missed=%d covered=%d)", p.Name, c.Missed, c.Covered)
+			}
+			sawLine = true
+			total := c.Missed + c.Covered
+			sum.LinesTotal += total
+			sum.LinesCovered += c.Covered
+			// Create the package entry only after a LINE counter is found,
+			// so a branch-only package doesn't pollute the breakdown as 0/0.
+			pc := perPkg[p.Name]
+			if pc == nil {
+				pc = &gocdnextv1.PackageCoverage{Name: p.Name}
+				perPkg[p.Name] = pc
+			}
+			pc.LinesTotal += total
+			pc.LinesCovered += c.Covered
+		}
+	}
+	if !sawLine {
+		return nil, nil, fmt.Errorf("no LINE counters — not a jacoco line-coverage report")
 	}
 	pkgs, warns := capPackages(perPkg)
 	sum.Packages = pkgs
