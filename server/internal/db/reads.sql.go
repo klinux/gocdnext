@@ -178,7 +178,8 @@ func (q *Queries) HeadLogLinesByJob(ctx context.Context, arg HeadLogLinesByJobPa
 const latestRunMetaByProjectSlug = `-- name: LatestRunMetaByProjectSlug :many
 WITH latest AS (
     SELECT DISTINCT ON (r.pipeline_id)
-        r.pipeline_id, r.id AS run_id, r.revisions, r.triggered_by
+        r.pipeline_id, r.id AS run_id, r.revisions, r.triggered_by,
+        r.cause, r.cause_detail
     FROM runs r
     JOIN pipelines pl ON pl.id = r.pipeline_id
     JOIN projects p ON p.id = pl.project_id
@@ -188,6 +189,16 @@ WITH latest AS (
 expanded AS (
     SELECT l.pipeline_id,
            l.triggered_by,
+           l.cause,
+           -- Guard the JSON→int cast: only accept 1-9 digits so a
+           -- malformed cause_detail (pr_number = "abc", a negative, or
+           -- a value past int32) can't 500 the cards. 9 digits caps at
+           -- 999,999,999 < int32 max; anything else falls back to 0.
+           (CASE
+               WHEN l.cause_detail->>'pr_number' ~ '^[0-9]{1,9}$'
+               THEN (l.cause_detail->>'pr_number')::int
+               ELSE 0
+           END)::int AS pr_number,
            (key)::uuid AS material_id,
            (value->>'revision')::text AS revision,
            (value->>'branch')::text AS branch
@@ -196,13 +207,13 @@ expanded AS (
 joined AS (
     SELECT DISTINCT ON (e.pipeline_id)
         e.pipeline_id, e.material_id, e.revision, e.branch,
-        m.message, m.author, e.triggered_by
+        m.message, m.author, e.triggered_by, e.cause, e.pr_number
     FROM expanded e
     LEFT JOIN modifications m
         ON m.material_id = e.material_id AND m.revision = e.revision
     ORDER BY e.pipeline_id, e.material_id
 )
-SELECT pipeline_id, revision, branch, message, author, triggered_by
+SELECT pipeline_id, revision, branch, message, author, triggered_by, cause, pr_number
 FROM joined
 `
 
@@ -213,6 +224,8 @@ type LatestRunMetaByProjectSlugRow struct {
 	Message     *string
 	Author      *string
 	TriggeredBy *string
+	Cause       string
+	PrNumber    int32
 }
 
 // Per-pipeline latest run with the triggering modification's
@@ -239,6 +252,8 @@ func (q *Queries) LatestRunMetaByProjectSlug(ctx context.Context, slug string) (
 			&i.Message,
 			&i.Author,
 			&i.TriggeredBy,
+			&i.Cause,
+			&i.PrNumber,
 		); err != nil {
 			return nil, err
 		}
@@ -253,7 +268,8 @@ func (q *Queries) LatestRunMetaByProjectSlug(ctx context.Context, slug string) (
 const latestRunMetaPerProject = `-- name: LatestRunMetaPerProject :many
 WITH latest AS (
     SELECT DISTINCT ON (pl.project_id)
-        pl.project_id, r.id AS run_id, r.revisions, r.triggered_by
+        pl.project_id, r.id AS run_id, r.revisions, r.triggered_by,
+        r.cause, r.cause_detail
     FROM runs r
     JOIN pipelines pl ON pl.id = r.pipeline_id
     ORDER BY pl.project_id, r.created_at DESC
@@ -261,6 +277,16 @@ WITH latest AS (
 expanded AS (
     SELECT l.project_id,
            l.triggered_by,
+           l.cause,
+           -- Guard the JSON→int cast: only accept 1-9 digits so a
+           -- malformed cause_detail (pr_number = "abc", a negative, or
+           -- a value past int32) can't 500 the cards. 9 digits caps at
+           -- 999,999,999 < int32 max; anything else falls back to 0.
+           (CASE
+               WHEN l.cause_detail->>'pr_number' ~ '^[0-9]{1,9}$'
+               THEN (l.cause_detail->>'pr_number')::int
+               ELSE 0
+           END)::int AS pr_number,
            (key)::uuid AS material_id,
            (value->>'revision')::text AS revision,
            (value->>'branch')::text AS branch
@@ -268,13 +294,14 @@ expanded AS (
 ),
 joined AS (
     SELECT DISTINCT ON (e.project_id)
-        e.project_id, e.revision, e.branch, m.message, m.author, e.triggered_by
+        e.project_id, e.revision, e.branch, m.message, m.author,
+        e.triggered_by, e.cause, e.pr_number
     FROM expanded e
     LEFT JOIN modifications m
         ON m.material_id = e.material_id AND m.revision = e.revision
     ORDER BY e.project_id, e.material_id
 )
-SELECT project_id, revision, branch, message, author, triggered_by
+SELECT project_id, revision, branch, message, author, triggered_by, cause, pr_number
 FROM joined
 `
 
@@ -285,6 +312,8 @@ type LatestRunMetaPerProjectRow struct {
 	Message     *string
 	Author      *string
 	TriggeredBy *string
+	Cause       string
+	PrNumber    int32
 }
 
 // Per-project commit metadata from the most recent run across all
@@ -309,6 +338,8 @@ func (q *Queries) LatestRunMetaPerProject(ctx context.Context) ([]LatestRunMetaP
 			&i.Message,
 			&i.Author,
 			&i.TriggeredBy,
+			&i.Cause,
+			&i.PrNumber,
 		); err != nil {
 			return nil, err
 		}

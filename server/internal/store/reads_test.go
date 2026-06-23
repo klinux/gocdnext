@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -119,6 +120,161 @@ func TestGetProjectDetail_ReturnsPipelinesAndRuns(t *testing.T) {
 	}
 	if got.Runs[1].ID != run1.RunID {
 		t.Fatalf("run ids mismatch")
+	}
+}
+
+func TestGetProjectDetail_LatestRunMetaCarriesPRRef(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+
+	// A pull_request run stamps cause + cause_detail.pr_number. The
+	// pipeline card reads these through LatestRunMeta to render a PR
+	// reference ("PR #1135") instead of a branch icon.
+	in := baseTriggerInput(pipelineID, materialID, 1)
+	in.Cause = "pull_request"
+	in.CauseDetail = json.RawMessage(`{"pr_number": 1135}`)
+	if _, err := s.CreateRunFromModification(ctx, in); err != nil {
+		t.Fatalf("create PR run: %v", err)
+	}
+
+	got, err := s.GetProjectDetail(ctx, "demo", 10)
+	if err != nil {
+		t.Fatalf("GetProjectDetail: %v", err)
+	}
+	if len(got.Pipelines) != 1 {
+		t.Fatalf("pipelines = %d, want 1", len(got.Pipelines))
+	}
+	meta := got.Pipelines[0].LatestRunMeta
+	if meta == nil {
+		t.Fatal("LatestRunMeta is nil — PR run produced no meta row")
+	}
+	if meta.Cause != "pull_request" {
+		t.Fatalf("Cause = %q, want pull_request", meta.Cause)
+	}
+	if meta.PRNumber != 1135 {
+		t.Fatalf("PRNumber = %d, want 1135", meta.PRNumber)
+	}
+	// Branch still flows so the tooltip can show the head ref.
+	if meta.Branch != "main" {
+		t.Fatalf("Branch = %q, want main", meta.Branch)
+	}
+}
+
+func TestGetProjectDetail_LatestRunMetaNonPRHasZeroPRNumber(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+
+	// A plain webhook run carries no pr_number. COALESCE(...,0) must
+	// keep the scan from blowing up on the NULL JSON path and leave
+	// PRNumber at 0 so the card falls back to the branch icon.
+	if _, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1)); err != nil {
+		t.Fatalf("create webhook run: %v", err)
+	}
+
+	got, err := s.GetProjectDetail(ctx, "demo", 10)
+	if err != nil {
+		t.Fatalf("GetProjectDetail: %v", err)
+	}
+	meta := got.Pipelines[0].LatestRunMeta
+	if meta == nil {
+		t.Fatal("LatestRunMeta is nil")
+	}
+	if meta.PRNumber != 0 {
+		t.Fatalf("PRNumber = %d, want 0 for non-PR run", meta.PRNumber)
+	}
+	if meta.Cause == "pull_request" {
+		t.Fatalf("Cause = %q, should not be pull_request", meta.Cause)
+	}
+}
+
+func TestGetProjectDetail_LatestRunMetaPRNumberIsSanitised(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+
+	// A bad cause_detail.pr_number must never reach the int4 cast raw:
+	// "abc" would be an invalid-syntax error and a 10-digit value an
+	// out-of-range error, either of which would 500 the cards. The
+	// regex+CASE guard maps all of these to 0. Each case appends a
+	// newer run so it becomes the pipeline's latest, exercising the
+	// same query against fresh JSON each time.
+	cases := []struct {
+		name   string
+		detail string
+		rev    string
+		modID  int64
+		wantPR int
+	}{
+		{"non_numeric", `{"pr_number":"abc"}`, "a111111111111111111111111111111111111111", 1, 0},
+		{"overflow_int32", `{"pr_number":"9999999999"}`, "b222222222222222222222222222222222222222", 2, 0},
+		{"negative", `{"pr_number":"-5"}`, "c333333333333333333333333333333333333333", 3, 0},
+		{"valid", `{"pr_number":42}`, "d444444444444444444444444444444444444444", 4, 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := baseTriggerInput(pipelineID, materialID, tc.modID)
+			in.Revision = tc.rev
+			in.Cause = "pull_request"
+			in.CauseDetail = json.RawMessage(tc.detail)
+			if _, err := s.CreateRunFromModification(ctx, in); err != nil {
+				t.Fatalf("create run: %v", err)
+			}
+
+			got, err := s.GetProjectDetail(ctx, "demo", 10)
+			if err != nil {
+				t.Fatalf("GetProjectDetail must not error on pr_number=%s: %v", tc.detail, err)
+			}
+			meta := got.Pipelines[0].LatestRunMeta
+			if meta == nil {
+				t.Fatal("LatestRunMeta is nil")
+			}
+			if meta.PRNumber != tc.wantPR {
+				t.Fatalf("PRNumber = %d, want %d (detail=%s)", meta.PRNumber, tc.wantPR, tc.detail)
+			}
+		})
+	}
+}
+
+func TestListProjects_LatestRunMetaCarriesPRRef(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+
+	// Sibling query to GetProjectDetail's: LatestRunMetaPerProject
+	// feeds the /projects list cards. Same PR-ref + guard contract.
+	in := baseTriggerInput(pipelineID, materialID, 1)
+	in.Cause = "pull_request"
+	in.CauseDetail = json.RawMessage(`{"pr_number": 1135}`)
+	if _, err := s.CreateRunFromModification(ctx, in); err != nil {
+		t.Fatalf("create PR run: %v", err)
+	}
+
+	got, err := s.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("projects = %d, want 1", len(got))
+	}
+	meta := got[0].LatestRunMeta
+	if meta == nil {
+		t.Fatal("LatestRunMeta is nil for project list card")
+	}
+	if meta.Cause != "pull_request" {
+		t.Fatalf("Cause = %q, want pull_request", meta.Cause)
+	}
+	if meta.PRNumber != 1135 {
+		t.Fatalf("PRNumber = %d, want 1135", meta.PRNumber)
 	}
 }
 
