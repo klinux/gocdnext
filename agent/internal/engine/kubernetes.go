@@ -622,6 +622,79 @@ func (k *Kubernetes) waitForTaskTerminated(ctx context.Context, name string) (in
 	return -1, nil
 }
 
+// TaskTermination summarises why the task pod stopped, so the runner can
+// tell a platform DISRUPTION (eviction, node preemption, node shutdown,
+// or the pod being deleted) apart from an ordinary non-zero task exit.
+// On disruption the runner reports a clear message and skips the
+// housekeeper scans — those would only emit "container not found" noise
+// because the pod (and its housekeeper sidecar) is gone.
+type TaskTermination struct {
+	PodGone   bool   // the pod object no longer exists
+	Disrupted bool   // evicted / node-pressure / preempted / shutting down / being deleted
+	Reason    string // short k8s reason, e.g. "Evicted", "NodeShutdown"
+	Message   string // human-readable detail (best-effort)
+}
+
+// disruptionReasons are Pod.Status.Reason values that mean the platform
+// reclaimed the pod rather than the task failing on its own.
+var disruptionReasons = map[string]bool{
+	"Evicted":      true, // kubelet resource-pressure eviction
+	"NodeLost":     true,
+	"NodeShutdown": true,
+	"Shutdown":     true,
+	"Terminated":   true, // graceful node shutdown on some distros
+	"Preempting":   true,
+	"NodeAffinity": true,
+	"OutOfcpu":     true,
+	"OutOfmemory":  true,
+}
+
+// TaskPodTermination fetches the pod and classifies its termination.
+// Best-effort and never errors: a NotFound pod returns
+// {PodGone, Disrupted}=true; any other Get failure returns the zero
+// value so the caller falls back to its generic message.
+func (k *Kubernetes) TaskPodTermination(ctx context.Context, podName string) TaskTermination {
+	p, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if kerrors.IsNotFound(err) {
+		return TaskTermination{
+			PodGone:   true,
+			Disrupted: true,
+			Reason:    "PodDeleted",
+			Message:   "job pod no longer exists (evicted, preempted, or node reclaimed)",
+		}
+	}
+	if err != nil {
+		return TaskTermination{}
+	}
+	t := TaskTermination{Reason: p.Status.Reason, Message: p.Status.Message}
+	if p.DeletionTimestamp != nil {
+		t.Disrupted = true
+		if t.Reason == "" {
+			t.Reason = "Terminating"
+		}
+	}
+	if disruptionReasons[p.Status.Reason] {
+		t.Disrupted = true
+	}
+	for _, cs := range p.Status.ContainerStatuses {
+		if cs.Name == "task" && cs.State.Terminated != nil {
+			term := cs.State.Terminated
+			if t.Reason == "" {
+				t.Reason = term.Reason
+			}
+			if t.Message == "" {
+				t.Message = term.Message
+			}
+			// ContainerStatusUnknown = kubelet lost track of the
+			// container (node went away) — a strong disruption signal.
+			if term.Reason == "ContainerStatusUnknown" {
+				t.Disrupted = true
+			}
+		}
+	}
+	return t
+}
+
 // streamLogs follows the task container's log stream and emits one
 // line per scanner.Text() into OnLine. Errors opening or reading the
 // stream are logged to stderr by the agent host path — here we
