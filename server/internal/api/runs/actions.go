@@ -432,6 +432,12 @@ func (h *Handler) Rerun(w http.ResponseWriter, r *http.Request) {
 		audit.Emit(r.Context(), h.log, h.store,
 			store.AuditActionRunRerun, "run", res.RunID.String(),
 			map[string]any{"rerun_of": runID.String(), "counter": res.Counter})
+		// Re-open the GitHub check for the NEW run so a PR shows the
+		// rerun in progress instead of the prior (failed) conclusion.
+		// No-op unless the run is webhook/PR-driven on a GitHub repo.
+		if h.checks != nil {
+			h.checks.ReportRunReopened(r.Context(), res.RunID)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -482,6 +488,11 @@ func (h *Handler) RerunJob(w http.ResponseWriter, r *http.Request) {
 		audit.Emit(r.Context(), h.log, h.store,
 			store.AuditActionJobRerun, "job_run", res.JobRunID.String(),
 			map[string]any{"run_id": res.RunID.String(), "attempt": res.Attempt})
+		// A single-job rerun puts the parent run back to running, so the
+		// PR check shouldn't stay red — re-open it as in_progress.
+		if h.checks != nil {
+			h.checks.ReportRunReopened(r.Context(), res.RunID)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{

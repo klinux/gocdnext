@@ -101,6 +101,23 @@ func (r *Reporter) ReportRunCompleted(_ context.Context, runID uuid.UUID, status
 	}()
 }
 
+// ReportRunReopened is called from the rerun path (full run or single
+// job). Fire-and-forget like the others. Re-opens the run's existing
+// check to in_progress rather than creating a fresh one, so concurrent
+// single-job reruns on the same run don't orphan check runs.
+func (r *Reporter) ReportRunReopened(_ context.Context, runID uuid.UUID) {
+	if r == nil {
+		return
+	}
+	go func() {
+		work, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := r.ReopenCheck(work, runID); err != nil {
+			r.log.Warn("checks: reopen failed", "run_id", runID, "err", err)
+		}
+	}()
+}
+
 // CreateCheck is the synchronous version of ReportRunCreated —
 // callable from tests and from any caller that wants to know whether
 // the check was created. Returns nil when the run shouldn't produce
@@ -168,8 +185,23 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 
 // CompleteCheck is the synchronous version of ReportRunCompleted.
 // Returns nil when we have no check record for the run (feature
-// disabled, or create-side skipped).
+// disabled, or create-side skipped). Serialized per run (advisory lock)
+// with ReopenCheck so a stale completion can't land between a concurrent
+// reopen's status read and its PATCH.
 func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status string) error {
+	if r.appClient() == nil {
+		return nil
+	}
+	return r.store.WithRunCheckLock(ctx, runID, func() error {
+		return r.completeCheckLocked(ctx, runID, status)
+	})
+}
+
+// completeCheckLocked is CompleteCheck's body, run while holding the
+// per-run check lock. reopenLocked's self-heal calls it directly (it
+// already holds the lock) — re-acquiring would deadlock on a different
+// pooled connection.
+func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, status string) error {
 	app := r.appClient()
 	if app == nil {
 		return nil
@@ -181,6 +213,25 @@ func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status st
 	if err != nil {
 		return err
 	}
+
+	// The run's CURRENT status is authoritative, not the status captured
+	// when this completion was queued. A completion can arrive stale: the
+	// original run's terminal fired async, but the user has since re-run a
+	// job — re-opening THIS SAME check. Completing now with the stale
+	// status would flip the PR back to red mid-rerun. So re-read: skip
+	// while the run is non-terminal (a rerun is in flight), else use the
+	// fresh status. Idempotent with ReopenCheck's self-heal — both route
+	// through here, so whichever runs last writes the same state.
+	current, terminal, err := r.runTerminalStatus(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if !terminal {
+		r.log.Info("checks: skipping stale completion — run re-opened",
+			"run_id", runID, "queued_status", status, "current_status", current)
+		return nil
+	}
+	status = current
 
 	conclusion := conclusionFor(status)
 	title := "Pipeline " + status
@@ -211,6 +262,83 @@ func (r *Reporter) CompleteCheck(ctx context.Context, runID uuid.UUID, status st
 		"run_id", runID, "check_run_id", link.CheckRunID,
 		"status", status, "conclusion", conclusion)
 	return nil
+}
+
+// ReopenCheck re-opens a run's check on a rerun. It REUSES the existing
+// check run (one per run) when there is one — so a single-job rerun, or
+// two concurrent job reruns on the same run, never orphan a check run or
+// churn the run→check link (each just re-PATCHes the same check run to
+// in_progress). When there's no prior check — a fresh run from a full
+// rerun, or a non-reportable cause — it falls back to CreateCheck.
+//
+// It also self-heals the fire-and-forget race against ReportRunCompleted:
+// a very fast rerun can reach terminal before (or while) we re-open,
+// which would otherwise leave GitHub stuck at in_progress. After
+// re-opening we re-read the run status and, if it's already terminal,
+// complete the check immediately. Idempotent with the connect.go
+// completion path — whichever closes it last writes the same conclusion.
+func (r *Reporter) ReopenCheck(ctx context.Context, runID uuid.UUID) error {
+	if r.appClient() == nil {
+		return nil
+	}
+	return r.store.WithRunCheckLock(ctx, runID, func() error {
+		return r.reopenLocked(ctx, runID)
+	})
+}
+
+func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
+	app := r.appClient()
+	if app == nil {
+		return nil
+	}
+	link, err := r.store.GetGithubCheckRun(ctx, runID)
+	switch {
+	case errors.Is(err, store.ErrCheckRunNotFound):
+		// No prior check: a fresh run (full rerun) or a non-reportable
+		// cause. CreateCheck creates+links, or no-ops cleanly.
+		if err := r.CreateCheck(ctx, runID); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	default:
+		if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
+			Owner:      link.Owner,
+			Repo:       link.Repo,
+			CheckRunID: link.CheckRunID,
+			Status:     ghscm.CheckStatusInProgress,
+			Output: &ghscm.CheckRunOutput{
+				Title:   "Pipeline re-running",
+				Summary: "A rerun is in progress — follow the run for details.",
+			},
+		}); err != nil {
+			return fmt.Errorf("reopen check run: %w", err)
+		}
+		r.log.Info("checks: reopened",
+			"run_id", runID, "check_run_id", link.CheckRunID)
+	}
+
+	// Self-heal the race: a very fast rerun can finish before this reopen
+	// lands. completeCheckLocked re-reads the run — it no-ops while the
+	// rerun is running, or closes the check if it already finished. Called
+	// directly (not CompleteCheck) because we already hold the lock.
+	return r.completeCheckLocked(ctx, runID, "")
+}
+
+// runTerminalStatus reports the run's current status and whether it is a
+// terminal state. Used by ReopenCheck's self-heal.
+func (r *Reporter) runTerminalStatus(ctx context.Context, runID uuid.UUID) (string, bool, error) {
+	detail, err := r.store.GetRunDetail(ctx, runID, 0, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("get run detail: %w", err)
+	}
+	switch detail.Status {
+	case string(domain.StatusSuccess), string(domain.StatusFailed),
+		string(domain.StatusCanceled), string(domain.StatusSkipped):
+		return detail.Status, true, nil
+	default:
+		return detail.Status, false, nil
+	}
 }
 
 // coverageSummaryLine renders the run's coverage rows as markdown
