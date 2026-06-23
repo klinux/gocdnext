@@ -63,8 +63,13 @@ type GithubCheckRun struct {
 	Owner          string
 	Repo           string
 	HeadSHA        string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Completed is TRUE once the check has been PATCHed to a terminal
+	// state. The reporter reads it on a rerun: GitHub won't cleanly
+	// reopen a completed check, so a completed link forces a fresh
+	// check run instead of reusing the stale one.
+	Completed bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // UpsertGithubCheckRunInput is the write-side input.
@@ -112,7 +117,20 @@ func (s *Store) GetGithubCheckRun(ctx context.Context, runID uuid.UUID) (GithubC
 		Owner:          row.Owner,
 		Repo:           row.Repo,
 		HeadSHA:        row.HeadSha,
+		Completed:      row.Completed,
 		CreatedAt:      row.CreatedAt.Time,
 		UpdatedAt:      row.UpdatedAt.Time,
 	}, nil
+}
+
+// MarkGithubCheckRunCompleted flips the run→check link to completed after the
+// reporter PATCHes the check to a terminal state. A later rerun reads this to
+// recreate the check rather than reuse a completed one (GitHub won't cleanly
+// reopen it). Best-effort from the caller's view: a failure just means the
+// next rerun reuses instead of recreating — degraded, not broken.
+func (s *Store) MarkGithubCheckRunCompleted(ctx context.Context, runID uuid.UUID) error {
+	if err := s.q.MarkGithubCheckRunCompleted(ctx, pgUUID(runID)); err != nil {
+		return fmt.Errorf("store: mark github check run completed: %w", err)
+	}
+	return nil
 }
