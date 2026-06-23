@@ -166,6 +166,16 @@ when both have, and depend on the sentinel.</p>
 <p><code dir="auto">needs:</code> orders jobs WITHIN a single run. Upstream materials chain
 ACROSS runs in different pipelines. Different scopes; both exist
 because both problems are real.</p>
+<p><strong>Coming from another CI?</strong> A <code dir="auto">depends_on</code> / <code dir="auto">needs</code> that orders steps
+inside one run maps to gocdnext’s <strong><code dir="auto">needs:</code></strong> — same run, fail-fast.
+If your other tool splits one event across several pipeline <em>files</em> and
+orders them (e.g. Woodpecker’s workflow-level <code dir="auto">depends_on</code>), model that
+as <strong>stages + <code dir="auto">needs:</code> in a single pipeline</strong> — gocdnext keeps one run
+in one file. <code dir="auto">materials.upstream</code> is a <em>different</em> thing: it <strong>triggers
+a separate run</strong> when another pipeline succeeds (the value-stream
+chain), which a same-run <code dir="auto">depends_on</code> does not do. So don’t reach for
+<code dir="auto">upstream</code> just to order things — reach for it when you genuinely want a
+new, independently-tracked run kicked off by an upstream success.</p>
 <h2 id="cron-material">Cron material</h2>
 <p>Cron schedules are declared in the project settings UI (<em>Settings
 → Crons</em>), not in YAML. The cron entry points at a specific
