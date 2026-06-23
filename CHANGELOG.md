@@ -8,6 +8,38 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.51.0 — 2026-06-23
+
+### Added
+
+- **Coloured Java build logs.** The `gradle` and `maven` plugins now force
+  ANSI colour by default so `BUILD SUCCESSFUL`/`FAILED` and stack traces are
+  no longer flat white in CI (which has no TTY). Gradle gains a `console`
+  input (`rich` default; `auto`/`plain`/`verbose`); Maven a `color` input
+  (`true` default; `false`/`auto`). `-Dstyle.color=always` overrides
+  `--batch-mode`'s implicit off. (#75)
+- **PR reference on cards.** A `pull_request`-triggered run now shows a PR
+  badge ("PR #N" + a pull-request icon) instead of a branch chip on the
+  pipeline and project cards, so a PR run reads differently from a push at a
+  glance — the branch moves to the tooltip. The JSON→int cast for the PR
+  number is guarded (regex + `CASE`) so a malformed value can't error the
+  cards. (#77)
+
+### Fixed
+
+- **Rerun re-opens the GitHub check.** Re-running a run (or a single job)
+  left the GitHub check stuck red while the rerun executed. It now reports
+  the check back to `in_progress` on rerun and completes it with the final
+  status, serialised per run so a concurrent completion can't leave it hung.
+  (#74)
+- **Pod eviction/preemption reported clearly.** When a job pod is evicted,
+  preempted, or its node shuts down, the agent surfaced a cryptic "container
+  not found" with exit 143. It now detects the disruption (pod gone,
+  `Evicted`/`NodeShutdown`/…, or `ContainerStatusUnknown`) and reports
+  "job pod terminated externally … likely node preemption/eviction or
+  cancellation; rerun to retry", dropping the misleading scan noise. A
+  healthy exit 143 (real cancellation) still runs the normal scans. (#76)
+
 ## v0.50.0 — 2026-06-22
 
 ### Added
