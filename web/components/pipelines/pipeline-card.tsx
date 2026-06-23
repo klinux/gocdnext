@@ -268,13 +268,13 @@ export function PipelineCard({
           />
         </div>
 
-        {metrics || upstreams.length > 0 || downstreams.length > 0 ? (
-          <InlineMetricsFooter
-            metrics={metrics}
-            upstreams={upstreams}
-            downstreams={downstreams}
-          />
-        ) : null}
+        {/* Always render the footer (even empty) so every card shares the
+            same baseline height — see InlineMetricsFooter's min-height. */}
+        <InlineMetricsFooter
+          metrics={metrics}
+          upstreams={upstreams}
+          downstreams={downstreams}
+        />
       </article>
 
       <PipelineOverviewSheet
@@ -340,7 +340,7 @@ function RelationshipPills({
         ? `Triggers ${e.to_pipeline} after ${pipelineStageHint(e.stage)} passes`
         : `Triggers ${e.to_pipeline}`;
   return (
-    <span className="flex flex-wrap items-center gap-1">
+    <span className="flex min-w-0 items-center gap-1 overflow-hidden">
       {visible.map((e) => (
         <EntityChip
           key={`${direction}-${labelFor(e)}:${e.stage ?? ""}`}
@@ -428,12 +428,23 @@ function InlineMetricsFooter({
   const hasMetrics = metrics != null && metrics.runs_considered > 0;
   const hasUpstreams = upstreams.length > 0;
   const hasDownstreams = downstreams.length > 0;
-  if (!hasMetrics && !hasUpstreams && !hasDownstreams) {
-    return null;
-  }
+  const hasContent = hasMetrics || hasUpstreams || hasDownstreams;
+  // Always reserve the strip's height (min-h-7) so cards with/without metrics
+  // or relationship pills line up — the pill chips are taller than the plain
+  // metrics text, so min-h floors every footer to the tallest variant. The
+  // border+background "chrome" only renders when there's content, so an empty
+  // card reserves the space without drawing a broken-looking bar.
   const rate = hasMetrics ? Math.round(metrics!.success_rate * 100) : 0;
   return (
-    <div className="flex items-center gap-2.5 border-t border-border bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
+    <div
+      aria-hidden={!hasContent}
+      className={cn(
+        "flex min-h-7 items-center gap-2.5 px-2.5 py-1 text-[10px] text-muted-foreground",
+        hasContent
+          ? "border-t border-border bg-muted/30"
+          : "border-t border-transparent",
+      )}
+    >
       {hasMetrics ? (
         <>
           <span className="inline-flex items-center gap-1">
@@ -467,7 +478,7 @@ function InlineMetricsFooter({
           </span>
         </>
       ) : null}
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex min-w-0 items-center gap-2 overflow-hidden">
         {hasUpstreams ? (
           <RelationshipPills edges={upstreams} direction="in" />
         ) : null}
@@ -475,7 +486,7 @@ function InlineMetricsFooter({
           <RelationshipPills edges={downstreams} direction="out" />
         ) : null}
         {hasMetrics ? (
-          <span className="font-mono tabular-nums">
+          <span className="shrink-0 font-mono tabular-nums">
             {metrics!.runs_considered} runs · {metrics!.window_days}d
           </span>
         ) : null}
