@@ -144,6 +144,10 @@ export type RunMeta = {
   message?: string;
   author?: string;
   triggered_by?: string;
+  // cause + pr_number let cards show a PR reference (PR #N) instead of a
+  // branch when the latest run was triggered by a pull_request.
+  cause?: string;
+  pr_number?: number;
 };
 
 export type PipelineMetrics = {

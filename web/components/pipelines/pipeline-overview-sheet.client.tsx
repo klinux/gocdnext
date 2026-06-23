@@ -8,6 +8,7 @@ import {
   Download,
   FileCode,
   GitBranch,
+  GitPullRequest,
   Loader2,
 } from "lucide-react";
 
@@ -228,10 +229,20 @@ function OverviewPanel({
               </span>
             </Row>
           ) : null}
-          {meta?.branch || meta?.revision ? (
+          {meta?.branch ||
+          meta?.revision ||
+          (meta?.cause === "pull_request" && meta?.pr_number) ? (
             <Row label="ref">
               <span className="inline-flex max-w-full items-center gap-1.5 truncate">
-                {meta.branch ? (
+                {meta.cause === "pull_request" && meta.pr_number ? (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+                    title={meta.branch ? `Head: ${meta.branch}` : undefined}
+                  >
+                    <GitPullRequest className="size-3" aria-hidden />
+                    PR #{meta.pr_number}
+                  </span>
+                ) : meta.branch ? (
                   <span className="inline-flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
                     <GitBranch className="size-3" aria-hidden />
                     {meta.branch}

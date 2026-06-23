@@ -147,6 +147,11 @@ type RunMeta struct {
 	// modification row → Author is empty and the UI falls back to
 	// TriggeredBy so the card still shows "who did this".
 	TriggeredBy string `json:"triggered_by,omitempty"`
+	// Cause + PRNumber let the card render a pull-request reference
+	// (PR #N + a PR icon) instead of a branch icon when the latest run
+	// was triggered by a pull_request. PRNumber is 0 for non-PR runs.
+	Cause    string `json:"cause,omitempty"`
+	PRNumber int    `json:"pr_number,omitempty"`
 }
 
 // PipelineMetrics feeds the card's footer strip: lead time (wall
@@ -538,6 +543,8 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 			Message:     stringValue(m.Message),
 			Author:      stringValue(m.Author),
 			TriggeredBy: stringValue(m.TriggeredBy),
+			Cause:       m.Cause,
+			PRNumber:    int(m.PrNumber),
 		}
 	}
 
@@ -807,6 +814,8 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Message:     stringValue(m.Message),
 			Author:      stringValue(m.Author),
 			TriggeredBy: stringValue(m.TriggeredBy),
+			Cause:       m.Cause,
+			PRNumber:    int(m.PrNumber),
 		}
 	}
 
