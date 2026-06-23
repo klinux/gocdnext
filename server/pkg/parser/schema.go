@@ -507,7 +507,7 @@ type RuleDef struct {
 // job produces coverage".
 type CoverageReportDef struct {
 	Path   string `yaml:"path"`
-	Format string `yaml:"format"` // go-cover | lcov | cobertura
+	Format string `yaml:"format"` // go-cover | lcov | cobertura | jacoco
 	// FailUnder, when > 0, fails the JOB if total coverage lands
 	// below this percentage. Opt-in by design: reporting must never
 	// gate by accident; the operator writes the threshold to ask
