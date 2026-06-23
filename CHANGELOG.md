@@ -8,6 +8,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.51.1 — 2026-06-23
+
+### Fixed
+
+- **Rerun re-reports the GitHub check as running.** Re-running a run (or a
+  single job) left the PR check stuck on its prior result until the rerun
+  finished — GitHub treats a check run's `completed_at` as set-once, so
+  reopening a completed check to `in_progress` doesn't take. A rerun of a
+  completed check now creates a fresh check run (clean `in_progress`) and
+  re-points the run→check link; the per-run lock serialises concurrent
+  job-reruns so none is orphaned. A migration backfills the new
+  `completed` flag for already-terminal runs. (#78)
+- **Pipeline cards keep a consistent footer height.** Cards whose footer
+  carried a relationship pill (`deploy →`) rendered taller than metrics-only
+  cards, leaving rows ragged. The footer now reserves a fixed height on every
+  card (chrome only drawn when there's content) and is locked to a single
+  line, so cards in a row line up. (#79)
+
 ## v0.51.0 — 2026-06-23
 
 ### Added
