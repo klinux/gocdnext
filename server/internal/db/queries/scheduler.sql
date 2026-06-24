@@ -204,7 +204,8 @@ WHERE run_id = $1
 -- round-trip keeps the dispatch hot path tight.
 --
 -- r.cause + r.cause_detail come along because scheduler/civars.go
--- materialises CI_CAUSE + CI_PULL_REQUEST_* env vars from them.
+-- materialises CI_CAUSE + the cause-specific env vars from them
+-- (CI_PULL_REQUEST_* / CI_TAG_* / CI_UPSTREAM_*).
 -- Adding the columns here costs one extra row width on a hot path
 -- query that already loads the JSONB definition — negligible vs.
 -- the round trip we'd otherwise need to fetch them separately.
