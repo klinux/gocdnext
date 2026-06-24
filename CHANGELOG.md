@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.53.1 — 2026-06-24
+
+### Fixed
+
+- **Gradle logs no longer leak terminal escapes.** The `gradle` plugin
+  defaulted to `console: rich`, whose live progress area emits
+  cursor/erase/redraw escapes (`[5A`, `[0K`, `│███│ EXECUTING`) that can't
+  render in the append-only run log — they showed up as garbage. The default
+  is now `console: plain` (rich/verbose stay opt-in for interactive
+  terminals), and the log viewer colourises Gradle output by content instead:
+  `BUILD SUCCESSFUL` green; `BUILD FAILED` / `FAILURE: Build failed…` /
+  `> Task … FAILED` red; `Deprecated Gradle features…` amber — anchored so
+  ordinary prose and passing task lines stay neutral. Maven is unaffected (it
+  emits plain SGR, no cursor escapes). (#82)
+
 ## v0.53.0 — 2026-06-23
 
 ### Added
