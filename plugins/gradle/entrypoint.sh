@@ -134,12 +134,14 @@ if [ -n "${PLUGIN_CONFIGURATION_CACHE:-}" ]; then
     fi
 fi
 
-# Console mode — drives output COLOUR. Default `rich`: CI has no
-# TTY, so Gradle's own `auto` would render plain (everything white,
-# the failure/success colours lost). `rich`/`verbose` force ANSI;
-# `plain` drops colour + progress; `auto` = Gradle's native detect.
+# Console mode. Default `plain`: the gocdnext log is an append-only
+# line stream, and `rich`/`verbose` paint a live progress area with
+# cursor/erase/redraw escapes that can't render there (they leak as
+# `[5A`/`[0K` noise). The log viewer colours by content instead, so
+# `plain` reads clean AND coloured in the UI. `rich`/`verbose` force
+# the interactive ANSI UI; `auto` = Gradle's native TTY detect.
 # Typos fail loud rather than silently shipping a bad --console arg.
-console_val=$(printf '%s' "${PLUGIN_CONSOLE:-rich}" | tr '[:upper:]' '[:lower:]')
+console_val=$(printf '%s' "${PLUGIN_CONSOLE:-plain}" | tr '[:upper:]' '[:lower:]')
 case "$console_val" in
     auto|plain|rich|verbose) console_flag="--console=${console_val}" ;;
     *)

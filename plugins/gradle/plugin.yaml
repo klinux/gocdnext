@@ -72,15 +72,17 @@ inputs:
       incrementally.
   console:
     required: false
-    default: rich
+    default: plain
     description: >
       Gradle console mode: auto | plain | rich | verbose. Defaults
-      to `rich` so build output is COLOURISED in the gocdnext log
-      (BUILD SUCCESSFUL green, BUILD FAILED + failing tests red).
-      CI has no TTY, so Gradle's own `auto` default falls back to
-      plain — everything white. `rich`/`verbose` also draw a live
-      progress area; use `plain` to drop both colour and progress,
-      or `auto` for Gradle's native (TTY-detected) behaviour.
+      to `plain` — CI logs are append-only line streams, and `rich`/
+      `verbose` paint a live progress area with cursor/erase/redraw
+      escapes that can't render there (they show up as `[5A`/`[0K`
+      garbage). The gocdnext log viewer colourises by content instead
+      (BUILD SUCCESSFUL green, BUILD FAILED / failing tests red), so
+      `plain` is both clean AND coloured in the UI. Opt into `rich`/
+      `verbose` only for an interactive terminal, or `auto` for
+      Gradle's native TTY-detected behaviour.
   args:
     required: false
     description: >
