@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.53.0 — 2026-06-23
+
+### Added
+
+- **`CI_UPSTREAM_*` env vars on upstream-triggered runs.** A run created by an
+  `upstream` material's fanout now gets `CI_UPSTREAM_PIPELINE`,
+  `CI_UPSTREAM_RUN_COUNTER`, and `CI_UPSTREAM_STAGE` from the trigger metadata.
+  Lets a downstream rebuild the exact version the upstream produced — e.g. a
+  deploy uses `1.${CI_UPSTREAM_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}` to match
+  the build's `1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}` (run counters are
+  per-pipeline, so the deploy's own counter wouldn't line up). (#81)
+
+### Fixed
+
+- **Wrong `CI_COMMIT_SHA` on upstream-triggered runs.** Such a run carries the
+  git checkout *and* the upstream material, whose "revision" is the upstream
+  run's UUID with an empty branch. The CI-var builder could pick that UUID, so
+  `CI_COMMIT_SHA`/`CI_COMMIT_SHORT_SHA` became the first bytes of a UUID — a
+  deploy then templated an image tag that was never built (ImagePullBackOff).
+  It now prefers the material that carries a branch (the git checkout). (#81)
+
 ## v0.52.0 — 2026-06-23
 
 ### Added
