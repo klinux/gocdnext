@@ -51,7 +51,45 @@ func buildCIVars(run store.RunForDispatch, jobName string) map[string]string {
 	}
 	addPullRequestVars(out, run.Cause, run.CauseDetail)
 	addTagVars(out, run.Cause, run.CauseDetail)
+	addUpstreamVars(out, run.Cause, run.CauseDetail)
 	return out
+}
+
+// upstreamDetail mirrors the JSONB the fanout stamps on
+// `runs.cause_detail` for an `upstream` cause — see
+// server/internal/store/fanout.go (CreateRunFromUpstream).
+type upstreamDetail struct {
+	Pipeline   string `json:"upstream_pipeline"`
+	RunCounter int64  `json:"upstream_run_counter"`
+	Stage      string `json:"upstream_stage"`
+}
+
+// addUpstreamVars materialises CI_UPSTREAM_* for an upstream-triggered
+// run, surfacing the TRIGGERING pipeline's identity + counter. The key
+// one is CI_UPSTREAM_RUN_COUNTER: a downstream (e.g. a deploy) can rebuild
+// the exact version/tag the upstream produced — `1.${CI_UPSTREAM_RUN_COUNTER}.
+// ${CI_COMMIT_SHORT_SHA}` matches the upstream's
+// `1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}`. Without it the downstream's
+// own CI_RUN_COUNTER differs (counters don't cross pipelines), so the deploy
+// would template an image tag that was never built. Non-upstream causes and
+// malformed JSON skip, same "empty → leave literal" rule as the tag/PR vars.
+func addUpstreamVars(out map[string]string, cause string, detail []byte) {
+	if cause != "upstream" || len(detail) == 0 {
+		return
+	}
+	var u upstreamDetail
+	if err := json.Unmarshal(detail, &u); err != nil {
+		return
+	}
+	if u.Pipeline != "" {
+		out["CI_UPSTREAM_PIPELINE"] = u.Pipeline
+	}
+	if u.RunCounter > 0 {
+		out["CI_UPSTREAM_RUN_COUNTER"] = strconv.FormatInt(u.RunCounter, 10)
+	}
+	if u.Stage != "" {
+		out["CI_UPSTREAM_STAGE"] = u.Stage
+	}
 }
 
 // tagDetail mirrors the JSONB the webhook handler stamps on
@@ -177,10 +215,18 @@ func addPullRequestVars(out map[string]string, cause string, detail []byte) {
 }
 
 // primaryRevision picks one (revision, branch) pair from the
-// revisions JSONB the run carries. Today's runs only bind one git
-// material so the choice is moot — but we sort keys (material UUIDs)
-// before iterating so a future multi-material run produces the same
-// answer across replays / reaper requeues / late audit reads.
+// revisions JSONB the run carries. Keys (material UUIDs) are sorted so
+// the choice is stable across replays / reaper requeues / late audit
+// reads.
+//
+// An upstream-triggered run carries TWO materials: the git checkout
+// (real branch + commit SHA) AND the upstream material, whose "revision"
+// is the upstream RUN's UUID with an EMPTY branch. Picking the latter
+// would make CI_COMMIT_SHA / CI_COMMIT_SHORT_SHA the first bytes of a
+// UUID — e.g. a deploy would template an image tag that was never built
+// (ImagePullBackOff). So prefer the first material that has a branch
+// (the git checkout); fall back to the sorted-first entry only when none
+// does, preserving the deterministic default for single-material runs.
 func primaryRevision(raw []byte) (commit, branch string) {
 	if len(raw) == 0 {
 		return "", ""
@@ -200,6 +246,11 @@ func primaryRevision(raw []byte) (commit, branch string) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	for _, k := range keys {
+		if parsed[k].Branch != "" {
+			return parsed[k].Revision, parsed[k].Branch
+		}
+	}
 	r := parsed[keys[0]]
 	return r.Revision, r.Branch
 }
