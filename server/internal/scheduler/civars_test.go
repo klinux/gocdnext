@@ -75,6 +75,47 @@ func TestBuildCIVars(t *testing.T) {
 			},
 		},
 		{
+			// Regression: an upstream-triggered run carries TWO materials —
+			// the upstream material (sorts first, empty branch, "revision" =
+			// the upstream RUN's UUID) and the git checkout. primaryRevision
+			// must pick the git one, else CI_COMMIT_SHORT_SHA becomes the
+			// first bytes of a UUID and a deploy templates an image tag that
+			// was never built. Also surfaces the CI_UPSTREAM_* vars so the
+			// deploy can rebuild the upstream's 1.<counter>.<sha> version.
+			name: "upstream run skips the branchless upstream material + exposes CI_UPSTREAM_*",
+			run: store.RunForDispatch{
+				ID:          runID,
+				PipelineID:  pipelineID,
+				ProjectID:   projectID,
+				Counter:     12,
+				Cause:       "upstream",
+				CauseDetail: json.RawMessage(`{"upstream_pipeline":"build","upstream_run_counter":9,"upstream_stage":"image"}`),
+				// `0000…` sorts BEFORE `aaaa…`, so the UUID material would win
+				// the old sort-and-take-first; the fix must skip it (no branch).
+				Revisions: json.RawMessage(`{
+					"00001111-0000-0000-0000-000000000000":{"revision":"01c214cc-837d-4234-bae4-03f647579182","branch":""},
+					"` + materialA + `":{"revision":"` + fullSHA + `","branch":"gocdnext-tests"}
+				}`),
+			},
+			jobName: "deploy-stage",
+			want: map[string]string{
+				"CI":                      "true",
+				"GOCDNEXT":                "true",
+				"CI_RUN_ID":               runID.String(),
+				"CI_RUN_COUNTER":          "12",
+				"CI_PIPELINE_ID":          pipelineID.String(),
+				"CI_PROJECT_ID":           projectID.String(),
+				"CI_JOB_NAME":             "deploy-stage",
+				"CI_COMMIT_SHA":           fullSHA,
+				"CI_COMMIT_SHORT_SHA":     fullSHA[:8],
+				"CI_BRANCH":               "gocdnext-tests",
+				"CI_CAUSE":                "upstream",
+				"CI_UPSTREAM_PIPELINE":    "build",
+				"CI_UPSTREAM_RUN_COUNTER": "9",
+				"CI_UPSTREAM_STAGE":       "image",
+			},
+		},
+		{
 			name: "manual trigger without revisions leaves commit/branch unset",
 			run: store.RunForDispatch{
 				ID:         runID,

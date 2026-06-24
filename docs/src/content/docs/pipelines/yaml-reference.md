@@ -620,6 +620,35 @@ Annotated-tag webhooks lack a head_commit so `CI_TAG_MESSAGE` +
 `CI_TAG_AUTHOR` are omitted — the substitution layer keeps those
 literal.
 
+### Upstream runs
+
+When `CI_CAUSE == "upstream"` (a run created by an `upstream`
+material's fanout — see [Materials](#materials)), the **triggering**
+pipeline's identity is injected:
+
+| Name | Value |
+|---|---|
+| `CI_UPSTREAM_PIPELINE` | name of the pipeline that triggered this run |
+| `CI_UPSTREAM_RUN_COUNTER` | the upstream run's `CI_RUN_COUNTER` |
+| `CI_UPSTREAM_STAGE` | the upstream stage whose success triggered the fanout |
+
+The common use is rebuilding the **exact** version/tag the upstream
+produced. Run counters are per-pipeline (the downstream's own
+`CI_RUN_COUNTER` differs from the upstream's), so a deploy that wants
+the image the build job tagged uses the upstream's counter:
+
+```yaml
+# build pipeline — tags the image
+tags: 1.${CI_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}
+
+# deploy pipeline (upstream of build) — references the SAME tag
+image: registry/app:1.${CI_UPSTREAM_RUN_COUNTER}.${CI_COMMIT_SHORT_SHA}
+```
+
+`CI_COMMIT_SHORT_SHA` already matches across the two (fanout runs the
+downstream on the same revision). Non-upstream runs skip all
+`CI_UPSTREAM_*` vars silently.
+
 To wire a pipeline to tag pushes, declare it in `when.event`:
 
 ```yaml
