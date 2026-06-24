@@ -102,6 +102,24 @@ describe("classifyLine", () => {
     expect(classifyLine("✗ deploy aborted", "stdout")).toBe("error");
     expect(classifyLine("⚠ retention backlog growing", "stdout")).toBe("warn");
   });
+
+  it("colours Gradle build results (console=plain has no ANSI)", () => {
+    expect(classifyLine("BUILD SUCCESSFUL in 5m 3s", "stdout")).toBe("success");
+    expect(classifyLine("BUILD FAILED in 12s", "stdout")).toBe("error");
+    expect(classifyLine("FAILURE: Build failed with an exception.", "stdout")).toBe("error");
+    expect(classifyLine("> Task :app:compileKotlin FAILED", "stdout")).toBe("error");
+    expect(
+      classifyLine("Deprecated Gradle features were used in this build", "stdout"),
+    ).toBe("warn");
+  });
+
+  it("does not over-flag normal Gradle task lines or prose with FAILED", () => {
+    // Only the FINAL result + failing tasks are coloured — a running/ok
+    // task line and prose mentioning a failed thing stay neutral.
+    expect(classifyLine("> Task :app:compileKotlin", "stdout")).toBe("default");
+    expect(classifyLine("> Task :app:test UP-TO-DATE", "stdout")).toBe("default");
+    expect(classifyLine("the previous deploy FAILED to roll out", "stdout")).toBe("default");
+  });
 });
 
 describe("ansiToReact", () => {

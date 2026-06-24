@@ -291,6 +291,17 @@ export function classifyLine(text: string, stream: string): LogTone {
   if (/^(FAIL\s|FAIL$)/.test(t)) return "error";
   if (/^ok\s+\S/.test(t)) return "success";
 
+  // Gradle build results — `console: plain` emits no colour, so the
+  // success/failure semantics come from here (not ANSI). Anchored to
+  // Gradle's exact lines on purpose: a broad \bFAILED\b would paint
+  // ordinary prose red, and colouring every `> Task ...` line would be
+  // visual noise — only the final result and failing tasks are flagged.
+  if (/^BUILD SUCCESSFUL\b/.test(t)) return "success";
+  if (/^BUILD FAILED\b/.test(t)) return "error";
+  if (/^FAILURE: Build failed with an exception\.?$/.test(t)) return "error";
+  if (/^> Task\b.*\bFAILED$/.test(t)) return "error";
+  if (/^Deprecated Gradle features were used\b/.test(t)) return "warn";
+
   // Conventional log-level prefixes (case-sensitive to limit false
   // positives — "error" inside a normal sentence shouldn't paint red).
   if (/^(ERROR|FATAL|Error|Fatal|panic):/.test(t)) return "error";
