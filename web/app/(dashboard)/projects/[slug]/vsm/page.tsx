@@ -5,7 +5,7 @@ import {
   GocdnextAPIError,
   getProjectVSM,
 } from "@/server/queries/projects";
-import { VSMGraph } from "@/components/vsm/vsm-graph.client";
+import { VSMStreamView } from "@/components/vsm/vsm-stream-view.client";
 
 type Params = { slug: string };
 
@@ -42,9 +42,5 @@ export default async function VSMPage({
       </div>
     );
   }
-  return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
-      <VSMGraph vsm={vsm} />
-    </div>
-  );
+  return <VSMStreamView vsm={vsm} />;
 }

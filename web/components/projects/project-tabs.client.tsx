@@ -16,7 +16,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 type Tab = {
   label: string;
@@ -90,33 +90,36 @@ const tabs: Tab[] = [
 
 type Props = { slug: string };
 
-// ProjectTabs is the top-level nav inside a project. Each
-// trigger renders as a Next Link; the active one is decided
-// by pathname matching so keyboard / URL / click stay in
-// sync. "line" variant mimics GitHub's sub-navigation: no
-// pill rail behind, just an underline on the active tab.
+// ProjectTabs is the top-level nav inside a project — a row of Next
+// Links (real navigation, so `nav` + aria-current, not a tablist). The
+// active section is decided by pathname matching. Styled as a segmented
+// row: transparent track, the active tab gets a filled background — the
+// same language as the pipelines toolbar pills.
 export function ProjectTabs({ slug }: Props) {
   const pathname = usePathname();
-  const active = tabs.find((t) => t.match(pathname, slug))?.label ?? "Pipelines";
 
   return (
-    <Tabs value={active}>
-      <TabsList>
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <TabsTrigger
-              key={tab.label}
-              value={tab.label}
-              nativeButton={false}
-              render={<Link href={tab.href(slug)} />}
-            >
-              <Icon className="size-4" aria-hidden />
-              {tab.label}
-            </TabsTrigger>
-          );
-        })}
-      </TabsList>
-    </Tabs>
+    <nav aria-label="Project sections" className="flex flex-wrap gap-1">
+      {tabs.map((tab) => {
+        const Icon = tab.icon;
+        const isActive = tab.match(pathname, slug);
+        return (
+          <Link
+            key={tab.label}
+            href={tab.href(slug)}
+            aria-current={isActive ? "page" : undefined}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              isActive
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+            )}
+          >
+            <Icon className="size-3.5 opacity-80" aria-hidden />
+            {tab.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }

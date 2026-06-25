@@ -116,7 +116,7 @@ export function VisibleProjectsMenu({
           <Button
             variant="outline"
             size="sm"
-            className={cn("gap-1.5", saving && "opacity-70")}
+            className={cn("h-10 gap-1.5", saving && "opacity-70")}
             title="Choose which projects appear on this list"
           >
             {hiddenCount > 0 ? (
