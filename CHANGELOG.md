@@ -8,6 +8,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.54.0 — 2026-06-25
+
+### Added
+
+- **Vault secret backend: TLS for private/internal CAs.** The Vault external
+  secret backend dialed with the SDK default TLS config, so a Vault behind an
+  internal CA failed at login with `x509: certificate signed by unknown
+  authority`. Two new knobs (Settings → Secret backends, hot-reloaded; also
+  `GOCDNEXT_SECRET_VAULT_CACERT` / `GOCDNEXT_SECRET_VAULT_SKIP_VERIFY`):
+  - **CA certificate (PEM)** — verify the server cert against an internal CA
+    bundle; verification stays **on**. An unparseable PEM fails loud at client
+    build. This is the recommended fix.
+  - **Skip TLS verification** — explicit opt-in that disables verification for
+    an internal Vault you control. Logged loudly (the `addr`, never a
+    credential) and recorded in the audit trail as booleans (the PEM is never
+    audited). Defaults stay secure: neither set → verification on. (#83)
+
 ## v0.53.1 — 2026-06-24
 
 ### Fixed
