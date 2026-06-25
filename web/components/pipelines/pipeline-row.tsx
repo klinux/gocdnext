@@ -373,7 +373,7 @@ function StageBox({
   const box = (
     <span
       className={cn(
-        "flex size-[30px] items-center justify-center rounded-lg border-[1.5px]",
+        "flex size-[30px] items-center justify-center rounded-full border-[1.5px]",
         nodeBorder[tone],
         boxBg[tone],
       )}
@@ -383,7 +383,7 @@ function StageBox({
   );
   if (job && runId) {
     return (
-      <JobActions job={job} runId={runId} tooltip={tooltip} triggerClassName="rounded-lg">
+      <JobActions job={job} runId={runId} tooltip={tooltip} triggerClassName="rounded-full">
         {box}
       </JobActions>
     );
