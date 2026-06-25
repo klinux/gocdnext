@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw, Search } from "lucide-react";
+import { List, Network, RefreshCw, Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,12 @@ type Props = {
 };
 
 type StatusFilter = "all" | "running" | "failing" | "passing" | "never";
+type FlowView = "flow" | "flat";
+
+// View choice persists to localStorage — it's an ephemeral display
+// preference (like the projects grid/list toggle), not account data, so
+// a round-trip to user_preferences would be overkill.
+const VIEW_STORAGE_KEY = "gocdnext.pipelines.view";
 
 // Filter pills live on the Pipelines tab so a user staring at 20+
 // pipelines can narrow to what matters (what's red, what's moving)
@@ -34,8 +40,20 @@ export function PipelineFlowExplorer({
 }: Props) {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<FlowView>("flow");
   const activeCount = useMemo(() => countActive(pipelines, runs), [pipelines, runs]);
   useLiveRefresh(activeCount > 0);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is client-only; reading it in a lazy initializer would diverge from the server's "flow" render and cause a hydration mismatch, so the persisted choice is applied here after mount
+    if (stored === "flow" || stored === "flat") setView(stored);
+  }, []);
+
+  const setViewAndPersist = (next: FlowView) => {
+    setView(next);
+    window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+  };
 
   const counts = useMemo(() => countByStatus(pipelines), [pipelines]);
 
@@ -65,40 +83,44 @@ export function PipelineFlowExplorer({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Pill
-          label="All"
-          count={total}
-          active={status === "all"}
-          onClick={() => setStatus("all")}
-        />
-        <Pill
-          label="Running"
-          tone="running"
-          count={counts.running}
-          active={status === "running"}
-          onClick={() => setStatus("running")}
-        />
-        <Pill
-          label="Failing"
-          tone="failed"
-          count={counts.failing}
-          active={status === "failing"}
-          onClick={() => setStatus("failing")}
-        />
-        <Pill
-          label="Passing"
-          tone="success"
-          count={counts.passing}
-          active={status === "passing"}
-          onClick={() => setStatus("passing")}
-        />
-        <Pill
-          label="Never run"
-          tone="neutral"
-          count={counts.never}
-          active={status === "never"}
-          onClick={() => setStatus("never")}
-        />
+        <div className="inline-flex flex-wrap items-center rounded-lg border border-border bg-card p-1">
+          <Pill
+            label="All"
+            count={total}
+            active={status === "all"}
+            onClick={() => setStatus("all")}
+          />
+          <Pill
+            label="Running"
+            tone="running"
+            count={counts.running}
+            active={status === "running"}
+            onClick={() => setStatus("running")}
+          />
+          <Pill
+            label="Failing"
+            tone="failed"
+            count={counts.failing}
+            active={status === "failing"}
+            onClick={() => setStatus("failing")}
+          />
+          <Pill
+            label="Passing"
+            tone="success"
+            count={counts.passing}
+            active={status === "passing"}
+            onClick={() => setStatus("passing")}
+          />
+          <Pill
+            label="Never run"
+            tone="neutral"
+            count={counts.never}
+            active={status === "never"}
+            onClick={() => setStatus("never")}
+          />
+        </div>
+
+        <FlowToggle view={view} onChange={setViewAndPersist} />
 
         <div className="relative ml-auto w-full sm:w-64">
           <Search
@@ -111,7 +133,7 @@ export function PipelineFlowExplorer({
             value={query}
             onValueChange={(v) => setQuery(v)}
             aria-label="Search pipelines by name"
-            className="h-8 pl-8 text-xs"
+            className="h-9 pl-8 text-xs"
           />
         </div>
       </div>
@@ -150,8 +172,54 @@ export function PipelineFlowExplorer({
           pipelines={filtered}
           edges={filteredEdges}
           runs={runs}
+          view={view}
         />
       )}
+    </div>
+  );
+}
+
+// FlowToggle switches between the dependency-grouped "Flow" view and the
+// flat "List" view. Mirrors the projects grid/list toggle's look.
+function FlowToggle({
+  view,
+  onChange,
+}: {
+  view: FlowView;
+  onChange: (v: FlowView) => void;
+}) {
+  return (
+    <div className="inline-flex shrink-0 items-center rounded-lg border border-border bg-card p-1">
+      <button
+        type="button"
+        onClick={() => onChange("flow")}
+        aria-pressed={view === "flow"}
+        aria-label="Flow view"
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+          view === "flow"
+            ? "bg-primary/15 text-primary"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Network className="size-3.5" aria-hidden />
+        Flow
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("flat")}
+        aria-pressed={view === "flat"}
+        aria-label="List view"
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+          view === "flat"
+            ? "bg-primary/15 text-primary"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <List className="size-3.5" aria-hidden />
+        List
+      </button>
     </div>
   );
 }
@@ -171,27 +239,20 @@ function Pill({ label, count, active, onClick, tone }: PillProps) {
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors",
+        "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
         active
-          ? "border-foreground/20 bg-foreground text-background"
-          : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
+          ? "bg-accent text-foreground"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {tone ? (
         <span
           aria-hidden
-          className={cn("size-1.5 rounded-full", toneDotClasses[tone])}
+          className={cn("size-[7px] rounded-full", toneDotClasses[tone])}
         />
       ) : null}
       {label}
-      <span
-        className={cn(
-          "rounded-full px-1.5 text-[10px] tabular-nums",
-          active
-            ? "bg-background/20 text-background"
-            : "bg-muted text-muted-foreground",
-        )}
-      >
+      <span className="text-[11px] font-semibold tabular-nums text-muted-foreground">
         {count}
       </span>
     </button>
