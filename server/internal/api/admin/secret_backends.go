@@ -228,7 +228,16 @@ func (h *Handler) DeleteSecretBackend(w http.ResponseWriter, r *http.Request) {
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionPlatformSettingDel, "secret_backend", source,
 		map[string]any{"source": source})
-	w.WriteHeader(http.StatusNoContent)
+
+	// Return the post-delete DTO (now the env-fallback snapshot) so the UI can
+	// resync its form instead of leaving the deleted override's values on
+	// screen — a stale insecure_skip_verify toggle could otherwise be re-saved.
+	dto, err := h.secretBackendDTO(r.Context(), source)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, dto)
 }
 
 // TestSecretBackend handles POST /api/v1/admin/secret-backends/{source}/test.

@@ -24,9 +24,16 @@ const setSecretBackend = vi.fn(async (_input: Record<string, unknown>) => ({
     source_origin: "db",
   } satisfies SecretBackend,
 }));
+// delete returns the post-delete (env-fallback) DTO so the panel can resync.
 const deleteSecretBackend = vi.fn(async (_input: Record<string, unknown>) => ({
   ok: true as const,
-  data: undefined,
+  data: {
+    source: "gcp",
+    enabled: false,
+    value: {},
+    credential_keys: null,
+    source_origin: "env",
+  } satisfies SecretBackend,
 }));
 const testSecretBackend = vi.fn(
   async (
