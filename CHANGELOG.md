@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.55.0 — 2026-06-25
+
+### Changed
+
+- **Pipelines list + VSM reworked around the dependency graph.** The
+  Pipelines tab groups pipelines into dependency **flows** (connected chains,
+  topologically ordered) with a rail + per-edge artifact handoff; unconnected
+  pipelines sit in an "Independent" section. Cards become dense rows (identity
+  + PR/branch/C·A/compliance badges + bottleneck pill, a per-job stage track
+  with the full job-action dropdown, metrics, services indicator), with a Flow
+  ⇄ List toggle. The VSM tab replaces the 2D DAG with a **vertical value
+  stream** per chain: lead-time spine, process cards (PT/throughput/C·A),
+  handoff waits, bottleneck, per-stream summary (lead total · Σ process · flow
+  efficiency · rolled %C·A), off-path pipelines, and a project-wide DORA
+  rollup — all derived client-side from the existing data. Project/settings
+  nav and content tabs share one segmented, filled-active style. (#85)
+
+### Fixed
+
+- **Secret backends: clearing an override resyncs the form.** Delete returned
+  204, leaving the deleted override's values (incl. a stale
+  `insecure_skip_verify` toggle) on screen to be re-saved by accident — it now
+  returns the env-fallback DTO and the form resets to it. Long probe messages
+  (TLS/x509/PEM) no longer overflow on narrow screens. (#86)
+
 ## v0.54.1 — 2026-06-25
 
 ### Fixed
