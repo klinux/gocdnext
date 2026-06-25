@@ -197,6 +197,28 @@ describe("SecretBackendsForm dispatch", () => {
     expect(arg.preserve_credentials).toBe(false);
   });
 
+  it("trims whitespace pasted into the secret_id credential", async () => {
+    // A secret_id copied from a terminal often carries a trailing newline;
+    // Vault then rejects the login as "invalid secret id". Trim like every
+    // other field so the stored value matches what the user intended.
+    render(<SecretBackendsForm initial={threeBackends} />);
+    const p = panel(/HashiCorp Vault/);
+    fireEvent.click(p.getByLabelText(/Enable HashiCorp Vault/));
+    fireEvent.change(p.getByLabelText(/Vault address/), {
+      target: { value: "https://vault.example.com" },
+    });
+    fireEvent.change(p.getByLabelText(/Role ID/), { target: { value: "ci-role" } });
+    fireEvent.change(p.getByLabelText(/AppRole secret_id/i), {
+      target: { value: "  s3cr3t-id\n" },
+    });
+
+    fireEvent.click(p.getByRole("button", { name: /Save HashiCorp Vault/ }));
+
+    await waitFor(() => expect(setSecretBackend).toHaveBeenCalledTimes(1));
+    const arg = setSecretBackend.mock.calls[0]![0];
+    expect(arg.credentials).toEqual({ secret_id: "s3cr3t-id" });
+  });
+
   it("sends ca_cert and insecure_skip_verify when the operator sets them", async () => {
     render(<SecretBackendsForm initial={threeBackends} />);
     const p = panel(/HashiCorp Vault/);
