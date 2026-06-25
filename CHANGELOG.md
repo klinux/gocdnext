@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.54.1 — 2026-06-25
+
+### Fixed
+
+- **Vault credentials are trimmed before use.** A `secret_id` / `token` /
+  `role_id` pasted from a terminal or mounted from a k8s Secret often carries a
+  trailing newline, which Vault rejected as `invalid secret id` (or `invalid
+  token`) even though the value looked right. Credentials are now trimmed at the
+  point of use in `authenticate()` (covering UI, env, and DB config) and on save
+  in the secret-backend UI — every other Vault field was already trimmed. (#84)
+
 ## v0.54.0 — 2026-06-25
 
 ### Added
