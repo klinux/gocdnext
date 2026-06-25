@@ -19,7 +19,6 @@ const (
 	VaultAuthKubernetes = "kubernetes"
 	VaultAuthToken      = "token"
 
-	defaultVaultMount = "secret"
 	defaultK8sJWTPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // well-known mount path, not a credential
 )
 
@@ -71,11 +70,13 @@ func NewVaultBackend(ctx context.Context, cfg VaultConfig) (*VaultBackend, error
 	if cfg.Namespace != "" {
 		client.SetNamespace(cfg.Namespace)
 	}
-	mount := cfg.KVMount
-	if mount == "" {
-		mount = defaultVaultMount
-	}
-	b := &VaultBackend{client: client, mount: mount, cfg: cfg}
+	// mount empty → full-path mode: the secret's `path` is the complete Vault
+	// logical path (operator includes the engine mount + the KV v2 /data/
+	// segment, as the Vault UI shows it). mount set → paths are relative to
+	// it. No silent "secret" default — that prepended secret/data/ to an
+	// already-complete path and 403'd operators whose engine is mounted
+	// elsewhere (e.g. cora/data/...).
+	b := &VaultBackend{client: client, mount: cfg.KVMount, cfg: cfg}
 	if err := b.authenticate(ctx); err != nil {
 		return nil, err
 	}
@@ -201,6 +202,19 @@ func (b *VaultBackend) Fetch(ctx context.Context, path, key string) (string, err
 }
 
 func (b *VaultBackend) read(ctx context.Context, path, key string) (string, error) {
+	// Full-path mode (mount unset): `path` is the complete Vault logical path;
+	// detect KV v1/v2 from the response envelope instead of probing a /data/
+	// prefix we can't assume the operator wants.
+	if b.mount == "" {
+		m, ok, err := b.readKVAuto(ctx, path)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return valueFromMap(m, key)
+		}
+		return "", ErrSecretNotFound
+	}
 	// KV v2: data lives under <mount>/data/<path>, value under .data.data.<key>.
 	if m, ok, err := b.readKV(ctx, b.mount+"/data/"+path, true); err != nil {
 		return "", err
@@ -234,6 +248,28 @@ func (b *VaultBackend) readKV(ctx context.Context, logicalPath string, v2 bool) 
 		return nil, false, nil // not a v2 shape
 	}
 	return inner, true, nil
+}
+
+// readKVAuto reads a complete logical path (full-path mode) and detects KV
+// v1 vs v2 from the response envelope: a v2 read returns
+// {data:{...}, metadata:{...}}, so a nested `data` map sitting next to
+// `metadata` means v2 (value under .data.data); otherwise it's v1 (value
+// under .data). Requiring `metadata` too avoids misreading a v1 secret that
+// happens to carry a key literally named "data".
+func (b *VaultBackend) readKVAuto(ctx context.Context, logicalPath string) (map[string]any, bool, error) {
+	resp, err := b.client.Logical().ReadWithContext(ctx, logicalPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("vault: read %s: %w", logicalPath, err)
+	}
+	if resp == nil || resp.Data == nil {
+		return nil, false, nil
+	}
+	if inner, ok := resp.Data["data"].(map[string]any); ok {
+		if _, hasMeta := resp.Data["metadata"]; hasMeta {
+			return inner, true, nil // KV v2 envelope
+		}
+	}
+	return resp.Data, true, nil // KV v1 (flat)
 }
 
 func valueFromMap(m map[string]any, key string) (string, error) {

@@ -231,13 +231,13 @@ export function BackendFields({ source, draft, setDraft, credConfigured }: Props
         <Field
           label="KV mount"
           htmlFor={id("kv_mount")}
-          hint="Optional. Defaults to the server's configured mount."
+          hint="Engine mount for relative secret paths. Leave empty to use each secret's path as the COMPLETE Vault path (include the mount + /data/ as the Vault UI shows it)."
         >
           <Input
             id={id("kv_mount")}
             value={draft.kvMount}
             onValueChange={(v) => setDraft((d) => ({ ...d, kvMount: v }))}
-            placeholder="secret"
+            placeholder="secret (empty = full paths)"
             autoComplete="off"
           />
         </Field>

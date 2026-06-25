@@ -117,6 +117,34 @@ describe("SecretDialog source fields", () => {
   });
 });
 
+describe("SecretDialog rotate pre-fill", () => {
+  it("opens a Vault-backed secret as Vault with its path and key pre-filled", async () => {
+    render(
+      <SecretDialog
+        slug="demo"
+        mode="rotate"
+        name="KC_SECRET"
+        configuredSources={["db", "vault"]}
+        current={{ source: "vault", path: "gocdnext-pipelines", key: "kc_secret" }}
+        trigger={<button type="button">Rotate</button>}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /rotate/i }));
+    await screen.findByLabelText("Source");
+
+    // Opens as the secret's CURRENT source (Vault), not reset to db: the
+    // value field is hidden and path/key carry the existing ref — so
+    // "Update value" can't silently repoint a Vault secret to a db value.
+    expect(screen.queryByLabelText("Value")).toBeNull();
+    expect((screen.getByLabelText(/^Path/) as HTMLInputElement).value).toBe(
+      "gocdnext-pipelines",
+    );
+    expect((screen.getByLabelText(/^Key/) as HTMLInputElement).value).toBe(
+      "kc_secret",
+    );
+  });
+});
+
 describe("SecretDialog dispatch", () => {
   it("forwards source + ref on a project external secret", async () => {
     const user = userEvent.setup();
