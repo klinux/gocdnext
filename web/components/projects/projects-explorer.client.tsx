@@ -204,20 +204,22 @@ function ViewToggle({
   onChange: (v: ViewMode) => void;
 }) {
   return (
-    <div className="inline-flex shrink-0 rounded-md border border-border bg-background p-0.5">
+    // Same segmented look as the pipelines Flow/List toggle; h-10 matches
+    // the search field beside it so the toolbar row aligns.
+    <div className="inline-flex h-10 shrink-0 items-center rounded-lg border border-border bg-card p-1">
       <button
         type="button"
         onClick={() => onChange("grid")}
         aria-pressed={view === "grid"}
         aria-label="Grid view"
         className={cn(
-          "inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors",
+          "inline-flex h-full items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors",
           view === "grid"
-            ? "bg-foreground text-background"
+            ? "bg-primary/15 text-primary"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <LayoutGrid className="size-3.5" aria-hidden />
+        <LayoutGrid className="size-4" aria-hidden />
         Grid
       </button>
       <button
@@ -226,13 +228,13 @@ function ViewToggle({
         aria-pressed={view === "list"}
         aria-label="List view"
         className={cn(
-          "inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors",
+          "inline-flex h-full items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors",
           view === "list"
-            ? "bg-foreground text-background"
+            ? "bg-primary/15 text-primary"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <List className="size-3.5" aria-hidden />
+        <List className="size-4" aria-hidden />
         List
       </button>
     </div>
