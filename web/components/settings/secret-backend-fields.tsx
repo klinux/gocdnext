@@ -1,6 +1,7 @@
 import type React from "react";
 
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -8,6 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import type { SecretBackendSource } from "@/types/api";
 
 import { Field } from "./storage-form-fields";
@@ -251,6 +254,41 @@ export function BackendFields({ source, draft, setDraft, credConfigured }: Props
             autoComplete="off"
           />
         </Field>
+      </div>
+
+      <Field
+        label="CA certificate (PEM)"
+        htmlFor={id("ca_cert")}
+        hint="Optional. PEM bundle to verify a private/internal Vault CA. The proper fix for an 'unknown authority' TLS error — prefer this over skipping verification."
+      >
+        <Textarea
+          id={id("ca_cert")}
+          value={draft.caCert}
+          onChange={(e) => setDraft((d) => ({ ...d, caCert: e.target.value }))}
+          placeholder={"-----BEGIN CERTIFICATE-----\n..."}
+          className="h-28 font-mono text-xs"
+          spellCheck={false}
+        />
+      </Field>
+
+      <div className="flex items-start gap-3">
+        <Switch
+          id={id("insecure_skip_verify")}
+          checked={draft.insecureSkipVerify}
+          onCheckedChange={(v) =>
+            setDraft((d) => ({ ...d, insecureSkipVerify: v === true }))
+          }
+        />
+        <div className="space-y-0.5">
+          <Label htmlFor={id("insecure_skip_verify")} className="cursor-pointer">
+            Skip TLS verification
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Disables certificate validation for the Vault connection. Use only
+            for an internal Vault you control — prefer a CA certificate above.
+            The server logs a warning while this is on.
+          </p>
+        </div>
       </div>
     </div>
   );

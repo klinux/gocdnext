@@ -99,6 +99,10 @@ export function SecretBackendPanel({ backend }: Props) {
       }
       if (draft.kvMount.trim()) v.kv_mount = draft.kvMount.trim();
       if (draft.namespace.trim()) v.namespace = draft.namespace.trim();
+      if (draft.caCert.trim()) v.ca_cert = draft.caCert.trim();
+      // Only send the flag when it's on — keeps the stored value clean and
+      // makes "TLS verification off" an explicit, auditable choice.
+      if (draft.insecureSkipVerify) v.insecure_skip_verify = true;
       return v;
     }
     if (source === "gcp") {

@@ -197,6 +197,48 @@ describe("SecretBackendsForm dispatch", () => {
     expect(arg.preserve_credentials).toBe(false);
   });
 
+  it("sends ca_cert and insecure_skip_verify when the operator sets them", async () => {
+    render(<SecretBackendsForm initial={threeBackends} />);
+    const p = panel(/HashiCorp Vault/);
+    fireEvent.click(p.getByLabelText(/Enable HashiCorp Vault/));
+    fireEvent.change(p.getByLabelText(/Vault address/), {
+      target: { value: "https://vt.internal" },
+    });
+    fireEvent.change(p.getByLabelText(/Role ID/), { target: { value: "ci-role" } });
+    fireEvent.change(p.getByLabelText(/CA certificate/i), {
+      target: {
+        value: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+      },
+    });
+    fireEvent.click(p.getByRole("switch", { name: /Skip TLS verification/i }));
+
+    fireEvent.click(p.getByRole("button", { name: /Save HashiCorp Vault/ }));
+
+    await waitFor(() => expect(setSecretBackend).toHaveBeenCalledTimes(1));
+    const arg = setSecretBackend.mock.calls[0]![0];
+    expect(arg.value).toMatchObject({
+      ca_cert: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+      insecure_skip_verify: true,
+    });
+  });
+
+  it("omits the TLS keys when left at their defaults (verification stays on)", async () => {
+    render(<SecretBackendsForm initial={threeBackends} />);
+    const p = panel(/HashiCorp Vault/);
+    fireEvent.click(p.getByLabelText(/Enable HashiCorp Vault/));
+    fireEvent.change(p.getByLabelText(/Vault address/), {
+      target: { value: "https://vault.example.com" },
+    });
+    fireEvent.change(p.getByLabelText(/Role ID/), { target: { value: "r1" } });
+
+    fireEvent.click(p.getByRole("button", { name: /Save HashiCorp Vault/ }));
+
+    await waitFor(() => expect(setSecretBackend).toHaveBeenCalledTimes(1));
+    const arg = setSecretBackend.mock.calls[0]![0];
+    expect(arg.value).not.toHaveProperty("insecure_skip_verify");
+    expect(arg.value).not.toHaveProperty("ca_cert");
+  });
+
   it("sends preserve_credentials true and no credentials when editing without retyping", async () => {
     render(
       <SecretBackendsForm

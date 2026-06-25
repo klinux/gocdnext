@@ -161,6 +161,8 @@ type Config struct {
 	SecretVaultToken       string // static token (sensitive, dev)
 	SecretVaultJWTPath     string // kubernetes SA token path
 	SecretVaultNamespace   string
+	SecretVaultCACert      string // PEM CA bundle for a private/internal Vault CA
+	SecretVaultSkipVerify  bool   // skip TLS verification (explicit opt-in)
 	SecretGCPEnabled       bool
 	SecretGCPProject       string // auth via ADC / workload identity / GOOGLE_APPLICATION_CREDENTIALS
 	SecretAWSEnabled       bool
@@ -372,6 +374,8 @@ func Load() (*Config, error) {
 	c.SecretVaultToken = env("GOCDNEXT_SECRET_VAULT_TOKEN", "")
 	c.SecretVaultJWTPath = env("GOCDNEXT_SECRET_VAULT_JWT_PATH", "")
 	c.SecretVaultNamespace = env("GOCDNEXT_SECRET_VAULT_NAMESPACE", "")
+	c.SecretVaultCACert = env("GOCDNEXT_SECRET_VAULT_CACERT", "")
+	c.SecretVaultSkipVerify = strings.EqualFold(env("GOCDNEXT_SECRET_VAULT_SKIP_VERIFY", "false"), "true")
 	c.SecretGCPEnabled = strings.EqualFold(env("GOCDNEXT_SECRET_GCP_ENABLED", "false"), "true")
 	c.SecretGCPProject = env("GOCDNEXT_SECRET_GCP_PROJECT", "")
 	c.SecretAWSEnabled = strings.EqualFold(env("GOCDNEXT_SECRET_AWS_ENABLED", "false"), "true")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -33,6 +34,8 @@ type VaultConfig struct {
 	Token      string // static token (dev)
 	JWTPath    string // kubernetes SA token path
 	Namespace  string // Vault Enterprise namespace
+	CACert     string // PEM CA bundle to verify the server cert (private/internal CA)
+	Insecure   bool   // skip TLS verification — explicit opt-in, logged loudly
 }
 
 // VaultBackend reads KV (v1 or v2 auto-handled) from HashiCorp Vault. The
@@ -50,11 +53,20 @@ func NewVaultBackend(ctx context.Context, cfg VaultConfig) (*VaultBackend, error
 	if cfg.Addr == "" {
 		return nil, errors.New("vault: addr is required")
 	}
-	vc := vault.DefaultConfig()
-	vc.Address = cfg.Addr
+	vc, err := vaultClientConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	client, err := vault.NewClient(vc)
 	if err != nil {
 		return nil, fmt.Errorf("vault: new client: %w", err)
+	}
+	if cfg.Insecure {
+		// Loud, explicit: TLS verification is off, so the server certificate
+		// is NOT validated. Log the addr (never a credential) so an operator
+		// can see exactly which backend is running insecure.
+		slog.Warn("vault: TLS verification DISABLED (insecure_skip_verify) — the server certificate is not validated; prefer a ca_cert bundle",
+			"addr", cfg.Addr)
 	}
 	if cfg.Namespace != "" {
 		client.SetNamespace(cfg.Namespace)
@@ -68,6 +80,25 @@ func NewVaultBackend(ctx context.Context, cfg VaultConfig) (*VaultBackend, error
 		return nil, err
 	}
 	return b, nil
+}
+
+// vaultClientConfig builds the SDK config and applies TLS settings when a CA
+// bundle and/or insecure-skip-verify is configured. Split out of
+// NewVaultBackend so the TLS wiring is unit-testable without a live server.
+// An invalid CA PEM fails loud (no silent fall-through to system roots).
+func vaultClientConfig(cfg VaultConfig) (*vault.Config, error) {
+	vc := vault.DefaultConfig()
+	vc.Address = cfg.Addr
+	if cfg.Insecure || cfg.CACert != "" {
+		tls := &vault.TLSConfig{Insecure: cfg.Insecure}
+		if cfg.CACert != "" {
+			tls.CACertBytes = []byte(cfg.CACert)
+		}
+		if err := vc.ConfigureTLS(tls); err != nil {
+			return nil, fmt.Errorf("vault: configure tls: %w", err)
+		}
+	}
+	return vc, nil
 }
 
 func (b *VaultBackend) Name() string { return "vault" }
