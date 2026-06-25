@@ -49,6 +49,18 @@ inputs:
       only NON-secret vars (e.g. GO_PIPELINE_GROUP_NAME). Credential-looking
       names (that are, or end in, TOKEN/SECRET/PASSWORD/KEY/CREDENTIAL) are
       rejected. Each must be a valid env var name.
+  config_secrets:
+    required: false
+    description: >
+      Explicit `NAME=value` pairs (space/comma separated) for substituting a
+      CREDENTIAL into the config — e.g. an OAuth2/Keycloak resource's client
+      secret: `GRAVITEE_KEYCLOAK_SECRET=${{ MY_KC_SECRET }}`. This is the
+      escape hatch that envsubst_vars deliberately forbids, so opt in only for
+      values that genuinely belong in the Gravitee payload. The value should
+      be a `${{ secret }}` reference so the agent masks it in the log; it's
+      exported for envsubst only (never on argv). Values must not contain
+      whitespace. For per-environment secrets, point each pipeline at its
+      env's secret (stage vs prod) — the placeholder name stays the same.
   defaults:
     required: false
     description: >

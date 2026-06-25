@@ -202,9 +202,51 @@ if [ -n "${PLUGIN_ENVSUBST_VARS:-}" ]; then
         allow_vars+=("$v")
     done
 fi
+# config_secrets: explicit `NAME=value` pairs for CREDENTIAL substitution
+# into the config — e.g. an OAuth2/Keycloak resource's client secret. Unlike
+# envsubst_vars these ARE allowed to be secrets: the operator opts in per
+# placeholder, the value is a `${{ secret }}` the agent masks in the log, and
+# it's exported into the env for envsubst only (never on argv). Values must
+# not contain whitespace (the list splits on space/comma). Per-environment is
+# achieved by pointing each pipeline at its env's secret.
+declare -a cs_env=()
+if [ -n "${PLUGIN_CONFIG_SECRETS:-}" ]; then
+    IFS=', ' read -r -a _pairs <<<"$PLUGIN_CONFIG_SECRETS"
+    for pair in "${_pairs[@]}"; do
+        [ -z "$pair" ] && continue
+        case "$pair" in
+            *=*) ;;
+            *) die "config_secrets entries must be NAME=value" ;;
+        esac
+        csname="${pair%%=*}"
+        [[ "$csname" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+            || die "config_secrets name '$csname' is not a valid env var name"
+        # Reject names that would hijack the plugin or the tools it shells out
+        # to: PATH/HOME/IFS break command resolution, GIO_*/PLUGIN_* change the
+        # plugin/CLI behaviour, PYTHON*/SSL/CA vars reroute the validator.
+        # config_secrets fills CONFIG placeholders, not run configuration.
+        case "$csname" in
+            API_NAME | PATH | HOME | IFS | ENV | BASH_ENV | SHELL | SHELLOPTS \
+                | CDPATH | REQUESTS_CA_BUNDLE | SSL_CERT_FILE | SSL_CERT_DIR \
+                | CURL_CA_BUNDLE | PLUGIN_* | GIO_* | GOCDNEXT_* | LD_* | PYTHON*)
+                die "config_secrets name '$csname' is reserved" ;;
+        esac
+        # No credential-name rejection (that's the point). The value rides
+        # SCOPED to the envsubst process below (the cs_env array) — never
+        # exported, so gio/yq/python don't inherit it.
+        allow_vars+=("$csname")
+        cs_env+=("$pair")
+    done
+    # Drop the raw pairs from the env so nothing downstream inherits them.
+    unset PLUGIN_CONFIG_SECRETS
+fi
 shell_format=""
 for v in "${allow_vars[@]}"; do shell_format+="\${${v}} "; done
-API_NAME="$PLUGIN_API_NAME" envsubst "$shell_format" <"$merged" >Graviteeio.yml
+# config_secrets ride env scoped to THIS envsubst call only (never exported).
+# Note: the rendered Graviteeio.yml then HOLDS the substituted secret — it
+# lives in the ephemeral per-job workspace; don't capture it as an artifact.
+env API_NAME="$PLUGIN_API_NAME" ${cs_env[@]:+"${cs_env[@]}"} \
+    envsubst "$shell_format" <"$merged" >Graviteeio.yml
 rm -f "$merged"
 
 # ── security gate: open methods under the keyless default plan ──

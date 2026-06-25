@@ -21,6 +21,9 @@ done
 cat >"$TMP/gio" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GIO_CALLS"
+# Dump the inherited env so tests can assert a config_secret never leaks
+# into the child process environment (not just argv).
+[ -n "${GIO_ENV:-}" ] && env >> "$GIO_ENV"
 case " $* " in
     *" list "*) echo "${GIO_FAKE_LIST_JSON:-[]}" ;;
 esac
@@ -104,6 +107,79 @@ grep -q 'base-plan' "$FX/Graviteeio.yml" && grep -q 'keyless' "$FX/Graviteeio.ym
                                                       || fail "merge mode did not concat plans"
 [ -f "$FX/templates/api_config.yml.j2" ]              || fail "template not placed"
 [ -d "$FX/settings" ]                                 || fail "settings dir not created"
+
+# ── 1b. config_secrets: a Keycloak client secret is substituted into the
+#       config (accepted despite its *_SECRET name, which envsubst_vars
+#       would reject), the non-secret host rides envsubst_vars, and the
+#       secret never reaches gio argv or stdout. ──
+FX="$(mktemp -d "$TMP/fx.XXXX")"
+cat >"$FX/api.yml" <<'YAML'
+name: ${API_NAME}
+context_path: /orders
+plans:
+  - name: keyless
+resources:
+  - name: KC
+    type: oauth2-keycloak-resource
+    configuration:
+      auth-server-url: "${GRAVITEE_KEYCLOAK_HOST}"
+      secret: "${GRAVITEE_KEYCLOAK_SECRET}"
+YAML
+echo 'version: "1"' >"$FX/defaults.yml"
+echo '# template placeholder' >"$FX/tmpl.j2"
+: >"$TMP/calls"
+: >"$TMP/gioenv"
+GIO_FAKE_LIST_JSON='[]' GIO_ENV="$TMP/gioenv" \
+GRAVITEE_KEYCLOAK_HOST="https://kc.stage.test/auth" \
+PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="tok" \
+PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j2" \
+PLUGIN_ENVSUBST_VARS="GRAVITEE_KEYCLOAK_HOST" \
+PLUGIN_CONFIG_SECRETS="GRAVITEE_KEYCLOAK_SECRET=kc-s3cr3t-xyz" \
+  run >"$TMP/out" 2>&1 || fail "config_secrets run errored: $(cat "$TMP/out")"
+grep -q 'secret: "kc-s3cr3t-xyz"' "$FX/Graviteeio.yml"   || fail "config_secret not substituted"
+grep -q 'https://kc.stage.test/auth' "$FX/Graviteeio.yml" || fail "keycloak host not substituted"
+grep -q 'kc-s3cr3t-xyz' "$TMP/calls"                     && fail "config_secret leaked into gio argv"
+grep -q 'kc-s3cr3t-xyz' "$TMP/out"                       && fail "config_secret leaked into echoed output"
+# MED-1: the secret must NOT reach the child process ENV (gio/yq/python),
+# and PLUGIN_CONFIG_SECRETS must be unset before gio runs.
+grep -q 'kc-s3cr3t-xyz' "$TMP/gioenv"                    && fail "config_secret leaked into gio child env"
+grep -q 'PLUGIN_CONFIG_SECRETS' "$TMP/gioenv"            && fail "PLUGIN_CONFIG_SECRETS leaked into gio env"
+
+# ── 1c. a malformed config_secrets entry (no '=') fails loud ──
+FX="$(mktemp -d "$TMP/fx.XXXX")"
+cat >"$FX/api.yml" <<'YAML'
+name: ${API_NAME}
+context_path: /orders
+plans:
+  - name: keyless
+YAML
+echo 'version: "1"' >"$FX/defaults.yml"
+echo '# t' >"$FX/tmpl.j2"
+: >"$TMP/calls"
+GIO_FAKE_LIST_JSON='[]' \
+PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="tok" \
+PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j2" \
+PLUGIN_CONFIG_SECRETS="JUST_A_NAME" \
+  run >"$TMP/out" 2>&1 && fail "malformed config_secrets should have failed"
+grep -q 'NAME=value' "$TMP/out" || fail "malformed config_secrets error message missing"
+
+# ── 1d. config_secrets rejects a reserved name (would hijack the tools) ──
+FX="$(mktemp -d "$TMP/fx.XXXX")"
+cat >"$FX/api.yml" <<'YAML'
+name: ${API_NAME}
+context_path: /orders
+plans:
+  - name: keyless
+YAML
+echo 'version: "1"' >"$FX/defaults.yml"
+echo '# t' >"$FX/tmpl.j2"
+: >"$TMP/calls"
+GIO_FAKE_LIST_JSON='[]' \
+PLUGIN_API_NAME="orders-api" PLUGIN_URL="https://gv.test" PLUGIN_TOKEN="tok" \
+PLUGIN_PATH="$FX" PLUGIN_DEFAULTS="$FX/defaults.yml" PLUGIN_TEMPLATE="$FX/tmpl.j2" \
+PLUGIN_CONFIG_SECRETS="GIO_APIM_TOKEN=pwn" \
+  run >"$TMP/out" 2>&1 && fail "reserved config_secrets name should have failed"
+grep -q 'reserved' "$TMP/out" || fail "reserved-name error message missing"
 
 # ── 2. update path: existing id → apply --api <id> --with-deploy, plans
 #       stripped from the payload BY DEFAULT (manage_plans_on_update=false
