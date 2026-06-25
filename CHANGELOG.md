@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.56.0 — 2026-06-25
+
+### Added
+
+- **gravitee plugin: `config_secrets` for credential substitution.** A
+  Gravitee config can carry a credential placeholder — e.g. an
+  OAuth2/Keycloak resource's client secret. `envsubst_vars` deliberately
+  refuses credential-looking names, so `config_secrets` is the explicit
+  opt-in: `NAME=value` pairs whose value is a `${{ secret }}` the agent
+  masks. The value rides env scoped to the envsubst call only (never
+  exported, never on argv); reserved names (`PATH`/`HOME`/`PLUGIN_*`/`GIO_*`/
+  TLS/CA vars) are rejected; and the same placeholder maps to a
+  per-environment secret across pipelines (stage vs prod). (#87)
+
 ## v0.55.0 — 2026-06-25
 
 ### Changed
