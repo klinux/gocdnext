@@ -123,23 +123,32 @@ func (b *VaultBackend) HealthCheck(ctx context.Context) error {
 }
 
 func (b *VaultBackend) authenticate(ctx context.Context) error {
+	// Trim surrounding whitespace on every credential before use. Vault IDs and
+	// tokens never carry it, but a value pasted from a terminal or mounted from
+	// a k8s Secret often has a trailing newline — Vault then rejects the login
+	// as "invalid secret id" / "invalid token". Trimming at the point of use
+	// covers all config sources (UI, env, DB) uniformly.
 	switch b.cfg.AuthMethod {
 	case VaultAuthToken:
-		if b.cfg.Token == "" {
+		token := strings.TrimSpace(b.cfg.Token)
+		if token == "" {
 			return errors.New("vault: token auth needs a token")
 		}
-		b.client.SetToken(b.cfg.Token)
+		b.client.SetToken(token)
 		return nil
 	case VaultAuthAppRole:
-		if b.cfg.RoleID == "" || b.cfg.SecretID == "" {
+		roleID := strings.TrimSpace(b.cfg.RoleID)
+		secretID := strings.TrimSpace(b.cfg.SecretID)
+		if roleID == "" || secretID == "" {
 			return errors.New("vault: approle auth needs role_id and secret_id")
 		}
 		return b.loginAndSet(ctx, "auth/approle/login", map[string]any{
-			"role_id":   b.cfg.RoleID,
-			"secret_id": b.cfg.SecretID,
+			"role_id":   roleID,
+			"secret_id": secretID,
 		})
 	case VaultAuthKubernetes:
-		if b.cfg.Role == "" {
+		role := strings.TrimSpace(b.cfg.Role)
+		if role == "" {
 			return errors.New("vault: kubernetes auth needs a role")
 		}
 		jwtPath := b.cfg.JWTPath
@@ -151,7 +160,7 @@ func (b *VaultBackend) authenticate(ctx context.Context) error {
 			return fmt.Errorf("vault: kubernetes auth: read SA token: %w", err)
 		}
 		return b.loginAndSet(ctx, "auth/kubernetes/login", map[string]any{
-			"role": b.cfg.Role,
+			"role": role,
 			"jwt":  strings.TrimSpace(string(jwt)),
 		})
 	default:

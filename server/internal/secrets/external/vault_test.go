@@ -1,6 +1,7 @@
 package external
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,6 +51,36 @@ func transportTLS(t *testing.T, addr string, cfg VaultConfig) (*http.Transport, 
 		t.Fatalf("transport is %T, want *http.Transport", vc.HttpClient.Transport)
 	}
 	return tr, nil
+}
+
+func TestVaultAuthenticate_TrimsCredentials(t *testing.T) {
+	const addr = "https://vault.example.com"
+
+	t.Run("token auth trims surrounding whitespace", func(t *testing.T) {
+		// A token pasted from a terminal / mounted from a k8s Secret often has a
+		// trailing newline; Vault would reject it. Token auth is offline (no
+		// network), so we can assert the client received the trimmed value.
+		b, err := NewVaultBackend(context.Background(), VaultConfig{
+			Addr: addr, AuthMethod: VaultAuthToken, Token: "  hvs.abc123\n",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := b.client.Token(); got != "hvs.abc123" {
+			t.Fatalf("token = %q, want trimmed %q", got, "hvs.abc123")
+		}
+	})
+
+	t.Run("approle trims before the empty check", func(t *testing.T) {
+		// Whitespace-only role_id/secret_id must trim to empty and be rejected
+		// before any login attempt — proves the trim runs (and stays offline).
+		_, err := NewVaultBackend(context.Background(), VaultConfig{
+			Addr: addr, AuthMethod: VaultAuthAppRole, RoleID: "  ", SecretID: "  \n",
+		})
+		if err == nil || !strings.Contains(err.Error(), "needs role_id and secret_id") {
+			t.Fatalf("err = %v, want approle needs-creds (proves trim before login)", err)
+		}
+	})
 }
 
 func TestVaultClientConfigTLS(t *testing.T) {
