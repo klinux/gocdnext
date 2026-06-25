@@ -220,6 +220,7 @@ func main() {
 				Addr: cfg.SecretVaultAddr, KVMount: cfg.SecretVaultKVMount, AuthMethod: cfg.SecretVaultAuth,
 				Role: cfg.SecretVaultRole, RoleID: cfg.SecretVaultRoleID, SecretID: cfg.SecretVaultSecretID,
 				Token: cfg.SecretVaultToken, JWTPath: cfg.SecretVaultJWTPath, Namespace: cfg.SecretVaultNamespace,
+				CACert: cfg.SecretVaultCACert, Insecure: cfg.SecretVaultSkipVerify,
 			},
 			GCPEnabled: cfg.SecretGCPEnabled,
 			GCP:        external.GCPConfig{Project: cfg.SecretGCPProject},
@@ -500,7 +501,8 @@ func main() {
 			Value: map[string]any{
 				"addr": cfg.SecretVaultAddr, "kv_mount": cfg.SecretVaultKVMount, "auth": cfg.SecretVaultAuth,
 				"role": cfg.SecretVaultRole, "role_id": cfg.SecretVaultRoleID, "jwt_path": cfg.SecretVaultJWTPath,
-				"namespace": cfg.SecretVaultNamespace,
+				"namespace": cfg.SecretVaultNamespace, "ca_cert": cfg.SecretVaultCACert,
+				"insecure_skip_verify": cfg.SecretVaultSkipVerify,
 			},
 			HasCreds: cfg.SecretVaultSecretID != "" || cfg.SecretVaultToken != "",
 		},

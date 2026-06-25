@@ -188,6 +188,8 @@ func backendConfigFromValue(source string, value map[string]any, creds map[strin
 			RoleID:     asString(value["role_id"]),
 			JWTPath:    asString(value["jwt_path"]),
 			Namespace:  asString(value["namespace"]),
+			CACert:     asString(value["ca_cert"]),
+			Insecure:   asBool(value["insecure_skip_verify"]),
 			SecretID:   creds["secret_id"],
 			Token:      creds["token"],
 		}

@@ -134,6 +134,33 @@ func TestRegistry_DBOverlay_EnablesAndRebuildsOnChange(t *testing.T) {
 	}
 }
 
+func TestBackendConfigFromValue_VaultTLS(t *testing.T) {
+	cfg := backendConfigFromValue(store.SecretSourceVault, map[string]any{
+		"addr":                 "https://vault.example.com",
+		"auth":                 "token",
+		"ca_cert":              "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+		"insecure_skip_verify": true,
+	}, map[string]string{"token": "t"}, originDB)
+
+	if cfg.vault.CACert == "" {
+		t.Error("CACert not mapped from value.ca_cert")
+	}
+	if !cfg.vault.Insecure {
+		t.Error("Insecure not mapped from value.insecure_skip_verify")
+	}
+
+	// Defaults: a config without the TLS keys stays secure (verify on, no CA).
+	plain := backendConfigFromValue(store.SecretSourceVault, map[string]any{
+		"addr": "https://vault.example.com", "auth": "token",
+	}, map[string]string{"token": "t"}, originDB)
+	if plain.vault.Insecure {
+		t.Error("Insecure must default to false")
+	}
+	if plain.vault.CACert != "" {
+		t.Error("CACert must default to empty")
+	}
+}
+
 func TestRegistry_DBDisablesEnvBackend(t *testing.T) {
 	r, _, _ := newRegistryWithFakeFactory(t, RegistryConfig{
 		VaultEnabled: true,
