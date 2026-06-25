@@ -2,6 +2,7 @@ package admin_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -138,6 +139,46 @@ func TestSecretBackends_PutThenGetSwitchesToDB(t *testing.T) {
 		if b["source"] == "vault" && b["source_origin"] != "db" {
 			t.Fatalf("vault origin after PUT = %v, want db", b["source_origin"])
 		}
+	}
+}
+
+func TestSecretBackends_PutVaultAuditRecordsTLSPosture(t *testing.T) {
+	s, srv := newSecretBackendsHandler(t, true)
+	put := `{"enabled":true,"value":{"addr":"https://vt.internal","auth":"token",` +
+		`"insecure_skip_verify":true,"ca_cert":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"},` +
+		`"credentials":{"token":"t"}}`
+	rr := request(srv, http.MethodPut, "/api/v1/admin/secret-backends/vault", bytes.NewBufferString(put))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("put = %d %s", rr.Code, rr.Body.String())
+	}
+
+	page, err := s.ListAuditEvents(context.Background(), store.ListAuditEventsFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	var raw json.RawMessage
+	for _, e := range page.Events {
+		if e.TargetType == "secret_backend" {
+			raw = e.Metadata
+			break
+		}
+	}
+	if raw == nil {
+		t.Fatal("no secret_backend audit event emitted")
+	}
+	// The CA PEM must never land in the audit trail — only the boolean.
+	if strings.Contains(string(raw), "BEGIN CERTIFICATE") {
+		t.Fatalf("CA PEM leaked into audit metadata: %s", raw)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["insecure_skip_verify"] != true {
+		t.Errorf("audit insecure_skip_verify = %v, want true", meta["insecure_skip_verify"])
+	}
+	if meta["has_ca_cert"] != true {
+		t.Errorf("audit has_ca_cert = %v, want true", meta["has_ca_cert"])
 	}
 }
 

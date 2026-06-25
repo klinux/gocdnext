@@ -18,6 +18,8 @@ export type BackendDraft = {
   token: string;
   kvMount: string;
   namespace: string;
+  caCert: string;
+  insecureSkipVerify: boolean;
   // gcp
   project: string;
   // aws
@@ -36,6 +38,10 @@ function vaultAuth(v: Record<string, unknown>): BackendDraft["auth"] {
   return "approle"; // default + unknown → approle
 }
 
+function bool(v: Record<string, unknown>, key: string): boolean {
+  return v[key] === true;
+}
+
 // draftFrom seeds the editor from a server row. Non-secret value fields
 // are prefilled; write-only credentials always start blank (the server
 // never echoes them).
@@ -52,6 +58,8 @@ export function draftFrom(b: SecretBackend): BackendDraft {
     token: "",
     kvMount: str(v, "kv_mount"),
     namespace: str(v, "namespace"),
+    caCert: str(v, "ca_cert"),
+    insecureSkipVerify: bool(v, "insecure_skip_verify"),
     project: str(v, "project"),
     region: str(v, "region"),
     endpoint: str(v, "endpoint"),

@@ -184,9 +184,17 @@ func (h *Handler) SetSecretBackend(w http.ResponseWriter, r *http.Request) {
 	if h.secretBackendInvalidator != nil {
 		h.secretBackendInvalidator(source) // converge this replica now; NOTIFY handles the rest
 	}
+	meta := map[string]any{"source": source, "enabled": req.Enabled, "credential_keys": sortedMapKeys(req.Credentials)}
+	if source == store.SecretSourceVault {
+		// TLS posture is security-relevant — record it in the audit trail.
+		// Booleans only; the CA PEM itself is never written to the audit.
+		skip, _ := value["insecure_skip_verify"].(bool)
+		ca, _ := value["ca_cert"].(string)
+		meta["insecure_skip_verify"] = skip
+		meta["has_ca_cert"] = strings.TrimSpace(ca) != ""
+	}
 	audit.Emit(r.Context(), h.log, h.store,
-		store.AuditActionPlatformSettingSet, "secret_backend", source,
-		map[string]any{"source": source, "enabled": req.Enabled, "credential_keys": sortedMapKeys(req.Credentials)})
+		store.AuditActionPlatformSettingSet, "secret_backend", source, meta)
 
 	dto, err := h.secretBackendDTO(r.Context(), source)
 	if err != nil {
