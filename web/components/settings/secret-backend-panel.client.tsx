@@ -77,11 +77,14 @@ export function SecretBackendPanel({ backend }: Props) {
   const typedCredentials = (): Record<string, string> | undefined => {
     if (source !== "vault") return undefined;
     const creds: Record<string, string> = {};
+    // Trim like every other field — a secret_id/token pasted from a terminal
+    // often carries a trailing newline, which Vault rejects as "invalid
+    // secret id". The value never legitimately has surrounding whitespace.
     if (draft.auth === "approle" && draft.secretId.trim()) {
-      creds.secret_id = draft.secretId;
+      creds.secret_id = draft.secretId.trim();
     }
     if (draft.auth === "token" && draft.token.trim()) {
-      creds.token = draft.token;
+      creds.token = draft.token.trim();
     }
     return Object.keys(creds).length > 0 ? creds : undefined;
   };
