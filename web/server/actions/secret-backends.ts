@@ -97,7 +97,7 @@ export async function setSecretBackend(
 
 export async function deleteSecretBackend(
   input: z.infer<typeof sourceSchema>,
-): Promise<ActionResult> {
+): Promise<ActionResult<SecretBackend>> {
   const parsed = sourceSchema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -111,8 +111,11 @@ export async function deleteSecretBackend(
       { method: "DELETE" },
     );
     if (!res.ok) return errorResult(res, await res.text());
+    // DELETE returns the post-delete (env-fallback) DTO so the caller can
+    // resync its form to the real state, not the deleted override.
+    const data = (await res.json()) as SecretBackend;
     revalidatePath("/settings/secret-backends");
-    return { ok: true, data: undefined };
+    return { ok: true, data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

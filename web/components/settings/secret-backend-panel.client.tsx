@@ -210,8 +210,12 @@ export function SecretBackendPanel({ backend }: Props) {
         toast.error(res.error);
         return;
       }
-      setOrigin("env");
-      setCredConfigured(false);
+      // Resync the form to the post-delete (env-fallback) state so stale
+      // override values — e.g. an insecure_skip_verify toggle — can't linger
+      // on screen and be re-saved by accident.
+      setDraft(draftFrom(res.data));
+      setOrigin(res.data.source_origin);
+      setCredConfigured((res.data.credential_keys ?? []).length > 0);
       setProbe(null);
       toast.success(`${label} override cleared — using env fallback`);
     });
@@ -281,20 +285,22 @@ export function SecretBackendPanel({ backend }: Props) {
           <div
             role="status"
             className={cn(
-              "flex items-center gap-2 rounded-md border px-3 py-2 text-sm",
+              "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
               chipTone(probe.status),
             )}
           >
             {probe.status === "ok" ? (
-              <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
             ) : probe.status === "error" ? (
-              <XCircle className="size-4 shrink-0" aria-hidden />
+              <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
             ) : (
-              <AlertTriangle className="size-4 shrink-0" aria-hidden />
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
             )}
-            <span className="font-medium capitalize">{probe.status}</span>
+            <span className="shrink-0 font-medium capitalize">{probe.status}</span>
             {probe.message ? (
-              <span className="text-muted-foreground">— {probe.message}</span>
+              <span className="min-w-0 flex-1 break-words text-muted-foreground">
+                — {probe.message}
+              </span>
             ) : null}
           </div>
         ) : null}

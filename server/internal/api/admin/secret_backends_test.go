@@ -271,8 +271,16 @@ func TestSecretBackends_DeleteDropsToEnv(t *testing.T) {
 		bytes.NewBufferString(`{"enabled":true,"value":{"project":"p"}}`)); rr.Code != http.StatusOK {
 		t.Fatalf("seed put: %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := request(srv, http.MethodDelete, "/api/v1/admin/secret-backends/gcp", nil); rr.Code != http.StatusNoContent {
-		t.Fatalf("delete = %d %s", rr.Code, rr.Body.String())
+	delRR := request(srv, http.MethodDelete, "/api/v1/admin/secret-backends/gcp", nil)
+	if delRR.Code != http.StatusOK {
+		t.Fatalf("delete = %d %s", delRR.Code, delRR.Body.String())
+	}
+	// Delete returns the post-delete DTO so the UI can resync — it must already
+	// report the env fallback, not the just-deleted db override.
+	var delDTO map[string]any
+	_ = json.Unmarshal(delRR.Body.Bytes(), &delDTO)
+	if delDTO["source_origin"] != "env" {
+		t.Fatalf("delete DTO source_origin = %v, want env", delDTO["source_origin"])
 	}
 	// gcp now falls back to env (disabled, since env has no gcp).
 	rr := request(srv, http.MethodGet, "/api/v1/admin/secret-backends", nil)
