@@ -99,7 +99,11 @@ export function PipelineRow({
         id={`pl-row-${pipeline.name}`}
         className={cn(
           "grid min-h-[84px] scroll-mt-24 items-stretch gap-0 transition-colors hover:bg-muted/40",
-          "grid-cols-[46px_minmax(200px,1.15fr)_minmax(280px,1.5fr)_auto_minmax(150px,auto)]",
+          // Cols 4 (metrics) + 5 (action) are FIXED width so the flexible
+          // identity/stage columns resolve to the same widths in every row —
+          // otherwise per-row metric/action content made the stage track
+          // start at a different x and the job circles didn't line up.
+          "grid-cols-[46px_minmax(200px,1.15fr)_minmax(280px,1.5fr)_260px_170px]",
           isFailing && "shadow-[inset_3px_0_0_0_var(--color-red-500)]",
         )}
       >
@@ -196,6 +200,7 @@ export function PipelineRow({
               </Tooltip>
             ) : null}
             {bottleneck ? <BottleneckPill bottleneck={bottleneck} /> : null}
+            {run?.has_services ? <ServicesChip /> : null}
           </div>
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] text-muted-foreground">
             <span>v{pipeline.definition_version}</span>
@@ -239,10 +244,11 @@ export function PipelineRow({
           </div>
         </div>
 
-        {/* Col 3 — stage mini-track (services chip first, mirroring the old
-            stage strip where services led the row). */}
-        <div className="flex items-center gap-2 overflow-x-auto py-3 pr-3">
-          {run?.has_services ? <ServicesChip /> : null}
+        {/* Col 3 — stage mini-track: one status circle per job, starting at
+            the column's left edge in EVERY row so the circles line up across
+            the whole flow. (The services indicator lives in the identity
+            badges now, so it can't push the track right.) */}
+        <div className="flex items-center overflow-x-auto py-3 pr-3">
           <RowStages columns={columns} runId={run?.id} />
         </div>
 
@@ -503,10 +509,10 @@ function ServicesChip() {
     <Tooltip>
       <TooltipTrigger
         render={
-          <span className="inline-flex shrink-0 cursor-help items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 font-mono text-[9px] uppercase tracking-wide text-muted-foreground" />
+          <span className="inline-flex shrink-0 cursor-help items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground" />
         }
       >
-        <Server className="size-3.5" aria-hidden />
+        <Server className="size-3" aria-hidden />
         services
       </TooltipTrigger>
       <TooltipContent>
