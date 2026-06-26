@@ -1,0 +1,762 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/klinux/gocdnext/main/schema/latest/gocdnext-pipeline.schema.json",
+  "$ref": "#/$defs/File",
+  "$defs": {
+    "AgentDef": {
+      "properties": {
+        "profile": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "AgentDef binds a job to a named runner_profiles row at apply time."
+    },
+    "ApprovalDef": {
+      "properties": {
+        "approvers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "approver_groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "type": "integer",
+          "description": "Required is the quorum: how many distinct allowed users must\napprove before the gate passes. Default 1 (any single approver\nis enough, matches legacy behaviour). Rejects always fail the\ngate immediately regardless of this."
+        },
+        "quorum_by_label": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object",
+          "description": "QuorumByLabel maps a PR label name → quorum override applied\nwhen the run is triggered by a PR carrying that label. See\ndomain.ApprovalSpec.QuorumByLabel for resolution semantics\n(snapshot-at-materialisation, MAX wins on multi-label match)."
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ApprovalDef is the YAML shape of a manual approval gate."
+    },
+    "Artifacts": {
+      "properties": {
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "optional": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Optional is a best-effort list — upload failures log but don't\nfail the job. Use for coverage, screenshots, debug logs. Paths\nlisted in both `paths` and `optional` are treated as required\n(required wins; see parser)."
+        },
+        "expire_in": {
+          "type": "string"
+        },
+        "when": {
+          "type": "string",
+          "description": "on_success|on_failure|always"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "paths"
+      ]
+    },
+    "CacheSpec": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key",
+        "paths"
+      ],
+      "description": "CacheSpec is one entry in a job's `cache:` list."
+    },
+    "CoverageReportDef": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "description": "go-cover | lcov | cobertura | jacoco"
+        },
+        "fail_under": {
+          "type": "number",
+          "description": "FailUnder, when \u003e 0, fails the JOB if total coverage lands\nbelow this percentage. Opt-in by design: reporting must never\ngate by accident; the operator writes the threshold to ask\nfor the gate."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "format"
+      ],
+      "description": "CoverageReportDef declares the job's coverage output."
+    },
+    "CronSpec": {
+      "properties": {
+        "expression": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "expression"
+      ]
+    },
+    "DeployDef": {
+      "properties": {
+        "environment": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string",
+          "description": "Version is optional; the raw string (refs allowed) recorded as\nthe deployed version. Empty defaults to the commit short sha at\ndispatch."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "environment"
+      ],
+      "description": "DeployDef is the YAML shape of a job's `deploy:` block."
+    },
+    "File": {
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "reserved for future"
+        },
+        "name": {
+          "type": "string",
+          "description": "pipeline name; defaults to filename"
+        },
+        "include": {
+          "items": {
+            "$ref": "#/$defs/Include"
+          },
+          "type": "array"
+        },
+        "materials": {
+          "items": {
+            "$ref": "#/$defs/MaterialSpec"
+          },
+          "type": "array"
+        },
+        "stages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "variables": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "template": {
+          "type": "string"
+        },
+        "jobs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JobDef"
+          },
+          "type": "object"
+        },
+        "concurrency": {
+          "type": "string",
+          "description": "Concurrency: \"\" / \"parallel\" (default, unlimited concurrent\nruns) or \"serial\" (one run at a time — subsequent triggers\nqueue behind the running one)."
+        },
+        "when": {
+          "$ref": "#/$defs/WhenDef",
+          "description": "When configures the pipeline's implicit project material (the\ngit source bound via scm_source). Mirrors the job-level\nWhenDef shape. Today only `event:` is wired — drives which\nSCM events create runs. `branch:` / `status:` are reserved\nfor future use at this level."
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServiceSpec"
+          },
+          "type": "array",
+          "description": "Services are sidecar containers the agent runs alongside\nevery job in this pipeline — postgres, redis, localstack,\netc. Jobs reach them by `name` over a shared docker network.\nSee domain.Service for runtime semantics."
+        },
+        "notifications": {
+          "items": {
+            "$ref": "#/$defs/NotificationSpec"
+          },
+          "type": "array",
+          "description": "Notifications are post-run side effects. Each entry picks a\ntrigger (on: failure|success|always|canceled), a notifier\nplugin (uses: …), and its inputs. Dispatched when the run\nreaches terminal."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "stages",
+        "jobs"
+      ],
+      "description": "File is the top-level structure of a YAML file inside `.gocdnext/`."
+    },
+    "GitSpec": {
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "on": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "push, pull_request"
+        },
+        "auto_register_webhook": {
+          "type": "boolean"
+        },
+        "secret_ref": {
+          "type": "string"
+        },
+        "poll_interval": {
+          "type": "string",
+          "description": "PollInterval is a Go duration string (\"5m\", \"30m\", \"1h\").\nWhen set, the server checks branch HEAD every N and creates\na modification when it advances — covers firewall-bound\nrepos that can't reach us via webhook. Zero/empty disables."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url"
+      ]
+    },
+    "IDTokenDef": {
+      "properties": {
+        "aud": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "aud"
+      ],
+      "description": "IDTokenDef is one `id_tokens:` entry."
+    },
+    "Include": {
+      "properties": {
+        "local": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "template": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "JobDef": {
+      "properties": {
+        "stage": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "extends": {
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "script": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object",
+          "description": "plugin step (legacy)"
+        },
+        "uses": {
+          "type": "string",
+          "description": "Uses + With are the GH-Actions-flavoured sugar for a plugin\njob: `uses:` names a container image that ships its own\nentrypoint, `with:` is the settings map the agent translates\nto PLUGIN_* env vars before `docker run`ing the image. No\n`script:` needed — the plugin's entrypoint IS the logic.\nMutually exclusive with `image` + `settings` on the same job;\nparser rejects the combination."
+        },
+        "with": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "variables": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "cache": {
+          "items": {
+            "$ref": "#/$defs/CacheSpec"
+          },
+          "type": "array",
+          "description": "Cache entries let this job reuse tar'd directories across\nruns, keyed by name. The agent fetches each cache BEFORE\ntasks (cache miss = silent skip) and uploads it after\nsuccess. Scope is per-project: two pipelines using the\nsame key intentionally share the blob. Dead schema before\n— wired end-to-end starting with commit that lands this\ncomment."
+        },
+        "artifacts": {
+          "$ref": "#/$defs/Artifacts"
+        },
+        "needs_artifacts": {
+          "items": {
+            "$ref": "#/$defs/NeedsArtifactDef"
+          },
+          "type": "array"
+        },
+        "test_reports": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "TestReports is a list of glob patterns the agent scans\nafter tasks complete. Each match is parsed as JUnit/xUnit\nXML and the per-case results ship back as a TestResultBatch\nalongside the JobResult. Empty list = no test reporting."
+        },
+        "coverage_report": {
+          "$ref": "#/$defs/CoverageReportDef",
+          "description": "CoverageReport points the agent at ONE coverage file to parse\nafter tasks complete (go-cover profile, lcov info, cobertura\nXML). Only the SUMMARY ships back — keep the raw file via\nartifacts.optional when you want it."
+        },
+        "parallel": {
+          "$ref": "#/$defs/Parallel"
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/RuleDef"
+          },
+          "type": "array"
+        },
+        "when": {
+          "$ref": "#/$defs/WhenDef"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "retry": {
+          "type": "integer"
+        },
+        "secrets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "agent": {
+          "$ref": "#/$defs/AgentDef",
+          "description": "Agent picks a runner profile by name and may add extra tag\nconstraints. Profile resolution happens at apply time; the\nresolved profile's tags merge (union) with the job's own\ntags before scheduler matching, so neither origin can grant\nitself a silent veto over the other."
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourcesDef",
+          "description": "Resources is the optional compute envelope. Empty fields fall\nback to the resolved profile's defaults; non-empty fields are\nvalidated against profile.max at apply time."
+        },
+        "docker": {
+          "type": "boolean",
+          "description": "Docker = true asks the agent for docker API access inside the\njob (socket mount / DinD sidecar). Pair with `image:` to spawn\nsibling containers for testcontainers / docker compose."
+        },
+        "cluster": {
+          "type": "string",
+          "description": "Cluster names a k8s cluster registered in the admin clusters\nregistry. Resolved at apply (must exist + project authorized)\nand injected as PLUGIN_KUBECONFIG at dispatch, so kubectl/helm\njobs target it without a pasted kubeconfig secret."
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalDef",
+          "description": "Approval flags this job as a manual gate. When set the job\nnever dispatches to an agent — it parks in awaiting_approval\nand transitions via the approve/reject HTTP endpoints. No\n`script`, `uses`, `image`, or `artifacts` allowed alongside\nit; parser rejects the combination."
+        },
+        "outputs": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/OutputDef"
+              }
+            ]
+          },
+          "type": "object",
+          "description": "Outputs declares the structured k/v pairs this job promises\nto produce. Each entry maps a YAML-alias to a plugin env-var\nname read from $GOCDNEXT_OUTPUT_FILE at job end (same shape\nas $GITHUB_OUTPUT). Downstream jobs reference any declared\nalias via `${{ needs.\u003cthis-job\u003e.outputs.\u003calias\u003e }}` resolved\nat dispatch. Empty/omitted = no outputs (the common case).\nSee issue #10.\n\nTwo forms accepted (UnmarshalYAML on OutputDef):\n\n  outputs:\n    # short form — alias: ENV_VAR (default masked: false)\n    next: NEXT\n    kind: KIND\n    # object form — pin masking explicitly (issue #22)\n    release-token:\n      env: RELEASE_TOKEN\n      masked: true        # bypass the scheduler 8-char heuristic for log scrubbing\n\nMasking semantics: outputs marked `masked: true` are added\nto the downstream job's LogMasks at dispatch (same path\nsecrets take). Substitution scope is `env:` / `variables:`\n/ plugin `with:` — raw `script:` lines are NOT substituted\npre-dispatch (the shell resolves `${VAR}` at runtime from\nthe env we ship), so the script body never carries the\nresolved value verbatim. Wherever the substituted value\nDOES land (env exported into the container, plugin\nsettings echoed by the runner), the agent's log replacer\nscrubs it. Downstream resolution of\n`${{ needs.X.outputs.Y }}` still produces the real value;\nthe mask is for agent log streams only. Defence-in-depth:\nthe heuristic 8+-char auto-mask still applies for unmarked\noutputs.\n\n4-char floor: the agent's log replacer (applyMasks in\nrunner.go) skips masks shorter than 4 characters so common\nshort tokens (\"v1\", \"go\", \"id\") don't get globally rewritten.\n`masked: true` bypasses the SCHEDULER's 8-char heuristic\nbut inherits the agent's 4-char floor — values shorter than\n4 chars are NOT scrubbed in log streams either way.\n`secrets:` hits the same runner floor when echoed; the\nhonest recommendation for a short-and-sensitive value is to\nNOT treat it as a build output at all — take it from\n`secrets:` directly (stays off the outputs persistence +\ndownstream substitution surface) and avoid echoing it in\nany step that prints env or argv.\n\nScope of this release: log scrubbing only. UI rendering of\nmasked values is out of scope — the persisted output value\nstill propagates verbatim to downstream\n`${{ needs.X.outputs.Y }}` substitutions and any future\noutputs surface that reads job_runs.outputs directly."
+        },
+        "id_tokens": {
+          "additionalProperties": {
+            "$ref": "#/$defs/IDTokenDef"
+          },
+          "type": "object",
+          "description": "IDTokens declares per-job OIDC tokens (keyless cloud auth).\nMap key = env var name the JWT is injected as; `aud` is\nREQUIRED (no default — an aud that silently equals the\nissuer URL would pass misconfigured verifiers, which is a\ncorner case, not a convenience). GitLab `id_tokens:` shape\nfor migration ergonomics:\n\n\tid_tokens:\n\t  GCP_ID_TOKEN:\n\t    aud: https://iam.googleapis.com/projects/N/.../providers/X\n\t  VAULT_JWT:\n\t    aud: [https://vault.example.com, https://vault-dr.example.com]"
+        },
+        "deploy": {
+          "$ref": "#/$defs/DeployDef",
+          "description": "Deploy marks this job as a deployment to a named environment\n(#39). Tracking marker only — the job's `uses:`/`script:`\nstill performs the deploy. Valid ONLY on an executable job;\nmutually exclusive with `approval:` (a gate executes nothing).\nSee DeployDef."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "stage"
+      ],
+      "description": "JobDef — definition of one job."
+    },
+    "MaterialSpec": {
+      "properties": {
+        "git": {
+          "$ref": "#/$defs/GitSpec"
+        },
+        "upstream": {
+          "$ref": "#/$defs/UpstreamSpec"
+        },
+        "cron": {
+          "$ref": "#/$defs/CronSpec"
+        },
+        "manual": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "minProperties": 1,
+      "description": "MaterialSpec — one of the fields must be set."
+    },
+    "NeedsArtifactDef": {
+      "properties": {
+        "from_job": {
+          "type": "string"
+        },
+        "from_pipeline": {
+          "type": "string",
+          "description": "\"\" = same run; set = upstream run triggered by this pipeline"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "subset filter; empty = all"
+        },
+        "dest": {
+          "type": "string",
+          "description": "default \"./\""
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "from_job"
+      ],
+      "description": "NeedsArtifactDef is one entry of a job's `needs_artifacts:` list."
+    },
+    "NotificationSpec": {
+      "properties": {
+        "on": {
+          "type": "string"
+        },
+        "uses": {
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "secrets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "on",
+        "uses"
+      ],
+      "description": "NotificationSpec is the YAML shape for one post-run notification."
+    },
+    "OutputDef": {
+      "properties": {
+        "env": {
+          "type": "string",
+          "description": "Env is the plugin env-var name written to\n$GOCDNEXT_OUTPUT_FILE that this alias maps to. Required."
+        },
+        "masked": {
+          "type": "boolean",
+          "description": "Masked, when true, adds the resolved value to LogMasks at\ndispatch so it gets scrubbed in downstream agent log\nstreams. The default (false) leaves the value plain — the\n8+-char heuristic auto-mask still applies as a backstop.\nExplicit opt-in here is the operator declaring intent\n(\"this value IS sensitive\"), tightening the contract\nwithout breaking the heuristic-based defaults."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "env"
+      ],
+      "description": "OutputDef is the YAML shape of a single `outputs:` entry on a job."
+    },
+    "Parallel": {
+      "properties": {
+        "matrix": {
+          "items": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ResourceQty": {
+      "properties": {
+        "cpu": {
+          "type": "string"
+        },
+        "memory": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ResourcesDef": {
+      "properties": {
+        "requests": {
+          "$ref": "#/$defs/ResourceQty"
+        },
+        "limits": {
+          "$ref": "#/$defs/ResourceQty"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ResourcesDef mirrors corev1.ResourceRequirements but kept as strings so the YAML stays human-friendly (\"100m\", \"256Mi\")."
+    },
+    "RuleDef": {
+      "properties": {
+        "if": {
+          "type": "string"
+        },
+        "changes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "exists": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "when": {
+          "type": "string",
+          "description": "always|manual|never|on_success"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ServiceSpec": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "image"
+      ],
+      "description": "ServiceSpec is the YAML shape for a pipeline-level sidecar container."
+    },
+    "UpstreamSpec": {
+      "properties": {
+        "pipeline": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pipeline",
+        "stage"
+      ]
+    },
+    "WhenDef": {
+      "properties": {
+        "status": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "success|failure|always"
+        },
+        "branch": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "event": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Paths gates run creation on the changed-file set of the\ntriggering push/PR: the pipeline fires only when at least one\nchanged file matches one glob (doublestar grammar, same as\nartifacts). Empty = always fire. When the platform can't know\nthe file set (Bitbucket pushes, truncated payloads, files-API\nfailure) it FAILS OPEN — running on a docs-only change is\nnoise; silently missing CI on a real change is an incident."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    }
+  },
+  "title": "gocdnext pipeline"
+}

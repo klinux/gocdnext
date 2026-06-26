@@ -5,6 +5,30 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PoliciesManager } from "./policies-manager.client";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
 
+// The form loads the CodeMirror policy editor via next/dynamic; stub it with a
+// labelled textarea so these tests drive the config field without CodeMirror's
+// browser machinery (the editor has its own focused test).
+vi.mock("./policy-yaml-editor.client", () => ({
+  default: ({
+    id,
+    value,
+    onChange,
+    placeholder,
+  }: {
+    id?: string;
+    value: string;
+    onChange: (v: string) => void;
+    placeholder?: string;
+  }) => (
+    <textarea
+      id={id}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
 const createPolicy = vi.fn(async (i: Record<string, unknown>) => ({
   ok: true as const,
   data: {
@@ -75,7 +99,8 @@ describe("PoliciesManager", () => {
     fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "global-scan" } });
-    fireEvent.change(screen.getByLabelText(/Policy config/i), {
+    // The editor is lazy-loaded (next/dynamic) — wait for the field to mount.
+    fireEvent.change(await screen.findByLabelText(/Policy config/i), {
       target: { value: "stages: [_compliance_scan]" },
     });
     // Select the SOC2 framework (badge toggle).

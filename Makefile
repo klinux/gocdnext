@@ -45,6 +45,17 @@ lint:
 proto:
 	cd proto && buf generate
 
+## schema: regenerate the pipeline JSON Schema from the parser structs
+schema:
+	cd server && $(GO) run ./cmd/schemagen -out ../schema -version latest
+	@mkdir -p web/lib/schema
+	cp schema/latest/gocdnext-policy-fragment.schema.json web/lib/schema/policy-fragment.schema.json
+
+## schema-check: fail if the committed schema is stale (CI drift guard)
+schema-check: schema
+	@git diff --exit-code -- schema web/lib/schema \
+		|| { echo "schema is stale — run \`make schema\` and commit"; exit 1; }
+
 ## plugins: build all plugin images locally (gocdnext/<name>:latest). Pipelines
 ## that reference these images via `uses:` pick them up without needing a
 ## registry push while we're still in the internal-first rollout phase.
@@ -96,4 +107,4 @@ admin-reset-password: build
 	fi
 	./$(BIN_DIR)/gocdnext admin reset-password --email "$(EMAIL)"
 
-.PHONY: help env-setup build test lint proto plugins dev stop db-up db-down migrate-up migrate-status admin-create-user admin-reset-password
+.PHONY: help env-setup build test lint proto schema schema-check plugins dev stop db-up db-down migrate-up migrate-status admin-create-user admin-reset-password
