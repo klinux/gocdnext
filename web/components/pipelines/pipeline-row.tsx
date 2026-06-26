@@ -243,17 +243,16 @@ export function PipelineRow({
           </div>
         </div>
 
-        {/* Col 3 — fixed-width services lane + the stage mini-track (one
-            status circle per job). The lane is the SAME width in every row
-            (empty when the run declares no services), so the circles always
-            start at the same x and line up across the whole flow — while the
-            services box stays visible and names what it declares. */}
+        {/* Col 3 — stage mini-track (one status circle per job). When the
+            run declares services, the cluster leads the track INLINE (only
+            then — no reserved lane), mirroring the design handoff: services
+            boot before the jobs, so the violet cluster + connector sit before
+            the first circle. Rows without services start at the track's left
+            edge (no empty gap). */}
         <div className="flex items-center overflow-x-auto py-3 pr-3">
-          <div className="flex w-[128px] shrink-0 items-center">
-            {run?.has_services ? (
-              <ServicesCluster names={run.service_names ?? []} tone={tone} />
-            ) : null}
-          </div>
+          {run?.has_services ? (
+            <ServicesCluster names={run.service_names ?? []} tone={tone} />
+          ) : null}
           <RowStages columns={columns} runId={run?.id} />
         </div>
 
