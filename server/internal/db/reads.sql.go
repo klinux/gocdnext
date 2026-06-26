@@ -64,7 +64,7 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProject
 const getRunWithPipeline = `-- name: GetRunWithPipeline :one
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason, r.revisions,
-       r.has_services,
+       r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
        pl.definition AS pipeline_definition
 FROM runs r
@@ -86,6 +86,7 @@ type GetRunWithPipelineRow struct {
 	QueueReason        *string
 	Revisions          []byte
 	HasServices        bool
+	ServiceNames       []string
 	CreatedAt          pgtype.Timestamptz
 	StartedAt          pgtype.Timestamptz
 	FinishedAt         pgtype.Timestamptz
@@ -113,6 +114,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.QueueReason,
 		&i.Revisions,
 		&i.HasServices,
+		&i.ServiceNames,
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
@@ -355,7 +357,7 @@ const latestRunPerPipelineByProjectSlug = `-- name: LatestRunPerPipelineByProjec
 SELECT DISTINCT ON (r.pipeline_id)
   r.pipeline_id, r.id, r.counter, r.cause, r.status,
   r.created_at, r.started_at, r.finished_at, r.triggered_by,
-  r.has_services
+  r.has_services, r.service_names
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p  ON p.id  = pl.project_id
@@ -364,16 +366,17 @@ ORDER BY r.pipeline_id, r.created_at DESC
 `
 
 type LatestRunPerPipelineByProjectSlugRow struct {
-	PipelineID  pgtype.UUID
-	ID          pgtype.UUID
-	Counter     int64
-	Cause       string
-	Status      string
-	CreatedAt   pgtype.Timestamptz
-	StartedAt   pgtype.Timestamptz
-	FinishedAt  pgtype.Timestamptz
-	TriggeredBy *string
-	HasServices bool
+	PipelineID   pgtype.UUID
+	ID           pgtype.UUID
+	Counter      int64
+	Cause        string
+	Status       string
+	CreatedAt    pgtype.Timestamptz
+	StartedAt    pgtype.Timestamptz
+	FinishedAt   pgtype.Timestamptz
+	TriggeredBy  *string
+	HasServices  bool
+	ServiceNames []string
 }
 
 // DISTINCT ON picks the most recent run per pipeline. Pipelines with
@@ -384,7 +387,9 @@ type LatestRunPerPipelineByProjectSlugRow struct {
 // (migration 00036) — lets the project page client skip the
 // /api/v1/runs/:id/services fetch entirely on pipelines whose
 // latest run never declared a `services:` block. Without it the
-// project page issues one polling fetch per card.
+// project page issues one polling fetch per card. service_names
+// (migration 00055) carries the names of those services so the card
+// can label them without that fetch.
 func (q *Queries) LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error) {
 	rows, err := q.db.Query(ctx, latestRunPerPipelineByProjectSlug, slug)
 	if err != nil {
@@ -405,6 +410,7 @@ func (q *Queries) LatestRunPerPipelineByProjectSlug(ctx context.Context, slug st
 			&i.FinishedAt,
 			&i.TriggeredBy,
 			&i.HasServices,
+			&i.ServiceNames,
 		); err != nil {
 			return nil, err
 		}
@@ -736,7 +742,7 @@ func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWit
 
 const listRunsByProjectSlug = `-- name: ListRunsByProjectSlug :many
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
-       r.counter, r.cause, r.status, r.queue_reason, r.has_services,
+       r.counter, r.cause, r.status, r.queue_reason, r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -760,6 +766,7 @@ type ListRunsByProjectSlugRow struct {
 	Status       string
 	QueueReason  *string
 	HasServices  bool
+	ServiceNames []string
 	CreatedAt    pgtype.Timestamptz
 	StartedAt    pgtype.Timestamptz
 	FinishedAt   pgtype.Timestamptz
@@ -784,6 +791,7 @@ func (q *Queries) ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProje
 			&i.Status,
 			&i.QueueReason,
 			&i.HasServices,
+			&i.ServiceNames,
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,

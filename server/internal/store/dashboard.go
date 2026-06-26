@@ -132,6 +132,7 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 				Cause:        r.Cause,
 				Status:       r.Status,
 				HasServices:  r.HasServices,
+				ServiceNames: r.ServiceNames,
 				CreatedAt:    r.CreatedAt.Time,
 				StartedAt:    pgTimePtr(r.StartedAt),
 				FinishedAt:   pgTimePtr(r.FinishedAt),

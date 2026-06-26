@@ -223,6 +223,12 @@ type RunSummary struct {
 	// any — without it, every card polls the services endpoint
 	// even for pipelines that never use them.
 	HasServices bool `json:"has_services"`
+	// ServiceNames comes from `runs.service_names` (migration 00055),
+	// the names of the services snapshotted at run-create — the
+	// name-granular companion to HasServices, so the pipelines list
+	// can label the declared services without the per-card fetch.
+	// Empty slice when the run declared none.
+	ServiceNames []string `json:"service_names"`
 	// QueueReason is the operator-visible explanation for a queued
 	// run that hasn't advanced. Today only the scheduler's serial-
 	// concurrency gate stamps this (format: "serial-busy:<run-id>"),
@@ -655,6 +661,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Cause:        lr.Cause,
 			Status:       lr.Status,
 			HasServices:  lr.HasServices,
+			ServiceNames: lr.ServiceNames,
 			CreatedAt:    lr.CreatedAt.Time,
 			StartedAt:    pgTimePtr(lr.StartedAt),
 			FinishedAt:   pgTimePtr(lr.FinishedAt),
@@ -736,6 +743,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Cause:        r.Cause,
 			Status:       r.Status,
 			HasServices:  r.HasServices,
+			ServiceNames: r.ServiceNames,
 			QueueReason:  stringValue(r.QueueReason),
 			CreatedAt:    r.CreatedAt.Time,
 			StartedAt:    pgTimePtr(r.StartedAt),
@@ -920,6 +928,7 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			Cause:        run.Cause,
 			Status:       run.Status,
 			HasServices:  run.HasServices,
+			ServiceNames: run.ServiceNames,
 			QueueReason:  stringValue(run.QueueReason),
 			CreatedAt:    run.CreatedAt.Time,
 			StartedAt:    pgTimePtr(run.StartedAt),

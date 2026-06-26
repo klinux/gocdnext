@@ -96,6 +96,11 @@ export type RunSummary = {
   // pipeline card polls /api/v1/runs/:id/services even when the
   // pipeline never declared a `services:` block.
   has_services: boolean;
+  // Names of the services snapshotted at run-create (server migration
+  // 00055) — the name-granular companion to has_services, so the
+  // pipelines list can label declared services without the per-card
+  // /services fetch. Empty array when the run declared none.
+  service_names: string[];
   created_at: string;
   started_at?: string;
   finished_at?: string;
