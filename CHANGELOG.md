@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.58.1 — 2026-06-26
+
+### Fixed
+
+- **Services cluster inline; running animation + status border restored.** The
+  services cluster moved out of its fixed-width lane to sit inline before the
+  jobs, so rows without services no longer carry an empty gap. Also restored
+  two redesign regressions: running jobs animate again (spinner + a pulsing
+  box) and every pipeline row gets a status-colored left edge
+  (emerald/sky/red/amber; none when idle), not just failures. (#95)
+
 ## v0.58.0 — 2026-06-26
 
 ### Added
