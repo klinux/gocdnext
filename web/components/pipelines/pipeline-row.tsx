@@ -200,7 +200,9 @@ export function PipelineRow({
               </Tooltip>
             ) : null}
             {bottleneck ? <BottleneckPill bottleneck={bottleneck} /> : null}
-            {run?.has_services ? <ServicesChip /> : null}
+            {run?.has_services ? (
+              <ServicesChip names={run.service_names ?? []} />
+            ) : null}
           </div>
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] text-muted-foreground">
             <span>v{pipeline.definition_version}</span>
@@ -501,22 +503,32 @@ function BottleneckPill({ bottleneck }: { bottleneck: Bottleneck }) {
   );
 }
 
-// ServicesChip signals the run declares a `services:` block (the old stage
-// strip rendered a live services box; the compact row points to the run
-// detail, where the live status lives, to avoid a fetch per row).
-function ServicesChip() {
+// ServicesChip names the `services:` a run declared, snapshotted at
+// run-create (runs.service_names, server migration 00055) — so the row
+// labels the actual services without a per-card /services fetch. One
+// service → its name; several → "N services" with the full list on hover.
+// Empty (e.g. an old run pre-backfill) falls back to the generic label.
+function ServicesChip({ names }: { names: string[] }) {
+  const label =
+    names.length === 0
+      ? "services"
+      : names.length === 1
+        ? names[0]
+        : `${names.length} services`;
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <span className="inline-flex shrink-0 cursor-help items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground" />
+          <span className="inline-flex max-w-[140px] shrink-0 cursor-help items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground" />
         }
       >
-        <Server className="size-3" aria-hidden />
-        services
+        <Server className="size-3 shrink-0" aria-hidden />
+        <span className="truncate">{label}</span>
       </TooltipTrigger>
       <TooltipContent>
-        This run declares services — see the run detail for live status
+        {names.length > 0
+          ? `Service${names.length > 1 ? "s" : ""}: ${names.join(", ")}`
+          : "This run declares services — see the run detail for live status"}
       </TooltipContent>
     </Tooltip>
   );
