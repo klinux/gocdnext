@@ -254,6 +254,152 @@ func TestRunHasServices_RealPipelineDefinition(t *testing.T) {
 	}
 }
 
+// TestRunServiceNames_SnapshotsAtCreate guards the runs.service_names
+// snapshot (migration 00055), the name-granular companion to
+// has_services. It mirrors TestRunHasServices_RealPipelineDefinition's
+// setup exactly — pipelines planted through ApplyProject (the real
+// persistence path), runs created via CreateRunFromModification — then
+// asserts the declared service NAMES land in service_names and read
+// back through all three run-summary read paths (ListRunsByProjectSlug
+// + LatestRunPerPipelineByProjectSlug via GetProjectDetail, and
+// GetRunWithPipeline via GetRunDetail). The no-services pipeline must
+// snapshot an empty slice, not the other run's names.
+func TestRunServiceNames_SnapshotsAtCreate(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	url, branch := "https://github.com/org/svc-names-pipe", "main"
+	fp := store.FingerprintFor(url, branch)
+
+	// Pipeline WITH multiple services — service_names must capture both
+	// names, in declaration order.
+	withSvcs := &domain.Pipeline{
+		Name:   "with-services",
+		Stages: []string{"build"},
+		Services: []domain.Service{
+			{Name: "postgres", Image: "postgres:16-alpine"},
+			{Name: "redis", Image: "redis:7-alpine"},
+		},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+		}},
+		Jobs: []domain.Job{
+			{Name: "test", Stage: "build", Tasks: []domain.Task{{Script: "go test"}}},
+		},
+	}
+	// Pipeline WITHOUT services — service_names must read back empty.
+	withoutSvcs := &domain.Pipeline{
+		Name:   "no-services",
+		Stages: []string{"build"},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+		}},
+		Jobs: []domain.Job{
+			{Name: "test", Stage: "build", Tasks: []domain.Task{{Script: "go test"}}},
+		},
+	}
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "svc-names-test", Name: "Svc Names Test",
+		Pipelines: []*domain.Pipeline{withSvcs, withoutSvcs},
+	})
+	if err != nil {
+		t.Fatalf("ApplyProject: %v", err)
+	}
+
+	makeRun := func(idx int, rev string) uuid.UUID {
+		t.Helper()
+		var matID uuid.UUID
+		if err := pool.QueryRow(ctx,
+			`SELECT id FROM materials WHERE pipeline_id=$1 LIMIT 1`,
+			res.Pipelines[idx].PipelineID).Scan(&matID); err != nil {
+			t.Fatalf("material lookup: %v", err)
+		}
+		run, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID:  res.Pipelines[idx].PipelineID,
+			MaterialID:  matID,
+			Revision:    rev,
+			Branch:      branch,
+			Provider:    "test",
+			Delivery:    "svcnames-" + rev,
+			TriggeredBy: "test",
+		})
+		if err != nil {
+			t.Fatalf("CreateRunFromModification: %v", err)
+		}
+		return run.RunID
+	}
+	runWithSvcs := makeRun(0, "aaa1111111111111111111111111111111111111")
+	runWithoutSvcs := makeRun(1, "bbb2222222222222222222222222222222222222")
+
+	wantNames := []string{"postgres", "redis"}
+
+	equalStrings := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Read path 1+2: GetProjectDetail. Its Runs come from
+	// ListRunsByProjectSlug; its Pipelines[].LatestRun comes from
+	// LatestRunPerPipelineByProjectSlug. Both must carry ServiceNames.
+	detail, err := s.GetProjectDetail(ctx, "svc-names-test", 50)
+	if err != nil {
+		t.Fatalf("GetProjectDetail: %v", err)
+	}
+
+	byID := make(map[uuid.UUID][]string, len(detail.Runs))
+	for _, r := range detail.Runs {
+		byID[r.ID] = r.ServiceNames
+	}
+	if got := byID[runWithSvcs]; !equalStrings(got, wantNames) {
+		t.Errorf("ListRunsByProjectSlug: service_names = %v, want %v", got, wantNames)
+	}
+	if got := byID[runWithoutSvcs]; len(got) != 0 {
+		t.Errorf("ListRunsByProjectSlug: no-services run service_names = %v, want empty", got)
+	}
+
+	for _, p := range detail.Pipelines {
+		if p.LatestRun == nil {
+			t.Fatalf("pipeline %q has no LatestRun", p.Name)
+		}
+		switch p.Name {
+		case "with-services":
+			if got := p.LatestRun.ServiceNames; !equalStrings(got, wantNames) {
+				t.Errorf("LatestRunPerPipelineByProjectSlug: service_names = %v, want %v", got, wantNames)
+			}
+		case "no-services":
+			if got := p.LatestRun.ServiceNames; len(got) != 0 {
+				t.Errorf("LatestRunPerPipelineByProjectSlug: no-services service_names = %v, want empty", got)
+			}
+		}
+	}
+
+	// Read path 3: GetRunDetail → GetRunWithPipeline.
+	rd, err := s.GetRunDetail(ctx, runWithSvcs, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail (with services): %v", err)
+	}
+	if got := rd.ServiceNames; !equalStrings(got, wantNames) {
+		t.Errorf("GetRunWithPipeline: service_names = %v, want %v", got, wantNames)
+	}
+	rd, err = s.GetRunDetail(ctx, runWithoutSvcs, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail (without services): %v", err)
+	}
+	if got := rd.ServiceNames; len(got) != 0 {
+		t.Errorf("GetRunWithPipeline: no-services service_names = %v, want empty", got)
+	}
+}
+
 // TestListAgentsForRun_DistinctAndExcludesNullAgent — covers the
 // broadcast target set for CleanupRunServices. The query returns
 // DISTINCT agents (so a run with N jobs on one agent yields one

@@ -201,6 +201,7 @@ SELECT r.id,
        r.cause,
        r.status,
        r.has_services,
+       r.service_names,
        r.created_at,
        r.started_at,
        r.finished_at,
@@ -234,6 +235,7 @@ type ListRunsGlobalRow struct {
 	Cause        string
 	Status       string
 	HasServices  bool
+	ServiceNames []string
 	CreatedAt    pgtype.Timestamptz
 	StartedAt    pgtype.Timestamptz
 	FinishedAt   pgtype.Timestamptz
@@ -271,6 +273,7 @@ func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) 
 			&i.Cause,
 			&i.Status,
 			&i.HasServices,
+			&i.ServiceNames,
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,

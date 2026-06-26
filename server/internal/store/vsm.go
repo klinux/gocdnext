@@ -137,6 +137,7 @@ func (s *Store) GetProjectVSM(ctx context.Context, slug string) (VSM, error) {
 			Cause:        r.Cause,
 			Status:       r.Status,
 			HasServices:  r.HasServices,
+			ServiceNames: r.ServiceNames,
 			CreatedAt:    r.CreatedAt.Time,
 			StartedAt:    pgTimePtr(r.StartedAt),
 			FinishedAt:   pgTimePtr(r.FinishedAt),

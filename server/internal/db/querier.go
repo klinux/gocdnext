@@ -616,6 +616,12 @@ type Querier interface {
 	// stages + jobs — without this, a concurrent ApplyProject between
 	// the Go decode and a re-read inside SQL could give us mismatched
 	// snapshots under READ COMMITTED.
+	//
+	// service_names (migration 00055) is the same snapshot at name
+	// granularity — computed from the SAME def for the same drift-safety
+	// reason — so the pipelines list can show WHICH services a run
+	// declared, not just whether it declared any. Appended last so the
+	// existing positional params keep their order.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
@@ -655,7 +661,9 @@ type Querier interface {
 	// (migration 00036) — lets the project page client skip the
 	// /api/v1/runs/:id/services fetch entirely on pipelines whose
 	// latest run never declared a `services:` block. Without it the
-	// project page issues one polling fetch per card.
+	// project page issues one polling fetch per card. service_names
+	// (migration 00055) carries the names of those services so the card
+	// can label them without that fetch.
 	LatestRunPerPipelineByProjectSlug(ctx context.Context, slug string) ([]LatestRunPerPipelineByProjectSlugRow, error)
 	ListAPITokensByServiceAccount(ctx context.Context, serviceAccountID pgtype.UUID) ([]ListAPITokensByServiceAccountRow, error)
 	// Tokens this user owns, newest first. Used by /settings/api-tokens.
