@@ -1,18 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { StatusPill } from "@/components/shared/status-pill";
-import { RelativeTime } from "@/components/shared/relative-time";
-import { isTerminalStatus } from "@/lib/status";
-import type { StatusTone } from "@/lib/status";
+import { Database, Clock } from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import { ServiceGlyph, detectTech } from "@/components/shared/service-tech";
 import type { RunService } from "@/types/api";
 
 type Props = {
@@ -36,10 +28,14 @@ export async function fetchServices(
   return (await res.json()) as RunService[];
 }
 
-// PipelineCanvas (always mounted on the run-detail page) owns the
-// polling for this query key. This tab just subscribes to the
-// shared cache so opening it doesn't kick off a second interval
-// chasing the same endpoint.
+// RunServices renders the run's environment containers as the design's
+// Services band: per-tech tinted cards with image:tag, a readiness badge
+// (live status) and the pod. Services boot before the jobs and stay alive
+// for the whole run — host:port and per-job "uses" are intentionally out
+// (the model is pipeline-scoped; we show status + pod, the data we have).
+//
+// PipelineCanvas (always mounted on the run-detail page) owns the polling
+// for this query key; this tab just subscribes to the shared cache.
 export function RunServices({ runId, runStatus: _runStatus, apiBaseURL }: Props) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["run-services", runId],
@@ -62,81 +58,90 @@ export function RunServices({ runId, runStatus: _runStatus, apiBaseURL }: Props)
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Name</TableHead>
-          <TableHead>Image</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Started</TableHead>
-          <TableHead>Ready</TableHead>
-          <TableHead>Duration</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Database className="size-4" style={{ color: "#a779e9" }} aria-hidden />
+        <span className="font-semibold">Services</span>
+        <span className="text-muted-foreground">
+          {rows.length} environment container{rows.length === 1 ? "" : "s"} ·
+          start before the jobs
+        </span>
+        <span
+          className="ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+          style={{ borderColor: "rgba(167,121,233,.38)", color: "#b495e6" }}
+        >
+          <Clock className="size-3" aria-hidden />
+          alive for the whole run
+        </span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {rows.map((svc) => (
-          <TableRow key={svc.id}>
-            <TableCell className="font-mono text-xs">{svc.name}</TableCell>
-            <TableCell className="font-mono text-xs">{svc.image}</TableCell>
-            <TableCell>
-              <StatusPill tone={statusTone(svc.status)}>
-                {svc.status}
-              </StatusPill>
-              {svc.error ? (
-                <p
-                  title={svc.error}
-                  className="mt-1 max-w-xs truncate text-xs text-destructive"
-                >
-                  {svc.error}
-                </p>
-              ) : null}
-            </TableCell>
-            <TableCell>
-              {svc.started_at ? (
-                <RelativeTime at={svc.started_at} />
-              ) : (
-                <span className="text-muted-foreground">—</span>
-              )}
-            </TableCell>
-            <TableCell>
-              {svc.ready_at ? (
-                <RelativeTime at={svc.ready_at} />
-              ) : (
-                <span className="text-muted-foreground">—</span>
-              )}
-            </TableCell>
-            <TableCell className="font-mono tabular-nums text-xs">
-              {formatDuration(svc)}
-            </TableCell>
-          </TableRow>
+          <ServiceCard key={svc.id} svc={svc} />
         ))}
-      </TableBody>
-    </Table>
+      </div>
+    </div>
   );
 }
 
-function statusTone(status: RunService["status"]): StatusTone {
-  switch (status) {
-    case "ready":
-      return "success";
-    case "starting":
-      return "running";
-    case "stopped":
-      return "neutral";
-    case "failed":
-      return "failed";
-    default:
-      return "neutral";
-  }
+function ServiceCard({ svc }: { svc: RunService }) {
+  const tech = detectTech(svc.image || svc.name);
+  return (
+    <div className="rounded-xl border border-border bg-card p-3.5">
+      <div className="flex items-center gap-3">
+        <ServiceGlyph tech={tech} className="size-8 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-mono text-sm font-semibold">{svc.name}</div>
+          <div className="truncate font-mono text-[11px] text-muted-foreground">
+            {svc.image}
+          </div>
+        </div>
+        <ReadinessBadge status={svc.status} />
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+        <span className="truncate font-mono" title={svc.pod_name ?? undefined}>
+          {svc.pod_name ?? svc.name}
+        </span>
+        <span className="shrink-0 font-mono tabular-nums">{formatDuration(svc)}</span>
+      </div>
+      {svc.error ? (
+        <p className="mt-1 truncate text-[11px] text-destructive" title={svc.error}>
+          {svc.error}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
-// formatDuration shows the readiness window (started → ready)
-// while a service is live, OR total uptime (started → stopped)
-// once the run cleaned up. Missing started_at falls through to
-// a `—` so the row stays renderable for events that arrived in
-// an unusual order (e.g. `ready` before `starting` after a
-// stream reconnect — the upsert preserves the first-observed
-// timestamp on each column).
+const READINESS: Record<
+  RunService["status"],
+  { label: string; color: string; pulse: boolean }
+> = {
+  ready: { label: "READY", color: "#3fb950", pulse: true },
+  starting: { label: "BOOTING", color: "#d9a429", pulse: false },
+  failed: { label: "FAILED", color: "#f85149", pulse: false },
+  stopped: { label: "STOPPED", color: "#6e7681", pulse: false },
+};
+
+function ReadinessBadge({ status }: { status: RunService["status"] }) {
+  const m = READINESS[status] ?? READINESS.stopped;
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+      style={{ borderColor: `${m.color}55`, color: m.color }}
+    >
+      <span
+        className={cn("size-[7px] rounded-full", m.pulse && "animate-pulse")}
+        style={{ background: m.color }}
+        aria-hidden
+      />
+      {m.label}
+    </span>
+  );
+}
+
+// formatDuration shows the readiness window (started → ready) while a
+// service is live, OR total uptime (started → stopped) once the run
+// cleaned up. Missing/odd timestamps fall through to `—`.
 function formatDuration(svc: RunService): string {
   if (!svc.started_at) return "—";
   const start = new Date(svc.started_at).getTime();

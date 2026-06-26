@@ -8,7 +8,6 @@ import {
   Check,
   GitBranch,
   Minus,
-  Server,
   ShieldCheck,
   X,
 } from "lucide-react";
@@ -24,6 +23,7 @@ import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
 import { JobActions } from "@/components/pipelines/job-actions.client";
+import { ServicesCluster } from "@/components/pipelines/services-cluster";
 import { PipelineOverviewSheet } from "@/components/pipelines/pipeline-overview-sheet.client";
 import {
   buildColumns,
@@ -249,9 +249,9 @@ export function PipelineRow({
             start at the same x and line up across the whole flow — while the
             services box stays visible and names what it declares. */}
         <div className="flex items-center overflow-x-auto py-3 pr-3">
-          <div className="flex w-[128px] shrink-0 items-center pr-2">
+          <div className="flex w-[128px] shrink-0 items-center">
             {run?.has_services ? (
-              <ServicesChip names={run.service_names ?? []} />
+              <ServicesCluster names={run.service_names ?? []} tone={tone} />
             ) : null}
           </div>
           <RowStages columns={columns} runId={run?.id} />
@@ -502,37 +502,6 @@ function BottleneckPill({ bottleneck }: { bottleneck: Bottleneck }) {
         {detail.length > 0 ? <span>· {detail.join(" · ")}</span> : null}
       </TooltipTrigger>
       <TooltipContent>{bottleneck.stageName} is the bottleneck</TooltipContent>
-    </Tooltip>
-  );
-}
-
-// ServicesChip names the `services:` a run declared, snapshotted at
-// run-create (runs.service_names, server migration 00055) — so the row
-// labels the actual services without a per-card /services fetch. One
-// service → its name; several → "N services" with the full list on hover.
-// Empty (e.g. an old run pre-backfill) falls back to the generic label.
-function ServicesChip({ names }: { names: string[] }) {
-  const label =
-    names.length === 0
-      ? "services"
-      : names.length === 1
-        ? names[0]
-        : `${names.length} services`;
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span className="inline-flex w-full cursor-help items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground" />
-        }
-      >
-        <Server className="size-3 shrink-0" aria-hidden />
-        <span className="truncate">{label}</span>
-      </TooltipTrigger>
-      <TooltipContent>
-        {names.length > 0
-          ? `Service${names.length > 1 ? "s" : ""}: ${names.join(", ")}`
-          : "This run declares services — see the run detail for live status"}
-      </TooltipContent>
     </Tooltip>
   );
 }
