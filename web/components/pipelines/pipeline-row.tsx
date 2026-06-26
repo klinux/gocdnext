@@ -200,9 +200,6 @@ export function PipelineRow({
               </Tooltip>
             ) : null}
             {bottleneck ? <BottleneckPill bottleneck={bottleneck} /> : null}
-            {run?.has_services ? (
-              <ServicesChip names={run.service_names ?? []} />
-            ) : null}
           </div>
           <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] text-muted-foreground">
             <span>v{pipeline.definition_version}</span>
@@ -246,11 +243,17 @@ export function PipelineRow({
           </div>
         </div>
 
-        {/* Col 3 — stage mini-track: one status circle per job, starting at
-            the column's left edge in EVERY row so the circles line up across
-            the whole flow. (The services indicator lives in the identity
-            badges now, so it can't push the track right.) */}
+        {/* Col 3 — fixed-width services lane + the stage mini-track (one
+            status circle per job). The lane is the SAME width in every row
+            (empty when the run declares no services), so the circles always
+            start at the same x and line up across the whole flow — while the
+            services box stays visible and names what it declares. */}
         <div className="flex items-center overflow-x-auto py-3 pr-3">
+          <div className="flex w-[128px] shrink-0 items-center pr-2">
+            {run?.has_services ? (
+              <ServicesChip names={run.service_names ?? []} />
+            ) : null}
+          </div>
           <RowStages columns={columns} runId={run?.id} />
         </div>
 
@@ -519,7 +522,7 @@ function ServicesChip({ names }: { names: string[] }) {
     <Tooltip>
       <TooltipTrigger
         render={
-          <span className="inline-flex max-w-[140px] shrink-0 cursor-help items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[9.5px] font-semibold text-muted-foreground" />
+          <span className="inline-flex w-full cursor-help items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 text-[10px] font-semibold text-muted-foreground" />
         }
       >
         <Server className="size-3 shrink-0" aria-hidden />
