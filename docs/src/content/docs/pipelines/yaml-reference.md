@@ -1077,8 +1077,10 @@ name: build
 stages: [test]
 ```
 
-Pin a release tag instead of `main` to match your installed server
-(e.g. `…/v0.58.0/…`) and avoid false errors when the spec evolves.
+The hosted URL tracks `main`. To pin to your installed server version
+(and avoid false errors as the spec evolves), vendor the schema file
+into your repo and use the workspace mapping below against that copy —
+per-version hosted URLs are planned.
 
 **2. Workspace mapping** (VS Code, offline-friendly). Install the
 `redhat.vscode-yaml` extension and add to `.vscode/settings.json`:

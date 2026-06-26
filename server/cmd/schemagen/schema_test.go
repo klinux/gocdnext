@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gocdnext/gocdnext/server/pkg/parser"
+	invopop "github.com/invopop/jsonschema"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
 )
@@ -161,5 +162,35 @@ func TestPolicyFragmentFixtures(t *testing.T) {
 		"stages: [build]\njobs:\n  _compliance_scan: {stage: build, uses: ghcr.io/acme/trivy@v1}\n",
 	))); err == nil {
 		t.Error("policy fragment should reject a stage name without the _compliance_ prefix")
+	}
+}
+
+// TestPolicyFragmentJobPrefixIsDraft04Compatible guards the construct, not just
+// the behaviour: the editor's validator (codemirror-json-schema) runs Draft-04,
+// which silently ignores `propertyNames`. The job-name prefix must therefore be
+// expressed with patternProperties + additionalProperties:false. The
+// round-trip/negative tests above pass under santhosh-tekuri (2020-12) even with
+// propertyNames, so they would NOT catch a regression — this one does.
+func TestPolicyFragmentJobPrefixIsDraft04Compatible(t *testing.T) {
+	s, err := reflectSchema(parserSrc, "policy fragment", &policyFragment{}, true)
+	if err != nil {
+		t.Fatalf("reflect schema: %v", err)
+	}
+	def, ok := s.Definitions["policyFragment"]
+	if !ok || def.Properties == nil {
+		t.Fatal("policyFragment def missing")
+	}
+	jobs, ok := def.Properties.Get("jobs")
+	if !ok {
+		t.Fatal("jobs property missing")
+	}
+	if _, ok := jobs.PatternProperties["^"+reservedPrefix]; !ok {
+		t.Errorf("jobs must constrain names via patternProperties %q (Draft-04 honoured)", "^"+reservedPrefix)
+	}
+	if jobs.AdditionalProperties != invopop.FalseSchema {
+		t.Error("jobs must set additionalProperties:false so non-prefixed names are rejected")
+	}
+	if jobs.PropertyNames != nil {
+		t.Error("jobs must NOT use propertyNames — the editor's Draft-04 validator ignores it")
 	}
 }
