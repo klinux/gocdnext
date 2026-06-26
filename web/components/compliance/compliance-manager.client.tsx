@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Library, ShieldCheck } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
@@ -27,8 +28,12 @@ export function ComplianceManager({
   return (
     <Tabs defaultValue="policies" className="space-y-4">
       <TabsList>
-        <TabsTrigger value="policies">Policies ({policies.length})</TabsTrigger>
+        <TabsTrigger value="policies">
+          <ShieldCheck className="size-4" />
+          Policies ({policies.length})
+        </TabsTrigger>
         <TabsTrigger value="frameworks">
+          <Library className="size-4" />
           Frameworks ({frameworks.length})
         </TabsTrigger>
       </TabsList>
