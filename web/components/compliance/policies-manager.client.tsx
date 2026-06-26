@@ -7,13 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import {
   Table,
   TableBody,
@@ -28,21 +22,20 @@ import {
   updateCompliancePolicy,
 } from "@/server/actions/compliance";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
-import {
-  PolicyForm,
-  blankPolicy,
-  policyToDraft,
-  type PolicyDraft,
-} from "./policy-form.client";
+import { blankPolicy, policyToDraft, type PolicyDraft } from "./policy-form.client";
+import { PolicySheet } from "./policy-sheet.client";
+import type { PreviewProject } from "./use-policy-preview";
 
 export function PoliciesManager({
   policies,
   setPolicies,
   frameworks,
+  projects,
 }: {
   policies: CompliancePolicy[];
   setPolicies: Dispatch<SetStateAction<CompliancePolicy[]>>;
   frameworks: ComplianceFramework[];
+  projects: PreviewProject[];
 }) {
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState<PolicyDraft | null>(null);
@@ -234,19 +227,14 @@ export function PoliciesManager({
       <Sheet open={draft !== null} onOpenChange={(o) => !o && setDraft(null)}>
         <SheetContent
           side="right"
-          className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-[40rem]"
+          className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[60rem]"
         >
-          <SheetHeader>
-            <SheetTitle>{draft?.id ? "Edit policy" : "New policy"}</SheetTitle>
-            <SheetDescription>
-              Mandatory pipeline config merged into every targeted project.
-            </SheetDescription>
-          </SheetHeader>
           {draft ? (
-            <PolicyForm
+            <PolicySheet
               draft={draft}
               setDraft={setDraft}
               frameworks={frameworks}
+              projects={projects}
               pending={pending}
               onSave={save}
               onCancel={() => setDraft(null)}

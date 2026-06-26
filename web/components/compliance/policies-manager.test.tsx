@@ -22,6 +22,7 @@ vi.mock("./policy-yaml-editor.client", () => ({
   }) => (
     <textarea
       id={id}
+      aria-label="Policy config (YAML)"
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
@@ -55,6 +56,7 @@ vi.mock("@/server/actions/compliance", () => ({
   createCompliancePolicy: (i: Record<string, unknown>) => createPolicy(i),
   updateCompliancePolicy: (i: Record<string, unknown>) => updatePolicy(i),
   deleteCompliancePolicy: (id: string) => deletePolicy(id),
+  previewDraftPolicy: vi.fn(async () => ({ ok: true as const, data: [] })),
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -81,7 +83,7 @@ beforeEach(() => {
 
 describe("PoliciesManager", () => {
   it("renders policies with scope + status", () => {
-    render(<PoliciesManager policies={policies} setPolicies={() => {}} frameworks={frameworks} />);
+    render(<PoliciesManager policies={policies} setPolicies={() => {}} frameworks={frameworks} projects={[]} />);
     expect(screen.getByText("pci-scan")).toBeTruthy();
     expect(screen.getByText("enabled")).toBeTruthy();
     // Framework id resolved to its name in the scope column.
@@ -89,13 +91,13 @@ describe("PoliciesManager", () => {
   });
 
   it("shows the empty state", () => {
-    render(<PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} />);
+    render(<PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} projects={[]} />);
     expect(screen.getByText(/No policies yet/i)).toBeTruthy();
   });
 
   it("creates a policy with a selected framework and config", async () => {
     const user = userEvent.setup();
-    render(<PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} />);
+    render(<PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} projects={[]} />);
     fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "global-scan" } });
@@ -106,7 +108,7 @@ describe("PoliciesManager", () => {
     // Select the SOC2 framework (badge toggle).
     await user.click(screen.getByRole("button", { name: "Framework SOC2" }));
 
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create policy/i }));
 
     await waitFor(() => expect(createPolicy).toHaveBeenCalledTimes(1));
     const arg = createPolicy.mock.calls[0]![0];
@@ -116,14 +118,15 @@ describe("PoliciesManager", () => {
     expect(arg.config_yaml).toContain("_compliance_scan");
   });
 
-  it("blocks save when config YAML is empty", () => {
-    const { container } = render(
-      <PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} />,
+  it("blocks save when config YAML is empty", async () => {
+    render(
+      <PoliciesManager policies={[]} setPolicies={() => {}} frameworks={frameworks} projects={[]} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    // New drafts pre-fill the sample config; clearing it must block the save.
+    fireEvent.change(await screen.findByLabelText(/Policy config/i), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /create policy/i }));
     expect(createPolicy).not.toHaveBeenCalled();
-    void container;
   });
 });

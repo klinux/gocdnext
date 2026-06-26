@@ -6,6 +6,7 @@ import {
   listComplianceFrameworks,
   listCompliancePolicies,
 } from "@/server/queries/admin";
+import { listProjects } from "@/server/queries/projects";
 
 export const metadata: Metadata = {
   title: "Compliance — gocdnext",
@@ -16,9 +17,10 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function CompliancePage() {
-  const [frameworks, policyList] = await Promise.all([
+  const [frameworks, policyList, projectList] = await Promise.all([
     listComplianceFrameworks(),
     listCompliancePolicies(),
+    listProjects(),
   ]);
   // The list endpoint omits config_yaml + framework_ids (metadata only); fetch
   // each full policy so the editor opens fully populated. Few policies in
@@ -26,6 +28,8 @@ export default async function CompliancePage() {
   const policies = await Promise.all(
     policyList.map((p) => getCompliancePolicy(p.id)),
   );
+  // Only slug + name are needed for the preview's project picker.
+  const projects = projectList.map((p) => ({ slug: p.slug, name: p.name }));
 
   return (
     <section className="space-y-6">
@@ -38,7 +42,11 @@ export default async function CompliancePage() {
         </p>
       </div>
 
-      <ComplianceManager frameworks={frameworks} policies={policies} />
+      <ComplianceManager
+        frameworks={frameworks}
+        policies={policies}
+        projects={projects}
+      />
     </section>
   );
 }

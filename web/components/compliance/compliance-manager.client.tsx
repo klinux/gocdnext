@@ -7,13 +7,16 @@ import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/adm
 
 import { FrameworksManager } from "./frameworks-manager.client";
 import { PoliciesManager } from "./policies-manager.client";
+import type { PreviewProject } from "./use-policy-preview";
 
 export function ComplianceManager({
   frameworks: initialFrameworks,
   policies: initialPolicies,
+  projects,
 }: {
   frameworks: ComplianceFramework[];
   policies: CompliancePolicy[];
+  projects: PreviewProject[];
 }) {
   // Frameworks state is lifted so a framework created in the Frameworks tab is
   // immediately selectable as a policy target in the Policies tab (and the tab
@@ -34,6 +37,7 @@ export function ComplianceManager({
           policies={policies}
           setPolicies={setPolicies}
           frameworks={frameworks}
+          projects={projects}
         />
       </TabsContent>
       <TabsContent value="frameworks">
