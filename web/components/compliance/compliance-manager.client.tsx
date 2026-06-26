@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Library, ShieldCheck } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { tabPillList, tabPillTrigger } from "@/lib/tab-pill";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
 
 import { FrameworksManager } from "./frameworks-manager.client";
@@ -29,18 +30,12 @@ export function ComplianceManager({
     <Tabs defaultValue="policies" className="space-y-4">
       {/* Match the project nav's pill language: transparent track, content-width
           tabs, bg-accent active — see components/projects/project-tabs.client. */}
-      <TabsList className="h-auto bg-transparent p-0">
-        <TabsTrigger
-          value="policies"
-          className="flex-none px-3 py-1.5 text-muted-foreground"
-        >
+      <TabsList className={tabPillList}>
+        <TabsTrigger value="policies" className={tabPillTrigger}>
           <ShieldCheck className="size-3.5 opacity-80" />
           Policies ({policies.length})
         </TabsTrigger>
-        <TabsTrigger
-          value="frameworks"
-          className="flex-none px-3 py-1.5 text-muted-foreground"
-        >
+        <TabsTrigger value="frameworks" className={tabPillTrigger}>
           <Library className="size-3.5 opacity-80" />
           Frameworks ({frameworks.length})
         </TabsTrigger>
