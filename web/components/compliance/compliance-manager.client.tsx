@@ -27,13 +27,21 @@ export function ComplianceManager({
 
   return (
     <Tabs defaultValue="policies" className="space-y-4">
-      <TabsList>
-        <TabsTrigger value="policies">
-          <ShieldCheck className="size-4" />
+      {/* Match the project nav's pill language: transparent track, content-width
+          tabs, bg-accent active — see components/projects/project-tabs.client. */}
+      <TabsList className="h-auto bg-transparent p-0">
+        <TabsTrigger
+          value="policies"
+          className="flex-none px-3 py-1.5 text-muted-foreground"
+        >
+          <ShieldCheck className="size-3.5 opacity-80" />
           Policies ({policies.length})
         </TabsTrigger>
-        <TabsTrigger value="frameworks">
-          <Library className="size-4" />
+        <TabsTrigger
+          value="frameworks"
+          className="flex-none px-3 py-1.5 text-muted-foreground"
+        >
+          <Library className="size-3.5 opacity-80" />
           Frameworks ({frameworks.length})
         </TabsTrigger>
       </TabsList>
