@@ -1480,6 +1480,12 @@ components:
         # so cards/timelines listing pipelines that never declared
         # services don't trigger an empty round-trip each.
         has_services: { type: boolean }
+        # Names of the services snapshotted at run-create (server
+        # migration 00055) — the name-granular companion to
+        # has_services. Lets the pipelines list label declared
+        # services without the per-run /services fetch. Defaulted to
+        # an empty array, so not listed under `required`.
+        service_names: { type: array, items: { type: string } }
         git_ref: { type: string, nullable: true }
         commit_sha: { type: string, nullable: true }
         triggered_by: { type: string, nullable: true }

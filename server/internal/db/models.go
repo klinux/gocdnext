@@ -377,6 +377,8 @@ type Run struct {
 	QueueReason *string
 	// Snapshot of pipeline.definition->Services non-emptiness at run create. Drives CleanupRunServices dispatch; immutable post-insert.
 	HasServices bool
+	// Snapshot of pipeline.definition->Services names at run create. Mirrors has_services; immutable post-insert.
+	ServiceNames []string
 }
 
 type RunnerProfile struct {

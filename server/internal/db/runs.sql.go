@@ -114,21 +114,22 @@ func (q *Queries) InsertJobRun(ctx context.Context, arg InsertJobRunParams) (Ins
 const insertRun = `-- name: InsertRun :one
 INSERT INTO runs (
     pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
-    has_services
+    has_services, service_names
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6, $7
+    $1, $2, $3, $4, 'queued', $5, $6, $7, $8
 )
 RETURNING id, pipeline_id, counter, cause, status, created_at
 `
 
 type InsertRunParams struct {
-	PipelineID  pgtype.UUID
-	Counter     int64
-	Cause       string
-	CauseDetail []byte
-	Revisions   []byte
-	TriggeredBy *string
-	HasServices bool
+	PipelineID   pgtype.UUID
+	Counter      int64
+	Cause        string
+	CauseDetail  []byte
+	Revisions    []byte
+	TriggeredBy  *string
+	HasServices  bool
+	ServiceNames []string
 }
 
 type InsertRunRow struct {
@@ -149,6 +150,12 @@ type InsertRunRow struct {
 // stages + jobs — without this, a concurrent ApplyProject between
 // the Go decode and a re-read inside SQL could give us mismatched
 // snapshots under READ COMMITTED.
+//
+// service_names (migration 00055) is the same snapshot at name
+// granularity — computed from the SAME def for the same drift-safety
+// reason — so the pipelines list can show WHICH services a run
+// declared, not just whether it declared any. Appended last so the
+// existing positional params keep their order.
 func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error) {
 	row := q.db.QueryRow(ctx, insertRun,
 		arg.PipelineID,
@@ -158,6 +165,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRun
 		arg.Revisions,
 		arg.TriggeredBy,
 		arg.HasServices,
+		arg.ServiceNames,
 	)
 	var i InsertRunRow
 	err := row.Scan(

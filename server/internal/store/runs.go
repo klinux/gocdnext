@@ -113,6 +113,22 @@ type insertRunSkeletonInput struct {
 	TriggeredBy string
 }
 
+// serviceNames extracts the declared service names from a pipeline
+// definition for the runs.service_names snapshot (migration 00055).
+// Callers pass the SAME decoded def used to compute has_services and to
+// materialise stages/jobs, so the snapshot stays drift-consistent under
+// concurrent ApplyProject. Returns an empty (non-nil) slice when the
+// pipeline declares no services — a nil would also be a valid TEXT[]
+// param, but an empty slice keeps the stamped value identical to the
+// column's '{}' default.
+func serviceNames(def domain.Pipeline) []string {
+	names := make([]string, 0, len(def.Services))
+	for _, svc := range def.Services {
+		names = append(names, svc.Name)
+	}
+	return names
+}
+
 // insertRunSkeleton runs the full "create run + stages + jobs + NOTIFY" dance
 // inside one tx. Trigger-specific code prepares cause+revisions and calls in.
 func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput) (RunCreated, error) {
@@ -141,20 +157,21 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		return RunCreated{}, fmt.Errorf("store: create run: counter: %w", err)
 	}
 
-	// has_services is computed from the SAME def we just decoded —
-	// not re-read inside the SQL — so an ApplyProject racing this
-	// tx can't make the snapshot disagree with the stages/jobs we
-	// materialise below. Without this care, READ COMMITTED would
-	// let two SELECTs against pipelines.definition return different
-	// values within the same store call.
+	// has_services / service_names are both computed from the SAME def
+	// we just decoded — not re-read inside the SQL — so an ApplyProject
+	// racing this tx can't make either snapshot disagree with the
+	// stages/jobs we materialise below. Without this care, READ
+	// COMMITTED would let two SELECTs against pipelines.definition
+	// return different values within the same store call.
 	runRow, err := q.InsertRun(ctx, db.InsertRunParams{
-		PipelineID:  pipelineRow.ID,
-		Counter:     counter,
-		Cause:       in.Cause,
-		CauseDetail: in.CauseDetail,
-		Revisions:   in.Revisions,
-		TriggeredBy: nullableString(in.TriggeredBy),
-		HasServices: len(def.Services) > 0,
+		PipelineID:   pipelineRow.ID,
+		Counter:      counter,
+		Cause:        in.Cause,
+		CauseDetail:  in.CauseDetail,
+		Revisions:    in.Revisions,
+		TriggeredBy:  nullableString(in.TriggeredBy),
+		HasServices:  len(def.Services) > 0,
+		ServiceNames: serviceNames(def),
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)

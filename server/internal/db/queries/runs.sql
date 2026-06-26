@@ -27,11 +27,17 @@ WHERE pipeline_id = $1;
 -- stages + jobs — without this, a concurrent ApplyProject between
 -- the Go decode and a re-read inside SQL could give us mismatched
 -- snapshots under READ COMMITTED.
+--
+-- service_names (migration 00055) is the same snapshot at name
+-- granularity — computed from the SAME def for the same drift-safety
+-- reason — so the pipelines list can show WHICH services a run
+-- declared, not just whether it declared any. Appended last so the
+-- existing positional params keep their order.
 INSERT INTO runs (
     pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
-    has_services
+    has_services, service_names
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6, $7
+    $1, $2, $3, $4, 'queued', $5, $6, $7, $8
 )
 RETURNING id, pipeline_id, counter, cause, status, created_at;
 
