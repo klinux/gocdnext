@@ -68,7 +68,12 @@ export function ServicesCluster({
     <div className="flex items-start gap-0">
       <Tooltip>
         <TooltipTrigger
-          render={<div className="flex cursor-help flex-col items-center gap-1" />}
+          render={
+            <div
+              className="flex cursor-help flex-col items-center gap-1"
+              aria-label={`Services: ${names.join(", ")}`}
+            />
+          }
         >
           <div
             className="flex items-center gap-[3px] rounded-[9px] border px-[7px] py-1"

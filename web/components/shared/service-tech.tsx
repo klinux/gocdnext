@@ -70,7 +70,16 @@ export const TECH: Record<TechKey, { bg: string; fg: string; icon: ReactNode }> 
 // fetch; unknown → generic. Matches common aliases (postgresql, mongodb).
 export function detectTech(nameOrImage: string): TechKey {
   const n = nameOrImage.toLowerCase();
-  if (n.includes("postgres") || n.includes("pg")) return "pg";
+  // Explicit aliases — a bare "pg" substring would mis-tint unrelated
+  // names, so only match real Postgres tokens.
+  if (
+    n.includes("postgres") ||
+    n.includes("pgbouncer") ||
+    n.includes("pg-") ||
+    n.includes("pg_") ||
+    n === "pg"
+  )
+    return "pg";
   if (n.includes("redis")) return "redis";
   if (n.includes("mongo")) return "mongo";
   if (n.includes("kafka")) return "kafka";
@@ -92,6 +101,7 @@ export function ServiceGlyph({
     <span
       className={cn("flex items-center justify-center rounded-md", className)}
       style={{ background: t.bg, color: t.fg }}
+      aria-hidden
     >
       {t.icon}
     </span>
