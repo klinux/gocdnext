@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.58.0 — 2026-06-26
+
+### Added
+
+- **Services shown across the list and run detail.** A pipeline that declares
+  a `services:` block now surfaces its environment containers (DB/cache/broker)
+  as a violet cluster of per-tech tiles (postgres/redis/mongo/kafka + a generic
+  fallback, brand-tinted) with a readiness dot in the Pipelines list, and as
+  the run's Services band — per-tech tinted cards with image:tag, a live
+  readiness badge (ready/booting/failed) and the pod. Services read as
+  environment containers distinct from the teal jobs/stages; the list stays
+  fetch-free (tech from the service name, readiness approximated from the run),
+  the detail reuses the `/services` query. (#94)
+
 ## v0.57.1 — 2026-06-25
 
 ### Fixed
