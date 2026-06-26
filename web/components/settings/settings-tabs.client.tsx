@@ -72,7 +72,7 @@ export function SettingsTabs() {
               value={tab.matchPrefix}
               nativeButton={false}
               render={<Link href={tab.href} />}
-              className="data-active:bg-accent data-active:text-accent-foreground dark:data-active:bg-accent"
+              className="data-active:border-primary/30 data-active:bg-primary/10 data-active:text-primary dark:data-active:bg-primary/10"
             >
               <Icon className="size-4" aria-hidden />
               {tab.label}
