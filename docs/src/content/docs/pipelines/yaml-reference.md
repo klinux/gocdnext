@@ -1054,3 +1054,43 @@ jobs:
 Hard kill if the job hasn't reached terminal status within the
 window. Default is no timeout. Use this to protect against wedged
 tests or infinite loops.
+
+## Editor IntelliSense (autocomplete + hover docs)
+
+A JSON Schema for this exact spec ships in the repo under
+`schema/latest/`. It is **generated from the parser structs**
+(`server/pkg/parser`) by `make schema`, so it never drifts from what
+the server accepts — and the struct doc comments become the hover
+documentation you see in the editor. CI fails if the committed schema
+is stale (`make schema-check`).
+
+Point your editor at it for autocomplete, hover docs, and inline
+validation of `.gocdnext/*.yaml` — two ways:
+
+**1. Per-file header** (VS Code, JetBrains, Neovim — any editor with a
+[YAML Language Server](https://github.com/redhat-developer/yaml-language-server)).
+First line of a pipeline file:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/klinux/gocdnext/main/schema/latest/gocdnext-pipeline.schema.json
+name: build
+stages: [test]
+```
+
+Pin a release tag instead of `main` to match your installed server
+(e.g. `…/v0.58.0/…`) and avoid false errors when the spec evolves.
+
+**2. Workspace mapping** (VS Code, offline-friendly). Install the
+`redhat.vscode-yaml` extension and add to `.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "./schema/latest/gocdnext-pipeline.schema.json": [".gocdnext/*.yaml"]
+  }
+}
+```
+
+Either way you get key autocomplete, hover docs sourced from the spec's
+own comments, and inline validation — no gocdnext-specific editor plugin
+to install.
