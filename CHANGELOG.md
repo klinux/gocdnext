@@ -8,6 +8,15 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.58.2 — 2026-06-26
+
+### Fixed
+
+- **Services connector edge aligned with the stage track.** The cluster's
+  dashed connector used a different geometry from the stage-to-stage
+  connectors, so it sat a few px high and thinner; it now matches them and
+  the cluster column lines its bracket up with the job circles. (#96)
+
 ## v0.58.1 — 2026-06-26
 
 ### Fixed
