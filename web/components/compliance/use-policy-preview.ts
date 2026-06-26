@@ -76,7 +76,18 @@ export function usePolicyPreview(
     draft.frameworkIds,
   ]);
 
-  const baseStages = views?.[0]?.raw.stages ?? [];
+  // Derive the surfaced state from "is there anything to preview" rather than
+  // clearing in the effect — so a now-empty config/project never shows stale
+  // views/error in the preview, footer summary, or placement rail.
+  const active = !!slug && hasConfig;
+  const baseStages = active ? (views?.[0]?.raw.stages ?? []) : [];
 
-  return { slug, setSlug, views, loading, error, baseStages };
+  return {
+    slug,
+    setSlug,
+    views: active ? views : null,
+    loading: active && loading,
+    error: active ? error : null,
+    baseStages,
+  };
 }

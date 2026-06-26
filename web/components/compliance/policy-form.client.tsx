@@ -204,7 +204,7 @@ export function PolicyForm({
       {/* 5 — Definition */}
       <section className={sectionCls}>
         <SectionLabel n={5}>Definition</SectionLabel>
-        <FieldLabel optional>Policy config</FieldLabel>
+        <FieldLabel>Policy config</FieldLabel>
         <PolicyYamlEditor
           id="pol-yaml"
           value={draft.configYaml}

@@ -133,11 +133,11 @@ function aggregate(views: EffectivePipelinePreview[] | null): Stats {
   return out;
 }
 
-function placementWord(stages: string[], before: string, after: string): string {
+function placementWord(_stages: string[], before: string, after: string): string {
   if (before) return `before ${before}`;
   if (after) return `after ${after}`;
-  if (stages.length) return `after ${stages[stages.length - 1]}`;
-  return "into the pipeline";
+  // No anchor → the backend prepends (insertStages default idx 0).
+  return "at the start";
 }
 
 function Stat({

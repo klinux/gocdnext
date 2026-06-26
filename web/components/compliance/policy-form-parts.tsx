@@ -244,11 +244,13 @@ export function PlacementRail({
       </div>
     );
   }
+  // No explicit anchor → gap 0, matching the backend's prepend default
+  // (insertStages uses idx 0 when before/after are empty).
   const selected = positionBefore
     ? stages.indexOf(positionBefore)
     : positionAfter
       ? stages.indexOf(positionAfter) + 1
-      : stages.length;
+      : 0;
 
   const pick = (idx: number) => {
     if (idx < stages.length) onChange(stages[idx]!, "");
