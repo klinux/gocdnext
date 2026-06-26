@@ -32,14 +32,15 @@
 # CPython 3.7–3.9.
 FROM python:3.9-slim-bookworm
 
-# Which graviteeio-cli to install. Pinned to the validated upstream
-# version for a reproducible build; override at build time if you
-# maintain a fork (e.g. for a TLS-verify or packaging fix), pinned to a
-# tag/commit — the override keeps any private fork URL out of this
-# public manifest:
-#   docker build \
-#     --build-arg GRAVITEE_CLI_SPEC="git+https://github.com/<your-org>/gravitee-cli@<tag-or-sha>"
-ARG GRAVITEE_CLI_SPEC="graviteeio-cli==0.4"
+# Which graviteeio-cli to install. Defaults to the klinux-maintained fork
+# (graviteeio-cli 0.4 + fixes): it accepts a Resource `configuration`
+# OBJECT in the gio_apim definition schema — upstream 0.4 requires a string
+# and rejects the object form that real Gravitee definitions use (e.g. an
+# oauth2 resource) — plus a pathlib fix and an optional TLS-verify skip.
+# Source + attribution: https://github.com/klinux/gravitee-cli (Apache-2.0).
+# Override at build time to pin a different gio:
+#   docker build --build-arg GRAVITEE_CLI_SPEC="graviteeio-cli==0.4"
+ARG GRAVITEE_CLI_SPEC="https://github.com/klinux/gravitee-cli/releases/download/v0.4.1/graviteeio_cli-0.4.1-py3-none-any.whl"
 # mikefarah yq v4 for the values merge (deep merge + array concat),
 # pinned + checksum-verified so the binary can't change under us.
 ARG YQ_VERSION="v4.44.3"
