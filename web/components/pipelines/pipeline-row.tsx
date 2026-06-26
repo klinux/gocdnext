@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Check,
   GitBranch,
+  Loader2,
   Minus,
   ShieldCheck,
   X,
@@ -61,6 +62,21 @@ const nodeBorder: Record<StatusTone, string> = {
   neutral: "border-muted-foreground/40",
 };
 
+// rowAccent is the status-colored left edge of the row (inset shadow),
+// restoring the old card's left-border language — failures/running
+// saturated, success a calmer emerald, idle/never-run none.
+const rowAccent: Record<StatusTone, string> = {
+  success: "shadow-[inset_3px_0_0_0_var(--color-emerald-500)]",
+  failed: "shadow-[inset_3px_0_0_0_var(--color-red-500)]",
+  canceled: "shadow-[inset_3px_0_0_0_var(--color-red-500)]",
+  running: "shadow-[inset_3px_0_0_0_var(--color-sky-500)]",
+  queued: "shadow-[inset_3px_0_0_0_var(--color-amber-500)]",
+  awaiting: "shadow-[inset_3px_0_0_0_var(--color-amber-500)]",
+  warning: "shadow-[inset_3px_0_0_0_var(--color-amber-500)]",
+  skipped: "",
+  neutral: "",
+};
+
 // PipelineRow is one pipeline as a dense horizontal row inside a flow
 // track: rail · identity · stages · metrics · action. Replaces the
 // grid card in the dependency-grouped listing. Click the name to open
@@ -80,7 +96,6 @@ export function PipelineRow({
   const [overviewOpen, setOverviewOpen] = useState(false);
 
   const tone: StatusTone = run ? statusTone(run.status) : "neutral";
-  const isFailing = tone === "failed" || tone === "canceled";
   const shortSha = meta?.revision ? meta.revision.slice(0, 7) : null;
   const subject = meta?.message ? truncate(firstLine(meta.message), 32) : null;
   const rate =
@@ -104,7 +119,7 @@ export function PipelineRow({
           // otherwise per-row metric/action content made the stage track
           // start at a different x and the job circles didn't line up.
           "grid-cols-[46px_minmax(200px,1.15fr)_minmax(280px,1.5fr)_260px_170px]",
-          isFailing && "shadow-[inset_3px_0_0_0_var(--color-red-500)]",
+          rowAccent[tone],
         )}
       >
         {/* Col 1 — rail node only. The connecting line + arrow lives on the
@@ -386,6 +401,7 @@ function StageBox({
         "flex size-[30px] items-center justify-center rounded-full border-[1.5px]",
         nodeBorder[tone],
         boxBg[tone],
+        tone === "running" && "animate-pulse",
       )}
     >
       <StageGlyph tone={tone} />
@@ -423,6 +439,8 @@ const boxBg: Record<StatusTone, string> = {
 function StageGlyph({ tone }: { tone: StatusTone }) {
   if (tone === "success") return <Check className="size-[15px] text-emerald-500" aria-hidden />;
   if (tone === "failed") return <X className="size-[15px] text-red-500" aria-hidden />;
+  if (tone === "running")
+    return <Loader2 className="size-[15px] animate-spin text-sky-500" aria-hidden />;
   if (tone === "queued" || tone === "awaiting")
     return <span className="font-mono text-[13px] text-muted-foreground">»</span>;
   return <Minus className="size-[15px] text-muted-foreground" aria-hidden />;
