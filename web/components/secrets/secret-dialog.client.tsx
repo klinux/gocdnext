@@ -40,6 +40,11 @@ type SharedProps = {
   // ["db"] keeps the dialog db-only when a caller doesn't pass it
   // (the common single-node case / standalone tests).
   configuredSources?: string[];
+  // In rotate mode, the secret's current source + ref so the dialog opens
+  // pre-filled — a Vault-backed secret opens as Vault with its path/key,
+  // not reset to "Stored value" (which would silently repoint it to db on
+  // submit). The value itself is never echoed back, so it stays empty.
+  current?: { source: SecretSource; path?: string; key?: string };
 };
 
 type Props =
@@ -90,21 +95,30 @@ export function SecretDialog(props: Props) {
     name = "",
     trigger,
     configuredSources = ["db"],
+    current,
   } = props;
   const gated = gateSources(configuredSources);
   // Fall back to db only if the server somehow reported nothing writable —
   // the list endpoint 503s when neither cipher nor a backend is configured,
-  // so in practice `gated` is always non-empty. The default source is the
-  // first offered one, so an external-only deployment opens on Vault, not db.
-  const sources: SecretSource[] = gated.length > 0 ? gated : ["db"];
-  const defaultSource = sources[0] ?? "db";
+  // so in practice `gated` is always non-empty.
+  const baseSources: SecretSource[] = gated.length > 0 ? gated : ["db"];
+  // Rotate must keep the secret's own source selectable even if its backend
+  // was since removed from the writable set — otherwise the Select would
+  // render an value not in its options.
+  const sources: SecretSource[] =
+    current?.source && !baseSources.includes(current.source)
+      ? [current.source, ...baseSources]
+      : baseSources;
+  // The initial source is the secret's current one (rotate) or the first
+  // offered one (create) — so an external-only deployment opens on Vault.
+  const initialSource: SecretSource = current?.source ?? sources[0] ?? "db";
 
   const [open, setOpen] = useState(false);
   const [formName, setFormName] = useState(name);
-  const [source, setSource] = useState<SecretSource>(defaultSource);
+  const [source, setSource] = useState<SecretSource>(initialSource);
   const [value, setValue] = useState("");
-  const [path, setPath] = useState("");
-  const [refKey, setRefKey] = useState("");
+  const [path, setPath] = useState(current?.path ?? "");
+  const [refKey, setRefKey] = useState(current?.key ?? "");
   const [clientError, setClientError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -112,10 +126,10 @@ export function SecretDialog(props: Props) {
 
   function resetAndClose() {
     setFormName(name);
-    setSource(defaultSource);
+    setSource(initialSource);
     setValue("");
-    setPath("");
-    setRefKey("");
+    setPath(current?.path ?? "");
+    setRefKey(current?.key ?? "");
     setClientError(null);
     setOpen(false);
   }

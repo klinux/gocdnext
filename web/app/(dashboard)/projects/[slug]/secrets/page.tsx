@@ -118,6 +118,7 @@ export default async function SecretsPage({
                           mode="rotate"
                           name={s.name}
                           configuredSources={configuredSources}
+                          current={{ source: s.source, path: s.ref?.path, key: s.ref?.key }}
                           trigger={
                             <Button variant="ghost" size="sm">
                               Rotate

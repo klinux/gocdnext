@@ -90,6 +90,25 @@ func TestVaultBackend_KVv2(t *testing.T) {
 	if _, err := b.Fetch(ctx, "myapp", ""); err == nil {
 		t.Fatal("empty key should be rejected")
 	}
+
+	// Full-path mode: an empty KVMount means the ref path is the COMPLETE
+	// Vault logical path (engine mount + the KV v2 /data/ segment included,
+	// as the Vault UI shows it). v1/v2 is detected from the response, so the
+	// same v2 secret resolves via its full path — no silent secret/data/
+	// prefix that would have produced secret/data/secret/data/myapp.
+	fp, err := external.NewVaultBackend(ctx, external.VaultConfig{
+		Addr: addr, AuthMethod: external.VaultAuthToken, Token: "root", // KVMount empty
+	})
+	if err != nil {
+		t.Fatalf("new full-path backend: %v", err)
+	}
+	if got, err := fp.Fetch(ctx, "secret/data/myapp", "PASSWORD"); err != nil || got != "s3cr3t-pw" {
+		t.Fatalf("full-path fetch = %q, %v (want s3cr3t-pw)", got, err)
+	}
+	// A bogus full path → not found (not a 500).
+	if _, err := fp.Fetch(ctx, "secret/data/nope", "PASSWORD"); !errors.Is(err, external.ErrSecretNotFound) {
+		t.Fatalf("full-path missing = %v, want ErrSecretNotFound", err)
+	}
 }
 
 func TestVaultBackend_AppRoleLogin(t *testing.T) {
