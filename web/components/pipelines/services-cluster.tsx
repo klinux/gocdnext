@@ -70,7 +70,7 @@ export function ServicesCluster({
         <TooltipTrigger
           render={
             <div
-              className="flex cursor-help flex-col items-center gap-1"
+              className="flex cursor-help flex-col items-center gap-1.5"
               aria-label={`Services: ${names.join(", ")}`}
             />
           }
@@ -106,9 +106,11 @@ export function ServicesCluster({
           and stay alive for the whole run
         </TooltipContent>
       </Tooltip>
-      {/* dashed violet connector linking the cluster to the first job */}
+      {/* dashed violet connector to the first job — same geometry as the
+          stage-to-stage connectors (mt-[14px] centres it on the 30px box
+          row) so the edge lines up across the whole track. */}
       <span
-        className="mt-[10px] ml-1 w-4 border-t border-dashed"
+        className="mx-1 mt-[14px] w-5 border-t-[1.5px] border-dashed"
         style={{ borderColor: "rgba(167,121,233,.4)" }}
         aria-hidden
       />
