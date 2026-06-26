@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2, X } from "lucide-react";
+import dynamic from "next/dynamic";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -15,8 +16,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
+
+// CodeMirror is browser-only and heavy — load it lazily so it stays off the
+// server render and the initial client chunk.
+const PolicyYamlEditor = dynamic(() => import("./policy-yaml-editor.client"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-64 animate-pulse rounded-md border border-input bg-muted/30" />
+  ),
+});
 
 export type PolicyDraft = {
   id: string | null;
@@ -262,14 +271,11 @@ export function PolicyForm({
         htmlFor="pol-yaml"
         hint="Pipeline schema. Stage & job names must start with _compliance_."
       >
-        <Textarea
+        <PolicyYamlEditor
           id="pol-yaml"
           value={draft.configYaml}
-          onChange={(e) => setDraft({ ...draft, configYaml: e.target.value })}
+          onChange={(value) => setDraft({ ...draft, configYaml: value })}
           placeholder={SAMPLE_YAML}
-          spellCheck={false}
-          rows={12}
-          className="resize-y font-mono text-xs"
         />
       </Field>
 
