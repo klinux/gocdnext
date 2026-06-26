@@ -8,6 +8,16 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.57.1 — 2026-06-25
+
+### Fixed
+
+- **Services indicator visible again in the pipelines list.** v0.57.0 moved it
+  into the identity badge row, where a narrow column plus the name/compliance/
+  branch/bottleneck badges could push it off-screen. It now sits in a
+  fixed-width lane at the start of the stage track — visible and naming the
+  declared services — while the job circles stay aligned across rows. (#93)
+
 ## v0.57.0 — 2026-06-25
 
 ### Added
