@@ -8,6 +8,42 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.57.0 — 2026-06-25
+
+### Added
+
+- **Service names in the pipelines list.** Runs now snapshot the names of the
+  services they declared (`runs.service_names`, the name-granular companion to
+  `has_services`), stamped at run-create from the same pipeline definition. The
+  row's services badge names them — one service shows its name, several show
+  "N services" with the full list on hover — without the per-card services
+  fetch. (#92)
+
+### Changed
+
+- **Job nodes are circles and stage tracks line up.** The per-job status boxes
+  in the Pipelines flow view are now circles (matching the rail + VSM nodes),
+  and the stage track starts at the same x in every row (the metric/action
+  columns are fixed-width, so the flexible columns resolve consistently). The
+  services indicator moved from the stage track into the identity badges, so it
+  no longer pushes a row's circles out of alignment. (#90)
+- **gravitee plugin defaults to the klinux gio fork.** Upstream
+  `graviteeio-cli` 0.4's schema rejects a Resource `configuration` object (the
+  form real Gravitee definitions use). The plugin now defaults to the
+  klinux-maintained fork (Apache-2.0, schema/pathlib/SSL fixes); override via
+  `GRAVITEE_CLI_SPEC`. (#91)
+
+### Fixed
+
+- **Vault secret backend: empty mount = full-path mode.** An empty KV mount no
+  longer defaults to `secret` (which double-prefixed a complete path and
+  403'd); it now uses the secret's path verbatim as the full Vault logical
+  path, detecting KV v1/v2 from the response. Set the mount for the relative
+  `<mount>/data/<path>` behaviour. (#89)
+- **Rotate pre-fills a secret's source/path/key.** Rotating a Vault-backed
+  secret opened in "Stored value" with empty fields (and could silently
+  repoint it to a db value); it now seeds the current source + path + key. (#89)
+
 ## v0.56.0 — 2026-06-25
 
 ### Added
