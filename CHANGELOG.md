@@ -8,6 +8,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.59.0 — 2026-06-26
+
+### Added
+
+- **Pipeline spec JSON Schema + editor IntelliSense.** A JSON Schema generated
+  from the parser structs (`make schema`, drift-guarded in CI) powers
+  autocomplete, hover docs (from the spec's own comments), and inline validation
+  for `.gocdnext/*.yaml` in any editor with a YAML Language Server — see the
+  "Editor IntelliSense" section of the YAML reference. (#98, #99)
+- **Schema-aware compliance policy editor.** The policy `config_yaml` field is a
+  CodeMirror 6 editor fed the generated policy-fragment schema (autocomplete,
+  hover docs, inline validation including the `_compliance_` prefix rule),
+  replacing the plain textarea. (#72, #99)
+- **Two-pane New Policy sheet with live merge preview.** The compliance policy
+  sheet is redesigned into a 5-section form (Identity / Behavior / Scope /
+  Placement / Definition) beside a live preview that shows where the policy's
+  stage lands in a **real** project's pipeline — computed server-side by the
+  actual merge engine (`ApplyPolicies`), never a JS reimplementation. Adds a
+  segmented mode control, priority stepper, framework chips, and a placement
+  rail. (#100)
+
+### Changed
+
+- **Consistent tab styling across the app.** Compliance, run detail, project
+  nav, settings nav, and the storage backend selector now share one tab
+  language — a teal-tinted active pill with section icons.
+
 ## v0.58.2 — 2026-06-26
 
 ### Fixed
