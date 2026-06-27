@@ -52,7 +52,27 @@ func (s *Store) PreviewEffectivePipelines(ctx context.Context, slug string, what
 	if whatIfFrameworks == nil {
 		return previewStored(rows)
 	}
-	return s.previewWhatIf(ctx, proj.ID, rows, *whatIfFrameworks)
+	return s.previewWhatIf(ctx, proj.ID, rows, *whatIfFrameworks, nil)
+}
+
+// PreviewWithDraft previews a project's pipelines under the policies that would
+// govern the given framework set PLUS an unsaved draft policy — the New Policy
+// sheet's live preview. The draft merges on top of the saved governance (same
+// engine, priority-ordered), so the preview is exactly what an apply would
+// produce. Nothing is persisted. Returns ErrProjectNotFound for an unknown slug.
+func (s *Store) PreviewWithDraft(ctx context.Context, slug string, frameworkIDs []string, draft compliance.Policy) ([]EffectivePipelineView, error) {
+	proj, err := s.q.GetProjectBySlug(ctx, slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, fmt.Errorf("store: preview draft: project by slug: %w", err)
+	}
+	rows, err := s.q.ListPipelinesForPreview(ctx, proj.ID)
+	if err != nil {
+		return nil, fmt.Errorf("store: preview draft: list pipelines: %w", err)
+	}
+	return s.previewWhatIf(ctx, proj.ID, rows, frameworkIDs, []compliance.Policy{draft})
 }
 
 // previewStored decodes the already-materialised raw + effective definitions.
@@ -79,7 +99,7 @@ func previewStored(rows []db.ListPipelinesForPreviewRow) ([]EffectivePipelineVie
 // definition; the server-owned synthetic pipeline is reconstructed (not read)
 // because it would only exist under the hypothetical governance — mirroring
 // reconcileGovernance so the preview matches what an assignment would produce.
-func (s *Store) previewWhatIf(ctx context.Context, projectID pgtype.UUID, rows []db.ListPipelinesForPreviewRow, frameworkIDs []string) ([]EffectivePipelineView, error) {
+func (s *Store) previewWhatIf(ctx context.Context, projectID pgtype.UUID, rows []db.ListPipelinesForPreviewRow, frameworkIDs []string, extra []compliance.Policy) ([]EffectivePipelineView, error) {
 	fwIDs, err := parseUUIDs(frameworkIDs)
 	if err != nil {
 		return nil, fmt.Errorf("store: preview what-if: %w", err)
@@ -88,6 +108,9 @@ func (s *Store) previewWhatIf(ctx context.Context, projectID pgtype.UUID, rows [
 	if err != nil {
 		return nil, err
 	}
+	// extra carries an unsaved draft policy (New Policy sheet preview); it merges
+	// on top of the saved governance, priority-ordered with it by ApplyPolicies.
+	policies = append(policies, extra...)
 	// Mirror reconcileGovernance: a governed project (any applicable policy) can
 	// only be enforced with a registered SCM source (enforcement is
 	// push-triggered). The real save refuses otherwise, so the what-if must too —

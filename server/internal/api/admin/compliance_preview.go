@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/compliance"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -85,6 +87,85 @@ func (h *Handler) EffectivePipelinePreview(w http.ResponseWriter, r *http.Reques
 	views, err := h.store.PreviewEffectivePipelines(r.Context(), slug, whatIf)
 	if err != nil {
 		h.writeComplianceErr(w, "effective pipeline preview", err)
+		return
+	}
+	out := make([]effectivePipelineDTO, 0, len(views))
+	for _, v := range views {
+		out = append(out, toEffectivePipelineDTO(v))
+	}
+	writeJSON(w, out)
+}
+
+// previewPolicyRequest is the unsaved draft the New Policy sheet previews,
+// applied against a real project (slug) the admin is previewing into.
+type previewPolicyRequest struct {
+	Slug           string   `json:"slug"`
+	FrameworkIDs   []string `json:"framework_ids"`
+	ConfigYAML     string   `json:"config_yaml"`
+	Mode           string   `json:"mode"`
+	PositionBefore string   `json:"position_before"`
+	PositionAfter  string   `json:"position_after"`
+	Priority       int      `json:"priority"`
+}
+
+// PreviewDraftPolicy handles POST /api/v1/admin/compliance/preview-policy.
+//
+// It compiles an UNSAVED draft policy and runs the real merge engine
+// (compliance.ApplyPolicies) against a REAL project's pipelines — combined with
+// the policies that govern the chosen framework set — so the New Policy sheet's
+// live preview is exactly what an apply would produce, against a real pipeline
+// (no fake sample, no JS reimplementation of the merge). Nothing is persisted.
+// Admin-only (inherited from the route group).
+func (h *Handler) PreviewDraftPolicy(w http.ResponseWriter, r *http.Request) {
+	var req previewPolicyRequest
+	// Bound the body — this runs on every (debounced) keystroke and parses
+	// arbitrary YAML; an unbounded read would be a cheap DoS.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(req.Slug) == "" {
+		http.Error(w, "slug is required", http.StatusBadRequest)
+		return
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = compliance.ModeInject
+	}
+	if mode != compliance.ModeInject && mode != compliance.ModeOverride {
+		http.Error(w, "mode must be inject or override", http.StatusBadRequest)
+		return
+	}
+	if req.PositionBefore != "" && req.PositionAfter != "" {
+		http.Error(w, "position_before and position_after are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+	for _, id := range req.FrameworkIDs {
+		if _, err := uuid.Parse(id); err != nil {
+			http.Error(w, "invalid framework id", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// CompilePolicy parses the caller's own YAML and enforces the reserved
+	// prefix; its error cites only that input, so echoing it is safe.
+	compiled, err := compliance.CompilePolicy(req.ConfigYAML)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	views, err := h.store.PreviewWithDraft(r.Context(), req.Slug, req.FrameworkIDs, compliance.Policy{
+		Name:           "(draft)",
+		Mode:           mode,
+		Priority:       req.Priority,
+		PositionBefore: req.PositionBefore,
+		PositionAfter:  req.PositionAfter,
+		Pipeline:       compiled,
+	})
+	if err != nil {
+		h.writeComplianceErr(w, "preview draft policy", err)
 		return
 	}
 	out := make([]effectivePipelineDTO, 0, len(views))

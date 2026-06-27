@@ -227,6 +227,7 @@ func mount(h *adminapi.Handler) http.Handler {
 	r.Get("/api/v1/admin/projects/{slug}/frameworks", h.ProjectFrameworks)
 	r.Put("/api/v1/admin/projects/{slug}/frameworks", h.SetProjectFrameworks)
 	r.Get("/api/v1/admin/projects/{slug}/effective-pipeline", h.EffectivePipelinePreview)
+	r.Post("/api/v1/admin/compliance/preview-policy", h.PreviewDraftPolicy)
 	return r
 }
 

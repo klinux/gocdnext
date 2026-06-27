@@ -133,3 +133,112 @@ func hasJobNamed(jobs []previewJob, name string) bool {
 	}
 	return false
 }
+
+// --- draft-policy preview (POST /compliance/preview-policy) ----------------
+
+func previewBody(t *testing.T, m map[string]any) *bytes.Buffer {
+	t.Helper()
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return bytes.NewBuffer(b)
+}
+
+type previewResp struct {
+	Raw struct {
+		Stages []string `json:"stages"`
+	} `json:"raw"`
+	Effective struct {
+		Stages []string `json:"stages"`
+		Jobs   []struct {
+			Name  string `json:"name"`
+			Stage string `json:"stage"`
+		} `json:"jobs"`
+	} `json:"effective"`
+}
+
+const previewYAML = "stages: [_compliance_scan]\n" +
+	"jobs:\n  _compliance_scan:\n    stage: _compliance_scan\n    image: scanner\n    script: [\"scan\"]\n"
+
+// The draft is previewed against a REAL project's pipelines. seedGovernedProject
+// (assign=false) gives project "payments" a `main` pipeline with stages [build]
+// + an SCM source; framework_ids:[] in the body means "no saved policies", so
+// the effective definition is the real pipeline with only the draft merged in.
+func TestPreviewDraftPolicy_Inject(t *testing.T) {
+	srv, s := newComplianceHandlerStore(t)
+	seedGovernedProject(t, s, "payments", false)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/compliance/preview-policy",
+		previewBody(t, map[string]any{
+			"slug": "payments", "framework_ids": []string{},
+			"config_yaml": previewYAML, "mode": "inject", "position_after": "build",
+		}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out []previewResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 pipeline view, got %d", len(out))
+	}
+	// Raw is the project's real pipeline; effective inserts the draft after build.
+	if got := out[0].Raw.Stages; !equalStrings(got, []string{"build"}) {
+		t.Fatalf("raw stages = %v, want [build]", got)
+	}
+	if got := out[0].Effective.Stages; !equalStrings(got, []string{"build", "_compliance_scan"}) {
+		t.Fatalf("effective stages = %v, want [build _compliance_scan]", got)
+	}
+}
+
+func TestPreviewDraftPolicy_Override(t *testing.T) {
+	srv, s := newComplianceHandlerStore(t)
+	seedGovernedProject(t, s, "payments", false)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/compliance/preview-policy",
+		previewBody(t, map[string]any{
+			"slug": "payments", "framework_ids": []string{},
+			"config_yaml": previewYAML, "mode": "override",
+		}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out []previewResp
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if len(out) != 1 || !equalStrings(out[0].Effective.Stages, []string{"_compliance_scan"}) {
+		t.Fatalf("override effective = %+v, want one pipeline with [_compliance_scan]", out)
+	}
+}
+
+func TestPreviewDraftPolicy_Rejects(t *testing.T) {
+	srv, s := newComplianceHandlerStore(t)
+	seedGovernedProject(t, s, "payments", false)
+	cases := map[string]map[string]any{
+		"missing slug":   {"config_yaml": previewYAML},
+		"invalid yaml":   {"slug": "payments", "config_yaml": "stages: [oops\n"},
+		"missing prefix": {"slug": "payments", "config_yaml": "stages: [scan]\njobs:\n  scan: {stage: scan, image: x, script: [\"y\"]}\n"},
+		"bad mode":       {"slug": "payments", "config_yaml": previewYAML, "mode": "bogus"},
+		"both positions": {"slug": "payments", "config_yaml": previewYAML, "position_before": "a", "position_after": "b"},
+		"bad framework":  {"slug": "payments", "framework_ids": []string{"not-a-uuid"}, "config_yaml": previewYAML},
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			rr := request(srv, http.MethodPost, "/api/v1/admin/compliance/preview-policy", previewBody(t, body))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want 400", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
