@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  Cloud,
   HardDrive,
   KeyRound,
   Loader2,
@@ -22,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { tabPillList, tabPillTrigger } from "@/lib/tab-pill";
 import {
   clearStorageConfig,
   saveStorageConfig,
@@ -304,10 +306,19 @@ export function StorageForm({ initial }: Props) {
             value={draft.backend}
             onValueChange={(v) => setBackend(v as Backend)}
           >
-            <TabsList>
-              <TabsTrigger value="filesystem">Filesystem</TabsTrigger>
-              <TabsTrigger value="s3">S3</TabsTrigger>
-              <TabsTrigger value="gcs">GCS</TabsTrigger>
+            <TabsList className={tabPillList}>
+              <TabsTrigger value="filesystem" className={tabPillTrigger}>
+                <HardDrive className="size-3.5 opacity-80" />
+                Filesystem
+              </TabsTrigger>
+              <TabsTrigger value="s3" className={tabPillTrigger}>
+                <Cloud className="size-3.5 opacity-80" />
+                S3
+              </TabsTrigger>
+              <TabsTrigger value="gcs" className={tabPillTrigger}>
+                <Cloud className="size-3.5 opacity-80" />
+                GCS
+              </TabsTrigger>
             </TabsList>
           </Tabs>
 

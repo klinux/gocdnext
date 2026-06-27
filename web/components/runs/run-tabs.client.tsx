@@ -3,8 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { FlaskConical, Gauge, Hammer, Package, Server } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { tabPillList, tabPillTrigger } from "@/lib/tab-pill";
 import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts, fetchArtifacts } from "@/components/runs/run-artifacts.client";
 import { RunServices, fetchServices } from "@/components/runs/run-services.client";
@@ -106,9 +108,13 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
 
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(parseTab(v))}>
-      <TabsList>
-        <TabsTrigger value="jobs">Jobs</TabsTrigger>
-        <TabsTrigger value="tests">
+      <TabsList className={tabPillList}>
+        <TabsTrigger value="jobs" className={tabPillTrigger}>
+          <Hammer className="size-3.5 opacity-80" />
+          Jobs
+        </TabsTrigger>
+        <TabsTrigger value="tests" className={tabPillTrigger}>
+          <FlaskConical className="size-3.5 opacity-80" />
           Tests
           {testCount > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
@@ -116,7 +122,8 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
             </span>
           ) : null}
         </TabsTrigger>
-        <TabsTrigger value="coverage">
+        <TabsTrigger value="coverage" className={tabPillTrigger}>
+          <Gauge className="size-3.5 opacity-80" />
           Coverage
           {covTotal > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
@@ -124,7 +131,8 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
             </span>
           ) : null}
         </TabsTrigger>
-        <TabsTrigger value="artifacts">
+        <TabsTrigger value="artifacts" className={tabPillTrigger}>
+          <Package className="size-3.5 opacity-80" />
           Artifacts
           {artifactCount > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
@@ -132,7 +140,8 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
             </span>
           ) : null}
         </TabsTrigger>
-        <TabsTrigger value="services">
+        <TabsTrigger value="services" className={tabPillTrigger}>
+          <Server className="size-3.5 opacity-80" />
           Services
           {serviceCount > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">

@@ -93,8 +93,8 @@ type Props = { slug: string };
 // ProjectTabs is the top-level nav inside a project — a row of Next
 // Links (real navigation, so `nav` + aria-current, not a tablist). The
 // active section is decided by pathname matching. Styled as a segmented
-// row: transparent track, the active tab gets a filled background — the
-// same language as the pipelines toolbar pills.
+// row: transparent track, the active tab takes the brand teal tint —
+// the shared pill language (see lib/tab-pill for the shadcn Tabs variants).
 export function ProjectTabs({ slug }: Props) {
   const pathname = usePathname();
 
@@ -109,9 +109,9 @@ export function ProjectTabs({ slug }: Props) {
             href={tab.href(slug)}
             aria-current={isActive ? "page" : undefined}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              "inline-flex items-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm font-medium transition-colors",
               isActive
-                ? "bg-accent text-foreground"
+                ? "border-primary/30 bg-primary/10 text-primary"
                 : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
             )}
           >

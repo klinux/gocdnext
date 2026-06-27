@@ -806,6 +806,7 @@ func main() {
 		p.Get("/api/v1/admin/compliance/policies/{id}", adminHandler.CompliancePolicy)
 		p.Put("/api/v1/admin/compliance/policies/{id}", adminHandler.UpdateCompliancePolicy)
 		p.Delete("/api/v1/admin/compliance/policies/{id}", adminHandler.DeleteCompliancePolicy)
+		p.Post("/api/v1/admin/compliance/preview-policy", adminHandler.PreviewDraftPolicy)
 		p.Get("/api/v1/admin/projects/{slug}/frameworks", adminHandler.ProjectFrameworks)
 		p.Put("/api/v1/admin/projects/{slug}/frameworks", adminHandler.SetProjectFrameworks)
 		p.Get("/api/v1/admin/projects/{slug}/effective-pipeline", adminHandler.EffectivePipelinePreview)

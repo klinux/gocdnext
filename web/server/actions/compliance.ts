@@ -203,6 +203,42 @@ export async function setProjectFrameworks(
   }
 }
 
+// ---- new-policy draft preview --------------------------------------------
+
+const previewDraftSchema = z.object({
+  slug: z.string().min(1),
+  framework_ids: z.array(z.string()).default([]),
+  config_yaml: z.string(),
+  mode: z.enum(["inject", "override"]).optional(),
+  position_before: z.string().optional(),
+  position_after: z.string().optional(),
+  priority: z.number().int().optional(),
+});
+
+// previewDraftPolicy runs the server merge engine for an UNSAVED draft against a
+// real project's pipelines (combined with the policies that govern the chosen
+// framework set), powering the New Policy sheet's live preview. Nothing is
+// persisted — the control plane recomputes on the fly.
+export async function previewDraftPolicy(
+  input: z.infer<typeof previewDraftSchema>,
+): Promise<CreatedResult<EffectivePipelinePreview[]>> {
+  const parsed = previewDraftSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  try {
+    const res = await apiFetch("/api/v1/admin/compliance/preview-policy", {
+      method: "POST",
+      body: JSON.stringify(parsed.data),
+    });
+    if (!res.ok) return errorResult(res, await res.text());
+    const data = (await res.json()) as EffectivePipelinePreview[];
+    return { ok: true, data };
+  } catch (err) {
+    return fail(err);
+  }
+}
+
 // ---- effective-pipeline what-if preview ----------------------------------
 
 const previewSchema = z.object({

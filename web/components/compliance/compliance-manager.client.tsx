@@ -1,19 +1,24 @@
 "use client";
 
 import { useState } from "react";
+import { Library, ShieldCheck } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { tabPillList, tabPillTrigger } from "@/lib/tab-pill";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
 
 import { FrameworksManager } from "./frameworks-manager.client";
 import { PoliciesManager } from "./policies-manager.client";
+import type { PreviewProject } from "./use-policy-preview";
 
 export function ComplianceManager({
   frameworks: initialFrameworks,
   policies: initialPolicies,
+  projects,
 }: {
   frameworks: ComplianceFramework[];
   policies: CompliancePolicy[];
+  projects: PreviewProject[];
 }) {
   // Frameworks state is lifted so a framework created in the Frameworks tab is
   // immediately selectable as a policy target in the Policies tab (and the tab
@@ -23,9 +28,15 @@ export function ComplianceManager({
 
   return (
     <Tabs defaultValue="policies" className="space-y-4">
-      <TabsList>
-        <TabsTrigger value="policies">Policies ({policies.length})</TabsTrigger>
-        <TabsTrigger value="frameworks">
+      {/* Match the project nav's pill language: transparent track, content-width
+          tabs, bg-accent active — see components/projects/project-tabs.client. */}
+      <TabsList className={tabPillList}>
+        <TabsTrigger value="policies" className={tabPillTrigger}>
+          <ShieldCheck className="size-3.5 opacity-80" />
+          Policies ({policies.length})
+        </TabsTrigger>
+        <TabsTrigger value="frameworks" className={tabPillTrigger}>
+          <Library className="size-3.5 opacity-80" />
           Frameworks ({frameworks.length})
         </TabsTrigger>
       </TabsList>
@@ -34,6 +45,7 @@ export function ComplianceManager({
           policies={policies}
           setPolicies={setPolicies}
           frameworks={frameworks}
+          projects={projects}
         />
       </TabsContent>
       <TabsContent value="frameworks">
