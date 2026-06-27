@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.60.0 — 2026-06-27
+
+### Added
+
+- **Run-duration trend charts.** A duration trend (bars + median line, latest
+  run accented) so a slowdown reads at a glance — per pipeline in the overview
+  sheet, and project-wide above the pipeline list (every pipeline's runs
+  together, ordered by finish time). Client-side from data already loaded. (#102)
+- **"Start from template" for compliance policies.** A library of ready-to-tweak
+  templates (SAST/semgrep, dependency scan/osv-scanner, secrets/gitleaks,
+  signing/cosign, sign-off/approval) pre-fills the schema-aware editor; templates
+  always start as `inject`, never inheriting a toggled override. (#72)
+
+### Changed
+
+- **Cause-aware trigger badge on pipeline rows + overview sheet.** The PR / tag /
+  manual / schedule / upstream icon now shows on the pipelines list and the
+  overview sheet (driven by `run.cause`, so manual/no-git runs show it too), not
+  just the branch. (#49)
+
 ## v0.59.0 — 2026-06-26
 
 ### Added
