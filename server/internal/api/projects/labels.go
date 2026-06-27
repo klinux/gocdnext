@@ -50,7 +50,8 @@ func (h *Handler) ListLabels(w http.ResponseWriter, r *http.Request) {
 	for _, l := range detail.Project.Labels {
 		out = append(out, labelDTO{Key: l.Key, Value: l.Value})
 	}
-	writeJSON(w, labelsBody{Labels: out})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(labelsBody{Labels: out})
 }
 
 // SetLabels handles PUT /api/v1/projects/{slug}/labels — replaces the full set.
