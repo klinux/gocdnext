@@ -28,22 +28,30 @@ const barTone: Record<StatusTone, string> = {
 };
 
 // runDurationPoints turns runs into oldest→newest duration points (finished
-// runs only — an in-flight run has no duration yet), capped at `limit`.
-export function runDurationPoints(runs: RunSummary[], limit = 30): DurationPoint[] {
+// runs only — an in-flight run has no duration yet), capped at the most recent
+// `limit`. Ordered by FINISH TIME, not counter: counter is unique per pipeline
+// (UNIQUE(pipeline_id, counter)), so the project-wide chart mixing pipelines
+// can't sort by it. Pass withPipeline for that aggregate so labels like
+// "build #42" stay unambiguous across pipelines.
+export function runDurationPoints(
+  runs: RunSummary[],
+  limit = 30,
+  opts?: { withPipeline?: boolean },
+): DurationPoint[] {
   return runs
     .filter((r) => r.started_at && r.finished_at)
     .map((r) => ({
-      counter: r.counter,
-      label: `#${r.counter}`,
+      finishedAt: new Date(r.finished_at!).getTime(),
+      label: opts?.withPipeline ? `${r.pipeline_name} #${r.counter}` : `#${r.counter}`,
       durationSeconds: Math.max(
         0,
         (new Date(r.finished_at!).getTime() - new Date(r.started_at!).getTime()) / 1000,
       ),
       status: r.status,
     }))
-    .sort((a, b) => a.counter - b.counter)
+    .sort((a, b) => a.finishedAt - b.finishedAt)
     .slice(-limit)
-    .map(({ counter: _counter, ...p }) => p);
+    .map(({ finishedAt: _finishedAt, ...p }) => p);
 }
 
 // DurationTrend renders recent run durations as bars (oldest→newest) with a

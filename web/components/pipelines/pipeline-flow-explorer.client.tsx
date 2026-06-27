@@ -45,7 +45,12 @@ export function PipelineFlowExplorer({
   const activeCount = useMemo(() => countActive(pipelines, runs), [pipelines, runs]);
   // Project-wide trend: every pipeline's recent run durations together — a
   // project-level slowdown shows even when no single pipeline looks off.
-  const projectPoints = useMemo(() => runDurationPoints(runs), [runs]);
+  // withPipeline so labels stay unambiguous across pipelines (ordered by time,
+  // not the per-pipeline counter).
+  const projectPoints = useMemo(
+    () => runDurationPoints(runs, 30, { withPipeline: true }),
+    [runs],
+  );
   useLiveRefresh(activeCount > 0);
 
   useEffect(() => {
