@@ -22,7 +22,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YAMLView } from "@/components/pipelines/yaml-view";
 import { CauseBadge } from "@/components/shared/cause-badge";
-import { DurationTrend, runDurationPoints } from "@/components/shared/duration-trend";
+import { durationSummary, runDurationPoints } from "@/components/shared/duration-trend";
+import { DurationSparkline } from "@/components/shared/duration-sparkline";
 import { EntityChip } from "@/components/shared/entity-chip";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -187,6 +188,7 @@ function OverviewPanel({
   const metrics = pipeline.metrics;
   const run = pipeline.latest_run;
   const points = useMemo(() => runDurationPoints(runs), [runs]);
+  const trend = useMemo(() => durationSummary(points), [points]);
   return (
     <div className="space-y-5">
       <section className="grid grid-cols-3 gap-2">
@@ -223,7 +225,18 @@ function OverviewPanel({
       </section>
 
       <Section title="Duration trend">
-        <DurationTrend points={points} />
+        {trend ? (
+          <div className="space-y-2">
+            <DurationSparkline values={trend.values} fill height={48} />
+            <div className="flex justify-between font-mono text-[10.5px] text-muted-foreground">
+              <span>fastest {formatDurationSeconds(trend.min)}</span>
+              <span className="text-foreground">median {formatDurationSeconds(trend.median)}</span>
+              <span>slowest {formatDurationSeconds(trend.max)}</span>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">Not enough finished runs yet.</p>
+        )}
       </Section>
 
       <Section title="Details">

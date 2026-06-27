@@ -6,6 +6,8 @@ import { List, Network, RefreshCw, Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { DurationTrendPill } from "@/components/shared/duration-trend-pill.client";
+import { runDurationPoints } from "@/components/shared/duration-trend";
 import { PipelineFlow } from "@/components/pipelines/pipeline-flow";
 import type {
   PipelineEdge,
@@ -42,6 +44,13 @@ export function PipelineFlowExplorer({
   const [query, setQuery] = useState("");
   const [view, setView] = useState<FlowView>("flow");
   const activeCount = useMemo(() => countActive(pipelines, runs), [pipelines, runs]);
+  // Project-wide trend for the toolbar pill: every pipeline's recent run
+  // durations together, ordered by finish time (counter is per-pipeline, so
+  // it can't sort the mixed series). withPipeline keeps labels unambiguous.
+  const pillPoints = useMemo(
+    () => runDurationPoints(runs, 30, { withPipeline: true }),
+    [runs],
+  );
   useLiveRefresh(activeCount > 0);
 
   useEffect(() => {
@@ -122,19 +131,26 @@ export function PipelineFlowExplorer({
 
         <FlowToggle view={view} onChange={setViewAndPersist} />
 
-        <div className="relative ml-auto w-full sm:w-64">
-          <Search
-            aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+        <div className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          <DurationTrendPill
+            points={pillPoints}
+            note="across all pipelines"
+            className="hidden sm:block"
           />
-          <Input
-            type="search"
-            placeholder="Search pipelines"
-            value={query}
-            onValueChange={(v) => setQuery(v)}
-            aria-label="Search pipelines by name"
-            className="h-9 pl-8 text-xs"
-          />
+          <div className="relative w-full sm:w-64">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              type="search"
+              placeholder="Search pipelines"
+              value={query}
+              onValueChange={(v) => setQuery(v)}
+              aria-label="Search pipelines by name"
+              className="h-9 pl-8 text-xs"
+            />
+          </div>
         </div>
       </div>
 
