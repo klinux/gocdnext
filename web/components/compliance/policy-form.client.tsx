@@ -5,6 +5,7 @@ import { Check } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import type { ComplianceFramework, CompliancePolicy } from "@/server/queries/admin";
+import { applyTemplate, POLICY_TEMPLATES } from "./policy-templates";
 import {
   FieldLabel,
   FrameworkChips,
@@ -204,6 +205,27 @@ export function PolicyForm({
       {/* 5 — Definition */}
       <section className={sectionCls}>
         <SectionLabel n={5}>Definition</SectionLabel>
+        {/* New policies can start from a ready-made template — inline chips
+            (not a dropdown menu, which crashed nested inside the sheet's
+            dialog). Editing leaves the config untouched. */}
+        {draft.id ? null : (
+          <div className="mb-3">
+            <FieldLabel>Start from a template</FieldLabel>
+            <div className="flex flex-wrap gap-1.5">
+              {POLICY_TEMPLATES.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  title={t.description}
+                  onClick={() => setDraft(applyTemplate(draft, t))}
+                  className="rounded-lg border border-border bg-background px-2.5 py-1 text-[11.5px] font-medium text-muted-foreground transition-colors hover:border-primary/35 hover:bg-primary/10 hover:text-primary"
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <FieldLabel>Policy config</FieldLabel>
         <PolicyYamlEditor
           id="pol-yaml"

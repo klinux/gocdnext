@@ -6,7 +6,6 @@ import { List, Network, RefreshCw, Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { DurationTrend, runDurationPoints } from "@/components/shared/duration-trend";
 import { PipelineFlow } from "@/components/pipelines/pipeline-flow";
 import type {
   PipelineEdge,
@@ -43,14 +42,6 @@ export function PipelineFlowExplorer({
   const [query, setQuery] = useState("");
   const [view, setView] = useState<FlowView>("flow");
   const activeCount = useMemo(() => countActive(pipelines, runs), [pipelines, runs]);
-  // Project-wide trend: every pipeline's recent run durations together — a
-  // project-level slowdown shows even when no single pipeline looks off.
-  // withPipeline so labels stay unambiguous across pipelines (ordered by time,
-  // not the per-pipeline counter).
-  const projectPoints = useMemo(
-    () => runDurationPoints(runs, 30, { withPipeline: true }),
-    [runs],
-  );
   useLiveRefresh(activeCount > 0);
 
   useEffect(() => {
@@ -170,18 +161,6 @@ export function PipelineFlowExplorer({
           </span>
         ) : null}
       </div>
-
-      {projectPoints.length >= 2 ? (
-        <div className="rounded-lg border border-border bg-card p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="font-mono text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Run duration trend
-            </span>
-            <span className="text-[10px] text-muted-foreground">across all pipelines</span>
-          </div>
-          <DurationTrend points={projectPoints} height={48} />
-        </div>
-      ) : null}
 
       {filtered.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
