@@ -238,6 +238,7 @@ type Querier interface {
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
 	DeleteProjectFrameworks(ctx context.Context, projectID pgtype.UUID) error
+	DeleteProjectLabels(ctx context.Context, projectID pgtype.UUID) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.
@@ -607,6 +608,9 @@ type Querier interface {
 	InsertPolicyFramework(ctx context.Context, arg InsertPolicyFrameworkParams) error
 	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
 	InsertProjectFramework(ctx context.Context, arg InsertProjectFrameworkParams) error
+	// Idempotent add of one key:value label. ON CONFLICT keeps the set/replace
+	// flow simple (delete-all + re-insert in a tx).
+	InsertProjectLabel(ctx context.Context, arg InsertProjectLabelParams) error
 	// has_services is a snapshot of `pipeline.Services` non-emptiness
 	// (migration 00036). Stamped here so the run-terminal cleanup
 	// cascade can decide whether to broadcast CleanupRunServices
@@ -697,6 +701,9 @@ type Querier interface {
 	// second roundtrip.
 	ListAgentsWithRunning(ctx context.Context) ([]ListAgentsWithRunningRow, error)
 	ListAllProjectIDs(ctx context.Context) ([]pgtype.UUID, error)
+	// Every project's labels in one read — the list page maps these by project_id
+	// (no N+1), and the analytics rollup groups by (key, value).
+	ListAllProjectLabels(ctx context.Context) ([]ProjectLabel, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.
@@ -932,6 +939,7 @@ type Querier interface {
 	ListProjectCronsByProject(ctx context.Context, projectID pgtype.UUID) ([]ProjectCron, error)
 	// Recompute fan-out: every project carrying any of the given frameworks.
 	ListProjectIDsByFrameworks(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
+	ListProjectLabels(ctx context.Context, projectID pgtype.UUID) ([]ListProjectLabelsRow, error)
 	// Projects whose total live artefact bytes (pending + ready, non-
 	// deleted, non-pinned) exceed the configured soft cap. Returned once
 	// per tick so the sweeper can ExpireOldestInProjectByExcess against

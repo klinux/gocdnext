@@ -361,6 +361,12 @@ type ProjectFramework struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type ProjectLabel struct {
+	ProjectID pgtype.UUID
+	Key       string
+	Value     string
+}
+
 type Run struct {
 	ID          pgtype.UUID
 	PipelineID  pgtype.UUID
