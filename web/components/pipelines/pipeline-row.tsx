@@ -199,13 +199,17 @@ export function PipelineRow({
                 <TooltipContent>Ref: {meta.branch}</TooltipContent>
               </Tooltip>
             ) : null}
-            {/* Cause glyph for triggers the ref pill doesn't already convey —
-                push reads as the branch pill, pull_request as the PR pill, so
-                only tag/manual/schedule/upstream/poll need their own icon. */}
-            {meta?.cause &&
-            !["push", "webhook", "pull_request"].includes(meta.cause) ? (
+            {/* Cause glyph for triggers the ref pill doesn't already convey.
+                Driven by run.cause (always present) — NOT meta.cause, which is
+                absent for manual/no-git runs (revisions:{}), so a manual-only
+                pipeline would otherwise show no cause. Suppress push/webhook
+                (the branch pill implies it) and pull_request only when the PR
+                pill is actually rendered. */}
+            {run?.cause &&
+            !["push", "webhook"].includes(run.cause) &&
+            !(run.cause === "pull_request" && prNumber) ? (
               <CauseBadge
-                cause={meta.cause}
+                cause={run.cause}
                 className="shrink-0 gap-1 px-1.5 py-0.5 text-[9.5px]"
               />
             ) : null}
