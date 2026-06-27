@@ -8,6 +8,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.61.0 — 2026-06-27
+
+### Added
+
+- **Duration trend as a toolbar sparkline pill.** The pipelines toolbar carries
+  a compact `DURATION` pill — sparkline + median + a window-over-window delta
+  badge (↑ red slower / ↓ green faster) — that expands a per-run histogram
+  popover on click (zero vertical footprint until opened; closes on Escape /
+  outside click). The per-pipeline overview sheet swaps its bar chart for the
+  same sparkline + fastest/median/slowest stats. The sparkline runs teal →
+  amber → red from the point a series regresses past median × 1.15. (#109)
+
 ## v0.60.1 — 2026-06-27
 
 ### Fixed
