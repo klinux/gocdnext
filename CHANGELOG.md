@@ -8,6 +8,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.60.1 — 2026-06-27
+
+### Fixed
+
+- **Compliance policy sheet crashed on "Start from template".** The template
+  picker was a dropdown menu opened nested inside the sheet's dialog, which
+  threw at runtime — the whole compliance page rendered "This page couldn't
+  load". Replaced with inline template chips in the Definition section (no
+  portal/menu inside the dialog); template behaviour is unchanged. (#108)
+
+### Changed
+
+- **Removed the full-width project-wide run-duration card** from the pipelines
+  page — it spent too much vertical space for one number. The per-pipeline
+  trend in the overview sheet stays; a compact toolbar sparkline replaces the
+  project-wide view in a follow-up. (#108)
+
 ## v0.60.0 — 2026-06-27
 
 ### Added
