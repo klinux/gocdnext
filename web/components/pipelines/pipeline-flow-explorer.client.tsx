@@ -131,7 +131,7 @@ export function PipelineFlowExplorer({
 
         <FlowToggle view={view} onChange={setViewAndPersist} />
 
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        <div className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <DurationTrendPill
             points={pillPoints}
             note="across all pipelines"

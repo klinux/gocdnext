@@ -47,9 +47,12 @@ export function DurationSparkline({
   const my = y(median);
 
   // Gradient flips from teal at the index the series first crosses 1.15× median
-  // (the regression point); clamped to [0,1]. No crossing → all teal.
+  // (the regression point); clamped to [0,1]. No crossing → all teal (the
+  // amber/red stops are omitted entirely so antialiasing can't paint a red
+  // sliver at the tail of a healthy series).
   const regIdx = durs.findIndex((v) => v > median * 1.15);
-  const stop = regIdx < 0 ? 1 : Math.max(0, Math.min(1, regIdx / (n - 1)));
+  const regressed = regIdx >= 0;
+  const stop = regressed ? Math.max(0, Math.min(1, regIdx / (n - 1))) : 1;
   const gid = `dur-spark-${id}`;
 
   return (
@@ -66,7 +69,8 @@ export function DurationSparkline({
         y1={my.toFixed(1)}
         x2={width}
         y2={my.toFixed(1)}
-        stroke="rgba(255,255,255,.14)"
+        className="text-muted-foreground/40"
+        stroke="currentColor"
         strokeWidth="1"
         strokeDasharray="2 2"
         vectorEffect="non-scaling-stroke"
@@ -84,8 +88,12 @@ export function DurationSparkline({
         <linearGradient id={gid} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="#45c8d4" />
           <stop offset={stop.toFixed(2)} stopColor="#45c8d4" />
-          <stop offset={Math.min(1, stop + 0.08).toFixed(2)} stopColor="#d9a429" />
-          <stop offset="1" stopColor="#f85149" />
+          {regressed ? (
+            <>
+              <stop offset={Math.min(1, stop + 0.08).toFixed(2)} stopColor="#d9a429" />
+              <stop offset="1" stopColor="#f85149" />
+            </>
+          ) : null}
         </linearGradient>
       </defs>
     </svg>

@@ -18,7 +18,21 @@ describe("DurationSparkline", () => {
   it("renders a line path + median reference with enough data", () => {
     const { container } = render(<DurationSparkline values={[10, 20, 30]} />);
     expect(container.querySelector("path")).not.toBeNull();
-    expect(container.querySelector("line")).not.toBeNull();
+    // median ref uses currentColor so it tracks the theme (not hardcoded white)
+    expect(container.querySelector("line")?.getAttribute("stroke")).toBe("currentColor");
+  });
+
+  it("stays all-teal when the series never regresses (no amber/red sliver)", () => {
+    const { container } = render(<DurationSparkline values={[100, 100, 100, 100]} />);
+    const html = container.innerHTML;
+    expect(html).toContain("#45c8d4");
+    expect(html).not.toContain("#d9a429");
+    expect(html).not.toContain("#f85149");
+  });
+
+  it("adds amber/red stops once the series regresses past median", () => {
+    const { container } = render(<DurationSparkline values={[50, 50, 200, 200]} />);
+    expect(container.innerHTML).toContain("#f85149");
   });
 });
 
