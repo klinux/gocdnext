@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YAMLView } from "@/components/pipelines/yaml-view";
+import { CauseBadge } from "@/components/shared/cause-badge";
 import { EntityChip } from "@/components/shared/entity-chip";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -221,11 +222,11 @@ function OverviewPanel({
         <DefList>
           {run ? (
             <Row label="triggered by">
-              <span className="truncate">
-                {run.triggered_by || run.cause}
-                {run.cause && run.triggered_by ? (
-                  <span className="text-muted-foreground"> · {run.cause}</span>
+              <span className="inline-flex min-w-0 items-center gap-2">
+                {run.triggered_by ? (
+                  <span className="truncate">{run.triggered_by}</span>
                 ) : null}
+                {run.cause ? <CauseBadge cause={run.cause} /> : null}
               </span>
             </Row>
           ) : null}

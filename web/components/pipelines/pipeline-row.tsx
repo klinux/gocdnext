@@ -20,6 +20,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { CauseBadge } from "@/components/shared/cause-badge";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
@@ -197,6 +198,20 @@ export function PipelineRow({
                 </TooltipTrigger>
                 <TooltipContent>Ref: {meta.branch}</TooltipContent>
               </Tooltip>
+            ) : null}
+            {/* Cause glyph for triggers the ref pill doesn't already convey.
+                Driven by run.cause (always present) — NOT meta.cause, which is
+                absent for manual/no-git runs (revisions:{}), so a manual-only
+                pipeline would otherwise show no cause. Suppress push/webhook
+                (the branch pill implies it) and pull_request only when the PR
+                pill is actually rendered. */}
+            {run?.cause &&
+            !["push", "webhook"].includes(run.cause) &&
+            !(run.cause === "pull_request" && prNumber) ? (
+              <CauseBadge
+                cause={run.cause}
+                className="shrink-0 gap-1 px-1.5 py-0.5 text-[9.5px]"
+              />
             ) : null}
             {/* Separate warning badge for a low change-approval rate. */}
             {rate != null && rate < 70 ? (
