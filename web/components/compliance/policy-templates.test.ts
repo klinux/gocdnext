@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { POLICY_TEMPLATES } from "./policy-templates";
+import { blankPolicy } from "./policy-form.client";
+import { applyTemplate, POLICY_TEMPLATES } from "./policy-templates";
 
 describe("POLICY_TEMPLATES", () => {
   it("ships a non-empty library with unique keys", () => {
@@ -27,5 +28,33 @@ describe("POLICY_TEMPLATES", () => {
         expect(job, `${t.key} job`).toMatch(/^_compliance_/);
       }
     }
+  });
+});
+
+describe("applyTemplate", () => {
+  it("never inherits a toggled Override — a template defaults to inject", () => {
+    // User toggled Override, THEN picks a SAST template (which sets no mode).
+    const draft = { ...blankPolicy(), mode: "override" as const };
+    const next = applyTemplate(draft, POLICY_TEMPLATES.find((t) => t.key === "sast")!);
+    expect(next.mode).toBe("inject");
+    expect(next.configYaml).toContain("_compliance_sast");
+  });
+
+  it("respects a template that explicitly opts into override", () => {
+    const draft = blankPolicy();
+    const next = applyTemplate(draft, {
+      key: "x",
+      label: "x",
+      description: "x",
+      mode: "override",
+      configYaml: "stages: [_compliance_x]\njobs:\n  _compliance_x: {stage: _compliance_x}\n",
+    });
+    expect(next.mode).toBe("override");
+  });
+
+  it("keeps an already-typed name, else suggests one", () => {
+    const tmpl = POLICY_TEMPLATES[0]!;
+    expect(applyTemplate({ ...blankPolicy(), name: "my-pol" }, tmpl).name).toBe("my-pol");
+    expect(applyTemplate(blankPolicy(), tmpl).name).toBe(`_compliance-${tmpl.key}`);
   });
 });

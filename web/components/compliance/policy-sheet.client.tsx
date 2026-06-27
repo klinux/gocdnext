@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import type { ComplianceFramework } from "@/server/queries/admin";
 import { PolicyForm, type PolicyDraft } from "./policy-form.client";
 import { PolicyPreview } from "./policy-preview.client";
-import { POLICY_TEMPLATES } from "./policy-templates";
+import { applyTemplate, POLICY_TEMPLATES } from "./policy-templates";
 import { usePolicyPreview, type PreviewProject } from "./use-policy-preview";
 
 // Thin custom scrollbar matching the handoff (default browser bars look heavy).
@@ -96,14 +96,7 @@ export function PolicySheet({
               {POLICY_TEMPLATES.map((t) => (
                 <DropdownMenuItem
                   key={t.key}
-                  onClick={() =>
-                    setDraft({
-                      ...draft,
-                      name: draft.name || `_compliance-${t.key}`,
-                      mode: t.mode ?? draft.mode,
-                      configYaml: t.configYaml,
-                    })
-                  }
+                  onClick={() => setDraft(applyTemplate(draft, t))}
                   className="flex flex-col items-start gap-0.5"
                 >
                   <span className="text-[13px] font-medium">{t.label}</span>

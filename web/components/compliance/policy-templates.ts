@@ -3,6 +3,8 @@
 // shipped security plugins (or an approval gate). Everything stays editable;
 // nothing is enforced until the admin saves. (#72 part A)
 
+import type { PolicyDraft } from "./policy-form.client";
+
 export type PolicyTemplate = {
   key: string;
   label: string;
@@ -76,3 +78,17 @@ jobs:
 `,
   },
 ];
+
+// applyTemplate pre-fills a draft from a template. mode falls back to "inject",
+// NOT the draft's current mode — a template is additive by nature (add a scan /
+// gate), so picking one must never silently inherit an Override the user toggled
+// earlier and replace the project's whole pipeline. A template that genuinely
+// overrides must say so via its own `mode`.
+export function applyTemplate(draft: PolicyDraft, t: PolicyTemplate): PolicyDraft {
+  return {
+    ...draft,
+    name: draft.name || `_compliance-${t.key}`,
+    mode: t.mode ?? "inject",
+    configYaml: t.configYaml,
+  };
+}
