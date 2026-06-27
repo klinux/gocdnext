@@ -22,6 +22,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YAMLView } from "@/components/pipelines/yaml-view";
 import { CauseBadge } from "@/components/shared/cause-badge";
+import { DurationTrend, runDurationPoints } from "@/components/shared/duration-trend";
 import { EntityChip } from "@/components/shared/entity-chip";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -134,7 +135,7 @@ export function PipelineOverviewSheet({
             value="overview"
             className="flex-1 overflow-y-auto px-5 py-4"
           >
-            <OverviewPanel pipeline={pipeline} meta={meta} />
+            <OverviewPanel pipeline={pipeline} meta={meta} runs={recentRuns} />
           </TabsContent>
 
           <TabsContent
@@ -177,12 +178,15 @@ export function PipelineOverviewSheet({
 function OverviewPanel({
   pipeline,
   meta,
+  runs,
 }: {
   pipeline: PipelineSummary;
   meta: PipelineSummary["latest_run_meta"];
+  runs: RunSummary[];
 }) {
   const metrics = pipeline.metrics;
   const run = pipeline.latest_run;
+  const points = useMemo(() => runDurationPoints(runs), [runs]);
   return (
     <div className="space-y-5">
       <section className="grid grid-cols-3 gap-2">
@@ -217,6 +221,10 @@ function OverviewPanel({
           }
         />
       </section>
+
+      <Section title="Duration trend">
+        <DurationTrend points={points} />
+      </Section>
 
       <Section title="Details">
         <DefList>
