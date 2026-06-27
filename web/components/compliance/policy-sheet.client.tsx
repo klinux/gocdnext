@@ -1,13 +1,21 @@
 "use client";
 
 import { useMemo } from "react";
-import { Check, Loader2, ShieldCheck } from "lucide-react";
+import { Check, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { ComplianceFramework } from "@/server/queries/admin";
 import { PolicyForm, type PolicyDraft } from "./policy-form.client";
 import { PolicyPreview } from "./policy-preview.client";
+import { POLICY_TEMPLATES } from "./policy-templates";
 import { usePolicyPreview, type PreviewProject } from "./use-policy-preview";
 
 // Thin custom scrollbar matching the handoff (default browser bars look heavy).
@@ -73,6 +81,38 @@ export function PolicySheet({
             ))}
           </div>
         </div>
+        {/* New policies can start from a ready-made template; editing keeps the
+            existing config untouched. */}
+        {draft.id ? null : (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button variant="outline" size="sm" className="ml-auto shrink-0" />}
+            >
+              <Sparkles className="mr-1.5 size-3.5" />
+              Start from template
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuLabel>Start from a template</DropdownMenuLabel>
+              {POLICY_TEMPLATES.map((t) => (
+                <DropdownMenuItem
+                  key={t.key}
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      name: draft.name || `_compliance-${t.key}`,
+                      mode: t.mode ?? draft.mode,
+                      configYaml: t.configYaml,
+                    })
+                  }
+                  className="flex flex-col items-start gap-0.5"
+                >
+                  <span className="text-[13px] font-medium">{t.label}</span>
+                  <span className="text-xs text-muted-foreground">{t.description}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </header>
 
       {/* two-pane body */}
