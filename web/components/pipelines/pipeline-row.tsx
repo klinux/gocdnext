@@ -20,6 +20,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { CauseBadge } from "@/components/shared/cause-badge";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { TriggerPipelineButton } from "@/components/pipelines/trigger-pipeline-button.client";
@@ -197,6 +198,16 @@ export function PipelineRow({
                 </TooltipTrigger>
                 <TooltipContent>Ref: {meta.branch}</TooltipContent>
               </Tooltip>
+            ) : null}
+            {/* Cause glyph for triggers the ref pill doesn't already convey —
+                push reads as the branch pill, pull_request as the PR pill, so
+                only tag/manual/schedule/upstream/poll need their own icon. */}
+            {meta?.cause &&
+            !["push", "webhook", "pull_request"].includes(meta.cause) ? (
+              <CauseBadge
+                cause={meta.cause}
+                className="shrink-0 gap-1 px-1.5 py-0.5 text-[9.5px]"
+              />
             ) : null}
             {/* Separate warning badge for a low change-approval rate. */}
             {rate != null && rate < 70 ? (
