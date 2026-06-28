@@ -21,6 +21,15 @@ ON CONFLICT (provider, repo, number) DO UPDATE SET
     opened_at = LEAST(vcs_pull_requests.opened_at, EXCLUDED.opened_at),
     updated_at = now();
 
+-- name: SetPullRequestFirstCommit :exec
+-- Recorded from the provider commits API when a PR opens. first_commit_at keeps
+-- the earliest (the start of the Coding stage).
+INSERT INTO vcs_pull_requests (provider, repo, number, first_commit_at, updated_at)
+VALUES (@provider, @repo, @number, @first_commit_at, now())
+ON CONFLICT (provider, repo, number) DO UPDATE SET
+    first_commit_at = LEAST(vcs_pull_requests.first_commit_at, EXCLUDED.first_commit_at),
+    updated_at      = now();
+
 -- name: MarkPullRequestApproved :exec
 -- Recorded on the first approving review. approved_at keeps the earliest.
 INSERT INTO vcs_pull_requests (provider, repo, number, approved_at, updated_at)

@@ -1333,6 +1333,9 @@ type Querier interface {
 	// UI writes here; the column has a NOT NULL default of '[]' so a
 	// fresh project never needs an initial INSERT against this field.
 	SetProjectNotifications(ctx context.Context, arg SetProjectNotificationsParams) error
+	// Recorded from the provider commits API when a PR opens. first_commit_at keeps
+	// the earliest (the start of the Coding stage).
+	SetPullRequestFirstCommit(ctx context.Context, arg SetPullRequestFirstCommitParams) error
 	// Sets runs.queue_reason on a still-queued run. Callers stamp this
 	// AFTER the busy decision so the field reflects the latest tick's
 	// reasoning. A run that flipped to a terminal status between the

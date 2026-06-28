@@ -12,7 +12,7 @@ import (
 )
 
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT id, provider, repo, number, title, author, head_ref, base_ref, head_sha, merge_sha, opened_at, approved_at, merged_at, closed_at, created_at, updated_at FROM vcs_pull_requests
+SELECT id, provider, repo, number, title, author, head_ref, base_ref, head_sha, merge_sha, opened_at, approved_at, merged_at, closed_at, created_at, updated_at, first_commit_at FROM vcs_pull_requests
 WHERE provider = $1 AND repo = $2 AND number = $3
 `
 
@@ -42,6 +42,7 @@ func (q *Queries) GetPullRequest(ctx context.Context, arg GetPullRequestParams) 
 		&i.ClosedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FirstCommitAt,
 	)
 	return i, err
 }
@@ -103,6 +104,33 @@ func (q *Queries) MarkPullRequestMerged(ctx context.Context, arg MarkPullRequest
 		arg.MergeSha,
 		arg.MergedAt,
 		arg.ClosedAt,
+	)
+	return err
+}
+
+const setPullRequestFirstCommit = `-- name: SetPullRequestFirstCommit :exec
+INSERT INTO vcs_pull_requests (provider, repo, number, first_commit_at, updated_at)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (provider, repo, number) DO UPDATE SET
+    first_commit_at = LEAST(vcs_pull_requests.first_commit_at, EXCLUDED.first_commit_at),
+    updated_at      = now()
+`
+
+type SetPullRequestFirstCommitParams struct {
+	Provider      string
+	Repo          string
+	Number        int64
+	FirstCommitAt pgtype.Timestamptz
+}
+
+// Recorded from the provider commits API when a PR opens. first_commit_at keeps
+// the earliest (the start of the Coding stage).
+func (q *Queries) SetPullRequestFirstCommit(ctx context.Context, arg SetPullRequestFirstCommitParams) error {
+	_, err := q.db.Exec(ctx, setPullRequestFirstCommit,
+		arg.Provider,
+		arg.Repo,
+		arg.Number,
+		arg.FirstCommitAt,
 	)
 	return err
 }

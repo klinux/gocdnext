@@ -57,6 +57,10 @@ func TestPullRequestLifecycle_EarliestWinsOutOfOrder(t *testing.T) {
 	_ = s.RecordPullRequestApproved(ctx, "github", "acme/web", 7, later)
 	_ = s.RecordPullRequestApproved(ctx, "github", "acme/web", 7, earlier)
 
+	// first_commit_at: later fetched first (e.g. opened), earlier on a retry.
+	_ = s.RecordPullRequestFirstCommit(ctx, "github", "acme/web", 7, later)
+	_ = s.RecordPullRequestFirstCommit(ctx, "github", "acme/web", 7, earlier)
+
 	pr, err := s.PullRequest(ctx, "github", "acme/web", 7)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -66,6 +70,9 @@ func TestPullRequestLifecycle_EarliestWinsOutOfOrder(t *testing.T) {
 	}
 	if !pr.ApprovedAt.Equal(earlier) {
 		t.Errorf("approved_at = %v, want earliest %v", pr.ApprovedAt, earlier)
+	}
+	if !pr.FirstCommitAt.Equal(earlier) {
+		t.Errorf("first_commit_at = %v, want earliest %v", pr.FirstCommitAt, earlier)
 	}
 	// Non-timestamp fields still follow the latest upsert.
 	if pr.HeadSHA != "shaEarlier" {

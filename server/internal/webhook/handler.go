@@ -55,6 +55,9 @@ type Handler struct {
 	// filtering (push payloads embed the lists; PR payloads don't).
 	// Nil = PR path filtering fails open. See pathfilter.go.
 	prFiles PRFilesFetcher
+	// prCommits fetches a PR's first-commit time (DORA Coding stage) from the
+	// provider API. Nil = the Coding stage is simply not recorded.
+	prCommits PRCommitsFetcher
 }
 
 // NewHandler builds the webhook handler. The Store must have a

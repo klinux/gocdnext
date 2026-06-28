@@ -336,7 +336,10 @@ func main() {
 		// when.paths on pull_request events: PR payloads carry no
 		// file lists, so filtering needs the provider's files API —
 		// same credential machinery as the config fetcher.
-		WithPRFilesFetcher(&configsync.PRFiles{MultiFetcher: gitHubFetcher})
+		WithPRFilesFetcher(&configsync.PRFiles{MultiFetcher: gitHubFetcher}).
+		// Same credential machinery fetches the PR's first commit time for the
+		// DORA Coding stage (#112).
+		WithPRCommitsFetcher(&configsync.PRCommits{MultiFetcher: gitHubFetcher})
 	projectsHandler := projectsapi.NewHandler(st, logger).
 		WithCipher(cipher).
 		WithSecretSources(secretSourcesFn).

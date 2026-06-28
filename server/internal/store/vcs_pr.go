@@ -13,14 +13,15 @@ import (
 // PullRequestLifecycle is the persisted lifecycle of one pull request — the
 // timestamps DORA lead-time decomposition reads (#112).
 type PullRequestLifecycle struct {
-	Provider   string
-	Repo       string
-	Number     int64
-	HeadSHA    string
-	MergeSHA   string
-	OpenedAt   time.Time
-	ApprovedAt time.Time
-	MergedAt   time.Time
+	Provider      string
+	Repo          string
+	Number        int64
+	HeadSHA       string
+	MergeSHA      string
+	FirstCommitAt time.Time
+	OpenedAt      time.Time
+	ApprovedAt    time.Time
+	MergedAt      time.Time
 }
 
 func ts(t time.Time) pgtype.Timestamptz {
@@ -45,6 +46,20 @@ func (s *Store) RecordPullRequestOpened(ctx context.Context, provider, repo stri
 		OpenedAt: ts(openedAt),
 	}); err != nil {
 		return fmt.Errorf("store: record pr opened: %w", err)
+	}
+	return nil
+}
+
+// RecordPullRequestFirstCommit records the PR's first commit time (Coding-stage
+// start), fetched from the provider commits API. Keeps the earliest.
+func (s *Store) RecordPullRequestFirstCommit(ctx context.Context, provider, repo string, number int, firstCommitAt time.Time) error {
+	if err := s.q.SetPullRequestFirstCommit(ctx, db.SetPullRequestFirstCommitParams{
+		Provider:      provider,
+		Repo:          repo,
+		Number:        int64(number),
+		FirstCommitAt: ts(firstCommitAt),
+	}); err != nil {
+		return fmt.Errorf("store: record pr first commit: %w", err)
 	}
 	return nil
 }
@@ -89,6 +104,9 @@ func (s *Store) PullRequest(ctx context.Context, provider, repo string, number i
 	pr := PullRequestLifecycle{
 		Provider: row.Provider, Repo: row.Repo, Number: row.Number,
 		HeadSHA: row.HeadSha, MergeSHA: row.MergeSha,
+	}
+	if row.FirstCommitAt.Valid {
+		pr.FirstCommitAt = row.FirstCommitAt.Time
 	}
 	if row.OpenedAt.Valid {
 		pr.OpenedAt = row.OpenedAt.Time
