@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.63.0 — 2026-06-28
+
 ### Added
 
 - **Analytics — lead-time bottleneck card.** A "Where lead time is lost" card
