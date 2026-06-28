@@ -8,6 +8,14 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Analytics — deploy-frequency chart (phase 2).** The Analytics page gains a
+  "Trend" section: deploys-to-production per day over the window as stacked bars
+  (successful teal, failed-in-prod red on top), with the window average and a
+  "N failures in M deploys" summary. Reads the daily series already returned by
+  the overview endpoint. (#111)
+
 ### Changed
 
 - **Canonical color system.** `web/app/globals.css` now follows the design
