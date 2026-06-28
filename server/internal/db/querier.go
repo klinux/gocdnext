@@ -729,6 +729,9 @@ type Querier interface {
 	// Every project's labels in one read — the list page maps these by project_id
 	// (no N+1), and the analytics rollup groups by (key, value).
 	ListAllProjectLabels(ctx context.Context) ([]ProjectLabel, error)
+	// Distinct environment names that have terminal deploys and belong to a project
+	// carrying the group-by key — the dashboard's "environment" filter options.
+	ListAnalyticsEnvironments(ctx context.Context, labelKey string) ([]string, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.

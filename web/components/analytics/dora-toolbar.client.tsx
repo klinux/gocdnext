@@ -17,21 +17,39 @@ const WINDOWS = [
   { value: "90", label: "90 days" },
 ];
 
-// DoraToolbar drives the page query: group-by label key + trailing window. Both
-// push to the URL (searchParams) so the RSC re-fetches. The "vs. previous
-// N days" caption mirrors the prior-window comparison the deltas use.
+// "All environments" sentinel — Base UI Select needs a non-empty value, so we
+// map this to "" (no filter) when building the URL. Must be a value the parser
+// can never accept as a real environment name, so a project with an env
+// literally called "all" still filters correctly.
+const ALL_ENV = "__all_environments__";
+
+// DoraToolbar drives the page query: group-by label key, trailing window, and
+// the deploy-environment filter. All push to the URL (searchParams) so the RSC
+// re-fetches. The "vs. previous N days" caption mirrors the prior-window
+// comparison the deltas use.
 export function DoraToolbar({
   keys,
   activeKey,
   windowDays,
+  environments,
+  activeEnv,
 }: {
   keys: string[];
   activeKey: string;
   windowDays: number;
+  environments: string[];
+  activeEnv: string;
 }) {
   const router = useRouter();
-  const go = (key: string, win: number) =>
-    router.push(`/analytics?key=${encodeURIComponent(key)}&window=${win}` as Route);
+  const go = (key: string, win: number, env: string) => {
+    const envQ = env ? `&env=${encodeURIComponent(env)}` : "";
+    router.push(`/analytics?key=${encodeURIComponent(key)}&window=${win}${envQ}` as Route);
+  };
+
+  const envItems: Record<string, string> = {
+    [ALL_ENV]: "All environments",
+    ...Object.fromEntries(environments.map((e) => [e, e])),
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -39,7 +57,7 @@ export function DoraToolbar({
         <Select
           items={Object.fromEntries(keys.map((k) => [k, k]))}
           value={activeKey}
-          onValueChange={(v) => v && go(v, windowDays)}
+          onValueChange={(v) => v && go(v, windowDays, activeEnv)}
         >
           <SelectTrigger aria-label="Group by" className="h-9 w-40 font-mono">
             <SelectValue />
@@ -58,7 +76,7 @@ export function DoraToolbar({
         <Select
           items={Object.fromEntries(WINDOWS.map((w) => [w.value, w.label]))}
           value={String(windowDays)}
-          onValueChange={(v) => v && go(activeKey, Number(v))}
+          onValueChange={(v) => v && go(activeKey, Number(v), activeEnv)}
         >
           <SelectTrigger aria-label="Window" className="h-9 w-32">
             <SelectValue />
@@ -72,6 +90,29 @@ export function DoraToolbar({
           </SelectContent>
         </Select>
       </Field>
+
+      {environments.length > 0 ? (
+        <Field label="Environment">
+          <Select
+            items={envItems}
+            value={activeEnv || ALL_ENV}
+            onValueChange={(v) =>
+              v && go(activeKey, windowDays, v === ALL_ENV ? "" : v)
+            }
+          >
+            <SelectTrigger aria-label="Environment" className="h-9 w-44 font-mono">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(envItems).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
 
       <span className="ml-auto text-xs text-muted-foreground">
         vs. previous {windowDays} days

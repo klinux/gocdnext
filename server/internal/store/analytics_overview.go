@@ -38,29 +38,31 @@ type DoraDay struct {
 // one shot: the org rollup (current + prior for deltas), the daily series for
 // the sparklines, and the per-team leaderboard.
 type AnalyticsOverview struct {
-	Key        string      `json:"key"`
-	WindowDays int         `json:"window_days"`
-	Current    OrgMetrics  `json:"current"`
-	Prior      OrgMetrics  `json:"prior"`
-	Daily      []DoraDay   `json:"daily"`
-	Teams      []DoraGroup `json:"teams"`
+	Key         string      `json:"key"`
+	WindowDays  int         `json:"window_days"`
+	Environment string      `json:"environment"`
+	Current     OrgMetrics  `json:"current"`
+	Prior       OrgMetrics  `json:"prior"`
+	Daily       []DoraDay   `json:"daily"`
+	Teams       []DoraGroup `json:"teams"`
 }
 
 // AnalyticsOverview assembles the org rollup for `labelKey` over the trailing
 // windowDays: the current window, the immediately preceding window of the same
 // length (for "vs. prior" deltas), the daily series, and the per-team
 // leaderboard. One read per page load.
-func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDays int) (AnalyticsOverview, error) {
+// environment filters to a single deploy environment by name; "" means all.
+func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDays int, environment string) (AnalyticsOverview, error) {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
 
-	cur, err := s.orgWindow(ctx, labelKey, windowDays, 0)
+	cur, err := s.orgWindow(ctx, labelKey, windowDays, 0, environment)
 	if err != nil {
 		return AnalyticsOverview{}, err
 	}
 	// Prior window: [2×window, window) trailing from now — same span, shifted.
-	prior, err := s.orgWindow(ctx, labelKey, 2*windowDays, windowDays)
+	prior, err := s.orgWindow(ctx, labelKey, 2*windowDays, windowDays, environment)
 	if err != nil {
 		return AnalyticsOverview{}, err
 	}
@@ -68,6 +70,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 	daysRows, err := s.q.DoraDailySeries(ctx, db.DoraDailySeriesParams{
 		LabelKey:    labelKey,
 		SinceWindow: dayInterval(windowDays),
+		Environment: environment,
 	})
 	if err != nil {
 		return AnalyticsOverview{}, fmt.Errorf("store: dora daily series: %w", err)
@@ -87,18 +90,19 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 		})
 	}
 
-	teams, err := s.DoraRollup(ctx, labelKey, windowDays)
+	teams, err := s.DoraRollup(ctx, labelKey, windowDays, environment)
 	if err != nil {
 		return AnalyticsOverview{}, err
 	}
 
 	return AnalyticsOverview{
-		Key:        labelKey,
-		WindowDays: windowDays,
-		Current:    metricsFromWindow(cur, windowDays),
-		Prior:      metricsFromWindow(prior, windowDays),
-		Daily:      daily,
-		Teams:      teams,
+		Key:         labelKey,
+		WindowDays:  windowDays,
+		Environment: environment,
+		Current:     metricsFromWindow(cur, windowDays),
+		Prior:       metricsFromWindow(prior, windowDays),
+		Daily:       daily,
+		Teams:       teams,
 	}, nil
 }
 
@@ -111,11 +115,12 @@ type orgWindowRaw struct {
 
 // orgWindow runs the org-wide counts + lead-time p50 and the MTTR p50 for the
 // trailing [sinceDays, untilDays) window. untilDays=0 means "up to now".
-func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, untilDays int) (orgWindowRaw, error) {
+func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, untilDays int, environment string) (orgWindowRaw, error) {
 	agg, err := s.q.DoraWindowAgg(ctx, db.DoraWindowAggParams{
 		LabelKey:    labelKey,
 		SinceWindow: dayInterval(sinceDays),
 		UntilWindow: dayInterval(untilDays),
+		Environment: environment,
 	})
 	if err != nil {
 		return orgWindowRaw{}, fmt.Errorf("store: dora window agg: %w", err)
@@ -124,6 +129,7 @@ func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, until
 		LabelKey:    labelKey,
 		SinceWindow: dayInterval(sinceDays),
 		UntilWindow: dayInterval(untilDays),
+		Environment: environment,
 	})
 	if err != nil {
 		return orgWindowRaw{}, fmt.Errorf("store: dora window mttr: %w", err)

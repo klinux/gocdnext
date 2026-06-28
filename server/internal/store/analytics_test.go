@@ -69,7 +69,7 @@ func TestDoraRollup_Metrics(t *testing.T) {
 	seedDeploy(t, pool, ctx, envID, pipelineID, 3, "success", false, 1, 10)
 	seedDeploy(t, pool, ctx, envID, pipelineID, 4, "success", false, 0, 10)
 
-	groups, err := s.DoraRollup(ctx, "team", 30)
+	groups, err := s.DoraRollup(ctx, "team", 30, "")
 	if err != nil {
 		t.Fatalf("dora: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestDoraRollup_Metrics(t *testing.T) {
 	}
 
 	// Window excludes old deploys: a 1-day window sees only the near-now success.
-	narrow, err := s.DoraRollup(ctx, "team", 1)
+	narrow, err := s.DoraRollup(ctx, "team", 1, "")
 	if err != nil {
 		t.Fatalf("dora narrow: %v", err)
 	}

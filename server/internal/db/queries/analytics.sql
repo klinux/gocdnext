@@ -5,6 +5,23 @@
 -- Distinct label keys across all projects — the dashboard's "group by" picker.
 SELECT DISTINCT key FROM project_labels ORDER BY key;
 
+-- name: ListAnalyticsEnvironments :many
+-- Distinct environment names that have terminal deploys and belong to a project
+-- carrying the group-by key — the dashboard's "environment" filter options.
+SELECT DISTINCT e.name
+FROM environments e
+WHERE EXISTS (
+        SELECT 1 FROM project_labels pl
+        WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+    )
+  AND EXISTS (
+        SELECT 1 FROM deployment_revisions dr
+        WHERE dr.environment_id = e.id
+          AND dr.status IN ('success', 'failed')
+          AND dr.finished_at IS NOT NULL
+    )
+ORDER BY e.name;
+
 -- name: DoraRollup :many
 -- DORA metrics per label-value group (for label key = label_key) over the
 -- trailing window. Joins each project's labels → environments →
@@ -23,6 +40,7 @@ WITH base AS (
     JOIN deployment_revisions dr ON dr.environment_id = e.id
     LEFT JOIN runs r ON r.id = dr.run_id
     WHERE pl.key = sqlc.arg(label_key)
+      AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
       AND dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
@@ -59,6 +77,7 @@ WITH base AS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
       )
+      AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
 )
 SELECT COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
        COUNT(*)::bigint AS deploys_total,
@@ -84,6 +103,7 @@ WITH failures AS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
       )
+      AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
 )
 SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
                     ORDER BY EXTRACT(EPOCH FROM (s.finished_at - f.finished_at))::double precision
@@ -132,6 +152,7 @@ agg AS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
       )
+      AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
     GROUP BY day
 )
 SELECT d.day AS day,
@@ -154,6 +175,7 @@ WITH failures AS (
     JOIN environments e ON e.project_id = pl.project_id
     JOIN deployment_revisions dr ON dr.environment_id = e.id
     WHERE pl.key = sqlc.arg(label_key)
+      AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
       AND dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - sqlc.arg(since_window)::interval

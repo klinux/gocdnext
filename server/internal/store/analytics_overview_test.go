@@ -12,6 +12,70 @@ import (
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
+func TestAnalyticsOverview_EnvironmentFilter(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "pay", Name: "pay",
+		Pipelines: []*domain.Pipeline{{
+			Name: "main", Stages: []string{"deploy"},
+			Jobs: []domain.Job{{Name: "ship", Stage: "deploy"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := s.ReplaceProjectLabels(ctx, res.ProjectID, []store.ProjectLabel{{Key: "team", Value: "payments"}}); err != nil {
+		t.Fatalf("labels: %v", err)
+	}
+	prod, err := s.EnsureEnvironment(ctx, res.ProjectID, "prod")
+	if err != nil {
+		t.Fatalf("prod env: %v", err)
+	}
+	stg, err := s.EnsureEnvironment(ctx, res.ProjectID, "staging")
+	if err != nil {
+		t.Fatalf("staging env: %v", err)
+	}
+	pipelineID := uuid.UUID(res.Pipelines[0].PipelineID)
+
+	// 2 prod successes, 1 staging success — all within a 30-day window.
+	seedDeploy(t, pool, ctx, prod, pipelineID, 1, "success", false, 1, 10)
+	seedDeploy(t, pool, ctx, prod, pipelineID, 2, "success", false, 2, 10)
+	seedDeploy(t, pool, ctx, stg, pipelineID, 3, "success", false, 1, 10)
+
+	all, err := s.AnalyticsOverview(ctx, "team", 30, "")
+	if err != nil {
+		t.Fatalf("overview all: %v", err)
+	}
+	if all.Current.DeploysSuccess != 3 {
+		t.Errorf("all envs success = %d, want 3", all.Current.DeploysSuccess)
+	}
+
+	onlyProd, err := s.AnalyticsOverview(ctx, "team", 30, "prod")
+	if err != nil {
+		t.Fatalf("overview prod: %v", err)
+	}
+	if onlyProd.Environment != "prod" || onlyProd.Current.DeploysSuccess != 2 {
+		t.Errorf("prod = env %q success %d, want prod/2", onlyProd.Environment, onlyProd.Current.DeploysSuccess)
+	}
+
+	if onlyStg, err := s.AnalyticsOverview(ctx, "team", 30, "staging"); err != nil {
+		t.Fatalf("overview staging: %v", err)
+	} else if onlyStg.Current.DeploysSuccess != 1 {
+		t.Errorf("staging success = %d, want 1", onlyStg.Current.DeploysSuccess)
+	}
+
+	envs, err := s.Environments(ctx, "team")
+	if err != nil {
+		t.Fatalf("environments: %v", err)
+	}
+	if len(envs) != 2 || envs[0] != "prod" || envs[1] != "staging" {
+		t.Fatalf("environments = %v, want [prod staging]", envs)
+	}
+}
+
 func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
@@ -44,7 +108,7 @@ func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 	seedDeploy(t, pool, ctx, envID, pipelineID, 4, "failed", false, 3, 10)
 	seedDeploy(t, pool, ctx, envID, pipelineID, 5, "success", false, 9, 10) // prior
 
-	ov, err := s.AnalyticsOverview(ctx, "team", 7)
+	ov, err := s.AnalyticsOverview(ctx, "team", 7, "")
 	if err != nil {
 		t.Fatalf("overview: %v", err)
 	}

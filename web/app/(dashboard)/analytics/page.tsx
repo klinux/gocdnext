@@ -9,7 +9,11 @@ import { DoraLeaderboard } from "@/components/analytics/dora-leaderboard.client"
 import { orgTier } from "@/components/analytics/dora-metrics";
 import { DoraToolbar } from "@/components/analytics/dora-toolbar.client";
 import { TIER_LABEL } from "@/lib/dora";
-import { getDoraOverview, listLabelKeys } from "@/server/queries/analytics";
+import {
+  getDoraOverview,
+  listEnvironments,
+  listLabelKeys,
+} from "@/server/queries/analytics";
 
 export const metadata: Metadata = {
   title: "Analytics — gocdnext",
@@ -17,7 +21,7 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-type Search = { key?: string; window?: string };
+type Search = { key?: string; window?: string; env?: string };
 
 function clampWindow(raw: string | undefined): number {
   const n = Number(raw);
@@ -64,12 +68,20 @@ export default async function AnalyticsPage({
 async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
   const windowDays = clampWindow(sp.window);
   const activeKey = sp.key && keys.includes(sp.key) ? sp.key : (keys[0] ?? "");
-  const ov = await getDoraOverview(activeKey, windowDays);
+  const environments = await listEnvironments(activeKey);
+  const activeEnv = sp.env && environments.includes(sp.env) ? sp.env : "";
+  const ov = await getDoraOverview(activeKey, windowDays, activeEnv);
   const tier = orgTier(ov);
 
   return (
     <>
-      <DoraToolbar keys={keys} activeKey={activeKey} windowDays={windowDays} />
+      <DoraToolbar
+        keys={keys}
+        activeKey={activeKey}
+        windowDays={windowDays}
+        environments={environments}
+        activeEnv={activeEnv}
+      />
 
       <div className="space-y-3.5">
         <SectionLabel>

@@ -512,6 +512,26 @@ paths:
                 type: object
                 properties:
                   keys: { type: array, items: { type: string } }
+  /api/v1/analytics/environments:
+    get:
+      tags: [analytics]
+      summary: Deploy environments available as the analytics environment filter.
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to scope the environment list.
+      responses:
+        "200":
+          description: environments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environments: { type: array, items: { type: string } }
+        "400": { description: missing/invalid key }
   /api/v1/analytics/dora:
     get:
       tags: [analytics]
@@ -525,6 +545,10 @@ paths:
         - in: query
           name: window_days
           schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+        - in: query
+          name: environment
+          schema: { type: string }
+          description: Filter to a single deploy environment by name; omit for all.
       responses:
         "200":
           description: rollup
@@ -549,6 +573,10 @@ paths:
         - in: query
           name: window_days
           schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+        - in: query
+          name: environment
+          schema: { type: string }
+          description: Filter to a single deploy environment by name; omit for all.
       responses:
         "200":
           description: overview
@@ -1566,6 +1594,7 @@ components:
       properties:
         key: { type: string }
         window_days: { type: integer }
+        environment: { type: string, description: "active environment filter; empty = all" }
         groups:
           type: array
           items: { $ref: "#/components/schemas/DoraGroup" }
@@ -1600,6 +1629,7 @@ components:
       properties:
         key: { type: string }
         window_days: { type: integer }
+        environment: { type: string, description: "active environment filter; empty = all" }
         current: { $ref: "#/components/schemas/OrgMetrics" }
         prior: { $ref: "#/components/schemas/OrgMetrics" }
         daily:

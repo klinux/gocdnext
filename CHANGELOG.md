@@ -10,6 +10,14 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Analytics — environment filter.** The Analytics toolbar gains an
+  **Environment** selector (All / per environment); the whole dashboard (org
+  rollup, deltas, daily series, leaderboard) recomputes for the chosen deploy
+  environment. Backed by an `environment` query param threaded through every
+  DORA aggregation query (empty = all) and a new
+  `GET /api/v1/analytics/environments` listing the available environments for
+  the active group-by key. (#111)
+
 - **Analytics — deploy-frequency chart (phase 2).** The Analytics page gains a
   "Trend" section: deploys per day over the window as stacked bars (successful
   teal, change failures — `status='failed'` or rollback, matching CFR — red on
