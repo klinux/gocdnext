@@ -44,6 +44,7 @@ WITH base AS (
       AND dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
 )
 SELECT grp,
        COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
@@ -179,6 +180,7 @@ WITH failures AS (
       AND dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (

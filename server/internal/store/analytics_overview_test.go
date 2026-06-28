@@ -158,4 +158,8 @@ func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 	if len(ov.Teams) != 1 || ov.Teams[0].Group != "payments" {
 		t.Fatalf("teams = %+v", ov.Teams)
 	}
+	// TeamsPrior covers the prior window [7,14): the lone daysAgo=9 success.
+	if len(ov.TeamsPrior) != 1 || ov.TeamsPrior[0].DeploysSuccess != 1 {
+		t.Fatalf("teams_prior = %+v, want payments/1 success", ov.TeamsPrior)
+	}
 }
