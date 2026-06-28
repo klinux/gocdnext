@@ -209,6 +209,7 @@
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: var(--font-sans);
+    --font-mono: var(--font-mono);
 
     /* Brand scale utilities: bg-brand-500, text-brand-700, … */
     --color-brand-50:  var(--brand-50);
