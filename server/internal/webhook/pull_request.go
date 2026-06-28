@@ -73,6 +73,10 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	// Persist lifecycle (opened / merged) before the triggerable filter, so a
 	// merged-close — which doesn't start a build — still records merged_at.
 	h.recordGitHubPR(r.Context(), ev)
+	// On open, fetch the PR's first-commit time (Coding-stage start) once.
+	if ev.Action == github.PRActionOpened {
+		h.recordFirstCommit(r.Context(), ev.Repository.CloneURL, ev.Number)
+	}
 	if !ev.IsTriggerableAction() {
 		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: PR action ignored",

@@ -3,11 +3,48 @@ package webhook
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
+
+// PRCommitsFetcher resolves a pull request's first-commit timestamp (the start
+// of the DORA Coding stage) from the provider API, given the scm_source that
+// authenticated the delivery. ok=false on any miss — the Coding stage is then
+// just unavailable for that PR.
+type PRCommitsFetcher interface {
+	PRFirstCommitAt(ctx context.Context, source store.SCMSource, number int) (time.Time, bool)
+}
+
+// WithPRCommitsFetcher opts the handler into recording PR first-commit times.
+func (h *Handler) WithPRCommitsFetcher(f PRCommitsFetcher) *Handler {
+	h.prCommits = f
+	return h
+}
+
+// recordFirstCommit fetches + persists a PR's first-commit time, best-effort,
+// on the opening event (GitHub only). Bounded so it never holds the webhook
+// response for long; a miss leaves first_commit_at unset.
+func (h *Handler) recordFirstCommit(ctx context.Context, cloneURL string, number int) {
+	if h.prCommits == nil {
+		return
+	}
+	scm, ok := h.driftLookup(ctx, cloneURL)
+	if !ok {
+		return
+	}
+	fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	at, ok := h.prCommits.PRFirstCommitAt(fctx, scm, number)
+	if !ok {
+		return
+	}
+	if err := h.store.RecordPullRequestFirstCommit(ctx, "github", domain.NormalizeGitURL(cloneURL), number, at); err != nil {
+		h.log.Warn("github webhook: record PR first commit failed", "number", number, "err", err)
+	}
+}
 
 // repoKey is the persisted repo identity: the canonical form of the SAME
 // clone_url the HMAC signature was verified against (see extractCloneURL). We

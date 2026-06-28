@@ -11,13 +11,16 @@ convention that minor bumps may carry breaking changes until 1.0).
 ### Added
 
 - **VCS pull-request lifecycle tracking (GitHub).** gocdnext now persists the
-  opened / first-approved / merged timestamps (+ merge commit SHA) of GitHub
-  pull requests from `pull_request` and `pull_request_review` webhooks, into a
-  new `vcs_pull_requests` table (idempotent upserts, events may arrive in any
-  order). This is the data foundation for decomposing DORA lead time into
-  Coding / Review stages (the Analytics "where lead time is lost" card, #112) —
-  no user-facing change yet. Enable the **Pull request reviews** event on your
-  GitHub webhook to capture approvals.
+  first-commit / opened / first-approved / merged timestamps (+ merge commit
+  SHA) of GitHub pull requests from `pull_request` and `pull_request_review`
+  webhooks, into a new `vcs_pull_requests` table (idempotent upserts keyed by
+  the authenticated repo identity; events may arrive in any order, earliest
+  timestamp wins). The first-commit time (Coding-stage start) is fetched from
+  the GitHub commits API when a PR opens, best-effort. This is the data
+  foundation for decomposing DORA lead time into Coding / Review stages (the
+  Analytics "where lead time is lost" card, #112) — no user-facing change yet.
+  Enable the **Pull request reviews** event on your GitHub webhook to capture
+  approvals.
 
 - **Analytics — highlights / movers (phase 3).** A "Highlights" section surfaces
   the window's biggest improvement, biggest regression, and a watch item
