@@ -18,8 +18,10 @@ const WINDOWS = [
 ];
 
 // "All environments" sentinel — Base UI Select needs a non-empty value, so we
-// map this to "" (no filter) when building the URL.
-const ALL_ENV = "all";
+// map this to "" (no filter) when building the URL. Must be a value the parser
+// can never accept as a real environment name, so a project with an env
+// literally called "all" still filters correctly.
+const ALL_ENV = "__all_environments__";
 
 // DoraToolbar drives the page query: group-by label key, trailing window, and
 // the deploy-environment filter. All push to the URL (searchParams) so the RSC
