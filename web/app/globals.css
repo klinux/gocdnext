@@ -10,201 +10,203 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * gocdnext design tokens.
+ * gocdnext design tokens — canonical color system.
  *
- * Three layers:
- *   1. Brand scale (--brand-50..950): the teal-cyan identity.
- *      Used anywhere we want "this is gocdnext" to feel present.
- *   2. Status scale (--status-*): semantic tokens for the CI
- *      states a run can be in. Each status carries a base color,
- *      a soft -bg, and a -fg for on-bg text. Every pipeline view
- *      + status badge points here so a palette change is a single
- *      edit.
- *   3. shadcn tokens (--primary, --ring, …): re-pointed at the
- *      brand so the off-the-shelf components inherit our look.
+ * Source of truth: design_handoff_color_system/tokens.css. A
+ * blue-tinted dark-first theme with a teal brand accent, three
+ * status colors, and DORA tier aliases; a cool-paper light theme.
  *
- * Changing any of these values here is the right blast-radius —
- * do not set raw colors (`text-emerald-500`, …) in components.
+ * Structure (so a recolor is a single edit and never a raw hex in
+ * a component):
+ *   1. Canonical anchors (--bg, --panel, --line, --ink, --teal,
+ *      --green, …) carry the literal handoff hex/rgba. Light values
+ *      live in :root (our default theme); .dark overrides ONLY these
+ *      anchors with the dark values.
+ *   2. Brand scale (--brand-50..950) + tier aliases (--tier-*) +
+ *      shadcn tokens (--primary, --border, …) + status tokens all
+ *      reference the anchors via var(), so they follow the theme
+ *      automatically — defined once here, no per-theme duplication.
+ *
+ * Anchor hexes are the handoff's exact values; any new in-between
+ * shade is derived in OKLCH keeping the same hue/chroma.
+ * (Fonts/typography are a separate concern — not changed here.)
  */
 
 :root {
-    /* Brand — teal-cyan, hue 195. Chroma peaks at 500 and fades
-       at both ends of the scale for good contrast in both modes. */
-    --brand-50:  oklch(0.97 0.02 195);
-    --brand-100: oklch(0.93 0.04 195);
-    --brand-200: oklch(0.88 0.07 195);
-    --brand-300: oklch(0.80 0.09 195);
-    --brand-400: oklch(0.72 0.12 195);
-    --brand-500: oklch(0.65 0.14 195);
-    --brand-600: oklch(0.58 0.14 195);
-    --brand-700: oklch(0.50 0.12 195);
-    --brand-800: oklch(0.40 0.09 195);
-    --brand-900: oklch(0.30 0.06 195);
-    --brand-950: oklch(0.20 0.04 195);
+    /* ===== canonical anchors · LIGHT (handoff [data-theme="light"]) ===== */
+    --bg:        #eef2f2;
+    --bg-soft:   #e6ecec;
+    --panel:     #ffffff;
+    --panel-2:   #f6f9f9;
+    --panel-3:   #eef3f3;
+    --row-hover: #f1f6f6;
+    --bg-glow:   #dceff1;
 
-    /* Status tokens. -base is the saturated color, -bg is a soft
-       tint for fills + badges, -fg is the text color optimized for
-       that tint. Success/failed/running/queued/canceled/skipped
-       cover every value of domain.RunStatus + JobStatus. */
-    --status-success-base: oklch(0.70 0.16 150);
-    --status-success-bg:   oklch(0.70 0.16 150 / 12%);
-    --status-success-fg:   oklch(0.40 0.15 150);
+    --line:      #d3dddd;
+    --line-soft: #e4ebeb;
 
-    --status-failed-base:  oklch(0.62 0.22 20);
-    --status-failed-bg:    oklch(0.62 0.22 20 / 12%);
-    --status-failed-fg:    oklch(0.42 0.20 20);
+    --ink:       #14191d;
+    --ink-muted: #515d63;
+    --ink-dim:   #849096;
+    --ink-mono:  #76828a;
 
-    --status-running-base: var(--brand-500);
-    --status-running-bg:   oklch(0.65 0.14 195 / 10%);
-    --status-running-fg:   oklch(0.40 0.12 195);
+    --teal:      #0b8c99;
+    --teal-soft: rgba(14, 165, 181, 0.10);
+    --teal-line: rgba(14, 165, 181, 0.30);
+    --teal-ink:  #ffffff;
 
-    --status-queued-base:  oklch(0.60 0.02 250);
-    --status-queued-bg:    oklch(0.60 0.02 250 / 8%);
-    --status-queued-fg:    oklch(0.35 0.02 250);
+    --green:     #1a8f3c;
+    --green-bg:  rgba(26, 143, 60, 0.12);
 
-    --status-canceled-base: oklch(0.55 0.02 250);
-    --status-canceled-bg:   oklch(0.55 0.02 250 / 6%);
-    --status-canceled-fg:   oklch(0.40 0.02 250);
+    --red:       #d23a36;
+    --red-bg:    rgba(210, 58, 54, 0.10);
+    --red-text:  #c0392f;
 
-    --status-skipped-base: oklch(0.60 0.02 250);
-    --status-skipped-bg:   oklch(0.60 0.02 250 / 5%);
-    --status-skipped-fg:   oklch(0.45 0.02 250);
+    --amber:     #b07d10;
+    --amber-bg:  rgba(176, 125, 16, 0.12);
+    --amber-text:#946a0c;
 
-    /* Warning is the "attention required, not a hard failure"
-       channel: stale agents, auth-disabled banner, watch-list
-       metrics. Amber hue keeps it distinct from failed (red). */
-    --status-warning-base: oklch(0.75 0.16 75);
-    --status-warning-bg:   oklch(0.75 0.16 75 / 14%);
-    --status-warning-fg:   oklch(0.45 0.14 75);
+    /* ===== brand mark gradient (theme-independent; the logo ramp) ===== */
+    --brand-lighter: #8fe4ea;
+    --brand-light:   #4fd1db;
+    --brand-base:    #0ea5b5;
+    --brand-mid:     #0b8a97;
+    --brand-deep:    #086370;
+    --brand-darker:  #054752;
 
-    /* Base surfaces + typography — mostly unchanged from shadcn
-       defaults so existing components don't shift. */
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
+    /* Brand scale exposed as bg-brand-500 / text-brand-700 / … The
+       accent step (500) tracks the per-theme --teal; the deep steps
+       are the fixed logo ramp; the light tints are derived in OKLCH. */
+    --brand-50:  oklch(0.97 0.02 210);
+    --brand-100: oklch(0.93 0.04 205);
+    --brand-200: oklch(0.88 0.07 200);
+    --brand-300: var(--brand-lighter);
+    --brand-400: var(--brand-light);
+    --brand-500: var(--teal);
+    --brand-600: var(--brand-base);
+    --brand-700: var(--brand-mid);
+    --brand-800: var(--brand-deep);
+    --brand-900: var(--brand-darker);
+    --brand-950: oklch(0.30 0.05 220);
 
-    /* Primary now points at brand instead of neutral near-black.
-       Every shadcn Button variant=default, Badge variant=default,
-       focus ring, etc. picks up identity automatically. */
-    --primary: var(--brand-600);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: var(--status-failed-base);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: var(--brand-500);
+    /* ===== DORA performance tiers — semantic aliases ===== */
+    --tier-elite:     var(--teal);
+    --tier-elite-bg:  var(--teal-soft);
+    --tier-high:      var(--green);
+    --tier-high-bg:   var(--green-bg);
+    --tier-medium:    var(--amber-text);
+    --tier-medium-bg: var(--amber-bg);
+    --tier-low:       var(--red-text);
+    --tier-low-bg:    var(--red-bg);
 
-    --chart-1: var(--brand-500);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: var(--status-success-base);
-    --chart-4: var(--status-failed-base);
-    --chart-5: oklch(0.269 0 0);
+    /* ===== status tokens (run/job states) → canonical anchors ===== */
+    --status-success-base: var(--green);
+    --status-success-bg:   var(--green-bg);
+    --status-success-fg:   var(--green);
+
+    --status-failed-base:  var(--red);
+    --status-failed-bg:    var(--red-bg);
+    --status-failed-fg:    var(--red-text);
+
+    --status-running-base: var(--teal);
+    --status-running-bg:   var(--teal-soft);
+    --status-running-fg:   var(--teal);
+
+    --status-warning-base: var(--amber);
+    --status-warning-bg:   var(--amber-bg);
+    --status-warning-fg:   var(--amber-text);
+
+    /* Neutral states share the tertiary-ink hue; -bg is a faint mix. */
+    --status-queued-base:   var(--ink-dim);
+    --status-queued-bg:     color-mix(in oklab, var(--ink-dim) 10%, transparent);
+    --status-queued-fg:     var(--ink-muted);
+    --status-canceled-base: var(--ink-dim);
+    --status-canceled-bg:   color-mix(in oklab, var(--ink-dim) 8%, transparent);
+    --status-canceled-fg:   var(--ink-muted);
+    --status-skipped-base:  var(--ink-dim);
+    --status-skipped-bg:    color-mix(in oklab, var(--ink-dim) 6%, transparent);
+    --status-skipped-fg:    var(--ink-muted);
+
+    /* ===== shadcn tokens → canonical anchors (components inherit) ===== */
+    --background: var(--bg);
+    --foreground: var(--ink);
+    --card: var(--panel);
+    --card-foreground: var(--ink);
+    --popover: var(--panel-2);
+    --popover-foreground: var(--ink);
+    --primary: var(--teal);
+    --primary-foreground: var(--teal-ink);
+    --secondary: var(--panel-2);
+    --secondary-foreground: var(--ink);
+    --muted: var(--panel-2);
+    --muted-foreground: var(--ink-muted);
+    --accent: var(--panel-3);
+    --accent-foreground: var(--ink);
+    --destructive: var(--red);
+    --border: var(--line);
+    --input: var(--line);
+    --ring: var(--teal);
+
+    --chart-1: var(--teal);
+    --chart-2: var(--ink-dim);
+    --chart-3: var(--green);
+    --chart-4: var(--red);
+    --chart-5: var(--amber);
 
     --radius: 0.625rem;
 
-    /* Sidebar — accent flows through brand so the active nav item
-       is unmistakably gocdnext. */
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: var(--brand-600);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: var(--brand-700);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: var(--brand-500);
+    --sidebar: var(--bg-soft);
+    --sidebar-foreground: var(--ink);
+    --sidebar-primary: var(--teal);
+    --sidebar-primary-foreground: var(--teal-ink);
+    --sidebar-accent: var(--row-hover);
+    --sidebar-accent-foreground: var(--teal);
+    --sidebar-border: var(--line-soft);
+    --sidebar-ring: var(--teal);
 }
 
+/* Dark overrides ONLY the canonical anchors — brand scale, tier
+   aliases, status + shadcn tokens reference these via var() and
+   follow automatically. Values are the handoff :root (dark). */
 .dark {
-    /* Brand lifts a touch in dark mode so chroma still reads. */
-    --brand-50:  oklch(0.22 0.04 195);
-    --brand-100: oklch(0.28 0.06 195);
-    --brand-200: oklch(0.34 0.09 195);
-    --brand-300: oklch(0.42 0.12 195);
-    --brand-400: oklch(0.55 0.13 195);
-    --brand-500: oklch(0.68 0.14 195);
-    --brand-600: oklch(0.75 0.14 195);
-    --brand-700: oklch(0.82 0.12 195);
-    --brand-800: oklch(0.88 0.09 195);
-    --brand-900: oklch(0.93 0.06 195);
-    --brand-950: oklch(0.97 0.03 195);
+    --bg:        #0b0d12;
+    --bg-soft:   #0f1218;
+    --panel:     #14181f;
+    --panel-2:   #171c24;
+    --panel-3:   #1a1f28;
+    --row-hover: #181e27;
+    --bg-glow:   #11161e;
 
-    /* Status in dark: same hues, bumped lightness for legibility,
-       kept chroma so they still pop against the deep background. */
-    --status-success-base: oklch(0.76 0.17 150);
-    --status-success-bg:   oklch(0.76 0.17 150 / 15%);
-    --status-success-fg:   oklch(0.84 0.14 150);
+    --line:      #232a34;
+    --line-soft: #1c222b;
 
-    --status-failed-base:  oklch(0.72 0.22 20);
-    --status-failed-bg:    oklch(0.72 0.22 20 / 18%);
-    --status-failed-fg:    oklch(0.82 0.17 20);
+    --ink:       #e7ebf2;
+    --ink-muted: #97a1b1;
+    --ink-dim:   #626d7d;
+    --ink-mono:  #707b8b;
 
-    --status-running-base: var(--brand-500);
-    --status-running-bg:   oklch(0.68 0.14 195 / 15%);
-    --status-running-fg:   oklch(0.82 0.12 195);
+    --teal:      #45c8d4;
+    --teal-soft: rgba(69, 200, 212, 0.13);
+    --teal-line: rgba(69, 200, 212, 0.35);
+    --teal-ink:  #06222a;
 
-    --status-queued-base:  oklch(0.72 0.02 250);
-    --status-queued-bg:    oklch(0.72 0.02 250 / 10%);
-    --status-queued-fg:    oklch(0.80 0.02 250);
+    --green:     #3fb950;
+    --green-bg:  rgba(63, 185, 80, 0.14);
 
-    --status-canceled-base: oklch(0.60 0.02 250);
-    --status-canceled-bg:   oklch(0.60 0.02 250 / 10%);
-    --status-canceled-fg:   oklch(0.72 0.02 250);
+    --red:       #f85149;
+    --red-bg:    rgba(248, 81, 73, 0.15);
+    --red-text:  #ff7b72;
 
-    --status-skipped-base: oklch(0.55 0.02 250);
-    --status-skipped-bg:   oklch(0.55 0.02 250 / 8%);
-    --status-skipped-fg:   oklch(0.70 0.02 250);
-
-    --status-warning-base: oklch(0.78 0.16 75);
-    --status-warning-bg:   oklch(0.78 0.16 75 / 16%);
-    --status-warning-fg:   oklch(0.85 0.14 75);
-
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: var(--brand-500);
-    --primary-foreground: oklch(0.15 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: var(--status-failed-base);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: var(--brand-400);
-    --chart-1: var(--brand-500);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: var(--status-success-base);
-    --chart-4: var(--status-failed-base);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: var(--brand-500);
-    --sidebar-primary-foreground: oklch(0.15 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: var(--brand-400);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: var(--brand-400);
+    --amber:     #d9a429;
+    --amber-bg:  rgba(217, 164, 41, 0.13);
+    --amber-text:#e9c977;
 }
 
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: var(--font-sans);
 
-    /* Brand scale exposed as utilities: bg-brand-500, text-brand-700,
-       border-brand-200, ring-brand-400, etc. */
+    /* Brand scale utilities: bg-brand-500, text-brand-700, … */
     --color-brand-50:  var(--brand-50);
     --color-brand-100: var(--brand-100);
     --color-brand-200: var(--brand-200);
@@ -217,9 +219,20 @@
     --color-brand-900: var(--brand-900);
     --color-brand-950: var(--brand-950);
 
-    /* Status utilities: bg-status-success-bg, text-status-failed-fg,
-       etc. Pipeline canvas + badges consume these, so re-coloring
-       "success" across the app is one line here. */
+    /* DORA tier utilities: text-tier-elite, bg-tier-low-bg, … */
+    --color-tier-elite:     var(--tier-elite);
+    --color-tier-elite-bg:  var(--tier-elite-bg);
+    --color-tier-high:      var(--tier-high);
+    --color-tier-high-bg:   var(--tier-high-bg);
+    --color-tier-medium:    var(--tier-medium);
+    --color-tier-medium-bg: var(--tier-medium-bg);
+    --color-tier-low:       var(--tier-low);
+    --color-tier-low-bg:    var(--tier-low-bg);
+
+    /* Tertiary ink as a utility (text-dim) — the handoff's --dim. */
+    --color-dim: var(--ink-dim);
+
+    /* Status utilities: bg-status-success-bg, text-status-failed-fg, … */
     --color-status-success:    var(--status-success-base);
     --color-status-success-bg: var(--status-success-bg);
     --color-status-success-fg: var(--status-success-fg);
