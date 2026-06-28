@@ -90,6 +90,7 @@ export default defineConfig({
             { label: "Approval gates", link: "/concepts/approvals/" },
             { label: "Compliance pipelines", link: "/concepts/compliance/" },
             { label: "Deployments & rollback", link: "/concepts/deployments/" },
+            { label: "DORA analytics", link: "/concepts/analytics/" },
             { label: "OIDC id_tokens", link: "/concepts/id-tokens/" },
             { label: "Database migrations", link: "/concepts/migrations/" },
             { label: "Services lifecycle", link: "/concepts/services/" },
