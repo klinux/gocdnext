@@ -86,23 +86,23 @@ export function overallTier(tiers: Tier[]): Tier {
   );
 }
 
-// fmtDuration renders seconds the way the handoff does: "5 dias", "18h",
+// fmtDuration renders seconds: "5d", "18h",
 // "3h 12m", "48m", "2m". Days only kick in at ≥ 2 days (so a 28h restore reads
-// "28h", not "1 dia 4h"). Zero / negative → "—" (no data).
+// "28h", not "1d 4h"). Zero / negative → "—" (no data).
 export function fmtDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
   const days = Math.floor(seconds / DAY);
-  if (days >= 2) return `${days} dias`;
+  if (days >= 2) return `${days}d`;
   const hours = Math.floor(seconds / HOUR);
   const mins = Math.round((seconds % HOUR) / 60);
   if (hours >= 1) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   return `${Math.max(1, mins)}m`;
 }
 
-// fmtFreq renders a per-day rate in the requested cadence: "1.9/dia" for the
-// hero, "3.3/sem" for the leaderboard. One decimal, trimmed.
-export function fmtFreq(perDay: number, unit: "dia" | "sem" = "dia"): string {
-  const v = unit === "sem" ? perDay * 7 : perDay;
+// fmtFreq renders a per-day rate in the requested cadence: "1.9/day" for the
+// hero, "3.3/wk" for the leaderboard. One decimal, trimmed.
+export function fmtFreq(perDay: number, unit: "day" | "wk" = "day"): string {
+  const v = unit === "wk" ? perDay * 7 : perDay;
   const s = v.toFixed(1).replace(/\.0$/, "");
   return `${s}/${unit}`;
 }
