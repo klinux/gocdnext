@@ -257,6 +257,15 @@ type Querier interface {
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
+	// Median time-to-restore per group: for each FAILED deploy in the window, the
+	// gap to the next SUCCESS in the same environment. Successes are searched with
+	// no upper bound so a restore just after the window still counts.
+	DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRRow, error)
+	// DORA metrics per label-value group (for label key = label_key) over the
+	// trailing window. Joins each project's labels → environments →
+	// deployment_revisions (+ the producing run for lead time). One row per
+	// distinct value of the key.
+	DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error)
 	// Scope guard: confirm an environment id is owned by a project before
 	// serving its deployments through that project's URL.
 	EnvironmentBelongsToProject(ctx context.Context, arg EnvironmentBelongsToProjectParams) (bool, error)
@@ -867,6 +876,10 @@ type Querier interface {
 	// A grace window guards against racing the in-flight submit so the
 	// sweeper doesn't spam the queue with jobs already being archived.
 	ListJobsNeedingArchive(ctx context.Context, arg ListJobsNeedingArchiveParams) ([]ListJobsNeedingArchiveRow, error)
+	// Cross-project analytics rollups, grouped by a project label key (the #107
+	// epic). All metrics derive from deployment_revisions + the producing run.
+	// Distinct label keys across all projects — the dashboard's "group by" picker.
+	ListLabelKeys(ctx context.Context) ([]string, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	// All materials across pipelines of a project. VSM uses the
 	// `upstream` ones to build edges between pipeline nodes; git ones

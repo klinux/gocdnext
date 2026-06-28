@@ -702,6 +702,8 @@ func main() {
 		p.Get("/api/v1/pipelines/{id}/yaml", pipelinesHandler.YAML)
 		p.Get("/api/v1/plugins", pluginsHandler.List)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
+		p.Get("/api/v1/analytics/label-keys", dashboardHandler.LabelKeys)
+		p.Get("/api/v1/analytics/dora", dashboardHandler.DoraRollup)
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 		p.Get("/api/v1/agents", dashboardHandler.Agents)
 		p.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)

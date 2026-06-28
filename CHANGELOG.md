@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Project labels** (#106) — free-form `key:value` grouping tags on projects
+  (`team:payments`, `tier:critical`). Manage them in *Project → Settings*; filter
+  the projects list by a label chip. The grouping primitive the analytics epic
+  builds on.
+
+- **Cross-project analytics — DORA** (#107). A new *Analytics* view rolls up the
+  four DORA metrics — deployment frequency, lead time for changes, change-failure
+  rate, and time-to-restore (MTTR) — **grouped by a project label** (team, tier,
+  domain) over a 7/30/90-day window. Server-side aggregation over deploy markers
+  + run history (`/api/v1/analytics/dora`), so the dashboard is a cheap read.
+
 ## v0.60.0 — 2026-06-27
 
 ### Added
