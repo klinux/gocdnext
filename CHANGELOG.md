@@ -10,6 +10,14 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Analytics — lead-time bottleneck card.** A "Where lead time is lost" card
+  decomposes commit→production into four stages (Coding, Review, Release wait,
+  Deploy) as a stacked bar + legend, flags the biggest stage as the top lever,
+  and footnotes the sample (PR-correlated deploys, excluded count, Review
+  sample). Completes the DORA dashboard's handoff. Requires the GitHub PR
+  lifecycle webhooks (Pull requests + Pull request reviews) for correlation;
+  rollbacks and uncorrelated deploys are kept out of the medians. (#112)
+
 - **VCS pull-request lifecycle tracking (GitHub).** gocdnext now persists the
   first-commit / opened / first-approved / merged timestamps (+ merge commit
   SHA) of GitHub pull requests from `pull_request` and `pull_request_review`
