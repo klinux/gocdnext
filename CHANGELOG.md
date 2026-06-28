@@ -10,6 +10,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Changed
 
+- **Canonical color system.** `web/app/globals.css` now follows the design
+  handoff's single source of truth: a blue-tinted dark-first theme (replacing
+  the neutral-gray dark) with the exact teal brand accent (`#45c8d4`), three
+  status colors, and a cool-paper light theme. Canonical anchors carry the
+  literal handoff hex; the brand scale, **DORA tier aliases** (`--tier-*`,
+  exposed as `text-tier-elite` / `bg-tier-low-bg` utilities), shadcn tokens and
+  status tokens all reference those anchors via `var()` so a recolor is one
+  edit and the theme flips automatically. The analytics dashboard's tier colors
+  now reference the tokens instead of hard-coded hex. (Fonts and the remaining
+  raw-hex sweep in older components are follow-ups.)
+
 - **Analytics DORA dashboard — manager-grade redesign (phase 1).** The org
   Analytics page is rebuilt into a hierarchy: an **org rollup** (the four DORA
   metrics with performance tier, a delta vs. the prior window, a sparkline, and

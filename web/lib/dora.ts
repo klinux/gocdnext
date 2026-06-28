@@ -19,13 +19,21 @@ export const TIER_LABEL: Record<Tier, string> = {
   low: "Low",
 };
 
-// Tier → hex, matching the handoff (Elite=teal, High=green, Medium=amber,
-// Low=red) and the existing duration-sparkline palette.
+// Tier → canonical color tokens (Elite=teal, High=green, Medium=amber, Low=red),
+// defined in globals.css and theme-aware. TIER_COLOR is the solid foreground
+// (text / sparkline stroke); TIER_BG is the tinted chip background.
 export const TIER_COLOR: Record<Tier, string> = {
-  elite: "#45c8d4",
-  high: "#3fb950",
-  medium: "#d9a429",
-  low: "#f85149",
+  elite: "var(--tier-elite)",
+  high: "var(--tier-high)",
+  medium: "var(--tier-medium)",
+  low: "var(--tier-low)",
+};
+
+export const TIER_BG: Record<Tier, string> = {
+  elite: "var(--tier-elite-bg)",
+  high: "var(--tier-high-bg)",
+  medium: "var(--tier-medium-bg)",
+  low: "var(--tier-low-bg)",
 };
 
 const DAY = 86_400;
