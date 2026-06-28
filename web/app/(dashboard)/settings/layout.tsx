@@ -16,7 +16,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
     <div className="space-y-6">
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <SettingsIcon className="h-6 w-6" aria-hidden />
+          <SettingsIcon className="h-6 w-6 text-brand-500" aria-hidden />
           Settings
         </h1>
         <p className="text-sm text-muted-foreground">

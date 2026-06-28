@@ -47,7 +47,7 @@ export default async function GlobalSecretsPage({
       <header className="flex items-baseline justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <KeyRound className="h-6 w-6" aria-hidden />
+            <KeyRound className="h-6 w-6 text-brand-500" aria-hidden />
             Global secrets
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
