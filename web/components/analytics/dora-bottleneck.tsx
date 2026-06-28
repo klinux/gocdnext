@@ -113,7 +113,7 @@ function Shell({ totalP50, children }: { totalP50: number; children: React.React
         <div>
           <div className="text-sm font-semibold">Where lead time is lost</div>
           <div className="text-xs text-muted-foreground">
-            Commit → production, decomposed
+            Commit → deploy, decomposed
           </div>
         </div>
         {totalP50 > 0 ? (
