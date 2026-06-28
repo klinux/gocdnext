@@ -257,6 +257,17 @@ type Querier interface {
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
+	// Org lead-time decomposition over the trailing window: per-stage p50 across
+	// successful, NON-ROLLBACK deploys correlated to a pull request (deployed commit
+	// == vcs_pull_requests.merge_sha). Stages are consecutive: Coding (first commit
+	// → PR opened), Review (→ approval, only when approved_at exists), Release wait
+	// (approval/merge → deploy job start), Deploy (deploy job start → finish).
+	// Rollbacks are excluded entirely (a revert isn't new change-delivery and would
+	// inflate Release wait against an old approval). `eligible` = every successful
+	// non-rollback deploy in the window; `excluded` = those with no PR correlation
+	// (incl. retention-pruned runs / no git revision). Each stage exposes its own
+	// sample count, since p50s drop rows with missing boundaries.
+	DoraBottleneck(ctx context.Context, arg DoraBottleneckParams) (DoraBottleneckRow, error)
 	// Dense per-day org buckets over the trailing window — feeds the hero
 	// sparklines. generate_series yields one row per calendar day (zero-filled for
 	// days with no deploy) so a sparse 90-day window still plots an honest,

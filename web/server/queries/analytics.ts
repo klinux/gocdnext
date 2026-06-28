@@ -51,6 +51,22 @@ export type DoraOverview = {
   daily: DoraDay[];
   teams: DoraGroup[];
   teams_prior: DoraGroup[];
+  bottleneck: LeadTimeBottleneck;
+};
+
+// Lead-time decomposition into four consecutive stages (p50 seconds), across
+// successful deploys correlated to a PR via the merge SHA.
+export type LeadTimeBottleneck = {
+  correlated: number;
+  excluded: number;
+  coding_sample: number;
+  review_sample: number;
+  release_sample: number;
+  deploy_sample: number;
+  coding_p50_seconds: number;
+  review_p50_seconds: number;
+  release_wait_p50_seconds: number;
+  deploy_p50_seconds: number;
 };
 
 async function readJSON<T>(path: string): Promise<T> {
