@@ -60,7 +60,7 @@ export default async function AuditPage({
     <section className="space-y-6">
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <ClipboardList className="h-6 w-6" aria-hidden />
+          <ClipboardList className="h-6 w-6 text-brand-500" aria-hidden />
           Audit log
         </h1>
         <p className="text-sm text-muted-foreground">

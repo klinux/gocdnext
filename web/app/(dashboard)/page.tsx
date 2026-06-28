@@ -77,7 +77,7 @@ export default async function DashboardPage() {
     <section className="space-y-6">
       <header>
         <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <LayoutDashboard className="h-6 w-6" aria-hidden />
+          <LayoutDashboard className="h-6 w-6 text-brand-500" aria-hidden />
           Dashboard
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
