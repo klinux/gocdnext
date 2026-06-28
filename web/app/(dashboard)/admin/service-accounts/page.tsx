@@ -28,7 +28,7 @@ export default async function ServiceAccountsPage() {
     <section className="space-y-6">
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Bot className="size-6" aria-hidden /> Service accounts
+          <Bot className="size-6 text-brand-500" aria-hidden /> Service accounts
         </h1>
         <p className="text-sm text-muted-foreground">
           Machine identities for CI orchestration, deploy bots, and any

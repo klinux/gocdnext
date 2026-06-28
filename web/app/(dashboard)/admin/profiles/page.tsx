@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Cpu } from "lucide-react";
 
 import { ProfilesManager } from "@/components/profiles/profiles-manager.client";
 import {
@@ -33,7 +34,7 @@ export default async function RunnerProfilesPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Runner profiles</h2>
+        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight"><Cpu className="size-6 text-brand-500" aria-hidden />Runner profiles</h2>
         <p className="text-sm text-muted-foreground">
           Named bundles of execution policy — fallback image, default + max
           compute, and required agent tags. Pipelines reference them by name

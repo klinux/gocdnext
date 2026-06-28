@@ -25,14 +25,14 @@ function dotColor(tone: StatusTone): string {
   switch (tone) {
     case "success":
     case "running":
-      return "#3fb950"; // ready
+      return "var(--status-success)"; // ready
     case "queued":
     case "awaiting":
-      return "#d9a429"; // booting
+      return "var(--status-warning)"; // booting
     case "failed":
-      return "#f85149"; // failed
+      return "var(--status-failed)"; // failed
     default:
-      return "#6e7681"; // muted (canceled/skipped/warning/neutral)
+      return "var(--muted-foreground)"; // muted (canceled/skipped/warning/neutral)
   }
 }
 

@@ -32,7 +32,7 @@ export default async function AgentsListPage() {
     <section className="space-y-6">
       <header>
         <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Server className="h-6 w-6" aria-hidden />
+          <Server className="h-6 w-6 text-brand-500" aria-hidden />
           Agents
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">

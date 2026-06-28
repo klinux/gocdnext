@@ -69,7 +69,7 @@ export default async function RunsListPage({
     <section className="space-y-5">
       <header>
         <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Activity className="h-6 w-6" aria-hidden />
+          <Activity className="h-6 w-6 text-brand-500" aria-hidden />
           Runs
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">

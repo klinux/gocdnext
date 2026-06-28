@@ -31,7 +31,7 @@ export default async function AccountPage() {
     <section className="space-y-6">
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <UserCog className="size-6" aria-hidden /> Account
+          <UserCog className="size-6 text-brand-500" aria-hidden /> Account
         </h1>
         <p className="text-sm text-muted-foreground">
           Your profile, credentials, and personal API tokens. OIDC users

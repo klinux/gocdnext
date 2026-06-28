@@ -65,9 +65,9 @@ function Mark({ size, className }: { size: number; className?: string }) {
           gradientTransform="matrix(1.2400315,0.08753382,-0.03824616,0.54180708,17.388739,9.4616189)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#8FE4EA" />
-          <stop offset="55%" stopColor="#0ea5b5" />
-          <stop offset="100%" stopColor="#086370" />
+          <stop offset="0%" style={{ stopColor: "var(--brand-lighter)" }} />
+          <stop offset="55%" style={{ stopColor: "var(--brand-base)" }} />
+          <stop offset="100%" style={{ stopColor: "var(--brand-deep)" }} />
         </linearGradient>
         <linearGradient
           id={tealId}
@@ -78,8 +78,8 @@ function Mark({ size, className }: { size: number; className?: string }) {
           gradientTransform="matrix(1.21055,-0.09023533,0.03942653,0.52892569,10.577888,22.499414)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0%" stopColor="#4FD1DB" />
-          <stop offset="100%" stopColor="#086370" />
+          <stop offset="0%" style={{ stopColor: "var(--brand-light)" }} />
+          <stop offset="100%" style={{ stopColor: "var(--brand-deep)" }} />
         </linearGradient>
       </defs>
 

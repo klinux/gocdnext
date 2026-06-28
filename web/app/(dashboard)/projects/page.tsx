@@ -31,7 +31,7 @@ export default async function ProjectsPage() {
       <header className="flex items-baseline justify-between gap-4">
         <div>
           <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <Boxes className="h-6 w-6" aria-hidden />
+            <Boxes className="h-6 w-6 text-brand-500" aria-hidden />
             Projects
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">

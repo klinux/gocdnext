@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ShieldCheck } from "lucide-react";
 
 import { ComplianceManager } from "@/components/compliance/compliance-manager.client";
 import {
@@ -34,7 +35,7 @@ export default async function CompliancePage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Compliance</h2>
+        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight"><ShieldCheck className="size-6 text-brand-500" aria-hidden />Compliance</h2>
         <p className="text-sm text-muted-foreground">
           Framework-scoped, enforced pipeline policies. A policy&apos;s mandatory
           jobs / approval gates are merged into every targeted project and can&apos;t

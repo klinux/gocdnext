@@ -25,14 +25,14 @@ describe("DurationSparkline", () => {
   it("stays all-teal when the series never regresses (no amber/red sliver)", () => {
     const { container } = render(<DurationSparkline values={[100, 100, 100, 100]} />);
     const html = container.innerHTML;
-    expect(html).toContain("#45c8d4");
-    expect(html).not.toContain("#d9a429");
-    expect(html).not.toContain("#f85149");
+    expect(html).toContain("var(--teal)");
+    expect(html).not.toContain("var(--amber)");
+    expect(html).not.toContain("var(--red)");
   });
 
   it("adds amber/red stops once the series regresses past median", () => {
     const { container } = render(<DurationSparkline values={[50, 50, 200, 200]} />);
-    expect(container.innerHTML).toContain("#f85149");
+    expect(container.innerHTML).toContain("var(--red)");
   });
 });
 
