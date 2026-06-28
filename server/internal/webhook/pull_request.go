@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -73,6 +74,13 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 	// Persist lifecycle (opened / merged) before the triggerable filter, so a
 	// merged-close — which doesn't start a build — still records merged_at.
 	h.recordGitHubPR(r.Context(), ev)
+	// Capture the PR's first-commit time (Coding-stage start) off the hot path:
+	// a detached goroutine (analytics data, not build gating) retried on each
+	// triggerable action until it lands. context.WithoutCancel so it outlives
+	// the request without inheriting its deadline.
+	if ev.IsTriggerableAction() {
+		go h.recordFirstCommit(context.WithoutCancel(r.Context()), ev.Repository.CloneURL, ev.Number)
+	}
 	if !ev.IsTriggerableAction() {
 		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: PR action ignored",
