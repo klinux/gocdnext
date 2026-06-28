@@ -8,6 +8,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // A pull_request opened webhook persists opened_at; a pull_request_review
@@ -48,7 +49,10 @@ func TestGitHubWebhook_PRLifecyclePersisted(t *testing.T) {
 		t.Fatalf("review status = %d", resp.StatusCode)
 	}
 
-	pr, err := s.PullRequest(context.Background(), "github", "org/demo", 42)
+	// Persisted under the canonical clone_url (the authenticated identity), not
+	// the unauthenticated repository.full_name.
+	repo := domain.NormalizeGitURL("https://github.com/org/demo.git")
+	pr, err := s.PullRequest(context.Background(), "github", repo, 42)
 	if err != nil {
 		t.Fatalf("get pr: %v", err)
 	}
@@ -57,5 +61,25 @@ func TestGitHubWebhook_PRLifecyclePersisted(t *testing.T) {
 	}
 	if !pr.ApprovedAt.Equal(time.Date(2026, 6, 1, 15, 30, 0, 0, time.UTC)) {
 		t.Errorf("approved_at = %v", pr.ApprovedAt)
+	}
+}
+
+// A signed-but-malformed approval (no PR number / no submitted_at) is rejected
+// with 400 rather than persisting a junk lifecycle row.
+func TestGitHubWebhook_ReviewMissingFields_400(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	_ = seedPRMaterial(t, pool, []string{"push", "pull_request"})
+	srv := newServer(t, s)
+
+	body := `{
+      "action": "submitted",
+      "review": {"state": "approved", "user": {"login": "lead"}},
+      "pull_request": {"number": 0},
+      "repository": {"full_name": "org/demo", "clone_url": "https://github.com/org/demo.git"}
+    }`
+	resp := postSigned(t, srv, "pull_request_review", []byte(body))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }

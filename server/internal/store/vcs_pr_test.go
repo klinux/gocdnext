@@ -41,32 +41,34 @@ func TestPullRequestLifecycle_UpsertAnyOrder(t *testing.T) {
 	}
 }
 
-func TestPullRequestLifecycle_KeepsEarliest(t *testing.T) {
+func TestPullRequestLifecycle_EarliestWinsOutOfOrder(t *testing.T) {
 	s := store.New(dbtest.SetupPool(t))
 	ctx := context.Background()
 
-	first := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	earlier := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
 	later := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
-	// opened_at keeps its first value across a later synchronize event.
-	_ = s.RecordPullRequestOpened(ctx, "github", "acme/web", 7, first, "t", "a", "feat", "main", "sha1")
-	_ = s.RecordPullRequestOpened(ctx, "github", "acme/web", 7, later, "t2", "a", "feat", "main", "sha2")
+	// Deliveries arrive OUT OF ORDER: the later timestamp lands first, the
+	// earlier one second. opened_at + approved_at must end on the EARLIEST
+	// (LEAST), not the first-received — otherwise phase-2 Review timing skews.
+	_ = s.RecordPullRequestOpened(ctx, "github", "acme/web", 7, later, "t", "a", "feat", "main", "shaLater")
+	_ = s.RecordPullRequestOpened(ctx, "github", "acme/web", 7, earlier, "t2", "a", "feat", "main", "shaEarlier")
 
-	// approved_at keeps the first approval, ignores a later one.
-	_ = s.RecordPullRequestApproved(ctx, "github", "acme/web", 7, first)
 	_ = s.RecordPullRequestApproved(ctx, "github", "acme/web", 7, later)
+	_ = s.RecordPullRequestApproved(ctx, "github", "acme/web", 7, earlier)
 
 	pr, err := s.PullRequest(ctx, "github", "acme/web", 7)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !pr.OpenedAt.Equal(first) {
-		t.Errorf("opened_at = %v, want first %v", pr.OpenedAt, first)
+	if !pr.OpenedAt.Equal(earlier) {
+		t.Errorf("opened_at = %v, want earliest %v", pr.OpenedAt, earlier)
 	}
-	if !pr.ApprovedAt.Equal(first) {
-		t.Errorf("approved_at = %v, want first %v", pr.ApprovedAt, first)
+	if !pr.ApprovedAt.Equal(earlier) {
+		t.Errorf("approved_at = %v, want earliest %v", pr.ApprovedAt, earlier)
 	}
-	if pr.HeadSHA != "sha2" {
-		t.Errorf("head_sha = %q, want latest sha2", pr.HeadSHA) // non-timestamp fields follow latest
+	// Non-timestamp fields still follow the latest upsert.
+	if pr.HeadSHA != "shaEarlier" {
+		t.Errorf("head_sha = %q, want latest-upsert shaEarlier", pr.HeadSHA)
 	}
 }

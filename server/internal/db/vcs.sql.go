@@ -50,7 +50,8 @@ const markPullRequestApproved = `-- name: MarkPullRequestApproved :exec
 INSERT INTO vcs_pull_requests (provider, repo, number, approved_at, updated_at)
 VALUES ($1, $2, $3, $4, now())
 ON CONFLICT (provider, repo, number) DO UPDATE SET
-    approved_at = COALESCE(vcs_pull_requests.approved_at, EXCLUDED.approved_at),
+    -- Earliest approval wins by submitted_at, not by delivery order.
+    approved_at = LEAST(vcs_pull_requests.approved_at, EXCLUDED.approved_at),
     updated_at  = now()
 `
 
@@ -78,8 +79,8 @@ VALUES ($1, $2, $3, $4, $5, $6, now())
 ON CONFLICT (provider, repo, number) DO UPDATE SET
     merge_sha = CASE WHEN EXCLUDED.merge_sha <> '' THEN EXCLUDED.merge_sha
                      ELSE vcs_pull_requests.merge_sha END,
-    merged_at = COALESCE(vcs_pull_requests.merged_at, EXCLUDED.merged_at),
-    closed_at = COALESCE(vcs_pull_requests.closed_at, EXCLUDED.closed_at),
+    merged_at = LEAST(vcs_pull_requests.merged_at, EXCLUDED.merged_at),
+    closed_at = LEAST(vcs_pull_requests.closed_at, EXCLUDED.closed_at),
     updated_at = now()
 `
 
@@ -119,7 +120,9 @@ ON CONFLICT (provider, repo, number) DO UPDATE SET
     head_ref  = EXCLUDED.head_ref,
     base_ref  = EXCLUDED.base_ref,
     head_sha  = EXCLUDED.head_sha,
-    opened_at = COALESCE(vcs_pull_requests.opened_at, EXCLUDED.opened_at),
+    -- LEAST ignores NULLs → the EARLIEST opened_at wins regardless of which
+    -- webhook arrived first (deliveries can be reordered/retried).
+    opened_at = LEAST(vcs_pull_requests.opened_at, EXCLUDED.opened_at),
     updated_at = now()
 `
 
