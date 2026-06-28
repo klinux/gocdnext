@@ -1650,7 +1650,7 @@ components:
         Lead-time decomposition into four consecutive stages (p50 seconds across
         successful deploys correlated to a PR via the merge SHA). Review uses the
         approval timestamp (only deploys with an approval contribute).
-      required: [correlated, excluded, coding_sample, review_sample, release_sample, deploy_sample, coding_p50_seconds, review_p50_seconds, release_wait_p50_seconds, deploy_p50_seconds]
+      required: [correlated, excluded, coding_sample, review_sample, release_sample, deploy_sample, total_p50_seconds, coding_p50_seconds, review_p50_seconds, release_wait_p50_seconds, deploy_p50_seconds]
       properties:
         correlated: { type: integer, format: int64, description: "non-rollback successful deploys with a PR correlation" }
         excluded: { type: integer, format: int64, description: "non-rollback successful deploys with no PR correlation" }
@@ -1658,6 +1658,7 @@ components:
         review_sample: { type: integer, format: int64, description: "correlated deploys that have an approval" }
         release_sample: { type: integer, format: int64 }
         deploy_sample: { type: integer, format: int64 }
+        total_p50_seconds: { type: number, format: double, description: "true p50 of deploy_finished − first_commit (NOT the sum of stage p50s)" }
         coding_p50_seconds: { type: number, format: double, description: "opened − first_commit" }
         review_p50_seconds: { type: number, format: double, description: "approved − opened" }
         release_wait_p50_seconds: { type: number, format: double, description: "deploy job start − (approved or merged)" }

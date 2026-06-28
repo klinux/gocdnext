@@ -261,6 +261,11 @@ SELECT
     COUNT(*) FILTER (WHERE correlated AND approved_at IS NOT NULL AND opened_at IS NOT NULL AND approved_at >= opened_at)::bigint AS review_sample,
     COUNT(*) FILTER (WHERE correlated AND COALESCE(approved_at, merged_at) IS NOT NULL AND deploy_started >= COALESCE(approved_at, merged_at))::bigint AS release_sample,
     COUNT(*) FILTER (WHERE correlated AND deploy_finished >= deploy_started)::bigint AS deploy_sample,
+    -- True end-to-end median (NOT the sum of stage p50s, which come from
+    -- different samples). The header shows this; the bar shows the stage split.
+    COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (deploy_finished - first_commit_at))::double precision
+    ) FILTER (WHERE correlated AND first_commit_at IS NOT NULL AND deploy_finished >= first_commit_at), 0)::double precision AS total_p50_s,
     COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
         ORDER BY EXTRACT(EPOCH FROM (opened_at - first_commit_at))::double precision
     ) FILTER (WHERE correlated AND first_commit_at IS NOT NULL AND opened_at >= first_commit_at), 0)::double precision AS coding_p50_s,

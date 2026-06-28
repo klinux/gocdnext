@@ -52,6 +52,7 @@ function overview(over: Partial<DoraOverview>): DoraOverview {
       review_sample: 0,
       release_sample: 0,
       deploy_sample: 0,
+      total_p50_seconds: 0,
       coding_p50_seconds: 0,
       review_p50_seconds: 0,
       release_wait_p50_seconds: 0,
