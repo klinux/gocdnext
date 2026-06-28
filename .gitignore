@@ -14,7 +14,9 @@ go.sum.lock
 
 # Node / Next.js
 web/node_modules/
-web/.next/
+# .next anywhere — the web app builds to web/.next, and a stray `next build`
+# run from another dir (e.g. server/) must not leak its output into git.
+.next/
 web/out/
 web/.turbo/
 web/*.tsbuildinfo
