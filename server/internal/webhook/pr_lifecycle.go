@@ -24,12 +24,19 @@ func (h *Handler) WithPRCommitsFetcher(f PRCommitsFetcher) *Handler {
 	return h
 }
 
-// recordFirstCommit fetches + persists a PR's first-commit time, best-effort,
-// on the opening event (GitHub only). Bounded so it never holds the webhook
-// response for long; a miss leaves first_commit_at unset.
+// recordFirstCommit fetches + persists a PR's first-commit time (GitHub only),
+// best-effort. It runs OFF the webhook hot path (a detached goroutine at the
+// call site) — this is analytics data, never build gating, so it must not delay
+// the build dispatch or the webhook response. Retried on every triggerable PR
+// action until the value lands, so a transient API failure on `opened` self-
+// heals on the next `synchronize`/`reopened`; once set, only a cheap read runs.
 func (h *Handler) recordFirstCommit(ctx context.Context, cloneURL string, number int) {
 	if h.prCommits == nil {
 		return
+	}
+	repo := domain.NormalizeGitURL(cloneURL)
+	if pr, err := h.store.PullRequest(ctx, "github", repo, number); err == nil && !pr.FirstCommitAt.IsZero() {
+		return // already captured — skip the API round-trip
 	}
 	scm, ok := h.driftLookup(ctx, cloneURL)
 	if !ok {
@@ -41,7 +48,7 @@ func (h *Handler) recordFirstCommit(ctx context.Context, cloneURL string, number
 	if !ok {
 		return
 	}
-	if err := h.store.RecordPullRequestFirstCommit(ctx, "github", domain.NormalizeGitURL(cloneURL), number, at); err != nil {
+	if err := h.store.RecordPullRequestFirstCommit(ctx, "github", repo, number, at); err != nil {
 		h.log.Warn("github webhook: record PR first commit failed", "number", number, "err", err)
 	}
 }

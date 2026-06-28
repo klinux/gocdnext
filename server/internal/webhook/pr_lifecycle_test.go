@@ -47,12 +47,18 @@ func TestGitHubWebhook_FirstCommitRecorded(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 
-	pr, err := s.PullRequest(context.Background(), "github", domain.NormalizeGitURL("https://github.com/org/demo.git"), 42)
-	if err != nil {
-		t.Fatalf("get pr: %v", err)
+	// first_commit_at is recorded off the hot path (detached goroutine), so poll.
+	repo := domain.NormalizeGitURL("https://github.com/org/demo.git")
+	var got time.Time
+	for i := 0; i < 50; i++ {
+		if pr, err := s.PullRequest(context.Background(), "github", repo, 42); err == nil && !pr.FirstCommitAt.IsZero() {
+			got = pr.FirstCommitAt
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if !pr.FirstCommitAt.Equal(firstCommit) {
-		t.Errorf("first_commit_at = %v, want %v", pr.FirstCommitAt, firstCommit)
+	if !got.Equal(firstCommit) {
+		t.Errorf("first_commit_at = %v, want %v", got, firstCommit)
 	}
 }
 

@@ -11,14 +11,18 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/scm/github"
 )
 
-func TestFetchPRFirstCommit(t *testing.T) {
+func TestFetchPRFirstCommit_MinAcrossPage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/repos/acme/web/pulls/42/commits") {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
+		// Commits NOT oldest-first — the earliest (07:00) is in the middle, and
+		// uses committer date (author date absent). The min must win.
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[
-		  {"commit": {"author": {"date": "2026-06-01T08:00:00Z"}, "committer": {"date": "2026-06-01T09:00:00Z"}}}
+		  {"commit": {"author": {"date": "2026-06-01T09:00:00Z"}}},
+		  {"commit": {"committer": {"date": "2026-06-01T07:00:00Z"}}},
+		  {"commit": {"author": {"date": "2026-06-01T08:00:00Z"}}}
 		]`))
 	}))
 	defer srv.Close()
@@ -28,9 +32,28 @@ func TestFetchPRFirstCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	// Prefers author date over committer date.
+	if !got.Equal(time.Date(2026, 6, 1, 7, 0, 0, 0, time.UTC)) {
+		t.Errorf("first commit = %v, want earliest 07:00", got)
+	}
+}
+
+func TestFetchPRFirstCommit_TrailingSlashAPIBase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A doubled slash (//repos) would 404 here; the path must be clean.
+		if strings.Contains(r.URL.Path, "//") {
+			t.Errorf("doubled slash in path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`[{"commit": {"author": {"date": "2026-06-01T08:00:00Z"}}}]`))
+	}))
+	defer srv.Close()
+
+	got, err := github.FetchPRFirstCommit(context.Background(), srv.Client(),
+		github.Config{APIBase: srv.URL + "/", Owner: "acme", Repo: "web"}, 42)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
 	if !got.Equal(time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)) {
-		t.Errorf("first commit = %v, want author date 08:00", got)
+		t.Errorf("first commit = %v", got)
 	}
 }
 
