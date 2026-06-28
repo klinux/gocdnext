@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const maxAnalyticsLabelKeyLen = 100
+const (
+	maxAnalyticsLabelKeyLen = 100
+	maxAnalyticsEnvLen      = 100
+)
 
 // LabelKeys handles GET /api/v1/analytics/label-keys — the distinct project
 // label keys available as a "group by" dimension.
@@ -22,6 +25,50 @@ func (h *Handler) LabelKeys(w http.ResponseWriter, r *http.Request) {
 		keys = []string{}
 	}
 	writeAnalyticsJSON(w, map[string]any{"keys": keys})
+}
+
+// requireKey validates the shared `key` query param (required, bounded, no ':').
+func requireKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	key := strings.TrimSpace(r.URL.Query().Get("key"))
+	if key == "" {
+		http.Error(w, "key is required", http.StatusBadRequest)
+		return "", false
+	}
+	if len(key) > maxAnalyticsLabelKeyLen || strings.Contains(key, ":") {
+		http.Error(w, "invalid key", http.StatusBadRequest)
+		return "", false
+	}
+	return key, true
+}
+
+// Environments handles GET /api/v1/analytics/environments?key= — the deploy
+// environments available as the dashboard's environment filter.
+func (h *Handler) Environments(w http.ResponseWriter, r *http.Request) {
+	key, ok := requireKey(w, r)
+	if !ok {
+		return
+	}
+	envs, err := h.store.Environments(r.Context(), key)
+	if err != nil {
+		h.log.Error("analytics: environments", "key", key, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if envs == nil {
+		envs = []string{}
+	}
+	writeAnalyticsJSON(w, map[string]any{"environments": envs})
+}
+
+// parseEnvironment reads the optional `environment` filter; "" means all. A
+// bounded string — the store query treats empty as no filter.
+func parseEnvironment(w http.ResponseWriter, r *http.Request) (string, bool) {
+	env := strings.TrimSpace(r.URL.Query().Get("environment"))
+	if len(env) > maxAnalyticsEnvLen {
+		http.Error(w, "invalid environment", http.StatusBadRequest)
+		return "", false
+	}
+	return env, true
 }
 
 // parseDoraParams validates the shared `key` (required, bounded, no ':') and
@@ -57,8 +104,12 @@ func (h *Handler) DoraRollup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	environment, ok := parseEnvironment(w, r)
+	if !ok {
+		return
+	}
 
-	groups, err := h.store.DoraRollup(r.Context(), key, windowDays)
+	groups, err := h.store.DoraRollup(r.Context(), key, windowDays, environment)
 	if err != nil {
 		h.log.Error("analytics: dora rollup", "key", key, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -67,6 +118,7 @@ func (h *Handler) DoraRollup(w http.ResponseWriter, r *http.Request) {
 	writeAnalyticsJSON(w, map[string]any{
 		"key":         key,
 		"window_days": windowDays,
+		"environment": environment,
 		"groups":      groups,
 	})
 }
@@ -80,8 +132,12 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	environment, ok := parseEnvironment(w, r)
+	if !ok {
+		return
+	}
 
-	ov, err := h.store.AnalyticsOverview(r.Context(), key, windowDays)
+	ov, err := h.store.AnalyticsOverview(r.Context(), key, windowDays, environment)
 	if err != nil {
 		h.log.Error("analytics: overview", "key", key, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

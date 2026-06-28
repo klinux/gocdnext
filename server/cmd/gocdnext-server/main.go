@@ -703,6 +703,7 @@ func main() {
 		p.Get("/api/v1/plugins", pluginsHandler.List)
 		p.Get("/api/v1/dashboard/metrics", dashboardHandler.Metrics)
 		p.Get("/api/v1/analytics/label-keys", dashboardHandler.LabelKeys)
+		p.Get("/api/v1/analytics/environments", dashboardHandler.Environments)
 		p.Get("/api/v1/analytics/dora", dashboardHandler.DoraRollup)
 		p.Get("/api/v1/analytics/dora/overview", dashboardHandler.Overview)
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)

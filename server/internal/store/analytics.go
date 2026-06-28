@@ -32,20 +32,31 @@ func (s *Store) LabelKeys(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
+// Environments lists the distinct deploy-environment names available as the
+// analytics "environment" filter, scoped to projects carrying labelKey.
+func (s *Store) Environments(ctx context.Context, labelKey string) ([]string, error) {
+	envs, err := s.q.ListAnalyticsEnvironments(ctx, labelKey)
+	if err != nil {
+		return nil, fmt.Errorf("store: list analytics environments: %w", err)
+	}
+	return envs, nil
+}
+
 // DoraRollup computes the four DORA metrics for each value of `labelKey`, over
 // the trailing windowDays. Deployment frequency and change-failure rate are
 // derived in Go from the counts; lead time + MTTR are SQL medians.
-func (s *Store) DoraRollup(ctx context.Context, labelKey string, windowDays int) ([]DoraGroup, error) {
+// environment filters to a single deploy environment by name; "" means all.
+func (s *Store) DoraRollup(ctx context.Context, labelKey string, windowDays int, environment string) ([]DoraGroup, error) {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
 	iv := pgtype.Interval{Days: int32(windowDays), Valid: true}
 
-	rows, err := s.q.DoraRollup(ctx, db.DoraRollupParams{LabelKey: labelKey, SinceWindow: iv})
+	rows, err := s.q.DoraRollup(ctx, db.DoraRollupParams{LabelKey: labelKey, SinceWindow: iv, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora rollup: %w", err)
 	}
-	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceWindow: iv})
+	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceWindow: iv, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora mttr: %w", err)
 	}

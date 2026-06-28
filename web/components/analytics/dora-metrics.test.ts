@@ -31,6 +31,7 @@ function overview(over: Partial<DoraOverview>): DoraOverview {
   return {
     key: "team",
     window_days: 30,
+    environment: "",
     current: cur,
     prior: {
       ...cur,
