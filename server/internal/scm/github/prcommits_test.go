@@ -57,6 +57,38 @@ func TestFetchPRFirstCommit_TrailingSlashAPIBase(t *testing.T) {
 	}
 }
 
+func TestFetchPRFirstCommit_PaginatesToGlobalMin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1":
+			// A full page (100) of later commits → triggers a second request.
+			w.Write([]byte("["))
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					w.Write([]byte(","))
+				}
+				w.Write([]byte(`{"commit":{"author":{"date":"2026-06-02T00:00:00Z"}}}`))
+			}
+			w.Write([]byte("]"))
+		case "2":
+			// The real first commit lives on page 2.
+			w.Write([]byte(`[{"commit":{"author":{"date":"2026-05-30T06:00:00Z"}}}]`))
+		default:
+			w.Write([]byte("[]"))
+		}
+	}))
+	defer srv.Close()
+
+	got, err := github.FetchPRFirstCommit(context.Background(), srv.Client(),
+		github.Config{APIBase: srv.URL, Owner: "acme", Repo: "web"}, 42)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !got.Equal(time.Date(2026, 5, 30, 6, 0, 0, 0, time.UTC)) {
+		t.Errorf("first commit = %v, want page-2 earliest 2026-05-30 06:00", got)
+	}
+}
+
 func TestFetchPRFirstCommit_Empty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[]`))
