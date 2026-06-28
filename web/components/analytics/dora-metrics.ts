@@ -131,14 +131,17 @@ export function orgTier(ov: DoraOverview): Tier {
   return overallTier(tiers);
 }
 
-// teamTier is a single group's performer band: the overall of its four metric
-// tiers (a fast-but-unstable team — great freq/lead, awful CFR — lands Low,
-// matching the handoff's "card" example).
+// teamTier is a single group's performer band: the overall of the metric tiers
+// that have a sample. Dimensions without data are excluded (same guard as the
+// hero cards) so a no-restore MTTR or no-success lead time can't grant spurious
+// Elite credit. A fast-but-unstable group — great freq/lead, awful CFR — still
+// lands Low (weakest link), matching the handoff's "card" example.
 export function teamTier(g: DoraGroup): Tier {
-  return overallTier([
-    freqTier(g.deploy_freq_per_day),
-    leadTier(g.lead_time_p50_seconds),
-    cfrTier(g.change_failure_rate),
-    mttrTier(g.mttr_p50_seconds),
-  ]);
+  const tiers: Tier[] = [freqTier(g.deploy_freq_per_day)];
+  if (g.deploys_total > 0) tiers.push(cfrTier(g.change_failure_rate));
+  if (g.deploys_success > 0 && g.lead_time_p50_seconds > 0) {
+    tiers.push(leadTier(g.lead_time_p50_seconds));
+  }
+  if (g.mttr_p50_seconds > 0) tiers.push(mttrTier(g.mttr_p50_seconds));
+  return overallTier(tiers);
 }

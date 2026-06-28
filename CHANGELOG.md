@@ -8,6 +8,19 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Changed
+
+- **Analytics DORA dashboard — manager-grade redesign (phase 1).** The org
+  Analytics page is rebuilt into a hierarchy: an **org rollup** (the four DORA
+  metrics with performance tier, a delta vs. the prior window, a sparkline, and
+  the Elite benchmark), a **sortable team leaderboard** ranked across all four
+  metrics, and a **DORA benchmark reference** table. Tiers follow the standard
+  thresholds (Elite/High/Medium/Low) and a group is graded by its weakest
+  metric; metrics without a sample read "sem dados" rather than a misleading
+  Elite. Grouping works by any project-label key (team, tier, domain). Backed by
+  a single `/api/v1/analytics/dora/overview` read. Deploy-frequency chart,
+  lead-time bottleneck and highlights land in later phases. (#113)
+
 ## v0.62.0 — 2026-06-28
 
 ### Added

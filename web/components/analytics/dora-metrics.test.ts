@@ -136,4 +136,39 @@ describe("tiers", () => {
       ),
     ).toBe("elite");
   });
+
+  it("excludes no-sample dimensions from a team's tier (no spurious Elite)", () => {
+    // All-failed group: no successful deploy (lead/MTTR have no sample). It must
+    // not get Elite credit from a 0-second lead/MTTR — freq + CFR drag it Low.
+    expect(
+      teamTier(
+        group({
+          deploys_success: 0,
+          deploys_total: 5,
+          deploys_failed: 5,
+          deploy_freq_per_day: 0,
+          lead_time_p50_seconds: 0,
+          change_failure_rate: 1,
+          mttr_p50_seconds: 0,
+        }),
+      ),
+    ).toBe("low");
+  });
+
+  it("does not penalize a team that simply never had to restore (MTTR excluded)", () => {
+    // Strong, never failed → MTTR has no sample but the team is still Elite.
+    expect(
+      teamTier(
+        group({
+          deploys_success: 10,
+          deploys_total: 10,
+          deploys_failed: 0,
+          deploy_freq_per_day: 2,
+          lead_time_p50_seconds: 120,
+          change_failure_rate: 0,
+          mttr_p50_seconds: 0,
+        }),
+      ),
+    ).toBe("elite");
+  });
 });

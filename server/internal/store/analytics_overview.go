@@ -23,8 +23,9 @@ type OrgMetrics struct {
 }
 
 // DoraDay is one daily bucket of the trailing window — the hero sparklines plot
-// these. Day is an ISO date (YYYY-MM-DD); only days with ≥1 terminal deploy are
-// present, so the frontend fills gaps against the window.
+// these. Day is an ISO date (YYYY-MM-DD). The series is dense: DoraDailySeries
+// zero-fills every calendar day in the window (via generate_series), so a
+// sparse window still plots an honest, non-compressed trend.
 type DoraDay struct {
 	Day            string  `json:"day"`
 	DeploysSuccess int64   `json:"deploys_success"`
