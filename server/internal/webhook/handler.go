@@ -169,6 +169,9 @@ func (h *Handler) HandleGitHub(w http.ResponseWriter, r *http.Request) {
 	case "pull_request":
 		h.handlePullRequest(w, r, body, delivery, rec)
 		return
+	case "pull_request_review":
+		h.handleReview(w, r, body, delivery, rec)
+		return
 	default:
 		rec.status = store.WebhookStatusIgnored
 		h.log.Info("github webhook: ignored event", "event", event, "delivery", delivery)

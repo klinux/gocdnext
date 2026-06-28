@@ -491,6 +491,7 @@ type Querier interface {
 	// block is absent (pipeline nil means "inherit"; pipeline empty
 	// list means "explicit opt-out" and we skip this entirely).
 	GetProjectNotifications(ctx context.Context, id pgtype.UUID) ([]byte, error)
+	GetPullRequest(ctx context.Context, arg GetPullRequestParams) (VcsPullRequest, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
 	// pipeline + revisions without pulling the whole detail query. cause +
 	// cause_detail let RerunRun reproduce the original run's CI-var context
@@ -1153,6 +1154,11 @@ type Querier interface {
 	// Same-second fires are gated via the cron expression parser
 	// reading last_fired_at — the store update closes that loop.
 	MarkProjectCronFired(ctx context.Context, arg MarkProjectCronFiredParams) error
+	// Recorded on the first approving review. approved_at keeps the earliest.
+	MarkPullRequestApproved(ctx context.Context, arg MarkPullRequestApprovedParams) error
+	// Recorded on pull_request closed with merged=true. merge_sha is the commit
+	// that landed on the base branch (correlates to a deployment in phase 2).
+	MarkPullRequestMerged(ctx context.Context, arg MarkPullRequestMergedParams) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
@@ -1531,6 +1537,12 @@ type Querier interface {
 	// that default naturally via COALESCE on the column-side default.
 	// Callers that DO set it override via ON CONFLICT.
 	UpsertProject(ctx context.Context, arg UpsertProjectParams) (UpsertProjectRow, error)
+	// VCS pull-request lifecycle (the #112 epic). Webhook handlers upsert the
+	// opened / approved / merged timestamps as events arrive in any order; one row
+	// per (provider, repo, number). Feeds DORA lead-time decomposition later.
+	// Recorded on pull_request opened/reopened/synchronize. opened_at keeps its
+	// first (created_at) value; head/refs/title follow the latest event.
+	UpsertPullRequestOpened(ctx context.Context, arg UpsertPullRequestOpenedParams) error
 	// Insert-or-rotate. ON CONFLICT flips auth_ref_encrypted + api_base
 	// + display_name but preserves id + created_at + created_by so
 	// audit trails point to the original provisioning.
