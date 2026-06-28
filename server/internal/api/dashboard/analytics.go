@@ -24,27 +24,38 @@ func (h *Handler) LabelKeys(w http.ResponseWriter, r *http.Request) {
 	writeAnalyticsJSON(w, map[string]any{"keys": keys})
 }
 
-// DoraRollup handles GET /api/v1/analytics/dora?key=<labelKey>&window_days=<N>.
-// Returns the four DORA metrics for each value of the label key over the
-// trailing window. `key` is required.
-func (h *Handler) DoraRollup(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(r.URL.Query().Get("key"))
+// parseDoraParams validates the shared `key` (required, bounded, no ':') and
+// `window_days` (1..365, default 30) query params. On a bad request it writes
+// the 400 and returns ok=false.
+func parseDoraParams(w http.ResponseWriter, r *http.Request) (key string, windowDays int, ok bool) {
+	key = strings.TrimSpace(r.URL.Query().Get("key"))
 	if key == "" {
 		http.Error(w, "key is required", http.StatusBadRequest)
-		return
+		return "", 0, false
 	}
 	if len(key) > maxAnalyticsLabelKeyLen || strings.Contains(key, ":") {
 		http.Error(w, "invalid key", http.StatusBadRequest)
-		return
+		return "", 0, false
 	}
-	windowDays := 30
+	windowDays = 30
 	if v := r.URL.Query().Get("window_days"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 365 {
 			http.Error(w, "window_days must be 1..365", http.StatusBadRequest)
-			return
+			return "", 0, false
 		}
 		windowDays = n
+	}
+	return key, windowDays, true
+}
+
+// DoraRollup handles GET /api/v1/analytics/dora?key=<labelKey>&window_days=<N>.
+// Returns the four DORA metrics for each value of the label key over the
+// trailing window. `key` is required.
+func (h *Handler) DoraRollup(w http.ResponseWriter, r *http.Request) {
+	key, windowDays, ok := parseDoraParams(w, r)
+	if !ok {
+		return
 	}
 
 	groups, err := h.store.DoraRollup(r.Context(), key, windowDays)
@@ -58,6 +69,25 @@ func (h *Handler) DoraRollup(w http.ResponseWriter, r *http.Request) {
 		"window_days": windowDays,
 		"groups":      groups,
 	})
+}
+
+// Overview handles GET /api/v1/analytics/dora/overview?key=&window_days=. It is
+// the single read behind the redesigned Analytics page: org rollup (current +
+// prior window for deltas), the daily series for sparklines, and the per-team
+// leaderboard.
+func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
+	key, windowDays, ok := parseDoraParams(w, r)
+	if !ok {
+		return
+	}
+
+	ov, err := h.store.AnalyticsOverview(r.Context(), key, windowDays)
+	if err != nil {
+		h.log.Error("analytics: overview", "key", key, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeAnalyticsJSON(w, ov)
 }
 
 func writeAnalyticsJSON(w http.ResponseWriter, body any) {

@@ -38,6 +38,93 @@ FROM base
 GROUP BY grp
 ORDER BY grp;
 
+-- name: DoraWindowAgg :one
+-- Org-wide DORA counts + lead-time p50 over an arbitrary [since, until) window
+-- (both intervals trailing from now). The same query serves the current window
+-- (until=0) and the prior window (since=2×window, until=window) for deltas.
+-- A deploy counts once even if its project carries the key under several values
+-- (EXISTS, not a join, so no fan-out double count).
+WITH base AS (
+    SELECT dr.status,
+           dr.is_rollback,
+           EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    LEFT JOIN runs r ON r.id = dr.run_id
+    WHERE dr.status IN ('success', 'failed')
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+      )
+)
+SELECT COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
+       COUNT(*)::bigint AS deploys_total,
+       COUNT(*) FILTER (WHERE status = 'failed' OR is_rollback)::bigint AS deploys_failed,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
+                FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM base;
+
+-- name: DoraWindowMTTR :one
+-- Org-wide median time-to-restore over [since, until): for each FAILED deploy
+-- whose project carries the key, the gap to the next SUCCESS in the same
+-- environment (lateral index probe per failure).
+WITH failures AS (
+    SELECT dr.environment_id, dr.finished_at
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    WHERE dr.status = 'failed'
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+      )
+)
+SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (s.finished_at - f.finished_at))::double precision
+                ) FILTER (WHERE s.finished_at IS NOT NULL),
+                0)::double precision AS mttr_p50_s
+FROM failures f
+LEFT JOIN LATERAL (
+    SELECT drs.finished_at
+    FROM deployment_revisions drs
+    WHERE drs.environment_id = f.environment_id
+      AND drs.status = 'success'
+      AND drs.finished_at IS NOT NULL
+      AND drs.finished_at > f.finished_at
+    ORDER BY drs.finished_at ASC
+    LIMIT 1
+) s ON TRUE;
+
+-- name: DoraDailySeries :many
+-- Per-day org buckets over the trailing window — feeds the hero sparklines.
+-- One row per day that had at least one terminal deploy: deploy count, failed
+-- count, lead-time p50, and MTTR is left to the window agg (too sparse daily).
+SELECT date_trunc('day', dr.finished_at)::date AS day,
+       COUNT(*)::bigint AS deploys_total,
+       COUNT(*) FILTER (WHERE dr.status = 'failed' OR dr.is_rollback)::bigint AS deploys_failed,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
+                ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM deployment_revisions dr
+JOIN environments e ON e.id = dr.environment_id
+LEFT JOIN runs r ON r.id = dr.run_id
+WHERE dr.status IN ('success', 'failed')
+  AND dr.finished_at IS NOT NULL
+  AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+  AND EXISTS (
+      SELECT 1 FROM project_labels pl
+      WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+  )
+GROUP BY day
+ORDER BY day;
+
 -- name: DoraMTTR :many
 -- Median time-to-restore per group: for each FAILED deploy in the window, the
 -- gap to the next SUCCESS in the same environment. The restore lookup is a

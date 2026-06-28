@@ -257,6 +257,10 @@ type Querier interface {
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
+	// Per-day org buckets over the trailing window — feeds the hero sparklines.
+	// One row per day that had at least one terminal deploy: deploy count, failed
+	// count, lead-time p50, and MTTR is left to the window agg (too sparse daily).
+	DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error)
 	// Median time-to-restore per group: for each FAILED deploy in the window, the
 	// gap to the next SUCCESS in the same environment. The restore lookup is a
 	// lateral index probe per failure instead of a self-scan over all historical
@@ -267,6 +271,16 @@ type Querier interface {
 	// deployment_revisions (+ the producing run for lead time). One row per
 	// distinct value of the key.
 	DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error)
+	// Org-wide DORA counts + lead-time p50 over an arbitrary [since, until) window
+	// (both intervals trailing from now). The same query serves the current window
+	// (until=0) and the prior window (since=2×window, until=window) for deltas.
+	// A deploy counts once even if its project carries the key under several values
+	// (EXISTS, not a join, so no fan-out double count).
+	DoraWindowAgg(ctx context.Context, arg DoraWindowAggParams) (DoraWindowAggRow, error)
+	// Org-wide median time-to-restore over [since, until): for each FAILED deploy
+	// whose project carries the key, the gap to the next SUCCESS in the same
+	// environment (lateral index probe per failure).
+	DoraWindowMTTR(ctx context.Context, arg DoraWindowMTTRParams) (float64, error)
 	// Scope guard: confirm an environment id is owned by a project before
 	// serving its deployments through that project's URL.
 	EnvironmentBelongsToProject(ctx context.Context, arg EnvironmentBelongsToProjectParams) (bool, error)

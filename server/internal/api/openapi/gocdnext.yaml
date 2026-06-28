@@ -532,6 +532,30 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DoraRollup" }
         "400": { description: missing/invalid key or window_days }
+  /api/v1/analytics/dora/overview:
+    get:
+      tags: [analytics]
+      summary: Org DORA overview — rollup (current + prior window), daily series, leaderboard.
+      description: >
+        Single read behind the Analytics page: org-wide metrics for the current
+        window and the immediately preceding window of equal length (for deltas),
+        a per-day series for sparklines, and the per-team leaderboard.
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+        - in: query
+          name: window_days
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        "200":
+          description: overview
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DoraOverview" }
+        "400": { description: missing/invalid key or window_days }
 
   # -------------------- runs --------------------
   /api/v1/runs:
@@ -1543,6 +1567,44 @@ components:
         key: { type: string }
         window_days: { type: integer }
         groups:
+          type: array
+          items: { $ref: "#/components/schemas/DoraGroup" }
+
+    OrgMetrics:
+      type: object
+      description: Org-wide DORA rollup over one window (no group label).
+      required: [deploys_success, deploys_total, deploys_failed, deploy_freq_per_day, lead_time_p50_seconds, change_failure_rate, mttr_p50_seconds]
+      properties:
+        deploys_success: { type: integer, format: int64 }
+        deploys_total: { type: integer, format: int64 }
+        deploys_failed: { type: integer, format: int64 }
+        deploy_freq_per_day: { type: number, format: double }
+        lead_time_p50_seconds: { type: number, format: double }
+        change_failure_rate: { type: number, format: double }
+        mttr_p50_seconds: { type: number, format: double }
+
+    DoraDay:
+      type: object
+      description: One daily bucket of the window (hero sparklines).
+      required: [day, deploys_total, deploys_failed, lead_time_p50_seconds]
+      properties:
+        day: { type: string, format: date }
+        deploys_total: { type: integer, format: int64 }
+        deploys_failed: { type: integer, format: int64 }
+        lead_time_p50_seconds: { type: number, format: double }
+
+    DoraOverview:
+      type: object
+      required: [key, window_days, current, prior, daily, teams]
+      properties:
+        key: { type: string }
+        window_days: { type: integer }
+        current: { $ref: "#/components/schemas/OrgMetrics" }
+        prior: { $ref: "#/components/schemas/OrgMetrics" }
+        daily:
+          type: array
+          items: { $ref: "#/components/schemas/DoraDay" }
+        teams:
           type: array
           items: { $ref: "#/components/schemas/DoraGroup" }
 

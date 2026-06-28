@@ -1,8 +1,14 @@
 import type { Metadata } from "next";
-import { BarChart3 } from "lucide-react";
+import type { ReactNode } from "react";
+import { LineChart } from "lucide-react";
 
-import { DoraDashboard } from "@/components/analytics/dora-dashboard.client";
-import { getDoraRollup, listLabelKeys } from "@/server/queries/analytics";
+import { DoraBenchmark } from "@/components/analytics/dora-benchmark";
+import { DoraHeroCards, TierChip } from "@/components/analytics/dora-hero-cards";
+import { DoraLeaderboard } from "@/components/analytics/dora-leaderboard.client";
+import { orgTier } from "@/components/analytics/dora-metrics";
+import { DoraToolbar } from "@/components/analytics/dora-toolbar.client";
+import { TIER_LABEL } from "@/lib/dora";
+import { getDoraOverview, listLabelKeys } from "@/server/queries/analytics";
 
 export const metadata: Metadata = {
   title: "Analytics — gocdnext",
@@ -18,6 +24,15 @@ function clampWindow(raw: string | undefined): number {
   return Math.floor(n);
 }
 
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2.5 font-mono text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+      {children}
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
 export default async function AnalyticsPage({
   searchParams,
 }: {
@@ -25,39 +40,80 @@ export default async function AnalyticsPage({
 }) {
   const sp = await searchParams;
   const keys = await listLabelKeys();
-  const windowDays = clampWindow(sp.window);
-  // Group by the requested key when it exists, else the first available key.
-  const activeKey = sp.key && keys.includes(sp.key) ? sp.key : (keys[0] ?? "");
-  const rollup = activeKey ? await getDoraRollup(activeKey, windowDays) : null;
 
   return (
-    <section className="space-y-6">
-      <div>
-        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <BarChart3 className="size-6" aria-hidden />
+    <div className="space-y-6">
+      <header className="space-y-1.5">
+        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+          <LineChart className="size-6 text-brand-500" aria-hidden />
           Analytics
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          DORA metrics rolled up across projects, grouped by a project label
-          (team, tier, domain). Deployment frequency, lead time, change-failure
-          rate and time-to-restore — the org-level health view.
+        </h1>
+        <p className="max-w-[880px] text-sm text-muted-foreground">
+          As quatro métricas DORA consolidadas entre todos os projetos, com
+          classificação de desempenho por faixa. Onde o time entrega rápido,
+          onde quebra, e onde o tempo se perde — a saúde de engenharia em nível
+          de organização.
         </p>
+      </header>
+
+      {keys.length === 0 ? <EmptyState /> : <Dashboard sp={sp} keys={keys} />}
+    </div>
+  );
+}
+
+async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
+  const windowDays = clampWindow(sp.window);
+  const activeKey = sp.key && keys.includes(sp.key) ? sp.key : (keys[0] ?? "");
+  const ov = await getDoraOverview(activeKey, windowDays);
+  const tier = orgTier(ov);
+
+  return (
+    <>
+      <DoraToolbar keys={keys} activeKey={activeKey} windowDays={windowDays} />
+
+      <div className="space-y-3.5">
+        <SectionLabel>
+          Resumo da organização
+          <TierChip
+            tier={tier}
+            label={`${TIER_LABEL[tier]} performer`}
+            className="text-[11px]"
+          />
+          <span className="font-normal normal-case tracking-normal text-muted-foreground/70">
+            {ov.teams.length} times · {ov.current.deploys_total} deploys na
+            janela
+          </span>
+        </SectionLabel>
+        <DoraHeroCards overview={ov} />
       </div>
 
-      {keys.length === 0 ? (
-        <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-          No project labels yet. Add <span className="font-mono">key:value</span>{" "}
-          labels (e.g. <span className="font-mono">team:payments</span>) in a
-          project&apos;s Settings to group analytics by them.
-        </p>
-      ) : (
-        <DoraDashboard
-          keys={keys}
-          activeKey={activeKey}
-          windowDays={windowDays}
-          groups={rollup?.groups ?? []}
-        />
-      )}
-    </section>
+      <div className="space-y-3.5">
+        <SectionLabel>Desempenho por time</SectionLabel>
+        {ov.teams.length === 0 ? (
+          <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+            Nenhum deploy nesta janela para grupos de{" "}
+            <span className="font-mono">{activeKey}</span>. As métricas DORA
+            derivam de marcadores de deploy — os projetos precisam rodar um job
+            com bloco <span className="font-mono">deploy:</span>.
+          </p>
+        ) : (
+          <DoraLeaderboard teams={ov.teams} />
+        )}
+      </div>
+
+      <DoraBenchmark />
+    </>
+  );
+}
+
+function EmptyState() {
+  return (
+    <p className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+      Nenhuma label de projeto ainda. As métricas DORA são agrupadas por uma
+      label <span className="font-mono">key:value</span> (ex.{" "}
+      <span className="font-mono">team:payments</span>) — adicione labels em{" "}
+      <span className="font-mono">Projeto → Settings</span> para habilitar o
+      agrupamento por time.
+    </p>
   );
 }
