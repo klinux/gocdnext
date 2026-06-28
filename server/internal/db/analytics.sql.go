@@ -13,15 +13,19 @@ import (
 
 const doraBottleneck = `-- name: DoraBottleneck :one
 WITH eligible AS (
+    -- Universe = every successful, non-rollback deploy in the window. run/job/
+    -- sha/PR are LEFT-joined so a deploy whose run was retention-pruned, or that
+    -- has no git revision, or no matching PR, still counts (as ` + "`" + `excluded` + "`" + `)
+    -- rather than vanishing — deployment_revisions outlives the run on purpose.
     SELECT dr.finished_at AS deploy_finished,
            djr.started_at AS deploy_started,
            pr.first_commit_at, pr.opened_at, pr.approved_at, pr.merged_at,
            (pr.id IS NOT NULL) AS correlated
     FROM deployment_revisions dr
-    JOIN runs r ON r.id = dr.run_id
     JOIN environments e ON e.id = dr.environment_id
-    JOIN job_runs djr ON djr.id = dr.job_run_id
-    JOIN LATERAL (
+    LEFT JOIN runs r ON r.id = dr.run_id
+    LEFT JOIN job_runs djr ON djr.id = dr.job_run_id
+    LEFT JOIN LATERAL (
         -- deployed commit SHA = the git material's revision in runs.revisions
         -- (non-empty branch; skips upstream). Deterministic pick by key so a
         -- multi-material run can't choose a different SHA across calls.
@@ -44,7 +48,7 @@ WITH eligible AS (
       AND NOT dr.is_rollback
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - $1::interval
-      AND djr.started_at IS NOT NULL
+      AND dr.finished_at <  now()
       AND ($2::text = '' OR e.name = $2)
       AND EXISTS (
           SELECT 1 FROM project_labels pl

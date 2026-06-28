@@ -191,3 +191,30 @@ func TestDoraBottleneck_ExcludesRollbackAndDedupesPR(t *testing.T) {
 		t.Fatalf("want correlated 1 / excluded 0 (rollback & dupe handled), got %+v", ov.Bottleneck)
 	}
 }
+
+func TestDoraBottleneck_CountsRetentionPrunedAsExcluded(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	res, _ := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "pay", Name: "pay"})
+	_ = s.ReplaceProjectLabels(ctx, res.ProjectID, []store.ProjectLabel{{Key: "team", Value: "payments"}})
+	envID, _ := s.EnsureEnvironment(ctx, res.ProjectID, "prod")
+
+	// A successful deploy whose run was retention-pruned (run_id/job_run_id NULL)
+	// must still be counted — as excluded — not vanish from the universe.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO deployment_revisions (environment_id, run_id, job_run_id, version, status, is_rollback, finished_at)
+		VALUES ($1, NULL, NULL, 'v', 'success', false, now() - interval '2 days')`,
+		envID); err != nil {
+		t.Fatalf("seed pruned deploy: %v", err)
+	}
+
+	ov, err := s.AnalyticsOverview(ctx, "team", 30, "")
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	if ov.Bottleneck.Correlated != 0 || ov.Bottleneck.Excluded != 1 {
+		t.Fatalf("want correlated 0 / excluded 1 (pruned counts), got %+v", ov.Bottleneck)
+	}
+}
