@@ -51,14 +51,14 @@ describe("formatters", () => {
     expect(fmtDuration(48 * 60)).toBe("48m");
     expect(fmtDuration(3 * 3600 + 12 * 60)).toBe("3h 12m");
     expect(fmtDuration(18 * 3600)).toBe("18h");
-    expect(fmtDuration(5 * 86400)).toBe("5 dias");
+    expect(fmtDuration(5 * 86400)).toBe("5d");
     expect(fmtDuration(0)).toBe("—");
   });
 
   it("formats frequency per day or per week", () => {
-    expect(fmtFreq(1.9)).toBe("1.9/dia");
-    expect(fmtFreq(3.3 / 7, "sem")).toBe("3.3/sem");
-    expect(fmtFreq(1, "dia")).toBe("1/dia");
+    expect(fmtFreq(1.9)).toBe("1.9/day");
+    expect(fmtFreq(3.3 / 7, "wk")).toBe("3.3/wk");
+    expect(fmtFreq(1, "day")).toBe("1/day");
   });
 
   it("formats a rate as whole percent", () => {

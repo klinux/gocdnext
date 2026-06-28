@@ -75,7 +75,7 @@ function MetricCard({ m }: { m: HeroMetric }) {
           <TierChip tier={m.tier} />
         ) : (
           <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 font-mono text-[10.5px] font-bold uppercase tracking-wide text-muted-foreground">
-            sem dados
+            no data
           </span>
         )}
       </div>
