@@ -50,6 +50,7 @@ export type DoraOverview = {
   prior: OrgMetrics;
   daily: DoraDay[];
   teams: DoraGroup[];
+  teams_prior: DoraGroup[];
 };
 
 async function readJSON<T>(path: string): Promise<T> {

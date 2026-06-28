@@ -45,6 +45,9 @@ type AnalyticsOverview struct {
 	Prior       OrgMetrics  `json:"prior"`
 	Daily       []DoraDay   `json:"daily"`
 	Teams       []DoraGroup `json:"teams"`
+	// TeamsPrior is the same per-group rollup over the immediately preceding
+	// window — the movers compare Teams vs TeamsPrior group-by-group.
+	TeamsPrior []DoraGroup `json:"teams_prior"`
 }
 
 // AnalyticsOverview assembles the org rollup for `labelKey` over the trailing
@@ -90,7 +93,11 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 		})
 	}
 
-	teams, err := s.DoraRollup(ctx, labelKey, windowDays, environment)
+	teams, err := s.doraRollupWindow(ctx, labelKey, windowDays, 0, windowDays, environment)
+	if err != nil {
+		return AnalyticsOverview{}, err
+	}
+	teamsPrior, err := s.doraRollupWindow(ctx, labelKey, 2*windowDays, windowDays, windowDays, environment)
 	if err != nil {
 		return AnalyticsOverview{}, err
 	}
@@ -103,6 +110,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 		Prior:       metricsFromWindow(prior, windowDays),
 		Daily:       daily,
 		Teams:       teams,
+		TeamsPrior:  teamsPrior,
 	}, nil
 }
 

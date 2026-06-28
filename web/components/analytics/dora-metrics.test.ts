@@ -44,6 +44,7 @@ function overview(over: Partial<DoraOverview>): DoraOverview {
       { day: "2026-06-02", deploys_success: 2, deploys_total: 3, deploys_failed: 1, lead_time_p50_seconds: 700 },
     ],
     teams: [],
+    teams_prior: [],
     ...over,
   };
 }
