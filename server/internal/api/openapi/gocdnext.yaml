@@ -1625,7 +1625,7 @@ components:
 
     DoraOverview:
       type: object
-      required: [key, window_days, current, prior, daily, teams]
+      required: [key, window_days, current, prior, daily, teams, teams_prior]
       properties:
         key: { type: string }
         window_days: { type: integer }

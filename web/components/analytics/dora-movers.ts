@@ -88,7 +88,7 @@ function regression(recs: Rec[], taken: Set<string>): Mover | null {
     kind: "down",
     team: r.c.group,
     text: cfrStory
-      ? `change failure rose to ${fmtPct(r.c.change_failure_rate)} — ${r.c.deploys_failed}/${r.c.deploys_total} reverted.`
+      ? `change failure rose to ${fmtPct(r.c.change_failure_rate)} — ${r.c.deploys_failed}/${r.c.deploys_total} change failures.`
       : `dropped from ${TIER_LABEL[r.tierPrior!]} to ${TIER_LABEL[r.tierCur]}.`,
     foot:
       r.cfrDeltaPp > 0
@@ -97,20 +97,37 @@ function regression(recs: Rec[], taken: Set<string>): Mover | null {
   };
 }
 
+// Cadence thresholds: "stalled" is fewer than ~1 successful deploy every two
+// weeks; a "hard drop" is a ≥40% fall in frequency vs. the prior window while
+// already below weekly. Only a group meeting one of these is worth flagging —
+// so a healthy org shows no Watch card (no false alarm).
+const STALLED_PER_DAY = 1 / 14;
+const WEEKLY_PER_DAY = 1 / 7;
+
 function watch(recs: Rec[], taken: Set<string>, windowDays: number): Mover | null {
-  // Stalled cadence: the remaining group shipping the fewest deploys.
-  const cand = recs
+  const scored = recs
     .filter((r) => !taken.has(r.c.group))
-    .sort((a, b) => a.c.deploys_total - b.c.deploys_total);
-  const r = cand[0];
-  if (!r) return null;
+    .map((r) => {
+      const priorFreq = r.p?.deploy_freq_per_day ?? 0;
+      const freqDrop =
+        priorFreq > 0 ? (priorFreq - r.c.deploy_freq_per_day) / priorFreq : 0;
+      const stalled = r.c.deploy_freq_per_day < STALLED_PER_DAY;
+      const droppedHard = freqDrop >= 0.4 && r.c.deploy_freq_per_day < WEEKLY_PER_DAY;
+      return { r, freqDrop, qualifies: stalled || droppedHard };
+    })
+    .filter((x) => x.qualifies)
+    .sort((a, b) => a.r.c.deploy_freq_per_day - b.r.c.deploy_freq_per_day);
+
+  const top = scored[0];
+  if (!top) return null;
+  const c = top.r.c;
   return {
     kind: "watch",
-    team: r.c.group,
-    text: `only shipped ${r.c.deploys_total} deploy${r.c.deploys_total === 1 ? "" : "s"} in ${windowDays}d — cadence at risk.`,
+    team: c.group,
+    text: `shipped ${c.deploys_success} successful deploy${c.deploys_success === 1 ? "" : "s"} in ${windowDays}d — cadence at risk.`,
     foot:
-      r.c.deploys_failed > 0
-        ? `Change failure ${fmtPct(r.c.change_failure_rate)} on a thin sample.`
+      top.freqDrop >= 0.4
+        ? `Deploy frequency −${pct(top.freqDrop)}% vs. prior window.`
         : `Large-batch risk as changes accumulate.`,
   };
 }
