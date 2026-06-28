@@ -199,3 +199,54 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) s ON TRUE
 GROUP BY f.grp;
+
+-- name: DoraBottleneck :one
+-- Org lead-time decomposition over the trailing window: per-stage p50 across
+-- successful deploys correlated to a pull request (the deployed commit ==
+-- vcs_pull_requests.merge_sha). Stages are consecutive: Coding (first commit →
+-- PR opened), Review (→ approval, only when approved_at exists), Release wait
+-- (approval/merge → deploy job start), Deploy (deploy job start → finish).
+-- `correlated` is the sample; the caller derives "excluded = success − correlated".
+WITH deploys AS (
+    SELECT dr.finished_at AS deploy_finished,
+           djr.started_at AS deploy_started,
+           vpr.first_commit_at, vpr.opened_at, vpr.approved_at, vpr.merged_at
+    FROM deployment_revisions dr
+    JOIN runs r ON r.id = dr.run_id
+    JOIN environments e ON e.id = dr.environment_id
+    JOIN job_runs djr ON djr.id = dr.job_run_id
+    JOIN LATERAL (
+        -- deployed commit SHA = the git material's revision in runs.revisions
+        -- (the entry with a non-empty branch; skips upstream materials).
+        SELECT rev.value ->> 'revision' AS sha
+        FROM jsonb_each(r.revisions) AS rev
+        WHERE COALESCE(rev.value ->> 'branch', '') <> ''
+        LIMIT 1
+    ) dep ON TRUE
+    JOIN vcs_pull_requests vpr ON vpr.merge_sha <> '' AND vpr.merge_sha = dep.sha
+    WHERE dr.status = 'success'
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+      AND djr.started_at IS NOT NULL
+      AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+      )
+)
+SELECT
+    COUNT(*)::bigint AS correlated,
+    COUNT(*) FILTER (WHERE approved_at IS NOT NULL)::bigint AS review_sample,
+    COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (opened_at - first_commit_at))::double precision
+    ) FILTER (WHERE first_commit_at IS NOT NULL AND opened_at >= first_commit_at), 0)::double precision AS coding_p50_s,
+    COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (approved_at - opened_at))::double precision
+    ) FILTER (WHERE approved_at IS NOT NULL AND opened_at IS NOT NULL AND approved_at >= opened_at), 0)::double precision AS review_p50_s,
+    COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (deploy_started - COALESCE(approved_at, merged_at)))::double precision
+    ) FILTER (WHERE COALESCE(approved_at, merged_at) IS NOT NULL AND deploy_started >= COALESCE(approved_at, merged_at)), 0)::double precision AS release_p50_s,
+    COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (deploy_finished - deploy_started))::double precision
+    ) FILTER (WHERE deploy_finished >= deploy_started), 0)::double precision AS deploy_p50_s
+FROM deploys;

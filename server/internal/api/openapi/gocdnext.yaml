@@ -1642,6 +1642,23 @@ components:
           type: array
           description: per-group rollup over the prior window (movers compare vs this)
           items: { $ref: "#/components/schemas/DoraGroup" }
+        bottleneck: { $ref: "#/components/schemas/LeadTimeBottleneck" }
+
+    LeadTimeBottleneck:
+      type: object
+      description: >
+        Lead-time decomposition into four consecutive stages (p50 seconds across
+        successful deploys correlated to a PR via the merge SHA). Review uses the
+        approval timestamp (only deploys with an approval contribute).
+      required: [correlated, excluded, review_sample, coding_p50_seconds, review_p50_seconds, release_wait_p50_seconds, deploy_p50_seconds]
+      properties:
+        correlated: { type: integer, format: int64 }
+        excluded: { type: integer, format: int64, description: "successful deploys with no PR correlation" }
+        review_sample: { type: integer, format: int64, description: "correlated deploys that have an approval" }
+        coding_p50_seconds: { type: number, format: double, description: "opened − first_commit" }
+        review_p50_seconds: { type: number, format: double, description: "approved − opened" }
+        release_wait_p50_seconds: { type: number, format: double, description: "deploy job start − (approved or merged)" }
+        deploy_p50_seconds: { type: number, format: double, description: "deploy finish − deploy job start" }
 
     ProjectDetail:
       allOf:
