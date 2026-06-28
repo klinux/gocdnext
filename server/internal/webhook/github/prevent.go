@@ -35,6 +35,12 @@ type PullRequestEvent struct {
 	Repository Repository
 	At         time.Time // PR.updated_at, best proxy for "when this action happened"
 
+	// Lifecycle timestamps for DORA lead-time decomposition (#112).
+	// CreatedAt = PR opened; MergedAt + MergeSHA set on a merged close.
+	CreatedAt time.Time
+	MergedAt  time.Time
+	MergeSHA  string
+
 	// Labels are the PR's labels, lowercased + deduped. Nil when
 	// the PR has no labels (so downstream `len(...) > 0` checks and
 	// JSON `omitempty` both work). Used by the PR-label-driven
@@ -52,14 +58,17 @@ type prPayload struct {
 }
 
 type prDetails struct {
-	HTMLURL   string    `json:"html_url"`
-	Title     string    `json:"title"`
-	Merged    bool      `json:"merged"`
-	UpdatedAt time.Time `json:"updated_at"`
-	User      *prUser   `json:"user"`
-	Head      *prRef    `json:"head"`
-	Base      *prRef    `json:"base"`
-	Labels    []prLabel `json:"labels"`
+	HTMLURL        string     `json:"html_url"`
+	Title          string     `json:"title"`
+	Merged         bool       `json:"merged"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	MergedAt       *time.Time `json:"merged_at"`
+	MergeCommitSHA string     `json:"merge_commit_sha"`
+	User           *prUser    `json:"user"`
+	Head           *prRef     `json:"head"`
+	Base           *prRef     `json:"base"`
+	Labels         []prLabel  `json:"labels"`
 }
 
 type prUser struct {
@@ -109,11 +118,80 @@ func ParsePullRequestEvent(body []byte) (PullRequestEvent, error) {
 		BaseRef:    p.PullRequest.Base.Ref,
 		Repository: *p.Repository,
 		At:         p.PullRequest.UpdatedAt,
+		CreatedAt:  p.PullRequest.CreatedAt,
+		MergeSHA:   p.PullRequest.MergeCommitSHA,
+	}
+	if p.PullRequest.MergedAt != nil {
+		ev.MergedAt = *p.PullRequest.MergedAt
 	}
 	if p.PullRequest.User != nil {
 		ev.Author = p.PullRequest.User.Login
 	}
 	ev.Labels = normaliseLabels(p.PullRequest.Labels)
+	return ev, nil
+}
+
+// ReviewEvent is a pull_request_review webhook, projected to what the lifecycle
+// tracker needs: which PR was reviewed, the review state, and when. Only
+// "approved" reviews matter for the Review-stage boundary.
+type ReviewEvent struct {
+	Action      string
+	State       string // "approved" | "changes_requested" | "commented"
+	Number      int
+	Reviewer    string
+	SubmittedAt time.Time
+	Repository  Repository
+}
+
+type reviewPayload struct {
+	Action      string         `json:"action"`
+	Review      *reviewDetails `json:"review"`
+	PullRequest *prNumberOnly  `json:"pull_request"`
+	Repository  *Repository    `json:"repository"`
+}
+
+type reviewDetails struct {
+	State       string    `json:"state"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	User        *prUser   `json:"user"`
+}
+
+type prNumberOnly struct {
+	Number int `json:"number"`
+}
+
+// IsApproval reports whether this review records an approval (the only state
+// that advances the Review stage).
+func (ev ReviewEvent) IsApproval() bool {
+	return ev.Action == "submitted" && strings.EqualFold(ev.State, "approved")
+}
+
+// ParseReviewEvent decodes a pull_request_review payload. Strict like
+// ParsePullRequestEvent: a malformed body is an error, not a silent skip.
+func ParseReviewEvent(body []byte) (ReviewEvent, error) {
+	if len(body) == 0 {
+		return ReviewEvent{}, ErrEmptyPayload
+	}
+	var p reviewPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ReviewEvent{}, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+	if p.Review == nil || p.PullRequest == nil {
+		return ReviewEvent{}, errors.New("github webhook: missing review fields")
+	}
+	if p.Repository == nil || p.Repository.CloneURL == "" {
+		return ReviewEvent{}, ErrMissingRepository
+	}
+	ev := ReviewEvent{
+		Action:      p.Action,
+		State:       p.Review.State,
+		Number:      p.PullRequest.Number,
+		SubmittedAt: p.Review.SubmittedAt,
+		Repository:  *p.Repository,
+	}
+	if p.Review.User != nil {
+		ev.Reviewer = p.Review.User.Login
+	}
 	return ev, nil
 }
 
