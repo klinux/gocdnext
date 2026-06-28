@@ -86,12 +86,12 @@ export function DurationSparkline({
       />
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stopColor="#45c8d4" />
-          <stop offset={stop.toFixed(2)} stopColor="#45c8d4" />
+          <stop offset="0" style={{ stopColor: "var(--teal)" }} />
+          <stop offset={stop.toFixed(2)} style={{ stopColor: "var(--teal)" }} />
           {regressed ? (
             <>
-              <stop offset={Math.min(1, stop + 0.08).toFixed(2)} stopColor="#d9a429" />
-              <stop offset="1" stopColor="#f85149" />
+              <stop offset={Math.min(1, stop + 0.08).toFixed(2)} style={{ stopColor: "var(--amber)" }} />
+              <stop offset="1" style={{ stopColor: "var(--red)" }} />
             </>
           ) : null}
         </linearGradient>
