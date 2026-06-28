@@ -99,3 +99,36 @@ func TestAnalytics_LabelKeys(t *testing.T) {
 		t.Fatalf("body = %s", rr.Body.String())
 	}
 }
+
+func TestAnalytics_Environments(t *testing.T) {
+	h, _ := newHandler(t)
+
+	// key required.
+	rr := httptest.NewRecorder()
+	h.Environments(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/environments", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status = %d, want 400", rr.Code)
+	}
+
+	// Happy path (no data) → 200 with an empty environments array.
+	rr = httptest.NewRecorder()
+	h.Environments(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/environments?key=team", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if !json.Valid(rr.Body.Bytes()) || !strings.Contains(rr.Body.String(), `"environments"`) {
+		t.Fatalf("body = %s", rr.Body.String())
+	}
+}
+
+func TestAnalytics_OverviewEnvironmentEcho(t *testing.T) {
+	h, _ := newHandler(t)
+	rr := httptest.NewRecorder()
+	h.Overview(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/dora/overview?key=team&environment=prod", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"environment":"prod"`) {
+		t.Fatalf("environment not echoed: %s", rr.Body.String())
+	}
+}

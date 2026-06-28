@@ -45,6 +45,7 @@ export type DoraDay = {
 export type DoraOverview = {
   key: string;
   window_days: number;
+  environment: string;
   current: OrgMetrics;
   prior: OrgMetrics;
   daily: DoraDay[];
@@ -75,6 +76,15 @@ export async function listLabelKeys(): Promise<string[]> {
   return r.keys ?? [];
 }
 
+// listEnvironments returns the deploy environments available as the environment
+// filter, scoped to the group-by key.
+export async function listEnvironments(key: string): Promise<string[]> {
+  const r = await readJSON<{ environments: string[] }>(
+    `/api/v1/analytics/environments?key=${encodeURIComponent(key)}`,
+  );
+  return r.environments ?? [];
+}
+
 export async function getDoraRollup(
   key: string,
   windowDays: number,
@@ -85,11 +95,14 @@ export async function getDoraRollup(
 }
 
 // getDoraOverview is the single read behind the redesigned Analytics page.
+// environment "" means all environments.
 export async function getDoraOverview(
   key: string,
   windowDays: number,
+  environment = "",
 ): Promise<DoraOverview> {
+  const env = environment ? `&environment=${encodeURIComponent(environment)}` : "";
   return readJSON<DoraOverview>(
-    `/api/v1/analytics/dora/overview?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
+    `/api/v1/analytics/dora/overview?key=${encodeURIComponent(key)}&window_days=${windowDays}${env}`,
   );
 }

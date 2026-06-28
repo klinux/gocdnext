@@ -38,6 +38,7 @@ agg AS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = $2
       )
+      AND ($3::text = '' OR e.name = $3)
     GROUP BY day
 )
 SELECT d.day AS day,
@@ -53,6 +54,7 @@ ORDER BY d.day
 type DoraDailySeriesParams struct {
 	SinceWindow pgtype.Interval
 	LabelKey    string
+	Environment string
 }
 
 type DoraDailySeriesRow struct {
@@ -68,7 +70,7 @@ type DoraDailySeriesRow struct {
 // days with no deploy) so a sparse 90-day window still plots an honest,
 // non-compressed trend. Success/total/failed counts + lead-time p50 per day.
 func (q *Queries) DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error) {
-	rows, err := q.db.Query(ctx, doraDailySeries, arg.SinceWindow, arg.LabelKey)
+	rows, err := q.db.Query(ctx, doraDailySeries, arg.SinceWindow, arg.LabelKey, arg.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +102,10 @@ WITH failures AS (
     JOIN environments e ON e.project_id = pl.project_id
     JOIN deployment_revisions dr ON dr.environment_id = e.id
     WHERE pl.key = $1
+      AND ($2::text = '' OR e.name = $2)
       AND dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $2::interval
+      AND dr.finished_at >= now() - $3::interval
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
@@ -125,6 +128,7 @@ GROUP BY f.grp
 
 type DoraMTTRParams struct {
 	LabelKey    string
+	Environment string
 	SinceWindow pgtype.Interval
 }
 
@@ -138,7 +142,7 @@ type DoraMTTRRow struct {
 // lateral index probe per failure instead of a self-scan over all historical
 // deploy events for the label key.
 func (q *Queries) DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRRow, error) {
-	rows, err := q.db.Query(ctx, doraMTTR, arg.LabelKey, arg.SinceWindow)
+	rows, err := q.db.Query(ctx, doraMTTR, arg.LabelKey, arg.Environment, arg.SinceWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -171,9 +175,10 @@ WITH base AS (
     JOIN deployment_revisions dr ON dr.environment_id = e.id
     LEFT JOIN runs r ON r.id = dr.run_id
     WHERE pl.key = $1
+      AND ($2::text = '' OR e.name = $2)
       AND dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $2::interval
+      AND dr.finished_at >= now() - $3::interval
 )
 SELECT grp,
        COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
@@ -189,6 +194,7 @@ ORDER BY grp
 
 type DoraRollupParams struct {
 	LabelKey    string
+	Environment string
 	SinceWindow pgtype.Interval
 }
 
@@ -205,7 +211,7 @@ type DoraRollupRow struct {
 // deployment_revisions (+ the producing run for lead time). One row per
 // distinct value of the key.
 func (q *Queries) DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error) {
-	rows, err := q.db.Query(ctx, doraRollup, arg.LabelKey, arg.SinceWindow)
+	rows, err := q.db.Query(ctx, doraRollup, arg.LabelKey, arg.Environment, arg.SinceWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -246,6 +252,7 @@ WITH base AS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = $3
       )
+      AND ($4::text = '' OR e.name = $4)
 )
 SELECT COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
        COUNT(*)::bigint AS deploys_total,
@@ -260,6 +267,7 @@ type DoraWindowAggParams struct {
 	SinceWindow pgtype.Interval
 	UntilWindow pgtype.Interval
 	LabelKey    string
+	Environment string
 }
 
 type DoraWindowAggRow struct {
@@ -275,7 +283,12 @@ type DoraWindowAggRow struct {
 // A deploy counts once even if its project carries the key under several values
 // (EXISTS, not a join, so no fan-out double count).
 func (q *Queries) DoraWindowAgg(ctx context.Context, arg DoraWindowAggParams) (DoraWindowAggRow, error) {
-	row := q.db.QueryRow(ctx, doraWindowAgg, arg.SinceWindow, arg.UntilWindow, arg.LabelKey)
+	row := q.db.QueryRow(ctx, doraWindowAgg,
+		arg.SinceWindow,
+		arg.UntilWindow,
+		arg.LabelKey,
+		arg.Environment,
+	)
 	var i DoraWindowAggRow
 	err := row.Scan(
 		&i.DeploysSuccess,
@@ -299,6 +312,7 @@ WITH failures AS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = $3
       )
+      AND ($4::text = '' OR e.name = $4)
 )
 SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
                     ORDER BY EXTRACT(EPOCH FROM (s.finished_at - f.finished_at))::double precision
@@ -321,16 +335,60 @@ type DoraWindowMTTRParams struct {
 	SinceWindow pgtype.Interval
 	UntilWindow pgtype.Interval
 	LabelKey    string
+	Environment string
 }
 
 // Org-wide median time-to-restore over [since, until): for each FAILED deploy
 // whose project carries the key, the gap to the next SUCCESS in the same
 // environment (lateral index probe per failure).
 func (q *Queries) DoraWindowMTTR(ctx context.Context, arg DoraWindowMTTRParams) (float64, error) {
-	row := q.db.QueryRow(ctx, doraWindowMTTR, arg.SinceWindow, arg.UntilWindow, arg.LabelKey)
+	row := q.db.QueryRow(ctx, doraWindowMTTR,
+		arg.SinceWindow,
+		arg.UntilWindow,
+		arg.LabelKey,
+		arg.Environment,
+	)
 	var mttr_p50_s float64
 	err := row.Scan(&mttr_p50_s)
 	return mttr_p50_s, err
+}
+
+const listAnalyticsEnvironments = `-- name: ListAnalyticsEnvironments :many
+SELECT DISTINCT e.name
+FROM environments e
+WHERE EXISTS (
+        SELECT 1 FROM project_labels pl
+        WHERE pl.project_id = e.project_id AND pl.key = $1
+    )
+  AND EXISTS (
+        SELECT 1 FROM deployment_revisions dr
+        WHERE dr.environment_id = e.id
+          AND dr.status IN ('success', 'failed')
+          AND dr.finished_at IS NOT NULL
+    )
+ORDER BY e.name
+`
+
+// Distinct environment names that have terminal deploys and belong to a project
+// carrying the group-by key — the dashboard's "environment" filter options.
+func (q *Queries) ListAnalyticsEnvironments(ctx context.Context, labelKey string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAnalyticsEnvironments, labelKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listLabelKeys = `-- name: ListLabelKeys :many
