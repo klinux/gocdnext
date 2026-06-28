@@ -207,10 +207,10 @@ GROUP BY f.grp;
 -- → PR opened), Review (→ approval, only when approved_at exists), Release wait
 -- (approval/merge → deploy job start), Deploy (deploy job start → finish).
 -- Rollbacks are excluded entirely (a revert isn't new change-delivery and would
--- inflate Release wait against an old approval). `eligible` = successful
--- non-rollback deploys with a started deploy job; `excluded` = those with no PR
--- correlation. Each stage exposes its own sample count, since p50s drop rows
--- with missing boundaries.
+-- inflate Release wait against an old approval). `eligible` = every successful
+-- non-rollback deploy in the window; `excluded` = those with no PR correlation
+-- (incl. retention-pruned runs / no git revision). Each stage exposes its own
+-- sample count, since p50s drop rows with missing boundaries.
 WITH eligible AS (
     -- Universe = every successful, non-rollback deploy in the window. run/job/
     -- sha/PR are LEFT-joined so a deploy whose run was retention-pruned, or that
