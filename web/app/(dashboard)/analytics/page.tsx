@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { LineChart } from "lucide-react";
 
 import { DoraBenchmark } from "@/components/analytics/dora-benchmark";
+import { DoraBottleneck } from "@/components/analytics/dora-bottleneck";
 import { DoraDeployFrequency } from "@/components/analytics/dora-deploy-frequency";
 import { DoraHeroCards, TierChip } from "@/components/analytics/dora-hero-cards";
 import { DoraLeaderboard } from "@/components/analytics/dora-leaderboard.client";
@@ -101,12 +102,15 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
       </div>
 
       <div className="space-y-3.5">
-        <SectionLabel>Trend</SectionLabel>
-        <DoraDeployFrequency
-          daily={ov.daily}
-          windowDays={windowDays}
-          freqPerDay={ov.current.deploy_freq_per_day}
-        />
+        <SectionLabel>Trend &amp; bottleneck</SectionLabel>
+        <div className="grid gap-3.5 lg:grid-cols-2">
+          <DoraDeployFrequency
+            daily={ov.daily}
+            windowDays={windowDays}
+            freqPerDay={ov.current.deploy_freq_per_day}
+          />
+          <DoraBottleneck bottleneck={ov.bottleneck} />
+        </div>
       </div>
 
       <div className="space-y-3.5">

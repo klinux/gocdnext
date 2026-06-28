@@ -62,6 +62,7 @@ type LeadTimeBottleneck struct {
 	ReviewSample  int64   `json:"review_sample"`
 	ReleaseSample int64   `json:"release_sample"`
 	DeploySample  int64   `json:"deploy_sample"`
+	TotalP50Sec   float64 `json:"total_p50_seconds"`
 	CodingP50Sec  float64 `json:"coding_p50_seconds"`
 	ReviewP50Sec  float64 `json:"review_p50_seconds"`
 	ReleaseP50Sec float64 `json:"release_wait_p50_seconds"`
@@ -157,6 +158,7 @@ func (s *Store) leadTimeBottleneck(ctx context.Context, labelKey string, windowD
 		ReviewSample:  row.ReviewSample,
 		ReleaseSample: row.ReleaseSample,
 		DeploySample:  row.DeploySample,
+		TotalP50Sec:   row.TotalP50S,
 		CodingP50Sec:  row.CodingP50S,
 		ReviewP50Sec:  row.ReviewP50S,
 		ReleaseP50Sec: row.ReleaseP50S,

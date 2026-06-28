@@ -63,6 +63,7 @@ export type LeadTimeBottleneck = {
   review_sample: number;
   release_sample: number;
   deploy_sample: number;
+  total_p50_seconds: number;
   coding_p50_seconds: number;
   review_p50_seconds: number;
   release_wait_p50_seconds: number;

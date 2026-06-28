@@ -121,6 +121,9 @@ func TestDoraBottleneck_Decomposition(t *testing.T) {
 	near("review", b.ReviewP50Sec, 7200)
 	near("release", b.ReleaseP50Sec, 3*3600)
 	near("deploy", b.DeployP50Sec, 1200)
+	// True end-to-end p50 = deploy_finished − first_commit = 6h20m (here it
+	// happens to equal the stage sum, since there's a single deploy).
+	near("total", b.TotalP50Sec, 6*3600+20*60)
 }
 
 func TestDoraBottleneck_ExcludesUncorrelated(t *testing.T) {
