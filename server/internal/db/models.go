@@ -542,6 +542,25 @@ type VcsIntegration struct {
 	UpdatedAt     pgtype.Timestamptz
 }
 
+type VcsPullRequest struct {
+	ID         pgtype.UUID
+	Provider   string
+	Repo       string
+	Number     int64
+	Title      string
+	Author     string
+	HeadRef    string
+	BaseRef    string
+	HeadSha    string
+	MergeSha   string
+	OpenedAt   pgtype.Timestamptz
+	ApprovedAt pgtype.Timestamptz
+	MergedAt   pgtype.Timestamptz
+	ClosedAt   pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type WebhookDelivery struct {
 	ID         int64
 	Provider   string
