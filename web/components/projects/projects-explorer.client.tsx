@@ -9,6 +9,7 @@ import {
   List,
   RefreshCw,
   Search,
+  Tag,
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,9 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<ProjectStatus | "all">("all");
   const [provider, setProvider] = useState<ProjectProvider | "all">("all");
+  // A selected label is its "key:value" identity (value may be empty); null =
+  // no label filter.
+  const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("grid");
   // Local mirror of the hide-list — the menu writes here on every
   // toggle for instant UX, while the debounced save persists to the
@@ -82,12 +86,29 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
     () => countBy(visibleProjects, (p) => p.provider ?? ""),
     [visibleProjects],
   );
+  // Label chips: count projects carrying each key:value across the visible set.
+  const labelCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of visibleProjects) {
+      for (const l of p.labels ?? []) {
+        const k = `${l.key}:${l.value}`;
+        m.set(k, (m.get(k) ?? 0) + 1);
+      }
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [visibleProjects]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return visibleProjects.filter((p) => {
       if (status !== "all" && p.status !== status) return false;
       if (provider !== "all" && (p.provider ?? "") !== provider) return false;
+      if (
+        labelFilter &&
+        !(p.labels ?? []).some((l) => `${l.key}:${l.value}` === labelFilter)
+      ) {
+        return false;
+      }
       if (!q) return true;
       return (
         p.slug.toLowerCase().includes(q) ||
@@ -95,7 +116,7 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
         (p.description ?? "").toLowerCase().includes(q)
       );
     });
-  }, [visibleProjects, query, status, provider]);
+  }, [visibleProjects, query, status, provider, labelFilter]);
 
   return (
     <div className="space-y-5">
@@ -171,6 +192,28 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
                 />
               ) : null,
             )}
+          </>
+        ) : null}
+
+        {labelCounts.length > 0 ? (
+          <>
+            <span className="mx-1 h-4 w-px bg-border" aria-hidden />
+            {labelCounts.map(([k, count]) => {
+              const sep = k.indexOf(":");
+              const key = k.slice(0, sep);
+              const value = k.slice(sep + 1);
+              return (
+                <FilterPill
+                  key={k}
+                  label={value ? `${key}:${value}` : key}
+                  count={count}
+                  active={labelFilter === k}
+                  onClick={() => setLabelFilter(labelFilter === k ? null : k)}
+                  tone="neutral"
+                  icon={<Tag className="size-3" />}
+                />
+              );
+            })}
           </>
         ) : null}
       </div>

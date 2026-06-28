@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 
 import { ProjectPollSettings } from "@/components/projects/project-poll-settings.client";
 import { ProjectLogArchiveSettings } from "@/components/projects/project-log-archive-settings.client";
+import { ProjectLabelsCard } from "@/components/projects/project-labels.client";
 import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
 import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
 import {
@@ -97,6 +98,8 @@ export default async function ProjectSettingsPage({
           project.
         </p>
       </div>
+
+      <ProjectLabelsCard slug={slug} initial={detail.project.labels ?? []} />
 
       <ProjectPollSettings
         slug={slug}
