@@ -1638,6 +1638,10 @@ components:
         teams:
           type: array
           items: { $ref: "#/components/schemas/DoraGroup" }
+        teams_prior:
+          type: array
+          description: per-group rollup over the prior window (movers compare vs this)
+          items: { $ref: "#/components/schemas/DoraGroup" }
 
     ProjectDetail:
       allOf:

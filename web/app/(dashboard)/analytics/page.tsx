@@ -7,6 +7,7 @@ import { DoraDeployFrequency } from "@/components/analytics/dora-deploy-frequenc
 import { DoraHeroCards, TierChip } from "@/components/analytics/dora-hero-cards";
 import { DoraLeaderboard } from "@/components/analytics/dora-leaderboard.client";
 import { orgTier } from "@/components/analytics/dora-metrics";
+import { DoraMovers } from "@/components/analytics/dora-movers.client";
 import { DoraToolbar } from "@/components/analytics/dora-toolbar.client";
 import { TIER_LABEL } from "@/lib/dora";
 import {
@@ -123,6 +124,13 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
           <DoraLeaderboard teams={ov.teams} groupKey={activeKey} />
         )}
       </div>
+
+      {ov.teams.length > 0 ? (
+        <div className="space-y-3.5">
+          <SectionLabel>Highlights</SectionLabel>
+          <DoraMovers overview={ov} windowDays={windowDays} />
+        </div>
+      ) : null}
 
       <DoraBenchmark />
     </>

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
@@ -50,13 +48,24 @@ func (s *Store) DoraRollup(ctx context.Context, labelKey string, windowDays int,
 	if windowDays <= 0 {
 		windowDays = 30
 	}
-	iv := pgtype.Interval{Days: int32(windowDays), Valid: true}
+	// Trailing window: [windowDays, 0); the span (for deploy frequency) is the
+	// whole window.
+	return s.doraRollupWindow(ctx, labelKey, windowDays, 0, windowDays, environment)
+}
 
-	rows, err := s.q.DoraRollup(ctx, db.DoraRollupParams{LabelKey: labelKey, SinceWindow: iv, Environment: environment})
+// doraRollupWindow is the per-group rollup over an arbitrary [sinceDays,
+// untilDays) window; spanDays is the window length used as the deploy-frequency
+// denominator. The current window is [w,0) and the prior is [2w,w) — same span,
+// shifted — so the movers can compare team-by-team.
+func (s *Store) doraRollupWindow(ctx context.Context, labelKey string, sinceDays, untilDays, spanDays int, environment string) ([]DoraGroup, error) {
+	since := dayInterval(sinceDays)
+	until := dayInterval(untilDays)
+
+	rows, err := s.q.DoraRollup(ctx, db.DoraRollupParams{LabelKey: labelKey, SinceWindow: since, UntilWindow: until, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora rollup: %w", err)
 	}
-	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceWindow: iv, Environment: environment})
+	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceWindow: since, UntilWindow: until, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora mttr: %w", err)
 	}
@@ -75,7 +84,9 @@ func (s *Store) DoraRollup(ctx context.Context, labelKey string, windowDays int,
 			LeadTimeP50Sec: r.LeadTimeP50S,
 			MTTRP50Sec:     mttr[r.Grp],
 		}
-		g.DeployFreqPerDay = float64(r.DeploysSuccess) / float64(windowDays)
+		if spanDays > 0 {
+			g.DeployFreqPerDay = float64(r.DeploysSuccess) / float64(spanDays)
+		}
 		if r.DeploysTotal > 0 {
 			g.ChangeFailureRate = float64(r.DeploysFailed) / float64(r.DeploysTotal)
 		}

@@ -106,6 +106,7 @@ WITH failures AS (
       AND dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - $3::interval
+      AND dr.finished_at <  now() - $4::interval
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
@@ -130,6 +131,7 @@ type DoraMTTRParams struct {
 	LabelKey    string
 	Environment string
 	SinceWindow pgtype.Interval
+	UntilWindow pgtype.Interval
 }
 
 type DoraMTTRRow struct {
@@ -142,7 +144,12 @@ type DoraMTTRRow struct {
 // lateral index probe per failure instead of a self-scan over all historical
 // deploy events for the label key.
 func (q *Queries) DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRRow, error) {
-	rows, err := q.db.Query(ctx, doraMTTR, arg.LabelKey, arg.Environment, arg.SinceWindow)
+	rows, err := q.db.Query(ctx, doraMTTR,
+		arg.LabelKey,
+		arg.Environment,
+		arg.SinceWindow,
+		arg.UntilWindow,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +186,7 @@ WITH base AS (
       AND dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - $3::interval
+      AND dr.finished_at <  now() - $4::interval
 )
 SELECT grp,
        COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
@@ -196,6 +204,7 @@ type DoraRollupParams struct {
 	LabelKey    string
 	Environment string
 	SinceWindow pgtype.Interval
+	UntilWindow pgtype.Interval
 }
 
 type DoraRollupRow struct {
@@ -211,7 +220,12 @@ type DoraRollupRow struct {
 // deployment_revisions (+ the producing run for lead time). One row per
 // distinct value of the key.
 func (q *Queries) DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error) {
-	rows, err := q.db.Query(ctx, doraRollup, arg.LabelKey, arg.Environment, arg.SinceWindow)
+	rows, err := q.db.Query(ctx, doraRollup,
+		arg.LabelKey,
+		arg.Environment,
+		arg.SinceWindow,
+		arg.UntilWindow,
+	)
 	if err != nil {
 		return nil, err
 	}

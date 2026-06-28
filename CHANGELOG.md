@@ -10,6 +10,14 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ### Added
 
+- **Analytics — highlights / movers (phase 3).** A "Highlights" section surfaces
+  the window's biggest improvement, biggest regression, and a watch item
+  (stalled cadence), derived per-group from the current vs. the prior window —
+  e.g. "payments improved from Medium to High", "card change failure rose to
+  67%", "growth only shipped 1 deploy". Captions are data-derived (tier moves,
+  lead-time/CFR deltas), not editorial. Backed by a new `teams_prior` per-group
+  prior-window rollup on the overview endpoint. (#111)
+
 - **Analytics — environment filter.** The Analytics toolbar gains an
   **Environment** selector (All / per environment); the whole dashboard (org
   rollup, deltas, daily series, leaderboard) recomputes for the chosen deploy
