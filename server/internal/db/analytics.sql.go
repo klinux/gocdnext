@@ -11,6 +11,88 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const doraDailySeries = `-- name: DoraDailySeries :many
+WITH days AS (
+    SELECT generate_series(
+        date_trunc('day', now() - $1::interval),
+        date_trunc('day', now()),
+        interval '1 day'
+    )::date AS day
+),
+agg AS (
+    SELECT date_trunc('day', dr.finished_at)::date AS day,
+           COUNT(*) FILTER (WHERE dr.status = 'success')::bigint AS deploys_success,
+           COUNT(*)::bigint AS deploys_total,
+           COUNT(*) FILTER (WHERE dr.status = 'failed' OR dr.is_rollback)::bigint AS deploys_failed,
+           COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
+                    ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
+                    0)::double precision AS lead_time_p50_s
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    LEFT JOIN runs r ON r.id = dr.run_id
+    WHERE dr.status IN ('success', 'failed')
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - $1::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = $2
+      )
+    GROUP BY day
+)
+SELECT d.day AS day,
+       COALESCE(a.deploys_success, 0)::bigint AS deploys_success,
+       COALESCE(a.deploys_total, 0)::bigint AS deploys_total,
+       COALESCE(a.deploys_failed, 0)::bigint AS deploys_failed,
+       COALESCE(a.lead_time_p50_s, 0)::double precision AS lead_time_p50_s
+FROM days d
+LEFT JOIN agg a ON a.day = d.day
+ORDER BY d.day
+`
+
+type DoraDailySeriesParams struct {
+	SinceWindow pgtype.Interval
+	LabelKey    string
+}
+
+type DoraDailySeriesRow struct {
+	Day            pgtype.Date
+	DeploysSuccess int64
+	DeploysTotal   int64
+	DeploysFailed  int64
+	LeadTimeP50S   float64
+}
+
+// Dense per-day org buckets over the trailing window — feeds the hero
+// sparklines. generate_series yields one row per calendar day (zero-filled for
+// days with no deploy) so a sparse 90-day window still plots an honest,
+// non-compressed trend. Success/total/failed counts + lead-time p50 per day.
+func (q *Queries) DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error) {
+	rows, err := q.db.Query(ctx, doraDailySeries, arg.SinceWindow, arg.LabelKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DoraDailySeriesRow{}
+	for rows.Next() {
+		var i DoraDailySeriesRow
+		if err := rows.Scan(
+			&i.Day,
+			&i.DeploysSuccess,
+			&i.DeploysTotal,
+			&i.DeploysFailed,
+			&i.LeadTimeP50S,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const doraMTTR = `-- name: DoraMTTR :many
 WITH failures AS (
     SELECT pl.value AS grp, dr.environment_id, dr.finished_at
@@ -146,6 +228,109 @@ func (q *Queries) DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraR
 		return nil, err
 	}
 	return items, nil
+}
+
+const doraWindowAgg = `-- name: DoraWindowAgg :one
+WITH base AS (
+    SELECT dr.status,
+           dr.is_rollback,
+           EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    LEFT JOIN runs r ON r.id = dr.run_id
+    WHERE dr.status IN ('success', 'failed')
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - $1::interval
+      AND dr.finished_at <  now() - $2::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = $3
+      )
+)
+SELECT COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
+       COUNT(*)::bigint AS deploys_total,
+       COUNT(*) FILTER (WHERE status = 'failed' OR is_rollback)::bigint AS deploys_failed,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
+                FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM base
+`
+
+type DoraWindowAggParams struct {
+	SinceWindow pgtype.Interval
+	UntilWindow pgtype.Interval
+	LabelKey    string
+}
+
+type DoraWindowAggRow struct {
+	DeploysSuccess int64
+	DeploysTotal   int64
+	DeploysFailed  int64
+	LeadTimeP50S   float64
+}
+
+// Org-wide DORA counts + lead-time p50 over an arbitrary [since, until) window
+// (both intervals trailing from now). The same query serves the current window
+// (until=0) and the prior window (since=2×window, until=window) for deltas.
+// A deploy counts once even if its project carries the key under several values
+// (EXISTS, not a join, so no fan-out double count).
+func (q *Queries) DoraWindowAgg(ctx context.Context, arg DoraWindowAggParams) (DoraWindowAggRow, error) {
+	row := q.db.QueryRow(ctx, doraWindowAgg, arg.SinceWindow, arg.UntilWindow, arg.LabelKey)
+	var i DoraWindowAggRow
+	err := row.Scan(
+		&i.DeploysSuccess,
+		&i.DeploysTotal,
+		&i.DeploysFailed,
+		&i.LeadTimeP50S,
+	)
+	return i, err
+}
+
+const doraWindowMTTR = `-- name: DoraWindowMTTR :one
+WITH failures AS (
+    SELECT dr.environment_id, dr.finished_at
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    WHERE dr.status = 'failed'
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - $1::interval
+      AND dr.finished_at <  now() - $2::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = $3
+      )
+)
+SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (s.finished_at - f.finished_at))::double precision
+                ) FILTER (WHERE s.finished_at IS NOT NULL),
+                0)::double precision AS mttr_p50_s
+FROM failures f
+LEFT JOIN LATERAL (
+    SELECT drs.finished_at
+    FROM deployment_revisions drs
+    WHERE drs.environment_id = f.environment_id
+      AND drs.status = 'success'
+      AND drs.finished_at IS NOT NULL
+      AND drs.finished_at > f.finished_at
+    ORDER BY drs.finished_at ASC
+    LIMIT 1
+) s ON TRUE
+`
+
+type DoraWindowMTTRParams struct {
+	SinceWindow pgtype.Interval
+	UntilWindow pgtype.Interval
+	LabelKey    string
+}
+
+// Org-wide median time-to-restore over [since, until): for each FAILED deploy
+// whose project carries the key, the gap to the next SUCCESS in the same
+// environment (lateral index probe per failure).
+func (q *Queries) DoraWindowMTTR(ctx context.Context, arg DoraWindowMTTRParams) (float64, error) {
+	row := q.db.QueryRow(ctx, doraWindowMTTR, arg.SinceWindow, arg.UntilWindow, arg.LabelKey)
+	var mttr_p50_s float64
+	err := row.Scan(&mttr_p50_s)
+	return mttr_p50_s, err
 }
 
 const listLabelKeys = `-- name: ListLabelKeys :many

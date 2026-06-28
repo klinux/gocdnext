@@ -21,6 +21,36 @@ export type DoraRollup = {
   groups: DoraGroup[];
 };
 
+// Org-wide rollup over one window (no group label) — current + prior drive the
+// hero cards' values and "vs. prior" deltas.
+export type OrgMetrics = {
+  deploys_success: number;
+  deploys_total: number;
+  deploys_failed: number;
+  deploy_freq_per_day: number;
+  lead_time_p50_seconds: number;
+  change_failure_rate: number;
+  mttr_p50_seconds: number;
+};
+
+export type DoraDay = {
+  day: string; // YYYY-MM-DD
+  deploys_success: number;
+  deploys_total: number;
+  deploys_failed: number;
+  lead_time_p50_seconds: number;
+};
+
+// The single payload behind the Analytics page.
+export type DoraOverview = {
+  key: string;
+  window_days: number;
+  current: OrgMetrics;
+  prior: OrgMetrics;
+  daily: DoraDay[];
+  teams: DoraGroup[];
+};
+
 async function readJSON<T>(path: string): Promise<T> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
   const session = (await cookies()).get("gocdnext_session")?.value;
@@ -51,5 +81,15 @@ export async function getDoraRollup(
 ): Promise<DoraRollup> {
   return readJSON<DoraRollup>(
     `/api/v1/analytics/dora?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
+  );
+}
+
+// getDoraOverview is the single read behind the redesigned Analytics page.
+export async function getDoraOverview(
+  key: string,
+  windowDays: number,
+): Promise<DoraOverview> {
+  return readJSON<DoraOverview>(
+    `/api/v1/analytics/dora/overview?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
   );
 }

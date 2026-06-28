@@ -53,6 +53,41 @@ func TestAnalytics_DoraValidationAndShape(t *testing.T) {
 	}
 }
 
+func TestAnalytics_Overview(t *testing.T) {
+	h, _ := newHandler(t)
+
+	// key required.
+	rr := httptest.NewRecorder()
+	h.Overview(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/dora/overview", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status = %d, want 400", rr.Code)
+	}
+
+	// Happy path (no data) → 200 echoing key/window with empty teams + current/prior.
+	rr = httptest.NewRecorder()
+	h.Overview(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/dora/overview?key=team&window_days=14", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Key        string `json:"key"`
+		WindowDays int    `json:"window_days"`
+		Current    struct {
+			DeploysTotal int64 `json:"deploys_total"`
+		} `json:"current"`
+		Prior struct {
+			DeploysTotal int64 `json:"deploys_total"`
+		} `json:"prior"`
+		Teams []any `json:"teams"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Key != "team" || body.WindowDays != 14 {
+		t.Fatalf("echo = %+v", body)
+	}
+}
+
 func TestAnalytics_LabelKeys(t *testing.T) {
 	h, _ := newHandler(t)
 	rr := httptest.NewRecorder()
