@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
-import { type Delta, TIER_COLOR, TIER_LABEL, type Tier } from "@/lib/dora";
+import { type Delta, TIER_BG, TIER_COLOR, TIER_LABEL, type Tier } from "@/lib/dora";
 import { cn } from "@/lib/utils";
 import type { DoraOverview } from "@/server/queries/analytics";
 
@@ -40,7 +40,7 @@ export function TierChip({
         "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 font-mono text-[10.5px] font-bold uppercase tracking-wide",
         className,
       )}
-      style={{ backgroundColor: `${color}22`, color }}
+      style={{ backgroundColor: TIER_BG[tier], color }}
     >
       <span className="size-1.5 rounded-full" style={{ backgroundColor: color }} />
       {label ?? TIER_LABEL[tier]}
