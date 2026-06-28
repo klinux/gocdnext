@@ -45,6 +45,18 @@ function overview(over: Partial<DoraOverview>): DoraOverview {
     ],
     teams: [],
     teams_prior: [],
+    bottleneck: {
+      correlated: 0,
+      excluded: 0,
+      coding_sample: 0,
+      review_sample: 0,
+      release_sample: 0,
+      deploy_sample: 0,
+      coding_p50_seconds: 0,
+      review_p50_seconds: 0,
+      release_wait_p50_seconds: 0,
+      deploy_p50_seconds: 0,
+    },
     ...over,
   };
 }
