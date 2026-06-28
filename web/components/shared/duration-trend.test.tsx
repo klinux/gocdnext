@@ -1,7 +1,6 @@
-import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { DurationTrend, runDurationPoints } from "./duration-trend";
+import { durationSummary, runDurationPoints, type DurationPoint } from "./duration-trend";
 import type { RunSummary } from "@/types/api";
 
 function run(p: Partial<RunSummary> & { counter: number }): RunSummary {
@@ -18,6 +17,10 @@ function run(p: Partial<RunSummary> & { counter: number }): RunSummary {
   };
 }
 
+function pts(...durs: number[]): DurationPoint[] {
+  return durs.map((d, i) => ({ label: `#${i + 1}`, durationSeconds: d, status: "success" }));
+}
+
 describe("runDurationPoints", () => {
   it("orders by finish time (not counter), drops unfinished runs", () => {
     // counter order ≠ finish order — counter is unique only per pipeline.
@@ -26,10 +29,9 @@ describe("runDurationPoints", () => {
       run({ counter: 1, started_at: "2026-01-01T00:00:00Z", finished_at: "2026-01-01T00:01:00Z" }),
       run({ counter: 2, started_at: "2026-01-01T00:00:00Z" }), // running — dropped
     ];
-    const pts = runDurationPoints(runs);
-    // #3 finished first (00:30) then #1 (01:00) → oldest→newest by finish time.
-    expect(pts.map((p) => p.label)).toEqual(["#3", "#1"]);
-    expect(pts.map((p) => p.durationSeconds)).toEqual([30, 60]);
+    const out = runDurationPoints(runs);
+    expect(out.map((p) => p.label)).toEqual(["#3", "#1"]);
+    expect(out.map((p) => p.durationSeconds)).toEqual([30, 60]);
   });
 
   it("labels with the pipeline name when aggregating across pipelines", () => {
@@ -48,36 +50,46 @@ describe("runDurationPoints", () => {
       run({
         counter: i + 1,
         started_at: "2026-01-01T00:00:00Z",
-        // finish time increases with counter so time-order == counter-order here.
         finished_at: new Date(Date.UTC(2026, 0, 1, 0, 0, 10 + i)).toISOString(),
       }),
     );
-    const pts = runDurationPoints(runs, 30);
-    expect(pts).toHaveLength(30);
-    expect(pts[0]!.label).toBe("#11");
-    expect(pts[29]!.label).toBe("#40");
+    const out = runDurationPoints(runs, 30);
+    expect(out).toHaveLength(30);
+    expect(out[0]!.label).toBe("#11");
+    expect(out[29]!.label).toBe("#40");
   });
 });
 
-describe("DurationTrend", () => {
-  it("shows a hint below 2 finished runs", () => {
-    render(<DurationTrend points={[{ label: "#1", durationSeconds: 10, status: "success" }]} />);
-    expect(screen.getByText(/not enough finished runs/i)).toBeTruthy();
+describe("durationSummary", () => {
+  it("returns null below 2 positive points", () => {
+    expect(durationSummary(pts())).toBeNull();
+    expect(durationSummary(pts(10))).toBeNull();
+    expect(durationSummary(pts(0, 0))).toBeNull(); // zero durations filtered out
   });
 
-  it("renders bars + a median with enough data", () => {
-    render(
-      <DurationTrend
-        points={[
-          { label: "#1", durationSeconds: 10, status: "success" },
-          { label: "#2", durationSeconds: 30, status: "failed" },
-          { label: "#3", durationSeconds: 20, status: "success" },
-        ]}
-      />,
-    );
-    expect(screen.getByText("3 runs")).toBeTruthy();
-    expect(screen.getByText(/median/i)).toBeTruthy();
-    // one titled bar per point
-    expect(screen.getByTitle(/#2 · .* · failed/)).toBeTruthy();
+  it("computes median + fastest/slowest", () => {
+    const s = durationSummary(pts(30, 10, 20))!;
+    expect(s.median).toBe(20);
+    expect(s.min).toBe(10);
+    expect(s.max).toBe(30);
+    expect(s.values).toEqual([30, 10, 20]); // preserves chronological order
+  });
+
+  it("flags a regression: recent half slower than prior", () => {
+    const s = durationSummary(pts(60, 60, 120, 120))!;
+    expect(s.deltaPct).toBe(100); // 60 → 120 median
+    expect(s.slower).toBe(true);
+  });
+
+  it("flags an improvement: recent half faster", () => {
+    const s = durationSummary(pts(120, 120, 60, 60))!;
+    expect(s.deltaPct).toBe(-50); // 120 → 60 median
+    expect(s.slower).toBe(false);
+  });
+
+  it("leaves delta null without enough history to split a window", () => {
+    const s = durationSummary(pts(10, 20, 30))!;
+    expect(s.deltaPct).toBeNull();
+    expect(s.slower).toBe(false);
   });
 });

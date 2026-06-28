@@ -8,6 +8,8 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.62.0 — 2026-06-28
+
 ### Added
 
 - **Project labels** (#106) — free-form `key:value` grouping tags on projects
@@ -20,6 +22,39 @@ convention that minor bumps may carry breaking changes until 1.0).
   rate, and time-to-restore (MTTR) — **grouped by a project label** (team, tier,
   domain) over a 7/30/90-day window. Server-side aggregation over deploy markers
   + run history (`/api/v1/analytics/dora`), so the dashboard is a cheap read.
+  Metric semantics: lead time = `deploy.finished_at − run.started_at` (excludes
+  queue wait); change-failure rate counts failed **or** rolled-back deploys;
+  MTTR = a failed deploy to the next success in the same environment. The new
+  endpoints and the `labels` field are documented in the OpenAPI spec. (#110)
+
+## v0.61.0 — 2026-06-27
+
+### Added
+
+- **Duration trend as a toolbar sparkline pill.** The pipelines toolbar carries
+  a compact `DURATION` pill — sparkline + median + a window-over-window delta
+  badge (↑ red slower / ↓ green faster) — that expands a per-run histogram
+  popover on click (zero vertical footprint until opened; closes on Escape /
+  outside click). The per-pipeline overview sheet swaps its bar chart for the
+  same sparkline + fastest/median/slowest stats. The sparkline runs teal →
+  amber → red from the point a series regresses past median × 1.15. (#109)
+
+## v0.60.1 — 2026-06-27
+
+### Fixed
+
+- **Compliance policy sheet crashed on "Start from template".** The template
+  picker was a dropdown menu opened nested inside the sheet's dialog, which
+  threw at runtime — the whole compliance page rendered "This page couldn't
+  load". Replaced with inline template chips in the Definition section (no
+  portal/menu inside the dialog); template behaviour is unchanged. (#108)
+
+### Changed
+
+- **Removed the full-width project-wide run-duration card** from the pipelines
+  page — it spent too much vertical space for one number. The per-pipeline
+  trend in the overview sheet stays; a compact toolbar sparkline replaces the
+  project-wide view in a follow-up. (#108)
 
 ## v0.60.0 — 2026-06-27
 
