@@ -56,3 +56,21 @@ WHERE id = $1;
 UPDATE projects
 SET notifications = $2, updated_at = NOW()
 WHERE id = $1;
+
+-- name: InsertProjectLabel :exec
+-- Idempotent add of one key:value label. ON CONFLICT keeps the set/replace
+-- flow simple (delete-all + re-insert in a tx).
+INSERT INTO project_labels (project_id, key, value)
+VALUES ($1, $2, $3)
+ON CONFLICT (project_id, key, value) DO NOTHING;
+
+-- name: DeleteProjectLabels :exec
+DELETE FROM project_labels WHERE project_id = $1;
+
+-- name: ListProjectLabels :many
+SELECT key, value FROM project_labels WHERE project_id = $1 ORDER BY key, value;
+
+-- name: ListAllProjectLabels :many
+-- Every project's labels in one read — the list page maps these by project_id
+-- (no N+1), and the analytics rollup groups by (key, value).
+SELECT project_id, key, value FROM project_labels ORDER BY project_id, key, value;

@@ -38,6 +38,7 @@ const (
 	AuditActionUserCreate             = "user.create"
 	AuditActionWebhookSecretRotate    = "webhook_secret.rotate"
 	AuditActionProjectNotifsSet       = "project_notifications.set"
+	AuditActionProjectLabelsSet       = "project_labels.set"
 	AuditActionProjectPollSet         = "project_poll.set"
 	AuditActionProjectLogArchiveSet   = "project_log_archive.set"
 	AuditActionAPITokenCreate         = "api_token.create"

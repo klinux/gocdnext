@@ -27,6 +27,15 @@ func (q *Queries) DeleteProjectBySlug(ctx context.Context, slug string) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const deleteProjectLabels = `-- name: DeleteProjectLabels :exec
+DELETE FROM project_labels WHERE project_id = $1
+`
+
+func (q *Queries) DeleteProjectLabels(ctx context.Context, projectID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProjectLabels, projectID)
+	return err
+}
+
 const findProjectBySlug = `-- name: FindProjectBySlug :one
 SELECT id, slug, name, description, config_path, created_at, updated_at
 FROM projects
@@ -109,6 +118,80 @@ func (q *Queries) GetProjectNotifications(ctx context.Context, id pgtype.UUID) (
 	var notifications []byte
 	err := row.Scan(&notifications)
 	return notifications, err
+}
+
+const insertProjectLabel = `-- name: InsertProjectLabel :exec
+INSERT INTO project_labels (project_id, key, value)
+VALUES ($1, $2, $3)
+ON CONFLICT (project_id, key, value) DO NOTHING
+`
+
+type InsertProjectLabelParams struct {
+	ProjectID pgtype.UUID
+	Key       string
+	Value     string
+}
+
+// Idempotent add of one key:value label. ON CONFLICT keeps the set/replace
+// flow simple (delete-all + re-insert in a tx).
+func (q *Queries) InsertProjectLabel(ctx context.Context, arg InsertProjectLabelParams) error {
+	_, err := q.db.Exec(ctx, insertProjectLabel, arg.ProjectID, arg.Key, arg.Value)
+	return err
+}
+
+const listAllProjectLabels = `-- name: ListAllProjectLabels :many
+SELECT project_id, key, value FROM project_labels ORDER BY project_id, key, value
+`
+
+// Every project's labels in one read — the list page maps these by project_id
+// (no N+1), and the analytics rollup groups by (key, value).
+func (q *Queries) ListAllProjectLabels(ctx context.Context) ([]ProjectLabel, error) {
+	rows, err := q.db.Query(ctx, listAllProjectLabels)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectLabel{}
+	for rows.Next() {
+		var i ProjectLabel
+		if err := rows.Scan(&i.ProjectID, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectLabels = `-- name: ListProjectLabels :many
+SELECT key, value FROM project_labels WHERE project_id = $1 ORDER BY key, value
+`
+
+type ListProjectLabelsRow struct {
+	Key   string
+	Value string
+}
+
+func (q *Queries) ListProjectLabels(ctx context.Context, projectID pgtype.UUID) ([]ListProjectLabelsRow, error) {
+	rows, err := q.db.Query(ctx, listProjectLabels, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectLabelsRow{}
+	for rows.Next() {
+		var i ListProjectLabelsRow
+		if err := rows.Scan(&i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setProjectNotifications = `-- name: SetProjectNotifications :exec

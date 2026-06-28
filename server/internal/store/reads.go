@@ -61,6 +61,10 @@ type ProjectSummary struct {
 	// — so the card can show the commit line without a second
 	// roundtrip to project detail.
 	LatestRunMeta *RunMeta `json:"latest_run_meta,omitempty"`
+	// Labels are the project's key:value grouping labels (team:payments,
+	// tier:critical). Populated by ListProjects from AllProjectLabels; drives
+	// the list filter and the cross-project analytics group-by.
+	Labels []ProjectLabel `json:"labels"`
 }
 
 // PipelinePreview is the shape shown inside a project card: name,
@@ -386,6 +390,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 			RunCount:      r.RunCount,
 			Provider:      r.Provider,
 			Status:        r.StatusAgg,
+			Labels:        []ProjectLabel{},
 		}
 		if r.LatestRunAt.Valid {
 			t := r.LatestRunAt.Time
@@ -393,6 +398,17 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectSummary, error) {
 		}
 		byID[id] = len(out)
 		out = append(out, p)
+	}
+
+	// Grouping labels — one read, attached by project id (no N+1).
+	labelsByID, err := s.AllProjectLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for id, idx := range byID {
+		if ls := labelsByID[id]; len(ls) > 0 {
+			out[idx].Labels = ls
+		}
 	}
 
 	// Second query: the preview stack per project. One round-trip
@@ -585,6 +601,11 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 		return ProjectDetail{}, fmt.Errorf("store: list runs: %w", err)
 	}
 
+	labels, err := s.ProjectLabels(ctx, fromPgUUID(proj.ID))
+	if err != nil {
+		return ProjectDetail{}, err
+	}
+
 	detail := ProjectDetail{
 		Project: ProjectSummary{
 			ID:            fromPgUUID(proj.ID),
@@ -595,6 +616,7 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			CreatedAt:     proj.CreatedAt.Time,
 			UpdatedAt:     proj.UpdatedAt.Time,
 			PipelineCount: pipelineCount,
+			Labels:        labels,
 		},
 		// Pre-allocate to empty slices so the JSON stays `[]` instead of
 		// `null` when there are no rows. Clients iterate without nil-guards.

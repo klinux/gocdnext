@@ -60,6 +60,8 @@ tags:
     description: Pipeline metadata, manual triggers.
   - name: dashboard
     description: Aggregate metrics, recent runs, agents.
+  - name: analytics
+    description: Cross-project rollups (DORA) grouped by project label.
   - name: plugins
     description: Plugin catalog (read-only).
   - name: webhooks
@@ -458,6 +460,78 @@ paths:
                 type: object
                 properties:
                   run_ids: { type: array, items: { type: string, format: uuid } }
+
+  /api/v1/projects/{slug}/labels:
+    get:
+      tags: [projects]
+      summary: List a project's key:value grouping labels.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: labels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  labels:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProjectLabel" }
+    put:
+      tags: [projects]
+      summary: Replace a project's full label set.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labels:
+                  type: array
+                  items: { $ref: "#/components/schemas/ProjectLabel" }
+      responses:
+        "204": { description: replaced }
+        "400": { description: invalid labels (key required, no ':', bounds) }
+        "404": { description: project not found }
+
+  # -------------------- analytics --------------------
+  /api/v1/analytics/label-keys:
+    get:
+      tags: [analytics]
+      summary: Distinct project label keys available as a group-by dimension.
+      responses:
+        "200":
+          description: keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys: { type: array, items: { type: string } }
+  /api/v1/analytics/dora:
+    get:
+      tags: [analytics]
+      summary: DORA metrics per label-value group over a trailing window.
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+        - in: query
+          name: window_days
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        "200":
+          description: rollup
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DoraRollup" }
+        "400": { description: missing/invalid key or window_days }
 
   # -------------------- runs --------------------
   /api/v1/runs:
@@ -1437,6 +1511,40 @@ components:
         description: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         log_archive_enabled: { type: boolean, nullable: true, description: "null = inherit global" }
+        labels:
+          type: array
+          description: Free-form key:value grouping tags.
+          items: { $ref: "#/components/schemas/ProjectLabel" }
+
+    ProjectLabel:
+      type: object
+      required: [key, value]
+      properties:
+        key: { type: string, description: "non-empty, no ':'" }
+        value: { type: string, description: "may be empty (flat tag)" }
+
+    DoraGroup:
+      type: object
+      required: [group, deploys_success, deploys_total, deploys_failed, deploy_freq_per_day, lead_time_p50_seconds, change_failure_rate, mttr_p50_seconds]
+      properties:
+        group: { type: string, description: "the label value, e.g. payments" }
+        deploys_success: { type: integer, format: int64 }
+        deploys_total: { type: integer, format: int64 }
+        deploys_failed: { type: integer, format: int64, description: "status=failed OR is_rollback" }
+        deploy_freq_per_day: { type: number, format: double }
+        lead_time_p50_seconds: { type: number, format: double, description: "p50 deploy.finished_at − run.started_at (excludes queue wait)" }
+        change_failure_rate: { type: number, format: double, description: "deploys_failed / deploys_total" }
+        mttr_p50_seconds: { type: number, format: double, description: "p50 failed → next success in the same environment" }
+
+    DoraRollup:
+      type: object
+      required: [key, window_days, groups]
+      properties:
+        key: { type: string }
+        window_days: { type: integer }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/DoraGroup" }
 
     ProjectDetail:
       allOf:

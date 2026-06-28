@@ -238,6 +238,7 @@ type Querier interface {
 	DeleteProjectBySlug(ctx context.Context, slug string) (int64, error)
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
 	DeleteProjectFrameworks(ctx context.Context, projectID pgtype.UUID) error
+	DeleteProjectLabels(ctx context.Context, projectID pgtype.UUID) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.
@@ -256,6 +257,16 @@ type Querier interface {
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
+	// Median time-to-restore per group: for each FAILED deploy in the window, the
+	// gap to the next SUCCESS in the same environment. The restore lookup is a
+	// lateral index probe per failure instead of a self-scan over all historical
+	// deploy events for the label key.
+	DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRRow, error)
+	// DORA metrics per label-value group (for label key = label_key) over the
+	// trailing window. Joins each project's labels → environments →
+	// deployment_revisions (+ the producing run for lead time). One row per
+	// distinct value of the key.
+	DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error)
 	// Scope guard: confirm an environment id is owned by a project before
 	// serving its deployments through that project's URL.
 	EnvironmentBelongsToProject(ctx context.Context, arg EnvironmentBelongsToProjectParams) (bool, error)
@@ -607,6 +618,9 @@ type Querier interface {
 	InsertPolicyFramework(ctx context.Context, arg InsertPolicyFrameworkParams) error
 	InsertProjectCron(ctx context.Context, arg InsertProjectCronParams) (ProjectCron, error)
 	InsertProjectFramework(ctx context.Context, arg InsertProjectFrameworkParams) error
+	// Idempotent add of one key:value label. ON CONFLICT keeps the set/replace
+	// flow simple (delete-all + re-insert in a tx).
+	InsertProjectLabel(ctx context.Context, arg InsertProjectLabelParams) error
 	// has_services is a snapshot of `pipeline.Services` non-emptiness
 	// (migration 00036). Stamped here so the run-terminal cleanup
 	// cascade can decide whether to broadcast CleanupRunServices
@@ -697,6 +711,9 @@ type Querier interface {
 	// second roundtrip.
 	ListAgentsWithRunning(ctx context.Context) ([]ListAgentsWithRunningRow, error)
 	ListAllProjectIDs(ctx context.Context) ([]pgtype.UUID, error)
+	// Every project's labels in one read — the list page maps these by project_id
+	// (no N+1), and the analytics rollup groups by (key, value).
+	ListAllProjectLabels(ctx context.Context) ([]ProjectLabel, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.
@@ -860,6 +877,10 @@ type Querier interface {
 	// A grace window guards against racing the in-flight submit so the
 	// sweeper doesn't spam the queue with jobs already being archived.
 	ListJobsNeedingArchive(ctx context.Context, arg ListJobsNeedingArchiveParams) ([]ListJobsNeedingArchiveRow, error)
+	// Cross-project analytics rollups, grouped by a project label key (the #107
+	// epic). All metrics derive from deployment_revisions + the producing run.
+	// Distinct label keys across all projects — the dashboard's "group by" picker.
+	ListLabelKeys(ctx context.Context) ([]string, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	// All materials across pipelines of a project. VSM uses the
 	// `upstream` ones to build edges between pipeline nodes; git ones
@@ -932,6 +953,7 @@ type Querier interface {
 	ListProjectCronsByProject(ctx context.Context, projectID pgtype.UUID) ([]ProjectCron, error)
 	// Recompute fan-out: every project carrying any of the given frameworks.
 	ListProjectIDsByFrameworks(ctx context.Context, dollar_1 []pgtype.UUID) ([]pgtype.UUID, error)
+	ListProjectLabels(ctx context.Context, projectID pgtype.UUID) ([]ListProjectLabelsRow, error)
 	// Projects whose total live artefact bytes (pending + ready, non-
 	// deleted, non-pinned) exceed the configured soft cap. Returned once
 	// per tick so the sweeper can ExpireOldestInProjectByExcess against

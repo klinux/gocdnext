@@ -54,6 +54,13 @@ export type ProjectProvider =
   | "manual"
   | ""; // empty = no scm_source bound yet
 
+// ProjectLabel is a free-form key:value grouping tag (team:payments,
+// tier:critical) — the primitive cross-project views group/filter by.
+export type ProjectLabel = {
+  key: string;
+  value: string;
+};
+
 export type ProjectSummary = {
   id: string;
   slug: string;
@@ -70,6 +77,7 @@ export type ProjectSummary = {
   top_pipelines?: PipelinePreview[];
   metrics?: PipelineMetrics;
   latest_run_meta?: RunMeta;
+  labels?: ProjectLabel[];
 };
 
 export type ProjectSCMInfo = {
