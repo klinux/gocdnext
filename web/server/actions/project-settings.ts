@@ -117,7 +117,12 @@ export async function setProjectLogArchive(
 // tier:critical). The server replaces the whole set on PUT and re-validates
 // (key required, bounds); this is a client-friendly pre-check.
 const labelSchema = z.object({
-  key: z.string().trim().min(1, "label key is required").max(100),
+  key: z
+    .string()
+    .trim()
+    .min(1, "label key is required")
+    .max(100)
+    .refine((s) => !s.includes(":"), "label key must not contain ':'"),
   value: z.string().trim().max(100),
 });
 const setLabelsSchema = z.object({

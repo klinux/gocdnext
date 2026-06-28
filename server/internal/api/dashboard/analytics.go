@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 )
+
+const maxAnalyticsLabelKeyLen = 100
 
 // LabelKeys handles GET /api/v1/analytics/label-keys — the distinct project
 // label keys available as a "group by" dimension.
@@ -25,9 +28,13 @@ func (h *Handler) LabelKeys(w http.ResponseWriter, r *http.Request) {
 // Returns the four DORA metrics for each value of the label key over the
 // trailing window. `key` is required.
 func (h *Handler) DoraRollup(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
+	key := strings.TrimSpace(r.URL.Query().Get("key"))
 	if key == "" {
 		http.Error(w, "key is required", http.StatusBadRequest)
+		return
+	}
+	if len(key) > maxAnalyticsLabelKeyLen || strings.Contains(key, ":") {
+		http.Error(w, "invalid key", http.StatusBadRequest)
 		return
 	}
 	windowDays := 30

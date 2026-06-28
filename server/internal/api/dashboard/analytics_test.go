@@ -25,6 +25,13 @@ func TestAnalytics_DoraValidationAndShape(t *testing.T) {
 		t.Fatalf("bad window status = %d, want 400", rr.Code)
 	}
 
+	// Label keys use ':' as display separator and are bounded.
+	rr = httptest.NewRecorder()
+	h.DoraRollup(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/dora?key=team:backend", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad key status = %d, want 400", rr.Code)
+	}
+
 	// Happy path (no data) → 200 with an empty groups array, echoing inputs.
 	rr = httptest.NewRecorder()
 	h.DoraRollup(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/dora?key=team&window_days=14", nil))

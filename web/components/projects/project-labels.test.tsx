@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 
 import { ProjectLabelsCard } from "./project-labels.client";
 import type { ProjectLabel } from "@/types/api";
@@ -14,6 +15,11 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const initial: ProjectLabel[] = [{ key: "team", value: "payments" }];
 
 describe("ProjectLabelsCard", () => {
+  beforeEach(() => {
+    setProjectLabels.mockClear();
+    vi.mocked(toast.error).mockClear();
+  });
+
   it("renders existing labels", () => {
     render(<ProjectLabelsCard slug="demo" initial={initial} />);
     expect((screen.getByLabelText("Label 1 key") as HTMLInputElement).value).toBe("team");
@@ -41,5 +47,16 @@ describe("ProjectLabelsCard", () => {
         { key: "tier", value: "critical" },
       ],
     });
+  });
+
+  it("does not silently drop a value-only row", () => {
+    render(<ProjectLabelsCard slug="demo" initial={initial} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /add label/i }));
+    fireEvent.change(screen.getByLabelText("Label 2 value"), { target: { value: "payments" } });
+    fireEvent.click(screen.getByRole("button", { name: /save labels/i }));
+
+    expect(setProjectLabels).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("Label key is required");
   });
 });

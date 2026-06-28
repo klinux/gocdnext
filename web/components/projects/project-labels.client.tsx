@@ -36,10 +36,14 @@ export function ProjectLabelsCard({
   const add = () => setRows((prev) => [...prev, { key: "", value: "" }]);
 
   const save = () => {
-    // Drop rows with no key; trim happens server-side too, but keep the wire clean.
-    const labels = rows
-      .map((r) => ({ key: r.key.trim(), value: r.value.trim() }))
-      .filter((r) => r.key !== "");
+    // Drop wholly blank rows; a value without a key is ambiguous and should be
+    // surfaced instead of silently disappearing on save.
+    const trimmed = rows.map((r) => ({ key: r.key.trim(), value: r.value.trim() }));
+    if (trimmed.some((r) => r.key === "" && r.value !== "")) {
+      toast.error("Label key is required");
+      return;
+    }
+    const labels = trimmed.filter((r) => r.key !== "");
     startTransition(async () => {
       const res = await setProjectLabels({ slug, labels });
       if (!res.ok) {

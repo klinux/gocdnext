@@ -75,6 +75,11 @@ func TestLabels_SetGetTrimAndValidate(t *testing.T) {
 		t.Fatalf("too-long status = %d, want 400", code)
 	}
 
+	// ':' is the wire/display separator, so keys cannot contain it.
+	if code := putLabels(t, router, "demo", `{"labels":[{"key":"team:backend","value":"x"}]}`); code != http.StatusBadRequest {
+		t.Fatalf("colon key status = %d, want 400", code)
+	}
+
 	// unknown project → 404.
 	if code := putLabels(t, router, "nope", `{"labels":[]}`); code != http.StatusNotFound {
 		t.Fatalf("unknown project status = %d, want 404", code)

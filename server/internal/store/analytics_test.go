@@ -14,14 +14,16 @@ import (
 )
 
 // seedDeploy inserts a deployment_revision finished `daysAgo` days ago, with a
-// producing run created `leadMin` minutes before the deploy finished (so lead
-// time = leadMin minutes for a success).
+// producing run STARTED `leadMin` minutes before the deploy finished (so lead
+// time = leadMin minutes for a success). created_at is 2 min earlier still, to
+// prove the queue wait is excluded from lead time.
 func seedDeploy(t *testing.T, pool *pgxpool.Pool, ctx context.Context, envID, pipelineID uuid.UUID, counter int, status string, isRollback bool, daysAgo, leadMin int) {
 	t.Helper()
 	var runID uuid.UUID
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO runs (pipeline_id, counter, cause, status, revisions, created_at, finished_at)
+		INSERT INTO runs (pipeline_id, counter, cause, status, revisions, created_at, started_at, finished_at)
 		VALUES ($1, $2, 'manual', 'success', '{}'::jsonb,
+		        now() - make_interval(days => $3, mins => $4 + 2),
 		        now() - make_interval(days => $3, mins => $4),
 		        now() - make_interval(days => $3))
 		RETURNING id`,
@@ -95,7 +97,7 @@ func TestDoraRollup_Metrics(t *testing.T) {
 		t.Errorf("MTTR = %v, want ~86400", g.MTTRP50Sec)
 	}
 
-	// Window excludes old deploys: a 1-day window sees only the 1d-ago success.
+	// Window excludes old deploys: a 1-day window sees only the near-now success.
 	narrow, err := s.DoraRollup(ctx, "team", 1)
 	if err != nil {
 		t.Fatalf("dora narrow: %v", err)

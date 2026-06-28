@@ -258,8 +258,9 @@ type Querier interface {
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
 	// Median time-to-restore per group: for each FAILED deploy in the window, the
-	// gap to the next SUCCESS in the same environment. Successes are searched with
-	// no upper bound so a restore just after the window still counts.
+	// gap to the next SUCCESS in the same environment. The restore lookup is a
+	// lateral index probe per failure instead of a self-scan over all historical
+	// deploy events for the label key.
 	DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRRow, error)
 	// DORA metrics per label-value group (for label key = label_key) over the
 	// trailing window. Joins each project's labels → environments →

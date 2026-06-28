@@ -114,6 +114,9 @@ func parseLabels(in []labelDTO) ([]store.ProjectLabel, error) {
 		if key == "" {
 			return nil, errors.New("label key is required")
 		}
+		if strings.Contains(key, ":") {
+			return nil, errors.New("label key must not contain ':'")
+		}
 		if len(key) > maxLabelLen || len(value) > maxLabelLen {
 			return nil, errors.New("label key/value too long")
 		}

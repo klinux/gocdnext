@@ -37,6 +37,14 @@ type Props = {
 type ViewMode = "grid" | "list";
 const VIEW_STORAGE_KEY = "gocdnext.projects.view";
 
+function labelID(label: { key: string; value: string }): string {
+  return JSON.stringify([label.key, label.value]);
+}
+
+function labelText(key: string, value: string): string {
+  return value ? `${key}:${value}` : key;
+}
+
 // ProjectsExplorer owns the toolbar (search + filter pills + view
 // toggle) and swaps between the grid/list views. State is all
 // client-side — dataset is small enough (dozens of projects) that
@@ -46,8 +54,7 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<ProjectStatus | "all">("all");
   const [provider, setProvider] = useState<ProjectProvider | "all">("all");
-  // A selected label is its "key:value" identity (value may be empty); null =
-  // no label filter.
+  // A selected label is its stable tuple identity; null = no label filter.
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("grid");
   // Local mirror of the hide-list — the menu writes here on every
@@ -88,14 +95,24 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
   );
   // Label chips: count projects carrying each key:value across the visible set.
   const labelCounts = useMemo(() => {
-    const m = new Map<string, number>();
+    const m = new Map<
+      string,
+      { id: string; key: string; value: string; count: number }
+    >();
     for (const p of visibleProjects) {
       for (const l of p.labels ?? []) {
-        const k = `${l.key}:${l.value}`;
-        m.set(k, (m.get(k) ?? 0) + 1);
+        const id = labelID(l);
+        const cur = m.get(id);
+        if (cur) {
+          cur.count += 1;
+        } else {
+          m.set(id, { id, key: l.key, value: l.value, count: 1 });
+        }
       }
     }
-    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return [...m.values()].sort((a, b) =>
+      labelText(a.key, a.value).localeCompare(labelText(b.key, b.value)),
+    );
   }, [visibleProjects]);
 
   const filtered = useMemo(() => {
@@ -105,7 +122,7 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
       if (provider !== "all" && (p.provider ?? "") !== provider) return false;
       if (
         labelFilter &&
-        !(p.labels ?? []).some((l) => `${l.key}:${l.value}` === labelFilter)
+        !(p.labels ?? []).some((l) => labelID(l) === labelFilter)
       ) {
         return false;
       }
@@ -198,17 +215,16 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
         {labelCounts.length > 0 ? (
           <>
             <span className="mx-1 h-4 w-px bg-border" aria-hidden />
-            {labelCounts.map(([k, count]) => {
-              const sep = k.indexOf(":");
-              const key = k.slice(0, sep);
-              const value = k.slice(sep + 1);
+            {labelCounts.map((chip) => {
               return (
                 <FilterPill
-                  key={k}
-                  label={value ? `${key}:${value}` : key}
-                  count={count}
-                  active={labelFilter === k}
-                  onClick={() => setLabelFilter(labelFilter === k ? null : k)}
+                  key={chip.id}
+                  label={labelText(chip.key, chip.value)}
+                  count={chip.count}
+                  active={labelFilter === chip.id}
+                  onClick={() =>
+                    setLabelFilter(labelFilter === chip.id ? null : chip.id)
+                  }
                   tone="neutral"
                   icon={<Tag className="size-3" />}
                 />
