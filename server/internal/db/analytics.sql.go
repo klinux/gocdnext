@@ -12,25 +12,42 @@ import (
 )
 
 const doraDailySeries = `-- name: DoraDailySeries :many
-SELECT date_trunc('day', dr.finished_at)::date AS day,
-       COUNT(*)::bigint AS deploys_total,
-       COUNT(*) FILTER (WHERE dr.status = 'failed' OR dr.is_rollback)::bigint AS deploys_failed,
-       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
-                ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
-                0)::double precision AS lead_time_p50_s
-FROM deployment_revisions dr
-JOIN environments e ON e.id = dr.environment_id
-LEFT JOIN runs r ON r.id = dr.run_id
-WHERE dr.status IN ('success', 'failed')
-  AND dr.finished_at IS NOT NULL
-  AND dr.finished_at >= now() - $1::interval
-  AND EXISTS (
-      SELECT 1 FROM project_labels pl
-      WHERE pl.project_id = e.project_id AND pl.key = $2
-  )
-GROUP BY day
-ORDER BY day
+WITH days AS (
+    SELECT generate_series(
+        date_trunc('day', now() - $1::interval),
+        date_trunc('day', now()),
+        interval '1 day'
+    )::date AS day
+),
+agg AS (
+    SELECT date_trunc('day', dr.finished_at)::date AS day,
+           COUNT(*) FILTER (WHERE dr.status = 'success')::bigint AS deploys_success,
+           COUNT(*)::bigint AS deploys_total,
+           COUNT(*) FILTER (WHERE dr.status = 'failed' OR dr.is_rollback)::bigint AS deploys_failed,
+           COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
+                    ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
+                    0)::double precision AS lead_time_p50_s
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    LEFT JOIN runs r ON r.id = dr.run_id
+    WHERE dr.status IN ('success', 'failed')
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - $1::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = $2
+      )
+    GROUP BY day
+)
+SELECT d.day AS day,
+       COALESCE(a.deploys_success, 0)::bigint AS deploys_success,
+       COALESCE(a.deploys_total, 0)::bigint AS deploys_total,
+       COALESCE(a.deploys_failed, 0)::bigint AS deploys_failed,
+       COALESCE(a.lead_time_p50_s, 0)::double precision AS lead_time_p50_s
+FROM days d
+LEFT JOIN agg a ON a.day = d.day
+ORDER BY d.day
 `
 
 type DoraDailySeriesParams struct {
@@ -39,15 +56,17 @@ type DoraDailySeriesParams struct {
 }
 
 type DoraDailySeriesRow struct {
-	Day           pgtype.Date
-	DeploysTotal  int64
-	DeploysFailed int64
-	LeadTimeP50S  float64
+	Day            pgtype.Date
+	DeploysSuccess int64
+	DeploysTotal   int64
+	DeploysFailed  int64
+	LeadTimeP50S   float64
 }
 
-// Per-day org buckets over the trailing window — feeds the hero sparklines.
-// One row per day that had at least one terminal deploy: deploy count, failed
-// count, lead-time p50, and MTTR is left to the window agg (too sparse daily).
+// Dense per-day org buckets over the trailing window — feeds the hero
+// sparklines. generate_series yields one row per calendar day (zero-filled for
+// days with no deploy) so a sparse 90-day window still plots an honest,
+// non-compressed trend. Success/total/failed counts + lead-time p50 per day.
 func (q *Queries) DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error) {
 	rows, err := q.db.Query(ctx, doraDailySeries, arg.SinceWindow, arg.LabelKey)
 	if err != nil {
@@ -59,6 +78,7 @@ func (q *Queries) DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams
 		var i DoraDailySeriesRow
 		if err := rows.Scan(
 			&i.Day,
+			&i.DeploysSuccess,
 			&i.DeploysTotal,
 			&i.DeploysFailed,
 			&i.LeadTimeP50S,

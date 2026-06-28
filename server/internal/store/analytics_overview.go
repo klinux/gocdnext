@@ -27,6 +27,7 @@ type OrgMetrics struct {
 // present, so the frontend fills gaps against the window.
 type DoraDay struct {
 	Day            string  `json:"day"`
+	DeploysSuccess int64   `json:"deploys_success"`
 	DeploysTotal   int64   `json:"deploys_total"`
 	DeploysFailed  int64   `json:"deploys_failed"`
 	LeadTimeP50Sec float64 `json:"lead_time_p50_seconds"`
@@ -78,6 +79,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 		}
 		daily = append(daily, DoraDay{
 			Day:            day,
+			DeploysSuccess: d.DeploysSuccess,
 			DeploysTotal:   d.DeploysTotal,
 			DeploysFailed:  d.DeploysFailed,
 			LeadTimeP50Sec: d.LeadTimeP50S,

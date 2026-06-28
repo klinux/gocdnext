@@ -38,7 +38,7 @@ type Row = {
 type SortKey = "name" | "deploys" | "freqPerDay" | "leadSec" | "cfr" | "mttrSec" | "tier";
 
 const COLS: { key: SortKey; label: string; num: boolean }[] = [
-  { key: "name", label: "Time", num: false },
+  { key: "name", label: "Grupo", num: false },
   { key: "deploys", label: "Deploys", num: true },
   { key: "freqPerDay", label: "Deploy freq", num: true },
   { key: "leadSec", label: "Lead time", num: true },
@@ -66,10 +66,17 @@ function toRow(g: DoraGroup): Row {
   };
 }
 
-// DoraLeaderboard ranks teams across the four DORA metrics. Click a header to
+// DoraLeaderboard ranks groups across the four DORA metrics. Click a header to
 // sort; click again to flip direction. Default: Faixa (tier) descending —
-// best performers first.
-export function DoraLeaderboard({ teams }: { teams: DoraGroup[] }) {
+// best performers first. `groupKey` is the active group-by label (team / tier /
+// domain) — drives the row prefix so the copy stays correct for any dimension.
+export function DoraLeaderboard({
+  teams,
+  groupKey,
+}: {
+  teams: DoraGroup[];
+  groupKey: string;
+}) {
   const [sortKey, setSortKey] = useState<SortKey>("tier");
   const [dir, setDir] = useState<1 | -1>(-1);
 
@@ -128,7 +135,7 @@ export function DoraLeaderboard({ teams }: { teams: DoraGroup[] }) {
           {rows.map((r) => (
             <TableRow key={r.name} className="font-mono">
               <TableCell className="font-semibold">
-                <span className="text-brand-500">team:</span>
+                <span className="text-brand-500">{groupKey}:</span>
                 {r.name}
               </TableCell>
               <TableCell className="text-right">{r.deploys}</TableCell>

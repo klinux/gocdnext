@@ -1585,10 +1585,11 @@ components:
 
     DoraDay:
       type: object
-      description: One daily bucket of the window (hero sparklines).
-      required: [day, deploys_total, deploys_failed, lead_time_p50_seconds]
+      description: One daily bucket of the window, zero-filled (hero sparklines).
+      required: [day, deploys_success, deploys_total, deploys_failed, lead_time_p50_seconds]
       properties:
         day: { type: string, format: date }
+        deploys_success: { type: integer, format: int64 }
         deploys_total: { type: integer, format: int64 }
         deploys_failed: { type: integer, format: int64 }
         lead_time_p50_seconds: { type: number, format: double }

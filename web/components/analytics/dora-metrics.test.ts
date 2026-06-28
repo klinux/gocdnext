@@ -39,8 +39,8 @@ function overview(over: Partial<DoraOverview>): DoraOverview {
       change_failure_rate: 0.18,
     },
     daily: [
-      { day: "2026-06-01", deploys_total: 2, deploys_failed: 0, lead_time_p50_seconds: 600 },
-      { day: "2026-06-02", deploys_total: 3, deploys_failed: 1, lead_time_p50_seconds: 700 },
+      { day: "2026-06-01", deploys_success: 2, deploys_total: 2, deploys_failed: 0, lead_time_p50_seconds: 600 },
+      { day: "2026-06-02", deploys_success: 2, deploys_total: 3, deploys_failed: 1, lead_time_p50_seconds: 700 },
     ],
     teams: [],
     ...over,
@@ -75,6 +75,33 @@ describe("heroMetrics", () => {
     expect(mttr.key).toBe("Time to restore");
     expect(mttr.series).toHaveLength(2);
     expect(mttr.series[0]).toBe(mttr.series[1]);
+  });
+
+  it("uses success/day (not total) for the deploy-frequency trend", () => {
+    const freq = heroMetrics(overview({}))[0]!;
+    expect(freq.series).toEqual([2, 2]); // deploys_success per day, ignores the failure
+  });
+
+  it("renders no tier / dash for metrics without a sample", () => {
+    // No successful deploys and no restores → lead time + MTTR have no sample.
+    const ov = overview({
+      current: {
+        deploys_success: 0,
+        deploys_total: 3,
+        deploys_failed: 3,
+        deploy_freq_per_day: 0,
+        lead_time_p50_seconds: 0,
+        change_failure_rate: 1,
+        mttr_p50_seconds: 0,
+      },
+    });
+    const [, lead, cfr, mttr] = heroMetrics(ov);
+    expect(lead!.tier).toBeNull();
+    expect(lead!.value).toBe("—");
+    expect(mttr!.tier).toBeNull();
+    expect(mttr!.value).toBe("—");
+    // CFR still has a sample (3 deploys) — classified, not blanked.
+    expect(cfr!.tier).toBe("low");
   });
 });
 

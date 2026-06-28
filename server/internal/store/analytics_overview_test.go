@@ -73,19 +73,21 @@ func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 		t.Errorf("lead = %v, want ~600", ov.Current.LeadTimeP50Sec)
 	}
 
-	// Daily series: 4 distinct days carried a terminal deploy in the window.
-	if len(ov.Daily) != 4 {
-		t.Fatalf("daily days = %d (%+v), want 4", len(ov.Daily), ov.Daily)
+	// Daily series is dense: one row per calendar day in the window (zero-
+	// filled), so a 7-day window yields 8 buckets (7 days ago … today).
+	if len(ov.Daily) != 8 {
+		t.Fatalf("daily days = %d (%+v), want 8 (dense)", len(ov.Daily), ov.Daily)
 	}
-	var seriesTotal int64
+	var seriesTotal, seriesSuccess int64
 	for _, d := range ov.Daily {
 		if d.Day == "" {
 			t.Errorf("daily day empty: %+v", d)
 		}
 		seriesTotal += d.DeploysTotal
+		seriesSuccess += d.DeploysSuccess
 	}
-	if seriesTotal != 4 {
-		t.Errorf("series total = %d, want 4 (current window only)", seriesTotal)
+	if seriesTotal != 4 || seriesSuccess != 3 {
+		t.Errorf("series total/success = %d/%d, want 4/3 (current window only)", seriesTotal, seriesSuccess)
 	}
 
 	// Leaderboard carries the one team.

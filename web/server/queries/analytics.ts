@@ -35,6 +35,7 @@ export type OrgMetrics = {
 
 export type DoraDay = {
   day: string; // YYYY-MM-DD
+  deploys_success: number;
   deploys_total: number;
   deploys_failed: number;
   lead_time_p50_seconds: number;

@@ -80,7 +80,7 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
             className="text-[11px]"
           />
           <span className="font-normal normal-case tracking-normal text-muted-foreground/70">
-            {ov.teams.length} times · {ov.current.deploys_total} deploys na
+            {ov.teams.length} grupos · {ov.current.deploys_total} deploys na
             janela
           </span>
         </SectionLabel>
@@ -88,7 +88,9 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
       </div>
 
       <div className="space-y-3.5">
-        <SectionLabel>Desempenho por time</SectionLabel>
+        <SectionLabel>
+          Desempenho por <span className="font-mono normal-case">{activeKey}</span>
+        </SectionLabel>
         {ov.teams.length === 0 ? (
           <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
             Nenhum deploy nesta janela para grupos de{" "}
@@ -97,7 +99,7 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
             com bloco <span className="font-mono">deploy:</span>.
           </p>
         ) : (
-          <DoraLeaderboard teams={ov.teams} />
+          <DoraLeaderboard teams={ov.teams} groupKey={activeKey} />
         )}
       </div>
 

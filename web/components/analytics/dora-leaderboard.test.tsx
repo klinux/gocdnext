@@ -36,14 +36,14 @@ function rowNames(): string[] {
 
 describe("DoraLeaderboard", () => {
   it("renders one row per team with the team prefix", () => {
-    render(<DoraLeaderboard teams={teams} />);
+    render(<DoraLeaderboard teams={teams} groupKey="team" />);
     expect(screen.getAllByText("team:")).toHaveLength(3);
     expect(rowNames().sort()).toEqual(["data-eng", "payments", "platform"]);
   });
 
   it("sorts by lead time ascending then toggles descending on header click", async () => {
     const user = userEvent.setup();
-    render(<DoraLeaderboard teams={teams} />);
+    render(<DoraLeaderboard teams={teams} groupKey="team" />);
 
     const leadHeader = screen.getByText("Lead time");
     await user.click(leadHeader); // first click on a numeric col → descending

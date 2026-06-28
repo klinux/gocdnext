@@ -71,7 +71,13 @@ function MetricCard({ m }: { m: HeroMetric }) {
           <Icon className="size-3.5 text-muted-foreground/70" aria-hidden />
           {m.key}
         </span>
-        <TierChip tier={m.tier} />
+        {m.tier ? (
+          <TierChip tier={m.tier} />
+        ) : (
+          <span className="shrink-0 rounded-md bg-muted px-2 py-0.5 font-mono text-[10.5px] font-bold uppercase tracking-wide text-muted-foreground">
+            sem dados
+          </span>
+        )}
       </div>
       <div className="mt-2 font-sans text-[30px] font-extrabold leading-none tracking-[-0.04em] text-foreground">
         {m.value}

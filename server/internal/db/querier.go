@@ -257,9 +257,10 @@ type Querier interface {
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
-	// Per-day org buckets over the trailing window — feeds the hero sparklines.
-	// One row per day that had at least one terminal deploy: deploy count, failed
-	// count, lead-time p50, and MTTR is left to the window agg (too sparse daily).
+	// Dense per-day org buckets over the trailing window — feeds the hero
+	// sparklines. generate_series yields one row per calendar day (zero-filled for
+	// days with no deploy) so a sparse 90-day window still plots an honest,
+	// non-compressed trend. Success/total/failed counts + lead-time p50 per day.
 	DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error)
 	// Median time-to-restore per group: for each FAILED deploy in the window, the
 	// gap to the next SUCCESS in the same environment. The restore lookup is a
