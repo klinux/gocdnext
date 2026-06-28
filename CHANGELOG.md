@@ -8,6 +8,25 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.62.0 — 2026-06-28
+
+### Added
+
+- **Project labels** (#106) — free-form `key:value` grouping tags on projects
+  (`team:payments`, `tier:critical`). Manage them in *Project → Settings*; filter
+  the projects list by a label chip. The grouping primitive the analytics epic
+  builds on.
+
+- **Cross-project analytics — DORA** (#107). A new *Analytics* view rolls up the
+  four DORA metrics — deployment frequency, lead time for changes, change-failure
+  rate, and time-to-restore (MTTR) — **grouped by a project label** (team, tier,
+  domain) over a 7/30/90-day window. Server-side aggregation over deploy markers
+  + run history (`/api/v1/analytics/dora`), so the dashboard is a cheap read.
+  Metric semantics: lead time = `deploy.finished_at − run.started_at` (excludes
+  queue wait); change-failure rate counts failed **or** rolled-back deploys;
+  MTTR = a failed deploy to the next success in the same environment. The new
+  endpoints and the `labels` field are documented in the OpenAPI spec. (#110)
+
 ## v0.61.0 — 2026-06-27
 
 ### Added

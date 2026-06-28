@@ -6,6 +6,7 @@ import type { Route } from "next";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  BarChart3,
   BookOpen,
   Bot,
   Boxes,
@@ -57,6 +58,7 @@ type NavItem = {
 const primaryNav: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Projects", href: "/projects", icon: Boxes },
+  { label: "Analytics", href: "/analytics", icon: BarChart3 },
   { label: "Runs", href: "/runs", icon: Activity },
   { label: "Agents", href: "/agents", icon: Server },
   // Plugin catalog is documentation-first: every dev authoring a

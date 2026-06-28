@@ -9,6 +9,7 @@ import {
   List,
   RefreshCw,
   Search,
+  Tag,
 } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,14 @@ type Props = {
 type ViewMode = "grid" | "list";
 const VIEW_STORAGE_KEY = "gocdnext.projects.view";
 
+function labelID(label: { key: string; value: string }): string {
+  return JSON.stringify([label.key, label.value]);
+}
+
+function labelText(key: string, value: string): string {
+  return value ? `${key}:${value}` : key;
+}
+
 // ProjectsExplorer owns the toolbar (search + filter pills + view
 // toggle) and swaps between the grid/list views. State is all
 // client-side — dataset is small enough (dozens of projects) that
@@ -45,6 +54,8 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<ProjectStatus | "all">("all");
   const [provider, setProvider] = useState<ProjectProvider | "all">("all");
+  // A selected label is its stable tuple identity; null = no label filter.
+  const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("grid");
   // Local mirror of the hide-list — the menu writes here on every
   // toggle for instant UX, while the debounced save persists to the
@@ -82,12 +93,39 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
     () => countBy(visibleProjects, (p) => p.provider ?? ""),
     [visibleProjects],
   );
+  // Label chips: count projects carrying each key:value across the visible set.
+  const labelCounts = useMemo(() => {
+    const m = new Map<
+      string,
+      { id: string; key: string; value: string; count: number }
+    >();
+    for (const p of visibleProjects) {
+      for (const l of p.labels ?? []) {
+        const id = labelID(l);
+        const cur = m.get(id);
+        if (cur) {
+          cur.count += 1;
+        } else {
+          m.set(id, { id, key: l.key, value: l.value, count: 1 });
+        }
+      }
+    }
+    return [...m.values()].sort((a, b) =>
+      labelText(a.key, a.value).localeCompare(labelText(b.key, b.value)),
+    );
+  }, [visibleProjects]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return visibleProjects.filter((p) => {
       if (status !== "all" && p.status !== status) return false;
       if (provider !== "all" && (p.provider ?? "") !== provider) return false;
+      if (
+        labelFilter &&
+        !(p.labels ?? []).some((l) => labelID(l) === labelFilter)
+      ) {
+        return false;
+      }
       if (!q) return true;
       return (
         p.slug.toLowerCase().includes(q) ||
@@ -95,7 +133,7 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
         (p.description ?? "").toLowerCase().includes(q)
       );
     });
-  }, [visibleProjects, query, status, provider]);
+  }, [visibleProjects, query, status, provider, labelFilter]);
 
   return (
     <div className="space-y-5">
@@ -171,6 +209,27 @@ export function ProjectsExplorer({ projects, initialHiddenProjects }: Props) {
                 />
               ) : null,
             )}
+          </>
+        ) : null}
+
+        {labelCounts.length > 0 ? (
+          <>
+            <span className="mx-1 h-4 w-px bg-border" aria-hidden />
+            {labelCounts.map((chip) => {
+              return (
+                <FilterPill
+                  key={chip.id}
+                  label={labelText(chip.key, chip.value)}
+                  count={chip.count}
+                  active={labelFilter === chip.id}
+                  onClick={() =>
+                    setLabelFilter(labelFilter === chip.id ? null : chip.id)
+                  }
+                  tone="neutral"
+                  icon={<Tag className="size-3" />}
+                />
+              );
+            })}
           </>
         ) : null}
       </div>

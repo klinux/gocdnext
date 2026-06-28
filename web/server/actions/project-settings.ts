@@ -112,3 +112,62 @@ export async function setProjectLogArchive(
     };
   }
 }
+
+// Project labels — free-form key:value grouping tags (team:payments,
+// tier:critical). The server replaces the whole set on PUT and re-validates
+// (key required, bounds); this is a client-friendly pre-check.
+const labelSchema = z.object({
+  key: z
+    .string()
+    .trim()
+    .min(1, "label key is required")
+    .max(100)
+    .refine((s) => !s.includes(":"), "label key must not contain ':'"),
+  value: z.string().trim().max(100),
+});
+const setLabelsSchema = z.object({
+  slug: z.string().min(1),
+  labels: z.array(labelSchema).max(50),
+});
+
+export async function setProjectLabels(
+  input: z.infer<typeof setLabelsSchema>,
+): Promise<ActionResult> {
+  const parsed = setLabelsSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/labels`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "PUT",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      body: JSON.stringify({ labels: parsed.data.labels }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "save failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    revalidatePath("/projects");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
