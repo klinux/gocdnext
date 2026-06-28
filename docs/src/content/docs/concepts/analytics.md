@@ -54,8 +54,8 @@ lead_time = p50( deploy.finished_at − run.started_at )   (successful deploys)
 
 We start the clock at `run.started_at`, not `created_at`, so **queue wait**
 (time spent waiting for an agent — operator capacity, not change latency) is
-excluded. Decomposing the *pre-merge* portion (coding, review) needs VCS
-timing gocdnext does not yet persist; that breakdown is planned separately.
+excluded. The full commit→production path — including the pre-merge Coding and
+Review stages — is broken down in the **bottleneck** card (see below).
 
 ### Change failure rate (CFR)
 
@@ -121,6 +121,9 @@ the environments that actually have deploys under the active group-by key.
 - **Trend → Deploy frequency** — deploys per day as stacked bars (successful
   teal, change failures red on top), with the window average and an *N change
   failures in M deploys* summary.
+- **Trend → Where lead time is lost** — the bottleneck card: lead time
+  decomposed into four consecutive stages and shown as a stacked bar + legend,
+  with the biggest stage flagged as the top lever (see below).
 - **Performance by `<key>`** — a sortable leaderboard ranking every group across
   all four metrics plus its tier. Click a column header to sort; click again to
   flip direction.
@@ -128,6 +131,27 @@ the environments that actually have deploys under the active group-by key.
   watch item (stalled cadence), derived per-group from the current vs. prior
   window. Captions are data-derived, not editorial.
 - **DORA benchmark reference** — the threshold table above, always on the page.
+
+## Lead-time bottleneck
+
+"Where lead time is lost" decomposes the commit→production path into four
+consecutive, non-overlapping stages (each a p50 across deploys that correlate to
+a pull request), so you can see which stage to attack first:
+
+| Stage | Boundary | What it captures |
+|---|---|---|
+| **Coding** | first commit → PR opened | time spent writing the change |
+| **Review** | PR opened → first approval | human review + policy (only deploys with a recorded approval) |
+| **Release wait** | approval/merge → deploy job start | trigger, queue, post-merge CI, deploy windows |
+| **Deploy** | deploy job start → finish | the deploy itself |
+
+A deploy is correlated by matching the **deployed commit** to a pull request's
+**merge commit**. This needs the VCS lifecycle webhooks enabled (currently
+**GitHub**): the **Pull requests** and **Pull request reviews** events feed PR
+opened / approved / merged timestamps, and the PR's first commit is fetched from
+the commits API. Rollbacks are excluded, and successful deploys with no PR
+correlation are reported as a small *N excluded (no PR)* count rather than
+skewing the medians.
 
 ## How to use it
 
