@@ -12,24 +12,36 @@ import (
 )
 
 const doraBottleneck = `-- name: DoraBottleneck :one
-WITH deploys AS (
+WITH eligible AS (
     SELECT dr.finished_at AS deploy_finished,
            djr.started_at AS deploy_started,
-           vpr.first_commit_at, vpr.opened_at, vpr.approved_at, vpr.merged_at
+           pr.first_commit_at, pr.opened_at, pr.approved_at, pr.merged_at,
+           (pr.id IS NOT NULL) AS correlated
     FROM deployment_revisions dr
     JOIN runs r ON r.id = dr.run_id
     JOIN environments e ON e.id = dr.environment_id
     JOIN job_runs djr ON djr.id = dr.job_run_id
     JOIN LATERAL (
         -- deployed commit SHA = the git material's revision in runs.revisions
-        -- (the entry with a non-empty branch; skips upstream materials).
-        SELECT rev.value ->> 'revision' AS sha
-        FROM jsonb_each(r.revisions) AS rev
-        WHERE COALESCE(rev.value ->> 'branch', '') <> ''
+        -- (non-empty branch; skips upstream). Deterministic pick by key so a
+        -- multi-material run can't choose a different SHA across calls.
+        SELECT rev.v ->> 'revision' AS sha
+        FROM jsonb_each(r.revisions) AS rev(k, v)
+        WHERE COALESCE(rev.v ->> 'branch', '') <> ''
+        ORDER BY rev.k
         LIMIT 1
     ) dep ON TRUE
-    JOIN vcs_pull_requests vpr ON vpr.merge_sha <> '' AND vpr.merge_sha = dep.sha
+    LEFT JOIN LATERAL (
+        -- One PR per deployed SHA — pick deterministically so mirrored repos
+        -- sharing a merge SHA can't fan a deploy into multiple PR rows.
+        SELECT vpr.id, vpr.first_commit_at, vpr.opened_at, vpr.approved_at, vpr.merged_at
+        FROM vcs_pull_requests vpr
+        WHERE vpr.merge_sha <> '' AND vpr.merge_sha = dep.sha
+        ORDER BY vpr.merged_at DESC NULLS LAST, vpr.number DESC
+        LIMIT 1
+    ) pr ON TRUE
     WHERE dr.status = 'success'
+      AND NOT dr.is_rollback
       AND dr.finished_at IS NOT NULL
       AND dr.finished_at >= now() - $1::interval
       AND djr.started_at IS NOT NULL
@@ -40,21 +52,25 @@ WITH deploys AS (
       )
 )
 SELECT
-    COUNT(*)::bigint AS correlated,
-    COUNT(*) FILTER (WHERE approved_at IS NOT NULL)::bigint AS review_sample,
+    COUNT(*) FILTER (WHERE correlated)::bigint AS correlated,
+    COUNT(*) FILTER (WHERE NOT correlated)::bigint AS excluded,
+    COUNT(*) FILTER (WHERE correlated AND first_commit_at IS NOT NULL AND opened_at >= first_commit_at)::bigint AS coding_sample,
+    COUNT(*) FILTER (WHERE correlated AND approved_at IS NOT NULL AND opened_at IS NOT NULL AND approved_at >= opened_at)::bigint AS review_sample,
+    COUNT(*) FILTER (WHERE correlated AND COALESCE(approved_at, merged_at) IS NOT NULL AND deploy_started >= COALESCE(approved_at, merged_at))::bigint AS release_sample,
+    COUNT(*) FILTER (WHERE correlated AND deploy_finished >= deploy_started)::bigint AS deploy_sample,
     COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
         ORDER BY EXTRACT(EPOCH FROM (opened_at - first_commit_at))::double precision
-    ) FILTER (WHERE first_commit_at IS NOT NULL AND opened_at >= first_commit_at), 0)::double precision AS coding_p50_s,
+    ) FILTER (WHERE correlated AND first_commit_at IS NOT NULL AND opened_at >= first_commit_at), 0)::double precision AS coding_p50_s,
     COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
         ORDER BY EXTRACT(EPOCH FROM (approved_at - opened_at))::double precision
-    ) FILTER (WHERE approved_at IS NOT NULL AND opened_at IS NOT NULL AND approved_at >= opened_at), 0)::double precision AS review_p50_s,
+    ) FILTER (WHERE correlated AND approved_at IS NOT NULL AND opened_at IS NOT NULL AND approved_at >= opened_at), 0)::double precision AS review_p50_s,
     COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
         ORDER BY EXTRACT(EPOCH FROM (deploy_started - COALESCE(approved_at, merged_at)))::double precision
-    ) FILTER (WHERE COALESCE(approved_at, merged_at) IS NOT NULL AND deploy_started >= COALESCE(approved_at, merged_at)), 0)::double precision AS release_p50_s,
+    ) FILTER (WHERE correlated AND COALESCE(approved_at, merged_at) IS NOT NULL AND deploy_started >= COALESCE(approved_at, merged_at)), 0)::double precision AS release_p50_s,
     COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
         ORDER BY EXTRACT(EPOCH FROM (deploy_finished - deploy_started))::double precision
-    ) FILTER (WHERE deploy_finished >= deploy_started), 0)::double precision AS deploy_p50_s
-FROM deploys
+    ) FILTER (WHERE correlated AND deploy_finished >= deploy_started), 0)::double precision AS deploy_p50_s
+FROM eligible
 `
 
 type DoraBottleneckParams struct {
@@ -64,26 +80,38 @@ type DoraBottleneckParams struct {
 }
 
 type DoraBottleneckRow struct {
-	Correlated   int64
-	ReviewSample int64
-	CodingP50S   float64
-	ReviewP50S   float64
-	ReleaseP50S  float64
-	DeployP50S   float64
+	Correlated    int64
+	Excluded      int64
+	CodingSample  int64
+	ReviewSample  int64
+	ReleaseSample int64
+	DeploySample  int64
+	CodingP50S    float64
+	ReviewP50S    float64
+	ReleaseP50S   float64
+	DeployP50S    float64
 }
 
 // Org lead-time decomposition over the trailing window: per-stage p50 across
-// successful deploys correlated to a pull request (the deployed commit ==
-// vcs_pull_requests.merge_sha). Stages are consecutive: Coding (first commit →
-// PR opened), Review (→ approval, only when approved_at exists), Release wait
+// successful, NON-ROLLBACK deploys correlated to a pull request (deployed commit
+// == vcs_pull_requests.merge_sha). Stages are consecutive: Coding (first commit
+// → PR opened), Review (→ approval, only when approved_at exists), Release wait
 // (approval/merge → deploy job start), Deploy (deploy job start → finish).
-// `correlated` is the sample; the caller derives "excluded = success − correlated".
+// Rollbacks are excluded entirely (a revert isn't new change-delivery and would
+// inflate Release wait against an old approval). `eligible` = successful
+// non-rollback deploys with a started deploy job; `excluded` = those with no PR
+// correlation. Each stage exposes its own sample count, since p50s drop rows
+// with missing boundaries.
 func (q *Queries) DoraBottleneck(ctx context.Context, arg DoraBottleneckParams) (DoraBottleneckRow, error) {
 	row := q.db.QueryRow(ctx, doraBottleneck, arg.SinceWindow, arg.Environment, arg.LabelKey)
 	var i DoraBottleneckRow
 	err := row.Scan(
 		&i.Correlated,
+		&i.Excluded,
+		&i.CodingSample,
 		&i.ReviewSample,
+		&i.ReleaseSample,
+		&i.DeploySample,
 		&i.CodingP50S,
 		&i.ReviewP50S,
 		&i.ReleaseP50S,

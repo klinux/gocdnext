@@ -18,7 +18,7 @@ import (
 // revisions carry the deployed commit SHA, a deploy job_run with start/finish,
 // a deployment_revisions row linking it, and a PR whose merge_sha == the SHA.
 func seedCorrelatedDeploy(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
-	envID, pipelineID uuid.UUID, counter int, sha string,
+	envID, pipelineID uuid.UUID, counter int, sha string, isRollback bool,
 	deployStarted, deployFinished time.Time) {
 	t.Helper()
 	matID := uuid.New().String()
@@ -53,8 +53,8 @@ func seedCorrelatedDeploy(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO deployment_revisions (environment_id, run_id, job_run_id, version, status, is_rollback, finished_at)
-		VALUES ($1, $2, $3, $4, 'success', false, $5)`,
-		envID, runID, jobID, sha, deployFinished); err != nil {
+		VALUES ($1, $2, $3, $4, 'success', $5, $6)`,
+		envID, runID, jobID, sha, isRollback, deployFinished); err != nil {
 		t.Fatalf("seed deployment_revision: %v", err)
 	}
 }
@@ -99,15 +99,18 @@ func TestDoraBottleneck_Decomposition(t *testing.T) {
 	_ = s.RecordPullRequestApproved(ctx, "github", repo, 7, approved)
 	_ = s.RecordPullRequestMerged(ctx, "github", repo, 7, merged, sha)
 
-	seedCorrelatedDeploy(t, pool, ctx, envID, pipelineID, 1, sha, deployStarted, deployFinished)
+	seedCorrelatedDeploy(t, pool, ctx, envID, pipelineID, 1, sha, false, deployStarted, deployFinished)
 
 	ov, err := s.AnalyticsOverview(ctx, "team", 30, "")
 	if err != nil {
 		t.Fatalf("overview: %v", err)
 	}
 	b := ov.Bottleneck
-	if b.Correlated != 1 || b.ReviewSample != 1 || b.Excluded != 0 {
+	if b.Correlated != 1 || b.Excluded != 0 {
 		t.Fatalf("counts = %+v", b)
+	}
+	if b.CodingSample != 1 || b.ReviewSample != 1 || b.ReleaseSample != 1 || b.DeploySample != 1 {
+		t.Fatalf("per-stage samples = %+v", b)
 	}
 	near := func(name string, got, want float64) {
 		if math.Abs(got-want) > 2 {
@@ -138,7 +141,7 @@ func TestDoraBottleneck_ExcludesUncorrelated(t *testing.T) {
 
 	// A success deploy whose SHA matches no PR → counted as excluded, not in p50.
 	df := time.Now().UTC().Add(-24 * time.Hour)
-	seedCorrelatedDeploy(t, pool, ctx, envID, pipelineID, 1, "orphansha", df.Add(-5*time.Minute), df)
+	seedCorrelatedDeploy(t, pool, ctx, envID, pipelineID, 1, "orphansha", false, df.Add(-5*time.Minute), df)
 
 	ov, err := s.AnalyticsOverview(ctx, "team", 30, "")
 	if err != nil {
@@ -146,5 +149,45 @@ func TestDoraBottleneck_ExcludesUncorrelated(t *testing.T) {
 	}
 	if ov.Bottleneck.Correlated != 0 || ov.Bottleneck.Excluded != 1 {
 		t.Fatalf("want correlated 0 / excluded 1, got %+v", ov.Bottleneck)
+	}
+}
+
+func TestDoraBottleneck_ExcludesRollbackAndDedupesPR(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	res, _ := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "pay", Name: "pay",
+		Pipelines: []*domain.Pipeline{{
+			Name: "main", Stages: []string{"deploy"},
+			Jobs: []domain.Job{{Name: "ship", Stage: "deploy"}},
+		}},
+	})
+	_ = s.ReplaceProjectLabels(ctx, res.ProjectID, []store.ProjectLabel{{Key: "team", Value: "payments"}})
+	envID, _ := s.EnsureEnvironment(ctx, res.ProjectID, "prod")
+	pipelineID := uuid.UUID(res.Pipelines[0].PipelineID)
+
+	now := time.Now().UTC()
+	const sha = "sharedsha"
+	// TWO PRs share the same merge SHA (mirrored repos) — a deploy must dedupe
+	// to one, not fan out to two.
+	_ = s.RecordPullRequestOpened(ctx, "github", "acme/web", 7, now.Add(-50*time.Hour), "t", "a", "f", "main", "h")
+	_ = s.RecordPullRequestMerged(ctx, "github", "acme/web", 7, now.Add(-49*time.Hour), sha)
+	_ = s.RecordPullRequestOpened(ctx, "github", "mirror/web", 8, now.Add(-48*time.Hour), "t", "a", "f", "main", "h")
+	_ = s.RecordPullRequestMerged(ctx, "github", "mirror/web", 8, now.Add(-47*time.Hour), sha)
+
+	// One real deploy of that SHA, plus a successful ROLLBACK of the same SHA.
+	df := now.Add(-24 * time.Hour)
+	seedCorrelatedDeploy(t, pool, ctx, envID, pipelineID, 1, sha, false, df.Add(-10*time.Minute), df)
+	seedCorrelatedDeploy(t, pool, ctx, envID, pipelineID, 2, sha, true, df.Add(time.Hour), df.Add(70*time.Minute))
+
+	ov, err := s.AnalyticsOverview(ctx, "team", 30, "")
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	// Rollback dropped entirely; the real deploy dedupes to a single PR.
+	if ov.Bottleneck.Correlated != 1 || ov.Bottleneck.Excluded != 0 {
+		t.Fatalf("want correlated 1 / excluded 0 (rollback & dupe handled), got %+v", ov.Bottleneck)
 	}
 }

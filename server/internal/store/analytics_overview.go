@@ -58,7 +58,10 @@ type AnalyticsOverview struct {
 type LeadTimeBottleneck struct {
 	Correlated    int64   `json:"correlated"`
 	Excluded      int64   `json:"excluded"`
+	CodingSample  int64   `json:"coding_sample"`
 	ReviewSample  int64   `json:"review_sample"`
+	ReleaseSample int64   `json:"release_sample"`
+	DeploySample  int64   `json:"deploy_sample"`
 	CodingP50Sec  float64 `json:"coding_p50_seconds"`
 	ReviewP50Sec  float64 `json:"review_p50_seconds"`
 	ReleaseP50Sec float64 `json:"release_wait_p50_seconds"`
@@ -117,7 +120,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 		return AnalyticsOverview{}, err
 	}
 
-	bottleneck, err := s.leadTimeBottleneck(ctx, labelKey, windowDays, environment, cur.success)
+	bottleneck, err := s.leadTimeBottleneck(ctx, labelKey, windowDays, environment)
 	if err != nil {
 		return AnalyticsOverview{}, err
 	}
@@ -135,10 +138,10 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 	}, nil
 }
 
-// leadTimeBottleneck runs the stage decomposition for the window and derives
-// the excluded count (successful deploys with no PR correlation) from the org
-// success total.
-func (s *Store) leadTimeBottleneck(ctx context.Context, labelKey string, windowDays int, environment string, successTotal int64) (LeadTimeBottleneck, error) {
+// leadTimeBottleneck runs the stage decomposition for the window. Sample counts
+// + excluded are derived in the query (non-rollback successful deploys, with vs.
+// without a PR correlation).
+func (s *Store) leadTimeBottleneck(ctx context.Context, labelKey string, windowDays int, environment string) (LeadTimeBottleneck, error) {
 	row, err := s.q.DoraBottleneck(ctx, db.DoraBottleneckParams{
 		LabelKey:    labelKey,
 		SinceWindow: dayInterval(windowDays),
@@ -147,14 +150,13 @@ func (s *Store) leadTimeBottleneck(ctx context.Context, labelKey string, windowD
 	if err != nil {
 		return LeadTimeBottleneck{}, fmt.Errorf("store: dora bottleneck: %w", err)
 	}
-	excluded := successTotal - row.Correlated
-	if excluded < 0 {
-		excluded = 0
-	}
 	return LeadTimeBottleneck{
 		Correlated:    row.Correlated,
-		Excluded:      excluded,
+		Excluded:      row.Excluded,
+		CodingSample:  row.CodingSample,
 		ReviewSample:  row.ReviewSample,
+		ReleaseSample: row.ReleaseSample,
+		DeploySample:  row.DeploySample,
 		CodingP50Sec:  row.CodingP50S,
 		ReviewP50Sec:  row.ReviewP50S,
 		ReleaseP50Sec: row.ReleaseP50S,

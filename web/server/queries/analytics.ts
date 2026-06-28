@@ -59,7 +59,10 @@ export type DoraOverview = {
 export type LeadTimeBottleneck = {
   correlated: number;
   excluded: number;
+  coding_sample: number;
   review_sample: number;
+  release_sample: number;
+  deploy_sample: number;
   coding_p50_seconds: number;
   review_p50_seconds: number;
   release_wait_p50_seconds: number;
