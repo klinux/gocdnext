@@ -11,10 +11,10 @@ convention that minor bumps may carry breaking changes until 1.0).
 ### Added
 
 - **Analytics — deploy-frequency chart (phase 2).** The Analytics page gains a
-  "Trend" section: deploys-to-production per day over the window as stacked bars
-  (successful teal, failed-in-prod red on top), with the window average and a
-  "N failures in M deploys" summary. Reads the daily series already returned by
-  the overview endpoint. (#111)
+  "Trend" section: deploys per day over the window as stacked bars (successful
+  teal, change failures — `status='failed'` or rollback, matching CFR — red on
+  top), with the window average and a "N change failures in M deploys" summary.
+  Reads the daily series already returned by the overview endpoint. (#111)
 
 ### Changed
 

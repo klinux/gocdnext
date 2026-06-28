@@ -1,16 +1,18 @@
 import { fmtFreq } from "@/lib/dora";
 import type { DoraDay } from "@/server/queries/analytics";
 
-// One plotted day: successful vs failed deploys. `fail` is total − success so
-// the stacked bar's height is the day's total terminal deploys.
+// One plotted day. `fail` uses the API's DORA semantics — deploys_failed =
+// status='failed' OR is_rollback — so a successful rollback counts red, like
+// the CFR card. `ok` is total − fail, keeping the stack height = the day's
+// total terminal deploys.
 type Day = { ok: number; fail: number };
 
 const CHART_PX = 120; // tallest bar in px; per-deploy unit derives from the max.
 
 function toDays(daily: DoraDay[]): Day[] {
   return daily.map((d) => ({
-    ok: d.deploys_success,
-    fail: Math.max(0, d.deploys_total - d.deploys_success),
+    ok: Math.max(0, d.deploys_total - d.deploys_failed),
+    fail: d.deploys_failed,
   }));
 }
 
@@ -39,7 +41,7 @@ export function DoraDeployFrequency({
         <div>
           <div className="text-sm font-semibold">Deploy frequency</div>
           <div className="text-xs text-muted-foreground">
-            Deploys to production per day · failures highlighted in red
+            Deploys per day · change failures highlighted in red
           </div>
         </div>
         <div className="text-right">
@@ -81,17 +83,17 @@ export function DoraDeployFrequency({
         <span>today</span>
       </div>
 
-      <div className="mt-3 flex items-center gap-4 text-xs">
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
         <span className="inline-flex items-center gap-1.5">
           <span className="size-2.5 rounded-sm" style={{ background: "var(--teal)", opacity: 0.8 }} />
           Deploy ok
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="size-2.5 rounded-sm" style={{ background: "var(--red)" }} />
-          Failed in prod
+          Change failure
         </span>
-        <span className="ml-auto text-muted-foreground/70">
-          {totalFails} failures in {totalDeploys} deploys
+        <span className="basis-full text-muted-foreground/70 sm:ml-auto sm:basis-auto">
+          {totalFails} change failures in {totalDeploys} deploys
         </span>
       </div>
     </div>
