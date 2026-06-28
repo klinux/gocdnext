@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Cloud } from "lucide-react";
 
 import { ClustersManager } from "@/components/clusters/clusters-manager.client";
 import { listAdminClusters } from "@/server/queries/admin";
@@ -29,7 +30,8 @@ export default async function ClustersPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">
+        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <Cloud className="size-6 text-brand-500" aria-hidden />
           Kubernetes clusters
         </h2>
         <p className="text-sm text-muted-foreground">

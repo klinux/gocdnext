@@ -54,7 +54,7 @@ export default async function AgentDetailPage({
     <section className="space-y-6">
       <header>
         <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Server className="h-6 w-6" aria-hidden />
+          <Server className="h-6 w-6 text-brand-500" aria-hidden />
           <span className="font-mono">{agent.name}</span>
           <HealthBadge state={agent.health_state} />
         </h2>

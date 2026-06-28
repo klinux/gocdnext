@@ -51,7 +51,7 @@ function PageHeader() {
   return (
     <header className="space-y-1">
       <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-        <Package className="h-6 w-6" aria-hidden />
+        <Package className="h-6 w-6 text-brand-500" aria-hidden />
         Plugins
       </h1>
     </header>

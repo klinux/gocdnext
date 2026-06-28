@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { UsersRound } from "lucide-react";
 
 import { GroupsManager } from "@/components/groups/groups-manager.client";
 import {
@@ -39,7 +40,7 @@ export default async function GroupsPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Groups</h2>
+        <h2 className="flex items-center gap-2 text-2xl font-semibold tracking-tight"><UsersRound className="size-6 text-brand-500" aria-hidden />Groups</h2>
         <p className="text-sm text-muted-foreground">
           Collective approvers — reference by name in{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">
