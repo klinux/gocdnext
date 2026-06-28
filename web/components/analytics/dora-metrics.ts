@@ -64,7 +64,7 @@ export function heroMetrics(ov: DoraOverview): HeroMetric[] {
   const freq: HeroMetric = {
     key: "Deploy frequency",
     value: trimNum(cur.deploy_freq_per_day),
-    unit: "/dia",
+    unit: "/day",
     tier: freqTierV,
     delta: pctDelta(cur.deploy_freq_per_day, prior.deploy_freq_per_day, false),
     vs: `${cur.deploys_success} deploys`,
@@ -82,8 +82,8 @@ export function heroMetrics(ov: DoraOverview): HeroMetric[] {
     delta: hasLead
       ? pctDelta(cur.lead_time_p50_seconds, prior.lead_time_p50_seconds, true)
       : { text: "—", good: null },
-    vs: hasLead ? "run → deploy p50" : "sem deploy concluído",
-    bench: "Elite: < 1 dia",
+    vs: hasLead ? "run → deploy p50" : "no completed deploy",
+    bench: "Elite: < 1 day",
     series: leadSeries,
     color: leadTierV ? TIER_COLOR[leadTierV] : NEUTRAL,
   };
@@ -97,7 +97,7 @@ export function heroMetrics(ov: DoraOverview): HeroMetric[] {
     delta: hasCfr
       ? ppDelta(cur.change_failure_rate, prior.change_failure_rate)
       : { text: "—", good: null },
-    vs: hasCfr ? `${cur.deploys_failed}/${cur.deploys_total} falharam` : "sem deploys",
+    vs: hasCfr ? `${cur.deploys_failed}/${cur.deploys_total} failed` : "no deploys",
     bench: "Elite: 0–15%",
     series: cfrSeries,
     color: cfrTierV ? TIER_COLOR[cfrTierV] : NEUTRAL,
@@ -112,8 +112,8 @@ export function heroMetrics(ov: DoraOverview): HeroMetric[] {
     delta: hasMttr
       ? pctDelta(cur.mttr_p50_seconds, prior.mttr_p50_seconds, true)
       : { text: "—", good: null },
-    vs: hasMttr ? "p50 restore" : "sem restaurações",
-    bench: "Elite: < 1 hora",
+    vs: hasMttr ? "p50 restore" : "no restores",
+    bench: "Elite: < 1 hour",
     // No daily MTTR breakdown — flat baseline from the window value.
     series: [cur.mttr_p50_seconds, cur.mttr_p50_seconds],
     color: mttrTierV ? TIER_COLOR[mttrTierV] : NEUTRAL,

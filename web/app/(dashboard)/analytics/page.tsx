@@ -49,10 +49,9 @@ export default async function AnalyticsPage({
           Analytics
         </h1>
         <p className="max-w-[880px] text-sm text-muted-foreground">
-          As quatro métricas DORA consolidadas entre todos os projetos, com
-          classificação de desempenho por faixa. Onde o time entrega rápido,
-          onde quebra, e onde o tempo se perde — a saúde de engenharia em nível
-          de organização.
+          The four DORA metrics consolidated across all projects, classified by
+          performance tier. Where teams ship fast, where they break, and where
+          time is lost — engineering health at the org level.
         </p>
       </header>
 
@@ -73,15 +72,15 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
 
       <div className="space-y-3.5">
         <SectionLabel>
-          Resumo da organização
+          Organization summary
           <TierChip
             tier={tier}
             label={`${TIER_LABEL[tier]} performer`}
             className="text-[11px]"
           />
           <span className="font-normal normal-case tracking-normal text-muted-foreground/70">
-            {ov.teams.length} grupos · {ov.current.deploys_total} deploys na
-            janela
+            {ov.teams.length} groups · {ov.current.deploys_total} deploys in
+            window
           </span>
         </SectionLabel>
         <DoraHeroCards overview={ov} />
@@ -89,14 +88,14 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
 
       <div className="space-y-3.5">
         <SectionLabel>
-          Desempenho por <span className="font-mono normal-case">{activeKey}</span>
+          Performance by <span className="font-mono normal-case">{activeKey}</span>
         </SectionLabel>
         {ov.teams.length === 0 ? (
           <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-            Nenhum deploy nesta janela para grupos de{" "}
-            <span className="font-mono">{activeKey}</span>. As métricas DORA
-            derivam de marcadores de deploy — os projetos precisam rodar um job
-            com bloco <span className="font-mono">deploy:</span>.
+            No deploys in this window for any{" "}
+            <span className="font-mono">{activeKey}</span> group. DORA metrics
+            derive from deploy markers — projects must run a job with a{" "}
+            <span className="font-mono">deploy:</span> block.
           </p>
         ) : (
           <DoraLeaderboard teams={ov.teams} groupKey={activeKey} />
@@ -111,11 +110,10 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
 function EmptyState() {
   return (
     <p className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-      Nenhuma label de projeto ainda. As métricas DORA são agrupadas por uma
-      label <span className="font-mono">key:value</span> (ex.{" "}
-      <span className="font-mono">team:payments</span>) — adicione labels em{" "}
-      <span className="font-mono">Projeto → Settings</span> para habilitar o
-      agrupamento por time.
+      No project labels yet. DORA metrics are grouped by a{" "}
+      <span className="font-mono">key:value</span> label (e.g.{" "}
+      <span className="font-mono">team:payments</span>) — add labels in{" "}
+      <span className="font-mono">Project → Settings</span> to enable grouping.
     </p>
   );
 }

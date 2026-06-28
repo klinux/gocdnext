@@ -12,14 +12,14 @@ import {
 } from "@/components/ui/select";
 
 const WINDOWS = [
-  { value: "7", label: "7 dias" },
-  { value: "30", label: "30 dias" },
-  { value: "90", label: "90 dias" },
+  { value: "7", label: "7 days" },
+  { value: "30", label: "30 days" },
+  { value: "90", label: "90 days" },
 ];
 
 // DoraToolbar drives the page query: group-by label key + trailing window. Both
-// push to the URL (searchParams) so the RSC re-fetches. The "vs. N dias
-// anteriores" caption mirrors the prior-window comparison the deltas use.
+// push to the URL (searchParams) so the RSC re-fetches. The "vs. previous
+// N days" caption mirrors the prior-window comparison the deltas use.
 export function DoraToolbar({
   keys,
   activeKey,
@@ -35,13 +35,13 @@ export function DoraToolbar({
 
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <Field label="Agrupar por">
+      <Field label="Group by">
         <Select
           items={Object.fromEntries(keys.map((k) => [k, k]))}
           value={activeKey}
           onValueChange={(v) => v && go(v, windowDays)}
         >
-          <SelectTrigger aria-label="Agrupar por" className="h-9 w-40 font-mono">
+          <SelectTrigger aria-label="Group by" className="h-9 w-40 font-mono">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -54,13 +54,13 @@ export function DoraToolbar({
         </Select>
       </Field>
 
-      <Field label="Janela">
+      <Field label="Window">
         <Select
           items={Object.fromEntries(WINDOWS.map((w) => [w.value, w.label]))}
           value={String(windowDays)}
           onValueChange={(v) => v && go(activeKey, Number(v))}
         >
-          <SelectTrigger aria-label="Janela" className="h-9 w-32">
+          <SelectTrigger aria-label="Window" className="h-9 w-32">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -74,7 +74,7 @@ export function DoraToolbar({
       </Field>
 
       <span className="ml-auto text-xs text-muted-foreground">
-        vs. {windowDays} dias anteriores
+        vs. previous {windowDays} days
       </span>
     </div>
   );

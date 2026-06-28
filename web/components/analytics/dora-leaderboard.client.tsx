@@ -38,13 +38,13 @@ type Row = {
 type SortKey = "name" | "deploys" | "freqPerDay" | "leadSec" | "cfr" | "mttrSec" | "tier";
 
 const COLS: { key: SortKey; label: string; num: boolean }[] = [
-  { key: "name", label: "Grupo", num: false },
+  { key: "name", label: "Group", num: false },
   { key: "deploys", label: "Deploys", num: true },
   { key: "freqPerDay", label: "Deploy freq", num: true },
   { key: "leadSec", label: "Lead time", num: true },
   { key: "cfr", label: "Change failure", num: true },
   { key: "mttrSec", label: "Restore (MTTR)", num: true },
-  { key: "tier", label: "Faixa", num: true },
+  { key: "tier", label: "Tier", num: true },
 ];
 
 function cfrTone(rate: number): string {
@@ -67,7 +67,7 @@ function toRow(g: DoraGroup): Row {
 }
 
 // DoraLeaderboard ranks groups across the four DORA metrics. Click a header to
-// sort; click again to flip direction. Default: Faixa (tier) descending —
+// sort; click again to flip direction. Default: Tier descending —
 // best performers first. `groupKey` is the active group-by label (team / tier /
 // domain) — drives the row prefix so the copy stays correct for any dimension.
 export function DoraLeaderboard({
@@ -139,7 +139,7 @@ export function DoraLeaderboard({
                 {r.name}
               </TableCell>
               <TableCell className="text-right">{r.deploys}</TableCell>
-              <TableCell className="text-right">{fmtFreq(r.freqPerDay, "sem")}</TableCell>
+              <TableCell className="text-right">{fmtFreq(r.freqPerDay, "wk")}</TableCell>
               <TableCell className="text-right">{fmtDuration(r.leadSec)}</TableCell>
               <TableCell className={cn("text-right", cfrTone(r.cfr))}>
                 {Math.round(r.cfr * 100)}%

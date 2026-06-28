@@ -55,7 +55,7 @@ describe("heroMetrics", () => {
     const freq = m[0]!;
     expect(freq.key).toBe("Deploy frequency");
     expect(freq.value).toBe("1.9");
-    expect(freq.unit).toBe("/dia");
+    expect(freq.unit).toBe("/day");
     expect(freq.delta.good).toBe(true); // 1.9 vs 1.6 up = good
 
     const lead = m[1]!;

@@ -22,7 +22,7 @@ function g(name: string, over: Partial<DoraGroup>): DoraGroup {
 
 const teams: DoraGroup[] = [
   g("platform", { lead_time_p50_seconds: 120 }), // 2m — fastest
-  g("data-eng", { lead_time_p50_seconds: 2 * 86400 }), // 2 dias — slowest
+  g("data-eng", { lead_time_p50_seconds: 2 * 86400 }), // 2 days — slowest
   g("payments", { lead_time_p50_seconds: 4 * 3600 + 10 * 60 }), // 4h 10m
 ];
 
