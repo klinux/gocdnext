@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 func TestSecurityFindings_ReplaceListFilterClear(t *testing.T) {
@@ -26,8 +26,6 @@ func TestSecurityFindings_ReplaceListFilterClear(t *testing.T) {
 		WHERE j.id = $1`, jobID).Scan(&projectID); err != nil {
 		t.Fatalf("lookup project: %v", err)
 	}
-
-	markRunTerminal(t, pool, ctx, jobID)
 
 	findings := []store.FindingIn{
 		{Tool: "Trivy", RuleID: "CVE-1", Severity: "critical", Level: "error", Message: "m1", LocationPath: "go.sum", Fingerprint: "fp1", ArtifactPath: "trivy.sarif"},
@@ -89,8 +87,6 @@ func TestReplaceSecurityFindings_StaleAttemptRejected(t *testing.T) {
 		t.Fatalf("lookup project: %v", err)
 	}
 
-	markRunTerminal(t, pool, ctx, jobID)
-
 	// Attempt 0 writes one finding.
 	if err := s.ReplaceSecurityFindings(ctx, jobID, 0, []store.FindingIn{
 		{Tool: "Trivy", RuleID: "CVE-1", Severity: "critical", Level: "error", Message: "m", Fingerprint: "fp1"},
@@ -126,13 +122,64 @@ func TestReplaceSecurityFindings_StaleAttemptRejected(t *testing.T) {
 	}
 }
 
-// markRunTerminal flips the job's run to a terminal status so it qualifies as
-// the "latest terminal run per pipeline" the findings query reads from.
-func markRunTerminal(t *testing.T, pool *pgxpool.Pool, ctx context.Context, jobRunID uuid.UUID) {
-	t.Helper()
-	if _, err := pool.Exec(ctx,
-		`UPDATE runs SET status='success' WHERE id = (SELECT run_id FROM job_runs WHERE id=$1)`,
-		jobRunID); err != nil {
-		t.Fatalf("mark run terminal: %v", err)
+// TestFindingsForProject_NewUnscannedRunDoesNotHidePrior guards the MED: a newer
+// run that hasn't been (successfully) scanned must NOT hide the previous scanned
+// run's findings. The list sources from the latest SCANNED run per pipeline.
+func TestFindingsForProject_NewUnscannedRunDoesNotHidePrior(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	fp := store.FingerprintFor("https://github.com/org/sec2", "main")
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "sec2", Name: "sec2",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "p1",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/sec2", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{{Name: "scan", Stage: "build", Image: "alpine", Tasks: []domain.Task{{Script: "true"}}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	projectID := applied.ProjectID
+	pipelineID := applied.Pipelines[0].PipelineID
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("material: %v", err)
+	}
+	mkRun := func(mod int64, rev string) (runID, jobID uuid.UUID) {
+		res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID: pipelineID, MaterialID: materialID, ModificationID: mod,
+			Revision: rev, Branch: "main", Provider: "github", Delivery: "t", TriggeredBy: "system:test",
+		})
+		if err != nil {
+			t.Fatalf("create run %d: %v", mod, err)
+		}
+		return res.RunID, res.JobRuns[0].ID
+	}
+
+	// Run 1: scanned with a critical finding.
+	_, job1 := mkRun(1, "aaa")
+	if err := s.ReplaceSecurityFindings(ctx, job1, 0, []store.FindingIn{
+		{Tool: "Trivy", RuleID: "CVE-1", Severity: "critical", Level: "error", Message: "m", Fingerprint: "fp1"},
+	}); err != nil {
+		t.Fatalf("reconcile run1: %v", err)
+	}
+
+	// Run 2: newer, but its scan never reconciled (failed / in-flight).
+	mkRun(2, "bbb")
+
+	// The tab must still show run 1's critical — run 2 isn't a scanned run yet.
+	page, err := s.FindingsForProject(ctx, projectID, store.FindingsFilter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 1 || page.Findings[0].RuleID != "CVE-1" {
+		t.Fatalf("unscanned newer run must not hide prior findings, got %+v", page.Findings)
 	}
 }

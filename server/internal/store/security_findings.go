@@ -99,15 +99,19 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 		return ErrSnapshotStale
 	}
 
+	// Context (run/pipeline/project/job) is resolved unconditionally — needed
+	// both to stamp findings and to write the reconciliation marker even for a
+	// clean (zero-finding) scan.
+	cx, err := q.SecurityFindingContext(ctx, pgUUID(jobRunID))
+	if err != nil {
+		return fmt.Errorf("store: findings context: %w", err)
+	}
+
 	if err := q.DeleteSecurityFindingsByJobRun(ctx, pgUUID(jobRunID)); err != nil {
 		return fmt.Errorf("store: findings delete: %w", err)
 	}
 
 	if len(findings) > 0 {
-		cx, err := q.SecurityFindingContext(ctx, pgUUID(jobRunID))
-		if err != nil {
-			return fmt.Errorf("store: findings context: %w", err)
-		}
 		params := make([]db.InsertSecurityFindingsParams, 0, len(findings))
 		for _, f := range findings {
 			// artifact_id is nullable (ON DELETE SET NULL); Nil → SQL NULL so
@@ -138,6 +142,18 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 		if _, err := q.InsertSecurityFindings(ctx, params); err != nil {
 			return fmt.Errorf("store: findings insert: %w", err)
 		}
+	}
+
+	// Reconciliation marker — the list only advances to this run once it's
+	// recorded here, so a failed/in-flight scan never hides a prior run's
+	// findings, and a clean scan (0 findings) is distinct from "not scanned".
+	if err := q.UpsertSecurityScan(ctx, db.UpsertSecurityScanParams{
+		JobRunID:     pgUUID(jobRunID),
+		RunID:        cx.RunID,
+		PipelineID:   cx.PipelineID,
+		FindingCount: int32(len(findings)),
+	}); err != nil {
+		return fmt.Errorf("store: findings mark scan: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

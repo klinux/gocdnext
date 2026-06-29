@@ -39,7 +39,32 @@ CREATE INDEX idx_security_findings_job_run ON security_findings (job_run_id);
 CREATE INDEX idx_security_findings_run_severity ON security_findings (run_id, severity);
 -- +goose StatementEnd
 
+-- +goose StatementBegin
+-- Reconciliation marker: one row per job_run whose SARIF was SUCCESSFULLY parsed
+-- (including a clean scan with zero findings). Lets the Security tab distinguish
+-- "scanned clean" from "not scanned / parse failed" — the findings list only
+-- advances to a newer run once that run has a successful scan here, so a failed
+-- or in-flight scan never hides the previous run's known vulnerabilities.
+CREATE TABLE security_scans (
+    job_run_id    UUID PRIMARY KEY REFERENCES job_runs(id) ON DELETE CASCADE,
+    run_id        UUID NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    pipeline_id   UUID NOT NULL,
+    finding_count INT NOT NULL DEFAULT 0,
+    reconciled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+-- "latest scanned run per pipeline" reads by pipeline_id (+ runs.counter for
+-- ordering).
+CREATE INDEX idx_security_scans_pipeline ON security_scans (pipeline_id);
+-- +goose StatementEnd
+
 -- +goose Down
+-- +goose StatementBegin
+DROP TABLE IF EXISTS security_scans;
+-- +goose StatementEnd
+
 -- +goose StatementBegin
 DROP TABLE IF EXISTS security_findings;
 -- +goose StatementEnd

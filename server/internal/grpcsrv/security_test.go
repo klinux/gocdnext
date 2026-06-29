@@ -71,10 +71,6 @@ func TestReconcileSecurityFindings(t *testing.T) {
 		t.Fatalf("create run: %v", err)
 	}
 	jobID := run.JobRuns[0].ID
-	// Findings show for the latest TERMINAL run per pipeline.
-	if _, err := pool.Exec(ctx, `UPDATE runs SET status='success' WHERE id = $1`, run.RunID); err != nil {
-		t.Fatalf("mark run terminal: %v", err)
-	}
 
 	// A ready SARIF artifact for the job.
 	key := "sec/" + jobID.String() + "/findings.sarif"

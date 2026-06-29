@@ -13,6 +13,18 @@ WHERE j.id = $1;
 -- name: DeleteSecurityFindingsByJobRun :exec
 DELETE FROM security_findings WHERE job_run_id = $1;
 
+-- name: UpsertSecurityScan :exec
+-- Mark a job_run as successfully reconciled (parsed OK, even with zero findings).
+-- Written in the same tx as the findings replace, so the marker and the rows
+-- are always consistent.
+INSERT INTO security_scans (job_run_id, run_id, pipeline_id, finding_count)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (job_run_id) DO UPDATE
+    SET run_id        = EXCLUDED.run_id,
+        pipeline_id   = EXCLUDED.pipeline_id,
+        finding_count = EXCLUDED.finding_count,
+        reconciled_at = NOW();
+
 -- name: InsertSecurityFindings :copyfrom
 INSERT INTO security_findings (
     job_run_id, run_id, pipeline_id, project_id, job_name,
@@ -27,12 +39,12 @@ INSERT INTO security_findings (
 -- newest run; uses idx_runs_pipeline_counter), filtered + paginated. Ordered
 -- worst-severity first.
 WITH latest AS (
-    SELECT DISTINCT ON (r.pipeline_id) r.id
-    FROM runs r
-    JOIN pipelines p ON p.id = r.pipeline_id
+    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-      AND r.status NOT IN ('queued', 'running')
-    ORDER BY r.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
@@ -51,12 +63,12 @@ LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 
 -- name: CountFindingsForProject :one
 WITH latest AS (
-    SELECT DISTINCT ON (r.pipeline_id) r.id
-    FROM runs r
-    JOIN pipelines p ON p.id = r.pipeline_id
+    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-      AND r.status NOT IN ('queued', 'running')
-    ORDER BY r.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, r.counter DESC
 )
 SELECT COUNT(*)::bigint
 FROM security_findings f
@@ -69,12 +81,12 @@ WHERE (sqlc.arg(severity)::text = '' OR f.severity = sqlc.arg(severity))
 -- Per-severity totals across the latest run per pipeline (unfiltered) — the tab
 -- header chips.
 WITH latest AS (
-    SELECT DISTINCT ON (r.pipeline_id) r.id
-    FROM runs r
-    JOIN pipelines p ON p.id = r.pipeline_id
+    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-      AND r.status NOT IN ('queued', 'running')
-    ORDER BY r.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, r.counter DESC
 )
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f

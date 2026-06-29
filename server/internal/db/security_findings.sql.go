@@ -13,12 +13,12 @@ import (
 
 const countFindingsForProject = `-- name: CountFindingsForProject :one
 WITH latest AS (
-    SELECT DISTINCT ON (r.pipeline_id) r.id
-    FROM runs r
-    JOIN pipelines p ON p.id = r.pipeline_id
+    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = $4
-      AND r.status NOT IN ('queued', 'running')
-    ORDER BY r.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, r.counter DESC
 )
 SELECT COUNT(*)::bigint
 FROM security_findings f
@@ -58,12 +58,12 @@ func (q *Queries) DeleteSecurityFindingsByJobRun(ctx context.Context, jobRunID p
 
 const findingsForProject = `-- name: FindingsForProject :many
 WITH latest AS (
-    SELECT DISTINCT ON (r.pipeline_id) r.id
-    FROM runs r
-    JOIN pipelines p ON p.id = r.pipeline_id
+    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = $6
-      AND r.status NOT IN ('queued', 'running')
-    ORDER BY r.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
@@ -207,12 +207,12 @@ func (q *Queries) SecurityFindingContext(ctx context.Context, id pgtype.UUID) (S
 
 const severityCountsForProject = `-- name: SeverityCountsForProject :many
 WITH latest AS (
-    SELECT DISTINCT ON (r.pipeline_id) r.id
-    FROM runs r
-    JOIN pipelines p ON p.id = r.pipeline_id
+    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = $1
-      AND r.status NOT IN ('queued', 'running')
-    ORDER BY r.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, r.counter DESC
 )
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f
@@ -245,4 +245,34 @@ func (q *Queries) SeverityCountsForProject(ctx context.Context, projectID pgtype
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertSecurityScan = `-- name: UpsertSecurityScan :exec
+INSERT INTO security_scans (job_run_id, run_id, pipeline_id, finding_count)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (job_run_id) DO UPDATE
+    SET run_id        = EXCLUDED.run_id,
+        pipeline_id   = EXCLUDED.pipeline_id,
+        finding_count = EXCLUDED.finding_count,
+        reconciled_at = NOW()
+`
+
+type UpsertSecurityScanParams struct {
+	JobRunID     pgtype.UUID
+	RunID        pgtype.UUID
+	PipelineID   pgtype.UUID
+	FindingCount int32
+}
+
+// Mark a job_run as successfully reconciled (parsed OK, even with zero findings).
+// Written in the same tx as the findings replace, so the marker and the rows
+// are always consistent.
+func (q *Queries) UpsertSecurityScan(ctx context.Context, arg UpsertSecurityScanParams) error {
+	_, err := q.db.Exec(ctx, upsertSecurityScan,
+		arg.JobRunID,
+		arg.RunID,
+		arg.PipelineID,
+		arg.FindingCount,
+	)
+	return err
 }
