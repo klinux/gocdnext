@@ -89,16 +89,32 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 		return AnalyticsOverview{}, err
 	}
 
-	daysRows, err := s.q.DoraDailySeries(ctx, db.DoraDailySeriesParams{
+	// Counts dense from the rollup; lead p50 per day live, merged by day (#128
+	// phase 1b).
+	countRows, err := s.q.DoraDailyCounts(ctx, db.DoraDailyCountsParams{
+		SinceDays:   int32(windowDays),
+		LabelKey:    labelKey,
+		Environment: environment,
+	})
+	if err != nil {
+		return AnalyticsOverview{}, fmt.Errorf("store: dora daily counts: %w", err)
+	}
+	leadRows, err := s.q.DoraDailyLead(ctx, db.DoraDailyLeadParams{
 		LabelKey:    labelKey,
 		SinceWindow: dayInterval(windowDays),
 		Environment: environment,
 	})
 	if err != nil {
-		return AnalyticsOverview{}, fmt.Errorf("store: dora daily series: %w", err)
+		return AnalyticsOverview{}, fmt.Errorf("store: dora daily lead: %w", err)
 	}
-	daily := make([]DoraDay, 0, len(daysRows))
-	for _, d := range daysRows {
+	leadByDay := make(map[string]float64, len(leadRows))
+	for _, l := range leadRows {
+		if l.Day.Valid {
+			leadByDay[l.Day.Time.Format("2006-01-02")] = l.LeadTimeP50S
+		}
+	}
+	daily := make([]DoraDay, 0, len(countRows))
+	for _, d := range countRows {
 		day := ""
 		if d.Day.Valid {
 			day = d.Day.Time.Format("2006-01-02")
@@ -108,7 +124,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 			DeploysSuccess: d.DeploysSuccess,
 			DeploysTotal:   d.DeploysTotal,
 			DeploysFailed:  d.DeploysFailed,
-			LeadTimeP50Sec: d.LeadTimeP50S,
+			LeadTimeP50Sec: leadByDay[day],
 		})
 	}
 
@@ -176,14 +192,24 @@ type orgWindowRaw struct {
 // orgWindow runs the org-wide counts + lead-time p50 and the MTTR p50 for the
 // trailing [sinceDays, untilDays) window. untilDays=0 means "up to now".
 func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, untilDays int, environment string) (orgWindowRaw, error) {
-	agg, err := s.q.DoraWindowAgg(ctx, db.DoraWindowAggParams{
+	// Counts from the rollup; lead + MTTR live (#128 phase 1b).
+	counts, err := s.q.DoraCountsOrg(ctx, db.DoraCountsOrgParams{
+		SinceDays:   int32(sinceDays),
+		UntilDays:   int32(untilDays),
+		LabelKey:    labelKey,
+		Environment: environment,
+	})
+	if err != nil {
+		return orgWindowRaw{}, fmt.Errorf("store: dora counts org: %w", err)
+	}
+	lead, err := s.q.DoraLeadOrg(ctx, db.DoraLeadOrgParams{
 		LabelKey:    labelKey,
 		SinceWindow: dayInterval(sinceDays),
 		UntilWindow: dayInterval(untilDays),
 		Environment: environment,
 	})
 	if err != nil {
-		return orgWindowRaw{}, fmt.Errorf("store: dora window agg: %w", err)
+		return orgWindowRaw{}, fmt.Errorf("store: dora lead org: %w", err)
 	}
 	mttr, err := s.q.DoraWindowMTTR(ctx, db.DoraWindowMTTRParams{
 		LabelKey:    labelKey,
@@ -195,10 +221,10 @@ func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, until
 		return orgWindowRaw{}, fmt.Errorf("store: dora window mttr: %w", err)
 	}
 	return orgWindowRaw{
-		success: agg.DeploysSuccess,
-		total:   agg.DeploysTotal,
-		failed:  agg.DeploysFailed,
-		leadP50: agg.LeadTimeP50S,
+		success: counts.DeploysSuccess,
+		total:   counts.DeploysTotal,
+		failed:  counts.DeploysFailed,
+		leadP50: lead,
 		mttrP50: mttr,
 	}, nil
 }

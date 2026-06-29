@@ -214,6 +214,12 @@ type Querier interface {
 	DeleteCluster(ctx context.Context, id pgtype.UUID) error
 	DeleteComplianceFramework(ctx context.Context, id pgtype.UUID) error
 	DeleteCompliancePolicy(ctx context.Context, id pgtype.UUID) error
+	// Maintenance of the analytics_deploy_daily rollup (#128 phase 1b) — the
+	// deploy/DORA mirror of analytics_run_rollup. Same DELETE-window + reinsert
+	// contract (deploys are mutable via rollback/redeploy), same leader advisory
+	// lock (TryRollupLock, shared with the run rollup). since_days <= 0 = full
+	// rebuild.
+	DeleteDeployDailyWindow(ctx context.Context, sinceDays int32) error
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
@@ -272,27 +278,38 @@ type Querier interface {
 	// (incl. retention-pruned runs / no git revision). Each stage exposes its own
 	// sample count, since p50s drop rows with missing boundaries.
 	DoraBottleneck(ctx context.Context, arg DoraBottleneckParams) (DoraBottleneckRow, error)
-	// Dense per-day org buckets over the trailing window — feeds the hero
-	// sparklines. generate_series yields one row per calendar day (zero-filled for
-	// days with no deploy) so a sparse 90-day window still plots an honest,
-	// non-compressed trend. Success/total/failed counts + lead-time p50 per day.
-	DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error)
+	// Deploy COUNTS per label-value group over the [since_days, until_days) day
+	// window, from the analytics_deploy_daily rollup (additive, O(days)). Pairs with
+	// DoraLeadGroup (live lead p50) + DoraMTTR (live). day-window mirrors the live
+	// interval window: current = (since=window, until=0); prior = (2×window, window).
+	DoraCountsGroup(ctx context.Context, arg DoraCountsGroupParams) ([]DoraCountsGroupRow, error)
+	// Org-wide deploy COUNTS over the [since_days, until_days) day window, from the
+	// analytics_deploy_daily rollup. EXISTS (not a join) so an environment is
+	// counted once even if its project carries the key under several values.
+	// Current window = (since=window, until=0); prior = (2×window, window).
+	DoraCountsOrg(ctx context.Context, arg DoraCountsOrgParams) (DoraCountsOrgRow, error)
+	// Dense per-day org deploy COUNTS over the trailing window, from the rollup —
+	// feeds the hero sparklines. generate_series yields one row per calendar day
+	// (zero-filled) so a sparse window still plots an honest trend. Pairs with
+	// DoraDailyLead (live lead p50 per day), merged by day in the store.
+	DoraDailyCounts(ctx context.Context, arg DoraDailyCountsParams) ([]DoraDailyCountsRow, error)
+	// Per-day org lead-time p50, LIVE (percentile can't be summed). Sparse — only
+	// days with successful deploys; the store left-joins these onto the dense
+	// DoraDailyCounts day list, defaulting missing days to 0.
+	DoraDailyLead(ctx context.Context, arg DoraDailyLeadParams) ([]DoraDailyLeadRow, error)
+	// Lead-time p50 per group, LIVE from deploys + producing run (a median can't be
+	// summed across rollup buckets). Lead = producing run START → deploy finish
+	// (excludes queue wait). Same window as DoraCountsGroup, interval-based so the
+	// 00057 index applies.
+	DoraLeadGroup(ctx context.Context, arg DoraLeadGroupParams) ([]DoraLeadGroupRow, error)
+	// Org-wide lead-time p50, LIVE (percentile can't be summed). Same window as
+	// DoraCountsOrg, interval-based for the 00057 index.
+	DoraLeadOrg(ctx context.Context, arg DoraLeadOrgParams) (float64, error)
 	// Median time-to-restore per group: for each FAILED deploy in the window, the
 	// gap to the next SUCCESS in the same environment. The restore lookup is a
 	// lateral index probe per failure instead of a self-scan over all historical
 	// deploy events for the label key.
 	DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRRow, error)
-	// DORA metrics per label-value group (for label key = label_key) over the
-	// trailing window. Joins each project's labels → environments →
-	// deployment_revisions (+ the producing run for lead time). One row per
-	// distinct value of the key.
-	DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error)
-	// Org-wide DORA counts + lead-time p50 over an arbitrary [since, until) window
-	// (both intervals trailing from now). The same query serves the current window
-	// (until=0) and the prior window (since=2×window, until=window) for deltas.
-	// A deploy counts once even if its project carries the key under several values
-	// (EXISTS, not a join, so no fan-out double count).
-	DoraWindowAgg(ctx context.Context, arg DoraWindowAggParams) (DoraWindowAggRow, error)
 	// Org-wide median time-to-restore over [since, until): for each FAILED deploy
 	// whose project carries the key, the gap to the next SUCCESS in the same
 	// environment (lateral index probe per failure).
@@ -608,6 +625,10 @@ type Querier interface {
 	InsertCluster(ctx context.Context, arg InsertClusterParams) (InsertClusterRow, error)
 	InsertComplianceFramework(ctx context.Context, arg InsertComplianceFrameworkParams) (ComplianceFramework, error)
 	InsertCompliancePolicy(ctx context.Context, arg InsertCompliancePolicyParams) (InsertCompliancePolicyRow, error)
+	// deploys_failed folds status='failed' OR is_rollback (a rollback signals a
+	// change failure even when the rollback deploy itself succeeded) — matches the
+	// live DORA queries. deploys_total counts terminal deploys (success+failed).
+	InsertDeployDailyWindow(ctx context.Context, sinceDays int32) error
 	InsertGroup(ctx context.Context, arg InsertGroupParams) (Group, error)
 	InsertJobRun(ctx context.Context, arg InsertJobRunParams) (InsertJobRunRow, error)
 	// Records one vote on a gate. Unique (job_run_id, user_id) —

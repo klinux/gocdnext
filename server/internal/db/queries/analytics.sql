@@ -22,18 +22,33 @@ WHERE EXISTS (
     )
 ORDER BY e.name;
 
--- name: DoraRollup :many
--- DORA metrics per label-value group (for label key = label_key) over the
--- trailing window. Joins each project's labels → environments →
--- deployment_revisions (+ the producing run for lead time). One row per
--- distinct value of the key.
+-- name: DoraCountsGroup :many
+-- Deploy COUNTS per label-value group over the [since_days, until_days) day
+-- window, from the analytics_deploy_daily rollup (additive, O(days)). Pairs with
+-- DoraLeadGroup (live lead p50) + DoraMTTR (live). day-window mirrors the live
+-- interval window: current = (since=window, until=0); prior = (2×window, window).
+SELECT pl.value AS grp,
+       COALESCE(SUM(d.deploys_success), 0)::bigint AS deploys_success,
+       COALESCE(SUM(d.deploys_total), 0)::bigint AS deploys_total,
+       COALESCE(SUM(d.deploys_failed), 0)::bigint AS deploys_failed
+FROM project_labels pl
+JOIN environments e ON e.project_id = pl.project_id
+JOIN analytics_deploy_daily d ON d.environment_id = e.id
+WHERE pl.key = sqlc.arg(label_key)
+  AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
+  AND d.day >  current_date - sqlc.arg(since_days)::int
+  AND d.day <= current_date - sqlc.arg(until_days)::int
+GROUP BY pl.value
+ORDER BY pl.value;
+
+-- name: DoraLeadGroup :many
+-- Lead-time p50 per group, LIVE from deploys + producing run (a median can't be
+-- summed across rollup buckets). Lead = producing run START → deploy finish
+-- (excludes queue wait). Same window as DoraCountsGroup, interval-based so the
+-- 00057 index applies.
 WITH base AS (
     SELECT pl.value AS grp,
            dr.status,
-           dr.is_rollback,
-           -- Lead time = producing run START → deploy finish (excludes queue
-           -- wait, which is operator capacity, not change latency). NULL when
-           -- the run never started → filtered out of the median below.
            EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
     FROM project_labels pl
     JOIN environments e ON e.project_id = pl.project_id
@@ -47,9 +62,6 @@ WITH base AS (
       AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
 )
 SELECT grp,
-       COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
-       COUNT(*)::bigint AS deploys_total,
-       COUNT(*) FILTER (WHERE status = 'failed' OR is_rollback)::bigint AS deploys_failed,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
                 FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
                 0)::double precision AS lead_time_p50_s
@@ -57,15 +69,29 @@ FROM base
 GROUP BY grp
 ORDER BY grp;
 
--- name: DoraWindowAgg :one
--- Org-wide DORA counts + lead-time p50 over an arbitrary [since, until) window
--- (both intervals trailing from now). The same query serves the current window
--- (until=0) and the prior window (since=2×window, until=window) for deltas.
--- A deploy counts once even if its project carries the key under several values
--- (EXISTS, not a join, so no fan-out double count).
+-- name: DoraCountsOrg :one
+-- Org-wide deploy COUNTS over the [since_days, until_days) day window, from the
+-- analytics_deploy_daily rollup. EXISTS (not a join) so an environment is
+-- counted once even if its project carries the key under several values.
+-- Current window = (since=window, until=0); prior = (2×window, window).
+SELECT COALESCE(SUM(d.deploys_success), 0)::bigint AS deploys_success,
+       COALESCE(SUM(d.deploys_total), 0)::bigint AS deploys_total,
+       COALESCE(SUM(d.deploys_failed), 0)::bigint AS deploys_failed
+FROM analytics_deploy_daily d
+JOIN environments e ON e.id = d.environment_id
+WHERE d.day >  current_date - sqlc.arg(since_days)::int
+  AND d.day <= current_date - sqlc.arg(until_days)::int
+  AND EXISTS (
+      SELECT 1 FROM project_labels pl
+      WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+  )
+  AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment));
+
+-- name: DoraLeadOrg :one
+-- Org-wide lead-time p50, LIVE (percentile can't be summed). Same window as
+-- DoraCountsOrg, interval-based for the 00057 index.
 WITH base AS (
     SELECT dr.status,
-           dr.is_rollback,
            EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
     FROM deployment_revisions dr
     JOIN environments e ON e.id = dr.environment_id
@@ -80,10 +106,7 @@ WITH base AS (
       )
       AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
 )
-SELECT COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
-       COUNT(*)::bigint AS deploys_total,
-       COUNT(*) FILTER (WHERE status = 'failed' OR is_rollback)::bigint AS deploys_failed,
-       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
+SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
                 FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
                 0)::double precision AS lead_time_p50_s
 FROM base;
@@ -122,48 +145,62 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) s ON TRUE;
 
--- name: DoraDailySeries :many
--- Dense per-day org buckets over the trailing window — feeds the hero
--- sparklines. generate_series yields one row per calendar day (zero-filled for
--- days with no deploy) so a sparse 90-day window still plots an honest,
--- non-compressed trend. Success/total/failed counts + lead-time p50 per day.
+-- name: DoraDailyCounts :many
+-- Dense per-day org deploy COUNTS over the trailing window, from the rollup —
+-- feeds the hero sparklines. generate_series yields one row per calendar day
+-- (zero-filled) so a sparse window still plots an honest trend. Pairs with
+-- DoraDailyLead (live lead p50 per day), merged by day in the store.
 WITH days AS (
     SELECT generate_series(
-        date_trunc('day', now() - sqlc.arg(since_window)::interval),
-        date_trunc('day', now()),
+        current_date - sqlc.arg(since_days)::int,
+        current_date,
         interval '1 day'
     )::date AS day
 ),
 agg AS (
-    SELECT date_trunc('day', dr.finished_at)::date AS day,
-           COUNT(*) FILTER (WHERE dr.status = 'success')::bigint AS deploys_success,
-           COUNT(*)::bigint AS deploys_total,
-           COUNT(*) FILTER (WHERE dr.status = 'failed' OR dr.is_rollback)::bigint AS deploys_failed,
-           COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
-                    ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
-                    0)::double precision AS lead_time_p50_s
-    FROM deployment_revisions dr
-    JOIN environments e ON e.id = dr.environment_id
-    LEFT JOIN runs r ON r.id = dr.run_id
-    WHERE dr.status IN ('success', 'failed')
-      AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+    SELECT d.day AS day,
+           SUM(d.deploys_success)::bigint AS deploys_success,
+           SUM(d.deploys_total)::bigint AS deploys_total,
+           SUM(d.deploys_failed)::bigint AS deploys_failed
+    FROM analytics_deploy_daily d
+    JOIN environments e ON e.id = d.environment_id
+    WHERE d.day > current_date - sqlc.arg(since_days)::int
       AND EXISTS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
       )
       AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
-    GROUP BY day
+    GROUP BY d.day
 )
-SELECT d.day AS day,
+SELECT s.day AS day,
        COALESCE(a.deploys_success, 0)::bigint AS deploys_success,
        COALESCE(a.deploys_total, 0)::bigint AS deploys_total,
-       COALESCE(a.deploys_failed, 0)::bigint AS deploys_failed,
-       COALESCE(a.lead_time_p50_s, 0)::double precision AS lead_time_p50_s
-FROM days d
-LEFT JOIN agg a ON a.day = d.day
-ORDER BY d.day;
+       COALESCE(a.deploys_failed, 0)::bigint AS deploys_failed
+FROM days s
+LEFT JOIN agg a ON a.day = s.day
+ORDER BY s.day;
+
+-- name: DoraDailyLead :many
+-- Per-day org lead-time p50, LIVE (percentile can't be summed). Sparse — only
+-- days with successful deploys; the store left-joins these onto the dense
+-- DoraDailyCounts day list, defaulting missing days to 0.
+SELECT date_trunc('day', dr.finished_at)::date AS day,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
+                ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM deployment_revisions dr
+JOIN environments e ON e.id = dr.environment_id
+LEFT JOIN runs r ON r.id = dr.run_id
+WHERE dr.status IN ('success', 'failed')
+  AND dr.finished_at IS NOT NULL
+  AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+  AND EXISTS (
+      SELECT 1 FROM project_labels pl
+      WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
+  )
+  AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
+GROUP BY day;
 
 -- name: DoraMTTR :many
 -- Median time-to-restore per group: for each FAILED deploy in the window, the

@@ -131,79 +131,59 @@ func (q *Queries) DoraBottleneck(ctx context.Context, arg DoraBottleneckParams) 
 	return i, err
 }
 
-const doraDailySeries = `-- name: DoraDailySeries :many
-WITH days AS (
-    SELECT generate_series(
-        date_trunc('day', now() - $1::interval),
-        date_trunc('day', now()),
-        interval '1 day'
-    )::date AS day
-),
-agg AS (
-    SELECT date_trunc('day', dr.finished_at)::date AS day,
-           COUNT(*) FILTER (WHERE dr.status = 'success')::bigint AS deploys_success,
-           COUNT(*)::bigint AS deploys_total,
-           COUNT(*) FILTER (WHERE dr.status = 'failed' OR dr.is_rollback)::bigint AS deploys_failed,
-           COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
-                    ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
-                    0)::double precision AS lead_time_p50_s
-    FROM deployment_revisions dr
-    JOIN environments e ON e.id = dr.environment_id
-    LEFT JOIN runs r ON r.id = dr.run_id
-    WHERE dr.status IN ('success', 'failed')
-      AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $1::interval
-      AND EXISTS (
-          SELECT 1 FROM project_labels pl
-          WHERE pl.project_id = e.project_id AND pl.key = $2
-      )
-      AND ($3::text = '' OR e.name = $3)
-    GROUP BY day
-)
-SELECT d.day AS day,
-       COALESCE(a.deploys_success, 0)::bigint AS deploys_success,
-       COALESCE(a.deploys_total, 0)::bigint AS deploys_total,
-       COALESCE(a.deploys_failed, 0)::bigint AS deploys_failed,
-       COALESCE(a.lead_time_p50_s, 0)::double precision AS lead_time_p50_s
-FROM days d
-LEFT JOIN agg a ON a.day = d.day
-ORDER BY d.day
+const doraCountsGroup = `-- name: DoraCountsGroup :many
+SELECT pl.value AS grp,
+       COALESCE(SUM(d.deploys_success), 0)::bigint AS deploys_success,
+       COALESCE(SUM(d.deploys_total), 0)::bigint AS deploys_total,
+       COALESCE(SUM(d.deploys_failed), 0)::bigint AS deploys_failed
+FROM project_labels pl
+JOIN environments e ON e.project_id = pl.project_id
+JOIN analytics_deploy_daily d ON d.environment_id = e.id
+WHERE pl.key = $1
+  AND ($2::text = '' OR e.name = $2)
+  AND d.day >  current_date - $3::int
+  AND d.day <= current_date - $4::int
+GROUP BY pl.value
+ORDER BY pl.value
 `
 
-type DoraDailySeriesParams struct {
-	SinceWindow pgtype.Interval
+type DoraCountsGroupParams struct {
 	LabelKey    string
 	Environment string
+	SinceDays   int32
+	UntilDays   int32
 }
 
-type DoraDailySeriesRow struct {
-	Day            pgtype.Date
+type DoraCountsGroupRow struct {
+	Grp            string
 	DeploysSuccess int64
 	DeploysTotal   int64
 	DeploysFailed  int64
-	LeadTimeP50S   float64
 }
 
-// Dense per-day org buckets over the trailing window — feeds the hero
-// sparklines. generate_series yields one row per calendar day (zero-filled for
-// days with no deploy) so a sparse 90-day window still plots an honest,
-// non-compressed trend. Success/total/failed counts + lead-time p50 per day.
-func (q *Queries) DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams) ([]DoraDailySeriesRow, error) {
-	rows, err := q.db.Query(ctx, doraDailySeries, arg.SinceWindow, arg.LabelKey, arg.Environment)
+// Deploy COUNTS per label-value group over the [since_days, until_days) day
+// window, from the analytics_deploy_daily rollup (additive, O(days)). Pairs with
+// DoraLeadGroup (live lead p50) + DoraMTTR (live). day-window mirrors the live
+// interval window: current = (since=window, until=0); prior = (2×window, window).
+func (q *Queries) DoraCountsGroup(ctx context.Context, arg DoraCountsGroupParams) ([]DoraCountsGroupRow, error) {
+	rows, err := q.db.Query(ctx, doraCountsGroup,
+		arg.LabelKey,
+		arg.Environment,
+		arg.SinceDays,
+		arg.UntilDays,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DoraDailySeriesRow{}
+	items := []DoraCountsGroupRow{}
 	for rows.Next() {
-		var i DoraDailySeriesRow
+		var i DoraCountsGroupRow
 		if err := rows.Scan(
-			&i.Day,
+			&i.Grp,
 			&i.DeploysSuccess,
 			&i.DeploysTotal,
 			&i.DeploysFailed,
-			&i.LeadTimeP50S,
 		); err != nil {
 			return nil, err
 		}
@@ -213,6 +193,288 @@ func (q *Queries) DoraDailySeries(ctx context.Context, arg DoraDailySeriesParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const doraCountsOrg = `-- name: DoraCountsOrg :one
+SELECT COALESCE(SUM(d.deploys_success), 0)::bigint AS deploys_success,
+       COALESCE(SUM(d.deploys_total), 0)::bigint AS deploys_total,
+       COALESCE(SUM(d.deploys_failed), 0)::bigint AS deploys_failed
+FROM analytics_deploy_daily d
+JOIN environments e ON e.id = d.environment_id
+WHERE d.day >  current_date - $1::int
+  AND d.day <= current_date - $2::int
+  AND EXISTS (
+      SELECT 1 FROM project_labels pl
+      WHERE pl.project_id = e.project_id AND pl.key = $3
+  )
+  AND ($4::text = '' OR e.name = $4)
+`
+
+type DoraCountsOrgParams struct {
+	SinceDays   int32
+	UntilDays   int32
+	LabelKey    string
+	Environment string
+}
+
+type DoraCountsOrgRow struct {
+	DeploysSuccess int64
+	DeploysTotal   int64
+	DeploysFailed  int64
+}
+
+// Org-wide deploy COUNTS over the [since_days, until_days) day window, from the
+// analytics_deploy_daily rollup. EXISTS (not a join) so an environment is
+// counted once even if its project carries the key under several values.
+// Current window = (since=window, until=0); prior = (2×window, window).
+func (q *Queries) DoraCountsOrg(ctx context.Context, arg DoraCountsOrgParams) (DoraCountsOrgRow, error) {
+	row := q.db.QueryRow(ctx, doraCountsOrg,
+		arg.SinceDays,
+		arg.UntilDays,
+		arg.LabelKey,
+		arg.Environment,
+	)
+	var i DoraCountsOrgRow
+	err := row.Scan(&i.DeploysSuccess, &i.DeploysTotal, &i.DeploysFailed)
+	return i, err
+}
+
+const doraDailyCounts = `-- name: DoraDailyCounts :many
+WITH days AS (
+    SELECT generate_series(
+        current_date - $1::int,
+        current_date,
+        interval '1 day'
+    )::date AS day
+),
+agg AS (
+    SELECT d.day AS day,
+           SUM(d.deploys_success)::bigint AS deploys_success,
+           SUM(d.deploys_total)::bigint AS deploys_total,
+           SUM(d.deploys_failed)::bigint AS deploys_failed
+    FROM analytics_deploy_daily d
+    JOIN environments e ON e.id = d.environment_id
+    WHERE d.day > current_date - $1::int
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = $2
+      )
+      AND ($3::text = '' OR e.name = $3)
+    GROUP BY d.day
+)
+SELECT s.day AS day,
+       COALESCE(a.deploys_success, 0)::bigint AS deploys_success,
+       COALESCE(a.deploys_total, 0)::bigint AS deploys_total,
+       COALESCE(a.deploys_failed, 0)::bigint AS deploys_failed
+FROM days s
+LEFT JOIN agg a ON a.day = s.day
+ORDER BY s.day
+`
+
+type DoraDailyCountsParams struct {
+	SinceDays   int32
+	LabelKey    string
+	Environment string
+}
+
+type DoraDailyCountsRow struct {
+	Day            pgtype.Date
+	DeploysSuccess int64
+	DeploysTotal   int64
+	DeploysFailed  int64
+}
+
+// Dense per-day org deploy COUNTS over the trailing window, from the rollup —
+// feeds the hero sparklines. generate_series yields one row per calendar day
+// (zero-filled) so a sparse window still plots an honest trend. Pairs with
+// DoraDailyLead (live lead p50 per day), merged by day in the store.
+func (q *Queries) DoraDailyCounts(ctx context.Context, arg DoraDailyCountsParams) ([]DoraDailyCountsRow, error) {
+	rows, err := q.db.Query(ctx, doraDailyCounts, arg.SinceDays, arg.LabelKey, arg.Environment)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DoraDailyCountsRow{}
+	for rows.Next() {
+		var i DoraDailyCountsRow
+		if err := rows.Scan(
+			&i.Day,
+			&i.DeploysSuccess,
+			&i.DeploysTotal,
+			&i.DeploysFailed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doraDailyLead = `-- name: DoraDailyLead :many
+SELECT date_trunc('day', dr.finished_at)::date AS day,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision
+                ) FILTER (WHERE dr.status = 'success' AND r.started_at IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM deployment_revisions dr
+JOIN environments e ON e.id = dr.environment_id
+LEFT JOIN runs r ON r.id = dr.run_id
+WHERE dr.status IN ('success', 'failed')
+  AND dr.finished_at IS NOT NULL
+  AND dr.finished_at >= now() - $1::interval
+  AND EXISTS (
+      SELECT 1 FROM project_labels pl
+      WHERE pl.project_id = e.project_id AND pl.key = $2
+  )
+  AND ($3::text = '' OR e.name = $3)
+GROUP BY day
+`
+
+type DoraDailyLeadParams struct {
+	SinceWindow pgtype.Interval
+	LabelKey    string
+	Environment string
+}
+
+type DoraDailyLeadRow struct {
+	Day          pgtype.Date
+	LeadTimeP50S float64
+}
+
+// Per-day org lead-time p50, LIVE (percentile can't be summed). Sparse — only
+// days with successful deploys; the store left-joins these onto the dense
+// DoraDailyCounts day list, defaulting missing days to 0.
+func (q *Queries) DoraDailyLead(ctx context.Context, arg DoraDailyLeadParams) ([]DoraDailyLeadRow, error) {
+	rows, err := q.db.Query(ctx, doraDailyLead, arg.SinceWindow, arg.LabelKey, arg.Environment)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DoraDailyLeadRow{}
+	for rows.Next() {
+		var i DoraDailyLeadRow
+		if err := rows.Scan(&i.Day, &i.LeadTimeP50S); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doraLeadGroup = `-- name: DoraLeadGroup :many
+WITH base AS (
+    SELECT pl.value AS grp,
+           dr.status,
+           EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
+    FROM project_labels pl
+    JOIN environments e ON e.project_id = pl.project_id
+    JOIN deployment_revisions dr ON dr.environment_id = e.id
+    LEFT JOIN runs r ON r.id = dr.run_id
+    WHERE pl.key = $1
+      AND ($2::text = '' OR e.name = $2)
+      AND dr.status IN ('success', 'failed')
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - $3::interval
+      AND dr.finished_at <  now() - $4::interval
+)
+SELECT grp,
+       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
+                FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM base
+GROUP BY grp
+ORDER BY grp
+`
+
+type DoraLeadGroupParams struct {
+	LabelKey    string
+	Environment string
+	SinceWindow pgtype.Interval
+	UntilWindow pgtype.Interval
+}
+
+type DoraLeadGroupRow struct {
+	Grp          string
+	LeadTimeP50S float64
+}
+
+// Lead-time p50 per group, LIVE from deploys + producing run (a median can't be
+// summed across rollup buckets). Lead = producing run START → deploy finish
+// (excludes queue wait). Same window as DoraCountsGroup, interval-based so the
+// 00057 index applies.
+func (q *Queries) DoraLeadGroup(ctx context.Context, arg DoraLeadGroupParams) ([]DoraLeadGroupRow, error) {
+	rows, err := q.db.Query(ctx, doraLeadGroup,
+		arg.LabelKey,
+		arg.Environment,
+		arg.SinceWindow,
+		arg.UntilWindow,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DoraLeadGroupRow{}
+	for rows.Next() {
+		var i DoraLeadGroupRow
+		if err := rows.Scan(&i.Grp, &i.LeadTimeP50S); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const doraLeadOrg = `-- name: DoraLeadOrg :one
+WITH base AS (
+    SELECT dr.status,
+           EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
+    FROM deployment_revisions dr
+    JOIN environments e ON e.id = dr.environment_id
+    LEFT JOIN runs r ON r.id = dr.run_id
+    WHERE dr.status IN ('success', 'failed')
+      AND dr.finished_at IS NOT NULL
+      AND dr.finished_at >= now() - $1::interval
+      AND dr.finished_at <  now() - $2::interval
+      AND EXISTS (
+          SELECT 1 FROM project_labels pl
+          WHERE pl.project_id = e.project_id AND pl.key = $3
+      )
+      AND ($4::text = '' OR e.name = $4)
+)
+SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
+                FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
+                0)::double precision AS lead_time_p50_s
+FROM base
+`
+
+type DoraLeadOrgParams struct {
+	SinceWindow pgtype.Interval
+	UntilWindow pgtype.Interval
+	LabelKey    string
+	Environment string
+}
+
+// Org-wide lead-time p50, LIVE (percentile can't be summed). Same window as
+// DoraCountsOrg, interval-based for the 00057 index.
+func (q *Queries) DoraLeadOrg(ctx context.Context, arg DoraLeadOrgParams) (float64, error) {
+	row := q.db.QueryRow(ctx, doraLeadOrg,
+		arg.SinceWindow,
+		arg.UntilWindow,
+		arg.LabelKey,
+		arg.Environment,
+	)
+	var lead_time_p50_s float64
+	err := row.Scan(&lead_time_p50_s)
+	return lead_time_p50_s, err
 }
 
 const doraMTTR = `-- name: DoraMTTR :many
@@ -286,151 +548,6 @@ func (q *Queries) DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRR
 		return nil, err
 	}
 	return items, nil
-}
-
-const doraRollup = `-- name: DoraRollup :many
-WITH base AS (
-    SELECT pl.value AS grp,
-           dr.status,
-           dr.is_rollback,
-           -- Lead time = producing run START → deploy finish (excludes queue
-           -- wait, which is operator capacity, not change latency). NULL when
-           -- the run never started → filtered out of the median below.
-           EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
-    FROM project_labels pl
-    JOIN environments e ON e.project_id = pl.project_id
-    JOIN deployment_revisions dr ON dr.environment_id = e.id
-    LEFT JOIN runs r ON r.id = dr.run_id
-    WHERE pl.key = $1
-      AND ($2::text = '' OR e.name = $2)
-      AND dr.status IN ('success', 'failed')
-      AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $3::interval
-      AND dr.finished_at <  now() - $4::interval
-)
-SELECT grp,
-       COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
-       COUNT(*)::bigint AS deploys_total,
-       COUNT(*) FILTER (WHERE status = 'failed' OR is_rollback)::bigint AS deploys_failed,
-       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
-                FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
-                0)::double precision AS lead_time_p50_s
-FROM base
-GROUP BY grp
-ORDER BY grp
-`
-
-type DoraRollupParams struct {
-	LabelKey    string
-	Environment string
-	SinceWindow pgtype.Interval
-	UntilWindow pgtype.Interval
-}
-
-type DoraRollupRow struct {
-	Grp            string
-	DeploysSuccess int64
-	DeploysTotal   int64
-	DeploysFailed  int64
-	LeadTimeP50S   float64
-}
-
-// DORA metrics per label-value group (for label key = label_key) over the
-// trailing window. Joins each project's labels → environments →
-// deployment_revisions (+ the producing run for lead time). One row per
-// distinct value of the key.
-func (q *Queries) DoraRollup(ctx context.Context, arg DoraRollupParams) ([]DoraRollupRow, error) {
-	rows, err := q.db.Query(ctx, doraRollup,
-		arg.LabelKey,
-		arg.Environment,
-		arg.SinceWindow,
-		arg.UntilWindow,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DoraRollupRow{}
-	for rows.Next() {
-		var i DoraRollupRow
-		if err := rows.Scan(
-			&i.Grp,
-			&i.DeploysSuccess,
-			&i.DeploysTotal,
-			&i.DeploysFailed,
-			&i.LeadTimeP50S,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const doraWindowAgg = `-- name: DoraWindowAgg :one
-WITH base AS (
-    SELECT dr.status,
-           dr.is_rollback,
-           EXTRACT(EPOCH FROM (dr.finished_at - r.started_at))::double precision AS lead_s
-    FROM deployment_revisions dr
-    JOIN environments e ON e.id = dr.environment_id
-    LEFT JOIN runs r ON r.id = dr.run_id
-    WHERE dr.status IN ('success', 'failed')
-      AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $1::interval
-      AND dr.finished_at <  now() - $2::interval
-      AND EXISTS (
-          SELECT 1 FROM project_labels pl
-          WHERE pl.project_id = e.project_id AND pl.key = $3
-      )
-      AND ($4::text = '' OR e.name = $4)
-)
-SELECT COUNT(*) FILTER (WHERE status = 'success')::bigint AS deploys_success,
-       COUNT(*)::bigint AS deploys_total,
-       COUNT(*) FILTER (WHERE status = 'failed' OR is_rollback)::bigint AS deploys_failed,
-       COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
-                FILTER (WHERE status = 'success' AND lead_s IS NOT NULL),
-                0)::double precision AS lead_time_p50_s
-FROM base
-`
-
-type DoraWindowAggParams struct {
-	SinceWindow pgtype.Interval
-	UntilWindow pgtype.Interval
-	LabelKey    string
-	Environment string
-}
-
-type DoraWindowAggRow struct {
-	DeploysSuccess int64
-	DeploysTotal   int64
-	DeploysFailed  int64
-	LeadTimeP50S   float64
-}
-
-// Org-wide DORA counts + lead-time p50 over an arbitrary [since, until) window
-// (both intervals trailing from now). The same query serves the current window
-// (until=0) and the prior window (since=2×window, until=window) for deltas.
-// A deploy counts once even if its project carries the key under several values
-// (EXISTS, not a join, so no fan-out double count).
-func (q *Queries) DoraWindowAgg(ctx context.Context, arg DoraWindowAggParams) (DoraWindowAggRow, error) {
-	row := q.db.QueryRow(ctx, doraWindowAgg,
-		arg.SinceWindow,
-		arg.UntilWindow,
-		arg.LabelKey,
-		arg.Environment,
-	)
-	var i DoraWindowAggRow
-	err := row.Scan(
-		&i.DeploysSuccess,
-		&i.DeploysTotal,
-		&i.DeploysFailed,
-		&i.LeadTimeP50S,
-	)
-	return i, err
 }
 
 const doraWindowMTTR = `-- name: DoraWindowMTTR :one

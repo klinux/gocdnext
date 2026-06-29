@@ -45,6 +45,10 @@ func TestAnalyticsOverview_EnvironmentFilter(t *testing.T) {
 	seedDeploy(t, pool, ctx, prod, pipelineID, 2, "success", false, 2, 10)
 	seedDeploy(t, pool, ctx, stg, pipelineID, 3, "success", false, 1, 10)
 
+	if err := s.RefreshDeployDaily(ctx, 0); err != nil {
+		t.Fatalf("refresh deploy: %v", err)
+	}
+
 	all, err := s.AnalyticsOverview(ctx, "team", 30, "")
 	if err != nil {
 		t.Fatalf("overview all: %v", err)
@@ -107,6 +111,10 @@ func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 	seedDeploy(t, pool, ctx, envID, pipelineID, 3, "success", false, 4, 10)
 	seedDeploy(t, pool, ctx, envID, pipelineID, 4, "failed", false, 3, 10)
 	seedDeploy(t, pool, ctx, envID, pipelineID, 5, "success", false, 9, 10) // prior
+
+	if err := s.RefreshDeployDaily(ctx, 0); err != nil {
+		t.Fatalf("refresh deploy: %v", err)
+	}
 
 	ov, err := s.AnalyticsOverview(ctx, "team", 7, "")
 	if err != nil {
