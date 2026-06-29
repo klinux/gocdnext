@@ -239,6 +239,10 @@ type Querier interface {
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
 	DeleteProjectFrameworks(ctx context.Context, projectID pgtype.UUID) error
 	DeleteProjectLabels(ctx context.Context, projectID pgtype.UUID) error
+	// Clear the buckets the matching InsertRunDailyWindow will rebuild. since_days
+	// <= 0 clears ALL history (full rebuild); otherwise the trailing window
+	// [current_date - since_days, today].
+	DeleteRunDailyWindow(ctx context.Context, sinceDays int32) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.
@@ -664,6 +668,12 @@ type Querier interface {
 	// declared, not just whether it declared any. Appended last so the
 	// existing positional params keep their order.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
+	// Recompute the daily terminal-run counts for the same window the delete cleared.
+	// Bucketed by finished_at::date. runs_failed folds 'failed' + 'errored';
+	// 'canceled' is neither and is excluded. ON CONFLICT is a belt-and-suspenders
+	// guard (the window was just deleted in this tx and the advisory lock serialises
+	// refreshers, so a conflict shouldn't arise).
+	InsertRunDailyWindow(ctx context.Context, sinceDays int32) error
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
@@ -1281,10 +1291,10 @@ type Querier interface {
 	// land the cancel on its next Connect frame.
 	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
 	// The pipelines that break most, among projects carrying label_key, over the
-	// window. EXISTS (not a label JOIN) so each pipeline appears once regardless of
-	// how many label values its project has. min_runs guards against a 1-of-1
-	// failure topping the list; only pipelines with at least one failure qualify.
-	// Ordered worst-first (rate, then absolute failures).
+	// window — from the rollup. EXISTS (not a label JOIN) so each pipeline appears
+	// once regardless of how many label values its project has. min_runs guards
+	// against a 1-of-1 failure topping the list; only pipelines with at least one
+	// failure qualify. Ordered worst-first (rate, then absolute failures).
 	ReliabilityHotspots(ctx context.Context, arg ReliabilityHotspotsParams) ([]ReliabilityHotspotsRow, error)
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
@@ -1411,18 +1421,25 @@ type Querier interface {
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
-	// Throughput & reliability rollups for the analytics epic (#107 phase 3).
+	// Throughput & reliability rollups for the analytics epic (#107 phase 3),
+	// backed by the analytics_run_daily materialized rollup (#128 phase 1).
 	// RUN-based (not deploy-based like DORA) — so no environment filter; runs are
-	// not environment-scoped. Terminal runs only. "Failure" = failed or errored
-	// (infra error); 'canceled' is neither success nor failure and is excluded
-	// from the rate denominator. OK to seq-scan runs over the window at gocdnext's
-	// scale (internal CI volume); a finished_at index is the lever if it grows.
-	// Per label-value group (for key = label_key): run counts + queue-wait and
-	// duration medians over the trailing window. A project carrying the key under
-	// several values contributes to each (JOIN, like DoraRollup) — intentional, the
-	// group is the unit. Queue wait = created→start (operator capacity); duration =
-	// start→finish (the work itself).
-	ThroughputRollup(ctx context.Context, arg ThroughputRollupParams) ([]ThroughputRollupRow, error)
+	// not environment-scoped. Counts come from the rollup (additive, O(days));
+	// the queue-wait/duration medians stay LIVE (a median can't be summed across
+	// daily buckets). "Failure" = failed or errored; 'canceled' is excluded.
+	//
+	// Window: "last window_days calendar days". Counts/hotspots use the rollup's
+	// DATE column (day > current_date - window_days); the live latency query uses
+	// the equivalent sargable timestamp bound on finished_at so both cover the same
+	// days and the partial index (00060) still applies.
+	// Per label-value group: terminal run counts over the window, from the rollup.
+	// A project carrying the key under several values contributes to each (JOIN).
+	ThroughputCounts(ctx context.Context, arg ThroughputCountsParams) ([]ThroughputCountsRow, error)
+	// Per label-value group: queue-wait + duration p50, LIVE from runs over the
+	// same window. Queue wait = created→start (operator capacity); duration =
+	// start→finish (the work). finished_at >= current_date - (window_days-1) is the
+	// midnight-aligned, index-friendly equivalent of the rollup's day predicate.
+	ThroughputLatency(ctx context.Context, arg ThroughputLatencyParams) ([]ThroughputLatencyRow, error)
 	// Best-effort `last_used_at` bump. Called from the middleware
 	// when a Bearer token authenticates successfully — a stale value
 	// doesn't break anything, just makes the audit trail less useful.
@@ -1431,6 +1448,20 @@ type Querier interface {
 	// debounce in the middleware so we don't rewrite the row on every
 	// 2s dashboard poll.
 	TouchUserSession(ctx context.Context, id []byte) error
+	// Maintenance of the analytics_run_daily rollup (#128 phase 1).
+	//
+	// A run's bucket is MUTABLE: RerunJob/RerunRun reopen the same row (finished_at
+	// NULL → a new finished_at on completion), so a run can change status and even
+	// move to a different day. An additive upsert would leave a stale count in the
+	// old bucket (double counting). So a refresh is DELETE-the-window + reinsert
+	// (run in one tx by the store) — buckets that lost their last terminal run go to
+	// zero. The trailing-window refresh self-corrects recent reruns; a periodic full
+	// rebuild (since_days <= 0) heals reruns of runs that finished outside the
+	// window. The window predicates here MUST stay aligned (same day range).
+	// Transaction-scoped advisory lock so only one replica refreshes the rollup at a
+	// time (auto-released on commit/rollback). false → another replica holds it;
+	// the caller skips this cycle instead of duplicating the scan + write.
+	TryRollupLock(ctx context.Context, key int64) (bool, error)
 	// Rolls back an AssignJob whose Dispatch failed downstream (busy
 	// session queue, session vanished between AssignJob commit and the
 	// gRPC send). Snapshot-validating CAS — only undoes the row if it's
