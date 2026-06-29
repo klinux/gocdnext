@@ -8,6 +8,23 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.65.0 — 2026-06-29
+
+### Added
+
+- **Analytics — compliance posture.** A new section on the Analytics page: per
+  label-value group, framework adoption — how many of the group's projects are
+  bound to each compliance framework, with a coverage % and a toned bar. Current
+  state (no window/environment), low cardinality, so a live aggregation. (#107
+  phase 4 / #132)
+
+### Fixed
+
+- **Project-card author avatar uses design-system tokens.** Replaced the raw
+  amber gradient with `bg-muted` / `text-muted-foreground` — matching the
+  project-row author chip and the sidebar avatar fallback, consistent across
+  card and list views. (#133)
+
 ## v0.64.0 — 2026-06-29
 
 ### Added
