@@ -178,3 +178,52 @@ func TestRefreshRunDaily_Incremental(t *testing.T) {
 		t.Fatalf("after incremental (5d bucket must survive): %+v", rep.Groups)
 	}
 }
+
+// TestRefreshRunDaily_RerunMovesBucket guards the MED bug: a rerun reopens the
+// same run and can move it to a different day/status. An additive upsert would
+// leave the stale bucket and double-count; the DELETE-then-reinsert rebuild must
+// not.
+func TestRefreshRunDaily_RerunMovesBucket(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	ids := applyLabeledProject(t, s, ctx, "p", "team", "core", "main")
+	pid := ids["main"]
+	// A run that failed 5 days ago.
+	seedRuns(t, pool, ctx, pid, 1, 1, "failed", 5)
+	if err := s.RefreshRunDaily(ctx, 0); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	rep, err := s.ReliabilityReport(ctx, "team", 30)
+	if err != nil {
+		t.Fatalf("reliability: %v", err)
+	}
+	if rep.Groups[0].RunsTotal != 1 || rep.Groups[0].RunsFailed != 1 {
+		t.Fatalf("before rerun: %+v", rep.Groups)
+	}
+
+	// Rerun: the SAME run reopens and finishes today as a success (5-day jump,
+	// so the old bucket is outside any trailing window).
+	if _, err := pool.Exec(ctx, `
+		UPDATE runs SET status='success',
+		    created_at = now() - make_interval(secs => 150),
+		    started_at = now() - make_interval(secs => 120),
+		    finished_at = now()
+		WHERE pipeline_id=$1 AND counter=1`, pid); err != nil {
+		t.Fatalf("rerun update: %v", err)
+	}
+
+	// The periodic full rebuild heals it: exactly one run, now a success — the
+	// old failed bucket must be gone (no double count).
+	if err := s.RefreshRunDaily(ctx, 0); err != nil {
+		t.Fatalf("full rebuild: %v", err)
+	}
+	rep, err = s.ReliabilityReport(ctx, "team", 30)
+	if err != nil {
+		t.Fatalf("reliability 2: %v", err)
+	}
+	if rep.Groups[0].RunsTotal != 1 || rep.Groups[0].RunsSuccess != 1 || rep.Groups[0].RunsFailed != 0 {
+		t.Fatalf("after rerun+rebuild (must not double-count): %+v", rep.Groups)
+	}
+}

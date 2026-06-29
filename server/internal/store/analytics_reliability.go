@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
@@ -13,6 +15,10 @@ import (
 const (
 	reliabilityHotspotMinRuns = 5
 	reliabilityHotspotMaxRows = 8
+	// rollupAdvisoryLockKey namespaces the analytics_run_daily refresh advisory
+	// lock so only one replica rebuilds at a time. Arbitrary but fixed; distinct
+	// from goose's migration lock.
+	rollupAdvisoryLockKey = 4128937
 )
 
 // ThroughputGroup is the run-based throughput + reliability rollup for one
@@ -49,12 +55,39 @@ type ReliabilityReport struct {
 	Hotspots   []ReliabilityHotspot `json:"hotspots"`
 }
 
-// RefreshRunDaily recomputes the analytics_run_daily rollup for the trailing
-// sinceDays whole calendar days (sinceDays <= 0 → all history, the boot
-// backfill). Idempotent — safe to re-run / overlap; catches late-finishing runs.
+// RefreshRunDaily rebuilds the analytics_run_daily rollup for the trailing
+// sinceDays whole calendar days (sinceDays <= 0 → all history, the boot/periodic
+// full rebuild). DELETE-then-reinsert in one tx — so buckets that lost their
+// last terminal run go to zero and reruns that moved a run's status/day within
+// the window self-correct (an additive upsert would double-count). A
+// transaction-scoped advisory lock makes it leader-only across replicas; a
+// replica that loses the lock skips this cycle (no-op, not an error). Reruns of
+// runs that finished OUTSIDE the trailing window are healed by the periodic full
+// rebuild.
 func (s *Store) RefreshRunDaily(ctx context.Context, sinceDays int) error {
-	if err := s.q.RefreshRunDaily(ctx, int32(sinceDays)); err != nil {
-		return fmt.Errorf("store: refresh run daily: %w", err)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("store: refresh run daily begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	got, err := q.TryRollupLock(ctx, rollupAdvisoryLockKey)
+	if err != nil {
+		return fmt.Errorf("store: rollup lock: %w", err)
+	}
+	if !got {
+		return nil // another replica is refreshing
+	}
+
+	if err := q.DeleteRunDailyWindow(ctx, int32(sinceDays)); err != nil {
+		return fmt.Errorf("store: refresh run daily delete: %w", err)
+	}
+	if err := q.InsertRunDailyWindow(ctx, int32(sinceDays)); err != nil {
+		return fmt.Errorf("store: refresh run daily insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: refresh run daily commit: %w", err)
 	}
 	return nil
 }

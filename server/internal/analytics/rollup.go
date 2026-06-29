@@ -17,35 +17,48 @@ type Refresher struct {
 	store        RollupStore
 	log          *slog.Logger
 	tick         time.Duration
+	fullEvery    time.Duration
 	trailingDays int
 }
 
-// RollupStore is the slice of the store the refresher needs.
+// RollupStore is the slice of the store the refresher needs. RefreshRunDaily is
+// leader-gated internally (advisory lock), so running it on every replica is
+// safe — only one does the work per cycle.
 type RollupStore interface {
 	RefreshRunDaily(ctx context.Context, sinceDays int) error
 }
 
-// NewRefresher builds a refresher with sensible defaults: refresh every 5
-// minutes, recomputing the trailing 2 calendar days.
+// NewRefresher builds a refresher with sensible defaults: refresh the trailing 2
+// days every 5 minutes (freshness), and a full rebuild every hour (heals reruns
+// of runs that finished outside the trailing window).
 func NewRefresher(store RollupStore, log *slog.Logger) *Refresher {
-	return &Refresher{store: store, log: log, tick: 5 * time.Minute, trailingDays: 2}
+	return &Refresher{
+		store:        store,
+		log:          log,
+		tick:         5 * time.Minute,
+		fullEvery:    time.Hour,
+		trailingDays: 2,
+	}
 }
 
-// Run backfills all history once, then refreshes the trailing window on each
-// tick until ctx is cancelled. Errors are logged, never fatal — a stale rollup
-// is recoverable on the next tick.
+// Run rebuilds all history once on boot, then on each tick refreshes the
+// trailing window (freshness) and, less often, rebuilds in full (self-healing).
+// Errors are logged, never fatal — a stale rollup recovers on the next cycle.
 func (r *Refresher) Run(ctx context.Context) error {
-	r.log.Info("analytics rollup refresher started", "tick", r.tick, "trailing_days", r.trailingDays)
+	r.log.Info("analytics rollup refresher started",
+		"tick", r.tick, "full_every", r.fullEvery, "trailing_days", r.trailingDays)
 
-	// Boot backfill (sinceDays <= 0 → all history). At large history this is a
-	// single grouped upsert per boot; an incremental watermark is the lever if
-	// boots get expensive (#128).
+	// Boot full rebuild (sinceDays <= 0 → all history). At large history this is
+	// a single grouped scan per boot/hour; an incremental watermark is the lever
+	// if it gets expensive (#128).
 	if err := r.store.RefreshRunDaily(ctx, 0); err != nil {
 		r.log.Error("analytics rollup backfill", "err", err)
 	}
 
 	t := time.NewTicker(r.tick)
 	defer t.Stop()
+	full := time.NewTicker(r.fullEvery)
+	defer full.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -53,6 +66,10 @@ func (r *Refresher) Run(ctx context.Context) error {
 		case <-t.C:
 			if err := r.store.RefreshRunDaily(ctx, r.trailingDays); err != nil {
 				r.log.Error("analytics rollup refresh", "err", err)
+			}
+		case <-full.C:
+			if err := r.store.RefreshRunDaily(ctx, 0); err != nil {
+				r.log.Error("analytics rollup full rebuild", "err", err)
 			}
 		}
 	}

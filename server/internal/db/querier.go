@@ -239,6 +239,10 @@ type Querier interface {
 	DeleteProjectCron(ctx context.Context, id pgtype.UUID) error
 	DeleteProjectFrameworks(ctx context.Context, projectID pgtype.UUID) error
 	DeleteProjectLabels(ctx context.Context, projectID pgtype.UUID) error
+	// Clear the buckets the matching InsertRunDailyWindow will rebuild. since_days
+	// <= 0 clears ALL history (full rebuild); otherwise the trailing window
+	// [current_date - since_days, today].
+	DeleteRunDailyWindow(ctx context.Context, sinceDays int32) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.
@@ -664,6 +668,12 @@ type Querier interface {
 	// declared, not just whether it declared any. Appended last so the
 	// existing positional params keep their order.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
+	// Recompute the daily terminal-run counts for the same window the delete cleared.
+	// Bucketed by finished_at::date. runs_failed folds 'failed' + 'errored';
+	// 'canceled' is neither and is excluded. ON CONFLICT is a belt-and-suspenders
+	// guard (the window was just deleted in this tx and the advisory lock serialises
+	// refreshers, so a conflict shouldn't arise).
+	InsertRunDailyWindow(ctx context.Context, sinceDays int32) error
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
@@ -1280,13 +1290,6 @@ type Querier interface {
 	// recent) is skipped — the replay path is still expected to
 	// land the cancel on its next Connect frame.
 	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
-	// Maintenance of the analytics_run_daily rollup (#128 phase 1).
-	// Recompute + upsert the daily run-outcome buckets for the trailing since_days
-	// (whole calendar days, so a partial-day recompute never overwrites a complete
-	// bucket with a truncated count). since_days <= 0 recomputes ALL history
-	// (the boot backfill). Idempotent: DO UPDATE overwrites with the fresh counts,
-	// so re-running or overlapping windows is safe and catches late-finishing runs.
-	RefreshRunDaily(ctx context.Context, sinceDays int32) error
 	// The pipelines that break most, among projects carrying label_key, over the
 	// window — from the rollup. EXISTS (not a label JOIN) so each pipeline appears
 	// once regardless of how many label values its project has. min_runs guards
@@ -1445,6 +1448,20 @@ type Querier interface {
 	// debounce in the middleware so we don't rewrite the row on every
 	// 2s dashboard poll.
 	TouchUserSession(ctx context.Context, id []byte) error
+	// Maintenance of the analytics_run_daily rollup (#128 phase 1).
+	//
+	// A run's bucket is MUTABLE: RerunJob/RerunRun reopen the same row (finished_at
+	// NULL → a new finished_at on completion), so a run can change status and even
+	// move to a different day. An additive upsert would leave a stale count in the
+	// old bucket (double counting). So a refresh is DELETE-the-window + reinsert
+	// (run in one tx by the store) — buckets that lost their last terminal run go to
+	// zero. The trailing-window refresh self-corrects recent reruns; a periodic full
+	// rebuild (since_days <= 0) heals reruns of runs that finished outside the
+	// window. The window predicates here MUST stay aligned (same day range).
+	// Transaction-scoped advisory lock so only one replica refreshes the rollup at a
+	// time (auto-released on commit/rollback). false → another replica holds it;
+	// the caller skips this cycle instead of duplicating the scan + write.
+	TryRollupLock(ctx context.Context, key int64) (bool, error)
 	// Rolls back an AssignJob whose Dispatch failed downstream (busy
 	// session queue, session vanished between AssignJob commit and the
 	// gRPC send). Snapshot-validating CAS — only undoes the row if it's
