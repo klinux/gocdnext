@@ -25,6 +25,13 @@ type Agent struct {
 	Engine string
 }
 
+type AnalyticsRunDaily struct {
+	PipelineID  pgtype.UUID
+	Day         pgtype.Date
+	RunsSuccess int64
+	RunsFailed  int64
+}
+
 type ApiToken struct {
 	ID               pgtype.UUID
 	UserID           pgtype.UUID
