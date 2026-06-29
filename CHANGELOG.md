@@ -8,6 +8,29 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.64.0 — 2026-06-29
+
+### Added
+
+- **Analytics — throughput & reliability.** A new section on the Analytics page,
+  run-based (vs the deploy-based DORA rollup): **throughput by group** (run
+  volume, runs/day, success rate, queue-wait & duration p50) and **reliability
+  hotspots** (the pipelines that fail most among labelled projects, worst-first,
+  with a ≥5-run floor). No environment filter — runs aren't environment-scoped.
+  (#107 phase 3 / #127)
+
+### Changed
+
+- **Analytics — materialized daily rollups.** Run and deploy outcomes are now
+  rolled up into daily per-pipeline / per-environment tables (`analytics_run_daily`,
+  `analytics_deploy_daily`), refreshed incrementally with a periodic full rebuild
+  under a shared advisory lock. The dashboard's count metrics (throughput,
+  success rate, deploy frequency, change-failure rate, the daily series) read the
+  rollup — additive, O(days) — instead of scanning run/deploy history on every
+  load; lead time + MTTR stay live (percentiles can't be summed across buckets).
+  All windows share one calendar-day definition so counts and percentiles always
+  cover the same days. (#128 phases 1 & 1b / #129, #131)
+
 ## v0.63.0 — 2026-06-28
 
 ### Added
