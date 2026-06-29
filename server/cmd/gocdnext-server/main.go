@@ -709,6 +709,7 @@ func main() {
 		p.Get("/api/v1/analytics/environments", dashboardHandler.Environments)
 		p.Get("/api/v1/analytics/dora", dashboardHandler.DoraRollup)
 		p.Get("/api/v1/analytics/dora/overview", dashboardHandler.Overview)
+		p.Get("/api/v1/analytics/reliability", dashboardHandler.Reliability)
 		p.Get("/api/v1/runs", dashboardHandler.RunsGlobal)
 		p.Get("/api/v1/agents", dashboardHandler.Agents)
 		p.Get("/api/v1/agents/{id}", dashboardHandler.AgentDetail)

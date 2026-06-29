@@ -1280,6 +1280,12 @@ type Querier interface {
 	// recent) is skipped — the replay path is still expected to
 	// land the cancel on its next Connect frame.
 	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
+	// The pipelines that break most, among projects carrying label_key, over the
+	// window. EXISTS (not a label JOIN) so each pipeline appears once regardless of
+	// how many label values its project has. min_runs guards against a 1-of-1
+	// failure topping the list; only pipelines with at least one failure qualify.
+	// Ordered worst-first (rate, then absolute failures).
+	ReliabilityHotspots(ctx context.Context, arg ReliabilityHotspotsParams) ([]ReliabilityHotspotsRow, error)
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -1405,6 +1411,18 @@ type Querier interface {
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
+	// Throughput & reliability rollups for the analytics epic (#107 phase 3).
+	// RUN-based (not deploy-based like DORA) — so no environment filter; runs are
+	// not environment-scoped. Terminal runs only. "Failure" = failed or errored
+	// (infra error); 'canceled' is neither success nor failure and is excluded
+	// from the rate denominator. OK to seq-scan runs over the window at gocdnext's
+	// scale (internal CI volume); a finished_at index is the lever if it grows.
+	// Per label-value group (for key = label_key): run counts + queue-wait and
+	// duration medians over the trailing window. A project carrying the key under
+	// several values contributes to each (JOIN, like DoraRollup) — intentional, the
+	// group is the unit. Queue wait = created→start (operator capacity); duration =
+	// start→finish (the work itself).
+	ThroughputRollup(ctx context.Context, arg ThroughputRollupParams) ([]ThroughputRollupRow, error)
 	// Best-effort `last_used_at` bump. Called from the middleware
 	// when a Bearer token authenticates successfully — a stale value
 	// doesn't break anything, just makes the audit trail less useful.

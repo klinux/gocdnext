@@ -88,6 +88,43 @@ func TestAnalytics_Overview(t *testing.T) {
 	}
 }
 
+func TestAnalytics_Reliability(t *testing.T) {
+	h, _ := newHandler(t)
+
+	// key required.
+	rr := httptest.NewRecorder()
+	h.Reliability(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/reliability", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status = %d, want 400", rr.Code)
+	}
+
+	// window_days out of range.
+	rr = httptest.NewRecorder()
+	h.Reliability(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/reliability?key=team&window_days=0", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad window status = %d, want 400", rr.Code)
+	}
+
+	// Happy path (no data) → 200 echoing key/window with empty groups + hotspots.
+	rr = httptest.NewRecorder()
+	h.Reliability(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/reliability?key=team&window_days=14", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Key        string `json:"key"`
+		WindowDays int    `json:"window_days"`
+		Groups     []any  `json:"groups"`
+		Hotspots   []any  `json:"hotspots"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Key != "team" || body.WindowDays != 14 {
+		t.Fatalf("echo = %+v", body)
+	}
+}
+
 func TestAnalytics_LabelKeys(t *testing.T) {
 	h, _ := newHandler(t)
 	rr := httptest.NewRecorder()

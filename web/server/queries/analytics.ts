@@ -70,6 +70,38 @@ export type LeadTimeBottleneck = {
   deploy_p50_seconds: number;
 };
 
+// Run-based throughput + reliability for one label-value group over the window.
+// Distinct from DoraGroup (deploy-based) — these come from run history, so
+// there's no environment dimension.
+export type ThroughputGroup = {
+  group: string;
+  runs_success: number;
+  runs_failed: number;
+  runs_total: number;
+  runs_per_day: number;
+  success_rate: number;
+  queue_wait_p50_seconds: number;
+  duration_p50_seconds: number;
+};
+
+// One pipeline that fails often, among projects carrying the group-by key.
+export type ReliabilityHotspot = {
+  project_slug: string;
+  project: string;
+  pipeline: string;
+  runs_total: number;
+  runs_failed: number;
+  failure_rate: number;
+};
+
+// The throughput & reliability payload behind that section of the Analytics page.
+export type ReliabilityReport = {
+  key: string;
+  window_days: number;
+  groups: ThroughputGroup[];
+  hotspots: ReliabilityHotspot[];
+};
+
 async function readJSON<T>(path: string): Promise<T> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
   const session = (await cookies()).get("gocdnext_session")?.value;
@@ -122,5 +154,16 @@ export async function getDoraOverview(
   const env = environment ? `&environment=${encodeURIComponent(environment)}` : "";
   return readJSON<DoraOverview>(
     `/api/v1/analytics/dora/overview?key=${encodeURIComponent(key)}&window_days=${windowDays}${env}`,
+  );
+}
+
+// getReliability reads the run-based throughput + reliability rollup. No
+// environment filter — runs aren't environment-scoped.
+export async function getReliability(
+  key: string,
+  windowDays: number,
+): Promise<ReliabilityReport> {
+  return readJSON<ReliabilityReport>(
+    `/api/v1/analytics/reliability?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
   );
 }
