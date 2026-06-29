@@ -146,6 +146,24 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	writeAnalyticsJSON(w, ov)
 }
 
+// Reliability handles GET /api/v1/analytics/reliability?key=&window_days=. It
+// returns run-based throughput per label-value group plus the worst-failing
+// pipelines among labelled projects. No environment filter — runs aren't
+// environment-scoped (unlike deploys).
+func (h *Handler) Reliability(w http.ResponseWriter, r *http.Request) {
+	key, windowDays, ok := parseDoraParams(w, r)
+	if !ok {
+		return
+	}
+	rep, err := h.store.ReliabilityReport(r.Context(), key, windowDays)
+	if err != nil {
+		h.log.Error("analytics: reliability", "key", key, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeAnalyticsJSON(w, rep)
+}
+
 func writeAnalyticsJSON(w http.ResponseWriter, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
