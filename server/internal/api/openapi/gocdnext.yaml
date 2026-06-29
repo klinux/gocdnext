@@ -609,6 +609,27 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ReliabilityReport" }
         "400": { description: missing/invalid key or window_days }
+  /api/v1/analytics/compliance:
+    get:
+      tags: [analytics]
+      summary: Framework adoption per group (compliance posture).
+      description: >
+        Current-state compliance posture grouped by a project label: per
+        label-value group, the total projects and how many are bound to each
+        framework. No window or environment (not time-series).
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+      responses:
+        "200":
+          description: compliance coverage report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComplianceCoverageReport" }
+        "400": { description: missing/invalid key }
 
   # -------------------- runs --------------------
   /api/v1/runs:
@@ -1728,6 +1749,33 @@ components:
           type: array
           description: worst-failing pipelines (≥5 runs), worst first
           items: { $ref: "#/components/schemas/ReliabilityHotspot" }
+
+    FrameworkCoverage:
+      type: object
+      description: How many of a group's projects are bound to one framework.
+      required: [framework, covered]
+      properties:
+        framework: { type: string }
+        covered: { type: integer, format: int64 }
+
+    ComplianceGroup:
+      type: object
+      required: [group, projects_total, frameworks]
+      properties:
+        group: { type: string, description: "the label value, e.g. payments" }
+        projects_total: { type: integer, format: int64, description: "coverage denominator" }
+        frameworks:
+          type: array
+          items: { $ref: "#/components/schemas/FrameworkCoverage" }
+
+    ComplianceCoverageReport:
+      type: object
+      required: [key, groups]
+      properties:
+        key: { type: string }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/ComplianceGroup" }
 
     ProjectDetail:
       allOf:

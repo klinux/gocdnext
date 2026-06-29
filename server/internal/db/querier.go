@@ -132,6 +132,16 @@ type Querier interface {
 	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
 	CompleteRun(ctx context.Context, arg CompleteRunParams) error
 	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
+	// Per (label-value group, framework): how many of the group's projects are bound
+	// to that framework. Only frameworks with at least one bound project in the
+	// group appear; the store pairs these with the group totals for the percentage.
+	ComplianceCoverageByFramework(ctx context.Context, labelKey string) ([]ComplianceCoverageByFrameworkRow, error)
+	// Compliance posture rollup for the analytics epic (#107 phase 4). Current
+	// state (which projects are bound to which frameworks), grouped by a project
+	// label — no time window, no environment. Low cardinality (projects × a handful
+	// of frameworks), so a live aggregation; no materialized rollup needed.
+	// Distinct projects per label-value group — the coverage denominator.
+	ComplianceGroupTotals(ctx context.Context, labelKey string) ([]ComplianceGroupTotalsRow, error)
 	// Single-use: delete as we read. Returning nothing = no such state
 	// (or it expired and the sweeper got to it first).
 	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
