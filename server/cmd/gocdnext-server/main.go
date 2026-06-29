@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/analytics"
 	"github.com/gocdnext/gocdnext/server/internal/api/account"
 	adminapi "github.com/gocdnext/gocdnext/server/internal/api/admin"
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
@@ -871,6 +872,15 @@ func main() {
 	go func() {
 		if err := sched.Run(ctx); err != nil {
 			logger.Error("scheduler exited", "err", err)
+		}
+	}()
+
+	// Materialized analytics rollup: backfill on boot + refresh the trailing
+	// window each tick, so the cross-project dashboard reads cheap daily counts
+	// instead of scanning run history every load (#128 phase 1).
+	go func() {
+		if err := analytics.NewRefresher(st, logger).Run(ctx); err != nil {
+			logger.Error("analytics refresher exited", "err", err)
 		}
 	}()
 
