@@ -47,7 +47,7 @@ WITH eligible AS (
     WHERE dr.status = 'success'
       AND NOT dr.is_rollback
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $1::interval
+      AND dr.finished_at >= current_date - make_interval(days => $1::int - 1)
       AND dr.finished_at <  now()
       AND ($2::text = '' OR e.name = $2)
       AND EXISTS (
@@ -83,7 +83,7 @@ FROM eligible
 `
 
 type DoraBottleneckParams struct {
-	SinceWindow pgtype.Interval
+	SinceDays   int32
 	Environment string
 	LabelKey    string
 }
@@ -113,7 +113,7 @@ type DoraBottleneckRow struct {
 // (incl. retention-pruned runs / no git revision). Each stage exposes its own
 // sample count, since p50s drop rows with missing boundaries.
 func (q *Queries) DoraBottleneck(ctx context.Context, arg DoraBottleneckParams) (DoraBottleneckRow, error) {
-	row := q.db.QueryRow(ctx, doraBottleneck, arg.SinceWindow, arg.Environment, arg.LabelKey)
+	row := q.db.QueryRow(ctx, doraBottleneck, arg.SinceDays, arg.Environment, arg.LabelKey)
 	var i DoraBottleneckRow
 	err := row.Scan(
 		&i.Correlated,
@@ -241,8 +241,9 @@ func (q *Queries) DoraCountsOrg(ctx context.Context, arg DoraCountsOrgParams) (D
 
 const doraDailyCounts = `-- name: DoraDailyCounts :many
 WITH days AS (
+    -- Exactly the days the agg counts: (current_date - since_days, current_date].
     SELECT generate_series(
-        current_date - $1::int,
+        current_date - $1::int + 1,
         current_date,
         interval '1 day'
     )::date AS day
@@ -324,7 +325,7 @@ JOIN environments e ON e.id = dr.environment_id
 LEFT JOIN runs r ON r.id = dr.run_id
 WHERE dr.status IN ('success', 'failed')
   AND dr.finished_at IS NOT NULL
-  AND dr.finished_at >= now() - $1::interval
+  AND dr.finished_at >= current_date - make_interval(days => $1::int - 1)
   AND EXISTS (
       SELECT 1 FROM project_labels pl
       WHERE pl.project_id = e.project_id AND pl.key = $2
@@ -334,7 +335,7 @@ GROUP BY day
 `
 
 type DoraDailyLeadParams struct {
-	SinceWindow pgtype.Interval
+	SinceDays   int32
 	LabelKey    string
 	Environment string
 }
@@ -348,7 +349,7 @@ type DoraDailyLeadRow struct {
 // days with successful deploys; the store left-joins these onto the dense
 // DoraDailyCounts day list, defaulting missing days to 0.
 func (q *Queries) DoraDailyLead(ctx context.Context, arg DoraDailyLeadParams) ([]DoraDailyLeadRow, error) {
-	rows, err := q.db.Query(ctx, doraDailyLead, arg.SinceWindow, arg.LabelKey, arg.Environment)
+	rows, err := q.db.Query(ctx, doraDailyLead, arg.SinceDays, arg.LabelKey, arg.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -380,8 +381,8 @@ WITH base AS (
       AND ($2::text = '' OR e.name = $2)
       AND dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $3::interval
-      AND dr.finished_at <  now() - $4::interval
+      AND dr.finished_at >= current_date - make_interval(days => $3::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => $4::int - 1)
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
@@ -395,8 +396,8 @@ ORDER BY grp
 type DoraLeadGroupParams struct {
 	LabelKey    string
 	Environment string
-	SinceWindow pgtype.Interval
-	UntilWindow pgtype.Interval
+	SinceDays   int32
+	UntilDays   int32
 }
 
 type DoraLeadGroupRow struct {
@@ -412,8 +413,8 @@ func (q *Queries) DoraLeadGroup(ctx context.Context, arg DoraLeadGroupParams) ([
 	rows, err := q.db.Query(ctx, doraLeadGroup,
 		arg.LabelKey,
 		arg.Environment,
-		arg.SinceWindow,
-		arg.UntilWindow,
+		arg.SinceDays,
+		arg.UntilDays,
 	)
 	if err != nil {
 		return nil, err
@@ -442,8 +443,8 @@ WITH base AS (
     LEFT JOIN runs r ON r.id = dr.run_id
     WHERE dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $1::interval
-      AND dr.finished_at <  now() - $2::interval
+      AND dr.finished_at >= current_date - make_interval(days => $1::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => $2::int - 1)
       AND EXISTS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = $3
@@ -457,8 +458,8 @@ FROM base
 `
 
 type DoraLeadOrgParams struct {
-	SinceWindow pgtype.Interval
-	UntilWindow pgtype.Interval
+	SinceDays   int32
+	UntilDays   int32
 	LabelKey    string
 	Environment string
 }
@@ -467,8 +468,8 @@ type DoraLeadOrgParams struct {
 // DoraCountsOrg, interval-based for the 00057 index.
 func (q *Queries) DoraLeadOrg(ctx context.Context, arg DoraLeadOrgParams) (float64, error) {
 	row := q.db.QueryRow(ctx, doraLeadOrg,
-		arg.SinceWindow,
-		arg.UntilWindow,
+		arg.SinceDays,
+		arg.UntilDays,
 		arg.LabelKey,
 		arg.Environment,
 	)
@@ -487,8 +488,8 @@ WITH failures AS (
       AND ($2::text = '' OR e.name = $2)
       AND dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $3::interval
-      AND dr.finished_at <  now() - $4::interval
+      AND dr.finished_at >= current_date - make_interval(days => $3::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => $4::int - 1)
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
@@ -512,8 +513,8 @@ GROUP BY f.grp
 type DoraMTTRParams struct {
 	LabelKey    string
 	Environment string
-	SinceWindow pgtype.Interval
-	UntilWindow pgtype.Interval
+	SinceDays   int32
+	UntilDays   int32
 }
 
 type DoraMTTRRow struct {
@@ -529,8 +530,8 @@ func (q *Queries) DoraMTTR(ctx context.Context, arg DoraMTTRParams) ([]DoraMTTRR
 	rows, err := q.db.Query(ctx, doraMTTR,
 		arg.LabelKey,
 		arg.Environment,
-		arg.SinceWindow,
-		arg.UntilWindow,
+		arg.SinceDays,
+		arg.UntilDays,
 	)
 	if err != nil {
 		return nil, err
@@ -557,8 +558,8 @@ WITH failures AS (
     JOIN environments e ON e.id = dr.environment_id
     WHERE dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - $1::interval
-      AND dr.finished_at <  now() - $2::interval
+      AND dr.finished_at >= current_date - make_interval(days => $1::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => $2::int - 1)
       AND EXISTS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = $3
@@ -583,8 +584,8 @@ LEFT JOIN LATERAL (
 `
 
 type DoraWindowMTTRParams struct {
-	SinceWindow pgtype.Interval
-	UntilWindow pgtype.Interval
+	SinceDays   int32
+	UntilDays   int32
 	LabelKey    string
 	Environment string
 }
@@ -594,8 +595,8 @@ type DoraWindowMTTRParams struct {
 // environment (lateral index probe per failure).
 func (q *Queries) DoraWindowMTTR(ctx context.Context, arg DoraWindowMTTRParams) (float64, error) {
 	row := q.db.QueryRow(ctx, doraWindowMTTR,
-		arg.SinceWindow,
-		arg.UntilWindow,
+		arg.SinceDays,
+		arg.UntilDays,
 		arg.LabelKey,
 		arg.Environment,
 	)

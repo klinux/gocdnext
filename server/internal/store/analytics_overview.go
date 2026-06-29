@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
@@ -101,7 +99,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 	}
 	leadRows, err := s.q.DoraDailyLead(ctx, db.DoraDailyLeadParams{
 		LabelKey:    labelKey,
-		SinceWindow: dayInterval(windowDays),
+		SinceDays:   int32(windowDays),
 		Environment: environment,
 	})
 	if err != nil {
@@ -161,7 +159,7 @@ func (s *Store) AnalyticsOverview(ctx context.Context, labelKey string, windowDa
 func (s *Store) leadTimeBottleneck(ctx context.Context, labelKey string, windowDays int, environment string) (LeadTimeBottleneck, error) {
 	row, err := s.q.DoraBottleneck(ctx, db.DoraBottleneckParams{
 		LabelKey:    labelKey,
-		SinceWindow: dayInterval(windowDays),
+		SinceDays:   int32(windowDays),
 		Environment: environment,
 	})
 	if err != nil {
@@ -204,8 +202,8 @@ func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, until
 	}
 	lead, err := s.q.DoraLeadOrg(ctx, db.DoraLeadOrgParams{
 		LabelKey:    labelKey,
-		SinceWindow: dayInterval(sinceDays),
-		UntilWindow: dayInterval(untilDays),
+		SinceDays:   int32(sinceDays),
+		UntilDays:   int32(untilDays),
 		Environment: environment,
 	})
 	if err != nil {
@@ -213,8 +211,8 @@ func (s *Store) orgWindow(ctx context.Context, labelKey string, sinceDays, until
 	}
 	mttr, err := s.q.DoraWindowMTTR(ctx, db.DoraWindowMTTRParams{
 		LabelKey:    labelKey,
-		SinceWindow: dayInterval(sinceDays),
-		UntilWindow: dayInterval(untilDays),
+		SinceDays:   int32(sinceDays),
+		UntilDays:   int32(untilDays),
 		Environment: environment,
 	})
 	if err != nil {
@@ -246,8 +244,4 @@ func metricsFromWindow(r orgWindowRaw, windowDays int) OrgMetrics {
 		m.ChangeFailureRate = float64(r.failed) / float64(r.total)
 	}
 	return m
-}
-
-func dayInterval(days int) pgtype.Interval {
-	return pgtype.Interval{Days: int32(days), Valid: true}
 }

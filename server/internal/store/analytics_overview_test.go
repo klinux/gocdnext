@@ -145,10 +145,10 @@ func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 		t.Errorf("lead = %v, want ~600", ov.Current.LeadTimeP50Sec)
 	}
 
-	// Daily series is dense: one row per calendar day in the window (zero-
-	// filled), so a 7-day window yields 8 buckets (7 days ago … today).
-	if len(ov.Daily) != 8 {
-		t.Fatalf("daily days = %d (%+v), want 8 (dense)", len(ov.Daily), ov.Daily)
+	// Daily series is dense: exactly the calendar days the counts cover (zero-
+	// filled), so a 7-day window yields 7 buckets — same day set as the rollup.
+	if len(ov.Daily) != 7 {
+		t.Fatalf("daily days = %d (%+v), want 7 (dense)", len(ov.Daily), ov.Daily)
 	}
 	var seriesTotal, seriesSuccess int64
 	for _, d := range ov.Daily {
@@ -160,6 +160,21 @@ func TestAnalyticsOverview_CurrentVsPriorAndSeries(t *testing.T) {
 	}
 	if seriesTotal != 4 || seriesSuccess != 3 {
 		t.Errorf("series total/success = %d/%d, want 4/3 (current window only)", seriesTotal, seriesSuccess)
+	}
+
+	// Window coherence (#131 review): counts (rollup, calendar-day) and lead
+	// time (live) must cover the SAME days. A deploy finished ~24h ago lands on
+	// yesterday's bucket; with window_days=1 (today only) BOTH the counts and the
+	// lead time must exclude it — never counts=0 with lead>0.
+	day1, err := s.AnalyticsOverview(ctx, "team", 1, "")
+	if err != nil {
+		t.Fatalf("overview day1: %v", err)
+	}
+	if day1.Current.DeploysTotal != 0 {
+		t.Fatalf("1-day window should exclude the ≥1d-old deploys: %+v", day1.Current)
+	}
+	if day1.Current.LeadTimeP50Sec != 0 {
+		t.Errorf("lead must share the counts' calendar window (coherent), got %v with 0 deploys", day1.Current.LeadTimeP50Sec)
 	}
 
 	// Leaderboard carries the one team.

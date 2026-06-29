@@ -58,8 +58,8 @@ WITH base AS (
       AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
       AND dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
-      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
+      AND dr.finished_at >= current_date - make_interval(days => sqlc.arg(since_days)::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => sqlc.arg(until_days)::int - 1)
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_s)
@@ -98,8 +98,8 @@ WITH base AS (
     LEFT JOIN runs r ON r.id = dr.run_id
     WHERE dr.status IN ('success', 'failed')
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
-      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
+      AND dr.finished_at >= current_date - make_interval(days => sqlc.arg(since_days)::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => sqlc.arg(until_days)::int - 1)
       AND EXISTS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
@@ -121,8 +121,8 @@ WITH failures AS (
     JOIN environments e ON e.id = dr.environment_id
     WHERE dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
-      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
+      AND dr.finished_at >= current_date - make_interval(days => sqlc.arg(since_days)::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => sqlc.arg(until_days)::int - 1)
       AND EXISTS (
           SELECT 1 FROM project_labels pl
           WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
@@ -151,8 +151,9 @@ LEFT JOIN LATERAL (
 -- (zero-filled) so a sparse window still plots an honest trend. Pairs with
 -- DoraDailyLead (live lead p50 per day), merged by day in the store.
 WITH days AS (
+    -- Exactly the days the agg counts: (current_date - since_days, current_date].
     SELECT generate_series(
-        current_date - sqlc.arg(since_days)::int,
+        current_date - sqlc.arg(since_days)::int + 1,
         current_date,
         interval '1 day'
     )::date AS day
@@ -194,7 +195,7 @@ JOIN environments e ON e.id = dr.environment_id
 LEFT JOIN runs r ON r.id = dr.run_id
 WHERE dr.status IN ('success', 'failed')
   AND dr.finished_at IS NOT NULL
-  AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+  AND dr.finished_at >= current_date - make_interval(days => sqlc.arg(since_days)::int - 1)
   AND EXISTS (
       SELECT 1 FROM project_labels pl
       WHERE pl.project_id = e.project_id AND pl.key = sqlc.arg(label_key)
@@ -216,8 +217,8 @@ WITH failures AS (
       AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
       AND dr.status = 'failed'
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
-      AND dr.finished_at <  now() - sqlc.arg(until_window)::interval
+      AND dr.finished_at >= current_date - make_interval(days => sqlc.arg(since_days)::int - 1)
+      AND dr.finished_at <  current_date - make_interval(days => sqlc.arg(until_days)::int - 1)
 )
 SELECT grp,
        COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (
@@ -283,7 +284,7 @@ WITH eligible AS (
     WHERE dr.status = 'success'
       AND NOT dr.is_rollback
       AND dr.finished_at IS NOT NULL
-      AND dr.finished_at >= now() - sqlc.arg(since_window)::interval
+      AND dr.finished_at >= current_date - make_interval(days => sqlc.arg(since_days)::int - 1)
       AND dr.finished_at <  now()
       AND (sqlc.arg(environment)::text = '' OR e.name = sqlc.arg(environment))
       AND EXISTS (

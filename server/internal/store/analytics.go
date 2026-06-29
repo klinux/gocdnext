@@ -60,19 +60,19 @@ func (s *Store) DoraRollup(ctx context.Context, labelKey string, windowDays int,
 // denominator. The current window is [w,0) and the prior is [2w,w) — same span,
 // shifted — so the movers can compare team-by-team.
 func (s *Store) doraRollupWindow(ctx context.Context, labelKey string, sinceDays, untilDays, spanDays int, environment string) ([]DoraGroup, error) {
-	since := dayInterval(sinceDays)
-	until := dayInterval(untilDays)
+	sd, ud := int32(sinceDays), int32(untilDays)
 
 	// Counts from the rollup (additive, O(days)); lead time + MTTR live (medians
-	// can't be summed across daily buckets) — #128 phase 1b.
+	// can't be summed across daily buckets). All share the rollup's calendar-day
+	// window so a group's counts + percentiles always cover the same days — #128
+	// phase 1b.
 	rows, err := s.q.DoraCountsGroup(ctx, db.DoraCountsGroupParams{
-		LabelKey: labelKey, Environment: environment,
-		SinceDays: int32(sinceDays), UntilDays: int32(untilDays),
+		LabelKey: labelKey, Environment: environment, SinceDays: sd, UntilDays: ud,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora counts group: %w", err)
 	}
-	leadRows, err := s.q.DoraLeadGroup(ctx, db.DoraLeadGroupParams{LabelKey: labelKey, SinceWindow: since, UntilWindow: until, Environment: environment})
+	leadRows, err := s.q.DoraLeadGroup(ctx, db.DoraLeadGroupParams{LabelKey: labelKey, SinceDays: sd, UntilDays: ud, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora lead group: %w", err)
 	}
@@ -80,7 +80,7 @@ func (s *Store) doraRollupWindow(ctx context.Context, labelKey string, sinceDays
 	for _, l := range leadRows {
 		lead[l.Grp] = l.LeadTimeP50S
 	}
-	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceWindow: since, UntilWindow: until, Environment: environment})
+	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceDays: sd, UntilDays: ud, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora mttr: %w", err)
 	}
