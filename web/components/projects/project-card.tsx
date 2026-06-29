@@ -333,9 +333,9 @@ function AuthorChip({
   return (
     <span className="inline-flex shrink-0 items-center gap-1 text-[10px]">
       <span
-        // Gradient avatar mini from the design — warm tones that
-        // don't compete with status colours elsewhere on the card.
-        className="inline-flex size-[18px] items-center justify-center rounded-full bg-gradient-to-br from-amber-300/80 to-amber-700/80 font-mono text-[9px] font-semibold text-white shadow-sm"
+        // Design-system tokens (matches the project-row author chip + the
+        // sidebar avatar fallback) instead of a raw amber gradient.
+        className="inline-flex size-[18px] items-center justify-center rounded-full bg-muted font-mono text-[9px] font-semibold text-muted-foreground"
         aria-hidden
       >
         {initials}
