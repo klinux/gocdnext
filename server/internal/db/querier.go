@@ -150,6 +150,7 @@ type Querier interface {
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error)
 	// Delete-guard: how many projects carry the framework and how many policies
 	// target it. A framework still in use must not be silently dropped.
 	CountFrameworkUsage(ctx context.Context, frameworkID pgtype.UUID) (CountFrameworkUsageRow, error)
@@ -265,6 +266,7 @@ type Querier interface {
 	DeleteRunnerProfile(ctx context.Context, id pgtype.UUID) error
 	DeleteSCMCredential(ctx context.Context, id pgtype.UUID) error
 	DeleteSecretByName(ctx context.Context, arg DeleteSecretByNameParams) (int64, error)
+	DeleteSecurityFindingsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error
 	// ON DELETE CASCADE on api_tokens cleans up the token rows
 	// automatically.
 	DeleteServiceAccount(ctx context.Context, id pgtype.UUID) error
@@ -419,6 +421,10 @@ type Querier interface {
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
 	// read path.
 	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
+	// Findings from the latest run per pipeline in the project (counter DESC =
+	// newest run; uses idx_runs_pipeline_counter), filtered + paginated. Ordered
+	// worst-severity first.
+	FindingsForProject(ctx context.Context, arg FindingsForProjectParams) ([]FindingsForProjectRow, error)
 	// Hot path: the bearer middleware probes this on every request.
 	// Returns NOT FOUND when revoked or expired so the middleware
 	// doesn't have to special-case those.
@@ -706,6 +712,7 @@ type Querier interface {
 	// refreshers, so a conflict shouldn't arise).
 	InsertRunDailyWindow(ctx context.Context, sinceDays int32) error
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
+	InsertSecurityFindings(ctx context.Context, arg []InsertSecurityFindingsParams) (int64, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
 	InsertStageRun(ctx context.Context, arg InsertStageRunParams) (InsertStageRunRow, error)
 	// One INSERT per case. The agent batches N cases into a single
@@ -1386,6 +1393,11 @@ type Querier interface {
 	// than fail-open here — operator can run manual sweep if a stale
 	// leak surfaces).
 	RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error)
+	// Security findings ingested from SARIF artifacts (#71 v1).
+	// Resolve run/pipeline/project/job metadata from the completed job_run, so the
+	// ingestion only needs the job_run id. Used to stamp the denormalized columns
+	// on each finding (CopyFrom can't join).
+	SecurityFindingContext(ctx context.Context, id pgtype.UUID) (SecurityFindingContextRow, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
@@ -1407,6 +1419,9 @@ type Querier interface {
 	// explicitly with DELETE if you want them gone.
 	SetServiceAccountDisabled(ctx context.Context, arg SetServiceAccountDisabledParams) error
 	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
+	// Per-severity totals across the latest run per pipeline (unfiltered) — the tab
+	// header chips.
+	SeverityCountsForProject(ctx context.Context, projectID pgtype.UUID) ([]SeverityCountsForProjectRow, error)
 	// Marks a still-queued job as 'skipped' with a terminal finish
 	// time so GetStageProgress stops counting it as unfinished. The
 	// scheduler calls this for synthetic notification jobs whose
