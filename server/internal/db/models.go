@@ -25,6 +25,14 @@ type Agent struct {
 	Engine string
 }
 
+type AnalyticsDeployDaily struct {
+	EnvironmentID  pgtype.UUID
+	Day            pgtype.Date
+	DeploysSuccess int64
+	DeploysTotal   int64
+	DeploysFailed  int64
+}
+
 type AnalyticsRunDaily struct {
 	PipelineID  pgtype.UUID
 	Day         pgtype.Date
