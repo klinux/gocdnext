@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/google/uuid"
@@ -259,5 +260,95 @@ func TestFindingsForProject_PerScannerLatest(t *testing.T) {
 	}
 	if page.Total != 1 || page.Findings[0].RuleID != "r-xss" {
 		t.Fatalf("per-scanner: semgrep finding must survive a trivy-only newer scan, got %+v", page.Findings)
+	}
+}
+
+// TestFindingsForProject_PerMatrixVariant guards the matrix grain: two variants
+// of the same scanner job share job_name but differ by matrix_key, so the latest
+// scan must be tracked per (pipeline, job_name, matrix_key) — a clean run of
+// variant A must not hide variant B's finding from the prior run.
+func TestFindingsForProject_PerMatrixVariant(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	fp := store.FingerprintFor("https://github.com/org/sec4", "main")
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "sec4", Name: "sec4",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "p1",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/sec4", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{{
+				Name: "semgrep", Stage: "build", Image: "alpine",
+				Matrix: map[string][]string{"variant": {"a", "b"}},
+				Tasks:  []domain.Task{{Script: "true"}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	projectID := applied.ProjectID
+	pipelineID := applied.Pipelines[0].PipelineID
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("material: %v", err)
+	}
+	mkRun := func(mod int64) map[string]uuid.UUID {
+		res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID: pipelineID, MaterialID: materialID, ModificationID: mod,
+			Revision: "r", Branch: "main", Provider: "github", Delivery: "t", TriggeredBy: "system:test",
+		})
+		if err != nil {
+			t.Fatalf("create run %d: %v", mod, err)
+		}
+		m := map[string]uuid.UUID{}
+		for _, j := range res.JobRuns {
+			m[j.MatrixKey] = j.ID
+		}
+		if len(m) != 2 {
+			t.Fatalf("expected 2 matrix job_runs, got %d", len(m))
+		}
+		return m
+	}
+	keys := func(m map[string]uuid.UUID) (string, string) {
+		ks := make([]string, 0, 2)
+		for k := range m {
+			ks = append(ks, k)
+		}
+		sort.Strings(ks)
+		return ks[0], ks[1]
+	}
+
+	// Run 1: variant A clean, variant B has a finding.
+	run1 := mkRun(1)
+	a, b := keys(run1)
+	if err := s.ReplaceSecurityFindings(ctx, run1[a], 0, nil); err != nil {
+		t.Fatalf("reconcile a r1: %v", err)
+	}
+	if err := s.ReplaceSecurityFindings(ctx, run1[b], 0, []store.FindingIn{
+		{Tool: "Semgrep", RuleID: "r-b", Severity: "high", Level: "warning", Message: "m", Fingerprint: "fpb"},
+	}); err != nil {
+		t.Fatalf("reconcile b r1: %v", err)
+	}
+
+	// Run 2: only variant A reconciles (clean); B's scan never lands.
+	run2 := mkRun(2)
+	a2, _ := keys(run2)
+	if err := s.ReplaceSecurityFindings(ctx, run2[a2], 0, nil); err != nil {
+		t.Fatalf("reconcile a r2: %v", err)
+	}
+
+	// Variant B's finding from run 1 must still show.
+	page, err := s.FindingsForProject(ctx, projectID, store.FindingsFilter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 1 || page.Findings[0].RuleID != "r-b" {
+		t.Fatalf("matrix grain: variant B finding must survive a variant-A-only newer scan, got %+v", page.Findings)
 	}
 }

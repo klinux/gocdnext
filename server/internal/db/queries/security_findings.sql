@@ -42,13 +42,13 @@ WITH latest AS (
     -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
     -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
     -- finding whose scan is still in-flight / failed in that run.
-    SELECT DISTINCT ON (sc.pipeline_id, jr.name) sc.job_run_id AS id
+    SELECT DISTINCT ON (sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, '')) sc.job_run_id AS id
     FROM security_scans sc
     JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-    ORDER BY sc.pipeline_id, jr.name, r.counter DESC
+    ORDER BY sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, ''), r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
@@ -70,13 +70,13 @@ WITH latest AS (
     -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
     -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
     -- finding whose scan is still in-flight / failed in that run.
-    SELECT DISTINCT ON (sc.pipeline_id, jr.name) sc.job_run_id AS id
+    SELECT DISTINCT ON (sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, '')) sc.job_run_id AS id
     FROM security_scans sc
     JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-    ORDER BY sc.pipeline_id, jr.name, r.counter DESC
+    ORDER BY sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, ''), r.counter DESC
 )
 SELECT COUNT(*)::bigint
 FROM security_findings f
@@ -92,13 +92,13 @@ WITH latest AS (
     -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
     -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
     -- finding whose scan is still in-flight / failed in that run.
-    SELECT DISTINCT ON (sc.pipeline_id, jr.name) sc.job_run_id AS id
+    SELECT DISTINCT ON (sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, '')) sc.job_run_id AS id
     FROM security_scans sc
     JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-    ORDER BY sc.pipeline_id, jr.name, r.counter DESC
+    ORDER BY sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, ''), r.counter DESC
 )
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f
