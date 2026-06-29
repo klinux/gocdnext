@@ -69,6 +69,11 @@ func TestDoraRollup_Metrics(t *testing.T) {
 	seedDeploy(t, pool, ctx, envID, pipelineID, 3, "success", false, 1, 10)
 	seedDeploy(t, pool, ctx, envID, pipelineID, 4, "success", false, 0, 10)
 
+	// Counts now read the materialized deploy rollup (#128 phase 1b).
+	if err := s.RefreshDeployDaily(ctx, 0); err != nil {
+		t.Fatalf("refresh deploy: %v", err)
+	}
+
 	groups, err := s.DoraRollup(ctx, "team", 30, "")
 	if err != nil {
 		t.Fatalf("dora: %v", err)
@@ -104,6 +109,57 @@ func TestDoraRollup_Metrics(t *testing.T) {
 	}
 	if len(narrow) != 1 || narrow[0].DeploysTotal != 1 || narrow[0].DeploysSuccess != 1 {
 		t.Fatalf("narrow window = %+v", narrow)
+	}
+}
+
+// TestRefreshDeployDaily_RollbackCountsFailed locks the phase-1b rollup's
+// is_rollback semantics: a rollback deploy (is_rollback=true, status=success)
+// counts toward deploys_failed (a change-failure signal), matching the live
+// DORA queries — verified through the materialized rollup.
+func TestRefreshDeployDaily_RollbackCountsFailed(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "rb", Name: "rb",
+		Pipelines: []*domain.Pipeline{{
+			Name: "main", Stages: []string{"deploy"},
+			Jobs: []domain.Job{{Name: "ship", Stage: "deploy"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := s.ReplaceProjectLabels(ctx, res.ProjectID, []store.ProjectLabel{{Key: "team", Value: "core"}}); err != nil {
+		t.Fatalf("labels: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, res.ProjectID, "prod")
+	if err != nil {
+		t.Fatalf("env: %v", err)
+	}
+	pid := uuid.UUID(res.Pipelines[0].PipelineID)
+
+	seedDeploy(t, pool, ctx, envID, pid, 1, "success", false, 1, 10) // normal
+	seedDeploy(t, pool, ctx, envID, pid, 2, "success", true, 1, 10)  // rollback → failed
+
+	if err := s.RefreshDeployDaily(ctx, 0); err != nil {
+		t.Fatalf("refresh deploy: %v", err)
+	}
+	groups, err := s.DoraRollup(ctx, "team", 30, "")
+	if err != nil {
+		t.Fatalf("dora: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("groups = %+v", groups)
+	}
+	g := groups[0]
+	// Both are status=success → success=2, total=2; the rollback → failed=1.
+	if g.DeploysTotal != 2 || g.DeploysSuccess != 2 || g.DeploysFailed != 1 {
+		t.Fatalf("counts = %+v", g)
+	}
+	if math.Abs(g.ChangeFailureRate-0.5) > 1e-6 {
+		t.Errorf("CFR = %v, want 0.5", g.ChangeFailureRate)
 	}
 }
 

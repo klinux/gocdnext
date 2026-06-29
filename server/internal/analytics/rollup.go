@@ -21,11 +21,12 @@ type Refresher struct {
 	trailingDays int
 }
 
-// RollupStore is the slice of the store the refresher needs. RefreshRunDaily is
-// leader-gated internally (advisory lock), so running it on every replica is
+// RollupStore is the slice of the store the refresher needs. Both refreshes are
+// leader-gated internally (advisory lock), so running them on every replica is
 // safe — only one does the work per cycle.
 type RollupStore interface {
 	RefreshRunDaily(ctx context.Context, sinceDays int) error
+	RefreshDeployDaily(ctx context.Context, sinceDays int) error
 }
 
 // NewRefresher builds a refresher with sensible defaults: refresh the trailing 2
@@ -51,9 +52,7 @@ func (r *Refresher) Run(ctx context.Context) error {
 	// Boot full rebuild (sinceDays <= 0 → all history). At large history this is
 	// a single grouped scan per boot/hour; an incremental watermark is the lever
 	// if it gets expensive (#128).
-	if err := r.store.RefreshRunDaily(ctx, 0); err != nil {
-		r.log.Error("analytics rollup backfill", "err", err)
-	}
+	r.refresh(ctx, 0, "backfill")
 
 	t := time.NewTicker(r.tick)
 	defer t.Stop()
@@ -64,13 +63,20 @@ func (r *Refresher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			if err := r.store.RefreshRunDaily(ctx, r.trailingDays); err != nil {
-				r.log.Error("analytics rollup refresh", "err", err)
-			}
+			r.refresh(ctx, r.trailingDays, "refresh")
 		case <-full.C:
-			if err := r.store.RefreshRunDaily(ctx, 0); err != nil {
-				r.log.Error("analytics rollup full rebuild", "err", err)
-			}
+			r.refresh(ctx, 0, "full rebuild")
 		}
+	}
+}
+
+// refresh runs both the run and deploy rollups for the window, logging (never
+// fatal) per source so one failing doesn't stop the other.
+func (r *Refresher) refresh(ctx context.Context, sinceDays int, label string) {
+	if err := r.store.RefreshRunDaily(ctx, sinceDays); err != nil {
+		r.log.Error("analytics rollup "+label+" (runs)", "err", err)
+	}
+	if err := r.store.RefreshDeployDaily(ctx, sinceDays); err != nil {
+		r.log.Error("analytics rollup "+label+" (deploys)", "err", err)
 	}
 }

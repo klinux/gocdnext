@@ -15,6 +15,8 @@ func (f *fakeStore) RefreshRunDaily(_ context.Context, sinceDays int) error {
 	return nil
 }
 
+func (f *fakeStore) RefreshDeployDaily(_ context.Context, _ int) error { return nil }
+
 func TestRefresher_BackfillsOnBoot(t *testing.T) {
 	f := &fakeStore{calls: make(chan int, 4)}
 	r := NewRefresher(f, slog.New(slog.NewTextHandler(io.Discard, nil)))

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
@@ -58,14 +60,27 @@ func (s *Store) DoraRollup(ctx context.Context, labelKey string, windowDays int,
 // denominator. The current window is [w,0) and the prior is [2w,w) — same span,
 // shifted — so the movers can compare team-by-team.
 func (s *Store) doraRollupWindow(ctx context.Context, labelKey string, sinceDays, untilDays, spanDays int, environment string) ([]DoraGroup, error) {
-	since := dayInterval(sinceDays)
-	until := dayInterval(untilDays)
+	sd, ud := int32(sinceDays), int32(untilDays)
 
-	rows, err := s.q.DoraRollup(ctx, db.DoraRollupParams{LabelKey: labelKey, SinceWindow: since, UntilWindow: until, Environment: environment})
+	// Counts from the rollup (additive, O(days)); lead time + MTTR live (medians
+	// can't be summed across daily buckets). All share the rollup's calendar-day
+	// window so a group's counts + percentiles always cover the same days — #128
+	// phase 1b.
+	rows, err := s.q.DoraCountsGroup(ctx, db.DoraCountsGroupParams{
+		LabelKey: labelKey, Environment: environment, SinceDays: sd, UntilDays: ud,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("store: dora rollup: %w", err)
+		return nil, fmt.Errorf("store: dora counts group: %w", err)
 	}
-	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceWindow: since, UntilWindow: until, Environment: environment})
+	leadRows, err := s.q.DoraLeadGroup(ctx, db.DoraLeadGroupParams{LabelKey: labelKey, SinceDays: sd, UntilDays: ud, Environment: environment})
+	if err != nil {
+		return nil, fmt.Errorf("store: dora lead group: %w", err)
+	}
+	lead := make(map[string]float64, len(leadRows))
+	for _, l := range leadRows {
+		lead[l.Grp] = l.LeadTimeP50S
+	}
+	mttrRows, err := s.q.DoraMTTR(ctx, db.DoraMTTRParams{LabelKey: labelKey, SinceDays: sd, UntilDays: ud, Environment: environment})
 	if err != nil {
 		return nil, fmt.Errorf("store: dora mttr: %w", err)
 	}
@@ -81,7 +96,7 @@ func (s *Store) doraRollupWindow(ctx context.Context, labelKey string, sinceDays
 			DeploysSuccess: r.DeploysSuccess,
 			DeploysTotal:   r.DeploysTotal,
 			DeploysFailed:  r.DeploysFailed,
-			LeadTimeP50Sec: r.LeadTimeP50S,
+			LeadTimeP50Sec: lead[r.Grp],
 			MTTRP50Sec:     mttr[r.Grp],
 		}
 		if spanDays > 0 {
@@ -93,4 +108,36 @@ func (s *Store) doraRollupWindow(ctx context.Context, labelKey string, sinceDays
 		out = append(out, g)
 	}
 	return out, nil
+}
+
+// RefreshDeployDaily rebuilds the analytics_deploy_daily rollup for the trailing
+// sinceDays whole calendar days (sinceDays <= 0 → full rebuild). DELETE-window +
+// reinsert under the shared advisory lock — same contract as RefreshRunDaily
+// (deploys are mutable via rollback/redeploy). Leader-gated; a replica that
+// loses the lock no-ops.
+func (s *Store) RefreshDeployDaily(ctx context.Context, sinceDays int) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("store: refresh deploy daily begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	got, err := q.TryRollupLock(ctx, rollupAdvisoryLockKey)
+	if err != nil {
+		return fmt.Errorf("store: rollup lock: %w", err)
+	}
+	if !got {
+		return nil
+	}
+	if err := q.DeleteDeployDailyWindow(ctx, int32(sinceDays)); err != nil {
+		return fmt.Errorf("store: refresh deploy daily delete: %w", err)
+	}
+	if err := q.InsertDeployDailyWindow(ctx, int32(sinceDays)); err != nil {
+		return fmt.Errorf("store: refresh deploy daily insert: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: refresh deploy daily commit: %w", err)
+	}
+	return nil
 }
