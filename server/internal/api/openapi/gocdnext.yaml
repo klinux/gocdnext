@@ -584,6 +584,31 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DoraOverview" }
         "400": { description: missing/invalid key or window_days }
+  /api/v1/analytics/reliability:
+    get:
+      tags: [analytics]
+      summary: Run-based throughput per group + reliability hotspots over a window.
+      description: >
+        Throughput and reliability rolled up from run history (not deploys), so
+        there is no environment filter. Per label-value group: run volume,
+        runs/day, success rate, queue-wait and duration medians. Plus the
+        worst-failing pipelines among labelled projects (min 5 runs, worst first).
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+        - in: query
+          name: window_days
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        "200":
+          description: reliability report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReliabilityReport" }
+        "400": { description: missing/invalid key or window_days }
 
   # -------------------- runs --------------------
   /api/v1/runs:
@@ -1663,6 +1688,46 @@ components:
         review_p50_seconds: { type: number, format: double, description: "approved − opened" }
         release_wait_p50_seconds: { type: number, format: double, description: "deploy job start − (approved or merged)" }
         deploy_p50_seconds: { type: number, format: double, description: "deploy finish − deploy job start" }
+
+    ThroughputGroup:
+      type: object
+      description: Run-based throughput + reliability for one label-value group.
+      required: [group, runs_success, runs_failed, runs_total, runs_per_day, success_rate, queue_wait_p50_seconds, duration_p50_seconds]
+      properties:
+        group: { type: string, description: "the label value, e.g. payments" }
+        runs_success: { type: integer, format: int64 }
+        runs_failed: { type: integer, format: int64, description: "status failed OR errored" }
+        runs_total: { type: integer, format: int64, description: "terminal runs (success+failed+errored); canceled excluded" }
+        runs_per_day: { type: number, format: double }
+        success_rate: { type: number, format: double, description: "runs_success / runs_total" }
+        queue_wait_p50_seconds: { type: number, format: double, description: "p50 started_at − created_at" }
+        duration_p50_seconds: { type: number, format: double, description: "p50 finished_at − started_at" }
+
+    ReliabilityHotspot:
+      type: object
+      description: One pipeline that fails often, among labelled projects.
+      required: [project_slug, project, pipeline, runs_total, runs_failed, failure_rate]
+      properties:
+        project_slug: { type: string }
+        project: { type: string }
+        pipeline: { type: string }
+        runs_total: { type: integer, format: int64 }
+        runs_failed: { type: integer, format: int64 }
+        failure_rate: { type: number, format: double, description: "runs_failed / runs_total" }
+
+    ReliabilityReport:
+      type: object
+      required: [key, window_days, groups, hotspots]
+      properties:
+        key: { type: string }
+        window_days: { type: integer }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/ThroughputGroup" }
+        hotspots:
+          type: array
+          description: worst-failing pipelines (≥5 runs), worst first
+          items: { $ref: "#/components/schemas/ReliabilityHotspot" }
 
     ProjectDetail:
       allOf:
