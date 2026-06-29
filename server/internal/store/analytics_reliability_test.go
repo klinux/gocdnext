@@ -80,6 +80,11 @@ func TestReliabilityReport(t *testing.T) {
 	// An old burst (40d ago) must fall outside the 30-day window entirely.
 	seedRuns(t, pool, ctx, pay["clean"], 100, 50, "failed", 40)
 
+	// Counts + hotspots read the materialized rollup — populate it first.
+	if err := s.RefreshRunDaily(ctx, 0); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
 	rep, err := s.ReliabilityReport(ctx, "team", 30)
 	if err != nil {
 		t.Fatalf("reliability: %v", err)
@@ -134,5 +139,42 @@ func TestReliabilityReport(t *testing.T) {
 	}
 	if math.Abs(rep.Hotspots[1].FailureRate-3.0/11.0) > 1e-6 {
 		t.Errorf("main failure rate = %v, want %v", rep.Hotspots[1].FailureRate, 3.0/11.0)
+	}
+}
+
+func TestRefreshRunDaily_Incremental(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	ids := applyLabeledProject(t, s, ctx, "p", "team", "core", "main")
+	pid := ids["main"]
+	seedRuns(t, pool, ctx, pid, 1, 5, "success", 5) // 5 days ago
+	seedRuns(t, pool, ctx, pid, 6, 2, "failed", 1)  // yesterday
+
+	if err := s.RefreshRunDaily(ctx, 0); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	rep, err := s.ReliabilityReport(ctx, "team", 30)
+	if err != nil {
+		t.Fatalf("reliability: %v", err)
+	}
+	if len(rep.Groups) != 1 || rep.Groups[0].RunsTotal != 7 ||
+		rep.Groups[0].RunsSuccess != 5 || rep.Groups[0].RunsFailed != 2 {
+		t.Fatalf("after backfill: %+v", rep.Groups)
+	}
+
+	// A new run today; a trailing 2-day refresh must ADD today without dropping
+	// the 5-day-old bucket (outside the refresh window but already materialized).
+	seedRuns(t, pool, ctx, pid, 8, 1, "success", 0)
+	if err := s.RefreshRunDaily(ctx, 2); err != nil {
+		t.Fatalf("incremental: %v", err)
+	}
+	rep, err = s.ReliabilityReport(ctx, "team", 30)
+	if err != nil {
+		t.Fatalf("reliability 2: %v", err)
+	}
+	if rep.Groups[0].RunsTotal != 8 || rep.Groups[0].RunsSuccess != 6 {
+		t.Fatalf("after incremental (5d bucket must survive): %+v", rep.Groups)
 	}
 }

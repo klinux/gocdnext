@@ -17,6 +17,7 @@ const (
 
 // ThroughputGroup is the run-based throughput + reliability rollup for one
 // label-value group over the window. Run-based, so no environment dimension.
+// Counts come from the analytics_run_daily rollup; the p50s are computed live.
 type ThroughputGroup struct {
 	Group           string  `json:"group"`
 	RunsSuccess     int64   `json:"runs_success"`
@@ -48,41 +49,62 @@ type ReliabilityReport struct {
 	Hotspots   []ReliabilityHotspot `json:"hotspots"`
 }
 
+// RefreshRunDaily recomputes the analytics_run_daily rollup for the trailing
+// sinceDays whole calendar days (sinceDays <= 0 → all history, the boot
+// backfill). Idempotent — safe to re-run / overlap; catches late-finishing runs.
+func (s *Store) RefreshRunDaily(ctx context.Context, sinceDays int) error {
+	if err := s.q.RefreshRunDaily(ctx, int32(sinceDays)); err != nil {
+		return fmt.Errorf("store: refresh run daily: %w", err)
+	}
+	return nil
+}
+
 // ReliabilityReport rolls up run throughput + reliability for labelKey over the
-// trailing windowDays. Run-based — no environment filter (runs aren't
-// environment-scoped). Success rate + runs/day are derived in Go from counts.
+// trailing windowDays. Counts + hotspots read the materialized daily rollup
+// (additive, O(days)); the queue/duration p50s are computed live. Run-based —
+// no environment filter (runs aren't environment-scoped).
 func (s *Store) ReliabilityReport(ctx context.Context, labelKey string, windowDays int) (ReliabilityReport, error) {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
-	since := dayInterval(windowDays)
+	wd := int32(windowDays)
 
-	rows, err := s.q.ThroughputRollup(ctx, db.ThroughputRollupParams{LabelKey: labelKey, SinceWindow: since})
+	counts, err := s.q.ThroughputCounts(ctx, db.ThroughputCountsParams{LabelKey: labelKey, WindowDays: wd})
 	if err != nil {
-		return ReliabilityReport{}, fmt.Errorf("store: throughput rollup: %w", err)
+		return ReliabilityReport{}, fmt.Errorf("store: throughput counts: %w", err)
 	}
-	groups := make([]ThroughputGroup, 0, len(rows))
-	for _, r := range rows {
+	latRows, err := s.q.ThroughputLatency(ctx, db.ThroughputLatencyParams{LabelKey: labelKey, WindowDays: wd})
+	if err != nil {
+		return ReliabilityReport{}, fmt.Errorf("store: throughput latency: %w", err)
+	}
+	lat := make(map[string]db.ThroughputLatencyRow, len(latRows))
+	for _, l := range latRows {
+		lat[l.Grp] = l
+	}
+
+	groups := make([]ThroughputGroup, 0, len(counts))
+	for _, c := range counts {
+		total := c.RunsSuccess + c.RunsFailed
 		g := ThroughputGroup{
-			Group:           r.Grp,
-			RunsSuccess:     r.RunsSuccess,
-			RunsFailed:      r.RunsFailed,
-			RunsTotal:       r.RunsTotal,
-			QueueWaitP50Sec: r.QueueWaitP50S,
-			DurationP50Sec:  r.DurationP50S,
-			RunsPerDay:      float64(r.RunsTotal) / float64(windowDays),
+			Group:           c.Grp,
+			RunsSuccess:     c.RunsSuccess,
+			RunsFailed:      c.RunsFailed,
+			RunsTotal:       total,
+			RunsPerDay:      float64(total) / float64(windowDays),
+			QueueWaitP50Sec: lat[c.Grp].QueueWaitP50S,
+			DurationP50Sec:  lat[c.Grp].DurationP50S,
 		}
-		if r.RunsTotal > 0 {
-			g.SuccessRate = float64(r.RunsSuccess) / float64(r.RunsTotal)
+		if total > 0 {
+			g.SuccessRate = float64(c.RunsSuccess) / float64(total)
 		}
 		groups = append(groups, g)
 	}
 
 	hotRows, err := s.q.ReliabilityHotspots(ctx, db.ReliabilityHotspotsParams{
-		LabelKey:    labelKey,
-		SinceWindow: since,
-		MinRuns:     reliabilityHotspotMinRuns,
-		MaxRows:     reliabilityHotspotMaxRows,
+		LabelKey:   labelKey,
+		WindowDays: wd,
+		MinRuns:    reliabilityHotspotMinRuns,
+		MaxRows:    reliabilityHotspotMaxRows,
 	})
 	if err != nil {
 		return ReliabilityReport{}, fmt.Errorf("store: reliability hotspots: %w", err)

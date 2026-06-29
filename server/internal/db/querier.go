@@ -1280,11 +1280,18 @@ type Querier interface {
 	// recent) is skipped — the replay path is still expected to
 	// land the cancel on its next Connect frame.
 	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
+	// Maintenance of the analytics_run_daily rollup (#128 phase 1).
+	// Recompute + upsert the daily run-outcome buckets for the trailing since_days
+	// (whole calendar days, so a partial-day recompute never overwrites a complete
+	// bucket with a truncated count). since_days <= 0 recomputes ALL history
+	// (the boot backfill). Idempotent: DO UPDATE overwrites with the fresh counts,
+	// so re-running or overlapping windows is safe and catches late-finishing runs.
+	RefreshRunDaily(ctx context.Context, sinceDays int32) error
 	// The pipelines that break most, among projects carrying label_key, over the
-	// window. EXISTS (not a label JOIN) so each pipeline appears once regardless of
-	// how many label values its project has. min_runs guards against a 1-of-1
-	// failure topping the list; only pipelines with at least one failure qualify.
-	// Ordered worst-first (rate, then absolute failures).
+	// window — from the rollup. EXISTS (not a label JOIN) so each pipeline appears
+	// once regardless of how many label values its project has. min_runs guards
+	// against a 1-of-1 failure topping the list; only pipelines with at least one
+	// failure qualify. Ordered worst-first (rate, then absolute failures).
 	ReliabilityHotspots(ctx context.Context, arg ReliabilityHotspotsParams) ([]ReliabilityHotspotsRow, error)
 	// Called by the sweeper AFTER Store.Delete succeeded (or the object
 	// was already gone). Removes the DB row.
@@ -1411,18 +1418,25 @@ type Querier interface {
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)
-	// Throughput & reliability rollups for the analytics epic (#107 phase 3).
+	// Throughput & reliability rollups for the analytics epic (#107 phase 3),
+	// backed by the analytics_run_daily materialized rollup (#128 phase 1).
 	// RUN-based (not deploy-based like DORA) — so no environment filter; runs are
-	// not environment-scoped. Terminal runs only. "Failure" = failed or errored
-	// (infra error); 'canceled' is neither success nor failure and is excluded
-	// from the rate denominator. OK to seq-scan runs over the window at gocdnext's
-	// scale (internal CI volume); a finished_at index is the lever if it grows.
-	// Per label-value group (for key = label_key): run counts + queue-wait and
-	// duration medians over the trailing window. A project carrying the key under
-	// several values contributes to each (JOIN, like DoraRollup) — intentional, the
-	// group is the unit. Queue wait = created→start (operator capacity); duration =
-	// start→finish (the work itself).
-	ThroughputRollup(ctx context.Context, arg ThroughputRollupParams) ([]ThroughputRollupRow, error)
+	// not environment-scoped. Counts come from the rollup (additive, O(days));
+	// the queue-wait/duration medians stay LIVE (a median can't be summed across
+	// daily buckets). "Failure" = failed or errored; 'canceled' is excluded.
+	//
+	// Window: "last window_days calendar days". Counts/hotspots use the rollup's
+	// DATE column (day > current_date - window_days); the live latency query uses
+	// the equivalent sargable timestamp bound on finished_at so both cover the same
+	// days and the partial index (00060) still applies.
+	// Per label-value group: terminal run counts over the window, from the rollup.
+	// A project carrying the key under several values contributes to each (JOIN).
+	ThroughputCounts(ctx context.Context, arg ThroughputCountsParams) ([]ThroughputCountsRow, error)
+	// Per label-value group: queue-wait + duration p50, LIVE from runs over the
+	// same window. Queue wait = created→start (operator capacity); duration =
+	// start→finish (the work). finished_at >= current_date - (window_days-1) is the
+	// midnight-aligned, index-friendly equivalent of the rollup's day predicate.
+	ThroughputLatency(ctx context.Context, arg ThroughputLatencyParams) ([]ThroughputLatencyRow, error)
 	// Best-effort `last_used_at` bump. Called from the middleware
 	// when a Bearer token authenticates successfully — a stale value
 	// doesn't break anything, just makes the audit trail less useful.
