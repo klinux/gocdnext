@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -71,13 +72,32 @@ type FindingsPage struct {
 // including with an EMPTY slice, so a rerun that no longer emits SARIF clears
 // the prior attempt's findings. Never call this on a read/parse error (that
 // would silently hide vulnerabilities).
-func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID, findings []FindingIn) error {
+//
+// Snapshot-CAS on `attempt`: ingestion is async, and RerunJob reuses the same
+// job_run_id with a bumped attempt — so a slow goroutine from the PREVIOUS
+// attempt must not clobber the new attempt's findings. Returns ErrSnapshotStale
+// when the row's current attempt no longer matches expectedAttempt (or the row
+// is gone); the caller drops the stale write.
+func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID, expectedAttempt int32, findings []FindingIn) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("store: findings begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
+
+	var rowAttempt int32
+	if err := tx.QueryRow(ctx,
+		`SELECT attempt FROM job_runs WHERE id = $1 FOR UPDATE`, jobRunID,
+	).Scan(&rowAttempt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSnapshotStale
+		}
+		return fmt.Errorf("store: findings lock row: %w", err)
+	}
+	if rowAttempt != expectedAttempt {
+		return ErrSnapshotStale
+	}
 
 	if err := q.DeleteSecurityFindingsByJobRun(ctx, pgUUID(jobRunID)); err != nil {
 		return fmt.Errorf("store: findings delete: %w", err)

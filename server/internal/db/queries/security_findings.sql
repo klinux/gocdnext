@@ -31,6 +31,7 @@ WITH latest AS (
     FROM runs r
     JOIN pipelines p ON p.id = r.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
+      AND r.status NOT IN ('queued', 'running')
     ORDER BY r.pipeline_id, r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
@@ -54,6 +55,7 @@ WITH latest AS (
     FROM runs r
     JOIN pipelines p ON p.id = r.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
+      AND r.status NOT IN ('queued', 'running')
     ORDER BY r.pipeline_id, r.counter DESC
 )
 SELECT COUNT(*)::bigint
@@ -71,6 +73,7 @@ WITH latest AS (
     FROM runs r
     JOIN pipelines p ON p.id = r.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
+      AND r.status NOT IN ('queued', 'running')
     ORDER BY r.pipeline_id, r.counter DESC
 )
 SELECT f.severity, COUNT(*)::bigint AS n

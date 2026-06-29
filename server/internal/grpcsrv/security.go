@@ -2,6 +2,7 @@ package grpcsrv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -61,9 +62,7 @@ func (a *AgentService) reconcileSecurityFindings(jobRunID uuid.UUID, attempt int
 		if attempt == 0 {
 			return // first attempt, no SARIF → nothing to reconcile
 		}
-		if err := a.store.ReplaceSecurityFindings(ctx, jobRunID, nil); err != nil {
-			a.log.Warn("security: clear findings", "job_id", jobRunID, "err", err)
-		}
+		a.replaceFindings(ctx, jobRunID, attempt, nil)
 		return
 	}
 
@@ -89,17 +88,33 @@ func (a *AgentService) reconcileSecurityFindings(jobRunID uuid.UUID, attempt int
 		}
 	}
 
-	if err := a.store.ReplaceSecurityFindings(ctx, jobRunID, all); err != nil {
-		a.log.Warn("security: write findings", "job_id", jobRunID, "err", err)
-		return
-	}
-	a.log.Info("security findings ingested",
+	a.replaceFindings(ctx, jobRunID, attempt, all)
+	a.log.Info("security findings reconciled",
 		"job_id", jobRunID, "sarif_files", len(sarifs), "findings", len(all))
 }
 
+// replaceFindings writes the reconciled set, treating a stale attempt (the job
+// was reclaimed/rerun while we parsed) as a benign no-op rather than an error.
+func (a *AgentService) replaceFindings(ctx context.Context, jobRunID uuid.UUID, attempt int32, findings []store.FindingIn) {
+	err := a.store.ReplaceSecurityFindings(ctx, jobRunID, attempt, findings)
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrSnapshotStale):
+		a.log.Debug("security: skip stale findings write (job reclaimed/rerun)", "job_id", jobRunID)
+	default:
+		a.log.Warn("security: write findings", "job_id", jobRunID, "err", err)
+	}
+}
+
 func (a *AgentService) parseSarifArtifact(ctx context.Context, art store.Artifact) ([]store.FindingIn, error) {
-	sarifSem <- struct{}{}
-	defer func() { <-sarifSem }()
+	// Respect the ingest timeout while waiting for a parse slot — don't let
+	// goroutines pile up past their context on a big-SARIF burst.
+	select {
+	case sarifSem <- struct{}{}:
+		defer func() { <-sarifSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 
 	rc, err := a.artifactStore.Get(ctx, art.StorageKey)
 	if err != nil {

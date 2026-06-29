@@ -71,6 +71,10 @@ func TestReconcileSecurityFindings(t *testing.T) {
 		t.Fatalf("create run: %v", err)
 	}
 	jobID := run.JobRuns[0].ID
+	// Findings show for the latest TERMINAL run per pipeline.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status='success' WHERE id = $1`, run.RunID); err != nil {
+		t.Fatalf("mark run terminal: %v", err)
+	}
 
 	// A ready SARIF artifact for the job.
 	key := "sec/" + jobID.String() + "/findings.sarif"
@@ -85,6 +89,11 @@ func TestReconcileSecurityFindings(t *testing.T) {
 	}
 	if page.Total != 1 || page.Findings[0].Severity != "critical" || page.Findings[0].Tool != "Trivy" {
 		t.Fatalf("after ingest: %+v", page.Findings)
+	}
+
+	// A rerun bumps the job's attempt; the reconciler is fenced on it.
+	if _, err := pool.Exec(ctx, `UPDATE job_runs SET attempt = 1 WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("bump attempt: %v", err)
 	}
 
 	// 2) Malformed SARIF on a rerun → keep prior findings (don't clear on error).
