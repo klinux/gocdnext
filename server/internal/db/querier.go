@@ -1670,6 +1670,10 @@ type Querier interface {
 	// identical plaintext, so a "was this changed" diff is unreliable).
 	// Targets the partial UNIQUE index secrets_project_name_idx.
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
+	// Mark a job_run as successfully reconciled (parsed OK, even with zero findings).
+	// Written in the same tx as the findings replace, so the marker and the rows
+	// are always consistent.
+	UpsertSecurityScan(ctx context.Context, arg UpsertSecurityScanParams) error
 	// Upsert the service tracking row for a (run_id, name) tuple.
 	// Idempotent: re-issuing the same status is a no-op besides
 	// updating started_at/ready_at/stopped_at as appropriate.

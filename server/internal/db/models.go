@@ -484,6 +484,14 @@ type SecurityFinding struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type SecurityScan struct {
+	JobRunID     pgtype.UUID
+	RunID        pgtype.UUID
+	PipelineID   pgtype.UUID
+	FindingCount int32
+	ReconciledAt pgtype.Timestamptz
+}
+
 type ServiceAccount struct {
 	ID          pgtype.UUID
 	Name        string

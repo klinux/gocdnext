@@ -39,18 +39,22 @@ INSERT INTO security_findings (
 -- newest run; uses idx_runs_pipeline_counter), filtered + paginated. Ordered
 -- worst-severity first.
 WITH latest AS (
-    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
+    -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
+    -- finding whose scan is still in-flight / failed in that run.
+    SELECT DISTINCT ON (sc.pipeline_id, jr.name) sc.job_run_id AS id
     FROM security_scans sc
+    JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-    ORDER BY sc.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, jr.name, r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
        f.location_url, f.artifact_id, f.artifact_path, f.created_at
 FROM security_findings f
-JOIN latest l ON l.id = f.run_id
+JOIN latest l ON l.id = f.job_run_id
 WHERE (sqlc.arg(severity)::text = '' OR f.severity = sqlc.arg(severity))
   AND (sqlc.arg(tool)::text = '' OR f.tool = sqlc.arg(tool))
   AND (sqlc.arg(rule)::text = '' OR f.rule_id = sqlc.arg(rule))
@@ -63,16 +67,20 @@ LIMIT sqlc.arg(lim)::int OFFSET sqlc.arg(off)::int;
 
 -- name: CountFindingsForProject :one
 WITH latest AS (
-    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
+    -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
+    -- finding whose scan is still in-flight / failed in that run.
+    SELECT DISTINCT ON (sc.pipeline_id, jr.name) sc.job_run_id AS id
     FROM security_scans sc
+    JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-    ORDER BY sc.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, jr.name, r.counter DESC
 )
 SELECT COUNT(*)::bigint
 FROM security_findings f
-JOIN latest l ON l.id = f.run_id
+JOIN latest l ON l.id = f.job_run_id
 WHERE (sqlc.arg(severity)::text = '' OR f.severity = sqlc.arg(severity))
   AND (sqlc.arg(tool)::text = '' OR f.tool = sqlc.arg(tool))
   AND (sqlc.arg(rule)::text = '' OR f.rule_id = sqlc.arg(rule));
@@ -81,14 +89,18 @@ WHERE (sqlc.arg(severity)::text = '' OR f.severity = sqlc.arg(severity))
 -- Per-severity totals across the latest run per pipeline (unfiltered) — the tab
 -- header chips.
 WITH latest AS (
-    SELECT DISTINCT ON (sc.pipeline_id) sc.run_id AS id
+    -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
+    -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
+    -- finding whose scan is still in-flight / failed in that run.
+    SELECT DISTINCT ON (sc.pipeline_id, jr.name) sc.job_run_id AS id
     FROM security_scans sc
+    JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = sqlc.arg(project_id)
-    ORDER BY sc.pipeline_id, r.counter DESC
+    ORDER BY sc.pipeline_id, jr.name, r.counter DESC
 )
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f
-JOIN latest l ON l.id = f.run_id
+JOIN latest l ON l.id = f.job_run_id
 GROUP BY f.severity;

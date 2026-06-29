@@ -183,3 +183,81 @@ func TestFindingsForProject_NewUnscannedRunDoesNotHidePrior(t *testing.T) {
 		t.Fatalf("unscanned newer run must not hide prior findings, got %+v", page.Findings)
 	}
 }
+
+// TestFindingsForProject_PerScannerLatest guards the per-scanner grain: when a
+// new run reconciles only one scanner (clean), a different scanner's finding
+// from the previous run must remain — each scanner advances independently.
+func TestFindingsForProject_PerScannerLatest(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	fp := store.FingerprintFor("https://github.com/org/sec3", "main")
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "sec3", Name: "sec3",
+		Pipelines: []*domain.Pipeline{{
+			Name:   "p1",
+			Stages: []string{"build"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/sec3", Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{Name: "trivy", Stage: "build", Image: "alpine", Tasks: []domain.Task{{Script: "true"}}},
+				{Name: "semgrep", Stage: "build", Image: "alpine", Tasks: []domain.Task{{Script: "true"}}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	projectID := applied.ProjectID
+	pipelineID := applied.Pipelines[0].PipelineID
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("material: %v", err)
+	}
+	mkRun := func(mod int64) uuid.UUID {
+		res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+			PipelineID: pipelineID, MaterialID: materialID, ModificationID: mod,
+			Revision: "r", Branch: "main", Provider: "github", Delivery: "t", TriggeredBy: "system:test",
+		})
+		if err != nil {
+			t.Fatalf("create run %d: %v", mod, err)
+		}
+		return res.RunID
+	}
+	jobByName := func(runID uuid.UUID, name string) uuid.UUID {
+		var id uuid.UUID
+		if err := pool.QueryRow(ctx, `SELECT id FROM job_runs WHERE run_id=$1 AND name=$2`, runID, name).Scan(&id); err != nil {
+			t.Fatalf("job %s: %v", name, err)
+		}
+		return id
+	}
+
+	// Run 1: both scanners reconcile — semgrep finds something, trivy is clean.
+	run1 := mkRun(1)
+	if err := s.ReplaceSecurityFindings(ctx, jobByName(run1, "semgrep"), 0, []store.FindingIn{
+		{Tool: "Semgrep", RuleID: "r-xss", Severity: "high", Level: "warning", Message: "m", Fingerprint: "fp1"},
+	}); err != nil {
+		t.Fatalf("reconcile semgrep r1: %v", err)
+	}
+	if err := s.ReplaceSecurityFindings(ctx, jobByName(run1, "trivy"), 0, nil); err != nil {
+		t.Fatalf("reconcile trivy r1: %v", err)
+	}
+
+	// Run 2: only trivy reconciles (still clean); semgrep's scan never lands.
+	run2 := mkRun(2)
+	if err := s.ReplaceSecurityFindings(ctx, jobByName(run2, "trivy"), 0, nil); err != nil {
+		t.Fatalf("reconcile trivy r2: %v", err)
+	}
+
+	// The semgrep finding from run 1 must still show.
+	page, err := s.FindingsForProject(ctx, projectID, store.FindingsFilter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 1 || page.Findings[0].RuleID != "r-xss" {
+		t.Fatalf("per-scanner: semgrep finding must survive a trivy-only newer scan, got %+v", page.Findings)
+	}
+}
