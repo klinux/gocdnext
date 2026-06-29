@@ -136,7 +136,11 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
 
       <div className="space-y-3.5">
         <SectionLabel>Throughput &amp; reliability</SectionLabel>
-        <DoraReliability report={reliability} groupKey={activeKey} />
+        <DoraReliability
+          report={reliability}
+          groupKey={activeKey}
+          envFiltered={activeEnv !== ""}
+        />
       </div>
 
       {ov.teams.length > 0 ? (

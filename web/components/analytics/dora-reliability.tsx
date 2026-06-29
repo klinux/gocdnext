@@ -145,13 +145,16 @@ function Hotspots({ hotspots }: { hotspots: ReliabilityHotspot[] }) {
 
 // DoraReliability is the "throughput & reliability" section: per-group run
 // volume + success rate, plus the worst-failing pipelines. Run-based, so it
-// ignores the deploy-environment filter.
+// ignores the deploy-environment filter — when that filter is active, say so
+// (envFiltered) to avoid reading this section as environment-scoped too.
 export function DoraReliability({
   report,
   groupKey,
+  envFiltered = false,
 }: {
   report: ReliabilityReport;
   groupKey: string;
+  envFiltered?: boolean;
 }) {
   if (report.groups.length === 0) {
     return (
@@ -162,9 +165,16 @@ export function DoraReliability({
     );
   }
   return (
-    <div className="grid gap-3.5 lg:grid-cols-2">
-      <ThroughputTable groups={report.groups} groupKey={groupKey} />
-      <Hotspots hotspots={report.hotspots} />
+    <div className="space-y-2">
+      {envFiltered ? (
+        <p className="text-xs text-muted-foreground">
+          Run-based — not scoped by the environment filter (all environments).
+        </p>
+      ) : null}
+      <div className="grid gap-3.5 lg:grid-cols-2">
+        <ThroughputTable groups={report.groups} groupKey={groupKey} />
+        <Hotspots hotspots={report.hotspots} />
+      </div>
     </div>
   );
 }
