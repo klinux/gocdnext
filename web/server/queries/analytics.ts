@@ -102,6 +102,24 @@ export type ReliabilityReport = {
   hotspots: ReliabilityHotspot[];
 };
 
+// Compliance posture per label-value group — current state (framework adoption),
+// so no window or environment.
+export type FrameworkCoverage = {
+  framework: string;
+  covered: number;
+};
+
+export type ComplianceGroup = {
+  group: string;
+  projects_total: number;
+  frameworks: FrameworkCoverage[];
+};
+
+export type ComplianceCoverageReport = {
+  key: string;
+  groups: ComplianceGroup[];
+};
+
 async function readJSON<T>(path: string): Promise<T> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
   const session = (await cookies()).get("gocdnext_session")?.value;
@@ -165,5 +183,15 @@ export async function getReliability(
 ): Promise<ReliabilityReport> {
   return readJSON<ReliabilityReport>(
     `/api/v1/analytics/reliability?key=${encodeURIComponent(key)}&window_days=${windowDays}`,
+  );
+}
+
+// getComplianceCoverage reads framework adoption per label-value group (current
+// state — no window).
+export async function getComplianceCoverage(
+  key: string,
+): Promise<ComplianceCoverageReport> {
+  return readJSON<ComplianceCoverageReport>(
+    `/api/v1/analytics/compliance?key=${encodeURIComponent(key)}`,
   );
 }

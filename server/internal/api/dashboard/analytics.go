@@ -164,6 +164,22 @@ func (h *Handler) Reliability(w http.ResponseWriter, r *http.Request) {
 	writeAnalyticsJSON(w, rep)
 }
 
+// ComplianceCoverage handles GET /api/v1/analytics/compliance?key=. Framework
+// adoption per label-value group — current state, so no window or environment.
+func (h *Handler) ComplianceCoverage(w http.ResponseWriter, r *http.Request) {
+	key, ok := requireKey(w, r)
+	if !ok {
+		return
+	}
+	rep, err := h.store.ComplianceCoverage(r.Context(), key)
+	if err != nil {
+		h.log.Error("analytics: compliance coverage", "key", key, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeAnalyticsJSON(w, rep)
+}
+
 func writeAnalyticsJSON(w http.ResponseWriter, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
