@@ -66,6 +66,9 @@ func (h *Handler) ListFindings(w http.ResponseWriter, r *http.Request) {
 		}
 		offset = n
 	}
+	// include_resolved reveals dismissed + false_positive; default lists only
+	// open + accepted. Any non-empty truthy value enables it.
+	includeResolved := q.Get("include_resolved") == "1" || q.Get("include_resolved") == "true"
 
 	detail, err := h.store.GetProjectDetail(r.Context(), slug, 1)
 	if err != nil {
@@ -79,11 +82,12 @@ func (h *Handler) ListFindings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page, err := h.store.FindingsForProject(r.Context(), detail.Project.ID, store.FindingsFilter{
-		Severity: severity,
-		Tool:     tool,
-		Rule:     rule,
-		Limit:    int32(limit),
-		Offset:   int32(offset),
+		Severity:        severity,
+		Tool:            tool,
+		Rule:            rule,
+		IncludeResolved: includeResolved,
+		Limit:           int32(limit),
+		Offset:          int32(offset),
 	})
 	if err != nil {
 		h.log.Error("list findings", "slug", slug, "err", err)

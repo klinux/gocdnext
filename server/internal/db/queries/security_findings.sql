@@ -58,7 +58,10 @@ WITH latest AS (
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
        f.location_url, f.artifact_id, f.artifact_path, f.created_at,
-       (CASE WHEN sfs.first_seen_run_id = f.run_id THEN 'new' ELSE 'existing' END)::text AS status
+       (CASE WHEN sfs.first_seen_run_id = f.run_id THEN 'new' ELSE 'existing' END)::text AS status,
+       COALESCE(sfs.id, 0)::bigint AS state_id,
+       COALESCE(sfs.state, 'open')::text AS state,
+       COALESCE(sfs.state_reason, '')::text AS state_reason
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
 LEFT JOIN security_finding_states sfs
@@ -70,6 +73,8 @@ LEFT JOIN security_finding_states sfs
 WHERE (sqlc.arg(severity)::text = '' OR f.severity = sqlc.arg(severity))
   AND (sqlc.arg(tool)::text = '' OR f.tool = sqlc.arg(tool))
   AND (sqlc.arg(rule)::text = '' OR f.rule_id = sqlc.arg(rule))
+  -- default hides dismissed/false_positive; open + accepted stay visible.
+  AND (sqlc.arg(include_resolved)::bool OR COALESCE(sfs.state, 'open') IN ('open', 'accepted'))
 ORDER BY
     CASE f.severity
         WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3
@@ -89,13 +94,21 @@ WITH latest AS (
 SELECT COUNT(*)::bigint
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
+LEFT JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
 WHERE (sqlc.arg(severity)::text = '' OR f.severity = sqlc.arg(severity))
   AND (sqlc.arg(tool)::text = '' OR f.tool = sqlc.arg(tool))
-  AND (sqlc.arg(rule)::text = '' OR f.rule_id = sqlc.arg(rule));
+  AND (sqlc.arg(rule)::text = '' OR f.rule_id = sqlc.arg(rule))
+  AND (sqlc.arg(include_resolved)::bool OR COALESCE(sfs.state, 'open') IN ('open', 'accepted'));
 
 -- name: SeverityCountsForProject :many
--- Per-severity totals across the latest scan per scanner (unfiltered) — the tab
--- header chips.
+-- Per-severity totals across the latest scan per scanner for OPEN findings only
+-- — the tab header chips reflect the actionable backlog (accepted risk is shown
+-- as its own count, dismissed/false_positive are excluded).
 WITH latest AS (
     SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
     FROM security_scans sc
@@ -107,7 +120,37 @@ WITH latest AS (
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
+LEFT JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
+WHERE COALESCE(sfs.state, 'open') = 'open'
 GROUP BY f.severity;
+
+-- name: AcceptedCountForProject :one
+-- Count of accepted-risk findings in the latest scan per scanner — shown as a
+-- distinct chip so an acknowledged risk stays visible without inflating the
+-- open severity backlog.
+WITH latest AS (
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
+    WHERE p.project_id = sqlc.arg(project_id)
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
+)
+SELECT COUNT(*)::bigint
+FROM security_findings f
+JOIN latest l ON l.id = f.job_run_id
+JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
+WHERE sfs.state = 'accepted';
 
 -- name: FixedFindingsForProject :many
 -- Identities for a scanner that has a latest scan, but were NOT seen in that
@@ -163,3 +206,18 @@ JOIN latest l
     AND l.matrix_key  = sfs.matrix_key
 WHERE sfs.last_seen_run_id IS DISTINCT FROM l.latest_run_id
   AND sfs.state IN ('open', 'accepted');
+
+-- name: SetFindingState :one
+-- Update a finding identity's human state (open|dismissed|false_positive|
+-- accepted). Scoped to project_id (the handler resolves slug → project) so a
+-- maintainer of one project can't mutate another's findings. Returns the id when
+-- a row matched; no row → not found / wrong project (handler 404s). The state
+-- value is validated by the handler AND the column CHECK.
+UPDATE security_finding_states
+SET state             = sqlc.arg(state),
+    state_reason      = sqlc.arg(state_reason),
+    state_actor_id    = sqlc.arg(state_actor_id),
+    state_actor_email = sqlc.arg(state_actor_email),
+    state_updated_at  = NOW()
+WHERE id = sqlc.arg(id) AND project_id = sqlc.arg(project_id)
+RETURNING id;

@@ -522,6 +522,10 @@ paths:
         - in: query
           name: offset
           schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: include_resolved
+          description: when true, also show dismissed + false_positive (default hides them)
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: findings
@@ -530,6 +534,38 @@ paths:
               schema: { $ref: "#/components/schemas/FindingsList" }
         "400": { description: invalid severity/limit/offset }
         "404": { description: project not found }
+
+  /api/v1/projects/{slug}/finding-states/{id}/state:
+    put:
+      tags: [projects]
+      summary: Set a finding's triage state (maintainer+).
+      description: >
+        Set the human triage state of a finding identity (open / dismissed /
+        false_positive / accepted) with an optional reason. The state persists by
+        identity across runs (a dismissed finding stays dismissed when it
+        reappears). Maintainer role or higher; project-scoped.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: path
+          name: id
+          required: true
+          description: security_finding_states identity id
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state: { type: string, enum: [open, dismissed, false_positive, accepted] }
+                reason: { type: string, maxLength: 1000 }
+      responses:
+        "204": { description: state updated }
+        "400": { description: invalid state/id/reason }
+        "403": { description: requires maintainer role }
+        "404": { description: project or finding not found }
 
   # -------------------- analytics --------------------
   /api/v1/analytics/label-keys:
@@ -1675,6 +1711,9 @@ components:
         artifact_path: { type: string }
         created_at: { type: string, format: date-time }
         status: { type: string, enum: [new, existing], description: "cross-run dedup: new = first seen in this run" }
+        state: { type: string, enum: [open, dismissed, false_positive, accepted], description: "human triage state" }
+        state_id: { type: integer, format: int64, description: "security_finding_states identity id the state mutation targets (0 if absent)" }
+        state_reason: { type: string, description: "optional note set when the state was changed" }
 
     FixedFinding:
       type: object
@@ -1696,7 +1735,7 @@ components:
 
     FindingsList:
       type: object
-      required: [findings, total, severity_counts, fixed, fixed_total, limit, offset]
+      required: [findings, total, severity_counts, accepted_count, fixed, fixed_total, limit, offset]
       properties:
         findings:
           type: array
@@ -1705,7 +1744,8 @@ components:
         severity_counts:
           type: object
           additionalProperties: { type: integer, format: int64 }
-          description: "per-severity totals (unfiltered) for the header"
+          description: "per-severity totals for OPEN findings (the actionable backlog)"
+        accepted_count: { type: integer, format: int64, description: "accepted-risk findings, shown as a distinct chip" }
         fixed:
           type: array
           items: { $ref: "#/components/schemas/FixedFinding" }

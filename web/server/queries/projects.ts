@@ -205,12 +205,20 @@ export async function listEnvironments(
 // filterable by severity/tool/rule, paginated.
 export async function listFindings(
   slug: string,
-  opts: { severity?: string; tool?: string; rule?: string; limit?: number; offset?: number } = {},
+  opts: {
+    severity?: string;
+    tool?: string;
+    rule?: string;
+    includeResolved?: boolean;
+    limit?: number;
+    offset?: number;
+  } = {},
 ): Promise<FindingsList> {
   const qs = new URLSearchParams();
   if (opts.severity) qs.set("severity", opts.severity);
   if (opts.tool) qs.set("tool", opts.tool);
   if (opts.rule) qs.set("rule", opts.rule);
+  if (opts.includeResolved) qs.set("include_resolved", "1");
   if (opts.limit) qs.set("limit", String(opts.limit));
   if (opts.offset) qs.set("offset", String(opts.offset));
   const q = qs.toString();

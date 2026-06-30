@@ -18,6 +18,7 @@ type Search = {
   tool?: string;
   rule?: string;
   offset?: string;
+  include_resolved?: string;
 };
 
 const PAGE_SIZE = 50;
@@ -48,6 +49,7 @@ export default async function SecurityPage({
   const tool = sp.tool ?? "";
   const rule = sp.rule ?? "";
   const offset = Math.max(0, Number(sp.offset ?? 0) || 0);
+  const includeResolved = sp.include_resolved === "1";
 
   let data;
   try {
@@ -55,6 +57,7 @@ export default async function SecurityPage({
       severity: severity || undefined,
       tool: tool || undefined,
       rule: rule || undefined,
+      includeResolved,
       limit: PAGE_SIZE,
       offset,
     });
@@ -73,12 +76,17 @@ export default async function SecurityPage({
           artifacts (semgrep, trivy, osv-scanner, gitleaks…), sourced from the
           latest run of each pipeline.
         </p>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {SEVERITY_ORDER.map((sev) => (
             <StatusPill key={sev} tone={severityTone(sev)}>
               {data.severity_counts[sev] ?? 0} {severityLabel(sev)}
             </StatusPill>
           ))}
+          {data.accepted_count > 0 ? (
+            <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+              {data.accepted_count} accepted
+            </span>
+          ) : null}
         </div>
         {data.fixed_total > 0 ? <FixedSummary fixed={data.fixed} total={data.fixed_total} /> : null}
       </header>
@@ -118,10 +126,20 @@ export default async function SecurityPage({
           </Label>
           <Input id="rule" name="rule" defaultValue={rule} placeholder="CVE-…" className="h-9 w-48 text-sm" />
         </div>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            name="include_resolved"
+            value="1"
+            defaultChecked={includeResolved}
+            className="size-3.5 accent-primary"
+          />
+          Show resolved
+        </label>
         <Button type="submit" size="sm">
           Filter
         </Button>
-        {severity || tool || rule ? (
+        {severity || tool || rule || includeResolved ? (
           <Button type="button" variant="ghost" size="sm" render={<a href={basePath} />}>
             Clear
           </Button>
@@ -132,13 +150,13 @@ export default async function SecurityPage({
         <EmptyState filtered={!!(severity || tool || rule)} />
       ) : (
         <>
-          <FindingsTable findings={data.findings} />
+          <FindingsTable findings={data.findings} slug={slug} />
           <Pagination
             offset={offset}
             total={data.total}
             pageSize={PAGE_SIZE}
             basePath={basePath}
-            params={{ severity, tool, rule }}
+            params={{ severity, tool, rule, ...(includeResolved ? { include_resolved: "1" } : {}) }}
           />
         </>
       )}

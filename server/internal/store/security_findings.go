@@ -48,6 +48,13 @@ type Finding struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	// Status is cross-run dedup: "new" (first seen in this run) or "existing".
 	Status string `json:"status"`
+	// State is the human triage state: open|dismissed|false_positive|accepted.
+	// StateID is the security_finding_states identity id the state mutation
+	// targets (0 if the identity is somehow absent). StateReason is the optional
+	// note set when the state was changed.
+	State       string `json:"state"`
+	StateID     int64  `json:"state_id"`
+	StateReason string `json:"state_reason"`
 }
 
 // FixedFinding is an identity that was present in a prior scan but is gone from
@@ -74,8 +81,11 @@ type FindingsFilter struct {
 	Severity string
 	Tool     string
 	Rule     string
-	Limit    int32
-	Offset   int32
+	// IncludeResolved shows dismissed + false_positive too; default lists only
+	// open + accepted.
+	IncludeResolved bool
+	Limit           int32
+	Offset          int32
 }
 
 // FindingsPage is the paginated findings response + the (unfiltered) severity
@@ -84,10 +94,13 @@ type FindingsPage struct {
 	Findings       []Finding        `json:"findings"`
 	Total          int64            `json:"total"`
 	SeverityCounts map[string]int64 `json:"severity_counts"`
-	Fixed          []FixedFinding   `json:"fixed"`
-	FixedTotal     int64            `json:"fixed_total"`
-	Limit          int32            `json:"limit"`
-	Offset         int32            `json:"offset"`
+	// AcceptedCount is the number of accepted-risk findings (shown as a distinct
+	// chip; not folded into the open severity counts).
+	AcceptedCount int64          `json:"accepted_count"`
+	Fixed         []FixedFinding `json:"fixed"`
+	FixedTotal    int64          `json:"fixed_total"`
+	Limit         int32          `json:"limit"`
+	Offset        int32          `json:"offset"`
 }
 
 // maxFixedFindings caps the "fixed since last scan" list. Fixed sets are small
@@ -284,13 +297,14 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 
 	rows, err := s.q.FindingsForProject(ctx, db.FindingsForProjectParams{
 		ProjectID: pid, Severity: f.Severity, Tool: f.Tool, Rule: f.Rule,
-		Lim: f.Limit, Off: f.Offset,
+		IncludeResolved: f.IncludeResolved, Lim: f.Limit, Off: f.Offset,
 	})
 	if err != nil {
 		return FindingsPage{}, fmt.Errorf("store: findings list: %w", err)
 	}
 	total, err := s.q.CountFindingsForProject(ctx, db.CountFindingsForProjectParams{
 		ProjectID: pid, Severity: f.Severity, Tool: f.Tool, Rule: f.Rule,
+		IncludeResolved: f.IncludeResolved,
 	})
 	if err != nil {
 		return FindingsPage{}, fmt.Errorf("store: findings count: %w", err)
@@ -298,6 +312,10 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 	sevRows, err := s.q.SeverityCountsForProject(ctx, pid)
 	if err != nil {
 		return FindingsPage{}, fmt.Errorf("store: findings severity counts: %w", err)
+	}
+	acceptedCount, err := s.q.AcceptedCountForProject(ctx, pid)
+	if err != nil {
+		return FindingsPage{}, fmt.Errorf("store: findings accepted count: %w", err)
 	}
 	fixedRows, err := s.q.FixedFindingsForProject(ctx, db.FixedFindingsForProjectParams{
 		ProjectID: pid, Lim: maxFixedFindings,
@@ -329,6 +347,9 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 			LocationURL:  r.LocationUrl,
 			ArtifactPath: r.ArtifactPath,
 			Status:       r.Status,
+			State:        r.State,
+			StateID:      r.StateID,
+			StateReason:  r.StateReason,
 		}
 		if r.ArtifactID.Valid {
 			id := fromPgUUID(r.ArtifactID)
@@ -370,9 +391,41 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 		Findings:       out,
 		Total:          total,
 		SeverityCounts: counts,
+		AcceptedCount:  acceptedCount,
 		Fixed:          fixed,
 		FixedTotal:     fixedTotal,
 		Limit:          f.Limit,
 		Offset:         f.Offset,
 	}, nil
+}
+
+// ErrFindingStateNotFound is returned when SetFindingState targets an identity
+// id that doesn't exist or belongs to a different project.
+var ErrFindingStateNotFound = errors.New("finding state not found")
+
+// SetFindingState sets a finding identity's human triage state
+// (open|dismissed|false_positive|accepted) with an optional reason and actor.
+// Scoped to projectID so a maintainer of one project can't mutate another's
+// findings; returns ErrFindingStateNotFound when no identity matches (unknown id
+// or wrong project). The caller is responsible for validating `state` (the
+// column also has a CHECK as defense in depth).
+func (s *Store) SetFindingState(ctx context.Context, projectID uuid.UUID, stateID int64, state, reason string, actorID *uuid.UUID, actorEmail string) error {
+	actor := pgtype.UUID{}
+	if actorID != nil && *actorID != uuid.Nil {
+		actor = pgUUID(*actorID)
+	}
+	if _, err := s.q.SetFindingState(ctx, db.SetFindingStateParams{
+		State:           state,
+		StateReason:     reason,
+		StateActorID:    actor,
+		StateActorEmail: actorEmail,
+		ID:              stateID,
+		ProjectID:       pgUUID(projectID),
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrFindingStateNotFound
+		}
+		return fmt.Errorf("store: set finding state: %w", err)
+	}
+	return nil
 }
