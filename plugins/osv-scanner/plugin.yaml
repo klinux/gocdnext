@@ -12,12 +12,21 @@ description: >
   Ignores / acknowledged vulnerabilities go in an
   osv-scanner.toml (the baseline mechanism).
 
+  SCA is lockfile/SBOM-driven: it reads a RESOLVED dependency list,
+  not source. Ecosystems without a committed lockfile — notably
+  Gradle, where build.gradle is a build script, not a resolved
+  graph — report "no package sources found" until you give it one.
+  Emit a lockfile, or a CycloneDX/SPDX SBOM (auto-detected by the
+  dir scan), from the build job. See the Gradle recipe.
+
 inputs:
   dir:
     required: false
     default: "."
     description: >
-      Scan root, recursive. Lockfiles are auto-detected.
+      Scan root, recursive. Lockfiles AND CycloneDX/SPDX SBOMs
+      (e.g. a build/reports/bom.json emitted by an upstream build
+      job) are auto-detected.
   format:
     required: false
     default: "sarif"
@@ -75,6 +84,20 @@ examples:
       uses: ghcr.io/klinux/gocdnext-plugin-osv-scanner@v1
       with:
         fail-on: none
+      artifacts:
+        optional: [osv-report.sarif]
+
+  - name: scan an emitted SBOM (Gradle / no native lockfile)
+    description: >
+      For ecosystems without a committed lockfile, have the build
+      job emit a CycloneDX SBOM and restore it here — the dir scan
+      auto-detects it (no extra flag). See the Gradle recipe.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-osv-scanner@v1
+      needs_artifacts:
+        - from_job: sbom
+          paths: [build/reports/bom.json]
+          dest: ./
       artifacts:
         optional: [osv-report.sarif]
 
