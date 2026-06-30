@@ -140,14 +140,18 @@ export function PipelineRow({
 
         {/* Col 2 — identity */}
         <div className="flex min-w-0 flex-col justify-center py-3 pr-3">
-          <div className="flex min-w-0 items-center gap-2">
+          {/* flex-wrap so the badge cluster (compliance / C·A / branch / cause)
+              wraps to a second line at narrow (laptop) widths instead of
+              crushing or covering the pipeline name (#140). The name keeps a
+              readable min width and only truncates within it. */}
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     type="button"
                     onClick={() => setOverviewOpen(true)}
-                    className="truncate rounded-sm text-left text-[15px] font-semibold tracking-[-0.2px] outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                    className="min-w-[9rem] flex-1 truncate rounded-sm text-left text-[15px] font-semibold tracking-[-0.2px] outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 }
               >

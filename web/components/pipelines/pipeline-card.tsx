@@ -140,14 +140,18 @@ export function PipelineCard({
               is conveyed by the coloured left border of the card and
               the job circles in the stage strip below — the explicit
               text/icon badge that used to live here was redundant. */}
-          <div className="flex items-center gap-2">
+          {/* flex-wrap so the badge cluster (compliance / C·A / branch /
+              trigger) drops to a second line at narrow (laptop) widths instead
+              of crushing or covering the pipeline name (#140). The name keeps a
+              readable min width and only truncates within it. */}
+          <div className="flex flex-wrap items-center gap-2">
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     type="button"
                     onClick={() => setOverviewOpen(true)}
-                    className="min-w-0 flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                    className="min-w-[9rem] flex-1 truncate rounded-sm text-left font-mono text-sm font-semibold outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 }
               >
