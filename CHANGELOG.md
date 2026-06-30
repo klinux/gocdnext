@@ -8,6 +8,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.69.0 — 2026-06-30
+
+### Added
+
+- **DAST baseline scanner plugin — `nuclei` (#70).** Scans a *running* target (an
+  ephemeral app via `services:`, or a deployed env) and emits SARIF straight into
+  the Security dashboard, closing the last scan-type gap (SAST/SCA/secret/image/IaC
+  were covered, DAST wasn't). v1 is an unauthenticated baseline + API-spec-driven
+  scan, **hardened by default**: no auth/header input (no secret on argv), OAST
+  off, HTTP redirects off, HTTP templates only, templates pinned + baked (never
+  updated at runtime); a `spec:` has its base URL (incl. nested OpenAPI `servers`)
+  rewritten to the target so it can't redirect the scan to prod; a preflight
+  refuses to record a false "clean" against a target that never came up. Ships
+  with a deploy-then-scan recipe (`services:` / k8s ephemeral env / `_compliance_dast`).
+
+### Fixed
+
+- **osv-scanner: "No package sources found" is a clean pass (#142).** A blanket
+  `_compliance_sca` over a polyglot fleet no longer fails on repos without a
+  lockfile at the scanned path — it's treated as nothing-to-scan (clean) and
+  emits an empty SARIF so the dashboard records a clean scan; real scan errors
+  still fail loud. New `fail-on-no-sources` input for the strict case.
+- **web: pipeline names no longer crushed/covered by badges at laptop width
+  (#140).** The name+badges header now wraps the badge cluster to a second line
+  and the name keeps a readable min width, instead of collapsing to `d…` at
+  MacBook-class widths.
+
 ## v0.68.0 — 2026-06-30
 
 ### Added
