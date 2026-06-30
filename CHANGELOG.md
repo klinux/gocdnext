@@ -8,6 +8,26 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.66.0 — 2026-06-29
+
+### Added
+
+- **Security vulnerability dashboard (v1).** Scanner SARIF (semgrep / trivy /
+  osv-scanner / gitleaks) is now ingested on job completion — parsed server-side
+  from the uploaded artifact, normalized into a `security_findings` table — and
+  surfaced in a per-project **Security tab**: severity-count header + filterable
+  (severity / tool / rule), paginated list. Severity is resolved across the SARIF
+  result and its rule descriptor (CVSS → level → rule defaults). Findings are
+  tracked per (pipeline, scanner job, matrix cell) with a reconciliation marker,
+  so a clean scan is distinct from "not scanned", a failed/in-flight scan never
+  hides a prior run's known vulnerabilities, and a stale rerun can't clobber the
+  current attempt. Ingest + list only; cross-run dedup + finding state are v2. (#71)
+
+### Fixed
+
+- **Project-card author avatar** uses the brand light-green tint
+  (`bg-primary/15`), matching the sidebar avatar fallback. (#134)
+
 ## v0.65.0 — 2026-06-29
 
 ### Added
