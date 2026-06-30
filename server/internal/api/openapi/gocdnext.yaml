@@ -1657,7 +1657,7 @@ components:
     Finding:
       type: object
       description: A security finding normalized from a SARIF result.
-      required: [id, pipeline_id, run_id, job_name, tool, rule_id, severity, level, message, location_path, location_line, location_url, artifact_path, created_at]
+      required: [id, pipeline_id, run_id, job_name, tool, rule_id, severity, level, message, location_path, location_line, location_url, artifact_path, created_at, status]
       properties:
         id: { type: integer, format: int64 }
         pipeline_id: { type: string, format: uuid }
@@ -1674,10 +1674,29 @@ components:
         artifact_id: { type: string, format: uuid, nullable: true, description: "the SARIF artifact (null if swept)" }
         artifact_path: { type: string }
         created_at: { type: string, format: date-time }
+        status: { type: string, enum: [new, existing], description: "cross-run dedup: new = first seen in this run" }
+
+    FixedFinding:
+      type: object
+      description: An identity present in a prior scan but gone from the scanner's latest run, rendered from the identity snapshot.
+      required: [id, pipeline_id, scanner_job, matrix_key, tool, rule_id, severity, level, message, location_path, location_line, last_seen_at]
+      properties:
+        id: { type: integer, format: int64, description: "security_finding_states identity id" }
+        pipeline_id: { type: string, format: uuid }
+        scanner_job: { type: string }
+        matrix_key: { type: string }
+        tool: { type: string }
+        rule_id: { type: string }
+        severity: { type: string, enum: [critical, high, medium, low] }
+        level: { type: string }
+        message: { type: string }
+        location_path: { type: string }
+        location_line: { type: integer }
+        last_seen_at: { type: string, format: date-time }
 
     FindingsList:
       type: object
-      required: [findings, total, severity_counts, limit, offset]
+      required: [findings, total, severity_counts, fixed, fixed_total, limit, offset]
       properties:
         findings:
           type: array
@@ -1687,6 +1706,11 @@ components:
           type: object
           additionalProperties: { type: integer, format: int64 }
           description: "per-severity totals (unfiltered) for the header"
+        fixed:
+          type: array
+          items: { $ref: "#/components/schemas/FixedFinding" }
+          description: "identities gone since the previous scan (open/accepted only), capped"
+        fixed_total: { type: integer, format: int64 }
         limit: { type: integer }
         offset: { type: integer }
 

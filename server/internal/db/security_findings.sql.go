@@ -13,16 +13,12 @@ import (
 
 const countFindingsForProject = `-- name: CountFindingsForProject :one
 WITH latest AS (
-    -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
-    -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
-    -- finding whose scan is still in-flight / failed in that run.
-    SELECT DISTINCT ON (sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, '')) sc.job_run_id AS id
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
     FROM security_scans sc
-    JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = $4
-    ORDER BY sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, ''), r.counter DESC
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
 )
 SELECT COUNT(*)::bigint
 FROM security_findings f
@@ -51,6 +47,35 @@ func (q *Queries) CountFindingsForProject(ctx context.Context, arg CountFindings
 	return column_1, err
 }
 
+const countFixedFindingsForProject = `-- name: CountFixedFindingsForProject :one
+WITH latest AS (
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key)
+        sc.pipeline_id, sc.scanner_job, sc.matrix_key, sc.run_id AS latest_run_id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
+    WHERE p.project_id = $1
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
+)
+SELECT COUNT(*)::bigint
+FROM security_finding_states sfs
+JOIN latest l
+    ON  l.pipeline_id = sfs.pipeline_id
+    AND l.scanner_job = sfs.scanner_job
+    AND l.matrix_key  = sfs.matrix_key
+WHERE sfs.last_seen_run_id IS DISTINCT FROM l.latest_run_id
+  AND sfs.state IN ('open', 'accepted')
+`
+
+// Real total of fixed identities (the list above is capped); the header count
+// must not understate when a removed scanner retires a large prior set.
+func (q *Queries) CountFixedFindingsForProject(ctx context.Context, projectID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countFixedFindingsForProject, projectID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteSecurityFindingsByJobRun = `-- name: DeleteSecurityFindingsByJobRun :exec
 DELETE FROM security_findings WHERE job_run_id = $1
 `
@@ -61,23 +86,27 @@ func (q *Queries) DeleteSecurityFindingsByJobRun(ctx context.Context, jobRunID p
 }
 
 const findingsForProject = `-- name: FindingsForProject :many
+
 WITH latest AS (
-    -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
-    -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
-    -- finding whose scan is still in-flight / failed in that run.
-    SELECT DISTINCT ON (sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, '')) sc.job_run_id AS id
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
     FROM security_scans sc
-    JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = $6
-    ORDER BY sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, ''), r.counter DESC
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
-       f.location_url, f.artifact_id, f.artifact_path, f.created_at
+       f.location_url, f.artifact_id, f.artifact_path, f.created_at,
+       (CASE WHEN sfs.first_seen_run_id = f.run_id THEN 'new' ELSE 'existing' END)::text AS status
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
+LEFT JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
 WHERE ($1::text = '' OR f.severity = $1)
   AND ($2::text = '' OR f.tool = $2)
   AND ($3::text = '' OR f.rule_id = $3)
@@ -114,11 +143,15 @@ type FindingsForProjectRow struct {
 	ArtifactID   pgtype.UUID
 	ArtifactPath string
 	CreatedAt    pgtype.Timestamptz
+	Status       string
 }
 
-// Findings from the latest run per pipeline in the project (counter DESC =
-// newest run; uses idx_runs_pipeline_counter), filtered + paginated. Ordered
-// worst-severity first.
+// NOTE: the batch identity upsert lives as a raw tx.Exec in the store
+// (ReplaceSecurityFindings) — sqlc's static analyzer can't model the multi-array
+// unnest(a,b,...) FROM-form (valid at runtime). See upsertFindingIdentitiesSQL.
+// Findings from the latest reconciled scan per (pipeline, scanner_job, matrix
+// cell) in the project, filtered + paginated, worst-severity first. The identity
+// join surfaces new (first seen in this run) vs existing.
 func (q *Queries) FindingsForProject(ctx context.Context, arg FindingsForProjectParams) ([]FindingsForProjectRow, error) {
 	rows, err := q.db.Query(ctx, findingsForProject,
 		arg.Severity,
@@ -151,6 +184,97 @@ func (q *Queries) FindingsForProject(ctx context.Context, arg FindingsForProject
 			&i.ArtifactID,
 			&i.ArtifactPath,
 			&i.CreatedAt,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const fixedFindingsForProject = `-- name: FixedFindingsForProject :many
+WITH latest AS (
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key)
+        sc.pipeline_id, sc.scanner_job, sc.matrix_key, sc.run_id AS latest_run_id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
+    WHERE p.project_id = $2
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
+)
+SELECT sfs.id, sfs.pipeline_id, sfs.scanner_job, sfs.matrix_key, sfs.tool,
+       sfs.fingerprint, sfs.last_rule_id, sfs.last_severity, sfs.last_level,
+       sfs.last_message, sfs.last_location_path, sfs.last_location_line,
+       sfs.last_seen_at
+FROM security_finding_states sfs
+JOIN latest l
+    ON  l.pipeline_id = sfs.pipeline_id
+    AND l.scanner_job = sfs.scanner_job
+    AND l.matrix_key  = sfs.matrix_key
+WHERE sfs.last_seen_run_id IS DISTINCT FROM l.latest_run_id
+  AND sfs.state IN ('open', 'accepted')
+ORDER BY
+    CASE sfs.last_severity
+        WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3
+    END,
+    sfs.tool, sfs.last_rule_id, sfs.id
+LIMIT $1::int
+`
+
+type FixedFindingsForProjectParams struct {
+	Lim       int32
+	ProjectID pgtype.UUID
+}
+
+type FixedFindingsForProjectRow struct {
+	ID               int64
+	PipelineID       pgtype.UUID
+	ScannerJob       string
+	MatrixKey        string
+	Tool             string
+	Fingerprint      string
+	LastRuleID       string
+	LastSeverity     string
+	LastLevel        string
+	LastMessage      string
+	LastLocationPath string
+	LastLocationLine int32
+	LastSeenAt       pgtype.Timestamptz
+}
+
+// Identities for a scanner that has a latest scan, but were NOT seen in that
+// latest run — i.e. fixed/gone since the previous scan. Rendered from the
+// snapshot (the security_findings row is gone). Grain stays (pipeline,
+// scanner_job, matrix_key) — NOT tool — so a tool that stopped emitting (job
+// dropped Semgrep, kept Trivy) correctly retires its old identities. Excludes
+// dismissed/false_positive so resolved noise isn't resurrected as "fixed".
+func (q *Queries) FixedFindingsForProject(ctx context.Context, arg FixedFindingsForProjectParams) ([]FixedFindingsForProjectRow, error) {
+	rows, err := q.db.Query(ctx, fixedFindingsForProject, arg.Lim, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FixedFindingsForProjectRow{}
+	for rows.Next() {
+		var i FixedFindingsForProjectRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PipelineID,
+			&i.ScannerJob,
+			&i.MatrixKey,
+			&i.Tool,
+			&i.Fingerprint,
+			&i.LastRuleID,
+			&i.LastSeverity,
+			&i.LastLevel,
+			&i.LastMessage,
+			&i.LastLocationPath,
+			&i.LastLocationLine,
+			&i.LastSeenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -168,6 +292,7 @@ type InsertSecurityFindingsParams struct {
 	PipelineID   pgtype.UUID
 	ProjectID    pgtype.UUID
 	JobName      string
+	MatrixKey    string
 	ArtifactID   pgtype.UUID
 	ArtifactPath string
 	Tool         string
@@ -183,7 +308,8 @@ type InsertSecurityFindingsParams struct {
 
 const securityFindingContext = `-- name: SecurityFindingContext :one
 
-SELECT j.run_id, r.pipeline_id, p.project_id, j.name AS job_name
+SELECT j.run_id, r.pipeline_id, p.project_id, j.name AS job_name,
+       COALESCE(j.matrix_key, '')::text AS matrix_key
 FROM job_runs j
 JOIN runs r ON r.id = j.run_id
 JOIN pipelines p ON p.id = r.pipeline_id
@@ -195,12 +321,14 @@ type SecurityFindingContextRow struct {
 	PipelineID pgtype.UUID
 	ProjectID  pgtype.UUID
 	JobName    string
+	MatrixKey  string
 }
 
-// Security findings ingested from SARIF artifacts (#71 v1).
+// Security findings ingested from SARIF artifacts (#71 v1) + cross-run identity
+// and state (#71 v2).
 // Resolve run/pipeline/project/job metadata from the completed job_run, so the
 // ingestion only needs the job_run id. Used to stamp the denormalized columns
-// on each finding (CopyFrom can't join).
+// on each finding + the scan marker + the identity (CopyFrom can't join).
 func (q *Queries) SecurityFindingContext(ctx context.Context, id pgtype.UUID) (SecurityFindingContextRow, error) {
 	row := q.db.QueryRow(ctx, securityFindingContext, id)
 	var i SecurityFindingContextRow
@@ -209,22 +337,19 @@ func (q *Queries) SecurityFindingContext(ctx context.Context, id pgtype.UUID) (S
 		&i.PipelineID,
 		&i.ProjectID,
 		&i.JobName,
+		&i.MatrixKey,
 	)
 	return i, err
 }
 
 const severityCountsForProject = `-- name: SeverityCountsForProject :many
 WITH latest AS (
-    -- Latest reconciled scan per (pipeline, scanner job) — so each scanner
-    -- advances independently: a clean Trivy in a new run doesn't hide a Semgrep
-    -- finding whose scan is still in-flight / failed in that run.
-    SELECT DISTINCT ON (sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, '')) sc.job_run_id AS id
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
     FROM security_scans sc
-    JOIN job_runs jr ON jr.id = sc.job_run_id
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
     WHERE p.project_id = $1
-    ORDER BY sc.pipeline_id, jr.name, COALESCE(jr.matrix_key, ''), r.counter DESC
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
 )
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f
@@ -237,7 +362,7 @@ type SeverityCountsForProjectRow struct {
 	N        int64
 }
 
-// Per-severity totals across the latest run per pipeline (unfiltered) — the tab
+// Per-severity totals across the latest scan per scanner (unfiltered) — the tab
 // header chips.
 func (q *Queries) SeverityCountsForProject(ctx context.Context, projectID pgtype.UUID) ([]SeverityCountsForProjectRow, error) {
 	rows, err := q.db.Query(ctx, severityCountsForProject, projectID)
@@ -260,11 +385,13 @@ func (q *Queries) SeverityCountsForProject(ctx context.Context, projectID pgtype
 }
 
 const upsertSecurityScan = `-- name: UpsertSecurityScan :exec
-INSERT INTO security_scans (job_run_id, run_id, pipeline_id, finding_count)
-VALUES ($1, $2, $3, $4)
+INSERT INTO security_scans (job_run_id, run_id, pipeline_id, scanner_job, matrix_key, finding_count)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (job_run_id) DO UPDATE
     SET run_id        = EXCLUDED.run_id,
         pipeline_id   = EXCLUDED.pipeline_id,
+        scanner_job   = EXCLUDED.scanner_job,
+        matrix_key    = EXCLUDED.matrix_key,
         finding_count = EXCLUDED.finding_count,
         reconciled_at = NOW()
 `
@@ -273,17 +400,22 @@ type UpsertSecurityScanParams struct {
 	JobRunID     pgtype.UUID
 	RunID        pgtype.UUID
 	PipelineID   pgtype.UUID
+	ScannerJob   string
+	MatrixKey    string
 	FindingCount int32
 }
 
 // Mark a job_run as successfully reconciled (parsed OK, even with zero findings).
 // Written in the same tx as the findings replace, so the marker and the rows
-// are always consistent.
+// are always consistent. scanner_job/matrix_key denormalize the scanner grain so
+// the latest-scan CTE never joins job_runs.
 func (q *Queries) UpsertSecurityScan(ctx context.Context, arg UpsertSecurityScanParams) error {
 	_, err := q.db.Exec(ctx, upsertSecurityScan,
 		arg.JobRunID,
 		arg.RunID,
 		arg.PipelineID,
+		arg.ScannerJob,
+		arg.MatrixKey,
 		arg.FindingCount,
 	)
 	return err

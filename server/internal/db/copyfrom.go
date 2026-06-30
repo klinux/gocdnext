@@ -34,6 +34,7 @@ func (r iteratorForInsertSecurityFindings) Values() ([]interface{}, error) {
 		r.rows[0].PipelineID,
 		r.rows[0].ProjectID,
 		r.rows[0].JobName,
+		r.rows[0].MatrixKey,
 		r.rows[0].ArtifactID,
 		r.rows[0].ArtifactPath,
 		r.rows[0].Tool,
@@ -53,5 +54,5 @@ func (r iteratorForInsertSecurityFindings) Err() error {
 }
 
 func (q *Queries) InsertSecurityFindings(ctx context.Context, arg []InsertSecurityFindingsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"security_findings"}, []string{"job_run_id", "run_id", "pipeline_id", "project_id", "job_name", "artifact_id", "artifact_path", "tool", "rule_id", "severity", "level", "message", "location_path", "location_line", "location_url", "fingerprint"}, &iteratorForInsertSecurityFindings{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"security_findings"}, []string{"job_run_id", "run_id", "pipeline_id", "project_id", "job_name", "matrix_key", "artifact_id", "artifact_path", "tool", "rule_id", "severity", "level", "message", "location_path", "location_line", "location_url", "fingerprint"}, &iteratorForInsertSecurityFindings{rows: arg})
 }

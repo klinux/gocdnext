@@ -20,6 +20,7 @@ function finding(over: Partial<Finding> = {}): Finding {
     location_url: "go.sum",
     artifact_path: "trivy.sarif",
     created_at: "2026-06-29T00:00:00Z",
+    status: "existing",
     ...over,
   };
 }
@@ -37,5 +38,15 @@ describe("FindingsTable", () => {
   it("shows an em-dash when there's no location", () => {
     render(<FindingsTable findings={[finding({ id: 2, location_path: "", location_line: 0 })]} />);
     expect(screen.getByText("—")).toBeTruthy();
+  });
+
+  it("badges a finding first seen in this run as New", () => {
+    render(<FindingsTable findings={[finding({ id: 3, status: "new" })]} />);
+    expect(screen.getByText("New")).toBeTruthy();
+  });
+
+  it("does not badge an existing finding", () => {
+    render(<FindingsTable findings={[finding({ id: 4, status: "existing" })]} />);
+    expect(screen.queryByText("New")).toBeNull();
   });
 });

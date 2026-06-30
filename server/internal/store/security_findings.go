@@ -46,6 +46,27 @@ type Finding struct {
 	ArtifactID   *uuid.UUID `json:"artifact_id,omitempty"`
 	ArtifactPath string     `json:"artifact_path"`
 	CreatedAt    time.Time  `json:"created_at"`
+	// Status is cross-run dedup: "new" (first seen in this run) or "existing".
+	Status string `json:"status"`
+}
+
+// FixedFinding is an identity that was present in a prior scan but is gone from
+// the scanner's latest reconciled run — rendered from the identity snapshot
+// (the security_findings occurrence row no longer exists). ID is the
+// security_finding_states identity id.
+type FixedFinding struct {
+	ID           int64     `json:"id"`
+	PipelineID   uuid.UUID `json:"pipeline_id"`
+	ScannerJob   string    `json:"scanner_job"`
+	MatrixKey    string    `json:"matrix_key"`
+	Tool         string    `json:"tool"`
+	RuleID       string    `json:"rule_id"`
+	Severity     string    `json:"severity"`
+	Level        string    `json:"level"`
+	Message      string    `json:"message"`
+	LocationPath string    `json:"location_path"`
+	LocationLine int       `json:"location_line"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
 // FindingsFilter narrows the findings list; empty strings disable a filter.
@@ -58,14 +79,51 @@ type FindingsFilter struct {
 }
 
 // FindingsPage is the paginated findings response + the (unfiltered) severity
-// counts for the header chips.
+// counts for the header chips + the cross-run "fixed" set.
 type FindingsPage struct {
 	Findings       []Finding        `json:"findings"`
 	Total          int64            `json:"total"`
 	SeverityCounts map[string]int64 `json:"severity_counts"`
+	Fixed          []FixedFinding   `json:"fixed"`
+	FixedTotal     int64            `json:"fixed_total"`
 	Limit          int32            `json:"limit"`
 	Offset         int32            `json:"offset"`
 }
+
+// maxFixedFindings caps the "fixed since last scan" list. Fixed sets are small
+// in practice (identities absent from the latest scan); the cap keeps the
+// Security tab payload bounded if a scanner is removed and a huge prior set
+// retires at once.
+const maxFixedFindings = 200
+
+// upsertFindingIdentitiesSQL batch-upserts one identity per current finding in a
+// single statement. Kept as raw SQL (not sqlc) because sqlc's static analyzer
+// can't model the multi-array unnest(a,b,...) FROM-form, which is valid at
+// runtime. ON CONFLICT touches ONLY last_seen_* + the snapshot — first_seen_*
+// and every state_* column are left intact, so a re-ingest can neither move
+// first-seen nor clobber a user's dismiss/accept.
+const upsertFindingIdentitiesSQL = `
+INSERT INTO security_finding_states (
+    project_id, pipeline_id, scanner_job, matrix_key, tool, fingerprint,
+    first_seen_run_id, first_seen_at, last_seen_run_id, last_seen_at,
+    last_rule_id, last_severity, last_level, last_message,
+    last_location_path, last_location_line
+)
+SELECT
+    $1, $2, $3, $4, t.tool, t.fingerprint,
+    $5, NOW(), $5, NOW(),
+    t.rule_id, t.severity, t.level, t.message, t.location_path, t.location_line
+FROM unnest($6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::int[])
+    AS t(tool, fingerprint, rule_id, severity, level, message, location_path, location_line)
+ON CONFLICT (pipeline_id, scanner_job, matrix_key, tool, fingerprint) DO UPDATE
+    SET last_seen_run_id   = EXCLUDED.last_seen_run_id,
+        last_seen_at       = NOW(),
+        last_rule_id       = EXCLUDED.last_rule_id,
+        last_severity      = EXCLUDED.last_severity,
+        last_level         = EXCLUDED.last_level,
+        last_message       = EXCLUDED.last_message,
+        last_location_path = EXCLUDED.last_location_path,
+        last_location_line = EXCLUDED.last_location_line`
 
 // ReplaceSecurityFindings replaces all findings for a job_run with `findings`
 // in one tx (DELETE + batch insert). Always run on a successful reconcile —
@@ -111,8 +169,22 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 		return fmt.Errorf("store: findings delete: %w", err)
 	}
 
+	// Guard: only insert occurrences + upsert identities when there's something
+	// to write. A clean (zero-finding) scan still writes the marker below, which
+	// is what advances "fixed" detection for the scanner.
 	if len(findings) > 0 {
-		params := make([]db.InsertSecurityFindingsParams, 0, len(findings))
+		n := len(findings)
+		params := make([]db.InsertSecurityFindingsParams, 0, n)
+		// Identities deduped within this scan by (tool, fingerprint): a SARIF can
+		// emit two results that collapse to the same identity, and the batch
+		// upsert's ON CONFLICT can't affect the same row twice (Postgres errors,
+		// rolling back the whole reconcile). The occurrence rows below keep both;
+		// only the identity collapses — last occurrence wins for the snapshot.
+		// pipeline/scanner/matrix are constant for this job_run, so (tool,
+		// fingerprint) is the full identity within the scan.
+		type identKey struct{ tool, fp string }
+		idents := make(map[identKey]FindingIn, n)
+		order := make([]identKey, 0, n)
 		for _, f := range findings {
 			// artifact_id is nullable (ON DELETE SET NULL); Nil → SQL NULL so
 			// the FK isn't violated when a finding has no artifact pointer.
@@ -126,6 +198,7 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 				PipelineID:   cx.PipelineID,
 				ProjectID:    cx.ProjectID,
 				JobName:      cx.JobName,
+				MatrixKey:    cx.MatrixKey,
 				ArtifactID:   artID,
 				ArtifactPath: f.ArtifactPath,
 				Tool:         f.Tool,
@@ -138,19 +211,55 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 				LocationUrl:  f.LocationURL,
 				Fingerprint:  f.Fingerprint,
 			})
+			k := identKey{f.Tool, f.Fingerprint}
+			if _, ok := idents[k]; !ok {
+				order = append(order, k)
+			}
+			idents[k] = f
 		}
 		if _, err := q.InsertSecurityFindings(ctx, params); err != nil {
 			return fmt.Errorf("store: findings insert: %w", err)
+		}
+		// Parallel arrays for the batch identity upsert — built in lockstep from
+		// the deduped set so they're the same length and conflict-free.
+		m := len(order)
+		tools := make([]string, m)
+		fps := make([]string, m)
+		rules := make([]string, m)
+		sevs := make([]string, m)
+		levels := make([]string, m)
+		msgs := make([]string, m)
+		paths := make([]string, m)
+		lines := make([]int32, m)
+		for i, k := range order {
+			f := idents[k]
+			tools[i] = f.Tool
+			fps[i] = f.Fingerprint
+			rules[i] = f.RuleID
+			sevs[i] = f.Severity
+			levels[i] = f.Level
+			msgs[i] = f.Message
+			paths[i] = f.LocationPath
+			lines[i] = int32(f.LocationLine)
+		}
+		if _, err := tx.Exec(ctx, upsertFindingIdentitiesSQL,
+			cx.ProjectID, cx.PipelineID, cx.JobName, cx.MatrixKey, cx.RunID,
+			tools, fps, rules, sevs, levels, msgs, paths, lines,
+		); err != nil {
+			return fmt.Errorf("store: findings upsert identities: %w", err)
 		}
 	}
 
 	// Reconciliation marker — the list only advances to this run once it's
 	// recorded here, so a failed/in-flight scan never hides a prior run's
 	// findings, and a clean scan (0 findings) is distinct from "not scanned".
+	// scanner_job/matrix_key denormalize the scanner grain for the latest CTE.
 	if err := q.UpsertSecurityScan(ctx, db.UpsertSecurityScanParams{
 		JobRunID:     pgUUID(jobRunID),
 		RunID:        cx.RunID,
 		PipelineID:   cx.PipelineID,
+		ScannerJob:   cx.JobName,
+		MatrixKey:    cx.MatrixKey,
 		FindingCount: int32(len(findings)),
 	}); err != nil {
 		return fmt.Errorf("store: findings mark scan: %w", err)
@@ -190,6 +299,18 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 	if err != nil {
 		return FindingsPage{}, fmt.Errorf("store: findings severity counts: %w", err)
 	}
+	fixedRows, err := s.q.FixedFindingsForProject(ctx, db.FixedFindingsForProjectParams{
+		ProjectID: pid, Lim: maxFixedFindings,
+	})
+	if err != nil {
+		return FindingsPage{}, fmt.Errorf("store: findings fixed: %w", err)
+	}
+	// Real total (the list above is capped) — the header must not understate when
+	// a removed scanner retires a large prior set.
+	fixedTotal, err := s.q.CountFixedFindingsForProject(ctx, pid)
+	if err != nil {
+		return FindingsPage{}, fmt.Errorf("store: findings fixed count: %w", err)
+	}
 
 	out := make([]Finding, 0, len(rows))
 	for _, r := range rows {
@@ -207,6 +328,7 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 			LocationLine: int(r.LocationLine),
 			LocationURL:  r.LocationUrl,
 			ArtifactPath: r.ArtifactPath,
+			Status:       r.Status,
 		}
 		if r.ArtifactID.Valid {
 			id := fromPgUUID(r.ArtifactID)
@@ -223,10 +345,33 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 		counts[c.Severity] = c.N
 	}
 
+	fixed := make([]FixedFinding, 0, len(fixedRows))
+	for _, fr := range fixedRows {
+		ff := FixedFinding{
+			ID:           fr.ID,
+			PipelineID:   fromPgUUID(fr.PipelineID),
+			ScannerJob:   fr.ScannerJob,
+			MatrixKey:    fr.MatrixKey,
+			Tool:         fr.Tool,
+			RuleID:       fr.LastRuleID,
+			Severity:     fr.LastSeverity,
+			Level:        fr.LastLevel,
+			Message:      fr.LastMessage,
+			LocationPath: fr.LastLocationPath,
+			LocationLine: int(fr.LastLocationLine),
+		}
+		if fr.LastSeenAt.Valid {
+			ff.LastSeenAt = fr.LastSeenAt.Time
+		}
+		fixed = append(fixed, ff)
+	}
+
 	return FindingsPage{
 		Findings:       out,
 		Total:          total,
 		SeverityCounts: counts,
+		Fixed:          fixed,
+		FixedTotal:     fixedTotal,
 		Limit:          f.Limit,
 		Offset:         f.Offset,
 	}, nil
