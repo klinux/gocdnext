@@ -131,6 +131,17 @@ run 0 PLUGIN_TARGET=http://app:8080 PLUGIN_SPEC=api.yaml
 has "-im"; has "openapi"; has "-list"; hasnt "-u"
 grep -q 'servers' "$YQ_EXPRS" || { echo "FAIL[$CASE]: servers not rewritten"; cat "$YQ_EXPRS"; teardown; exit 1; }
 grep -q 'strenv(TARGET)' "$YQ_EXPRS" || { echo "FAIL[$CASE]: target not used in rewrite"; teardown; exit 1; }
+# The rewrite must neutralize NESTED servers too (path/operation level), not
+# just the root — else an OpenAPI shipping `paths./x.get.servers: prod` slips
+# the scan to prod. Assert the recursive marker, and (when a real yq is present)
+# run the entrypoint's ACTUAL recorded expr against a nested spec → 0 prod left.
+grep -q 'has("servers")' "$YQ_EXPRS" || { echo "FAIL[$CASE]: rewrite isn't recursive (nested servers would leak)"; cat "$YQ_EXPRS"; teardown; exit 1; }
+if command -v yq >/dev/null 2>&1; then
+  expr="$(grep 'servers' "$YQ_EXPRS" | head -1)"
+  printf 'openapi: 3.0.0\nservers: [{url: https://prod-root}]\npaths:\n  /x: {servers: [{url: https://prod-path}], get: {servers: [{url: https://prod-op}]}}\n' > "$WORK/nested.yaml"
+  TARGET=http://app:8080 yq -i "$expr" "$WORK/nested.yaml"
+  grep -q 'prod' "$WORK/nested.yaml" && { echo "FAIL[$CASE]: real-yq rewrite left a prod server (nested leak)"; cat "$WORK/nested.yaml"; teardown; exit 1; }
+fi
 teardown; ok
 
 # ── 11. swagger spec → -im swagger + scheme/host/basePath rewrite ──

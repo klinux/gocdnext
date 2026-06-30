@@ -143,7 +143,12 @@ if [ -n "${SPEC}" ]; then
   fi
   case "${fmt}" in
     openapi)
-      TARGET="${TARGET}" yq -i '.servers = [{"url": strenv(TARGET)}]' "${speccopy}"
+      # Rewrite the root server AND every nested `servers` (OpenAPI 3 allows
+      # them at path- and operation-level too) to the target — otherwise a
+      # `paths./x.get.servers: [https://prod...]` would slip the scan to prod.
+      TARGET="${TARGET}" yq -i \
+        '.servers = [{"url": strenv(TARGET)}] | (.. | select(has("servers")).servers) = [{"url": strenv(TARGET)}]' \
+        "${speccopy}"
       ;;
     swagger)
       scheme="${TARGET%%://*}"
