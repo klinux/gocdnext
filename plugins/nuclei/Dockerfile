@@ -30,28 +30,35 @@ FROM projectdiscovery/nuclei:${NUCLEI_VERSION} AS nuclei
 
 FROM alpine:3.20
 ARG NUCLEI_VERSION=v3.3.2
+ARG NUCLEI_TEMPLATES_REF=v10.4.5
 ARG YQ_VERSION=v4.44.3
 ARG TARGETARCH=amd64
 
-# bash (entrypoint), curl (preflight), jq (fail-on gate), yq (spec rewrite).
-RUN apk add --no-cache bash curl jq ca-certificates \
+# bash (entrypoint), curl (preflight), jq (fail-on gate), yq (spec rewrite),
+# git (pinned templates clone).
+RUN apk add --no-cache bash curl jq git ca-certificates \
  && wget -qO /usr/local/bin/yq \
       "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH}" \
  && chmod +x /usr/local/bin/yq
 
 COPY --from=nuclei /usr/local/bin/nuclei /usr/local/bin/nuclei
 
-# Templates: baked at BUILD time (network here is fine), runtime NEVER updates
-# (-disable-update-check). The build fails loud if the templates didn't land in
-# the expected dir — the "builds fine, runtime empty" trap.
+# Templates: PINNED + baked at BUILD time, runtime NEVER updates
+# (-disable-update-check) → deterministic (same image = same templates). Clone
+# the EXACT tag rather than `nuclei -update-templates` (which floats to whatever
+# is latest at build time), drop .git to keep the layer lean, and fail loud if
+# they didn't land — the "builds fine, runtime empty" trap.
 ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates
-RUN nuclei -update-templates -update-template-dir /opt/nuclei-templates \
+RUN git clone --depth 1 --branch "${NUCLEI_TEMPLATES_REF}" \
+      https://github.com/projectdiscovery/nuclei-templates /opt/nuclei-templates \
+ && rm -rf /opt/nuclei-templates/.git \
  && test -n "$(ls -A /opt/nuclei-templates 2>/dev/null)" \
       || { echo "templates not baked into /opt/nuclei-templates" >&2; exit 1; }
 
 LABEL org.opencontainers.image.title="gocdnext-plugin-nuclei" \
       org.opencontainers.image.description="DAST baseline scanner (Nuclei) → SARIF" \
-      gocdnext.nuclei.version="${NUCLEI_VERSION}"
+      gocdnext.nuclei.version="${NUCLEI_VERSION}" \
+      gocdnext.nuclei.templates="${NUCLEI_TEMPLATES_REF}"
 
 COPY entrypoint.sh /usr/local/bin/gocdnext-nuclei
 RUN chmod +x /usr/local/bin/gocdnext-nuclei

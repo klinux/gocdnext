@@ -11,10 +11,13 @@ setup() {
   TMP="$(mktemp -d)"
   BIN="$TMP/bin"; WORK="$TMP/work"
   mkdir -p "$BIN" "$WORK"
-  # curl stub: print CURL_CODE (default 200) as the http_code.
+  # curl stub: print CURL_CODE (default 200) as http_code, exit CURL_RC
+  # (default 0). A real connection failure prints "000" AND exits non-zero —
+  # set CURL_CODE=000 CURL_RC=7 to exercise that.
   cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s' "${CURL_CODE:-200}"
+exit "${CURL_RC:-0}"
 EOF
   # nuclei stub: record argv; optionally write SARIF + JSONL; exit NUCLEI_RC.
   cat >"$BIN/nuclei" <<'EOF'
@@ -105,7 +108,7 @@ teardown; ok
 
 # ── 7. preflight 000 → exit 2, no SARIF ──
 CASE=preflight-down; setup
-run 2 PLUGIN_TARGET=http://app:8080 PLUGIN_READY_TIMEOUT=1 CURL_CODE=000
+run 2 PLUGIN_TARGET=http://app:8080 PLUGIN_READY_TIMEOUT=1 CURL_CODE=000 CURL_RC=7
 [ -e "$WORK/nuclei.sarif" ] && { echo "FAIL[$CASE]: SARIF written for unreachable target"; teardown; exit 1; }
 teardown; ok
 
@@ -152,6 +155,9 @@ setup; CASE=findings-advisory
 run 0 PLUGIN_TARGET=http://app:8080 PLUGIN_EXIT_CODE=0 NUCLEI_JSONL='{"info":{"severity":"high"}}'
 setup; CASE=findings-below
 run 0 PLUGIN_TARGET=http://app:8080 NUCLEI_JSONL='{"info":{"severity":"low"}}'
+# threshold (at/above): fail-on=medium must also catch a critical finding.
+setup; CASE=findings-threshold
+run 1 PLUGIN_TARGET=http://app:8080 PLUGIN_FAIL_ON=medium NUCLEI_JSONL='{"info":{"severity":"critical"}}'
 teardown; ok
 
 # ── 14. health-path join is clean ──

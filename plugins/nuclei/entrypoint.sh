@@ -35,6 +35,14 @@ TEMPLATES_DIR="${NUCLEI_TEMPLATES_DIR:-/opt/nuclei-templates}"
 
 die() { echo "gocdnext/nuclei: $*" >&2; exit 2; }
 
+# severity rank: lower = worse (mirrors the server's severityRank). Used for the
+# fail-on THRESHOLD so "fail-on: medium" also catches high/critical.
+sev_rank() {
+  case "${1}" in
+    critical) echo 0 ;; high) echo 1 ;; medium) echo 2 ;; low) echo 3 ;; info) echo 4 ;; *) echo 9 ;;
+  esac
+}
+
 [ -n "${TARGET}" ] || die "PLUGIN_TARGET is required (the base URL to scan, e.g. http://app:8080)"
 
 # ── input validation (fail loud, never silently misbehave) ──────────────────
@@ -58,6 +66,14 @@ for f in "${FAIL_ARR[@]}"; do
   for s in "${SEV_ARR[@]}"; do [ "${f}" = "${s}" ] && found=1 && break; done
   [ "${found}" = 1 ] || die "fail-on cannot include severities excluded by severity ('${f}' not in '${SEVERITY}'); add them to severity or lower fail-on"
 done
+# fail-on is a THRESHOLD ("at/above"): a finding fails when it's at least as
+# severe as the LEAST-severe entry in fail-on (the max rank = the floor). So
+# fail-on=medium also catches high + critical.
+floor_rank=-1
+for f in "${FAIL_ARR[@]}"; do
+  r="$(sev_rank "${f}")"
+  [ "${r}" -gt "${floor_rank}" ] && floor_rank="${r}"
+done
 
 # ── preflight: the target must be up, else we do NOT record a clean scan ─────
 preflight_url="${TARGET}"
@@ -69,7 +85,11 @@ deadline=$(( SECONDS + READY_TIMEOUT ))
 ready=0
 code=000
 while [ "${SECONDS}" -lt "${deadline}" ]; do
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${preflight_url}" 2>/dev/null || echo 000)"
+  # On a connection failure curl already prints "000" (from -w) AND exits
+  # non-zero — don't append another "000" (that yields "000000", which the root
+  # check below would wrongly treat as a live response). Empty → 000.
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${preflight_url}" 2>/dev/null || true)"
+  [ -z "${code}" ] && code=000
   if [ -n "${HEALTH_PATH}" ]; then
     case "${code}" in 2??|3??) ready=1; break ;; esac      # health-path → require 2xx/3xx
   else
@@ -165,7 +185,7 @@ fi
 matched=0
 if [ -s "${JSONL}" ]; then           # absent/empty on a clean run = 0 findings
   while IFS= read -r sev; do
-    for f in "${FAIL_ARR[@]}"; do [ "${sev}" = "${f}" ] && matched=$((matched + 1)) && break; done
+    [ "$(sev_rank "${sev}")" -le "${floor_rank}" ] && matched=$((matched + 1))
   done < <(jq -r '.info.severity // empty' "${JSONL}")
 fi
 echo "==> nuclei: ${matched} finding(s) at/above fail-on (${FAIL_ON})"
