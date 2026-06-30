@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.67.0 — 2026-06-30
+
+### Added
+
+- **Security dashboard v2 — cross-run dedup + finding triage state (#71).**
+  The per-project Security tab now tracks findings *over time*, not just within a
+  single scan:
+  - **New / existing / fixed.** Each finding has a persistent identity
+    (pipeline + scanner + matrix cell + tool + fingerprint). A finding first seen
+    in a run is badged **New**; one gone from the scanner's latest scan shows
+    under a collapsible **"✓ N fixed since last scan"** summary (rendered from a
+    snapshot, since its occurrence is gone). Fixed is tracked per scanner — a job
+    that drops a tool entirely correctly retires that tool's old findings.
+  - **Triage state.** Mark a finding **dismissed**, **false positive**, or
+    **accepted** (acknowledged risk) from a per-row menu. Open + accepted stay
+    visible (accepted badged); dismissed + false-positive are hidden behind a
+    **Show resolved** toggle. State **persists by identity across runs** — a
+    dismissal sticks when the finding reappears — and re-ingestion never clobbers
+    it. Severity counts cover open only; accepted is a separate count.
+  - **RBAC + audit.** Changing state requires the maintainer role; every change
+    is audited with actor, new state, and reason (the UI warns the reason is
+    audit-visible). `PUT /api/v1/projects/{slug}/finding-states/{id}/state`,
+    project-scoped.
+  - New **Security dashboard** concept page in the docs.
+
 ## v0.66.0 — 2026-06-29
 
 ### Added
