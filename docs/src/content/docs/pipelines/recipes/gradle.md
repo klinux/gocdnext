@@ -159,6 +159,103 @@ If you use the `build-logic/` convention pattern, the build cache
 benefits compound — convention compilation is a major chunk of cold
 builds, and warm runs skip it entirely.
 
+## Dependency scanning (SCA)
+
+The [`osv-scanner`](/gocdnext/docs/reference/plugins/#osv-scanner) plugin reads a
+**resolved dependency list** — a lockfile or an SBOM — not source. Gradle doesn't
+produce one by default: `build.gradle(.kts)` is a build script, not a resolved
+graph. So a plain osv-scanner job over a Gradle repo reports *"No package sources
+found"* and scans **nothing** (a misleadingly green result). Give it a resolved
+list; either form below is auto-detected by `osv-scanner scan source --recursive .`
+(what the plugin runs) — no extra flag.
+
+### Option A — CycloneDX SBOM (recommended)
+
+Apply the [cyclonedx-gradle-plugin](https://github.com/CycloneDX/cyclonedx-gradle-plugin)
+and run its task in the build job; the SBOM captures the full resolved graph
+(transitives + purls) and also works with trivy, grype, and Dependency-Track.
+
+```kotlin title="build.gradle.kts"
+plugins {
+  id("org.cyclonedx.bom") version "1.10.0"
+}
+```
+
+```yaml title=".gocdnext/security.yaml"
+stages: [build, scan]
+
+jobs:
+  sbom:
+    stage: build
+    uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+    with:
+      command: cyclonedxBom --no-daemon
+    cache:
+      - key: gradle-${CI_COMMIT_BRANCH}
+        paths: [.gradle-user-home, .gradle-cache]
+    artifacts:
+      paths: ["build/reports/bom.json"]   # root task aggregates subprojects
+
+  sca:
+    stage: scan
+    uses: ghcr.io/klinux/gocdnext-plugin-osv-scanner@v1
+    needs_artifacts:
+      - from_job: sbom
+        paths: ["build/reports/bom.json"]
+        dest: ./
+    artifacts:
+      optional: [osv-report.sarif]        # → Security dashboard
+```
+
+The `sca` job restores the SBOM with `needs_artifacts:`, osv-scanner auto-detects
+`build/reports/bom.json` in the dir scan, and the SARIF flows into the
+[Security dashboard](/gocdnext/docs/concepts/security/).
+
+**Don't want to touch `build.gradle`?** Apply the plugin at invocation via an
+init script committed alongside the pipeline — the repo's build files stay clean:
+
+```groovy title="gradle/cyclonedx.init.gradle"
+initscript {
+  repositories { mavenCentral() }
+  dependencies { classpath("org.cyclonedx:cyclonedx-gradle-plugin:1.10.0") }
+}
+allprojects { apply plugin: org.cyclonedx.gradle.CycloneDxPlugin }
+```
+
+```yaml
+  with:
+    command: --init-script gradle/cyclonedx.init.gradle cyclonedxBom --no-daemon
+```
+
+### Option B — native `gradle.lockfile`
+
+Enable [Gradle dependency locking](https://docs.gradle.org/current/userguide/dependency_locking.html)
+and commit the lockfile; osv-scanner reads `gradle.lockfile` directly.
+
+```kotlin title="build.gradle.kts"
+dependencyLocking { lockAllConfigurations() }
+```
+
+```bash
+./gradlew dependencies --write-locks   # writes gradle.lockfile — commit it
+```
+
+The SBOM is richer (full transitive graph, portable across tools); the native
+lockfile is simpler if you already use dependency locking.
+
+### Why the scanner doesn't generate it
+
+Producing either artifact **runs Gradle** — it resolves dependencies, executes
+the build configuration, and needs the JDK, the wrapper, and your repositories.
+That belongs in the build job, which already has the toolchain — not in the
+osv-scanner container, which is a tiny read-only scanner. Running the build from
+a scan step would also be arbitrary code execution in a step that should only
+read. So the pattern is **build job emits → scan job consumes**.
+
+Until you wire one of these up, set `fail-on-no-sources: "true"` on the
+osv-scanner job so "Gradle without a lockfile or SBOM → nothing scanned" fails
+**loud** instead of reporting a clean pass that scanned no dependencies.
+
 ## Common pitfalls
 
 - **`org.gradle.parallel=true` in `gradle.properties`** is fine,
