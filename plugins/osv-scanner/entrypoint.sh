@@ -16,6 +16,13 @@ case "${FAIL_ON}" in any|none) ;; *) fail "fail-on must be any | none (got '${FA
 FORMAT="$(printf '%s' "${PLUGIN_FORMAT:-sarif}" | tr '[:upper:]' '[:lower:]')"
 case "${FORMAT}" in sarif|json|table) ;; *) fail "format must be sarif | json | table (got '${FORMAT}')";; esac
 
+# fail-on-no-sources: by default a scan that finds NO package manifests is a
+# clean pass (nothing to scan) — so a blanket _compliance_sca over a polyglot
+# fleet doesn't fail on repos without a lockfile at the scanned path. Set true
+# for a targeted scan that EXPECTS a lockfile and should fail if it's missing.
+FAIL_NO_SOURCES="$(printf '%s' "${PLUGIN_FAIL_ON_NO_SOURCES:-false}" | tr '[:upper:]' '[:lower:]')"
+case "${FAIL_NO_SOURCES}" in true|false) ;; *) fail "fail-on-no-sources must be true | false (got '${FAIL_NO_SOURCES}')";; esac
+
 if [ -n "${PLUGIN_WORKING_DIR:-}" ]; then
     cd "${PLUGIN_WORKING_DIR}"
 fi
@@ -33,7 +40,15 @@ fi
 echo "==> osv-scanner source scan (dir=${DIR} format=${FORMAT} fail-on=${FAIL_ON} report=${REPORT})"
 
 RC=0
-osv-scanner "$@" || RC=$?
+OSVLOG="$(mktemp)"
+osv-scanner "$@" >"${OSVLOG}" 2>&1 || RC=$?
+cat "${OSVLOG}"
+
+# "No package sources found" is detected by MESSAGE, not just exit 128 — 128 is
+# a general error code that can mean other failures too. Only the no-sources
+# message gets the lenient (clean) treatment below.
+NO_SOURCES=0
+grep -qi 'no package sources found' "${OSVLOG}" && NO_SOURCES=1
 
 # Findings summary for the job log (table format is already
 # human-readable in the file; sarif/json get a jq count).
@@ -57,9 +72,26 @@ case "${RC}" in
         exit 1
         ;;
     *)
-        # 128 = "no lockfiles found" in osv-scanner v2; everything
-        # else is a scan error. Both stay loud regardless of
-        # fail-on — silence here would fake a clean report.
+        # No package sources found: nothing to scan. Clean pass by default
+        # (a blanket _compliance_sca must not fail on a repo without a lockfile
+        # at the scanned path); opt into failing with fail-on-no-sources: true.
+        if [ "${NO_SOURCES}" = "1" ]; then
+            if [ "${FAIL_NO_SOURCES}" = "true" ]; then
+                fail "no package sources found in '${DIR}' (fail-on-no-sources=true)"
+            fi
+            echo "    no package sources found in '${DIR}' — nothing to scan (clean)"
+            # Always (over)write a parser-valid empty SARIF so the dashboard
+            # records a clean SCA scan. This branch is "clean" by contract, so
+            # overwrite even if osv-scanner left a partial/invalid file behind —
+            # a half-written report would make the server parser fail and keep
+            # the prior run's findings.
+            if [ "${FORMAT}" = "sarif" ]; then
+                printf '%s' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"osv-scanner"}},"results":[]}]}' > "${REPORT}"
+            fi
+            exit 0
+        fi
+        # Any other non-{0,1} exit is a real scan error — stay loud, never fake
+        # a clean report.
         fail "scan error (exit ${RC}) — see log above"
         ;;
 esac

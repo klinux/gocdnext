@@ -35,6 +35,16 @@ inputs:
       any (default): exit 1 when vulnerabilities are found.
       none: report-only — findings don't fail the job, but scan
       ERRORS (bad lockfile, network) still do.
+  fail-on-no-sources:
+    required: false
+    default: "false"
+    description: >
+      What to do when the scan dir has NO package manifests/lockfiles. Default
+      false: a clean pass (nothing to scan) — so a blanket compliance SCA over a
+      polyglot fleet doesn't fail on repos without a lockfile at the scanned
+      path, and a clean SARIF is still emitted so the dashboard records it. Set
+      true for a targeted scan that expects a lockfile and should fail if it's
+      missing.
   config:
     required: false
     description: >
