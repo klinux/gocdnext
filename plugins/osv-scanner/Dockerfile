@@ -8,6 +8,9 @@
 #   PLUGIN_FORMAT       (optional)  sarif | json | table, default sarif.
 #   PLUGIN_REPORT_FILE  (optional)  default osv-report.<format>.
 #   PLUGIN_FAIL_ON      (optional)  any | none, default any.
+#   PLUGIN_FAIL_ON_NO_SOURCES (optional) true | false, default false. false =
+#                                   "no package sources found" is a clean pass
+#                                   (emits an empty SARIF); true = fail (exit 2).
 #   PLUGIN_CONFIG       (optional)  osv-scanner.toml path (ignores /
 #                                   baseline equivalent).
 #
