@@ -13,6 +13,23 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
 
+// severityRank orders normalized severities worst→least (lower = worse) so the
+// in-scan identity dedupe can keep the worst occurrence. Unknown sorts last.
+func severityRank(sev string) int {
+	switch sev {
+	case "critical":
+		return 0
+	case "high":
+		return 1
+	case "medium":
+		return 2
+	case "low":
+		return 3
+	default:
+		return 4
+	}
+}
+
 // FindingIn is one parsed SARIF finding to persist (the run/pipeline/project/job
 // context is resolved from the job_run by ReplaceSecurityFindings).
 type FindingIn struct {
@@ -192,7 +209,9 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 		// emit two results that collapse to the same identity, and the batch
 		// upsert's ON CONFLICT can't affect the same row twice (Postgres errors,
 		// rolling back the whole reconcile). The occurrence rows below keep both;
-		// only the identity collapses — last occurrence wins for the snapshot.
+		// only the identity collapses — **worst severity wins** for the snapshot,
+		// so two occurrences of one fingerprint at medium+high record `high`
+		// regardless of SARIF order (keeps Analytics/run/check counts stable).
 		// pipeline/scanner/matrix are constant for this job_run, so (tool,
 		// fingerprint) is the full identity within the scan.
 		type identKey struct{ tool, fp string }
@@ -225,10 +244,14 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 				Fingerprint:  f.Fingerprint,
 			})
 			k := identKey{f.Tool, f.Fingerprint}
-			if _, ok := idents[k]; !ok {
+			if prev, ok := idents[k]; !ok {
 				order = append(order, k)
+				idents[k] = f
+			} else if severityRank(f.Severity) < severityRank(prev.Severity) {
+				// strictly worse severity replaces the snapshot; equal keeps the
+				// first occurrence (deterministic regardless of SARIF order).
+				idents[k] = f
 			}
-			idents[k] = f
 		}
 		if _, err := q.InsertSecurityFindings(ctx, params); err != nil {
 			return fmt.Errorf("store: findings insert: %w", err)

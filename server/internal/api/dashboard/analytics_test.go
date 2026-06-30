@@ -153,6 +153,41 @@ func TestAnalytics_ComplianceCoverage(t *testing.T) {
 	}
 }
 
+func TestAnalytics_SecurityRollup(t *testing.T) {
+	h, _ := newHandler(t)
+
+	// key required.
+	rr := httptest.NewRecorder()
+	h.SecurityRollup(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/security", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status = %d, want 400", rr.Code)
+	}
+
+	// key with a colon is rejected.
+	rr = httptest.NewRecorder()
+	h.SecurityRollup(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/security?key=team:backend", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("colon key status = %d, want 400", rr.Code)
+	}
+
+	// Happy path (no data) → 200 echoing key with an empty groups array.
+	rr = httptest.NewRecorder()
+	h.SecurityRollup(rr, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/security?key=team", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Key    string `json:"key"`
+		Groups []any  `json:"groups"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Key != "team" {
+		t.Fatalf("echo = %+v", body)
+	}
+}
+
 func TestAnalytics_LabelKeys(t *testing.T) {
 	h, _ := newHandler(t)
 	rr := httptest.NewRecorder()

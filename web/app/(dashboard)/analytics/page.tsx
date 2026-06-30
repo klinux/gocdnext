@@ -9,12 +9,14 @@ import { DoraHeroCards, TierChip } from "@/components/analytics/dora-hero-cards"
 import { DoraLeaderboard } from "@/components/analytics/dora-leaderboard.client";
 import { orgTier } from "@/components/analytics/dora-metrics";
 import { DoraCompliance } from "@/components/analytics/dora-compliance";
+import { DoraSecurity } from "@/components/analytics/dora-security";
 import { DoraMovers } from "@/components/analytics/dora-movers.client";
 import { DoraReliability } from "@/components/analytics/dora-reliability";
 import { DoraToolbar } from "@/components/analytics/dora-toolbar.client";
 import { TIER_LABEL } from "@/lib/dora";
 import {
   getComplianceCoverage,
+  getSecurityRollup,
   getDoraOverview,
   getReliability,
   listEnvironments,
@@ -76,10 +78,11 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
   const activeKey = sp.key && keys.includes(sp.key) ? sp.key : (keys[0] ?? "");
   const environments = await listEnvironments(activeKey);
   const activeEnv = sp.env && environments.includes(sp.env) ? sp.env : "";
-  const [ov, reliability, compliance] = await Promise.all([
+  const [ov, reliability, compliance, security] = await Promise.all([
     getDoraOverview(activeKey, windowDays, activeEnv),
     getReliability(activeKey, windowDays),
     getComplianceCoverage(activeKey),
+    getSecurityRollup(activeKey),
   ]);
   const tier = orgTier(ov);
 
@@ -149,6 +152,11 @@ async function Dashboard({ sp, keys }: { sp: Search; keys: string[] }) {
       <div className="space-y-3.5">
         <SectionLabel>Compliance posture</SectionLabel>
         <DoraCompliance report={compliance} groupKey={activeKey} />
+      </div>
+
+      <div className="space-y-3.5">
+        <SectionLabel>Security posture</SectionLabel>
+        <DoraSecurity report={security} groupKey={activeKey} />
       </div>
 
       {ov.teams.length > 0 ? (
