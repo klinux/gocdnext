@@ -497,6 +497,75 @@ paths:
         "204": { description: replaced }
         "400": { description: invalid labels (key required, no ':', bounds) }
         "404": { description: project not found }
+  /api/v1/projects/{slug}/findings:
+    get:
+      tags: [projects]
+      summary: Security findings (SARIF) from the latest run per pipeline.
+      description: >
+        Vulnerability findings ingested from scanner SARIF artifacts, sourced
+        from the latest run per pipeline in the project. Filterable by severity /
+        tool / rule, paginated.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: query
+          name: severity
+          schema: { type: string, enum: [critical, high, medium, low] }
+        - in: query
+          name: tool
+          schema: { type: string }
+        - in: query
+          name: rule
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: include_resolved
+          description: when true, also show dismissed + false_positive (default hides them)
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: findings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FindingsList" }
+        "400": { description: invalid severity/limit/offset }
+        "404": { description: project not found }
+
+  /api/v1/projects/{slug}/finding-states/{id}/state:
+    put:
+      tags: [projects]
+      summary: Set a finding's triage state (maintainer+).
+      description: >
+        Set the human triage state of a finding identity (open / dismissed /
+        false_positive / accepted) with an optional reason. The state persists by
+        identity across runs (a dismissed finding stays dismissed when it
+        reappears). Maintainer role or higher; project-scoped.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: path
+          name: id
+          required: true
+          description: security_finding_states identity id
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state: { type: string, enum: [open, dismissed, false_positive, accepted] }
+                reason: { type: string, maxLength: 1000 }
+      responses:
+        "204": { description: state updated }
+        "400": { description: invalid state/id/reason }
+        "403": { description: requires maintainer role }
+        "404": { description: project or finding not found }
 
   # -------------------- analytics --------------------
   /api/v1/analytics/label-keys:
@@ -584,6 +653,52 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DoraOverview" }
         "400": { description: missing/invalid key or window_days }
+  /api/v1/analytics/reliability:
+    get:
+      tags: [analytics]
+      summary: Run-based throughput per group + reliability hotspots over a window.
+      description: >
+        Throughput and reliability rolled up from run history (not deploys), so
+        there is no environment filter. Per label-value group: run volume,
+        runs/day, success rate, queue-wait and duration medians. Plus the
+        worst-failing pipelines among labelled projects (min 5 runs, worst first).
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+        - in: query
+          name: window_days
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        "200":
+          description: reliability report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReliabilityReport" }
+        "400": { description: missing/invalid key or window_days }
+  /api/v1/analytics/compliance:
+    get:
+      tags: [analytics]
+      summary: Framework adoption per group (compliance posture).
+      description: >
+        Current-state compliance posture grouped by a project label: per
+        label-value group, the total projects and how many are bound to each
+        framework. No window or environment (not time-series).
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+      responses:
+        "200":
+          description: compliance coverage report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComplianceCoverageReport" }
+        "400": { description: missing/invalid key }
 
   # -------------------- runs --------------------
   /api/v1/runs:
@@ -1575,6 +1690,70 @@ components:
         key: { type: string, description: "non-empty, no ':'" }
         value: { type: string, description: "may be empty (flat tag)" }
 
+    Finding:
+      type: object
+      description: A security finding normalized from a SARIF result.
+      required: [id, pipeline_id, run_id, job_name, tool, rule_id, severity, level, message, location_path, location_line, location_url, artifact_path, created_at, status]
+      properties:
+        id: { type: integer, format: int64 }
+        pipeline_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        job_name: { type: string }
+        tool: { type: string, description: "SARIF tool.driver.name" }
+        rule_id: { type: string }
+        severity: { type: string, enum: [critical, high, medium, low] }
+        level: { type: string, description: "raw SARIF level (error|warning|note|none)" }
+        message: { type: string }
+        location_path: { type: string }
+        location_line: { type: integer }
+        location_url: { type: string }
+        artifact_id: { type: string, format: uuid, nullable: true, description: "the SARIF artifact (null if swept)" }
+        artifact_path: { type: string }
+        created_at: { type: string, format: date-time }
+        status: { type: string, enum: [new, existing], description: "cross-run dedup: new = first seen in this run" }
+        state: { type: string, enum: [open, dismissed, false_positive, accepted], description: "human triage state" }
+        state_id: { type: integer, format: int64, description: "security_finding_states identity id the state mutation targets (0 if absent)" }
+        state_reason: { type: string, description: "optional note set when the state was changed" }
+
+    FixedFinding:
+      type: object
+      description: An identity present in a prior scan but gone from the scanner's latest run, rendered from the identity snapshot.
+      required: [id, pipeline_id, scanner_job, matrix_key, tool, rule_id, severity, level, message, location_path, location_line, last_seen_at]
+      properties:
+        id: { type: integer, format: int64, description: "security_finding_states identity id" }
+        pipeline_id: { type: string, format: uuid }
+        scanner_job: { type: string }
+        matrix_key: { type: string }
+        tool: { type: string }
+        rule_id: { type: string }
+        severity: { type: string, enum: [critical, high, medium, low] }
+        level: { type: string }
+        message: { type: string }
+        location_path: { type: string }
+        location_line: { type: integer }
+        last_seen_at: { type: string, format: date-time }
+
+    FindingsList:
+      type: object
+      required: [findings, total, severity_counts, accepted_count, fixed, fixed_total, limit, offset]
+      properties:
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/Finding" }
+        total: { type: integer, format: int64 }
+        severity_counts:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+          description: "per-severity totals for OPEN findings (the actionable backlog)"
+        accepted_count: { type: integer, format: int64, description: "accepted-risk findings, shown as a distinct chip" }
+        fixed:
+          type: array
+          items: { $ref: "#/components/schemas/FixedFinding" }
+          description: "identities gone since the previous scan (open/accepted only), capped"
+        fixed_total: { type: integer, format: int64 }
+        limit: { type: integer }
+        offset: { type: integer }
+
     DoraGroup:
       type: object
       required: [group, deploys_success, deploys_total, deploys_failed, deploy_freq_per_day, lead_time_p50_seconds, change_failure_rate, mttr_p50_seconds]
@@ -1663,6 +1842,73 @@ components:
         review_p50_seconds: { type: number, format: double, description: "approved − opened" }
         release_wait_p50_seconds: { type: number, format: double, description: "deploy job start − (approved or merged)" }
         deploy_p50_seconds: { type: number, format: double, description: "deploy finish − deploy job start" }
+
+    ThroughputGroup:
+      type: object
+      description: Run-based throughput + reliability for one label-value group.
+      required: [group, runs_success, runs_failed, runs_total, runs_per_day, success_rate, queue_wait_p50_seconds, duration_p50_seconds]
+      properties:
+        group: { type: string, description: "the label value, e.g. payments" }
+        runs_success: { type: integer, format: int64 }
+        runs_failed: { type: integer, format: int64, description: "status failed OR errored" }
+        runs_total: { type: integer, format: int64, description: "terminal runs (success+failed+errored); canceled excluded" }
+        runs_per_day: { type: number, format: double }
+        success_rate: { type: number, format: double, description: "runs_success / runs_total" }
+        queue_wait_p50_seconds: { type: number, format: double, description: "p50 started_at − created_at" }
+        duration_p50_seconds: { type: number, format: double, description: "p50 finished_at − started_at" }
+
+    ReliabilityHotspot:
+      type: object
+      description: One pipeline that fails often, among labelled projects.
+      required: [project_slug, project, pipeline, runs_total, runs_failed, failure_rate]
+      properties:
+        project_slug: { type: string }
+        project: { type: string }
+        pipeline: { type: string }
+        runs_total: { type: integer, format: int64 }
+        runs_failed: { type: integer, format: int64 }
+        failure_rate: { type: number, format: double, description: "runs_failed / runs_total" }
+
+    ReliabilityReport:
+      type: object
+      required: [key, window_days, groups, hotspots]
+      properties:
+        key: { type: string }
+        window_days: { type: integer }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/ThroughputGroup" }
+        hotspots:
+          type: array
+          description: worst-failing pipelines (≥5 runs), worst first
+          items: { $ref: "#/components/schemas/ReliabilityHotspot" }
+
+    FrameworkCoverage:
+      type: object
+      description: How many of a group's projects are bound to one framework.
+      required: [framework, covered]
+      properties:
+        framework: { type: string }
+        covered: { type: integer, format: int64 }
+
+    ComplianceGroup:
+      type: object
+      required: [group, projects_total, frameworks]
+      properties:
+        group: { type: string, description: "the label value, e.g. payments" }
+        projects_total: { type: integer, format: int64, description: "coverage denominator" }
+        frameworks:
+          type: array
+          items: { $ref: "#/components/schemas/FrameworkCoverage" }
+
+    ComplianceCoverageReport:
+      type: object
+      required: [key, groups]
+      properties:
+        key: { type: string }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/ComplianceGroup" }
 
     ProjectDetail:
       allOf:
