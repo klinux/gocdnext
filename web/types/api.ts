@@ -812,3 +812,30 @@ export type EnvironmentSummary = {
 export type EnvironmentsList = { environments: EnvironmentSummary[] };
 
 export type DeploymentsList = { deployments: DeploymentRecord[] };
+
+// Security finding ingested from a SARIF scanner artifact (#71).
+export type Finding = {
+  id: number;
+  pipeline_id: string;
+  run_id: string;
+  job_name: string;
+  tool: string;
+  rule_id: string;
+  severity: string; // critical|high|medium|low
+  level: string;
+  message: string;
+  location_path: string;
+  location_line: number;
+  location_url: string;
+  artifact_id?: string | null;
+  artifact_path: string;
+  created_at: string;
+};
+
+export type FindingsList = {
+  findings: Finding[];
+  total: number;
+  severity_counts: Record<string, number>;
+  limit: number;
+  offset: number;
+};

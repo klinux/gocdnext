@@ -463,6 +463,35 @@ type Secret struct {
 	RefKey    *string
 }
 
+type SecurityFinding struct {
+	ID           int64
+	JobRunID     pgtype.UUID
+	RunID        pgtype.UUID
+	PipelineID   pgtype.UUID
+	ProjectID    pgtype.UUID
+	JobName      string
+	ArtifactID   pgtype.UUID
+	ArtifactPath string
+	Tool         string
+	RuleID       string
+	Severity     string
+	Level        string
+	Message      string
+	LocationPath string
+	LocationLine int32
+	LocationUrl  string
+	Fingerprint  string
+	CreatedAt    pgtype.Timestamptz
+}
+
+type SecurityScan struct {
+	JobRunID     pgtype.UUID
+	RunID        pgtype.UUID
+	PipelineID   pgtype.UUID
+	FindingCount int32
+	ReconciledAt pgtype.Timestamptz
+}
+
 type ServiceAccount struct {
 	ID          pgtype.UUID
 	Name        string
