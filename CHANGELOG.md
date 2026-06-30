@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.68.0 — 2026-06-30
+
+### Added
+
+- **Security dashboard v3 — org rollup + shift-left on PRs (#71, closes the
+  epic).** Completes the security dashboard with visibility beyond a single
+  project:
+  - **Org/label rollup** on the Analytics page: open vulnerabilities across every
+    project, grouped by a project label (team, tier, …), with per-severity counts,
+    accepted shown separately, and a clear distinction between a scanned-clean
+    group (`0 open`) and a never-scanned one. Counts are by finding **identity**,
+    not raw SARIF occurrences.
+  - **"New in this change" on PR runs**: the run's Security tab headlines findings
+    introduced versus the **base branch** — diffed per scanner series against the
+    base's latest reconciled scan. "No comparable base scan" is shown as distinct
+    from "0 new", and a scanner the PR adds is reported as unbaselined rather than
+    inflated into new. Dismissed/false-positive never count as new; accepted is
+    separate.
+  - **GitHub check-run summary**: the same posture as a one-line check summary
+    (e.g. `Security — 2 critical, 5 high open · 1 accepted · 3 new vs base`). It
+    **self-heals** — because SARIF is ingested asynchronously, if the scan lands
+    after the check completed, gocdnext re-patches the check so GitHub converges.
+  - Identity severity now uses **worst-severity-wins** within a scan, keeping the
+    rollup, run view, and check summary coherent.
+
 ## v0.67.0 — 2026-06-30
 
 ### Added
