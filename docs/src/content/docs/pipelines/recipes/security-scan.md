@@ -189,6 +189,15 @@ notifications:
     secrets: [SECURITY_SLACK_WEBHOOK]
 ```
 
+## Feed the Security dashboard
+
+Emit each scan as a **SARIF** artifact (`format: sarif` plus the file under
+`artifacts:`) and gocdnext ingests it into the per-project
+[Security dashboard](/gocdnext/docs/concepts/security/) — normalized severity,
+new/fixed tracking across runs, and triage state (dismiss / false-positive /
+accept). The `exit-code` gate and the dashboard are complementary: the gate
+fails the build now, the dashboard tracks findings over time.
+
 ## Common pitfalls
 
 - **gitleaks false positives**: add to `.gitleaksignore` (commit

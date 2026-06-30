@@ -11,28 +11,67 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acceptedCountForProject = `-- name: AcceptedCountForProject :one
+WITH latest AS (
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
+    WHERE p.project_id = $1
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
+)
+SELECT COUNT(*)::bigint
+FROM security_findings f
+JOIN latest l ON l.id = f.job_run_id
+JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
+WHERE sfs.state = 'accepted'
+`
+
+// Count of accepted-risk findings in the latest scan per scanner — shown as a
+// distinct chip so an acknowledged risk stays visible without inflating the
+// open severity backlog.
+func (q *Queries) AcceptedCountForProject(ctx context.Context, projectID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, acceptedCountForProject, projectID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countFindingsForProject = `-- name: CountFindingsForProject :one
 WITH latest AS (
     SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
     FROM security_scans sc
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
-    WHERE p.project_id = $4
+    WHERE p.project_id = $5
     ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
 )
 SELECT COUNT(*)::bigint
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
+LEFT JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
 WHERE ($1::text = '' OR f.severity = $1)
   AND ($2::text = '' OR f.tool = $2)
   AND ($3::text = '' OR f.rule_id = $3)
+  AND ($4::bool OR COALESCE(sfs.state, 'open') IN ('open', 'accepted'))
 `
 
 type CountFindingsForProjectParams struct {
-	Severity  string
-	Tool      string
-	Rule      string
-	ProjectID pgtype.UUID
+	Severity        string
+	Tool            string
+	Rule            string
+	IncludeResolved bool
+	ProjectID       pgtype.UUID
 }
 
 func (q *Queries) CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error) {
@@ -40,6 +79,7 @@ func (q *Queries) CountFindingsForProject(ctx context.Context, arg CountFindings
 		arg.Severity,
 		arg.Tool,
 		arg.Rule,
+		arg.IncludeResolved,
 		arg.ProjectID,
 	)
 	var column_1 int64
@@ -92,13 +132,16 @@ WITH latest AS (
     FROM security_scans sc
     JOIN runs r ON r.id = sc.run_id
     JOIN pipelines p ON p.id = sc.pipeline_id
-    WHERE p.project_id = $6
+    WHERE p.project_id = $7
     ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
 )
 SELECT f.id, f.pipeline_id, f.run_id, f.job_name, f.tool, f.rule_id,
        f.severity, f.level, f.message, f.location_path, f.location_line,
        f.location_url, f.artifact_id, f.artifact_path, f.created_at,
-       (CASE WHEN sfs.first_seen_run_id = f.run_id THEN 'new' ELSE 'existing' END)::text AS status
+       (CASE WHEN sfs.first_seen_run_id = f.run_id THEN 'new' ELSE 'existing' END)::text AS status,
+       COALESCE(sfs.id, 0)::bigint AS state_id,
+       COALESCE(sfs.state, 'open')::text AS state,
+       COALESCE(sfs.state_reason, '')::text AS state_reason
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
 LEFT JOIN security_finding_states sfs
@@ -110,21 +153,24 @@ LEFT JOIN security_finding_states sfs
 WHERE ($1::text = '' OR f.severity = $1)
   AND ($2::text = '' OR f.tool = $2)
   AND ($3::text = '' OR f.rule_id = $3)
+  -- default hides dismissed/false_positive; open + accepted stay visible.
+  AND ($4::bool OR COALESCE(sfs.state, 'open') IN ('open', 'accepted'))
 ORDER BY
     CASE f.severity
         WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3
     END,
     f.tool, f.rule_id, f.id
-LIMIT $5::int OFFSET $4::int
+LIMIT $6::int OFFSET $5::int
 `
 
 type FindingsForProjectParams struct {
-	Severity  string
-	Tool      string
-	Rule      string
-	Off       int32
-	Lim       int32
-	ProjectID pgtype.UUID
+	Severity        string
+	Tool            string
+	Rule            string
+	IncludeResolved bool
+	Off             int32
+	Lim             int32
+	ProjectID       pgtype.UUID
 }
 
 type FindingsForProjectRow struct {
@@ -144,6 +190,9 @@ type FindingsForProjectRow struct {
 	ArtifactPath string
 	CreatedAt    pgtype.Timestamptz
 	Status       string
+	StateID      int64
+	State        string
+	StateReason  string
 }
 
 // NOTE: the batch identity upsert lives as a raw tx.Exec in the store
@@ -157,6 +206,7 @@ func (q *Queries) FindingsForProject(ctx context.Context, arg FindingsForProject
 		arg.Severity,
 		arg.Tool,
 		arg.Rule,
+		arg.IncludeResolved,
 		arg.Off,
 		arg.Lim,
 		arg.ProjectID,
@@ -185,6 +235,9 @@ func (q *Queries) FindingsForProject(ctx context.Context, arg FindingsForProject
 			&i.ArtifactPath,
 			&i.CreatedAt,
 			&i.Status,
+			&i.StateID,
+			&i.State,
+			&i.StateReason,
 		); err != nil {
 			return nil, err
 		}
@@ -342,6 +395,45 @@ func (q *Queries) SecurityFindingContext(ctx context.Context, id pgtype.UUID) (S
 	return i, err
 }
 
+const setFindingState = `-- name: SetFindingState :one
+UPDATE security_finding_states
+SET state             = $1,
+    state_reason      = $2,
+    state_actor_id    = $3,
+    state_actor_email = $4,
+    state_updated_at  = NOW()
+WHERE id = $5 AND project_id = $6
+RETURNING id
+`
+
+type SetFindingStateParams struct {
+	State           string
+	StateReason     string
+	StateActorID    pgtype.UUID
+	StateActorEmail string
+	ID              int64
+	ProjectID       pgtype.UUID
+}
+
+// Update a finding identity's human state (open|dismissed|false_positive|
+// accepted). Scoped to project_id (the handler resolves slug → project) so a
+// maintainer of one project can't mutate another's findings. Returns the id when
+// a row matched; no row → not found / wrong project (handler 404s). The state
+// value is validated by the handler AND the column CHECK.
+func (q *Queries) SetFindingState(ctx context.Context, arg SetFindingStateParams) (int64, error) {
+	row := q.db.QueryRow(ctx, setFindingState,
+		arg.State,
+		arg.StateReason,
+		arg.StateActorID,
+		arg.StateActorEmail,
+		arg.ID,
+		arg.ProjectID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const severityCountsForProject = `-- name: SeverityCountsForProject :many
 WITH latest AS (
     SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key) sc.job_run_id AS id
@@ -354,6 +446,13 @@ WITH latest AS (
 SELECT f.severity, COUNT(*)::bigint AS n
 FROM security_findings f
 JOIN latest l ON l.id = f.job_run_id
+LEFT JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
+WHERE COALESCE(sfs.state, 'open') = 'open'
 GROUP BY f.severity
 `
 
@@ -362,8 +461,9 @@ type SeverityCountsForProjectRow struct {
 	N        int64
 }
 
-// Per-severity totals across the latest scan per scanner (unfiltered) — the tab
-// header chips.
+// Per-severity totals across the latest scan per scanner for OPEN findings only
+// — the tab header chips reflect the actionable backlog (accepted risk is shown
+// as its own count, dismissed/false_positive are excluded).
 func (q *Queries) SeverityCountsForProject(ctx context.Context, projectID pgtype.UUID) ([]SeverityCountsForProjectRow, error) {
 	rows, err := q.db.Query(ctx, severityCountsForProject, projectID)
 	if err != nil {

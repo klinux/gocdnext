@@ -89,6 +89,7 @@ export default defineConfig({
             { label: "Cache strategies", link: "/concepts/cache/" },
             { label: "Approval gates", link: "/concepts/approvals/" },
             { label: "Compliance pipelines", link: "/concepts/compliance/" },
+            { label: "Security dashboard", link: "/concepts/security/" },
             { label: "Deployments & rollback", link: "/concepts/deployments/" },
             { label: "DORA analytics", link: "/concepts/analytics/" },
             { label: "OIDC id_tokens", link: "/concepts/id-tokens/" },
