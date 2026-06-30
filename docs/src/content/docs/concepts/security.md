@@ -115,7 +115,9 @@ tab:
   when the next scan re-reports it) and is **not touched by re-ingestion** — a
   re-run can never clobber your triage.
 - An optional **reason** can be attached; it's shown on the row and recorded in
-  the audit log.
+  the [audit log](/gocdnext/docs/install/auth/). It's free text visible to anyone
+  with audit-log access — **don't paste secrets into it**. The UI flags this at
+  input time.
 
 ### Permissions and audit
 

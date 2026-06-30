@@ -46,8 +46,12 @@ export function FindingStateMenu({ slug, stateId, state }: Props) {
 
   const apply = (next: FindingState) => {
     if (next === current) return;
-    // A reason is optional but useful for dismiss/FP/accept (it's audited).
-    const reason = next === "open" ? "" : window.prompt(`Reason for "${LABEL[next]}" (optional):`) ?? "";
+    // A reason is optional but useful for dismiss/FP/accept (it's audited). Warn
+    // at input time that it lands in the audit log so nobody pastes a secret.
+    const reason =
+      next === "open"
+        ? ""
+        : window.prompt(`Reason for "${LABEL[next]}" (optional — visible in the audit log):`) ?? "";
     startTransition(async () => {
       const res = await setFindingState({ slug, stateId, state: next, reason });
       if (!res.ok) {
