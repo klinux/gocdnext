@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { FlaskConical, Gauge, Hammer, Package, Server } from "lucide-react";
+import { FlaskConical, Gauge, Hammer, Package, Server, ShieldAlert } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { tabPillList, tabPillTrigger } from "@/lib/tab-pill";
@@ -11,11 +11,12 @@ import { StageSection } from "@/components/runs/stage-section";
 import { RunArtifacts, fetchArtifacts } from "@/components/runs/run-artifacts.client";
 import { RunServices, fetchServices } from "@/components/runs/run-services.client";
 import { RunCoverage, fetchCoverage, pct } from "@/components/runs/run-coverage.client";
+import { RunSecurityPanel, fetchRunSecurity } from "@/components/runs/run-security.client";
 import { RunTests, fetchTests } from "@/components/runs/run-tests.client";
 import { isTerminalStatus } from "@/lib/status";
 import type { RunDetail } from "@/types/api";
 
-const TAB_VALUES = ["jobs", "tests", "coverage", "artifacts", "services"] as const;
+const TAB_VALUES = ["jobs", "tests", "coverage", "security", "artifacts", "services"] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 const TESTS_POLL_MS = 5_000;
@@ -92,6 +93,12 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
     queryFn: () => fetchServices(apiBaseURL, runId),
     staleTime: 30_000,
   });
+  const securityQuery = useQuery({
+    queryKey: ["run-security", runId],
+    queryFn: () => fetchRunSecurity(apiBaseURL, runId),
+    refetchInterval: isTerminalStatus(run.status) ? false : TESTS_POLL_MS,
+    staleTime: 30_000,
+  });
 
   const testCount = (testsQuery.data?.summaries ?? []).reduce(
     (acc, s) => acc + s.total,
@@ -105,6 +112,13 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
   const covCovered = covRows.reduce((acc, r) => acc + r.lines_covered, 0);
   const covTotal = covRows.reduce((acc, r) => acc + r.lines_total, 0);
   const serviceCount = servicesQuery.data?.length ?? 0;
+  // Badge: new-in-change count when a base is comparable, else open total.
+  const sec = securityQuery.data;
+  const secBadge = sec?.has_scans
+    ? sec.delta_available
+      ? sec.new_in_change.length
+      : sec.open_total
+    : 0;
 
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(parseTab(v))}>
@@ -128,6 +142,15 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
           {covTotal > 0 ? (
             <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
               {pct(covCovered, covTotal)}
+            </span>
+          ) : null}
+        </TabsTrigger>
+        <TabsTrigger value="security" className={tabPillTrigger}>
+          <ShieldAlert className="size-3.5 opacity-80" />
+          Security
+          {secBadge > 0 ? (
+            <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+              {secBadge}
             </span>
           ) : null}
         </TabsTrigger>
@@ -179,6 +202,14 @@ export function RunTabs({ runId, run, apiBaseURL }: Props) {
           runId={runId}
           runStatus={run.status}
           pipelineId={run.pipeline_id}
+          apiBaseURL={apiBaseURL}
+        />
+      </TabsContent>
+
+      <TabsContent value="security" className="mt-4">
+        <RunSecurityPanel
+          runId={runId}
+          runStatus={run.status}
           apiBaseURL={apiBaseURL}
         />
       </TabsContent>

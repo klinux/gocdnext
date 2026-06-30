@@ -99,10 +99,31 @@ func (a *AgentService) replaceFindings(ctx context.Context, jobRunID uuid.UUID, 
 	err := a.store.ReplaceSecurityFindings(ctx, jobRunID, attempt, findings)
 	switch {
 	case err == nil:
+		a.refreshCheckSecurity(jobRunID)
 	case errors.Is(err, store.ErrSnapshotStale):
 		a.log.Debug("security: skip stale findings write (job reclaimed/rerun)", "job_id", jobRunID)
 	default:
 		a.log.Warn("security: write findings", "job_id", jobRunID, "err", err)
+	}
+}
+
+// refreshCheckSecurity converges the GitHub check run's security line after a
+// successful (re)ingest — the check may have completed before the async SARIF
+// parse landed. Best-effort + detached ctx (the ingest ctx may be near its
+// deadline); a missing reporter or no check run is a clean no-op.
+func (a *AgentService) refreshCheckSecurity(jobRunID uuid.UUID) {
+	if a.checksReporter == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	runID, err := a.store.RunIDForJobRun(ctx, jobRunID)
+	if err != nil {
+		a.log.Debug("security: resolve run for check refresh", "job_id", jobRunID, "err", err)
+		return
+	}
+	if err := a.checksReporter.RefreshSecuritySummary(ctx, runID); err != nil {
+		a.log.Debug("security: check summary refresh", "run_id", runID, "err", err)
 	}
 }
 

@@ -701,6 +701,7 @@ func main() {
 		p.Get("/api/v1/runs/{id}/artifacts", runsHandler.Artifacts)
 		p.Get("/api/v1/runs/{id}/tests", runsHandler.TestResults)
 		p.Get("/api/v1/runs/{id}/coverage", runsHandler.Coverage)
+		p.Get("/api/v1/runs/{id}/security-findings", runsHandler.SecurityFindings)
 		p.Get("/api/v1/pipelines/{id}/coverage-trend", runsHandler.CoverageTrend)
 		p.Get("/api/v1/runs/{id}/services", runsHandler.Services)
 		p.Get("/api/v1/tests/history", runsHandler.TestCaseHistory)
