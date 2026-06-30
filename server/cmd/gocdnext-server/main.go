@@ -692,6 +692,7 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/caches", projectsHandler.ListCaches)
 		p.Get("/api/v1/projects/{slug}/notifications", projectsHandler.ListNotifications)
 		p.Get("/api/v1/projects/{slug}/labels", projectsHandler.ListLabels)
+		p.Get("/api/v1/projects/{slug}/findings", projectsHandler.ListFindings)
 		p.Get("/api/v1/projects/{slug}/environments", projectsHandler.ListEnvironments)
 		p.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", projectsHandler.ListEnvironmentDeployments)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)

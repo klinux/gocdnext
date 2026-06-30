@@ -1,0 +1,34 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep",
+          "rules": [
+            {
+              "id": "go.lang.security.audit.xss",
+              "defaultConfiguration": { "level": "warning" },
+              "properties": { "severity": "MEDIUM" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "go.lang.security.audit.xss",
+          "message": { "text": "Potential XSS via unescaped template output" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "web/handler.go" },
+                "region": { "startLine": 42 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "abc123def456" }
+        }
+      ]
+    }
+  ]
+}

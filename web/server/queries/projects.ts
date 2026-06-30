@@ -11,6 +11,7 @@ import type {
   CachesList,
   DashboardMetrics,
   EnvironmentsList,
+  FindingsList,
   GlobalRunSummary,
   PluginsList,
   ProjectDetail,
@@ -197,6 +198,24 @@ export async function listEnvironments(
 ): Promise<EnvironmentsList> {
   return readJSON<EnvironmentsList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/environments`,
+  );
+}
+
+// listFindings reads the project's security findings (latest run per pipeline),
+// filterable by severity/tool/rule, paginated.
+export async function listFindings(
+  slug: string,
+  opts: { severity?: string; tool?: string; rule?: string; limit?: number; offset?: number } = {},
+): Promise<FindingsList> {
+  const qs = new URLSearchParams();
+  if (opts.severity) qs.set("severity", opts.severity);
+  if (opts.tool) qs.set("tool", opts.tool);
+  if (opts.rule) qs.set("rule", opts.rule);
+  if (opts.limit) qs.set("limit", String(opts.limit));
+  if (opts.offset) qs.set("offset", String(opts.offset));
+  const q = qs.toString();
+  return readJSON<FindingsList>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/findings${q ? `?${q}` : ""}`,
   );
 }
 

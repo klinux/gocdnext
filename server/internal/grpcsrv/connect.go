@@ -858,6 +858,10 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// service restart.
 	a.maybeEnqueueArchive(ctx, log, batcher, comp.JobRunID)
 
+	// Security findings (#71): parse this job's *.sarif artifacts and reconcile
+	// the findings table. Async + best-effort — never affects the job result.
+	a.ingestSecurityFindings(comp.JobRunID, expectedAttempt)
+
 	// Deployment tracking (#39): if this job carried a `deploy:`
 	// marker, the dispatch path opened an in_progress revision.
 	// Finalise it to match the job's terminal outcome. Best-effort

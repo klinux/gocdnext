@@ -13,6 +13,7 @@ import {
   Network,
   Rocket,
   Settings,
+  ShieldAlert,
   type LucideIcon,
 } from "lucide-react";
 
@@ -73,6 +74,12 @@ const tabs: Tab[] = [
     href: (slug) => `/projects/${slug}/runs` as Route,
     match: (path, slug) => path.startsWith(`/projects/${slug}/runs`),
     icon: History,
+  },
+  {
+    label: "Security",
+    href: (slug) => `/projects/${slug}/security` as Route,
+    match: (path, slug) => path.startsWith(`/projects/${slug}/security`),
+    icon: ShieldAlert,
   },
   {
     label: "Environments",
