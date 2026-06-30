@@ -146,8 +146,17 @@ The dashboard is backed by two endpoints (see the
   triage state (`{ "state": "...", "reason": "..." }`). Maintainer+;
   project-scoped.
 
+## Org rollup (Analytics)
+
+The **Analytics** page rolls open vulnerabilities up across every project,
+grouped by a [project label](/gocdnext/docs/concepts/analytics/) you choose
+(team, tier, domain, …) — the same grouping the DORA and compliance sections use.
+Each group shows its open count by severity, with **accepted** risk counted
+separately and a clear distinction between a **scanned-clean** group (`0 open`)
+and one that's **never been scanned**. Counts are by finding **identity**, not
+raw SARIF occurrences, so duplicates don't inflate the numbers.
+
 ## Not yet
 
-Cross-project / org rollup of findings (on the Analytics page), a per-PR "new
-findings in this change" widget, and a check-run summary line are planned but not
-shipped. Today the dashboard is per-project.
+A per-PR "new findings in this change" widget and a check-run summary line are
+planned but not yet shipped.

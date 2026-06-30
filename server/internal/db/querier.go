@@ -1416,6 +1416,23 @@ type Querier interface {
 	// ingestion only needs the job_run id. Used to stamp the denormalized columns
 	// on each finding + the scan marker + the identity (CopyFrom can't join).
 	SecurityFindingContext(ctx context.Context, id pgtype.UUID) (SecurityFindingContextRow, error)
+	// Accepted-risk identities per group (shown as a distinct count, never folded
+	// into the open severity breakdown). Same present condition as the open counts.
+	SecurityRollupAccepted(ctx context.Context, labelKey string) ([]SecurityRollupAcceptedRow, error)
+	// Open identities per (label-value group, severity). The latest CTE is the
+	// latest reconciled run per (pipeline, scanner_job, matrix_key) across all
+	// projects; an identity counts when it's still present in that latest scan and
+	// open. Dedupe is intrinsic (one row per identity in security_finding_states).
+	SecurityRollupCounts(ctx context.Context, labelKey string) ([]SecurityRollupCountsRow, error)
+	// Org/label security rollup (#71 v3). Counts finding IDENTITIES (not SARIF
+	// occurrences) from security_finding_states: an identity is "currently open"
+	// when it's present in its scanner's latest reconciled scan
+	// (last_seen_run_id = latest_run_id) and state='open'. Grouped by a project
+	// label value.
+	// The group spine: every label value for the key, plus whether any of the
+	// group's projects has ever reconciled a scan (clean-vs-never-scanned). Counts
+	// are LEFT-merged in Go so a clean/zero group still appears.
+	SecurityRollupGroups(ctx context.Context, labelKey string) ([]SecurityRollupGroupsRow, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Update a finding identity's human state (open|dismissed|false_positive|
 	// accepted). Scoped to project_id (the handler resolves slug → project) so a
