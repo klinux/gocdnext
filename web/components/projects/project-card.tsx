@@ -333,9 +333,9 @@ function AuthorChip({
   return (
     <span className="inline-flex shrink-0 items-center gap-1 text-[10px]">
       <span
-        // Design-system tokens (matches the project-row author chip + the
-        // sidebar avatar fallback) instead of a raw amber gradient.
-        className="inline-flex size-[18px] items-center justify-center rounded-full bg-muted font-mono text-[9px] font-semibold text-muted-foreground"
+        // Brand light-green tint — the same token as the sidebar avatar
+        // fallback (bg-primary/15 text-primary), on the design system.
+        className="inline-flex size-[18px] items-center justify-center rounded-full bg-primary/15 font-mono text-[9px] font-semibold text-primary"
         aria-hidden
       >
         {initials}
