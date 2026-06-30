@@ -700,6 +700,29 @@ paths:
               schema: { $ref: "#/components/schemas/ComplianceCoverageReport" }
         "400": { description: missing/invalid key }
 
+  /api/v1/analytics/security:
+    get:
+      tags: [analytics]
+      summary: Open vulnerabilities per group (security posture).
+      description: >
+        Current-state security posture grouped by a project label: per
+        label-value group, open finding counts by severity (counting identities,
+        not SARIF occurrences), accepted shown separately, plus has_scans to tell
+        a clean group from a never-scanned one. No window (not time-series).
+      parameters:
+        - in: query
+          name: key
+          required: true
+          schema: { type: string }
+          description: Project label key to group by (e.g. team).
+      responses:
+        "200":
+          description: security rollup report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecurityRollupReport" }
+        "400": { description: missing/invalid key }
+
   # -------------------- runs --------------------
   /api/v1/runs:
     get:
@@ -1909,6 +1932,32 @@ components:
         groups:
           type: array
           items: { $ref: "#/components/schemas/ComplianceGroup" }
+
+    SecurityRollupGroup:
+      type: object
+      required: [group, has_scans, critical, high, medium, low, total_open, accepted]
+      properties:
+        group: { type: string, description: "the label value, e.g. payments" }
+        has_scans: { type: boolean, description: "false = never scanned (vs scanned-clean)" }
+        critical: { type: integer, format: int64 }
+        high: { type: integer, format: int64 }
+        medium: { type: integer, format: int64 }
+        low: { type: integer, format: int64 }
+        total_open: { type: integer, format: int64 }
+        accepted: { type: integer, format: int64, description: "accepted risk, counted separately" }
+
+    SecurityRollupReport:
+      type: object
+      required: [key, groups, org_critical, org_high, org_total_open, org_accepted]
+      properties:
+        key: { type: string }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/SecurityRollupGroup" }
+        org_critical: { type: integer, format: int64 }
+        org_high: { type: integer, format: int64 }
+        org_total_open: { type: integer, format: int64 }
+        org_accepted: { type: integer, format: int64 }
 
     ProjectDetail:
       allOf:
