@@ -175,17 +175,17 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 	if len(findings) > 0 {
 		n := len(findings)
 		params := make([]db.InsertSecurityFindingsParams, 0, n)
-		// Parallel arrays for the batch identity upsert — built in lockstep so
-		// they're guaranteed the same length.
-		tools := make([]string, n)
-		fps := make([]string, n)
-		rules := make([]string, n)
-		sevs := make([]string, n)
-		levels := make([]string, n)
-		msgs := make([]string, n)
-		paths := make([]string, n)
-		lines := make([]int32, n)
-		for i, f := range findings {
+		// Identities deduped within this scan by (tool, fingerprint): a SARIF can
+		// emit two results that collapse to the same identity, and the batch
+		// upsert's ON CONFLICT can't affect the same row twice (Postgres errors,
+		// rolling back the whole reconcile). The occurrence rows below keep both;
+		// only the identity collapses — last occurrence wins for the snapshot.
+		// pipeline/scanner/matrix are constant for this job_run, so (tool,
+		// fingerprint) is the full identity within the scan.
+		type identKey struct{ tool, fp string }
+		idents := make(map[identKey]FindingIn, n)
+		order := make([]identKey, 0, n)
+		for _, f := range findings {
 			// artifact_id is nullable (ON DELETE SET NULL); Nil → SQL NULL so
 			// the FK isn't violated when a finding has no artifact pointer.
 			artID := pgtype.UUID{}
@@ -211,6 +211,28 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 				LocationUrl:  f.LocationURL,
 				Fingerprint:  f.Fingerprint,
 			})
+			k := identKey{f.Tool, f.Fingerprint}
+			if _, ok := idents[k]; !ok {
+				order = append(order, k)
+			}
+			idents[k] = f
+		}
+		if _, err := q.InsertSecurityFindings(ctx, params); err != nil {
+			return fmt.Errorf("store: findings insert: %w", err)
+		}
+		// Parallel arrays for the batch identity upsert — built in lockstep from
+		// the deduped set so they're the same length and conflict-free.
+		m := len(order)
+		tools := make([]string, m)
+		fps := make([]string, m)
+		rules := make([]string, m)
+		sevs := make([]string, m)
+		levels := make([]string, m)
+		msgs := make([]string, m)
+		paths := make([]string, m)
+		lines := make([]int32, m)
+		for i, k := range order {
+			f := idents[k]
 			tools[i] = f.Tool
 			fps[i] = f.Fingerprint
 			rules[i] = f.RuleID
@@ -219,9 +241,6 @@ func (s *Store) ReplaceSecurityFindings(ctx context.Context, jobRunID uuid.UUID,
 			msgs[i] = f.Message
 			paths[i] = f.LocationPath
 			lines[i] = int32(f.LocationLine)
-		}
-		if _, err := q.InsertSecurityFindings(ctx, params); err != nil {
-			return fmt.Errorf("store: findings insert: %w", err)
 		}
 		if _, err := tx.Exec(ctx, upsertFindingIdentitiesSQL,
 			cx.ProjectID, cx.PipelineID, cx.JobName, cx.MatrixKey, cx.RunID,
@@ -286,6 +305,12 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 	if err != nil {
 		return FindingsPage{}, fmt.Errorf("store: findings fixed: %w", err)
 	}
+	// Real total (the list above is capped) — the header must not understate when
+	// a removed scanner retires a large prior set.
+	fixedTotal, err := s.q.CountFixedFindingsForProject(ctx, pid)
+	if err != nil {
+		return FindingsPage{}, fmt.Errorf("store: findings fixed count: %w", err)
+	}
 
 	out := make([]Finding, 0, len(rows))
 	for _, r := range rows {
@@ -346,7 +371,7 @@ func (s *Store) FindingsForProject(ctx context.Context, projectID uuid.UUID, f F
 		Total:          total,
 		SeverityCounts: counts,
 		Fixed:          fixed,
-		FixedTotal:     int64(len(fixed)),
+		FixedTotal:     fixedTotal,
 		Limit:          f.Limit,
 		Offset:         f.Offset,
 	}, nil

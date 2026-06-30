@@ -151,6 +151,9 @@ type Querier interface {
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error)
+	// Real total of fixed identities (the list above is capped); the header count
+	// must not understate when a removed scanner retires a large prior set.
+	CountFixedFindingsForProject(ctx context.Context, projectID pgtype.UUID) (int64, error)
 	// Delete-guard: how many projects carry the framework and how many policies
 	// target it. A framework still in use must not be silently dropped.
 	CountFrameworkUsage(ctx context.Context, frameworkID pgtype.UUID) (CountFrameworkUsageRow, error)

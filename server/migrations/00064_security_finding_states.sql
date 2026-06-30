@@ -37,6 +37,20 @@ WHERE jr.id = sc.job_run_id;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
+-- The latest-scan CTEs now group/sort by (pipeline_id, scanner_job, matrix_key).
+-- Replace the old (pipeline_id)-only index with the composite (its leftmost
+-- prefix still serves any pipeline_id-only lookup). A future optimization, if
+-- this page gets hot, is denormalizing runs.counter onto security_scans for an
+-- index-only latest selection.
+DROP INDEX IF EXISTS idx_security_scans_pipeline;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE INDEX idx_security_scans_scanner
+    ON security_scans (pipeline_id, scanner_job, matrix_key);
+-- +goose StatementEnd
+
+-- +goose StatementBegin
 -- One row per finding identity (pipeline + scanner job + matrix cell + tool +
 -- fingerprint). tool is in the key because one job can publish multiple SARIF
 -- tools whose fingerprints carry different meaning. Holds seen-tracking, the
@@ -136,7 +150,13 @@ DROP TABLE IF EXISTS security_finding_states;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
+-- Dropping the columns auto-removes idx_security_scans_scanner; restore the
+-- original (pipeline_id)-only index.
 ALTER TABLE security_scans DROP COLUMN IF EXISTS scanner_job, DROP COLUMN IF EXISTS matrix_key;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE INDEX IF NOT EXISTS idx_security_scans_pipeline ON security_scans (pipeline_id);
 -- +goose StatementEnd
 
 -- +goose StatementBegin

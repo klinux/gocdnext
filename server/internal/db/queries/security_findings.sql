@@ -142,3 +142,24 @@ ORDER BY
     END,
     sfs.tool, sfs.last_rule_id, sfs.id
 LIMIT sqlc.arg(lim)::int;
+
+-- name: CountFixedFindingsForProject :one
+-- Real total of fixed identities (the list above is capped); the header count
+-- must not understate when a removed scanner retires a large prior set.
+WITH latest AS (
+    SELECT DISTINCT ON (sc.pipeline_id, sc.scanner_job, sc.matrix_key)
+        sc.pipeline_id, sc.scanner_job, sc.matrix_key, sc.run_id AS latest_run_id
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    JOIN pipelines p ON p.id = sc.pipeline_id
+    WHERE p.project_id = sqlc.arg(project_id)
+    ORDER BY sc.pipeline_id, sc.scanner_job, sc.matrix_key, r.counter DESC
+)
+SELECT COUNT(*)::bigint
+FROM security_finding_states sfs
+JOIN latest l
+    ON  l.pipeline_id = sfs.pipeline_id
+    AND l.scanner_job = sfs.scanner_job
+    AND l.matrix_key  = sfs.matrix_key
+WHERE sfs.last_seen_run_id IS DISTINCT FROM l.latest_run_id
+  AND sfs.state IN ('open', 'accepted');

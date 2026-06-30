@@ -100,6 +100,39 @@ func TestFindingsForProject_StatusNewThenExisting(t *testing.T) {
 	}
 }
 
+// TestReplaceSecurityFindings_DuplicateIdentityInScan guards the MED: a SARIF
+// emitting two results that collapse to the same (tool, fingerprint) must not
+// error the identity upsert (ON CONFLICT can't affect a row twice, which would
+// roll back the whole reconcile and leave the dashboard stale). The scan
+// reconciles, both occurrences are stored, the identity collapses to one.
+func TestReplaceSecurityFindings_DuplicateIdentityInScan(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID, pipelineID, materialID := scanProject(t, pool, s, "sec-dup", "scan")
+
+	dup := store.FindingIn{Tool: "Trivy", RuleID: "CVE-1", Severity: "high", Level: "error", Message: "m", Fingerprint: "fp-dup"}
+	run1 := newScanRun(t, s, pipelineID, materialID, 1)
+	if err := s.ReplaceSecurityFindings(ctx, jobRunByName(t, pool, run1, "scan"), 0, []store.FindingIn{dup, dup}); err != nil {
+		t.Fatalf("duplicate identity must reconcile, got: %v", err)
+	}
+	page, err := s.FindingsForProject(ctx, projectID, store.FindingsFilter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("both occurrences must be stored, total=%d", page.Total)
+	}
+	var idents int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM security_finding_states WHERE fingerprint='fp-dup'`).Scan(&idents); err != nil {
+		t.Fatalf("count idents: %v", err)
+	}
+	if idents != 1 {
+		t.Fatalf("identity must collapse to one, got %d", idents)
+	}
+}
+
 // TestFindingsForProject_FixedPerScannerNotTool is the make-or-break case: ONE
 // scanner job emits two tools (Trivy + Semgrep) in run 1, then only Trivy in
 // run 2. The Semgrep identities must surface as "fixed" even though
