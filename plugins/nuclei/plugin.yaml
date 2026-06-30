@@ -96,7 +96,7 @@ inputs:
       SARIF report path. Pair with `artifacts:` so the dashboard ingests it.
 
 examples:
-  - name: baseline scan of a services: app
+  - name: "baseline scan of a services: app"
     description: >
       Boot the app as a service and scan it. The plugin waits for the app to be
       up (preflight) before scanning, and the SARIF feeds the Security tab.
