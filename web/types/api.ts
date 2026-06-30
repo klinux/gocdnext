@@ -831,6 +831,9 @@ export type Finding = {
   artifact_path: string;
   created_at: string;
   status: string; // "new" (first seen in this run) | "existing"
+  state: string; // open | dismissed | false_positive | accepted
+  state_id: number; // security_finding_states identity id (0 if absent)
+  state_reason: string;
 };
 
 // FixedFinding is an identity gone from the scanner's latest scan — surfaced
@@ -854,6 +857,7 @@ export type FindingsList = {
   findings: Finding[];
   total: number;
   severity_counts: Record<string, number>;
+  accepted_count: number;
   fixed: FixedFinding[];
   fixed_total: number;
   limit: number;

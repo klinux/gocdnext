@@ -100,6 +100,64 @@ func TestFindingsForProject_StatusNewThenExisting(t *testing.T) {
 	}
 }
 
+// TestFindingsForProject_StateFiltering: the default list shows open + accepted;
+// dismissed + false_positive are hidden unless include_resolved. Severity counts
+// cover open only; accepted is counted separately.
+func TestFindingsForProject_StateFiltering(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	projectID, pipelineID, materialID := scanProject(t, pool, s, "sec-statefilter", "scan")
+
+	findings := []store.FindingIn{
+		{Tool: "T", RuleID: "open-r", Severity: "critical", Level: "error", Message: "m", Fingerprint: "fp-open"},
+		{Tool: "T", RuleID: "accepted-r", Severity: "high", Level: "error", Message: "m", Fingerprint: "fp-accepted"},
+		{Tool: "T", RuleID: "dismissed-r", Severity: "high", Level: "error", Message: "m", Fingerprint: "fp-dismissed"},
+		{Tool: "T", RuleID: "fp-r", Severity: "high", Level: "error", Message: "m", Fingerprint: "fp-falsepos"},
+	}
+	run1 := newScanRun(t, s, pipelineID, materialID, 1)
+	if err := s.ReplaceSecurityFindings(ctx, jobRunByName(t, pool, run1, "scan"), 0, findings); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	for fp, st := range map[string]string{"fp-accepted": "accepted", "fp-dismissed": "dismissed", "fp-falsepos": "false_positive"} {
+		if _, err := pool.Exec(ctx, `UPDATE security_finding_states SET state=$1 WHERE fingerprint=$2`, st, fp); err != nil {
+			t.Fatalf("set state %s: %v", st, err)
+		}
+	}
+
+	// Default: open + accepted only.
+	def, err := s.FindingsForProject(ctx, projectID, store.FindingsFilter{})
+	if err != nil {
+		t.Fatalf("default list: %v", err)
+	}
+	if def.Total != 2 {
+		t.Fatalf("default total = %d, want 2 (open + accepted)", def.Total)
+	}
+	rules := map[string]bool{}
+	for _, f := range def.Findings {
+		rules[f.RuleID] = true
+	}
+	if !rules["open-r"] || !rules["accepted-r"] || rules["dismissed-r"] || rules["fp-r"] {
+		t.Fatalf("default must show open+accepted only, got %+v", rules)
+	}
+	// Severity counts cover OPEN only (the one critical), not the accepted high.
+	if def.SeverityCounts["critical"] != 1 || def.SeverityCounts["high"] != 0 {
+		t.Fatalf("severity counts must be open-only, got %+v", def.SeverityCounts)
+	}
+	if def.AcceptedCount != 1 {
+		t.Fatalf("accepted_count = %d, want 1", def.AcceptedCount)
+	}
+
+	// include_resolved: all four.
+	all, err := s.FindingsForProject(ctx, projectID, store.FindingsFilter{IncludeResolved: true})
+	if err != nil {
+		t.Fatalf("include_resolved list: %v", err)
+	}
+	if all.Total != 4 {
+		t.Fatalf("include_resolved total = %d, want 4", all.Total)
+	}
+}
+
 // TestReplaceSecurityFindings_DuplicateIdentityInScan guards the MED: a SARIF
 // emitting two results that collapse to the same (tool, fingerprint) must not
 // error the identity upsert (ON CONFLICT can't affect a row twice, which would

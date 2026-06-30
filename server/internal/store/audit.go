@@ -67,6 +67,7 @@ const (
 	AuditActionClusterDelete          = "cluster.delete"
 	AuditActionPlatformSettingSet     = "platform_setting.set"
 	AuditActionPlatformSettingDel     = "platform_setting.delete"
+	AuditActionFindingState           = "security_finding.state"
 
 	AuditActionComplianceFrameworkCreate = "compliance_framework.create"
 	AuditActionComplianceFrameworkUpdate = "compliance_framework.update"

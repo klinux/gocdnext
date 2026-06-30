@@ -738,6 +738,7 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/secrets/{name}", projectsHandler.DeleteSecret)
 		p.Put("/api/v1/projects/{slug}/notifications", projectsHandler.SetNotifications)
 		p.Put("/api/v1/projects/{slug}/labels", projectsHandler.SetLabels)
+		p.Put("/api/v1/projects/{slug}/finding-states/{id}/state", projectsHandler.SetFindingState)
 		p.Put("/api/v1/projects/{slug}/poll-interval", projectsHandler.SetPollInterval)
 		p.Get("/api/v1/projects/{slug}/log-archive", projectsHandler.GetLogArchiveSettings)
 		p.Put("/api/v1/projects/{slug}/log-archive", projectsHandler.SetLogArchiveSettings)

@@ -11,6 +11,10 @@ import (
 )
 
 type Querier interface {
+	// Count of accepted-risk findings in the latest scan per scanner — shown as a
+	// distinct chip so an acknowledged risk stays visible without inflating the
+	// open severity backlog.
+	AcceptedCountForProject(ctx context.Context, projectID pgtype.UUID) (int64, error)
 	// Idempotent on (group_id, user_id) — re-adding is a no-op, not
 	// an error, so the UI's "add if not present" flow doesn't need
 	// a pre-check query.
@@ -1413,6 +1417,12 @@ type Querier interface {
 	// on each finding + the scan marker + the identity (CopyFrom can't join).
 	SecurityFindingContext(ctx context.Context, id pgtype.UUID) (SecurityFindingContextRow, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
+	// Update a finding identity's human state (open|dismissed|false_positive|
+	// accepted). Scoped to project_id (the handler resolves slug → project) so a
+	// maintainer of one project can't mutate another's findings. Returns the id when
+	// a row matched; no row → not found / wrong project (handler 404s). The state
+	// value is validated by the handler AND the column CHECK.
+	SetFindingState(ctx context.Context, arg SetFindingStateParams) (int64, error)
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
 	// fresh project never needs an initial INSERT against this field.
@@ -1433,8 +1443,9 @@ type Querier interface {
 	// explicitly with DELETE if you want them gone.
 	SetServiceAccountDisabled(ctx context.Context, arg SetServiceAccountDisabledParams) error
 	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
-	// Per-severity totals across the latest scan per scanner (unfiltered) — the tab
-	// header chips.
+	// Per-severity totals across the latest scan per scanner for OPEN findings only
+	// — the tab header chips reflect the actionable backlog (accepted risk is shown
+	// as its own count, dismissed/false_positive are excluded).
 	SeverityCountsForProject(ctx context.Context, projectID pgtype.UUID) ([]SeverityCountsForProjectRow, error)
 	// Marks a still-queued job as 'skipped' with a terminal finish
 	// time so GetStageProgress stops counting it as unfinished. The
