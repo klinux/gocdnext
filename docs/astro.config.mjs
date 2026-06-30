@@ -73,6 +73,7 @@ export default defineConfig({
                 { label: "Container layer cache", link: "/pipelines/recipes/layer-cache/" },
                 { label: "Helm chart release", link: "/pipelines/recipes/helm-release/" },
                 { label: "Security scanning", link: "/pipelines/recipes/security-scan/" },
+                { label: "DAST (deploy-then-scan)", link: "/pipelines/recipes/dast/" },
                 { label: "Notifications fan-out", link: "/pipelines/recipes/notifications/" },
                 { label: "Release flow", link: "/pipelines/recipes/release-flow/" },
                 { label: "Deploy via SSH", link: "/pipelines/recipes/ssh-deploy/" },

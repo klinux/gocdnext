@@ -127,3 +127,19 @@ func TestParse_TruncatesAtCap(t *testing.T) {
 		t.Fatalf("got %d findings, truncated=%v; want %d + truncated", len(got), truncated, MaxFindings)
 	}
 }
+
+// TestParse_NucleiEmptyClean cross-checks the exact empty-but-valid SARIF the
+// nuclei plugin synthesizes for a clean DAST scan (plugins/nuclei/entrypoint.sh):
+// the server parser must accept it as a real scan with zero findings, so the
+// dashboard records "scanned clean" — never a parse error.
+func TestParse_NucleiEmptyClean(t *testing.T) {
+	// Keep this byte-identical to the entrypoint's synthetic SARIF.
+	const empty = `{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"nuclei"}},"results":[]}]}`
+	got, truncated, err := Parse(strings.NewReader(empty))
+	if err != nil || truncated {
+		t.Fatalf("parse: err=%v truncated=%v", err, truncated)
+	}
+	if len(got) != 0 {
+		t.Fatalf("findings = %d, want 0 (clean scan)", len(got))
+	}
+}
