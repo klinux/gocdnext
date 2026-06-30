@@ -1,0 +1,140 @@
+name: nuclei
+category: security
+description: >
+  DAST baseline scanner — runs ProjectDiscovery's Nuclei against a *running*
+  target (an ephemeral app booted via `services:`, or a deployed ephemeral env)
+  and emits SARIF that feeds the Security dashboard. v1 is an unauthenticated
+  baseline + API-spec-driven scan: no auth/headers (no secret on argv), OAST off
+  by default, HTTP redirects off, HTTP templates only, templates baked into the
+  image (never updated at runtime). Authenticated/deep scans are an advanced
+  recipe, not an input.
+
+inputs:
+  target:
+    required: true
+    description: >
+      Base URL to scan, e.g. http://app:8080 (a `services:` app on the run
+      network). The plugin preflights this until it responds before scanning.
+  severity:
+    required: false
+    default: critical,high,medium
+    description: >
+      Scan scope — which severities Nuclei runs/reports (`-severity`). This is
+      the scan's scope, not a full-posture guarantee; low/info are excluded by
+      default.
+  fail-on:
+    required: false
+    default: critical,high
+    description: >
+      Fail the job when any finding is at/above these. Must be a subset of
+      `severity` (else it could never fire — the plugin errors loudly).
+  exit-code:
+    required: false
+    default: "1"
+    description: >
+      Exit code when `fail-on` matches. Set to "0" to make the scan advisory.
+  spec:
+    required: false
+    description: >
+      Path to an OpenAPI 3 or Swagger 2 spec for an API-driven scan. The spec's
+      base URL (`servers` / `host`+`basePath`) is rewritten to `target` before
+      scanning, so a spec pointing at prod can never redirect the scan off the
+      ephemeral target.
+  spec-format:
+    required: false
+    default: openapi
+    description: >
+      openapi | swagger. Auto-detected from the file; this is the fallback when
+      detection is ambiguous.
+  tags:
+    required: false
+    description: Comma-separated Nuclei tags to scope the template set (`-tags`).
+  templates:
+    required: false
+    description: >
+      Override the baked template directory (replaces the default
+      /opt/nuclei-templates). Most pipelines should leave this unset.
+  ready-timeout:
+    required: false
+    default: "60"
+    description: >
+      Seconds to wait for `target` to respond before scanning. If it never does,
+      the job fails (exit 2) — it will NOT record a false "clean" scan against a
+      target that never came up.
+  health-path:
+    required: false
+    description: >
+      Optional path appended to `target` for the readiness probe (e.g. /health).
+      With it set, readiness requires a 2xx/3xx; without it, any HTTP response at
+      the root counts as "up".
+  rate-limit:
+    required: false
+    default: "50"
+    description: Requests per second (conservative default for a small app).
+  concurrency:
+    required: false
+    description: Template concurrency (`-concurrency`).
+  timeout:
+    required: false
+    default: "10"
+    description: Per-request timeout in seconds.
+  interactsh:
+    required: false
+    default: "false"
+    description: >
+      "true" enables out-of-band (OAST) detection. Off by default so an internal
+      scan never phones home to a public OAST server.
+  interactsh-server:
+    required: false
+    description: >
+      Custom OAST server URL. Requires `interactsh: true` (set without it is an
+      error, not a silent no-op).
+  output:
+    required: false
+    default: nuclei.sarif
+    description: >
+      SARIF report path. Pair with `artifacts:` so the dashboard ingests it.
+
+examples:
+  - name: "baseline scan of a services: app"
+    description: >
+      Boot the app as a service and scan it. The plugin waits for the app to be
+      up (preflight) before scanning, and the SARIF feeds the Security tab.
+    yaml: |
+      services:
+        app:
+          image: ghcr.io/org/app:${CI_COMMIT_SHORT_SHA}
+          ports: [8080]
+      jobs:
+        dast:
+          stage: scan
+          uses: ghcr.io/klinux/gocdnext-plugin-nuclei@v1
+          with:
+            target: http://app:8080
+            health-path: /healthz
+          artifacts:
+            - nuclei.sarif
+
+  - name: API-spec-driven scan
+    description: >
+      Drive deeper-than-baseline coverage from an OpenAPI spec. The spec's
+      servers are rewritten to `target`, so the scan stays on the ephemeral app.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-nuclei@v1
+      with:
+        target: http://app:8080
+        spec: openapi.yaml
+        severity: critical,high,medium
+        fail-on: critical,high
+      artifacts:
+        - nuclei.sarif
+
+  - name: advisory scan (don't fail the build)
+    description: Report findings to the dashboard without blocking the pipeline.
+    yaml: |
+      uses: ghcr.io/klinux/gocdnext-plugin-nuclei@v1
+      with:
+        target: http://app:8080
+        exit-code: "0"
+      artifacts:
+        - nuclei.sarif

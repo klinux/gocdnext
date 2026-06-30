@@ -16,7 +16,9 @@ already decide are false positives?*
 
 Any job that produces a [SARIF](https://sarifweb.azurewebsites.net/) file as an
 **artifact** feeds the dashboard. SARIF is the standard output format for
-semgrep, trivy, osv-scanner, gitleaks, CodeQL, and most modern scanners.
+semgrep, trivy, osv-scanner, gitleaks, CodeQL, and most modern scanners — and for
+**DAST** too: the [nuclei plugin](/gocdnext/docs/pipelines/recipes/dast/) scans a
+running app and emits SARIF that lands here alongside the static scans.
 
 ```yaml title=".gocdnext/security.yaml" {8-10}
 jobs:
