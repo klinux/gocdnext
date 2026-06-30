@@ -472,6 +472,21 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "BASE_IMAGE for ${{ matrix.plugin }}: $ref"
 
+      # Real smoke for plugins that ship one (smoke_test.sh) — runs the PINNED
+      # IMAGE (flag-drift + a micro-scan), as a PRE-PUBLISH gate so a broken
+      # image never reaches build-push below. The script does its own local
+      # `docker build` (same Dockerfile/context) on a dedicated docker network
+      # with trap cleanup, so it doesn't depend on the publishing build.
+      - name: plugin smoke test (if present)
+        run: |
+          s="plugins/${{ matrix.plugin }}/smoke_test.sh"
+          if [ -x "$s" ]; then
+            echo "==> $s"
+            bash "$s"
+          else
+            echo "no smoke_test.sh for ${{ matrix.plugin }} — skipping"
+          fi
+
       - id: build
         uses: docker/build-push-action@v6
         with:
