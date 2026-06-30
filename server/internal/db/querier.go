@@ -421,10 +421,20 @@ type Querier interface {
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
 	// read path.
 	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
-	// Findings from the latest run per pipeline in the project (counter DESC =
-	// newest run; uses idx_runs_pipeline_counter), filtered + paginated. Ordered
-	// worst-severity first.
+	// NOTE: the batch identity upsert lives as a raw tx.Exec in the store
+	// (ReplaceSecurityFindings) — sqlc's static analyzer can't model the multi-array
+	// unnest(a,b,...) FROM-form (valid at runtime). See upsertFindingIdentitiesSQL.
+	// Findings from the latest reconciled scan per (pipeline, scanner_job, matrix
+	// cell) in the project, filtered + paginated, worst-severity first. The identity
+	// join surfaces new (first seen in this run) vs existing.
 	FindingsForProject(ctx context.Context, arg FindingsForProjectParams) ([]FindingsForProjectRow, error)
+	// Identities for a scanner that has a latest scan, but were NOT seen in that
+	// latest run — i.e. fixed/gone since the previous scan. Rendered from the
+	// snapshot (the security_findings row is gone). Grain stays (pipeline,
+	// scanner_job, matrix_key) — NOT tool — so a tool that stopped emitting (job
+	// dropped Semgrep, kept Trivy) correctly retires its old identities. Excludes
+	// dismissed/false_positive so resolved noise isn't resurrected as "fixed".
+	FixedFindingsForProject(ctx context.Context, arg FixedFindingsForProjectParams) ([]FixedFindingsForProjectRow, error)
 	// Hot path: the bearer middleware probes this on every request.
 	// Returns NOT FOUND when revoked or expired so the middleware
 	// doesn't have to special-case those.
@@ -1393,10 +1403,11 @@ type Querier interface {
 	// than fail-open here — operator can run manual sweep if a stale
 	// leak surfaces).
 	RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error)
-	// Security findings ingested from SARIF artifacts (#71 v1).
+	// Security findings ingested from SARIF artifacts (#71 v1) + cross-run identity
+	// and state (#71 v2).
 	// Resolve run/pipeline/project/job metadata from the completed job_run, so the
 	// ingestion only needs the job_run id. Used to stamp the denormalized columns
-	// on each finding (CopyFrom can't join).
+	// on each finding + the scan marker + the identity (CopyFrom can't join).
 	SecurityFindingContext(ctx context.Context, id pgtype.UUID) (SecurityFindingContextRow, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
 	// Replaces the project-level notifications list. Admin/maintainer
@@ -1419,7 +1430,7 @@ type Querier interface {
 	// explicitly with DELETE if you want them gone.
 	SetServiceAccountDisabled(ctx context.Context, arg SetServiceAccountDisabledParams) error
 	SetVCSIntegrationEnabled(ctx context.Context, arg SetVCSIntegrationEnabledParams) error
-	// Per-severity totals across the latest run per pipeline (unfiltered) — the tab
+	// Per-severity totals across the latest scan per scanner (unfiltered) — the tab
 	// header chips.
 	SeverityCountsForProject(ctx context.Context, projectID pgtype.UUID) ([]SeverityCountsForProjectRow, error)
 	// Marks a still-queued job as 'skipped' with a terminal finish
@@ -1672,7 +1683,8 @@ type Querier interface {
 	UpsertSecret(ctx context.Context, arg UpsertSecretParams) (UpsertSecretRow, error)
 	// Mark a job_run as successfully reconciled (parsed OK, even with zero findings).
 	// Written in the same tx as the findings replace, so the marker and the rows
-	// are always consistent.
+	// are always consistent. scanner_job/matrix_key denormalize the scanner grain so
+	// the latest-scan CTE never joins job_runs.
 	UpsertSecurityScan(ctx context.Context, arg UpsertSecurityScanParams) error
 	// Upsert the service tracking row for a (run_id, name) tuple.
 	// Idempotent: re-issuing the same status is a no-op besides

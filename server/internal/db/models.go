@@ -482,6 +482,33 @@ type SecurityFinding struct {
 	LocationUrl  string
 	Fingerprint  string
 	CreatedAt    pgtype.Timestamptz
+	MatrixKey    string
+}
+
+type SecurityFindingState struct {
+	ID               int64
+	ProjectID        pgtype.UUID
+	PipelineID       pgtype.UUID
+	ScannerJob       string
+	MatrixKey        string
+	Tool             string
+	Fingerprint      string
+	FirstSeenRunID   pgtype.UUID
+	FirstSeenAt      pgtype.Timestamptz
+	LastSeenRunID    pgtype.UUID
+	LastSeenAt       pgtype.Timestamptz
+	LastRuleID       string
+	LastSeverity     string
+	LastLevel        string
+	LastMessage      string
+	LastLocationPath string
+	LastLocationLine int32
+	State            string
+	StateReason      string
+	StateActorID     pgtype.UUID
+	StateActorEmail  string
+	StateUpdatedAt   pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
 }
 
 type SecurityScan struct {
@@ -490,6 +517,8 @@ type SecurityScan struct {
 	PipelineID   pgtype.UUID
 	FindingCount int32
 	ReconciledAt pgtype.Timestamptz
+	ScannerJob   string
+	MatrixKey    string
 }
 
 type ServiceAccount struct {
