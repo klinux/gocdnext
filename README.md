@@ -232,7 +232,7 @@ See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts
 
 ![Architecture](docs/public/imgs/architecture.png)
 
-## What's shipped (v0.39.3)
+## What's shipped (v0.68.0)
 
 - **Pipeline core** — `.gocdnext/` folder, stage/job/needs/matrix, materials
   (git + upstream), webhook-first ingest with polling fallback.
@@ -267,6 +267,24 @@ See the [Architecture deep-dive](https://klinux.github.io/gocdnext/docs/concepts
   layer cache with buildx `cache: bucket` shorthand.
 - **Coverage** — per-job coverage reports with `fail_under` gating and a
   delta vs the mainline baseline.
+- **Security dashboard** — scanner SARIF (semgrep/trivy/osv-scanner/gitleaks)
+  ingested into a per-project Security tab with cross-run **new / existing /
+  fixed** tracking and triage state (dismiss / false-positive / accept, RBAC +
+  audit), an **org/label rollup** on the Analytics page, and shift-left signal on
+  PRs — **"new in this change"** vs the base branch + a self-healing GitHub
+  check-run summary.
+- **DORA analytics** — deployment frequency, lead time, change-failure rate and
+  time-to-restore rolled up across projects, grouped by a project label, with
+  performance tiers — on an Analytics page.
+- **Compliance pipelines** — policy-as-code framework checks (JSON-Schema-authored
+  policies, IntelliSense + live preview) surfaced per project with badges.
+- **Cluster registry** — named clusters (kubeconfig / token / in-cluster) injected
+  into deploys as a masked `PLUGIN_KUBECONFIG`, with a Test-connection probe.
+- **External secret backends** — Vault / GCP / AWS reference secrets (the DB stores
+  a `{path,key}` pointer, never the value), managed in Settings with hot-reload
+  and Test-connection.
+- **Project labels** — `key:value` grouping that drives the analytics, compliance
+  and security rollups.
 - **CLI** — `validate` + `run-local` (run a pipeline on your machine),
   plus `apply`, `secret`, `login`, and admin commands.
 - **RBAC + audit** — admin/maintainer/viewer, `audit_events` table,
