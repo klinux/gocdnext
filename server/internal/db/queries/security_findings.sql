@@ -207,6 +207,63 @@ JOIN latest l
 WHERE sfs.last_seen_run_id IS DISTINCT FROM l.latest_run_id
   AND sfs.state IN ('open', 'accepted');
 
+-- name: FindingsByRun :many
+-- One run's findings (occurrences) with their identity state. Deduped to
+-- identities in the store (worst-severity-wins); kept as occurrences here.
+SELECT f.job_name AS scanner_job, f.matrix_key, f.tool, f.fingerprint,
+       f.rule_id, f.severity, f.message, f.location_path, f.location_line,
+       COALESCE(sfs.state, 'open')::text AS state
+FROM security_findings f
+LEFT JOIN security_finding_states sfs
+    ON  sfs.pipeline_id = f.pipeline_id
+    AND sfs.scanner_job = f.job_name
+    AND sfs.matrix_key  = f.matrix_key
+    AND sfs.tool        = f.tool
+    AND sfs.fingerprint = f.fingerprint
+WHERE f.run_id = $1;
+
+-- name: RunScanSeries :many
+-- The run's reconciled scanner series — from security_scans (NOT findings), so a
+-- clean scan still registers. Drives has_scans / delta_available / unbaselined.
+SELECT DISTINCT scanner_job, matrix_key
+FROM security_scans
+WHERE run_id = $1;
+
+-- name: RunBaseContext :one
+-- The run's pipeline + (for PR runs) the base branch to diff "new in this change"
+-- against. base_ref is empty for non-PR runs (delta not applicable).
+SELECT pipeline_id, cause, COALESCE(cause_detail->>'pr_base_ref', '')::text AS base_ref
+FROM runs WHERE id = $1;
+
+-- name: SecurityBaseline :many
+-- The base-branch baseline for "new in this change", in ONE snapshot: the latest
+-- reconciled scan PER (scanner_job, matrix_key) on mainline runs of the base
+-- branch, LEFT JOINed to its findings. A clean series returns a row with NULL
+-- tool/fingerprint — so it still registers as a comparable series (clean base is
+-- a baseline) without a separate query racing a concurrent reconcile.
+--
+-- Branch match is via runs.revisions JSON (there is no runs.branch column);
+-- NOTE: in a multi-material pipeline this qualifies a run when ANY material is on
+-- the base branch — branch-scoping, not exact per-material binding (acceptable).
+WITH base_latest AS (
+    SELECT DISTINCT ON (sc.scanner_job, sc.matrix_key)
+        sc.job_run_id, sc.scanner_job, sc.matrix_key
+    FROM security_scans sc
+    JOIN runs r ON r.id = sc.run_id
+    WHERE sc.pipeline_id = sqlc.arg(pipeline_id)
+      AND r.id <> sqlc.arg(exclude_run)
+      AND r.cause IN ('webhook', 'poll')
+      AND jsonb_path_exists(
+          r.revisions,
+          '$.* ? (@.branch == $b)',
+          jsonb_build_object('b', sqlc.arg(base_ref)::text)
+      )
+    ORDER BY sc.scanner_job, sc.matrix_key, r.counter DESC
+)
+SELECT bl.scanner_job, bl.matrix_key, f.tool, f.fingerprint
+FROM base_latest bl
+LEFT JOIN security_findings f ON f.job_run_id = bl.job_run_id;
+
 -- name: SetFindingState :one
 -- Update a finding identity's human state (open|dismissed|false_positive|
 -- accepted). Scoped to project_id (the handler resolves slug → project) so a
