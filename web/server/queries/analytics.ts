@@ -120,6 +120,26 @@ export type ComplianceCoverageReport = {
   groups: ComplianceGroup[];
 };
 
+export type SecurityRollupGroup = {
+  group: string;
+  has_scans: boolean;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  total_open: number;
+  accepted: number;
+};
+
+export type SecurityRollupReport = {
+  key: string;
+  groups: SecurityRollupGroup[];
+  org_critical: number;
+  org_high: number;
+  org_total_open: number;
+  org_accepted: number;
+};
+
 async function readJSON<T>(path: string): Promise<T> {
   const url = env.GOCDNEXT_API_URL.replace(/\/+$/, "") + path;
   const session = (await cookies()).get("gocdnext_session")?.value;
@@ -193,5 +213,15 @@ export async function getComplianceCoverage(
 ): Promise<ComplianceCoverageReport> {
   return readJSON<ComplianceCoverageReport>(
     `/api/v1/analytics/compliance?key=${encodeURIComponent(key)}`,
+  );
+}
+
+// getSecurityRollup reads open-vulnerability counts per label-value group
+// (current state — no window).
+export async function getSecurityRollup(
+  key: string,
+): Promise<SecurityRollupReport> {
+  return readJSON<SecurityRollupReport>(
+    `/api/v1/analytics/security?key=${encodeURIComponent(key)}`,
   );
 }
