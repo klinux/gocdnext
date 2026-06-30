@@ -80,9 +80,12 @@ case "${RC}" in
                 fail "no package sources found in '${DIR}' (fail-on-no-sources=true)"
             fi
             echo "    no package sources found in '${DIR}' — nothing to scan (clean)"
-            # Synthesize a parser-valid empty SARIF so the Security dashboard
-            # records a clean SCA scan (clean != not-scanned).
-            if [ "${FORMAT}" = "sarif" ] && [ ! -f "${REPORT}" ]; then
+            # Always (over)write a parser-valid empty SARIF so the dashboard
+            # records a clean SCA scan. This branch is "clean" by contract, so
+            # overwrite even if osv-scanner left a partial/invalid file behind —
+            # a half-written report would make the server parser fail and keep
+            # the prior run's findings.
+            if [ "${FORMAT}" = "sarif" ]; then
                 printf '%s' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"osv-scanner"}},"results":[]}]}' > "${REPORT}"
             fi
             exit 0

@@ -44,6 +44,13 @@ run 0 OSV_RC=128 OSV_MSG="No package sources found, --help for usage information
 grep -q '"name":"osv-scanner"' "$WORK/osv-report.sarif" || { echo "FAIL[$CASE]: SARIF not parser-shaped"; teardown; exit 1; }
 teardown; ok
 
+# ── 1b. no sources but osv left a (partial) report → overwrite with valid SARIF ──
+CASE=no-sources-overwrite; setup
+run 0 OSV_RC=128 OSV_WRITE=1 OSV_MSG="No package sources found"
+grep -q '"name":"osv-scanner"' "$WORK/osv-report.sarif" \
+  || { echo "FAIL[$CASE]: partial report not overwritten with the clean SARIF"; cat "$WORK/osv-report.sarif"; teardown; exit 1; }
+teardown; ok
+
 # ── 2. no sources + fail-on-no-sources=true → exit 2 ──
 CASE=no-sources-strict; setup
 run 2 PLUGIN_FAIL_ON_NO_SOURCES=true OSV_RC=128 OSV_MSG="No package sources found"
