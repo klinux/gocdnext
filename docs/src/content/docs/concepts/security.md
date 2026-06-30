@@ -126,6 +126,10 @@ tab:
 - Every state change is written to the [audit log](/gocdnext/docs/install/auth/) with the
   actor, the new state, and the reason — so "who dismissed this and why" is
   always answerable.
+- **Reading** findings follows the same model as the rest of a run's data
+  (coverage, tests, logs): any authenticated user can view them. gocdnext's RBAC
+  is global roles, not per-project read ACLs, so there is no cross-project read
+  restriction on run-scoped views.
 
 ## Filtering
 

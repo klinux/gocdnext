@@ -10,8 +10,16 @@ import (
 
 // SecurityFindings handles GET /api/v1/runs/{id}/security-findings — the run's
 // security snapshot: open counts (identity-deduped), accepted, and the findings
-// "new in this change" vs the base branch (for PR runs). Run-scoped lookup,
-// mirroring the Coverage endpoint's authz (authenticated read group).
+// "new in this change" vs the base branch (for PR runs).
+//
+// Authorization (explicit decision): this is a run-scoped read behind RequireAuth
+// only, exactly like /runs/{id}/coverage, /tests and the logs — gocdnext's RBAC
+// is global roles (admin/maintainer/viewer), with no per-project read ACL, so an
+// authenticated viewer can read any run's data. Security findings are more
+// sensitive than coverage, but isolating only this endpoint would be inconsistent
+// and there's no per-project access primitive to check against. If per-project
+// read isolation is ever introduced, resolve run -> project here and deny
+// cross-project (with a test) — the same hook coverage/tests/logs would need.
 func (h *Handler) SecurityFindings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
