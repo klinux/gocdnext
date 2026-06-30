@@ -428,6 +428,9 @@ type Querier interface {
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
 	// read path.
 	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
+	// One run's findings (occurrences) with their identity state. Deduped to
+	// identities in the store (worst-severity-wins); kept as occurrences here.
+	FindingsByRun(ctx context.Context, runID pgtype.UUID) ([]FindingsByRunRow, error)
 	// NOTE: the batch identity upsert lives as a raw tx.Exec in the store
 	// (ReplaceSecurityFindings) — sqlc's static analyzer can't model the multi-array
 	// unnest(a,b,...) FROM-form (valid at runtime). See upsertFindingIdentitiesSQL.
@@ -1401,6 +1404,9 @@ type Querier interface {
 	// Emergency rotation: key leaves the JWKS immediately. In-flight
 	// tokens become unverifiable — that's the kill switch.
 	RevokeActiveOIDCKey(ctx context.Context) (int64, error)
+	// The run's pipeline + (for PR runs) the base branch to diff "new in this change"
+	// against. base_ref is empty for non-PR runs (delta not applicable).
+	RunBaseContext(ctx context.Context, id pgtype.UUID) (RunBaseContextRow, error)
 	// Snapshot read: was the run created with a non-empty `Services`
 	// block in its pipeline definition? Persisted on insert
 	// (migration 00036) rather than computed live from
@@ -1410,6 +1416,19 @@ type Querier interface {
 	// than fail-open here — operator can run manual sweep if a stale
 	// leak surfaces).
 	RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error)
+	// The run's reconciled scanner series — from security_scans (NOT findings), so a
+	// clean scan still registers. Drives has_scans / delta_available / unbaselined.
+	RunScanSeries(ctx context.Context, runID pgtype.UUID) ([]RunScanSeriesRow, error)
+	// The base-branch baseline for "new in this change", in ONE snapshot: the latest
+	// reconciled scan PER (scanner_job, matrix_key) on mainline runs of the base
+	// branch, LEFT JOINed to its findings. A clean series returns a row with NULL
+	// tool/fingerprint — so it still registers as a comparable series (clean base is
+	// a baseline) without a separate query racing a concurrent reconcile.
+	//
+	// Branch match is via runs.revisions JSON (there is no runs.branch column);
+	// NOTE: in a multi-material pipeline this qualifies a run when ANY material is on
+	// the base branch — branch-scoping, not exact per-material binding (acceptable).
+	SecurityBaseline(ctx context.Context, arg SecurityBaselineParams) ([]SecurityBaselineRow, error)
 	// Security findings ingested from SARIF artifacts (#71 v1) + cross-run identity
 	// and state (#71 v2).
 	// Resolve run/pipeline/project/job metadata from the completed job_run, so the

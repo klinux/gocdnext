@@ -156,7 +156,24 @@ separately and a clear distinction between a **scanned-clean** group (`0 open`)
 and one that's **never been scanned**. Counts are by finding **identity**, not
 raw SARIF occurrences, so duplicates don't inflate the numbers.
 
+## Shift-left: PR runs & check runs
+
+On a **pull-request run**, the run page's **Security** tab headlines the findings
+**new in this change** — diffed against the latest reconciled scan of the same
+scanner series on the PR's **base branch** (open + accepted only; dismissed and
+false-positive never count as new). "No comparable base scan" is shown as
+distinct from "0 new" so an absent baseline never reads as all-clear, and a
+scanner the PR adds (no base to compare) is reported as such rather than inflated
+into "new".
+
+The same posture is posted to the **GitHub check run** as a one-line summary
+(e.g. `Security — 2 critical, 5 high open · 1 accepted · 3 new vs base`), so a
+reviewer sees it without leaving the PR. Because SARIF is ingested asynchronously,
+the line **self-heals**: if the scan lands after the run's check already
+completed, gocdnext re-patches the check so GitHub converges to the right numbers.
+
 ## Not yet
 
-A per-PR "new findings in this change" widget and a check-run summary line are
-planned but not yet shipped.
+**Gating** a PR on new criticals (a policy decision) and an auto-posted PR
+**comment** (the check-run line already gives PR visibility without comment spam)
+are intentionally out of scope.

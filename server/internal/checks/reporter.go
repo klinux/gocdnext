@@ -234,16 +234,11 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	status = current
 
 	conclusion := conclusionFor(status)
-	title := "Pipeline " + status
-	summary := fmt.Sprintf("gocdnext run finished with status=%s.", status)
-	// Coverage enrichment: when the run reported coverage, the
-	// check summary carries the per-series percentages + delta vs
-	// the mainline baseline — the number a PR reviewer wants
-	// without leaving GitHub. Best-effort: a lookup failure
-	// degrades to the plain summary, never blocks the check.
-	if covLine := r.coverageSummaryLine(ctx, runID); covLine != "" {
-		summary += "\n\n" + covLine
-	}
+	// Coverage + security enrichment via the shared composer: the check
+	// summary carries per-series coverage deltas and the security posture
+	// (open + new vs base) — the numbers a PR reviewer wants without leaving
+	// GitHub. Best-effort: a lookup failure degrades to the plain summary.
+	title, summary := r.composeCheckOutput(ctx, runID, status, true)
 
 	if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
 		Owner:      link.Owner,
@@ -268,6 +263,66 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	if err := r.store.MarkGithubCheckRunCompleted(ctx, runID); err != nil {
 		r.log.Warn("checks: mark completed failed",
 			"run_id", runID, "check_run_id", link.CheckRunID, "err", err)
+	}
+	return nil
+}
+
+// RefreshSecuritySummary re-PATCHes a run's check output after SARIF ingestion
+// lands (it's async, so a run whose scanner is the last job can complete + close
+// the check before findings exist). Best-effort + self-healing: GitHub converges
+// to the security line once the scan reconciles. Takes the per-run check lock
+// ONCE and dispatches to locked-variant helpers — never the public lock-taking
+// methods (re-entry would deadlock on a second pooled connection).
+func (r *Reporter) RefreshSecuritySummary(ctx context.Context, runID uuid.UUID) error {
+	if r.appClient() == nil {
+		return nil
+	}
+	return r.store.WithRunCheckLock(ctx, runID, func() error {
+		return r.refreshSecurityLocked(ctx, runID)
+	})
+}
+
+func (r *Reporter) refreshSecurityLocked(ctx context.Context, runID uuid.UUID) error {
+	app := r.appClient()
+	if app == nil {
+		return nil
+	}
+	link, err := r.store.GetGithubCheckRun(ctx, runID)
+	if errors.Is(err, store.ErrCheckRunNotFound) {
+		return nil // no check for this run — nothing to refresh
+	}
+	if err != nil {
+		return err
+	}
+	current, terminal, err := r.runTerminalStatus(ctx, runID)
+	if err != nil {
+		return err
+	}
+	// Terminal but not yet finalized in our DB → go through the shared complete
+	// path (it composes the same output, PATCHes completed+conclusion, AND marks
+	// github_check_runs.completed) so the run→check link stays consistent and a
+	// later rerun recreates rather than reuses. We already hold the lock.
+	if terminal && !link.Completed {
+		return r.completeCheckLocked(ctx, runID, current)
+	}
+	// Otherwise re-PATCH output, reasserting (not deriving) the current state:
+	// terminal+completed → re-send status=completed + conclusion + output;
+	// still running → in_progress + output, no conclusion.
+	title, summary := r.composeCheckOutput(ctx, runID, current, terminal)
+	in := ghscm.UpdateCheckRunInput{
+		Owner:      link.Owner,
+		Repo:       link.Repo,
+		CheckRunID: link.CheckRunID,
+		Output:     &ghscm.CheckRunOutput{Title: title, Summary: summary},
+	}
+	if terminal {
+		in.Status = ghscm.CheckStatusCompleted
+		in.Conclusion = conclusionFor(current)
+	} else {
+		in.Status = ghscm.CheckStatusInProgress
+	}
+	if err := app.UpdateCheckRun(ctx, link.InstallationID, in); err != nil {
+		return fmt.Errorf("patch check run (security refresh): %w", err)
 	}
 	return nil
 }
@@ -396,6 +451,67 @@ func (r *Reporter) coverageSummaryLine(ctx context.Context, runID uuid.UUID) str
 		}
 	}
 	return b.String()
+}
+
+// securitySummaryLine renders the check-run security line from the run's
+// findings + base-branch delta. Identity counts (not SARIF occurrences); empty
+// when the run had no reconciled scan (non-fatal — a lookup failure degrades to
+// no line, never blocks the check). Segments: open severities, then `· N
+// accepted` (acknowledged risk, never folded into open), `· N new vs base` only
+// when a comparable base exists, `· N series without base` when some scanner
+// series have no base to diff against.
+func (r *Reporter) securitySummaryLine(ctx context.Context, runID uuid.UUID) string {
+	sec, err := r.store.RunSecuritySummary(ctx, runID)
+	if err != nil || !sec.HasScans {
+		return ""
+	}
+	var openParts []string
+	for _, s := range []struct {
+		n     int64
+		label string
+	}{{sec.Critical, "critical"}, {sec.High, "high"}, {sec.Medium, "medium"}, {sec.Low, "low"}} {
+		if s.n > 0 {
+			openParts = append(openParts, fmt.Sprintf("%d %s", s.n, s.label))
+		}
+	}
+	var b strings.Builder
+	b.WriteString("**Security** — ")
+	if len(openParts) == 0 {
+		b.WriteString("0 open")
+	} else {
+		b.WriteString(strings.Join(openParts, ", "))
+		b.WriteString(" open")
+	}
+	if sec.Accepted > 0 {
+		fmt.Fprintf(&b, " · %d accepted", sec.Accepted)
+	}
+	if sec.DeltaAvailable {
+		fmt.Fprintf(&b, " · %d new vs base", len(sec.NewInChange))
+	}
+	if sec.UnbaselinedSeries > 0 {
+		fmt.Fprintf(&b, " · %d series without base", sec.UnbaselinedSeries)
+	}
+	return b.String()
+}
+
+// composeCheckOutput builds the check run's title + summary, shared by the
+// completion path and the post-ingest security refresh so the two can never
+// drift. Coverage + security lines are appended best-effort.
+func (r *Reporter) composeCheckOutput(ctx context.Context, runID uuid.UUID, status string, terminal bool) (title, summary string) {
+	if terminal {
+		title = "Pipeline " + status
+		summary = fmt.Sprintf("gocdnext run finished with status=%s.", status)
+	} else {
+		title = "Pipeline running"
+		summary = "gocdnext run in progress."
+	}
+	if cov := r.coverageSummaryLine(ctx, runID); cov != "" {
+		summary += "\n\n" + cov
+	}
+	if sec := r.securitySummaryLine(ctx, runID); sec != "" {
+		summary += "\n\n" + sec
+	}
+	return title, summary
 }
 
 // runContext is the shape reporter needs: triggering material URL,
