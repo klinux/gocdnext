@@ -34,7 +34,14 @@ export function FindingsTable({ findings }: { findings: Finding[] }) {
                 </StatusPill>
               </TableCell>
               <TableCell>
-                <div className="font-mono text-xs font-medium">{f.rule_id}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-xs font-medium">{f.rule_id}</span>
+                  {f.status === "new" ? (
+                    <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wide text-primary">
+                      New
+                    </span>
+                  ) : null}
+                </div>
                 {f.message ? (
                   <div className="line-clamp-2 max-w-[420px] text-xs text-muted-foreground">
                     {f.message}

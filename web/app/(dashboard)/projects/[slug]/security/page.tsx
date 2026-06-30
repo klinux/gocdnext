@@ -10,6 +10,7 @@ import { Pagination } from "@/components/shared/pagination";
 import { StatusPill } from "@/components/shared/status-pill";
 import { SEVERITY_ORDER, severityLabel, severityTone } from "@/lib/severity";
 import { GocdnextAPIError, listFindings } from "@/server/queries/projects";
+import type { FixedFinding } from "@/types/api";
 
 type Params = { slug: string };
 type Search = {
@@ -79,6 +80,7 @@ export default async function SecurityPage({
             </StatusPill>
           ))}
         </div>
+        {data.fixed_total > 0 ? <FixedSummary fixed={data.fixed} total={data.fixed_total} /> : null}
       </header>
 
       <form
@@ -141,6 +143,34 @@ export default async function SecurityPage({
         </>
       )}
     </section>
+  );
+}
+
+// FixedSummary surfaces identities that were present in a prior scan but are
+// gone from the scanner's latest run — collapsed so it never competes with the
+// open findings, expandable for the "what got resolved" view.
+function FixedSummary({ fixed, total }: { fixed: FixedFinding[]; total: number }) {
+  return (
+    <details className="rounded-md border border-border bg-card px-3 py-2 text-sm">
+      <summary className="cursor-pointer font-medium text-muted-foreground">
+        ✓ {total} fixed since last scan
+      </summary>
+      <ul className="mt-2 space-y-1.5">
+        {fixed.map((f) => (
+          <li key={f.id} className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <StatusPill tone={severityTone(f.severity)}>{severityLabel(f.severity)}</StatusPill>
+            <span className="font-mono">{f.rule_id}</span>
+            <span>{f.tool}</span>
+            {f.location_path ? (
+              <span className="font-mono">
+                {f.location_path}
+                {f.location_line ? `:${f.location_line}` : ""}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

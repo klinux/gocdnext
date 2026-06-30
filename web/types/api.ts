@@ -830,12 +830,32 @@ export type Finding = {
   artifact_id?: string | null;
   artifact_path: string;
   created_at: string;
+  status: string; // "new" (first seen in this run) | "existing"
+};
+
+// FixedFinding is an identity gone from the scanner's latest scan — surfaced
+// from the snapshot (its security_findings occurrence row no longer exists).
+export type FixedFinding = {
+  id: number;
+  pipeline_id: string;
+  scanner_job: string;
+  matrix_key: string;
+  tool: string;
+  rule_id: string;
+  severity: string;
+  level: string;
+  message: string;
+  location_path: string;
+  location_line: number;
+  last_seen_at: string;
 };
 
 export type FindingsList = {
   findings: Finding[];
   total: number;
   severity_counts: Record<string, number>;
+  fixed: FixedFinding[];
+  fixed_total: number;
   limit: number;
   offset: number;
 };
