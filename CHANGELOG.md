@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.70.1 — 2026-07-01
+
+### Fixed
+
+- **Security dashboard now ingests real artifacts — gzipped-tar SARIF (#148).**
+  The agent stores every artifact as a gzipped tar (`runner.TarGzPath`), but the
+  server fed the still-compressed object straight to the SARIF JSON decoder, so a
+  real scan's report failed with `sarif: decode: invalid character '\x1f'` (the
+  gzip magic byte) and nothing was ever ingested — the dashboard only worked in
+  tests that seeded raw bytes. Ingestion now gunzips + untars and parses every
+  `*.sarif` entry (a non-gzip stream is still handled as a raw SARIF), with
+  bounded reads. This was masked until `artifacts.when` (v0.70.0) let a blocking
+  scan publish its SARIF on a red job.
+
 ## v0.70.0 — 2026-07-01
 
 ### Fixed
