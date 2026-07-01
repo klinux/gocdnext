@@ -8,6 +8,31 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.70.0 — 2026-07-01
+
+### Fixed
+
+- **`artifacts.when` is now honored — blocking scanners can publish SARIF
+  (#146).** The field (`on_success` | `on_failure` | `always`) was documented
+  and parsed but never wired: it was dropped at parse, never reached the agent,
+  and the agent uploaded artifacts only when every task succeeded. So a blocking
+  scanner (`exit-code: 1` on a finding) failed the job and its SARIF never
+  uploaded — the Security dashboard only ever saw clean scans, never the
+  findings that failed the build. Plumbed end-to-end (domain → parser → proto
+  `JobAssignment` → scheduler → agent) and evaluated in both exec paths
+  (shared + isolated), including the task-error, non-zero-exit, and coverage
+  `fail_under` failure branches. Use `artifacts.when: always` on a blocking
+  scanner so it fails the job **and** feeds the dashboard.
+- **Compliance no longer forces `push` onto `pull_request`-only pipelines
+  (#147).** A governed project unioned a `push` trigger onto every pipeline, so
+  a `when.event: [pull_request]` pipeline (e.g. a PR-check pipeline) also fired
+  on every push to the default branch. Now only pipelines that already fire on
+  push get the non-suppressible hardening (path/branch narrowing stripped);
+  PR-only / tag / manual pipelines are left untouched, and the synthetic
+  `_compliance` pipeline is created to carry push enforcement whenever no user
+  pipeline fires on push. Enforcement is preserved; PR-only pipelines keep their
+  semantics.
+
 ## v0.69.0 — 2026-06-30
 
 ### Added
