@@ -157,6 +157,43 @@ func TestPostJob_OptionalRealFailureStaysAlarming(t *testing.T) {
 	}
 }
 
+// TestPostJob_SkipArtifacts covers artifacts.when=on_failure on a green job:
+// PostJob must NOT upload artifacts (SkipArtifacts=true) even though a
+// required path is declared and the uploader would have returned a ref.
+// (The failure path handles the upload for that policy.)
+func TestPostJob_SkipArtifacts(t *testing.T) {
+	cr := newCaptureRunnerPJ(t)
+	uploader := &fakeIsolatedUploader{
+		refs: []*gocdnextv1.ArtifactRef{{Path: "gitleaks.sarif"}},
+	}
+	a := &gocdnextv1.JobAssignment{
+		RunId: "r", JobId: "j", Name: "n",
+		ArtifactPaths: []string{"gitleaks.sarif"},
+	}
+	var seq atomic.Int64
+
+	refs, err := cr.PostJob(context.Background(), PostJobConfig{
+		Uploader:      uploader,
+		PodName:       "pod",
+		HousekeeperCt: "housekeeper",
+		PodWorkDir:    "/workspace",
+		SkipArtifacts: true,
+	}, a, &seq)
+	if err != nil {
+		t.Fatalf("PostJob returned error: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("SkipArtifacts=true still uploaded: refs=%v", refs)
+	}
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	for _, line := range cr.out {
+		if strings.Contains(line, "artifact uploaded") {
+			t.Errorf("SkipArtifacts=true emitted an upload log: %q", line)
+		}
+	}
+}
+
 var errSimulatedNetwork = errSentinel("simulated network failure")
 
 type errSentinel string

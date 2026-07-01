@@ -458,11 +458,16 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// failed, which stack trace). Mirrors shared-mode behaviour
 		// (runner.go::Execute). Skipped only when the pod is gone.
 		// (Post-task artifact upload still doesn't run on failure.)
+		var failRefs []*gocdnextv1.ArtifactRef
 		if !skipScans {
 			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
+			// artifacts.when: on_failure/always still ship on a red job so a
+			// blocking scanner's SARIF reaches the dashboard. Requires the
+			// housekeeper alive — skipScans (pod gone/disrupted) also skips it.
+			failRefs = r.postJobArtifactsOnFailure(ctx, exec, podName, scriptWorkDir, a, &seq)
 		}
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit), resultMsg)
+		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit), resultMsg, failRefs)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
@@ -478,10 +483,13 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// order in runner.go).
 	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	if gateFailed, reason := r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq); gateFailed {
-		// fail_under: green build under the declared floor — job
-		// fails before post-job work (no cache store, no artifact
-		// upload), mirroring shared mode and task failures.
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason)
+		// fail_under: green build under the declared floor — job fails before
+		// cache store, mirroring shared mode and task failures. The pod is
+		// still alive (the task succeeded), so artifacts.when=on_failure/always
+		// can still ship via the housekeeper — a blocking scanner's SARIF must
+		// reach the dashboard even when the coverage gate tripped the job.
+		failRefs := r.postJobArtifactsOnFailure(ctx, exec, podName, scriptWorkDir, a, &seq)
+		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason, failRefs)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
@@ -504,6 +512,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 			PodName:       podName,
 			HousekeeperCt: "housekeeper",
 			PodWorkDir:    scriptWorkDir,
+			// artifacts.when=on_failure wants the upload only on a red job;
+			// skip it here (caches still run). always/on_success upload.
+			SkipArtifacts: !shouldUploadArtifacts(a.GetArtifactsWhen(), false),
 		}, a, &seq)
 	})
 	if postErr != nil {
