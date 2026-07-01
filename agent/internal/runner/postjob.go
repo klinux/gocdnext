@@ -53,6 +53,10 @@ type PostJobConfig struct {
 	PodName       string
 	HousekeeperCt string // typically "housekeeper"
 	PodWorkDir    string // mount path inside the pod, typically /workspace
+	// SkipArtifacts suppresses the artifact upload (caches still run). Set
+	// on a successful job whose artifacts.when is on_failure — the upload
+	// belongs to the failure path, not this one.
+	SkipArtifacts bool
 }
 
 // PostJob runs the post-task phase for an isolated-mode job and
@@ -79,57 +83,61 @@ func (r *Runner) PostJob(
 
 	var refs []*gocdnextv1.ArtifactRef
 
-	if required := a.GetArtifactPaths(); len(required) > 0 {
-		got, err := cfg.Uploader.UploadFromPod(
-			ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
-			a.GetRunId(), a.GetJobId(), required)
-		refs = append(refs, got...)
-		for _, ref := range got {
-			r.emitLog(a, seq, "stdout", fmt.Sprintf(
-				"artifact uploaded: %s (%d bytes, sha256 %s)",
-				ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
-		}
-		if err != nil {
-			r.emitLog(a, seq, "stderr", fmt.Sprintf("artifact upload failed: %v", err))
-			r.cfg.Logger.Warn("runner: required artifact upload failed (isolated)",
-				"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
-			return refs, err
-		}
-	}
-
-	if optional := a.GetOptionalArtifactPaths(); len(optional) > 0 {
-		got, err := cfg.Uploader.UploadFromPod(
-			ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
-			a.GetRunId(), a.GetJobId(), optional)
-		if err != nil {
-			// Distinguish "files don't exist" (the OPTIONAL contract:
-			// "if it's not there, no problem") from "real transport
-			// failure" (network, RPC, exec error). The first is a
-			// neutral info line; the second is a warn-level "failed".
-			// Pre-v0.14.8 both used the alarming "failed (continuing)"
-			// shape, which scared operators who had legitimately
-			// declared an optional Jacoco/screenshot upload that the
-			// run didn't produce.
-			var missing *podfs.PathsMissingError
-			if errors.As(err, &missing) {
-				r.emitLog(a, seq, "stdout", fmt.Sprintf(
-					"optional artifact: no files matched %s",
-					strings.Join(missing.Paths, ", ")))
-			} else {
-				r.emitLog(a, seq, "stderr", fmt.Sprintf(
-					"optional artifact upload failed (continuing): %v", err))
-				r.cfg.Logger.Warn("runner: optional artifact upload failed (isolated)",
-					"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
-			}
-		} else {
+	// SkipArtifacts opts out of the upload for this outcome (a successful
+	// job with artifacts.when=on_failure); caches below still run.
+	if !cfg.SkipArtifacts {
+		if required := a.GetArtifactPaths(); len(required) > 0 {
+			got, err := cfg.Uploader.UploadFromPod(
+				ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
+				a.GetRunId(), a.GetJobId(), required)
+			refs = append(refs, got...)
 			for _, ref := range got {
 				r.emitLog(a, seq, "stdout", fmt.Sprintf(
-					"optional artifact uploaded: %s (%d bytes, sha256 %s)",
+					"artifact uploaded: %s (%d bytes, sha256 %s)",
 					ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
 			}
-			refs = append(refs, got...)
+			if err != nil {
+				r.emitLog(a, seq, "stderr", fmt.Sprintf("artifact upload failed: %v", err))
+				r.cfg.Logger.Warn("runner: required artifact upload failed (isolated)",
+					"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+				return refs, err
+			}
 		}
-	}
+
+		if optional := a.GetOptionalArtifactPaths(); len(optional) > 0 {
+			got, err := cfg.Uploader.UploadFromPod(
+				ctx, cfg.Executor, cfg.PodName, cfg.HousekeeperCt, cfg.PodWorkDir,
+				a.GetRunId(), a.GetJobId(), optional)
+			if err != nil {
+				// Distinguish "files don't exist" (the OPTIONAL contract:
+				// "if it's not there, no problem") from "real transport
+				// failure" (network, RPC, exec error). The first is a
+				// neutral info line; the second is a warn-level "failed".
+				// Pre-v0.14.8 both used the alarming "failed (continuing)"
+				// shape, which scared operators who had legitimately
+				// declared an optional Jacoco/screenshot upload that the
+				// run didn't produce.
+				var missing *podfs.PathsMissingError
+				if errors.As(err, &missing) {
+					r.emitLog(a, seq, "stdout", fmt.Sprintf(
+						"optional artifact: no files matched %s",
+						strings.Join(missing.Paths, ", ")))
+				} else {
+					r.emitLog(a, seq, "stderr", fmt.Sprintf(
+						"optional artifact upload failed (continuing): %v", err))
+					r.cfg.Logger.Warn("runner: optional artifact upload failed (isolated)",
+						"err", err, "run_id", a.GetRunId(), "job_id", a.GetJobId())
+				}
+			} else {
+				for _, ref := range got {
+					r.emitLog(a, seq, "stdout", fmt.Sprintf(
+						"optional artifact uploaded: %s (%d bytes, sha256 %s)",
+						ref.GetPath(), ref.GetSize(), ref.GetContentSha256()))
+				}
+				refs = append(refs, got...)
+			}
+		}
+	} // end if !cfg.SkipArtifacts
 
 	if cfg.Cache != nil {
 		for _, entry := range a.GetCaches() {

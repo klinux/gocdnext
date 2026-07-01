@@ -210,6 +210,7 @@ func jobToDef(j domain.Job) JobDef {
 		def.Artifacts = &Artifacts{
 			Paths:    j.ArtifactPaths,
 			Optional: j.OptionalArtifactPaths,
+			When:     j.ArtifactsWhen, // omitempty: "" (on_success) stays implicit
 		}
 	}
 	for _, c := range j.Cache {

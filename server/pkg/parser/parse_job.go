@@ -122,6 +122,18 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 			canonOptional[canon] = struct{}{}
 			j.OptionalArtifactPaths = append(j.OptionalArtifactPaths, p)
 		}
+		// artifacts.when gates upload on task outcome. Empty defaults to
+		// on_success (upload only on a green job). Reject unknown values
+		// loudly — a typo like `on_faliure` must not silently fall back to
+		// on_success and hide a red scan's findings from the dashboard.
+		switch w := strings.TrimSpace(jd.Artifacts.When); w {
+		case "", "on_success":
+			// default: leave j.ArtifactsWhen empty (== on_success)
+		case "on_failure", "always":
+			j.ArtifactsWhen = w
+		default:
+			return domain.Job{}, fmt.Errorf("job %q: artifacts.when must be on_success | on_failure | always (got %q)", name, jd.Artifacts.When)
+		}
 	}
 	for _, c := range jd.Cache {
 		if c.Key == "" {

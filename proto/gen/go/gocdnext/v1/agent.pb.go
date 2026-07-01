@@ -2219,8 +2219,15 @@ type JobAssignment struct {
 	// (CoverageSummary on the agent stream) — the raw file never
 	// crosses this boundary.
 	CoverageReport *CoverageReportSpec `protobuf:"bytes,24,opt,name=coverage_report,json=coverageReport,proto3" json:"coverage_report,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ArtifactsWhen gates artifact upload on the task outcome, from the
+	// YAML `artifacts.when:`. "" / "on_success" → upload only when every
+	// task succeeded (default). "on_failure" → upload only when a task
+	// failed. "always" → upload regardless. This is what lets a blocking
+	// scanner (exit-code 1 on a finding) still publish its SARIF so the
+	// Security dashboard sees the findings that failed the job.
+	ArtifactsWhen string `protobuf:"bytes,25,opt,name=artifacts_when,json=artifactsWhen,proto3" json:"artifacts_when,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JobAssignment) Reset() {
@@ -2412,6 +2419,13 @@ func (x *JobAssignment) GetCoverageReport() *CoverageReportSpec {
 		return x.CoverageReport
 	}
 	return nil
+}
+
+func (x *JobAssignment) GetArtifactsWhen() string {
+	if x != nil {
+		return x.ArtifactsWhen
+	}
+	return ""
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so
@@ -3310,7 +3324,8 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x14cleanup_run_services\x18\x04 \x01(\v2\x1f.gocdnext.v1.CleanupRunServicesH\x00R\x12cleanupRunServicesB\x06\n" +
 	"\x04kind\"+\n" +
 	"\x12CleanupRunServices\x12\x15\n" +
-	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\xe6\t\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\x8d\n" +
+	"\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x12\n" +
@@ -3335,7 +3350,8 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\aoutputs\x18\x14 \x03(\v2'.gocdnext.v1.JobAssignment.OutputsEntryR\aoutputs\x12Q\n" +
 	"\rnode_selector\x18\x15 \x03(\v2,.gocdnext.v1.JobAssignment.NodeSelectorEntryR\fnodeSelector\x129\n" +
 	"\vtolerations\x18\x16 \x03(\v2\x17.gocdnext.v1.TolerationR\vtolerations\x12H\n" +
-	"\x0fcoverage_report\x18\x18 \x01(\v2\x1f.gocdnext.v1.CoverageReportSpecR\x0ecoverageReport\x1a6\n" +
+	"\x0fcoverage_report\x18\x18 \x01(\v2\x1f.gocdnext.v1.CoverageReportSpecR\x0ecoverageReport\x12%\n" +
+	"\x0eartifacts_when\x18\x19 \x01(\tR\rartifactsWhen\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +

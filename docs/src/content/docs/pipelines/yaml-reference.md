@@ -366,6 +366,14 @@ global retention default set by the operator. `when:` decides
 whether the upload runs at all: `on_success` (default), `on_failure`
 (only when the job failed — useful for crash dumps), or `always`.
 
+Use `when: always` for a **blocking scanner** that emits SARIF: a
+scanner with `exit-code: 1` fails the job on a finding, and without
+`always` its report wouldn't upload on that red run — so the
+[Security dashboard](/gocdnext/docs/concepts/security/) would never see
+the findings that actually failed the build. `always` publishes the
+SARIF on both outcomes, so blocking and dashboard visibility hold
+together.
+
 ## Test reports
 
 ```yaml
