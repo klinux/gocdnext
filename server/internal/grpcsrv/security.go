@@ -1,6 +1,9 @@
 package grpcsrv
 
 import (
+	"archive/tar"
+	"bufio"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -143,29 +146,77 @@ func (a *AgentService) parseSarifArtifact(ctx context.Context, art store.Artifac
 	}
 	defer rc.Close()
 
-	parsed, truncated, err := sarif.Parse(io.LimitReader(rc, maxSarifBytes))
+	var out []store.FindingIn
+	err = forEachSarifStream(rc, func(r io.Reader) error {
+		parsed, truncated, perr := sarif.Parse(r)
+		if perr != nil {
+			return perr
+		}
+		if truncated {
+			a.log.Warn("security: sarif findings truncated at cap", "artifact", art.Path)
+		}
+		for _, f := range parsed {
+			out = append(out, store.FindingIn{
+				ArtifactID:   art.ID,
+				ArtifactPath: art.Path,
+				Tool:         f.Tool,
+				RuleID:       f.RuleID,
+				Severity:     f.Severity,
+				Level:        f.Level,
+				Message:      f.Message,
+				LocationPath: f.LocationPath,
+				LocationLine: f.LocationLine,
+				LocationURL:  f.LocationURL,
+				Fingerprint:  f.Fingerprint,
+			})
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", art.Path, err)
 	}
-	if truncated {
-		a.log.Warn("security: sarif findings truncated at cap", "artifact", art.Path)
-	}
-
-	out := make([]store.FindingIn, 0, len(parsed))
-	for _, f := range parsed {
-		out = append(out, store.FindingIn{
-			ArtifactID:   art.ID,
-			ArtifactPath: art.Path,
-			Tool:         f.Tool,
-			RuleID:       f.RuleID,
-			Severity:     f.Severity,
-			Level:        f.Level,
-			Message:      f.Message,
-			LocationPath: f.LocationPath,
-			LocationLine: f.LocationLine,
-			LocationURL:  f.LocationURL,
-			Fingerprint:  f.Fingerprint,
-		})
-	}
 	return out, nil
+}
+
+// forEachSarifStream invokes fn with each SARIF document inside an artifact
+// object. The agent stores every artifact as a gzipped tar (runner.TarGzPath),
+// so the common case is: gunzip → untar → yield every *.sarif entry. A stream
+// that isn't gzip is treated as a single raw SARIF — covers pre-tar fixtures
+// and any direct (non-agent) upload. Reads are capped: the raw stream and the
+// total uncompressed tar output are each bounded by maxSarifBytes so a
+// pathological artifact can't exhaust memory.
+func forEachSarifStream(r io.Reader, fn func(io.Reader) error) error {
+	br := bufio.NewReader(r)
+	magic, _ := br.Peek(2)
+	if len(magic) < 2 || magic[0] != 0x1f || magic[1] != 0x8b {
+		// Not gzip → raw SARIF (legacy / test fixtures / direct upload).
+		return fn(io.LimitReader(br, maxSarifBytes))
+	}
+	gz, err := gzip.NewReader(br)
+	if err != nil {
+		return fmt.Errorf("gunzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(io.LimitReader(gz, maxSarifBytes))
+	seen := 0
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("untar: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg || !strings.HasSuffix(strings.ToLower(hdr.Name), ".sarif") {
+			continue
+		}
+		if err := fn(tr); err != nil {
+			return err
+		}
+		seen++
+	}
+	if seen == 0 {
+		return fmt.Errorf("no .sarif entry found in artifact tarball")
+	}
+	return nil
 }
