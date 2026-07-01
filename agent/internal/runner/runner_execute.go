@@ -226,11 +226,14 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// the cascade fires.
 	r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 	if gateFailed, reason := r.scanCoverage(scriptWorkDir, a, &seq); gateFailed {
-		// fail_under: the build is functionally green but the
-		// declared coverage floor wasn't met — the job fails like
-		// any other failed contract (no cache store, no artifacts,
-		// mirroring the task-failure path).
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason)
+		// fail_under: the build is functionally green but the declared
+		// coverage floor wasn't met — the job fails like any other failed
+		// contract (no cache store). This IS a job failure, so
+		// artifacts.when=on_failure/always still ships here (mirroring the
+		// task-failure branches) — a blocking scanner's SARIF must reach the
+		// dashboard even when the coverage gate is what tripped the job.
+		refs := r.uploadArtifactsOnFailure(ctx, scriptWorkDir, a, &seq)
+		r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason, refs, nil)
 		return
 	}
 

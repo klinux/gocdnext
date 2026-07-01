@@ -483,10 +483,13 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// order in runner.go).
 	r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 	if gateFailed, reason := r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq); gateFailed {
-		// fail_under: green build under the declared floor — job
-		// fails before post-job work (no cache store, no artifact
-		// upload), mirroring shared mode and task failures.
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason)
+		// fail_under: green build under the declared floor — job fails before
+		// cache store, mirroring shared mode and task failures. The pod is
+		// still alive (the task succeeded), so artifacts.when=on_failure/always
+		// can still ship via the housekeeper — a blocking scanner's SARIF must
+		// reach the dashboard even when the coverage gate tripped the job.
+		failRefs := r.postJobArtifactsOnFailure(ctx, exec, podName, scriptWorkDir, a, &seq)
+		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, 1, reason, failRefs)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
