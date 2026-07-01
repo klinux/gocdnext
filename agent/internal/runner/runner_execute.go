@@ -194,8 +194,11 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d: error)", phaseDur(tasksStart), i))
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
-			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
-				fmt.Sprintf("task %d: %v", i, err))
+			// artifacts.when: on_failure/always still ship on a red job so a
+			// blocking scanner's SARIF reaches the dashboard.
+			refs := r.uploadArtifactsOnFailure(ctx, scriptWorkDir, a, &seq)
+			r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
+				fmt.Sprintf("task %d: %v", i, err), refs, nil)
 			return
 		}
 		if exitCode != 0 {
@@ -203,8 +206,9 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 			r.emitPhase(a, &seq, fmt.Sprintf("tasks failed after %s (task %d, exit %d)", phaseDur(tasksStart), i, exitCode))
 			r.scanTestReports(ctx, scriptWorkDir, a, &seq)
 			r.scanCoverage(scriptWorkDir, a, &seq)
-			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
-				fmt.Sprintf("task %d exited with %d", i, exitCode))
+			refs := r.uploadArtifactsOnFailure(ctx, scriptWorkDir, a, &seq)
+			r.sendResultWithArtifactsAndOutputs(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(exitCode),
+				fmt.Sprintf("task %d exited with %d", i, exitCode), refs, nil)
 			return
 		}
 	}
@@ -253,7 +257,10 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// on every single-material pipeline.
 	var refs []*gocdnextv1.ArtifactRef
 	var uploadErr error
-	if len(a.GetArtifactPaths()) > 0 || len(a.GetOptionalArtifactPaths()) > 0 {
+	// On success we upload unless artifacts.when is on_failure (which wants
+	// the upload only on a red job — handled in the failure branches above).
+	if (len(a.GetArtifactPaths()) > 0 || len(a.GetOptionalArtifactPaths()) > 0) &&
+		shouldUploadArtifacts(a.GetArtifactsWhen(), false) {
 		r.timedPhase(a, &seq, "artifact upload", func() {
 			refs, uploadErr = r.uploadArtifacts(ctx, scriptWorkDir, a, &seq)
 		})

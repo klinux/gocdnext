@@ -437,6 +437,13 @@ type Job struct {
 	// failure — useful for coverage reports, screenshots, or debug logs
 	// that should ship when possible but never gate the build.
 	OptionalArtifactPaths []string
+	// ArtifactsWhen gates artifact upload on the task outcome
+	// (`artifacts.when:` in YAML): "on_success" (default — upload only
+	// when every task succeeded), "on_failure" (upload only when a task
+	// failed), or "always". Empty means on_success. This is what lets a
+	// blocking scanner (exit-code 1 on a finding) still publish its SARIF
+	// so the Security dashboard sees the very findings that failed the job.
+	ArtifactsWhen string
 	// ArtifactDeps declare artefacts this job consumes from earlier jobs
 	// in the same run. Agent downloads each before tasks start; a
 	// missing/not-ready dep fails the job cleanly.

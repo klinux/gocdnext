@@ -472,6 +472,14 @@ message JobAssignment {
   // (CoverageSummary on the agent stream) — the raw file never
   // crosses this boundary.
   CoverageReportSpec coverage_report = 24;
+
+  // ArtifactsWhen gates artifact upload on the task outcome, from the
+  // YAML `artifacts.when:`. "" / "on_success" → upload only when every
+  // task succeeded (default). "on_failure" → upload only when a task
+  // failed. "always" → upload regardless. This is what lets a blocking
+  // scanner (exit-code 1 on a finding) still publish its SARIF so the
+  // Security dashboard sees the findings that failed the job.
+  string artifacts_when = 25;
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so

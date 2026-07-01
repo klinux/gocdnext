@@ -438,6 +438,7 @@ func BuildAssignment(
 		// txn and silently dropping any other optional artifacts.
 		ArtifactPaths:         dedupedArtifactPaths,
 		OptionalArtifactPaths: dedupedOptionalPaths,
+		ArtifactsWhen:         jobDef.ArtifactsWhen,
 		ArtifactDownloads:     downloads,
 		Docker:                jobDef.Docker,
 		Services:              services,
