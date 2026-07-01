@@ -422,6 +422,13 @@ and <code dir="auto">optional:</code> is treated as required (required wins).</p
 global retention default set by the operator. <code dir="auto">when:</code> decides
 whether the upload runs at all: <code dir="auto">on_success</code> (default), <code dir="auto">on_failure</code>
 (only when the job failed — useful for crash dumps), or <code dir="auto">always</code>.</p>
+<p>Use <code dir="auto">when: always</code> for a <strong>blocking scanner</strong> that emits SARIF: a
+scanner with <code dir="auto">exit-code: 1</code> fails the job on a finding, and without
+<code dir="auto">always</code> its report wouldn’t upload on that red run — so the
+<a href="/gocdnext/docs/concepts/security/">Security dashboard</a> would never see
+the findings that actually failed the build. <code dir="auto">always</code> publishes the
+SARIF on both outcomes, so blocking and dashboard visibility hold
+together.</p>
 <h2 id="test-reports">Test reports</h2>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">test_reports</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#9B504E">**/junit.xml</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">- </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#9B504E">build/test-results/**/*.xml</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div></code></pre><div class="copy"><button title="Copy to clipboard" data-copied="Copied!" data-code="test_reports:  - &#x22;**/junit.xml&#x22;  - &#x22;build/test-results/**/*.xml&#x22;"><div></div></button></div></figure></div>
 <p><code dir="auto">test_reports:</code> is a <strong>bare list</strong> of globs (not a <code dir="auto">{paths: [...]}</code>
