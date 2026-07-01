@@ -25,6 +25,17 @@ func seedGovernedProject(t *testing.T, s *store.Store, slug string, assign bool)
 		Pipelines: []*domain.Pipeline{{
 			Name: "main", Stages: []string{"build"},
 			Jobs: []domain.Job{{Name: "compile", Stage: "build"}},
+			// Default-branch push material, as the API layer's implicit-material
+			// injection produces in production. Makes "main" a push pipeline so
+			// compliance hardens it in place rather than adding a synthetic.
+			Materials: []domain.Material{{
+				Type:        domain.MaterialGit,
+				Fingerprint: domain.GitFingerprint("https://github.com/acme/"+slug, "main"),
+				AutoUpdate:  true,
+				Git: &domain.GitMaterial{
+					URL: "https://github.com/acme/" + slug, Branch: "main", Events: []string{"push"},
+				},
+			}},
 		}},
 	}); err != nil {
 		t.Fatalf("seed project: %v", err)

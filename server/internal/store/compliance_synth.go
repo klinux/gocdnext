@@ -19,14 +19,17 @@ import (
 // recompute fan-out, so the same end state holds whether enforcement changed
 // via a repo push or an admin policy/framework mutation. It:
 //
-//   - guarantees a run path exists: a governed project with NO pipeline of its
-//     own gets the server-owned synthetic `_compliance` pipeline (so policies
-//     run even with no repo CI — the GitLab compliance guarantee);
-//   - makes the trigger non-suppressible: every governed pipeline gets a
-//     compliance-owned default-branch push material (no path/event narrowing),
-//     so the repo's `when.*` can't stop enforcement from firing;
-//   - tears the synthetic pipeline down when the project stops being governed or
-//     grows a pipeline of its own.
+//   - guarantees a push run path exists: if NO user pipeline fires on push to
+//     the default branch (only pull_request-only / tag / manual pipelines, or
+//     none at all), the server-owned synthetic `_compliance` pipeline is
+//     created to carry push enforcement (the GitLab compliance guarantee);
+//   - hardens the trigger on pipelines that DO fire on push: strips path/branch
+//     narrowing so a docs-only push can't dodge enforcement, while preserving
+//     the repo's clone URL / credentials / extra events. It does NOT add push
+//     to a pipeline scoped to other events — a `pull_request`-only pipeline
+//     (build-pr) stays PR-only; enforcement on push rides the synthetic;
+//   - tears the synthetic pipeline down once a user pipeline carries push
+//     enforcement, or the project stops being governed.
 //
 // A governed project with neither a pipeline nor a repo binding can't be
 // enforced at all → the operation is refused (rolls back) rather than silently
@@ -61,47 +64,35 @@ func reconcileGovernance(ctx context.Context, q *db.Queries, projectID pgtype.UU
 	}
 	var synthID pgtype.UUID
 	synthExists := false
-	repoCount := 0
 	for _, p := range pipes {
 		if p.SystemManaged {
 			synthExists = true
 			synthID = p.ID
-		} else {
-			repoCount++
 		}
 	}
 
-	// A governed project with no pipeline of its own runs policies via the
-	// synthetic pipeline; one that has a pipeline doesn't need it.
-	needSynth := repoCount == 0
-	switch {
-	case needSynth:
-		// Always upsert (not only on first create): refreshes the effective
-		// definition AND the material when policies or the scm_source
-		// (url/default-branch) change — a stale material would point the
-		// compliance trigger at the wrong branch/repo.
-		if err := createSyntheticPipeline(ctx, q, projectID, configPath, scmURL, defaultBranch, policies); err != nil {
-			return err
-		}
-	case synthExists:
-		if err := q.DeletePipeline(ctx, synthID); err != nil {
-			return fmt.Errorf("store: reconcile governance: drop synthetic: %w", err)
-		}
-	}
-
-	// Non-suppressible trigger on every governed repo pipeline. We MERGE onto any
-	// existing material on the same (url, default-branch) fingerprint so a repo's
-	// secret_ref / poll interval / extra events (tag, pull_request) survive — only
-	// path/branch narrowing of the compliance push is overridden.
+	// Harden the non-suppressible trigger ONLY on pipelines that already fire on
+	// push to the default branch: strip path/branch narrowing so a docs-only
+	// push can't dodge enforcement, while preserving the repo's clone URL /
+	// credentials / poll / extra events. We do NOT add push to a pipeline scoped
+	// to other events — a `pull_request`-only pipeline (build-pr) must stay
+	// PR-only; forcing push onto it made it run the full suite on every push
+	// (the bug). Track whether ANY user pipeline carries push enforcement.
 	complianceFP := domain.GitFingerprint(scmURL, defaultBranch)
+	anyPushPipeline := false
 	for _, p := range pipes {
 		if p.SystemManaged {
 			continue
 		}
-		mat, err := mergedComplianceMaterial(ctx, q, p.ID, scmURL, defaultBranch, complianceFP)
+		mat, firesOnPush, err := hardenedPushMaterial(ctx, q, p.ID, scmURL, defaultBranch, complianceFP)
 		if err != nil {
 			return err
 		}
+		if !firesOnPush {
+			// Not a default-branch push pipeline — leave its trigger untouched.
+			continue
+		}
+		anyPushPipeline = true
 		cfg, err := marshalMaterialConfig(mat)
 		if err != nil {
 			return fmt.Errorf("store: reconcile governance: marshal material: %w", err)
@@ -114,6 +105,24 @@ func reconcileGovernance(ctx context.Context, q *db.Queries, projectID pgtype.UU
 			AutoUpdate:  mat.AutoUpdate,
 		}); err != nil {
 			return fmt.Errorf("store: reconcile governance: override material: %w", err)
+		}
+	}
+
+	// A governed project needs at least one push-triggered run path so policies
+	// fire on a default-branch push. If no user pipeline fires on push (only
+	// PR-only/tag/manual pipelines, or none at all), the server-owned synthetic
+	// `_compliance` pipeline IS that path; otherwise it's redundant and removed.
+	// Always upsert on create: refreshes the effective definition + material when
+	// policies or the scm_source change.
+	needSynth := !anyPushPipeline
+	switch {
+	case needSynth:
+		if err := createSyntheticPipeline(ctx, q, projectID, configPath, scmURL, defaultBranch, policies); err != nil {
+			return err
+		}
+	case synthExists:
+		if err := q.DeletePipeline(ctx, synthID); err != nil {
+			return fmt.Errorf("store: reconcile governance: drop synthetic: %w", err)
 		}
 	}
 	return nil
@@ -136,15 +145,18 @@ func dropSyntheticIfPresent(ctx context.Context, q *db.Queries, projectID pgtype
 	return nil
 }
 
-// mergedComplianceMaterial builds the non-suppressible material for a governed
-// repo pipeline, preserving any existing same-fingerprint material's
-// credentials / poll interval / extra events while forcing a push trigger with
-// no path filter.
-func mergedComplianceMaterial(ctx context.Context, q *db.Queries, pipelineID pgtype.UUID, scmURL, defaultBranch, complianceFP string) (domain.Material, error) {
-	base := compliance.ComplianceMaterial(scmURL, defaultBranch)
+// hardenedPushMaterial builds the non-suppressible material for a governed repo
+// pipeline that ALREADY fires on push to the default branch: it preserves the
+// existing same-fingerprint material's clone URL / credentials / poll interval /
+// extra events (tag, …) and strips the path filter so a narrowed push can't
+// dodge enforcement. firesOnPush is false — and the returned material must be
+// ignored — when the pipeline has no default-branch material, or one scoped to
+// events that DON'T include push (pull_request-only, tag-only, manual): those
+// keep their trigger untouched (push enforcement rides the synthetic pipeline).
+func hardenedPushMaterial(ctx context.Context, q *db.Queries, pipelineID pgtype.UUID, scmURL, defaultBranch, complianceFP string) (domain.Material, bool, error) {
 	existing, err := q.ListMaterialsByPipeline(ctx, pipelineID)
 	if err != nil {
-		return domain.Material{}, fmt.Errorf("store: reconcile governance: list materials: %w", err)
+		return domain.Material{}, false, fmt.Errorf("store: reconcile governance: list materials: %w", err)
 	}
 	for _, m := range existing {
 		if m.Fingerprint != complianceFP || m.Type != string(domain.MaterialGit) {
@@ -152,11 +164,17 @@ func mergedComplianceMaterial(ctx context.Context, q *db.Queries, pipelineID pgt
 		}
 		var prev domain.GitMaterial
 		if err := json.Unmarshal(m.Config, &prev); err != nil {
-			return domain.Material{}, fmt.Errorf("store: reconcile governance: decode material: %w", err)
+			return domain.Material{}, false, fmt.Errorf("store: reconcile governance: decode material: %w", err)
 		}
+		if !eventsIncludePush(prev.Events) {
+			// PR-only / tag-only / manual on the default branch: not a push
+			// vehicle — leave it alone (do NOT force push onto it).
+			return domain.Material{}, false, nil
+		}
+		base := compliance.ComplianceMaterial(scmURL, defaultBranch)
 		// Preserve the repo's own clone URL (e.g. an SSH remote the agent has a
 		// key for — the runner clones exactly what we send), credentials,
-		// polling and extra events; force push, drop paths.
+		// polling and extra events; keep push, drop paths.
 		if prev.URL != "" {
 			base.Git.URL = prev.URL
 		}
@@ -167,9 +185,23 @@ func mergedComplianceMaterial(ctx context.Context, q *db.Queries, pipelineID pgt
 		}
 		base.Git.Events = unionEvents(prev.Events, "push")
 		base.Git.Paths = nil
-		break
+		return base, true, nil
 	}
-	return base, nil
+	return domain.Material{}, false, nil
+}
+
+// eventsIncludePush reports whether a git material fires on push. An empty
+// events list means push (the parser/webhook default), so it counts.
+func eventsIncludePush(events []string) bool {
+	if len(events) == 0 {
+		return true
+	}
+	for _, e := range events {
+		if e == "push" {
+			return true
+		}
+	}
+	return false
 }
 
 // unionEvents returns the existing events plus `want`, order-stable, deduped.

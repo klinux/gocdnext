@@ -136,11 +136,18 @@ func TestComplianceTriggerOverrideOnRepoPipeline(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("policy: %v", err)
 	}
+	// A push pipeline with its default-branch material (as the API layer's
+	// implicit-material injection would produce in production).
+	appFP := domain.GitFingerprint("https://github.com/acme/app", "main")
 	applyWithSCM(t, s, ctx, "app", []*domain.Pipeline{{
 		Name: "main", Stages: []string{"build"}, Jobs: []domain.Job{{Name: "compile", Stage: "build"}},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: appFP, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: "https://github.com/acme/app", Branch: "main", Events: []string{"push"}},
+		}},
 	}})
 
-	// No synthetic (repo has a pipeline); the repo pipeline carries a
+	// No synthetic (repo has a push pipeline); the repo pipeline carries a
 	// compliance-owned default-branch material so the repo can't suppress it.
 	if _, _, ok := pipelineByName(t, pool, ctx, "app", "_compliance"); ok {
 		t.Fatal("unexpected synthetic when repo pipeline exists")
@@ -214,11 +221,13 @@ func TestComplianceMaterialMergePreservesRepoFields(t *testing.T) {
 		Pipelines: []*domain.Pipeline{{
 			Name: "main", Stages: []string{"build"}, Jobs: []domain.Job{{Name: "compile", Stage: "build"}},
 			// Explicit repo material on the default branch: SSH remote, with
-			// credentials, a tag trigger, and a path filter.
+			// credentials, push+tag triggers, and a path filter. It fires on
+			// push, so compliance hardens it (preserve creds/url/events, strip
+			// paths) rather than leaving it alone.
 			Materials: []domain.Material{{
 				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
 				Git: &domain.GitMaterial{
-					URL: sshURL, Branch: "main", Events: []string{"tag"},
+					URL: sshURL, Branch: "main", Events: []string{"push", "tag"},
 					SecretRef: "gh-token", Paths: []string{"docs/**"},
 				},
 			}},
@@ -252,6 +261,121 @@ func TestComplianceMaterialMergePreservesRepoFields(t *testing.T) {
 	}
 	if strings.Contains(merged, "docs") {
 		t.Errorf("paths not cleared on compliance override: %s", merged)
+	}
+	// It fires on push → no synthetic needed.
+	if _, _, ok := pipelineByName(t, pool, ctx, "merge", "_compliance"); ok {
+		t.Error("unexpected synthetic when a push pipeline exists")
+	}
+}
+
+// TestCompliancePRonlyPipelineNotForcedToPush is the bug repro: a governed
+// project with a pull_request-only pipeline (build-pr) alongside a push
+// pipeline (build). Compliance must NOT add push to build-pr (it would run the
+// full suite on every push), while build gets the hardened push trigger and no
+// synthetic is created (build already carries push enforcement).
+func TestCompliancePRonlyPipelineNotForcedToPush(t *testing.T) {
+	s, pool, ctx := newGovStore(t)
+	if _, err := s.InsertCompliancePolicy(ctx, store.PolicyInput{
+		Name: "global", Mode: "inject", Enabled: true, AppliesToAll: true,
+		ConfigYAML: scanPolicyYAML,
+	}); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	url := "https://github.com/acme/split"
+	fp := domain.GitFingerprint(url, "main")
+	gitMat := func(events []string) []domain.Material {
+		return []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: "main", Events: events},
+		}}
+	}
+	_, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "split", Name: "split",
+		SCMSource: &store.SCMSourceInput{Provider: "github", URL: url, DefaultBranch: "main"},
+		Pipelines: []*domain.Pipeline{
+			{
+				Name: "build-pr", Stages: []string{"test"},
+				Jobs:      []domain.Job{{Name: "check", Stage: "test"}},
+				Materials: gitMat([]string{"pull_request"}),
+			},
+			{
+				Name: "build", Stages: []string{"build"},
+				Jobs:      []domain.Job{{Name: "compile", Stage: "build"}},
+				Materials: gitMat([]string{"push"}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	// build-pr must stay pull_request-only — no push forced onto it.
+	prID, _, ok := pipelineByName(t, pool, ctx, "split", "build-pr")
+	if !ok {
+		t.Fatal("build-pr missing")
+	}
+	var prMat string
+	for _, m := range materialConfigs(t, pool, ctx, prID) {
+		if strings.Contains(m, `"branch": "main"`) {
+			prMat = m
+		}
+	}
+	if prMat == "" {
+		t.Fatal("build-pr default-branch material not found")
+	}
+	if strings.Contains(prMat, `"push"`) {
+		t.Errorf("push was forced onto a pull_request-only pipeline (the bug): %s", prMat)
+	}
+	if !strings.Contains(prMat, `"pull_request"`) {
+		t.Errorf("build-pr lost its pull_request trigger: %s", prMat)
+	}
+
+	// build fires on push → hardened (paths stripped); no synthetic needed.
+	if _, _, ok := pipelineByName(t, pool, ctx, "split", "_compliance"); ok {
+		t.Error("unexpected synthetic when a push pipeline (build) exists")
+	}
+}
+
+// TestComplianceSyntheticWhenNoPushPipeline covers the other half: when every
+// user pipeline is non-push (here a single pull_request-only pipeline), the
+// synthetic `_compliance` pipeline is created to carry push enforcement, and
+// the user pipeline's trigger is left untouched.
+func TestComplianceSyntheticWhenNoPushPipeline(t *testing.T) {
+	s, pool, ctx := newGovStore(t)
+	if _, err := s.InsertCompliancePolicy(ctx, store.PolicyInput{
+		Name: "global", Mode: "inject", Enabled: true, AppliesToAll: true,
+		ConfigYAML: scanPolicyYAML,
+	}); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	url := "https://github.com/acme/pronly"
+	fp := domain.GitFingerprint(url, "main")
+	_, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "pronly", Name: "pronly",
+		SCMSource: &store.SCMSourceInput{Provider: "github", URL: url, DefaultBranch: "main"},
+		Pipelines: []*domain.Pipeline{{
+			Name: "build-pr", Stages: []string{"test"},
+			Jobs: []domain.Job{{Name: "check", Stage: "test"}},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: url, Branch: "main", Events: []string{"pull_request"}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	// Synthetic must exist (the only push-enforcement path).
+	if _, def, ok := pipelineByName(t, pool, ctx, "pronly", "_compliance"); !ok || !strings.Contains(def, "_compliance_scan") {
+		t.Fatalf("synthetic not created when no user pipeline fires on push (ok=%v)", ok)
+	}
+	// build-pr stays pull_request-only.
+	prID, _, _ := pipelineByName(t, pool, ctx, "pronly", "build-pr")
+	for _, m := range materialConfigs(t, pool, ctx, prID) {
+		if strings.Contains(m, `"branch": "main"`) && strings.Contains(m, `"push"`) {
+			t.Errorf("push forced onto the pull_request-only pipeline: %s", m)
+		}
 	}
 }
 
