@@ -181,6 +181,12 @@ type Querier interface {
 	// callers dedupe and zero the omitted count). Cheap row count
 	// against the same (job_run_id, seq) index TailLogLinesByJob hits.
 	CountLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) (int64, error)
+	// How many of the named approval gates of a run have reached 'success'. The marker
+	// for an env is written only when this equals the count of gates governing it (all
+	// governing gates passed) — the just-approved gate is visible as success in the
+	// caller's tx. Gates are never matrix (parser rejects approval+matrix), so name
+	// uniquely identifies each gate's job_run.
+	CountPassedGates(ctx context.Context, arg CountPassedGatesParams) (int64, error)
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Paired with ListRunsGlobal so /runs can render "N of M" with the
 	// same filter args. Returned as bigint to fit any table; UI only
@@ -752,6 +758,11 @@ type Querier interface {
 	// guard (the window was just deleted in this tx and the advisory lock serialises
 	// refreshers, so a conflict shouldn't arise).
 	InsertRunDailyWindow(ctx context.Context, sinceDays int32) error
+	// Record that a run cleared the approval gate(s) governing a concrete deploy env
+	// (#97 Phase 2). Written at approve time under the lane-env advisory lock; the
+	// dispatch backstop reads it to refuse a stale deploy. ON CONFLICT DO NOTHING makes
+	// a re-approve / replica race idempotent (a run passes a given env exactly once).
+	InsertRunGatePass(ctx context.Context, arg InsertRunGatePassParams) error
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertSecurityFindings(ctx context.Context, arg []InsertSecurityFindingsParams) (int64, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)

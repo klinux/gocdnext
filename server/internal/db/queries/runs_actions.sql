@@ -99,6 +99,24 @@ INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id,
 VALUES (NULL, '', 'run.superseded', 'run', $1, $2)
 ON CONFLICT (target_id) WHERE action = 'run.superseded' DO NOTHING;
 
+-- name: InsertRunGatePass :exec
+-- Record that a run cleared the approval gate(s) governing a concrete deploy env
+-- (#97 Phase 2). Written at approve time under the lane-env advisory lock; the
+-- dispatch backstop reads it to refuse a stale deploy. ON CONFLICT DO NOTHING makes
+-- a re-approve / replica race idempotent (a run passes a given env exactly once).
+INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (run_id, environment) DO NOTHING;
+
+-- name: CountPassedGates :one
+-- How many of the named approval gates of a run have reached 'success'. The marker
+-- for an env is written only when this equals the count of gates governing it (all
+-- governing gates passed) — the just-approved gate is visible as success in the
+-- caller's tx. Gates are never matrix (parser rejects approval+matrix), so name
+-- uniquely identifies each gate's job_run.
+SELECT count(*) FROM job_runs
+WHERE run_id = $1 AND name = ANY($2::text[]) AND approval_gate = true AND status = 'success';
+
 -- name: GetRunSupersedeContext :one
 -- Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
 -- cascade supersede fire. The definition is the drift-safe snapshot the run was

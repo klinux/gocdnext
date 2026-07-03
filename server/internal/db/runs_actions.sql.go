@@ -87,6 +87,28 @@ func (q *Queries) ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeE
 	return id, err
 }
 
+const countPassedGates = `-- name: CountPassedGates :one
+SELECT count(*) FROM job_runs
+WHERE run_id = $1 AND name = ANY($2::text[]) AND approval_gate = true AND status = 'success'
+`
+
+type CountPassedGatesParams struct {
+	RunID   pgtype.UUID
+	Column2 []string
+}
+
+// How many of the named approval gates of a run have reached 'success'. The marker
+// for an env is written only when this equals the count of gates governing it (all
+// governing gates passed) — the just-approved gate is visible as success in the
+// caller's tx. Gates are never matrix (parser rejects approval+matrix), so name
+// uniquely identifies each gate's job_run.
+func (q *Queries) CountPassedGates(ctx context.Context, arg CountPassedGatesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countPassedGates, arg.RunID, arg.Column2)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const emitRunSupersededAudit = `-- name: EmitRunSupersededAudit :exec
 INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
 VALUES (NULL, '', 'run.superseded', 'run', $1, $2)
@@ -262,6 +284,35 @@ func (q *Queries) GetStageRunOrdinal(ctx context.Context, id pgtype.UUID) (int32
 	var ordinal int32
 	err := row.Scan(&ordinal)
 	return ordinal, err
+}
+
+const insertRunGatePass = `-- name: InsertRunGatePass :exec
+INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (run_id, environment) DO NOTHING
+`
+
+type InsertRunGatePassParams struct {
+	RunID       pgtype.UUID
+	PipelineID  pgtype.UUID
+	Ref         string
+	Counter     int64
+	Environment string
+}
+
+// Record that a run cleared the approval gate(s) governing a concrete deploy env
+// (#97 Phase 2). Written at approve time under the lane-env advisory lock; the
+// dispatch backstop reads it to refuse a stale deploy. ON CONFLICT DO NOTHING makes
+// a re-approve / replica race idempotent (a run passes a given env exactly once).
+func (q *Queries) InsertRunGatePass(ctx context.Context, arg InsertRunGatePassParams) error {
+	_, err := q.db.Exec(ctx, insertRunGatePass,
+		arg.RunID,
+		arg.PipelineID,
+		arg.Ref,
+		arg.Counter,
+		arg.Environment,
+	)
+	return err
 }
 
 const listAwaitingGateNamesForRun = `-- name: ListAwaitingGateNamesForRun :many

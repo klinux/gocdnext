@@ -126,12 +126,13 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		required       int32
 		parentRun      pgtype.UUID
 		stageRunID     pgtype.UUID
+		gateName       string
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT approval_gate, status, approvers, approver_groups, approval_required, run_id, stage_run_id
+		SELECT approval_gate, status, approvers, approver_groups, approval_required, run_id, stage_run_id, name
 		FROM job_runs
 		WHERE id = $1
-	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID)
+	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID, &gateName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
@@ -251,6 +252,17 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	// promotes its stage (and onto the run) exactly like a
 	// regular job's success would, and a rejection fans out as
 	// a stage failure that cancels downstream queued work.
+	// #97 Phase 2: on approval, record the gate-pass marker for every concrete env
+	// this gate now clears (once all its governing gates passed), under the lane-env
+	// advisory lock. Fail-closed — a supersede pipeline must not approve a deploy
+	// without the backstop marker. No-op on reject (nextStatus='failed') and for
+	// supersede=off. Runs BEFORE the cascade so the marker lands with the flip.
+	if decision == "approved" {
+		if err := s.writeGatePassMarkers(ctx, tx, gateName, fromPgUUID(parentRun)); err != nil {
+			return ApprovalResult{}, err
+		}
+	}
+
 	q := s.q.WithTx(tx)
 	var comp JobCompletion
 	if err := cascadeAfterJobCompletion(ctx, q, stageRunID, parentRun, &comp); err != nil {
