@@ -841,6 +841,10 @@ type Querier interface {
 	// the boolean so admins can see disabled providers they can re-
 	// enable later.
 	ListAuthProviders(ctx context.Context) ([]AuthProvider, error)
+	// The names of a run's still-pending approval gates. Supersede resolves the
+	// deploy environments a run is awaiting clearance for from these (via the
+	// gate-governance graph), to intersect against the newer run's ready gate.
+	ListAwaitingGateNamesForRun(ctx context.Context, runID pgtype.UUID) ([]string, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	// credential_enc is intentionally NOT selected — the list/detail
 	// surface is write-only, the credential never leaves the server.
@@ -1528,6 +1532,20 @@ type Querier interface {
 	// Returns (id, agent_id) per stamped row so the handler can
 	// correlate Dispatch failures with their owning agent.
 	StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error)
+	// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
+	// the supersede victim candidates for `supersede: branch`. counter DESC so
+	// concurrent supersede passes lock runs.id rows in one consistent descending
+	// order (current is the highest, already locked by its own tx) and can't cycle.
+	SupersedeCandidatesBranch(ctx context.Context, arg SupersedeCandidatesBranchParams) ([]SupersedeCandidatesBranchRow, error)
+	// Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
+	// rides the (pipeline_id, counter) partial index.
+	SupersedeCandidatesPipeline(ctx context.Context, arg SupersedeCandidatesPipelineParams) ([]SupersedeCandidatesPipelineRow, error)
+	// Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
+	// superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —
+	// a second call on a terminal run returns 0 rows), plus superseded_by so the UI
+	// renders "superseded by #N" and the Phase-2 backstop's active-marker check can
+	// exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
+	SupersedeRun(ctx context.Context, arg SupersedeRunParams) (pgtype.UUID, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)

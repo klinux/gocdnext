@@ -175,6 +175,34 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 	return i, err
 }
 
+const listAwaitingGateNamesForRun = `-- name: ListAwaitingGateNamesForRun :many
+SELECT name FROM job_runs
+WHERE run_id = $1 AND approval_gate = true AND status = 'awaiting_approval'
+`
+
+// The names of a run's still-pending approval gates. Supersede resolves the
+// deploy environments a run is awaiting clearance for from these (via the
+// gate-governance graph), to intersect against the newer run's ready gate.
+func (q *Queries) ListAwaitingGateNamesForRun(ctx context.Context, runID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAwaitingGateNamesForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingCancelsForAgent = `-- name: ListPendingCancelsForAgent :many
 SELECT id, run_id
 FROM job_runs
@@ -401,4 +429,120 @@ func (q *Queries) StampCancelRequestedAtForRun(ctx context.Context, runID pgtype
 		return nil, err
 	}
 	return items, nil
+}
+
+const supersedeCandidatesBranch = `-- name: SupersedeCandidatesBranch :many
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.ref = $2 AND r.counter < $3
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC
+`
+
+type SupersedeCandidatesBranchParams struct {
+	PipelineID pgtype.UUID
+	Ref        string
+	Counter    int64
+}
+
+type SupersedeCandidatesBranchRow struct {
+	ID      pgtype.UUID
+	Counter int64
+}
+
+// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
+// the supersede victim candidates for `supersede: branch`. counter DESC so
+// concurrent supersede passes lock runs.id rows in one consistent descending
+// order (current is the highest, already locked by its own tx) and can't cycle.
+func (q *Queries) SupersedeCandidatesBranch(ctx context.Context, arg SupersedeCandidatesBranchParams) ([]SupersedeCandidatesBranchRow, error) {
+	rows, err := q.db.Query(ctx, supersedeCandidatesBranch, arg.PipelineID, arg.Ref, arg.Counter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersedeCandidatesBranchRow{}
+	for rows.Next() {
+		var i SupersedeCandidatesBranchRow
+		if err := rows.Scan(&i.ID, &i.Counter); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supersedeCandidatesPipeline = `-- name: SupersedeCandidatesPipeline :many
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.counter < $2
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC
+`
+
+type SupersedeCandidatesPipelineParams struct {
+	PipelineID pgtype.UUID
+	Counter    int64
+}
+
+type SupersedeCandidatesPipelineRow struct {
+	ID      pgtype.UUID
+	Counter int64
+}
+
+// Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
+// rides the (pipeline_id, counter) partial index.
+func (q *Queries) SupersedeCandidatesPipeline(ctx context.Context, arg SupersedeCandidatesPipelineParams) ([]SupersedeCandidatesPipelineRow, error) {
+	rows, err := q.db.Query(ctx, supersedeCandidatesPipeline, arg.PipelineID, arg.Counter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersedeCandidatesPipelineRow{}
+	for rows.Next() {
+		var i SupersedeCandidatesPipelineRow
+		if err := rows.Scan(&i.ID, &i.Counter); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supersedeRun = `-- name: SupersedeRun :one
+UPDATE runs
+SET status = 'canceled',
+    finished_at = COALESCE(finished_at, NOW()),
+    queue_reason = NULL,
+    superseded_by = $2,
+    cancel_reason = $3
+WHERE id = $1 AND status IN ('queued', 'running')
+RETURNING id
+`
+
+type SupersedeRunParams struct {
+	ID           pgtype.UUID
+	SupersededBy pgtype.UUID
+	CancelReason *string
+}
+
+// Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
+// superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —
+// a second call on a terminal run returns 0 rows), plus superseded_by so the UI
+// renders "superseded by #N" and the Phase-2 backstop's active-marker check can
+// exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
+func (q *Queries) SupersedeRun(ctx context.Context, arg SupersedeRunParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, supersedeRun, arg.ID, arg.SupersededBy, arg.CancelReason)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }

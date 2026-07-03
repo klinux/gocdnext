@@ -7,6 +7,52 @@ SELECT id, pipeline_id, status, revisions, cause, cause_detail
 FROM runs
 WHERE id = $1;
 
+-- name: SupersedeRun :one
+-- Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
+-- superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —
+-- a second call on a terminal run returns 0 rows), plus superseded_by so the UI
+-- renders "superseded by #N" and the Phase-2 backstop's active-marker check can
+-- exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
+UPDATE runs
+SET status = 'canceled',
+    finished_at = COALESCE(finished_at, NOW()),
+    queue_reason = NULL,
+    superseded_by = $2,
+    cancel_reason = $3
+WHERE id = $1 AND status IN ('queued', 'running')
+RETURNING id;
+
+-- name: ListAwaitingGateNamesForRun :many
+-- The names of a run's still-pending approval gates. Supersede resolves the
+-- deploy environments a run is awaiting clearance for from these (via the
+-- gate-governance graph), to intersect against the newer run's ready gate.
+SELECT name FROM job_runs
+WHERE run_id = $1 AND approval_gate = true AND status = 'awaiting_approval';
+
+-- name: SupersedeCandidatesBranch :many
+-- Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
+-- the supersede victim candidates for `supersede: branch`. counter DESC so
+-- concurrent supersede passes lock runs.id rows in one consistent descending
+-- order (current is the highest, already locked by its own tx) and can't cycle.
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.ref = $2 AND r.counter < $3
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC;
+
+-- name: SupersedeCandidatesPipeline :many
+-- Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
+-- rides the (pipeline_id, counter) partial index.
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.counter < $2
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC;
+
 -- name: CancelActiveRun :one
 -- Flips a run to 'canceled' only if it was still active. Idempotent:
 -- a second call on a terminal run returns no rows so the handler
