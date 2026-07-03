@@ -787,9 +787,17 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	`, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen stage: %w", err)
 	}
+	// Reviving a run also clears any supersede state (#97): a run that was superseded
+	// (canceled + superseded_by) and then rerun is a live run again, not "superseded
+	// by #N". Resetting supersede_effects_{claimed,}_at too is load-bearing — without
+	// it a LATER re-supersede of this run could never claim its effects (the claim
+	// requires effects_at IS NULL), so its CancelJob frames / cleanup / audit would
+	// never fire.
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
-		SET status = 'running', finished_at = NULL
+		SET status = 'running', finished_at = NULL,
+		    superseded_by = NULL, cancel_reason = NULL,
+		    supersede_effects_claimed_at = NULL, supersede_effects_at = NULL
 		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
 	`, runID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen run: %w", err)
@@ -865,6 +873,13 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 		  )
 	`, runID, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen downstream stages: %w", err)
+	}
+
+	// Drop gate-pass markers invalidated by the re-armed gates (#97): those gates are
+	// awaiting_approval again, so the run's "cleared env" claim for them is stale and
+	// must be re-earned through approval. Runs after the re-arm so it sees them.
+	if err := s.clearRevivedGatePassMarkers(ctx, tx, runID); err != nil {
+		return RerunJobResult{}, err
 	}
 
 	// Notify the scheduler the same way a fresh run does — it'll

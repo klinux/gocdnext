@@ -35,6 +35,55 @@ func LaneEnvLockKey(pipelineID uuid.UUID, laneMode, laneRef, env string) int64 {
 	return int64(h.Sum64())
 }
 
+// clearRevivedGatePassMarkers deletes a rerun-revived run's gate-pass markers whose
+// env is governed by a gate that is now awaiting_approval again (the rerun re-armed
+// it). A marker asserts "all gates governing this env passed"; a re-armed gate makes
+// that false, so the marker must go and the run re-establishes clearance through the
+// normal approve path. Markers for envs governed ONLY by still-passed (upstream)
+// gates are left intact — deleting those would drop a legitimate block and let an
+// older run's stale deploy for that env through. No-op for supersede=off (no
+// markers) and when nothing is awaiting.
+func (s *Store) clearRevivedGatePassMarkers(ctx context.Context, tx pgx.Tx, runID uuid.UUID) error {
+	q := s.q.WithTx(tx)
+	gateNames, err := q.ListAwaitingGateNamesForRun(ctx, pgUUID(runID))
+	if err != nil {
+		return fmt.Errorf("store: revived gate-pass gates: %w", err)
+	}
+	if len(gateNames) == 0 {
+		return nil
+	}
+	rc, err := q.GetRunSupersedeContext(ctx, pgUUID(runID))
+	if err != nil {
+		return fmt.Errorf("store: revived gate-pass context: %w", err)
+	}
+	var def domain.Pipeline
+	if err := json.Unmarshal(rc.Definition, &def); err != nil {
+		return fmt.Errorf("store: revived gate-pass decode: %w", err)
+	}
+	if def.Supersede != domain.SupersedeBranch && def.Supersede != domain.SupersedePipeline {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var envs []string
+	for _, gn := range gateNames {
+		for _, e := range def.GovernedEnvs(gn) {
+			if _, dup := seen[e]; !dup {
+				seen[e] = struct{}{}
+				envs = append(envs, e)
+			}
+		}
+	}
+	if len(envs) == 0 {
+		return nil
+	}
+	if err := q.DeleteRunGatePassForEnvs(ctx, db.DeleteRunGatePassForEnvsParams{
+		RunID: pgUUID(runID), Column2: envs,
+	}); err != nil {
+		return fmt.Errorf("store: delete revived gate-pass: %w", err)
+	}
+	return nil
+}
+
 // writeGatePassMarkers records, for each concrete deploy env the just-approved gate
 // governs, that the run cleared it — but only once ALL gates governing that env have
 // passed (a multi-gate env stays unmarked until the last approval). Runs in the

@@ -108,6 +108,12 @@ INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (run_id, environment) DO NOTHING;
 
+-- name: DeleteRunGatePassForEnvs :exec
+-- Drop a run's gate-pass markers for the given envs — used on rerun-revive, when a
+-- re-armed gate makes the run's "cleared env" claim stale. Scoped to the run + the
+-- specific envs so markers for still-passed (upstream) gates survive.
+DELETE FROM run_gate_pass WHERE run_id = $1 AND environment = ANY($2::text[]);
+
 -- name: CountPassedGates :one
 -- How many of the named approval gates of a run have reached 'success'. The marker
 -- for an env is written only when this equals the count of gates governing it (all

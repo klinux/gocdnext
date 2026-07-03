@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -239,6 +241,113 @@ func TestGatePass_UsesRunSnapshotNotLiveDefinition(t *testing.T) {
 	}
 	if got := f.markerEnvs(t, run.RunID); !reflect.DeepEqual(got, []string{"prod"}) {
 		t.Fatalf("marker = %v, want [prod] from the run snapshot (live def drifted to staging)", got)
+	}
+}
+
+// Approving a gate whose RUN was superseded returns ErrApprovalSuperseded (distinct
+// from "already decided") and records NO orphan vote — the gate row lock + the
+// superseded check land before the vote insert.
+func TestApprove_SupersededRunErrorsNoOrphanVote(t *testing.T) {
+	f := newGateFixture(t, "apprsup")
+	v := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+	gate := f.gateJobID(t, v.RunID, "approve-staging")
+
+	// Supersede v exactly as the terminalizer does: run canceled+superseded_by, gates
+	// canceled.
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2, cancel_reason='superseded by #2' WHERE id=$1`,
+		v.RunID, newer.RunID); err != nil {
+		t.Fatalf("supersede run: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE job_runs SET status='canceled' WHERE run_id=$1`, v.RunID); err != nil {
+		t.Fatalf("cancel jobs: %v", err)
+	}
+
+	_, err := f.s.ApproveGate(f.ctx, ApprovalDecision{JobRunID: gate, UserID: uuid.New(), User: "alice"})
+	if !errors.Is(err, ErrApprovalSuperseded) {
+		t.Fatalf("approve superseded gate = %v, want ErrApprovalSuperseded", err)
+	}
+	var votes int
+	if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FROM job_run_approvals WHERE job_run_id=$1`, gate).Scan(&votes); err != nil {
+		t.Fatalf("count votes: %v", err)
+	}
+	if votes != 0 {
+		t.Fatalf("orphan vote recorded on a superseded gate: %d", votes)
+	}
+}
+
+// Rerunning a job of a superseded run revives it: the supersede state (badge +
+// effects-claim) is fully cleared so it's a live run again and a future re-supersede
+// can fire its effects.
+func TestRerunRevive_ClearsSupersedeState(t *testing.T) {
+	f := newGateFixture(t, "revive")
+	v := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+	if _, err := f.pool.Exec(f.ctx, `
+		UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2,
+		    cancel_reason='superseded by #2', supersede_effects_at=NOW(), supersede_effects_claimed_at=NOW()
+		WHERE id=$1`, v.RunID, newer.RunID); err != nil {
+		t.Fatalf("supersede run: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE job_runs SET status='canceled' WHERE run_id=$1`, v.RunID); err != nil {
+		t.Fatalf("cancel jobs: %v", err)
+	}
+
+	if _, err := f.s.RerunJob(f.ctx, RerunJobInput{JobRunID: f.gateJobID(t, v.RunID, "compile"), TriggeredBy: "user:alice"}); err != nil {
+		t.Fatalf("rerun job: %v", err)
+	}
+
+	var status string
+	var supersededBy *uuid.UUID
+	var cancelReason *string
+	var effectsAt, claimedAt *time.Time
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT status, superseded_by, cancel_reason, supersede_effects_at, supersede_effects_claimed_at FROM runs WHERE id=$1`,
+		v.RunID).Scan(&status, &supersededBy, &cancelReason, &effectsAt, &claimedAt); err != nil {
+		t.Fatalf("read run: %v", err)
+	}
+	if status != "running" || supersededBy != nil || cancelReason != nil || effectsAt != nil || claimedAt != nil {
+		t.Fatalf("revive left supersede state: status=%q by=%v reason=%v effects_at=%v claimed_at=%v",
+			status, supersededBy, cancelReason, effectsAt, claimedAt)
+	}
+}
+
+// Rerun-revive drops gate-pass markers for RE-ARMED (downstream) gates but keeps
+// markers for still-passed (upstream) gates — deleting the latter would drop a
+// legitimate block and let an older run's stale deploy through.
+func TestRerunRevive_ClearsDownstreamMarkersKeepsUpstream(t *testing.T) {
+	f := newGateFixture(t, "revmark")
+	v := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+
+	// v cleared staging (upstream gate success + marker), was superseded before prod.
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE job_runs SET status='success' WHERE run_id=$1 AND name IN ('compile','approve-staging')`, v.RunID); err != nil {
+		t.Fatalf("pass upstream: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE job_runs SET status='canceled' WHERE run_id=$1 AND name IN ('dep-staging','approve-prod','dep-prod')`, v.RunID); err != nil {
+		t.Fatalf("cancel downstream: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `
+		INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+		VALUES ($1,$2,'main',$3,'staging'), ($1,$2,'main',$3,'prod')`,
+		v.RunID, f.pipelineID, v.Counter); err != nil {
+		t.Fatalf("seed markers: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2 WHERE id=$1`, v.RunID, newer.RunID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	// Rerun the staging deploy (stage 2) → re-arms approve-prod (stage 3), not
+	// approve-staging (stage 1).
+	if _, err := f.s.RerunJob(f.ctx, RerunJobInput{JobRunID: f.gateJobID(t, v.RunID, "dep-staging"), TriggeredBy: "user:alice"}); err != nil {
+		t.Fatalf("rerun job: %v", err)
+	}
+	if got := f.markerEnvs(t, v.RunID); !reflect.DeepEqual(got, []string{"staging"}) {
+		t.Fatalf("markers after revive = %v, want [staging] (prod re-armed→cleared, staging kept)", got)
 	}
 }
 

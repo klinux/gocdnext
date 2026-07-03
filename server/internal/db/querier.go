@@ -279,6 +279,10 @@ type Querier interface {
 	// <= 0 clears ALL history (full rebuild); otherwise the trailing window
 	// [current_date - since_days, today].
 	DeleteRunDailyWindow(ctx context.Context, sinceDays int32) error
+	// Drop a run's gate-pass markers for the given envs — used on rerun-revive, when a
+	// re-armed gate makes the run's "cleared env" claim stale. Scoped to the run + the
+	// specific envs so markers for still-passed (upstream) gates survive.
+	DeleteRunGatePassForEnvs(ctx context.Context, arg DeleteRunGatePassForEnvsParams) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.

@@ -109,6 +109,23 @@ func (q *Queries) CountPassedGates(ctx context.Context, arg CountPassedGatesPara
 	return count, err
 }
 
+const deleteRunGatePassForEnvs = `-- name: DeleteRunGatePassForEnvs :exec
+DELETE FROM run_gate_pass WHERE run_id = $1 AND environment = ANY($2::text[])
+`
+
+type DeleteRunGatePassForEnvsParams struct {
+	RunID   pgtype.UUID
+	Column2 []string
+}
+
+// Drop a run's gate-pass markers for the given envs — used on rerun-revive, when a
+// re-armed gate makes the run's "cleared env" claim stale. Scoped to the run + the
+// specific envs so markers for still-passed (upstream) gates survive.
+func (q *Queries) DeleteRunGatePassForEnvs(ctx context.Context, arg DeleteRunGatePassForEnvsParams) error {
+	_, err := q.db.Exec(ctx, deleteRunGatePassForEnvs, arg.RunID, arg.Column2)
+	return err
+}
+
 const emitRunSupersededAudit = `-- name: EmitRunSupersededAudit :exec
 INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
 VALUES (NULL, '', 'run.superseded', 'run', $1, $2)

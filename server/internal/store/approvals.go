@@ -28,6 +28,14 @@ var ErrApprovalNotPending = errors.New("store: approval gate is not pending")
 // approvers allow-list. Callers map this to 403.
 var ErrApproverNotAllowed = errors.New("store: user not in approvers list")
 
+// ErrApprovalSuperseded signals the gate is no longer pending because its RUN was
+// superseded (a newer revision won the lane) — distinct from a normal
+// already-decided gate. Callers map it to 409 with a superseded-specific message so
+// the UI can say "this run was superseded" rather than "already decided". Detected
+// under the gate row lock BEFORE recording a vote, so a superseded gate never
+// accrues an orphan vote (#97 Phase 2).
+var ErrApprovalSuperseded = errors.New("store: approval gate's run was superseded")
+
 // ApprovalDecision bundles the per-call inputs for Approve/Reject.
 // Keeping them in a struct lets the HTTP layer pass both in one
 // store call without a multi-arg signature that rots when fields
@@ -127,12 +135,23 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		parentRun      pgtype.UUID
 		stageRunID     pgtype.UUID
 		gateName       string
+		runSuperseded  bool
 	)
+	// FOR UPDATE OF j locks ONLY the gate row (not the run) so the gate's status
+	// can't flip under us between this read and the vote/flip below — closing the
+	// orphan-vote window where a concurrent supersede cancels the gate after we read
+	// it as pending. Locking only the job row keeps the global order job_runs ->
+	// (nothing here) intact; we deliberately do NOT lock runs (that would invert the
+	// job->runs order the result cascade uses and could deadlock). r.superseded_by
+	// tells "not pending because superseded" apart from a normal already-decided gate.
 	err = tx.QueryRow(ctx, `
-		SELECT approval_gate, status, approvers, approver_groups, approval_required, run_id, stage_run_id, name
-		FROM job_runs
-		WHERE id = $1
-	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID, &gateName)
+		SELECT j.approval_gate, j.status, j.approvers, j.approver_groups, j.approval_required,
+		       j.run_id, j.stage_run_id, j.name, (r.superseded_by IS NOT NULL)
+		FROM job_runs j
+		JOIN runs r ON r.id = j.run_id
+		WHERE j.id = $1
+		FOR UPDATE OF j
+	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID, &gateName, &runSuperseded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
@@ -143,6 +162,11 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
 	if status != "awaiting_approval" {
+		// A superseded run's gates are canceled by the supersede terminalizer; report
+		// that distinctly (and BEFORE any vote insert, so no orphan vote accrues).
+		if runSuperseded {
+			return ApprovalResult{}, ErrApprovalSuperseded
+		}
 		return ApprovalResult{}, ErrApprovalNotPending
 	}
 	if required < 1 {
