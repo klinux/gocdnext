@@ -23,6 +23,13 @@ import (
 // to pick up freshly queued runs. Payload is the run_id as a plain UUID string.
 const RunQueuedChannel = "run_queued"
 
+// SupersededRunChannel is the NOTIFY channel supersede emits on (in-tx, per
+// victim) so the scheduler fires the external effects of a supersede-cancel —
+// CancelJob frames to still-running jobs + service cleanup. Payload is the
+// superseded run_id as a plain UUID string. Transactional: a victim rolled back
+// by the per-victim savepoint (lock-timeout bail) emits nothing.
+const SupersededRunChannel = "run_superseded"
+
 // CreateRunFromModificationInput bundles everything needed to spawn a run
 // triggered by a matched modification (typically a webhook push). It is kept
 // intentionally concrete — other trigger flows (upstream, cron, manual) will

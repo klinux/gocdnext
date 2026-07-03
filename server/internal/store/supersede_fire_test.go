@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -92,6 +94,38 @@ func TestCreationFire_SupersedesOlderStage0Gate(t *testing.T) {
 	}
 	if s, _ := json.Marshal(meta); strings.Contains(string(s), "main") {
 		t.Fatalf("audit metadata leaks the ref: %s", s)
+	}
+}
+
+// The creation fire emits run_superseded (transactional NOTIFY) with the victim's
+// run id so the scheduler's effects listener can push CancelJob frames post-commit.
+func TestCreationFire_EmitsSupersededNotify(t *testing.T) {
+	f := newStage0GateFixture(t, "firenotify", domain.SupersedeBranch)
+	older := f.createRun(t, "main")
+
+	conn, err := pgx.Connect(f.ctx, dbtest.DSN())
+	if err != nil {
+		t.Fatalf("listen conn: %v", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	if _, err := conn.Exec(f.ctx, "LISTEN "+SupersededRunChannel); err != nil {
+		t.Fatalf("LISTEN: %v", err)
+	}
+
+	newer := f.createRun(t, "main") // fires supersede on older → pg_notify on commit
+	if len(newer.Superseded) != 1 {
+		t.Fatalf("expected 1 victim, got %d", len(newer.Superseded))
+	}
+
+	waitCtx, cancel := context.WithTimeout(f.ctx, 3*time.Second)
+	defer cancel()
+	note, err := conn.WaitForNotification(waitCtx)
+	if err != nil {
+		t.Fatalf("no run_superseded notification: %v", err)
+	}
+	if note.Channel != SupersededRunChannel || note.Payload != older.RunID.String() {
+		t.Fatalf("notify = {chan:%s payload:%s}, want {chan:%s payload:%s}",
+			note.Channel, note.Payload, SupersededRunChannel, older.RunID)
 	}
 }
 

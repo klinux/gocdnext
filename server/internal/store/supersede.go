@@ -151,6 +151,22 @@ func (s *Store) supersedeLaneSiblings(ctx context.Context, tx pgx.Tx, in superse
 	return out, nil
 }
 
+// ListRunningCancelRequestedForRun returns the still-running, cancel-requested
+// jobs of a run (agent_id non-null) so the supersede effects listener can push a
+// CancelJob frame to each. Reads committed state, so it's safe to call from the
+// scheduler's NOTIFY handler after the supersede tx committed.
+func (s *Store) ListRunningCancelRequestedForRun(ctx context.Context, runID uuid.UUID) ([]RunningJobRef, error) {
+	rows, err := s.q.ListRunningCancelRequestedForRun(ctx, pgUUID(runID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list running cancel-requested: %w", err)
+	}
+	out := make([]RunningJobRef, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
+	}
+	return out, nil
+}
+
 // isLockContention reports whether err is a bounded-wait abort we deliberately
 // provoke to skip a contended victim: lock_timeout (55P03) from our SET LOCAL, or
 // deadlock_detected (40P01) if Postgres's detector fires first. Either way the
@@ -244,6 +260,15 @@ func (s *Store) supersedeOne(ctx context.Context, tx pgx.Tx, q *db.Queries, id u
 	running := make([]RunningJobRef, 0, len(stamped))
 	for _, r := range stamped {
 		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
+	}
+
+	// Signal the effects listener (scheduler) to fire external effects for this
+	// victim after commit — CancelJob frames + service cleanup. Emitted on the
+	// per-victim savepoint tx, so a later lock-timeout bail that rolls the
+	// savepoint back also discards the notification (Postgres drops NOTIFYs from
+	// aborted subtransactions); it fires only if the whole tx commits.
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, SupersededRunChannel, id.String()); err != nil {
+		return nil, fmt.Errorf("store: supersede notify: %w", err)
 	}
 	return &SupersededRun{RunID: id, Counter: counter, RunningJobs: running}, nil
 }

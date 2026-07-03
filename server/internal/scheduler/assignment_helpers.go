@@ -169,19 +169,6 @@ func concurrencyFromDefinition(definition []byte) (string, error) {
 	return def.Concurrency, nil
 }
 
-// supersedeFromDefinition reads the pipeline's `supersede:` mode from the stored
-// definition snapshot (#97). Empty == off. Same cheap decode as
-// concurrencyFromDefinition so non-supersede runs pay ~nothing at dispatch.
-func supersedeFromDefinition(definition []byte) (string, error) {
-	var def struct {
-		Supersede string `json:"Supersede"`
-	}
-	if err := json.Unmarshal(definition, &def); err != nil {
-		return "", fmt.Errorf("scheduler: decode pipeline: %w", err)
-	}
-	return def.Supersede, nil
-}
-
 func findJob(jobs []domain.Job, name string) (domain.Job, bool) {
 	for _, j := range jobs {
 		if j.Name == name {

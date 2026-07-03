@@ -53,6 +53,19 @@ WHERE r.pipeline_id = $1 AND r.counter < $2
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
 ORDER BY r.counter DESC;
 
+-- name: ListRunningCancelRequestedForRun :many
+-- Running jobs of a run that carry a pending cancel intent (supersede stamped
+-- cancel_requested_at). The supersede effects listener pushes a CancelJob frame
+-- per row so the container stops promptly instead of waiting for the agent's next
+-- reconnect. agent_id is non-null by the predicate, so the listener can address a
+-- frame to it directly.
+SELECT id, agent_id
+FROM job_runs
+WHERE run_id = $1
+  AND status = 'running'
+  AND agent_id IS NOT NULL
+  AND cancel_requested_at IS NOT NULL;
+
 -- name: CancelActiveRun :one
 -- Flips a run to 'canceled' only if it was still active. Idempotent:
 -- a second call on a terminal run returns no rows so the handler

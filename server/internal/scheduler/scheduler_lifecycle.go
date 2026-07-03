@@ -131,8 +131,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		_ = conn.Close(context.Background())
 		return fmt.Errorf("scheduler: LISTEN: %w", err)
 	}
+	if _, err := conn.Exec(ctx, "LISTEN "+store.SupersededRunChannel); err != nil {
+		_ = conn.Close(context.Background())
+		return fmt.Errorf("scheduler: LISTEN superseded: %w", err)
+	}
 
 	runCh := make(chan uuid.UUID, 32)
+	supersededCh := make(chan uuid.UUID, 32)
 	// drainCh is the single-producer signal: on an agent register,
 	// or a tick, we coalesce into one drain without blocking the
 	// signaller. Buffer of 1 because two back-to-back drains add
@@ -165,13 +170,23 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			}
 			id, err := uuid.Parse(note.Payload)
 			if err != nil {
-				s.log.Warn("scheduler: bad notify payload", "payload", note.Payload)
+				s.log.Warn("scheduler: bad notify payload", "payload", note.Payload, "channel", note.Channel)
 				continue
 			}
+			target := runCh
+			if note.Channel == store.SupersededRunChannel {
+				target = supersededCh
+			}
 			select {
-			case runCh <- id:
+			case target <- id:
 			default:
-				// Channel full: drop, the tick loop will pick it up.
+				// run_queued drops are recovered by the tick loop's re-scan.
+				// run_superseded drops only defer prompt frame push — the
+				// cancel_requested_at stamp + reconnect/reaper still finalize —
+				// but warn so a flood is visible to the operator.
+				if note.Channel == store.SupersededRunChannel {
+					s.log.Warn("scheduler: superseded channel full; frame push deferred to reconnect/reaper", "run_id", id)
+				}
 			}
 		}
 	}()
@@ -195,6 +210,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return nil
 		case runID := <-runCh:
 			s.dispatchRun(ctx, runID)
+		case runID := <-supersededCh:
+			s.fireSupersedeEffects(ctx, runID)
 		case <-drainCh:
 			// Agent came online — re-try every queued run so jobs
 			// stop sitting around for up to a tick interval just

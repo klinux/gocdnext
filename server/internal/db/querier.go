@@ -1089,6 +1089,12 @@ type Querier interface {
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
+	// Running jobs of a run that carry a pending cancel intent (supersede stamped
+	// cancel_requested_at). The supersede effects listener pushes a CancelJob frame
+	// per row so the container stops promptly instead of waiting for the agent's next
+	// reconnect. agent_id is non-null by the predicate, so the listener can address a
+	// frame to it directly.
+	ListRunningCancelRequestedForRun(ctx context.Context, runID pgtype.UUID) ([]ListRunningCancelRequestedForRunRow, error)
 	// Every running job currently assigned to a given agent_id. The
 	// register-fence path uses this: when an agent re-registers (= the
 	// prior process is gone), every still-'running' row attributed to it

@@ -249,6 +249,45 @@ func (q *Queries) ListPendingCancelsForAgent(ctx context.Context, agentID pgtype
 	return items, nil
 }
 
+const listRunningCancelRequestedForRun = `-- name: ListRunningCancelRequestedForRun :many
+SELECT id, agent_id
+FROM job_runs
+WHERE run_id = $1
+  AND status = 'running'
+  AND agent_id IS NOT NULL
+  AND cancel_requested_at IS NOT NULL
+`
+
+type ListRunningCancelRequestedForRunRow struct {
+	ID      pgtype.UUID
+	AgentID pgtype.UUID
+}
+
+// Running jobs of a run that carry a pending cancel intent (supersede stamped
+// cancel_requested_at). The supersede effects listener pushes a CancelJob frame
+// per row so the container stops promptly instead of waiting for the agent's next
+// reconnect. agent_id is non-null by the predicate, so the listener can address a
+// frame to it directly.
+func (q *Queries) ListRunningCancelRequestedForRun(ctx context.Context, runID pgtype.UUID) ([]ListRunningCancelRequestedForRunRow, error) {
+	rows, err := q.db.Query(ctx, listRunningCancelRequestedForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunningCancelRequestedForRunRow{}
+	for rows.Next() {
+		var i ListRunningCancelRequestedForRunRow
+		if err := rows.Scan(&i.ID, &i.AgentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const reclaimPendingCancelsForOfflineAgent = `-- name: ReclaimPendingCancelsForOfflineAgent :many
 UPDATE job_runs jr
 SET status      = 'canceled',
