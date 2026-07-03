@@ -347,13 +347,70 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
+		var deployGuard *store.DeploymentRevisionGuard
+		releaseDeployGuard := func() {
+			if deployGuard == nil {
+				return
+			}
+			if err := deployGuard.Release(ctx); err != nil {
+				s.log.Warn("scheduler: release deployment guard",
+					"run_id", runID, "job_id", job.ID, "err", err)
+			}
+			deployGuard = nil
+		}
+		if deployTarget != nil && !job.DeployRollback {
+			laneMode, err := supersedeModeFromDefinition(run.Definition)
+			if err != nil {
+				s.log.Warn("scheduler: read supersede mode for deployment guard",
+					"run_id", runID, "job_id", job.ID, "err", err)
+				continue
+			}
+			if laneMode == domain.SupersedeBranch || laneMode == domain.SupersedePipeline {
+				guard, status, err := s.store.BeginDeploymentRevisionGuard(ctx, store.BeginDeploymentRevisionGuardInput{
+					PipelineID:  run.PipelineID,
+					Counter:     run.Counter,
+					Ref:         run.Ref,
+					LaneMode:    laneMode,
+					Environment: deployTarget.Environment,
+				})
+				if err != nil {
+					s.log.Warn("scheduler: deployment guard",
+						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
+					continue
+				}
+				if status == store.DeploymentRevisionGuardLockBusy {
+					reason := "supersede-lock-busy:" + deployTarget.Environment
+					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
+						s.log.Warn("scheduler: set supersede lock-busy queue_reason",
+							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
+					}
+					s.log.Info("scheduler: deployment guard lock busy",
+						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
+					continue
+				}
+				if status == store.DeploymentRevisionGuardBlocked {
+					reason := "supersede-blocked:" + deployTarget.Environment
+					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
+						s.log.Warn("scheduler: set supersede blocked queue_reason",
+							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
+					}
+					s.log.Info("scheduler: deployment blocked by newer gate-pass",
+						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
+					continue
+				}
+				deployGuard = guard
+			}
+		}
+
 		assigned, ok, err := s.store.AssignJob(ctx, job.ID, agentID)
 		if err != nil {
+			releaseDeployGuard()
 			s.log.Warn("scheduler: assign", "job_id", job.ID, "err", err)
 			continue
 		}
 		if !ok {
 			// Lost optimistic race with another scheduler tick / replica.
+			releaseDeployGuard()
 			continue
 		}
 
@@ -364,11 +421,19 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// JobResult can race in and call FinalizeDeploymentRevision
 		// against a revision that doesn't exist (a fast job would
 		// otherwise finalise 0 rows, then this create would leave an
-		// orphan in_progress that never reads as "current"). If the
-		// dispatch below fails, we delete this revision in the rollback.
+		// orphan in_progress that never reads as "current"). This is now
+		// fail-closed: if the revision can't be recorded, rollback AssignJob
+		// and retry later rather than dispatching an untrackable deploy. If
+		// the dispatch below fails, we delete this revision in the rollback.
 		var deployRevID uuid.UUID
 		if deployTarget != nil {
-			deployRevID = s.recordDeployRevision(ctx, run, job, assigned.Attempt, deployTarget)
+			deployRevID, err = s.createDeployRevision(ctx, run, job, assigned.Attempt, deployTarget)
+			if err != nil {
+				releaseDeployGuard()
+				s.rollbackUndispatchedAssignment(ctx, runID, job, agentID, assigned, uuid.Nil,
+					"deploy revision create failed", err)
+				continue
+			}
 		}
 
 		msg := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{Assign: assign}}
@@ -383,45 +448,12 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// mutex for both operations on whichever session is
 		// current at lock-acquire time.
 		if err := s.sessions.DispatchAssignment(agentID, msg, assigned.ID, assigned.Attempt); err != nil {
-			// Frame never reached an agent. Roll the row back via
-			// snapshot CAS so it goes back to (queued, NULL) and
-			// the scheduler retries on the next tick. Metrics:
-			// NOTHING was incremented yet (JobsScheduled/JobsRunning
-			// fire only on successful dispatch below), so there's
-			// nothing to undo here.
-			//
-			// Also delete the deploy revision created just above — the
-			// frame never reached an agent, so no deploy happened, and
-			// leaving it would both ghost the timeline AND collide with
-			// the next dispatch's create on the (job_run, attempt)
-			// unique index when the retry re-uses the same attempt.
-			if deployRevID != uuid.Nil {
-				if derr := s.store.DeleteDeploymentRevision(ctx, deployRevID); derr != nil {
-					s.log.Warn("scheduler: delete deploy revision after dispatch failure",
-						"job_id", job.ID, "revision_id", deployRevID, "err", derr)
-				}
-			}
-			runIDForNotify, ok, undoErr := s.store.UnassignJob(ctx, job.ID, agentID, assigned.Attempt)
-			switch {
-			case undoErr != nil:
-				s.log.Warn("scheduler: dispatch failed AND unassign errored",
-					"run_id", runID, "job_id", job.ID, "agent_id", agentID,
-					"dispatch_err", err, "unassign_err", undoErr)
-			case ok:
-				if nerr := s.store.NotifyRunQueued(ctx, runIDForNotify); nerr != nil {
-					s.log.Warn("scheduler: dispatch undo notify failed",
-						"run_id", runIDForNotify, "err", nerr)
-				}
-				s.log.Warn("scheduler: dispatch failed, row rolled back to queued",
-					"run_id", runID, "job_id", job.ID, "agent_id", agentID, "err", err)
-			default:
-				// Snapshot didn't match — a concurrent path already
-				// claimed this row in a different state. Leave it.
-				s.log.Warn("scheduler: dispatch failed, snapshot stale on unassign — leaving row alone",
-					"run_id", runID, "job_id", job.ID, "agent_id", agentID, "err", err)
-			}
+			releaseDeployGuard()
+			s.rollbackUndispatchedAssignment(ctx, runID, job, agentID, assigned, deployRevID,
+				"dispatch failed", err)
 			continue
 		}
+		releaseDeployGuard()
 
 		// Metrics fire AFTER successful dispatch so a dispatch
 		// failure (rolled back above) doesn't leak counters that
@@ -440,7 +472,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		s.log.Info("scheduler: dispatched",
 			"run_id", runID, "job_id", assigned.ID, "job_name", assigned.Name,
 			"agent_id", agentID)
-		// (Deploy revision was recorded above, before DispatchAssignment.)
+		// (Deploy revision was created above, before DispatchAssignment.)
 	}
 
 	if dispatched > 0 {
@@ -454,4 +486,43 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 // "try later" from real errors.
 func IsNoIdleAgent(err error) bool {
 	return errors.Is(err, grpcsrv.ErrNoSession)
+}
+
+func (s *Scheduler) rollbackUndispatchedAssignment(ctx context.Context, runID uuid.UUID, job store.DispatchableJob, agentID uuid.UUID, assigned store.AssignedJob, deployRevID uuid.UUID, reason string, cause error) {
+	// Frame never reached an agent. Roll the row back via snapshot CAS so it goes
+	// back to (queued, NULL) and the scheduler retries on the next tick. Metrics:
+	// NOTHING was incremented yet (JobsScheduled/JobsRunning fire only on
+	// successful dispatch), so there's nothing to undo here.
+	//
+	// If a deploy revision was created, delete it too: no deploy happened, and
+	// leaving it would ghost the timeline and collide with the next dispatch's
+	// create on the (job_run, attempt) unique index when the retry reuses the same
+	// attempt.
+	if deployRevID != uuid.Nil {
+		if derr := s.store.DeleteDeploymentRevision(ctx, deployRevID); derr != nil {
+			s.log.Warn("scheduler: delete deploy revision after undispatched assignment",
+				"job_id", job.ID, "revision_id", deployRevID, "reason", reason, "err", derr)
+		}
+	}
+	runIDForNotify, ok, undoErr := s.store.UnassignJob(ctx, job.ID, agentID, assigned.Attempt)
+	switch {
+	case undoErr != nil:
+		s.log.Warn("scheduler: undispatched assignment rollback errored",
+			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
+			"reason", reason, "cause", cause, "unassign_err", undoErr)
+	case ok:
+		if nerr := s.store.NotifyRunQueued(ctx, runIDForNotify); nerr != nil {
+			s.log.Warn("scheduler: undispatched assignment notify failed",
+				"run_id", runIDForNotify, "reason", reason, "err", nerr)
+		}
+		s.log.Warn("scheduler: undispatched assignment rolled back to queued",
+			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
+			"reason", reason, "err", cause)
+	default:
+		// Snapshot didn't match — a concurrent path already claimed this row in a
+		// different state. Leave it.
+		s.log.Warn("scheduler: undispatched assignment snapshot stale — leaving row alone",
+			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
+			"reason", reason, "err", cause)
+	}
 }

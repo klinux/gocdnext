@@ -169,6 +169,16 @@ func concurrencyFromDefinition(definition []byte) (string, error) {
 	return def.Concurrency, nil
 }
 
+func supersedeModeFromDefinition(definition []byte) (string, error) {
+	var def struct {
+		Supersede string `json:"Supersede"`
+	}
+	if err := json.Unmarshal(definition, &def); err != nil {
+		return "", fmt.Errorf("scheduler: decode pipeline: %w", err)
+	}
+	return def.Supersede, nil
+}
+
 func findJob(jobs []domain.Job, name string) (domain.Job, bool) {
 	for _, j := range jobs {
 		if j.Name == name {

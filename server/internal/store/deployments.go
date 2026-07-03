@@ -8,8 +8,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // Deployment status values (deployment_revisions.status). Mirrors the
@@ -60,6 +62,138 @@ type CreateDeploymentRevisionInput struct {
 	Version       string
 	IsRollback    bool
 	DeployedBy    string
+}
+
+// DeploymentRevisionGuardStatus is the dispatch-time supersede backstop verdict.
+type DeploymentRevisionGuardStatus string
+
+const (
+	DeploymentRevisionGuardAllowed  DeploymentRevisionGuardStatus = "allowed"
+	DeploymentRevisionGuardBlocked  DeploymentRevisionGuardStatus = "blocked"
+	DeploymentRevisionGuardLockBusy DeploymentRevisionGuardStatus = "lock_busy"
+)
+
+// BeginDeploymentRevisionGuardInput is the lane/env identity for a deploy job
+// before AssignJob runs. The scheduler holds the returned guard until after
+// DispatchAssignment, so approve-time gate-pass marker writes serialize against
+// the whole AssignJob -> dispatch window.
+type BeginDeploymentRevisionGuardInput struct {
+	PipelineID  uuid.UUID
+	Counter     int64
+	Ref         string
+	LaneMode    string
+	Environment string
+}
+
+// DeploymentRevisionGuard owns a session-level advisory lock on one lane/env.
+// Release must be called before the pooled connection is returned.
+type DeploymentRevisionGuard struct {
+	conn     *pgxpool.Conn
+	lockKey  int64
+	released bool
+}
+
+// BeginDeploymentRevisionGuard takes the Phase-2 supersede dispatch backstop lock
+// and checks whether a newer non-canceled run in the same lane has already cleared
+// the gate for this concrete environment. A blocked/errored guard means the caller
+// must not dispatch the deploy job.
+func (s *Store) BeginDeploymentRevisionGuard(ctx context.Context, in BeginDeploymentRevisionGuardInput) (*DeploymentRevisionGuard, DeploymentRevisionGuardStatus, error) {
+	if in.LaneMode != domain.SupersedeBranch && in.LaneMode != domain.SupersedePipeline {
+		return nil, DeploymentRevisionGuardAllowed, nil
+	}
+	key := LaneEnvLockKey(in.PipelineID, in.LaneMode, in.Ref, in.Environment)
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("store: deployment guard acquire: %w", err)
+	}
+	guard := &DeploymentRevisionGuard{conn: conn, lockKey: key}
+	ok, err := guard.tryLock(ctx)
+	if err != nil {
+		raw := conn.Hijack()
+		_ = raw.Close(context.Background())
+		return nil, "", err
+	}
+	if !ok {
+		conn.Release()
+		return nil, DeploymentRevisionGuardLockBusy, nil
+	}
+
+	blocked, err := guard.newerGatePassExists(ctx, in)
+	if err != nil {
+		_ = guard.Release(ctx)
+		return nil, "", err
+	}
+	if blocked {
+		_ = guard.Release(ctx)
+		return nil, DeploymentRevisionGuardBlocked, nil
+	}
+	return guard, DeploymentRevisionGuardAllowed, nil
+}
+
+func (g *DeploymentRevisionGuard) tryLock(ctx context.Context) (bool, error) {
+	var ok bool
+	if err := g.conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, g.lockKey).Scan(&ok); err != nil {
+		return false, fmt.Errorf("store: deployment guard lock: %w", err)
+	}
+	return ok, nil
+}
+
+func (g *DeploymentRevisionGuard) newerGatePassExists(ctx context.Context, in BeginDeploymentRevisionGuardInput) (bool, error) {
+	var blocked bool
+	if in.LaneMode == domain.SupersedeBranch {
+		err := g.conn.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM run_gate_pass gp
+				JOIN runs r ON r.id = gp.run_id
+				WHERE gp.pipeline_id = $1
+				  AND gp.ref = $2
+				  AND gp.environment = $3
+				  AND gp.counter > $4
+				  AND r.status <> 'canceled'
+			)
+		`, pgUUID(in.PipelineID), in.Ref, in.Environment, in.Counter).Scan(&blocked)
+		if err != nil {
+			return false, fmt.Errorf("store: deployment guard newer gate-pass: %w", err)
+		}
+		return blocked, nil
+	}
+	err := g.conn.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM run_gate_pass gp
+			JOIN runs r ON r.id = gp.run_id
+			WHERE gp.pipeline_id = $1
+			  AND gp.environment = $2
+			  AND gp.counter > $3
+			  AND r.status <> 'canceled'
+		)
+	`, pgUUID(in.PipelineID), in.Environment, in.Counter).Scan(&blocked)
+	if err != nil {
+		return false, fmt.Errorf("store: deployment guard newer gate-pass: %w", err)
+	}
+	return blocked, nil
+}
+
+// Release drops the session-level advisory lock and returns the pooled connection.
+func (g *DeploymentRevisionGuard) Release(_ context.Context) error {
+	if g == nil || g.released {
+		return nil
+	}
+	g.released = true
+	unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var ok bool
+	if err := g.conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, g.lockKey).Scan(&ok); err != nil {
+		conn := g.conn.Hijack()
+		_ = conn.Close(context.Background())
+		return fmt.Errorf("store: deployment guard unlock: %w", err)
+	}
+	g.conn.Release()
+	if !ok {
+		return fmt.Errorf("store: deployment guard unlock: lock was not held")
+	}
+	return nil
 }
 
 // EnsureEnvironment lazy-creates (or touches) the named environment

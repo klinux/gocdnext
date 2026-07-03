@@ -181,6 +181,20 @@ func (s *Store) SetRunQueueReason(ctx context.Context, runID uuid.UUID, reason s
 	return nil
 }
 
+// SetActiveRunQueueReason records a queue/backpressure reason on an in-flight run
+// that may already be running. Used by dispatch-time gates after earlier stages
+// have promoted the run out of queued.
+func (s *Store) SetActiveRunQueueReason(ctx context.Context, runID uuid.UUID, reason string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE runs
+		SET queue_reason = $2
+		WHERE id = $1 AND status IN ('queued', 'running')
+	`, pgUUID(runID), reason); err != nil {
+		return fmt.Errorf("store: set active queue_reason: %w", err)
+	}
+	return nil
+}
+
 // ClearRunQueueReason removes a previously-stamped reason. Idempotent
 // — clearing an already-clear row is a cheap no-op via the
 // IS NOT NULL guard in SQL. Called by the scheduler when the gate
