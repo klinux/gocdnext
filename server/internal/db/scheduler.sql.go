@@ -77,8 +77,8 @@ func (q *Queries) ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
 }
 
 const getRunForDispatch = `-- name: GetRunForDispatch :one
-SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
-       r.cause, r.cause_detail,
+SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions, r.ref,
+       r.cause, r.cause_detail, r.service_generation,
        p.definition, p.config_path,
        pr.notifications AS project_notifications,
        pr.slug AS project_slug
@@ -96,8 +96,10 @@ type GetRunForDispatchRow struct {
 	Counter              int64
 	Status               string
 	Revisions            []byte
+	Ref                  string
 	Cause                string
 	CauseDetail          []byte
+	ServiceGeneration    int64
 	Definition           []byte
 	ConfigPath           string
 	ProjectNotifications []byte
@@ -125,8 +127,10 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 		&i.Counter,
 		&i.Status,
 		&i.Revisions,
+		&i.Ref,
 		&i.Cause,
 		&i.CauseDetail,
+		&i.ServiceGeneration,
 		&i.Definition,
 		&i.ConfigPath,
 		&i.ProjectNotifications,
@@ -198,6 +202,11 @@ JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1
   AND j.status = 'queued'
   AND j.agent_id IS NULL
+  -- An approval gate is a state transition, never dispatched (#97 defence in
+  -- depth): even if some path leaves a gate 'queued' — e.g. a rerun of the gate
+  -- row — the scheduler must never hand it to an agent, where a task-less job
+  -- would "pass" it without the allow-list / quorum / gate-pass marker.
+  AND j.approval_gate = false
   AND s.ordinal = (SELECT ordinal FROM active_stage)
 ORDER BY j.name, j.matrix_key NULLS FIRST
 `

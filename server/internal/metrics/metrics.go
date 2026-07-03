@@ -117,6 +117,32 @@ var (
 		},
 		[]string{"provider", "outcome"},
 	)
+
+	// RunsSuperseded counts runs canceled by latest-wins supersede (#97),
+	// incremented once per superseded run when its effects fire. A rising rate is
+	// healthy churn (a busy lane getting frequent newer revisions), not an error.
+	// Labelless on purpose — keep supersede metrics low-cardinality (no run id /
+	// branch / env).
+	RunsSuperseded = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gocdnext_runs_superseded_total",
+		Help: "Runs canceled by latest-wins supersede.",
+	})
+
+	// SupersedeBackstopErrors counts dispatch-guard failures that fail CLOSED (#97):
+	// the deploy is NOT dispatched and the job is left for retry. Non-zero means the
+	// supersede backstop hit a DB/guard error — worth alerting on.
+	SupersedeBackstopErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gocdnext_supersede_backstop_errors_total",
+		Help: "Supersede dispatch-guard errors (fail-closed; deploy not dispatched).",
+	})
+
+	// SupersedeLockBusy counts deploy dispatch attempts that couldn't take the
+	// lane-env advisory lock and left the job queued for the next tick (#97). A
+	// steady low rate is normal contention; a spike suggests a hot lane-env.
+	SupersedeLockBusy = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gocdnext_supersede_lock_busy_total",
+		Help: "Deploy dispatches deferred because the lane-env supersede lock was held.",
+	})
 )
 
 func init() {
@@ -129,6 +155,9 @@ func init() {
 		LogArchiveJobs,
 		RetentionDroppedLogPartitions,
 		WebhookDeliveries,
+		RunsSuperseded,
+		SupersedeBackstopErrors,
+		SupersedeLockBusy,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),

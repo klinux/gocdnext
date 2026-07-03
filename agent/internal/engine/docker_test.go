@@ -239,10 +239,10 @@ func (f stubEngineFn) Name() string { return "stub" }
 func (f stubEngineFn) RunScript(ctx context.Context, spec engine.ScriptSpec) (int, error) {
 	return f(ctx, spec)
 }
-func (stubEngineFn) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
+func (stubEngineFn) EnsureServices(context.Context, []engine.ServiceSpec, string, string, int64, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
 	return engine.ServicesWireup{Cleanup: func() {}}, nil
 }
-func (stubEngineFn) CleanupRunServices(context.Context, string, func(engine.ServiceLifecycleEvent)) (int, error) {
+func (stubEngineFn) CleanupRunServices(context.Context, string, int64, func(engine.ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }
 

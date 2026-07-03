@@ -45,7 +45,7 @@ func (r *Runner) startServices(
 	log := func(stream, text string) { r.emitLog(a, seq, stream, text) }
 	onLifecycle := r.serviceLifecycleEmitter(a.GetRunId())
 
-	wireup, err := r.cfg.Engine.EnsureServices(ctx, specs, a.GetRunId(), a.GetJobId(), log, onLifecycle)
+	wireup, err := r.cfg.Engine.EnsureServices(ctx, specs, a.GetRunId(), a.GetJobId(), a.GetServiceGeneration(), log, onLifecycle)
 	if err != nil {
 		// EnsureServices contract: engines clean up partials internally
 		// before returning a non-nil error. We don't double-invoke

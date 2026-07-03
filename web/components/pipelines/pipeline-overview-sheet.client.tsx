@@ -25,7 +25,7 @@ import { CauseBadge } from "@/components/shared/cause-badge";
 import { durationSummary, runDurationPoints } from "@/components/shared/duration-trend";
 import { DurationSparkline } from "@/components/shared/duration-sparkline";
 import { EntityChip } from "@/components/shared/entity-chip";
-import { StatusBadge } from "@/components/shared/status-badge";
+import { RunStatusBadge } from "@/components/runs/run-status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { cn } from "@/lib/utils";
@@ -93,7 +93,12 @@ export function PipelineOverviewSheet({
             {run ? (
               <>
                 <span className="font-mono">#{run.counter}</span>
-                <StatusBadge status={run.status} className="text-[10px]" />
+                <RunStatusBadge
+                  status={run.status}
+                  cancelReason={run.cancel_reason}
+                  supersededBy={run.superseded_by}
+                  className="text-[10px]"
+                />
                 <LiveDuration
                   startedAt={run.started_at}
                   finishedAt={run.finished_at}
@@ -702,7 +707,13 @@ function RecentRunRow({ run }: { run: RunSummary }) {
         className="block rounded-md border border-border bg-background px-2.5 py-1.5 transition-colors hover:bg-accent"
       >
         <div className="flex items-center gap-2 text-xs">
-          <StatusBadge status={run.status} className="text-[10px]" />
+          <RunStatusBadge
+            status={run.status}
+            cancelReason={run.cancel_reason}
+            supersededBy={run.superseded_by}
+            className="text-[10px]"
+            linkWinner={false}
+          />
           <span className="font-mono text-[11px] text-muted-foreground">
             #{run.counter}
           </span>

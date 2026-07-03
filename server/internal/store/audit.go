@@ -28,6 +28,7 @@ const (
 	AuditActionRunTrigger             = "run.trigger"
 	AuditActionRunCancel              = "run.cancel"
 	AuditActionRunRerun               = "run.rerun"
+	AuditActionRunSuperseded          = "run.superseded"
 	AuditActionJobRerun               = "job.rerun"
 	AuditActionDeployRollback         = "deploy.rollback"
 	AuditActionJobCancel              = "job.cancel"

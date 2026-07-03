@@ -7,6 +7,197 @@ SELECT id, pipeline_id, status, revisions, cause, cause_detail
 FROM runs
 WHERE id = $1;
 
+-- name: SupersedeRun :one
+-- Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
+-- superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —
+-- a second call on a terminal run returns 0 rows), plus superseded_by so the UI
+-- renders "superseded by #N" and the Phase-2 backstop's active-marker check can
+-- exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
+UPDATE runs
+SET status = 'canceled',
+    finished_at = COALESCE(finished_at, NOW()),
+    queue_reason = NULL,
+    superseded_by = $2,
+    cancel_reason = $3
+WHERE id = $1 AND status IN ('queued', 'running')
+RETURNING id;
+
+-- name: ListAwaitingGateNamesForRun :many
+-- The names of a run's still-pending approval gates. Supersede resolves the
+-- deploy environments a run is awaiting clearance for from these (via the
+-- gate-governance graph), to intersect against the newer run's ready gate.
+SELECT name FROM job_runs
+WHERE run_id = $1 AND approval_gate = true AND status = 'awaiting_approval';
+
+-- name: SupersedeCandidatesBranch :many
+-- Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
+-- the supersede victim candidates for `supersede: branch`. counter DESC so
+-- concurrent supersede passes lock runs.id rows in one consistent descending
+-- order (current is the highest, already locked by its own tx) and can't cycle.
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.ref = $2 AND r.counter < $3
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC;
+
+-- name: SupersedeCandidatesPipeline :many
+-- Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
+-- rides the (pipeline_id, counter) partial index.
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.counter < $2
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC;
+
+-- name: RunHasSupersededBy :one
+-- Whether a run is still marked superseded. The effects worker re-checks this right
+-- before the DESTRUCTIVE service cleanup: RerunJob can revive a run (clearing
+-- superseded_by) after a worker claimed its effects, and a stale cleanup keyed on
+-- the same run_id would delete the revived run's pods.
+SELECT (superseded_by IS NOT NULL)::boolean FROM runs WHERE id = $1;
+
+-- name: GetSupersededRunGeneration :one
+-- The service_generation of a run ONLY while it is still superseded (#97). Returns
+-- no row once RerunJob revives it (clears superseded_by). The supersede cleanup uses
+-- this as a combined "still superseded?" + "which generation am I tearing down?" read:
+-- gating the generation on superseded_by IN ONE ROW is load-bearing, because a revive
+-- clears superseded_by AND bumps service_generation in a single UPDATE — reading the
+-- two separately could straddle the revive and tear down the revived generation's pods.
+SELECT service_generation FROM runs WHERE id = $1 AND superseded_by IS NOT NULL;
+
+-- name: GetRunServiceGeneration :one
+-- Current service_generation of a run (#97). Read INSIDE the completion tx by
+-- cascadeAfterJobCompletion so the run-terminal service cleanup carries the pre-revive
+-- generation (a rerun that revives the run into a higher generation keeps its fresh
+-- pods). The API-cancel path captures its own generation via CancelActiveRun's
+-- RETURNING; the supersede path uses GetSupersededRunGeneration.
+SELECT service_generation FROM runs WHERE id = $1;
+
+-- name: ClaimSupersedeEffects :one
+-- Claim the right to fire a superseded run's external effects. Succeeds when the
+-- effects aren't already done AND no LIVE claim holds it — a claim older than the
+-- lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
+-- so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
+-- duplicate audit across replicas; a returned row means "you own the effects now".
+--
+-- Returns first_claim = whether this is the FIRST-ever claim (no prior claimed_at)
+-- vs a lease-expiry RECLAIM. The CTE reads the pre-update claimed_at under FOR
+-- UPDATE so the caller can count gocdnext_runs_superseded_total exactly once per
+-- supersede event — a reclaim that re-fires effects (e.g. cleanup had no target yet)
+-- must not re-count. (A run revived then re-superseded clears claimed_at, so its
+-- next first claim counts again — correctly, it's a new supersede event.)
+WITH cur AS (
+    SELECT runs.id AS run_id,
+           runs.supersede_effects_claimed_at AS prev_claim,
+           runs.supersede_effects_at AS effects_at,
+           runs.superseded_by AS superseded_by
+    FROM runs WHERE runs.id = $1 FOR UPDATE
+)
+UPDATE runs r
+SET supersede_effects_claimed_at = NOW()
+FROM cur
+WHERE r.id = cur.run_id
+  AND cur.superseded_by IS NOT NULL
+  AND cur.effects_at IS NULL
+  AND (cur.prev_claim IS NULL
+       OR cur.prev_claim < NOW() - sqlc.arg(lease)::INTERVAL)
+RETURNING (cur.prev_claim IS NULL)::boolean AS first_claim;
+
+-- name: MarkSupersedeEffectsDone :exec
+-- Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
+-- which the replay stops retrying. Guarded on superseded_by so the method can't mark
+-- a non-superseded row done if ever misused. Until this lands the replay keeps
+-- retrying (via the lease), so a crash — or a cleanup that had no target yet — is
+-- recovered rather than silently dropped.
+UPDATE runs SET supersede_effects_at = NOW()
+WHERE id = $1 AND superseded_by IS NOT NULL;
+
+-- name: ListPendingSupersedeEffects :many
+-- Superseded runs whose effects haven't completed AND are claimable right now — the
+-- replay work-list (missed NOTIFY or a claim past its lease). Filtering out LIVE
+-- claims (within the lease) matters: with LIMIT, a block of in-flight claims would
+-- otherwise starve later never-notified rows. Oldest-first, bounded. Rides
+-- runs_supersede_effects_pending_idx.
+SELECT id FROM runs
+WHERE superseded_by IS NOT NULL AND supersede_effects_at IS NULL
+  AND (supersede_effects_claimed_at IS NULL
+       OR supersede_effects_claimed_at < NOW() - sqlc.arg(lease)::INTERVAL)
+ORDER BY finished_at
+LIMIT sqlc.arg(max_rows);
+
+-- name: EmitRunSupersededAudit :exec
+-- Idempotent run.superseded audit — system actor, counters + superseding id only
+-- (never a branch/ref value). The partial unique index (target_id WHERE
+-- action='run.superseded') makes a second writer — a racing replica or a
+-- lease-expiry replay — a clean no-op.
+INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
+VALUES (NULL, '', 'run.superseded', 'run', $1, $2)
+ON CONFLICT (target_id) WHERE action = 'run.superseded' DO NOTHING;
+
+-- name: InsertRunGatePass :exec
+-- Record that a run cleared the approval gate(s) governing a concrete deploy env
+-- (#97 Phase 2). Written at approve time under the lane-env advisory lock; the
+-- dispatch backstop reads it to refuse a stale deploy. ON CONFLICT DO NOTHING makes
+-- a re-approve / replica race idempotent (a run passes a given env exactly once).
+INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (run_id, environment) DO NOTHING;
+
+-- name: DeleteRunGatePassForEnvs :exec
+-- Drop a run's gate-pass markers for the given envs — used on rerun-revive, when a
+-- re-armed gate makes the run's "cleared env" claim stale. Scoped to the run + the
+-- specific envs so markers for still-passed (upstream) gates survive.
+DELETE FROM run_gate_pass WHERE run_id = $1 AND environment = ANY($2::text[]);
+
+-- name: CountPassedGates :one
+-- How many of the named approval gates of a run have reached 'success'. The marker
+-- for an env is written only when this equals the count of gates governing it (all
+-- governing gates passed) — the just-approved gate is visible as success in the
+-- caller's tx. Gates are never matrix (parser rejects approval+matrix), so name
+-- uniquely identifies each gate's job_run.
+SELECT count(*) FROM job_runs
+WHERE run_id = $1 AND name = ANY($2::text[]) AND approval_gate = true AND status = 'success';
+
+-- name: GetRunSupersedeContext :one
+-- Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
+-- (counter), for the cascade supersede fire and the gate-pass marker. Reads
+-- runs.definition — NOT pipelines.definition — so gate->env resolution matches the
+-- shape the run was materialised from even after a later ApplyProject edits the
+-- live pipeline.
+SELECT pipeline_id, definition, ref, counter
+FROM runs
+WHERE id = $1;
+
+-- name: GetStageRunOrdinal :one
+-- The 0-based ordinal of a stage_run within its run. The cascade fire uses the
+-- just-completed stage's ordinal to find the NEXT stage's ready gates.
+SELECT ordinal FROM stage_runs WHERE id = $1;
+
+-- name: SupersededAuditInfo :one
+-- Counters for the run.superseded audit the effects listener emits: the victim's
+-- own counter, plus the superseding run's id + counter (via superseded_by). One
+-- row only when the run is actually superseded, so a spurious NOTIFY emits nothing.
+SELECT v.counter AS superseded_counter, v.superseded_by AS by_run_id, n.counter AS by_counter
+FROM runs v JOIN runs n ON n.id = v.superseded_by
+WHERE v.id = $1 AND v.superseded_by IS NOT NULL;
+
+-- name: ListRunningCancelRequestedForRun :many
+-- Running jobs of a run that carry a pending cancel intent (supersede stamped
+-- cancel_requested_at). The supersede effects listener pushes a CancelJob frame
+-- per row so the container stops promptly instead of waiting for the agent's next
+-- reconnect. agent_id is non-null by the predicate, so the listener can address a
+-- frame to it directly.
+SELECT id, agent_id
+FROM job_runs
+WHERE run_id = $1
+  AND status = 'running'
+  AND agent_id IS NOT NULL
+  AND cancel_requested_at IS NOT NULL;
+
 -- name: CancelActiveRun :one
 -- Flips a run to 'canceled' only if it was still active. Idempotent:
 -- a second call on a terminal run returns no rows so the handler
@@ -23,7 +214,11 @@ SET status = 'canceled',
     finished_at = COALESCE(finished_at, NOW()),
     queue_reason = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id;
+-- service_generation returned in the SAME UPDATE (#97): the cancel cleanup carries it
+-- as max_generation, so a rerun that revives this run into a higher generation keeps
+-- its fresh pods. Capturing it atomically with the flip to canceled (not a separate
+-- post-cancel read) closes the window where a revive bumps it before the read.
+RETURNING id, service_generation;
 
 -- name: GetJobRunForCancel :one
 -- Thin row used by the job-scoped cancel handler. Returns the

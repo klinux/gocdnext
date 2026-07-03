@@ -36,6 +36,7 @@ func Emit(p *domain.Pipeline) ([]byte, error) {
 		Variables:   p.Variables,
 		Template:    p.Template,
 		Concurrency: p.Concurrency,
+		Supersede:   p.Supersede,
 	}
 	if len(p.TriggerEvents) > 0 || len(p.TriggerBranches) > 0 || len(p.TriggerPaths) > 0 {
 		w := &WhenDef{}
@@ -279,6 +280,9 @@ func buildRootNode(p *domain.Pipeline, f File) (*yaml.Node, error) {
 	addScalar(root, "name", f.Name)
 	if f.Concurrency != "" {
 		addScalar(root, "concurrency", f.Concurrency)
+	}
+	if f.Supersede != "" {
+		addScalar(root, "supersede", f.Supersede)
 	}
 	if f.When != nil {
 		whenNode, err := marshalInto(f.When)

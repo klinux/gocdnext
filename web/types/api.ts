@@ -109,6 +109,14 @@ export type RunSummary = {
   // pipelines list can label declared services without the per-card
   // /services fetch. Empty array when the run declared none.
   service_names: string[];
+  // Set when a run was canceled: the operator-visible reason. For a supersede
+  // (#97) it's "superseded by #N" (counter only) — the UI renders it as a muted
+  // badge in the canceled tone. Absent for runs that weren't canceled.
+  cancel_reason?: string;
+  // The id of the newer run that superseded this one (present only for a
+  // supersede-cancel; the winning run may be GC'd, so it can be absent even when
+  // cancel_reason is set). Lets the "superseded by #N" badge link to the winner.
+  superseded_by?: string;
   created_at: string;
   started_at?: string;
   finished_at?: string;

@@ -221,6 +221,16 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 	// on the gate. Downstream jobs still wait on `needs:` of an
 	// approval job; that's the whole point of the gate.
 	if jd.Approval != nil {
+		// parallel.matrix on a gate is rejected too (#97): a per-cell manual
+		// gate is semantically odd, and the supersede backstop's "all governing
+		// gates passed" would have to reason over matrix cells. Disallow it up
+		// front so the model stays one gate = one decision.
+		if jd.Parallel != nil {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: approval gate cannot declare parallel/matrix — a gate is a single human decision, not a per-cell fan-out",
+				name,
+			)
+		}
 		if len(jd.Script) > 0 || jd.Uses != "" || jd.Image != "" ||
 			jd.Settings != nil || jd.Artifacts != nil ||
 			len(jd.NeedsArtifacts) > 0 || len(jd.Cache) > 0 ||

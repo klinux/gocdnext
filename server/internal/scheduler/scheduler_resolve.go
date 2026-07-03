@@ -11,22 +11,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// recordDeployRevision lazy-creates the target environment and writes
-// an in_progress deployment_revision for a job about to dispatch
-// (#39). Returns the new revision id (uuid.Nil on a tracking-write
-// failure) so the caller can delete it if the dispatch then fails.
-// Best-effort: a tracking-write failure is logged, never fatal — the
-// deploy still happens. The job's terminal result finalises this
-// revision (handleJobResult → FinalizeDeploymentRevision). deployed_by
-// is left empty for now; the promoting actor lives on the upstream
-// approval gate's decided_by and wiring it through is a later
-// refinement.
-func (s *Scheduler) recordDeployRevision(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, attempt int32, target *DeployTarget) uuid.UUID {
+// createDeployRevision lazy-creates the target environment and writes an
+// in_progress deployment_revision for a job about to dispatch (#39). Dispatch is
+// fail-closed: if tracking cannot be written, the scheduler must not hand a deploy
+// to an agent because a fast JobResult would have no revision to finalize.
+// deployed_by is left empty for now; the promoting actor lives on the upstream
+// approval gate's decided_by and wiring it through is a later refinement.
+func (s *Scheduler) createDeployRevision(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, attempt int32, target *DeployTarget) (uuid.UUID, error) {
 	envID, err := s.store.EnsureEnvironment(ctx, run.ProjectID, target.Environment)
 	if err != nil {
-		s.log.Warn("scheduler: deploy tracking — ensure environment",
-			"run_id", run.ID, "job_id", job.ID, "environment", target.Environment, "err", err)
-		return uuid.Nil
+		return uuid.Nil, fmt.Errorf("ensure environment %q: %w", target.Environment, err)
 	}
 	revID, err := s.store.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
 		EnvironmentID: envID,
@@ -41,11 +35,9 @@ func (s *Scheduler) recordDeployRevision(ctx context.Context, run store.RunForDi
 		IsRollback: job.DeployRollback,
 	})
 	if err != nil {
-		s.log.Warn("scheduler: deploy tracking — create revision",
-			"run_id", run.ID, "job_id", job.ID, "environment", target.Environment, "err", err)
-		return uuid.Nil
+		return uuid.Nil, err
 	}
-	return revID
+	return revID, nil
 }
 
 // resolveProfile pulls the runner profile referenced by the job

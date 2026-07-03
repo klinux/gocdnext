@@ -138,6 +138,19 @@ const (
 	ConcurrencySerial   = "serial"
 )
 
+// Supersede values for the pipeline-level supersede: knob (issue #97).
+// Latest-wins for approval-gated pipelines, scoped to a "lane":
+//   - "off" (default; empty parses as off): no supersede — current behaviour.
+//   - "branch": lane = (pipeline, ref) — latest ready revision wins WITHIN a
+//     branch; feature branches are independent lanes.
+//   - "pipeline": lane = (pipeline) — any newer revision wins regardless of ref
+//     (single-target prod pipelines).
+const (
+	SupersedeOff      = "off"
+	SupersedeBranch   = "branch"
+	SupersedePipeline = "pipeline"
+)
+
 type Pipeline struct {
 	ID        string
 	ProjectID string
@@ -150,6 +163,10 @@ type Pipeline struct {
 	// Concurrency controls whether multiple runs of this pipeline
 	// can execute side by side. See the constants above.
 	Concurrency string
+	// Supersede controls latest-wins cancellation of older pending
+	// approvals + a stale-deploy backstop for gated pipelines (#97).
+	// See the Supersede* constants; empty == off.
+	Supersede string
 	// TriggerEvents configures which SCM events fire the pipeline's
 	// implicit project material (see injectImplicitProjectMaterial
 	// in api/projects). Sourced from YAML's top-level

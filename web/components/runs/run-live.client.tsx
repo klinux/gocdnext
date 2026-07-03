@@ -8,7 +8,7 @@ import { ChevronRight, GitBranch, Radio } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { CauseBadge } from "@/components/shared/cause-badge";
-import { StatusBadge } from "@/components/shared/status-badge";
+import { RunStatusBadge } from "@/components/runs/run-status-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { LiveDuration } from "@/components/shared/live-duration";
 import { RunActions } from "@/components/runs/run-actions.client";
@@ -264,7 +264,12 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
           >
             #{data.counter}
           </Link>
-          <StatusBadge status={data.status} className="text-[10px]" />
+          <RunStatusBadge
+            status={data.status}
+            cancelReason={data.cancel_reason}
+            supersededBy={data.superseded_by}
+            className="text-[10px]"
+          />
           {live ? (
             <span
               role="status"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -13,6 +14,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
+
+// serviceGenerationLabel carries the run's service_generation (#97) on every service
+// pod. CleanupRunServices deletes only pods whose generation is <= the frame's
+// max_generation, so a run revived under the same run_id — which dispatches its pods
+// at a higher generation with a fresh name — keeps them past a stale cleanup. A pod
+// without the label (pre-#97) reads as generation 0.
+const serviceGenerationLabel = "gocdnext.io/service-generation"
 
 // k8sServiceNameRE enforces DNS-1123 label rules and adds a tighter
 // length cap (32 chars) so the resulting pod name
@@ -78,6 +86,7 @@ func (k *Kubernetes) EnsureServices(
 	ctx context.Context,
 	services []ServiceSpec,
 	runID, jobID string,
+	generation int64,
 	log func(stream, text string),
 	onLifecycle func(ServiceLifecycleEvent),
 ) (ServicesWireup, error) {
@@ -96,7 +105,13 @@ func (k *Kubernetes) EnsureServices(
 	}
 
 	runShort := shortDockerID(runID)
-	prefix := "gocdnext-svc-" + runShort + "-"
+	// Generation goes in the NAME (#97), not just the label: a revived run (RerunJob
+	// bumps its generation) must build a FRESH pod, not reuse the superseded run's
+	// pre-cleanup pod via the AlreadyExists path below — which would then be deleted by
+	// the stale supersede cleanup. Jobs of the SAME run+generation still share one pod
+	// (same name → AlreadyExists reuse). runShort (12) + "-g<gen>-" + svc (<=32) stays
+	// under the 63-char pod-name budget for any realistic rerun count.
+	prefix := "gocdnext-svc-" + runShort + "-g" + strconv.FormatInt(generation, 10) + "-"
 
 	// seen guards against the same name being declared twice in
 	// one pipeline — the server-side parser SHOULD reject this,
@@ -131,7 +146,7 @@ func (k *Kubernetes) EnsureServices(
 	created := make(map[string]bool, len(services))
 	for _, svc := range services {
 		name := prefix + svc.Name
-		pod := k.buildServicePod(name, svc, runID, jobID)
+		pod := k.buildServicePod(name, svc, runID, jobID, generation)
 		if log != nil {
 			log("stdout", fmt.Sprintf("$ starting service %s (%s)", svc.Name, svc.Image))
 		}
@@ -255,7 +270,7 @@ func (k *Kubernetes) EnsureServices(
 //     -l gocdnext.io/job=<id>` debugging (it still surfaces the
 //     pod the job is actually using, just under a different
 //     originator).
-func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID string) *corev1.Pod {
+func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID string, generation int64) *corev1.Pod {
 	env := make([]corev1.EnvVar, 0, len(svc.Env))
 	// Iterate the sorted key order so two identical specs produce
 	// byte-identical PodSpecs. Helps test assertions + log diffs.
@@ -278,6 +293,9 @@ func (k *Kubernetes) buildServicePod(name string, svc ServiceSpec, runID, jobID 
 		"app.kubernetes.io/component":  "service",
 		"app.kubernetes.io/managed-by": "gocdnext-agent",
 		"gocdnext.io/service":          svc.Name,
+		// Read by CleanupRunServices to spare a revived run's higher-generation
+		// pods from a stale supersede/terminal cleanup (#97).
+		serviceGenerationLabel: strconv.FormatInt(generation, 10),
 	}
 	if v, ok := sanitizeLabelValue(runID); ok {
 		// Load-bearing for CleanupRunServices selector.
@@ -370,6 +388,17 @@ func assertOurServicePod(pod *corev1.Pod, runID, svcName string) error {
 	return nil
 }
 
+// podServiceGeneration reads the run's service_generation off a pod's label (#97).
+// A missing or malformed label reads as 0 — the value used by pre-#97 pods and the
+// most-cleanable generation, so a cleanup never spares an unlabeled pod by mistake.
+func podServiceGeneration(pod *corev1.Pod) int64 {
+	gen, err := strconv.ParseInt(pod.Labels[serviceGenerationLabel], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return gen
+}
+
 // CleanupRunServices deletes every service pod labelled with the
 // given runID. Called by the agent on receipt of a server-side
 // CleanupRunServices RPC (issued when CompleteJob's cascade marks
@@ -394,7 +423,7 @@ func assertOurServicePod(pod *corev1.Pod, runID, svcName string) error {
 // Returns the count of pods that actually went away (delete
 // succeeded OR was NotFound). Combined with the error, the
 // caller can distinguish "all good" from "partial failure".
-func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, onLifecycle func(ServiceLifecycleEvent)) (int, error) {
+func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, maxGeneration int64, onLifecycle func(ServiceLifecycleEvent)) (int, error) {
 	v, ok := sanitizeLabelValue(runID)
 	if !ok || v == "" {
 		return 0, fmt.Errorf("kubernetes engine: invalid runID %q for label selector", runID)
@@ -416,6 +445,14 @@ func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, onLif
 		errs    []error
 	)
 	for _, pod := range pods.Items {
+		// Generation guard (#97): delete only pods up to the generation this cleanup
+		// was decided for. A run revived under the same run_id dispatches its pods at a
+		// HIGHER generation (RerunJob bumps it), so skipping generation > maxGeneration
+		// spares the revived run's fresh pods from this stale cleanup. A missing/
+		// malformed label reads as generation 0 (pre-#97 pods, always cleaned up).
+		if podServiceGeneration(&pod) > maxGeneration {
+			continue
+		}
 		delErr := k.client.CoreV1().Pods(k.cfg.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
 			GracePeriodSeconds: &gp,
 		})

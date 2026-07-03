@@ -269,6 +269,13 @@ type JobCompletion struct {
 
 	RunCompleted bool
 	RunStatus    string
+	// ServiceGeneration is the run's service_generation captured in the SAME tx that
+	// finalized the run (#97). The run-terminal service cleanup carries it as
+	// max_generation so a rerun that revives the run into a higher generation keeps its
+	// fresh pods — a value re-read AFTER the tx commits could already be the bumped
+	// (post-revive) generation and delete the revived pods. Only meaningful when
+	// RunCompleted is true.
+	ServiceGeneration int64
 }
 
 // CompleteJob flips one job_run to its terminal state and cascades into the
@@ -327,6 +334,15 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 	}
 
 	if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+		return JobCompletion{}, false, err
+	}
+
+	// #97 cascade supersede fire: if this completion finished a stage and made a
+	// downstream approval gate reachable, clear older lane siblings pending for
+	// that gate's env — in THIS tx, so the supersede + its NOTIFY commit atomically
+	// with the completion. Effects (frames/service cleanup/audit) fire via the
+	// run_superseded NOTIFY; the caller needn't propagate the victims.
+	if _, err := s.supersedeAfterCascade(ctx, tx, fromPgUUID(row.RunID), fromPgUUID(row.StageRunID), &comp); err != nil {
 		return JobCompletion{}, false, err
 	}
 
@@ -412,6 +428,15 @@ func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, r
 	}
 	comp.RunCompleted = true
 	comp.RunStatus = runStatus
+	// Capture the service generation IN THIS TX (#97): a revive (RerunJob) can't run
+	// until this completion commits, so the in-tx read is the pre-revive generation the
+	// terminal cleanup must tear down. Reading it after commit would race a revive that
+	// bumps it and delete the revived run's pods.
+	gen, err := q.GetRunServiceGeneration(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("store: run service generation: %w", err)
+	}
+	comp.ServiceGeneration = gen
 	return nil
 }
 

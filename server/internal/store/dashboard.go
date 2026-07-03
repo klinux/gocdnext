@@ -133,6 +133,8 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 				Status:       r.Status,
 				HasServices:  r.HasServices,
 				ServiceNames: r.ServiceNames,
+				CancelReason: stringValue(r.CancelReason),
+				SupersededBy: pgUUIDPtr(r.SupersededBy),
 				CreatedAt:    r.CreatedAt.Time,
 				StartedAt:    pgTimePtr(r.StartedAt),
 				FinishedAt:   pgTimePtr(r.FinishedAt),

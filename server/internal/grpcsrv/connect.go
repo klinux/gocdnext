@@ -912,6 +912,9 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 		// side effects must outlive the originating request /
 		// stream lifecycle.
 		runID := comp.RunID
+		// Captured in the completion tx (#97): pass it to the cleanup so a rerun that
+		// revives the run into a higher generation keeps its fresh pods.
+		serviceGen := comp.ServiceGeneration
 		go func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -922,7 +925,7 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 				hasServices = true // fail-open: better one extra List than leak
 			}
 			if hasServices {
-				a.dispatchRunServiceCleanup(cleanupCtx, log, runID)
+				a.dispatchRunServiceCleanup(cleanupCtx, log, runID, serviceGen)
 			}
 		}()
 	}
@@ -990,7 +993,7 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 // engine, the cleanup masquerades as success while pods leak. The
 // reaper-style fallback is documented as a known limitation; in
 // any practical k8s deployment at least one agent will be k8s.
-func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger, runID uuid.UUID) {
+func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger, runID uuid.UUID, maxGeneration int64) {
 	ranAgents, err := a.store.ListAgentsForRun(ctx, runID)
 	if err != nil {
 		log.Warn("cleanup run services: list agents failed; continuing with connected-agents only",
@@ -1025,10 +1028,14 @@ func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger
 		return
 	}
 
+	// Generation-aware cleanup (#97): maxGeneration was captured in the completion tx
+	// (JobCompletion.ServiceGeneration), so it's the generation this run was terminal
+	// at — a rerun that later revives it into a higher generation keeps its fresh pods.
 	msg := &gocdnextv1.ServerMessage{
 		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
 			CleanupRunServices: &gocdnextv1.CleanupRunServices{
-				RunId: runID.String(),
+				RunId:         runID.String(),
+				MaxGeneration: maxGeneration,
 			},
 		},
 	}

@@ -209,6 +209,10 @@
           "type": "string",
           "description": "Concurrency: \"\" / \"parallel\" (default, unlimited concurrent\nruns) or \"serial\" (one run at a time — subsequent triggers\nqueue behind the running one)."
         },
+        "supersede": {
+          "type": "string",
+          "description": "Supersede: \"\" / \"off\" (default) | \"branch\" | \"pipeline\" — latest-wins\nfor approval-gated pipelines (#97). See domain.Supersede* constants."
+        },
         "when": {
           "$ref": "#/$defs/WhenDef",
           "description": "When configures the pipeline's implicit project material (the\ngit source bound via scm_source). Mirrors the job-level\nWhenDef shape. Today only `event:` is wired — drives which\nSCM events create runs. `branch:` / `status:` are reserved\nfor future use at this level."

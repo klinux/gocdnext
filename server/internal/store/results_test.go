@@ -354,6 +354,58 @@ func TestCompleteJob_StageAndRunPromoteOnSuccess(t *testing.T) {
 	assertStatus(t, pool, "runs", runID, "success")
 }
 
+// TestCompleteJob_CapturesServiceGeneration pins the run-terminal half of the HIGH
+// fix (#97): the completion captures the run's service_generation IN THE SAME TX that
+// finalizes the run, so the run-terminal service cleanup carries the pre-revive
+// generation. Re-reading it after the tx commits could see a revive's bumped value and
+// delete the revived pods.
+func TestCompleteJob_CapturesServiceGeneration(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, _, _, jobCompileID, jobUnitID := seedRunningJob(t, pool)
+
+	// Bump the run's generation so the assertion proves the completion captures the
+	// VALUE, not just 0 (in prod RerunJob bumps it; here we set it directly).
+	if _, err := pool.Exec(ctx, `UPDATE runs SET service_generation = 2 WHERE id=$1`, runID); err != nil {
+		t.Fatalf("bump gen: %v", err)
+	}
+
+	// First stage's job: run not yet terminal, so no generation captured.
+	got, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID: jobCompileID, Status: "success", ExitCode: 0,
+		ExpectedAgentID: jobAgentID(t, pool, jobCompileID),
+	})
+	if err != nil || !ok {
+		t.Fatalf("complete compile: ok=%v err=%v", ok, err)
+	}
+	if got.RunCompleted {
+		t.Fatalf("run should still be running (2nd stage pending): %+v", got)
+	}
+
+	// Flip unit → running and complete it → the run finalizes in this tx.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='running', started_at=NOW(),
+		 agent_id=(SELECT id FROM agents LIMIT 1) WHERE id=$1`, jobUnitID,
+	); err != nil {
+		t.Fatalf("flip unit running: %v", err)
+	}
+	got2, ok, err := s.CompleteJob(ctx, store.CompleteJobInput{
+		JobRunID: jobUnitID, Status: "success", ExitCode: 0,
+		ExpectedAgentID: jobAgentID(t, pool, jobUnitID),
+	})
+	if err != nil || !ok {
+		t.Fatalf("complete unit: ok=%v err=%v", ok, err)
+	}
+	if !got2.RunCompleted {
+		t.Fatalf("run should be complete: %+v", got2)
+	}
+	if got2.ServiceGeneration != 2 {
+		t.Errorf("JobCompletion.ServiceGeneration = %d, want 2 (captured in the completion tx)", got2.ServiceGeneration)
+	}
+}
+
 func TestCompleteJob_FailedJobFailsStageAndCancelsRest(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

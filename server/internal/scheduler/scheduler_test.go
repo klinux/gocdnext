@@ -88,6 +88,92 @@ func seedAgentRow(t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
 	return id
 }
 
+func seedDeployRuns(t *testing.T, pool *pgxpool.Pool, slug, supersede string) (pipelineID uuid.UUID, older, newer store.RunCreated) {
+	t.Helper()
+	s := store.New(pool)
+	ctx := context.Background()
+	fp := domain.GitFingerprint("https://github.com/org/"+slug, "main")
+	applyRes, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: slug, Name: slug,
+		Pipelines: []*domain.Pipeline{{
+			Name:      "deploy",
+			Supersede: supersede,
+			Stages:    []string{"deploy"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: "https://github.com/org/" + slug, Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{{
+				Name: "ship", Stage: "deploy", Image: "alpine:3.19",
+				Tasks:  []domain.Task{{Script: "echo deploy"}},
+				Deploy: &domain.DeploySpec{Environment: "prod"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply deploy project: %v", err)
+	}
+	pipelineID = applyRes.Pipelines[0].PipelineID
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("mat lookup: %v", err)
+	}
+	older, err = s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:  pipelineID,
+		MaterialID:  materialID,
+		Revision:    "aaa0123456789aaa0123456789aaa0123456789a",
+		Branch:      "main",
+		Provider:    "github",
+		Delivery:    slug + "-older",
+		TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("older run: %v", err)
+	}
+	newer, err = s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID:  pipelineID,
+		MaterialID:  materialID,
+		Revision:    "bbb0123456789bbb0123456789bbb0123456789b",
+		Branch:      "main",
+		Provider:    "github",
+		Delivery:    slug + "-newer",
+		TriggeredBy: "system:webhook",
+	})
+	if err != nil {
+		t.Fatalf("newer run: %v", err)
+	}
+	return pipelineID, older, newer
+}
+
+func soleJobID(t *testing.T, run store.RunCreated) uuid.UUID {
+	t.Helper()
+	if len(run.JobRuns) != 1 {
+		t.Fatalf("job count = %d, want 1", len(run.JobRuns))
+	}
+	return run.JobRuns[0].ID
+}
+
+func assertNoAssignment(t *testing.T, sess *grpcsrv.Session) {
+	t.Helper()
+	select {
+	case msg := <-sess.Out():
+		t.Fatalf("unexpected assignment frame: %+v", msg)
+	default:
+	}
+}
+
+func queueReasonOf(t *testing.T, pool *pgxpool.Pool, runID uuid.UUID) string {
+	t.Helper()
+	var reason *string
+	if err := pool.QueryRow(context.Background(), `SELECT queue_reason FROM runs WHERE id=$1`, runID).Scan(&reason); err != nil {
+		t.Fatalf("queue_reason: %v", err)
+	}
+	if reason == nil {
+		return ""
+	}
+	return *reason
+}
+
 func TestDispatchRun_JobWithoutProfileInheritsDefaultScheduling(t *testing.T) {
 	// Hotfix v0.14.1: a job that declares no `agent.profile:` AND a
 	// runner profile named `default` exists in the DB must inherit
@@ -237,6 +323,211 @@ func TestDispatchRun_NoIdleAgentKeepsJobQueued(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE name='compile'`).Scan(&status)
 	if status != "queued" {
 		t.Fatalf("status = %s, want queued", status)
+	}
+}
+
+func TestDispatchRun_DeployGuardBlocksNewerGatePass(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	pipelineID, older, newer := seedDeployRuns(t, pool, "guard-marker", domain.SupersedeBranch)
+	olderJobID := soleJobID(t, older)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+		VALUES ($1, $2, 'main', $3, 'prod')
+	`, newer.RunID, pipelineID, newer.Counter); err != nil {
+		t.Fatalf("insert newer marker: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "guard-marker-agent")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, older.RunID)
+	assertNoAssignment(t, sess)
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, olderJobID).Scan(&status); err != nil {
+		t.Fatalf("job status: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("job status = %q, want queued (stale deploy must not AssignJob)", status)
+	}
+	var revs int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM deployment_revisions WHERE job_run_id=$1`, olderJobID).Scan(&revs); err != nil {
+		t.Fatalf("revision count: %v", err)
+	}
+	if revs != 0 {
+		t.Fatalf("deployment revisions = %d, want 0 for blocked deploy", revs)
+	}
+	if got, want := queueReasonOf(t, pool, older.RunID), "supersede-blocked:prod"; got != want {
+		t.Fatalf("queue_reason = %q, want %q", got, want)
+	}
+}
+
+func TestDispatchRun_DeployGuardBlocksNewerSuccessfulGatePass(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	pipelineID, older, newer := seedDeployRuns(t, pool, "guard-success-marker", domain.SupersedeBranch)
+	olderJobID := soleJobID(t, older)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+		VALUES ($1, $2, 'main', $3, 'prod')
+	`, newer.RunID, pipelineID, newer.Counter); err != nil {
+		t.Fatalf("insert newer marker: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, newer.RunID); err != nil {
+		t.Fatalf("finish newer run: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "guard-success-marker-agent")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, older.RunID)
+	assertNoAssignment(t, sess)
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, olderJobID).Scan(&status); err != nil {
+		t.Fatalf("job status: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("job status = %q, want queued (newer successful marker must still block)", status)
+	}
+	if got, want := queueReasonOf(t, pool, older.RunID), "supersede-blocked:prod"; got != want {
+		t.Fatalf("queue_reason = %q, want %q", got, want)
+	}
+}
+
+func TestDispatchRun_DeployGuardLockContentionDoesNotAssign(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	pipelineID, older, _ := seedDeployRuns(t, pool, "guard-lock", domain.SupersedeBranch)
+	olderJobID := soleJobID(t, older)
+	key := store.LaneEnvLockKey(pipelineID, domain.SupersedeBranch, "main", "prod")
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire lock conn: %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+		t.Fatalf("take advisory lock: %v", err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, key) }()
+
+	agentID := seedAgentRow(t, pool, "guard-lock-agent")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, older.RunID)
+	assertNoAssignment(t, sess)
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, olderJobID).Scan(&status); err != nil {
+		t.Fatalf("job status: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("job status = %q, want queued while lane/env guard lock is held", status)
+	}
+	if got, want := queueReasonOf(t, pool, older.RunID), "supersede-lock-busy:prod"; got != want {
+		t.Fatalf("queue_reason = %q, want %q", got, want)
+	}
+}
+
+func TestDispatchRun_DeployGuardAllowsRollback(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	pipelineID, older, newer := seedDeployRuns(t, pool, "guard-rollback", domain.SupersedeBranch)
+	olderJobID := soleJobID(t, older)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+		VALUES ($1, $2, 'main', $3, 'prod')
+	`, newer.RunID, pipelineID, newer.Counter); err != nil {
+		t.Fatalf("insert newer marker: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE job_runs SET deploy_rollback = true WHERE id=$1`, olderJobID); err != nil {
+		t.Fatalf("mark rollback: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "guard-rollback-agent")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, older.RunID)
+	select {
+	case msg := <-sess.Out():
+		if msg.GetAssign() == nil {
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("rollback deploy was not dispatched")
+	}
+
+	var isRollback bool
+	if err := pool.QueryRow(ctx, `SELECT is_rollback FROM deployment_revisions WHERE job_run_id=$1`, olderJobID).Scan(&isRollback); err != nil {
+		t.Fatalf("deployment revision: %v", err)
+	}
+	if !isRollback {
+		t.Fatal("deployment revision is_rollback=false, want true")
+	}
+}
+
+func TestDispatchRun_DeployRevisionCreateErrorRollsBackAssign(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	_, older, _ := seedDeployRuns(t, pool, "guard-revision-error", domain.SupersedeOff)
+	olderJobID := soleJobID(t, older)
+	var projectID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		SELECT p.project_id
+		FROM pipelines p
+		JOIN runs r ON r.pipeline_id = p.id
+		WHERE r.id = $1
+	`, older.RunID).Scan(&projectID); err != nil {
+		t.Fatalf("project id: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, projectID, "prod")
+	if err != nil {
+		t.Fatalf("ensure env: %v", err)
+	}
+	if _, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID,
+		RunID:         older.RunID,
+		JobRunID:      olderJobID,
+		Attempt:       0,
+		Version:       "preexisting",
+	}); err != nil {
+		t.Fatalf("seed in-progress revision: %v", err)
+	}
+
+	agentID := seedAgentRow(t, pool, "guard-revision-error-agent")
+	sess := sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, older.RunID)
+	assertNoAssignment(t, sess)
+
+	var status string
+	var agentIDDB *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT status, agent_id FROM job_runs WHERE id=$1`, olderJobID).Scan(&status, &agentIDDB); err != nil {
+		t.Fatalf("job status: %v", err)
+	}
+	if status != "queued" || agentIDDB != nil {
+		t.Fatalf("job after revision error = (%q,%v), want (queued,<nil>)", status, agentIDDB)
 	}
 }
 

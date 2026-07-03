@@ -16,7 +16,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { StatusBadge } from "@/components/shared/status-badge";
+import { RunStatusBadge } from "@/components/runs/run-status-badge";
 import { StatusDot } from "@/components/shared/status-dot";
 import { RunsTable } from "@/components/runs/runs-table";
 import { formatDurationSeconds } from "@/lib/format";
@@ -280,7 +280,12 @@ export default async function DashboardPage() {
                     </span>
                     <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
                       <RelativeTime at={r.finished_at ?? r.created_at} />
-                      <StatusBadge status={r.status} />
+                      <RunStatusBadge
+                        status={r.status}
+                        cancelReason={r.cancel_reason}
+                        supersededBy={r.superseded_by}
+                        linkWinner={false}
+                      />
                     </span>
                   </Link>
                 ))}

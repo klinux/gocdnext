@@ -359,6 +359,14 @@ message ServerMessage {
 // concurrent race is treated as success).
 message CleanupRunServices {
   string run_id = 1;
+  // Delete only service pods whose generation label (gocdnext.io/service-generation)
+  // is <= this value. Every run carries a service_generation that bumps each time the
+  // run is revived (RerunJob) under the SAME run_id, and each generation's pods get a
+  // fresh name+label. A supersede/terminal cleanup captures the generation being torn
+  // down, so a run revived into a HIGHER generation keeps its new pods (their label is
+  // > max_generation) — closing the cleanup-vs-revive race (#97). Zero is a valid
+  // generation (a never-revived run); the server always sets this explicitly.
+  int64 max_generation = 2;
 }
 
 message JobAssignment {
@@ -480,6 +488,15 @@ message JobAssignment {
   // scanner (exit-code 1 on a finding) still publish its SARIF so the
   // Security dashboard sees the findings that failed the job.
   string artifacts_when = 25;
+
+  // ServiceGeneration is the run's service-pod generation at dispatch time. The
+  // Kubernetes engine stamps it into each `services:` pod's name + generation
+  // label so a run revived under the same run_id (RerunJob bumps the generation)
+  // builds a FRESH pod set, and a stale supersede/terminal CleanupRunServices —
+  // which carries the older generation it tore down — cannot delete the revived
+  // pods (#97). Zero for a never-revived run. Kubernetes engine only; Shell +
+  // Docker ignore it.
+  int64 service_generation = 26;
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so

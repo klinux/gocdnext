@@ -9,9 +9,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { RunStatusBadge } from "@/components/runs/run-status-badge";
 import { CauseBadge } from "@/components/shared/cause-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
-import { StatusBadge } from "@/components/shared/status-badge";
 import { durationBetween, formatDurationSeconds } from "@/lib/format";
 import type { GlobalRunSummary, RunSummary } from "@/types/api";
 
@@ -81,7 +81,11 @@ export function RunsTable({
             return (
               <TableRow key={r.id} className="font-mono text-xs">
                 <TableCell>
-                  <StatusBadge status={r.status} />
+                  <RunStatusBadge
+                    status={r.status}
+                    cancelReason={r.cancel_reason}
+                    supersededBy={r.superseded_by}
+                  />
                 </TableCell>
                 <TableCell className="truncate">
                   <Link

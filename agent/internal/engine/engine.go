@@ -227,7 +227,13 @@ type Engine interface {
 	//
 	// Engines that don't implement services return an error when
 	// len(services) > 0.
-	EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, log func(stream, text string), onLifecycle func(ServiceLifecycleEvent)) (ServicesWireup, error)
+	//
+	// generation is the run's service_generation (#97): the Kubernetes engine stamps
+	// it into each pod's name + a generation label so a run revived under the same
+	// run_id (dispatched at a higher generation) builds a fresh pod set instead of
+	// reusing — and being torn down with — the superseded generation's pods. Shell +
+	// Docker ignore it.
+	EnsureServices(ctx context.Context, services []ServiceSpec, runID, jobID string, generation int64, log func(stream, text string), onLifecycle func(ServiceLifecycleEvent)) (ServicesWireup, error)
 
 	// CleanupRunServices tears down every service pod/container
 	// labelled with the given runID. Driven by the server's
@@ -255,5 +261,11 @@ type Engine interface {
 	// agents shouldn't normally receive this message. The
 	// defensive no-op stays in place to cover legacy/unknown
 	// engines during a rolling upgrade.
-	CleanupRunServices(ctx context.Context, runID string, onLifecycle func(ServiceLifecycleEvent)) (int, error)
+	//
+	// maxGeneration restricts the delete to service pods whose generation label is
+	// <= it — a run revived under the same run_id dispatches its pods at a higher
+	// generation, so a stale cleanup carrying the older generation keeps its hands off
+	// them (#97). Callers wanting an unconditional teardown (run-terminal, no revive to
+	// protect) pass math.MaxInt64.
+	CleanupRunServices(ctx context.Context, runID string, maxGeneration int64, onLifecycle func(ServiceLifecycleEvent)) (int, error)
 }

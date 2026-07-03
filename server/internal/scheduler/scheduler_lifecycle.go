@@ -77,6 +77,15 @@ func (s *Scheduler) resolveCloneTokens(ctx context.Context, materials []store.Ma
 	return out
 }
 
+// WithChecksReporter wires the GitHub Checks reporter so a supersede-cancel closes
+// the old run's check (the JobResult completion path is skipped on supersede). nil
+// = feature off; the effects listener guards on it. Pass the SAME reporter the
+// AgentService gets so both paths report to the same check runs.
+func (s *Scheduler) WithChecksReporter(r checksReporter) *Scheduler {
+	s.checks = r
+	return s
+}
+
 // WithTickInterval overrides the backstop tick. Mainly for tests.
 func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 	if d > 0 {
@@ -131,8 +140,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		_ = conn.Close(context.Background())
 		return fmt.Errorf("scheduler: LISTEN: %w", err)
 	}
+	if _, err := conn.Exec(ctx, "LISTEN "+store.SupersededRunChannel); err != nil {
+		_ = conn.Close(context.Background())
+		return fmt.Errorf("scheduler: LISTEN superseded: %w", err)
+	}
 
 	runCh := make(chan uuid.UUID, 32)
+	supersededCh := make(chan uuid.UUID, 32)
 	// drainCh is the single-producer signal: on an agent register,
 	// or a tick, we coalesce into one drain without blocking the
 	// signaller. Buffer of 1 because two back-to-back drains add
@@ -165,13 +179,23 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			}
 			id, err := uuid.Parse(note.Payload)
 			if err != nil {
-				s.log.Warn("scheduler: bad notify payload", "payload", note.Payload)
+				s.log.Warn("scheduler: bad notify payload", "payload", note.Payload, "channel", note.Channel)
 				continue
 			}
+			target := runCh
+			if note.Channel == store.SupersededRunChannel {
+				target = supersededCh
+			}
 			select {
-			case runCh <- id:
+			case target <- id:
 			default:
-				// Channel full: drop, the tick loop will pick it up.
+				// run_queued drops are recovered by the tick loop's re-scan.
+				// run_superseded drops only defer prompt frame push — the
+				// cancel_requested_at stamp + reconnect/reaper still finalize —
+				// but warn so a flood is visible to the operator.
+				if note.Channel == store.SupersededRunChannel {
+					s.log.Warn("scheduler: superseded channel full; frame push deferred to reconnect/reaper", "run_id", id)
+				}
 			}
 		}
 	}()
@@ -195,6 +219,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return nil
 		case runID := <-runCh:
 			s.dispatchRun(ctx, runID)
+		case runID := <-supersededCh:
+			s.fireSupersedeEffects(ctx, runID)
 		case <-drainCh:
 			// Agent came online — re-try every queued run so jobs
 			// stop sitting around for up to a tick interval just
@@ -203,6 +229,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-ticker.C:
 			s.drainQueued(ctx)
 			s.refreshQueueDepth(ctx)
+			s.replaySupersedeEffects(ctx)
 		}
 	}
 }
