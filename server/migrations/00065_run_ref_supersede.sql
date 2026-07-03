@@ -31,6 +31,7 @@ SET ref = COALESCE((
         CASE WHEN jsonb_typeof(r.revisions) = 'object' THEN r.revisions ELSE '{}'::jsonb END
     ) AS rev
     WHERE COALESCE(rev.value->>'branch', '') <> ''
+    ORDER BY rev.key   -- deterministic in multi-material runs (stable lane, not random)
     LIMIT 1
 ), '')
 WHERE r.status IN ('queued', 'running');

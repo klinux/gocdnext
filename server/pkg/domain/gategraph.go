@@ -23,81 +23,76 @@ func (p *Pipeline) stageIndex() map[string]int {
 	return idx
 }
 
-// governingGatesForJob returns the approval-gate job names that govern deploy
-// job d (closest gates, shadowing removed). Unexported: callers use
-// GovernedEnvs / GoverningGates.
+func (p *Pipeline) byName() map[string]Job {
+	m := make(map[string]Job, len(p.Jobs))
+	for _, j := range p.Jobs {
+		m[j.Name] = j
+	}
+	return m
+}
+
+// transitivelyNeeds reports whether job j must run after `target` via the
+// explicit `needs:` DAG (j needs … needs target).
+func transitivelyNeeds(byName map[string]Job, j Job, target string) bool {
+	seen := make(map[string]bool)
+	var visit func(names []string) bool
+	visit = func(names []string) bool {
+		for _, n := range names {
+			if n == target {
+				return true
+			}
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			if child, ok := byName[n]; ok && visit(child.Needs) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(j.Needs)
+}
+
+// precedes reports whether job a must clear before job b can run: a is in an
+// earlier stage (sequential stages are a barrier) OR b transitively `needs:` a.
+// This is the "must-pass-before" partial order the governing-gate logic walks.
+func precedes(sidx map[string]int, byName map[string]Job, a, b Job) bool {
+	if sidx[a.Stage] < sidx[b.Stage] {
+		return true
+	}
+	return transitivelyNeeds(byName, b, a.Name)
+}
+
+// governingGatesForJob returns the approval gates that govern deploy job d — the
+// gates that must clear before d AND that no OTHER such gate shadows (a gate G is
+// shadowed when a closer gate G2 also-clearing-before-d sits between them:
+// G ≺ G2 ≺ d). Handles same-stage gate chains via `needs:` (approve-security →
+// approve-prod → deploy-prod ⇒ only approve-prod governs), not just stage order.
 func (p *Pipeline) governingGatesForJob(d Job) []string {
 	sidx := p.stageIndex()
-	dStage := sidx[d.Stage]
+	byName := p.byName()
 
-	// waits: gate name -> its stage index (gates D must clear before running).
-	waits := make(map[string]int)
+	var waits []Job // gates that must clear before d
 	for _, g := range p.Jobs {
-		if g.Approval == nil {
-			continue
-		}
-		if gs := sidx[g.Stage]; gs < dStage { // earlier stage → stage-sequence dep
-			waits[g.Name] = gs
+		if g.Approval != nil && precedes(sidx, byName, g, d) {
+			waits = append(waits, g)
 		}
 	}
-	// transitive needs add same-stage gates + explicit cross edges.
-	for _, gn := range p.transitiveNeedGates(d) {
-		waits[gn] = sidx[p.gateStage(gn)]
-	}
-
 	var out []string
-	for gn, gs := range waits {
+	for _, g := range waits {
 		shadowed := false
-		for other, os := range waits {
-			if other != gn && gs < os && os < dStage {
+		for _, g2 := range waits {
+			if g2.Name != g.Name && precedes(sidx, byName, g, g2) {
 				shadowed = true
 				break
 			}
 		}
 		if !shadowed {
-			out = append(out, gn)
+			out = append(out, g.Name)
 		}
 	}
 	return out
-}
-
-func (p *Pipeline) gateStage(name string) string {
-	for _, j := range p.Jobs {
-		if j.Name == name {
-			return j.Stage
-		}
-	}
-	return ""
-}
-
-// transitiveNeedGates walks the `needs:` DAG from d and returns every approval
-// gate reachable. Shadowing (closest-gate selection) is applied by the caller.
-func (p *Pipeline) transitiveNeedGates(d Job) []string {
-	byName := make(map[string]Job, len(p.Jobs))
-	for _, j := range p.Jobs {
-		byName[j.Name] = j
-	}
-	var gates []string
-	seen := make(map[string]bool)
-	var visit func(names []string)
-	visit = func(names []string) {
-		for _, n := range names {
-			if seen[n] {
-				continue
-			}
-			seen[n] = true
-			j, ok := byName[n]
-			if !ok {
-				continue
-			}
-			if j.Approval != nil {
-				gates = append(gates, n)
-			}
-			visit(j.Needs)
-		}
-	}
-	visit(d.Needs)
-	return gates
 }
 
 // GovernedEnvs returns the sorted, deduped CONCRETE deploy environment names

@@ -104,6 +104,30 @@ func TestGateGraph_MultiGateForOneEnv(t *testing.T) {
 	}
 }
 
+func TestGateGraph_GateChainPerPath(t *testing.T) {
+	// approve-security → approve-prod → deploy-prod (all wired by needs, gates in
+	// the SAME stage). The next gate on the path cuts propagation, so ONLY
+	// approve-prod governs prod — approve-security is shadowed via the needs chain,
+	// which a stage-only shadow rule would have missed.
+	p := &Pipeline{
+		Stages: []string{"approve", "deploy"},
+		Jobs: []Job{
+			gate("approve-security", "approve"),
+			gate("approve-prod", "approve", "approve-security"),
+			deploy("deploy-prod", "deploy", "prod", "approve-prod"),
+		},
+	}
+	if got := p.GoverningGates("prod"); !reflect.DeepEqual(got, []string{"approve-prod"}) {
+		t.Fatalf("GoverningGates(prod) = %v, want [approve-prod] (security shadowed via needs chain)", got)
+	}
+	if got := p.GovernedEnvs("approve-security"); len(got) != 0 {
+		t.Fatalf("approve-security governs nothing (shadowed), got %v", got)
+	}
+	if got := p.GovernedEnvs("approve-prod"); !reflect.DeepEqual(got, []string{"prod"}) {
+		t.Fatalf("GovernedEnvs(approve-prod) = %v, want [prod]", got)
+	}
+}
+
 func TestGateGraph_GateGovernsNoDeploy(t *testing.T) {
 	p := &Pipeline{
 		Stages: []string{"approve"},
