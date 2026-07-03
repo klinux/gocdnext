@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -95,17 +96,59 @@ func (s *Store) supersedeLaneSiblings(ctx context.Context, tx pgx.Tx, in superse
 		return envs
 	}
 
+	// Cross-order deadlock guard (review MED). Supersede holds runs(V) FOR UPDATE
+	// and then cancels the victim's gate/job rows — runs → job_runs order. But the
+	// codebase's cascade (approval decideGate, result completion) takes them
+	// job_runs → runs: it locks the gate/job row, then wants runs(V) via CompleteRun
+	// (a rejected/failed cascade cancels the awaiting gate and finalizes the run).
+	// The two orders can cycle. Rather than reorder the hot cascade path (and risk a
+	// new approval↔result deadlock), BOUND every lock wait: a contended victim aborts
+	// to its savepoint and is skipped, left pending for the next fire to retry (the
+	// Phase-2 backstop is the hard guarantee; Phase-1 is a best-effort pile-clear).
+	// This also kills the stale-cancel risk — an in-flight approval holds the gate
+	// row, so supersede times out and bails instead of racing its decision. Set once
+	// on the tx (SET LOCAL auto-resets at commit); it covers every victim below.
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '75ms'`); err != nil {
+		return nil, fmt.Errorf("store: supersede lock_timeout: %w", err)
+	}
+
 	var out []SupersededRun
 	for _, c := range candidates { // already counter DESC from SQL
-		superseded, err := s.supersedeOne(ctx, tx, q, c.id, c.counter, in, envsForGate)
+		// One savepoint per victim so a lock-timeout/deadlock abort rolls back only
+		// this victim's partial terminalization (incl. the runs-status flip) and the
+		// loop continues with the outer tx healthy.
+		sp, err := tx.Begin(ctx)
 		if err != nil {
+			return nil, fmt.Errorf("store: supersede savepoint: %w", err)
+		}
+		superseded, err := s.supersedeOne(ctx, sp, s.q.WithTx(sp), c.id, c.counter, in, envsForGate)
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			if isLockContention(err) {
+				continue // contended (in-flight approval / failing cascade) — retry next fire
+			}
 			return nil, err
+		}
+		if err := sp.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: supersede release savepoint: %w", err)
 		}
 		if superseded != nil {
 			out = append(out, *superseded)
 		}
 	}
 	return out, nil
+}
+
+// isLockContention reports whether err is a bounded-wait abort we deliberately
+// provoke to skip a contended victim: lock_timeout (55P03) from our SET LOCAL, or
+// deadlock_detected (40P01) if Postgres's detector fires first. Either way the
+// victim is left pending, not failed.
+func isLockContention(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "55P03" || pgErr.Code == "40P01"
+	}
+	return false
 }
 
 // supersedeOne locks + revalidates a single victim and terminalizes it if it

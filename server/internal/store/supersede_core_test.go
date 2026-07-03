@@ -343,6 +343,10 @@ func TestSupersede_RacingAssignJobStillCanceled(t *testing.T) {
 		t.Fatalf("begin sched tx: %v", err)
 	}
 	defer func() { _ = txSched.Rollback(f.ctx) }()
+	var schedPID int
+	if err := txSched.QueryRow(f.ctx, `SELECT pg_backend_pid()`).Scan(&schedPID); err != nil {
+		t.Fatalf("sched backend pid: %v", err)
+	}
 	ct, err := txSched.Exec(f.ctx,
 		`UPDATE job_runs SET status='running', agent_id=$2, started_at=NOW()
 		 WHERE id=$1 AND status='queued' AND agent_id IS NULL`, compileID, agentID)
@@ -385,7 +389,7 @@ func TestSupersede_RacingAssignJobStillCanceled(t *testing.T) {
 
 	// Deterministic barrier: wait until the supersede backend is actually blocked
 	// on txSched's row lock before we let AssignJob commit.
-	waitUntilBlocked(t, f.pool, f.ctx)
+	waitUntilBlockedBy(t, f.pool, f.ctx, schedPID)
 
 	// Let AssignJob win: compile is now committed-running.
 	if err := txSched.Commit(f.ctx); err != nil {
@@ -431,15 +435,79 @@ func TestSupersede_RacingAssignJobStillCanceled(t *testing.T) {
 	}
 }
 
-// waitUntilBlocked polls until some backend is waiting on a lock held by another
-// (pg_blocking_pids). Tests here run sequentially against a freshly-truncated DB,
-// so the only lock-blocked backend is the supersede goroutine.
-func waitUntilBlocked(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
+// The MED: an in-flight approval on the victim's gate must NOT deadlock supersede
+// or let it cancel based on a decision-in-flight. Supersede holds runs(V) then
+// cancels gate/job rows (runs → job_runs); the approval cascade holds the gate row
+// then wants runs(V) (job_runs → runs). The bounded lock_timeout makes supersede
+// abort its savepoint and leave the victim pending — the approval owns the decision.
+func TestSupersede_InFlightApprovalBails(t *testing.T) {
+	f := newGateFixture(t, "supappr")
+	victim := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+
+	var gateID uuid.UUID
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT id FROM job_runs WHERE run_id=$1 AND name='approve-staging'`, victim.RunID).Scan(&gateID); err != nil {
+		t.Fatalf("gate id: %v", err)
+	}
+
+	// Simulate an approval mid-cascade: hold the gate row lock uncommitted, exactly
+	// as decideGate's terminal UPDATE would (approvals.go).
+	txAppr, err := f.pool.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("begin approval tx: %v", err)
+	}
+	defer func() { _ = txAppr.Rollback(f.ctx) }()
+	ct, err := txAppr.Exec(f.ctx,
+		`UPDATE job_runs SET status='success', decided_at=NOW() WHERE id=$1 AND status='awaiting_approval'`, gateID)
+	if err != nil {
+		t.Fatalf("approval flip: %v", err)
+	}
+	if ct.RowsAffected() != 1 {
+		t.Fatalf("approval flip affected %d rows, want 1", ct.RowsAffected())
+	}
+
+	type result struct {
+		victims []SupersededRun
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, e := f.runSupersedeE(newer, "main", []string{"staging"})
+		ch <- result{out, e}
+	}()
+
+	// Supersede must return promptly (bounded lock_timeout ~75ms), NOT hang on the
+	// gate row txAppr holds. A generous ceiling still catches an unbounded wait.
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("supersede errored instead of bailing the contended victim: %v", r.err)
+		}
+		if len(r.victims) != 0 {
+			t.Fatalf("supersede canceled %d victims while an approval was in flight, want 0", len(r.victims))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("supersede hung on the in-flight gate row — lock_timeout bail not working")
+	}
+
+	// Victim untouched: the approval owns the decision; the flip was rolled back.
+	if st := f.stateOf(t, victim.RunID); st.status != "queued" || st.supersededBy != nil {
+		t.Fatalf("contended victim was terminalized: %+v", st)
+	}
+	_ = txAppr.Rollback(f.ctx)
+}
+
+// waitUntilBlockedBy polls until some backend is waiting on a lock held
+// specifically by blockerPID (the txSched backend), so the barrier can't be
+// satisfied by an unrelated waiter.
+func waitUntilBlockedBy(t *testing.T, pool *pgxpool.Pool, ctx context.Context, blockerPID int) {
 	t.Helper()
 	for i := 0; i < 250; i++ {
 		var blocked bool
 		if err := pool.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0)`,
+			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))`,
+			blockerPID,
 		).Scan(&blocked); err != nil {
 			t.Fatalf("poll pg_blocking_pids: %v", err)
 		}
@@ -448,5 +516,5 @@ func waitUntilBlocked(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for the supersede backend to block on the row lock")
+	t.Fatalf("timed out waiting for a backend to block on pid %d's row lock", blockerPID)
 }
