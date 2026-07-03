@@ -405,6 +405,7 @@ type Run struct {
 	CancelReason              *string
 	SupersedeEffectsClaimedAt pgtype.Timestamptz
 	SupersedeEffectsAt        pgtype.Timestamptz
+	Definition                []byte
 }
 
 type RunGatePass struct {

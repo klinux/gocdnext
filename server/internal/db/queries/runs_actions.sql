@@ -118,12 +118,14 @@ SELECT count(*) FROM job_runs
 WHERE run_id = $1 AND name = ANY($2::text[]) AND approval_gate = true AND status = 'success';
 
 -- name: GetRunSupersedeContext :one
--- Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
--- cascade supersede fire. The definition is the drift-safe snapshot the run was
--- materialised from — same source insertRunSkeleton decodes.
-SELECT r.pipeline_id, p.definition, r.ref, r.counter
-FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
-WHERE r.id = $1;
+-- Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
+-- (counter), for the cascade supersede fire and the gate-pass marker. Reads
+-- runs.definition — NOT pipelines.definition — so gate->env resolution matches the
+-- shape the run was materialised from even after a later ApplyProject edits the
+-- live pipeline.
+SELECT pipeline_id, definition, ref, counter
+FROM runs
+WHERE id = $1;
 
 -- name: GetStageRunOrdinal :one
 -- The 0-based ordinal of a stage_run within its run. The cascade fire uses the

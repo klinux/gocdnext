@@ -36,11 +36,15 @@ WHERE pipeline_id = $1;
 -- ref (migration 00065) is the supersede LANE key — the triggering branch,
 -- snapshotted at create time from the same trigger context (drift-safe like the
 -- others). Appended last so the existing positional params keep their order.
+-- definition (migration 00067) snapshots the effective pipeline definition the run
+-- is materialised from, so the supersede gate-governance graph (gate -> deploy env)
+-- is resolved at approve / cascade time against the run's OWN shape, not a
+-- since-drifted pipelines.definition. Same drift-safety as the snapshots above.
 INSERT INTO runs (
     pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
-    has_services, service_names, ref
+    has_services, service_names, ref, definition
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9
+    $1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10
 )
 RETURNING id, pipeline_id, counter, cause, status, created_at;
 

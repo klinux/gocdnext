@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sync"
 	"testing"
@@ -201,6 +202,43 @@ func TestGatePass_ConcurrentMultiGateExactlyOneMarker(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("round %d: prod markers = %d, want exactly 1 (advisory lock must serialize)", i, n)
 		}
+	}
+}
+
+// The MED: the marker must resolve gate->env from the RUN's definition snapshot,
+// not the live pipelines.definition (upserted in place by ApplyProject). Create a
+// run whose gate governs prod, DRIFT the live definition so the gate would govern
+// staging, then approve — the marker must still be prod (the run's shape).
+func TestGatePass_UsesRunSnapshotNotLiveDefinition(t *testing.T) {
+	def := domain.Pipeline{
+		Name: "p1", Supersede: domain.SupersedeBranch,
+		Stages: []string{"build", "approve", "deploy"},
+		Jobs: []domain.Job{
+			{Name: "compile", Stage: "build", Image: "alpine", Tasks: []domain.Task{{Script: "true"}}},
+			gateJob("gate", "approve"),
+			deployJob("dep", "deploy", "prod"),
+		},
+	}
+	f := newMarkerFixture(t, "gpdrift", def)
+	run := f.createRun(t, "main") // snapshots def: gate governs prod
+
+	// Drift the LIVE pipeline definition: the gate now governs staging.
+	mutated := def
+	mutated.Jobs = append([]domain.Job(nil), def.Jobs...)
+	mutated.Jobs[2] = deployJob("dep", "deploy", "staging")
+	raw, err := json.Marshal(mutated)
+	if err != nil {
+		t.Fatalf("marshal mutated def: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE pipelines SET definition=$2 WHERE id=$1`, f.pipelineID, raw); err != nil {
+		t.Fatalf("drift pipeline def: %v", err)
+	}
+
+	if _, err := f.s.ApproveGate(f.ctx, ApprovalDecision{JobRunID: f.gateJobID(t, run.RunID, "gate")}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if got := f.markerEnvs(t, run.RunID); !reflect.DeepEqual(got, []string{"prod"}) {
+		t.Fatalf("marker = %v, want [prod] from the run snapshot (live def drifted to staging)", got)
 	}
 }
 

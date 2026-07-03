@@ -595,9 +595,11 @@ type Querier interface {
 	// the round trip we'd otherwise need to fetch them separately.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
-	// Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
-	// cascade supersede fire. The definition is the drift-safe snapshot the run was
-	// materialised from — same source insertRunSkeleton decodes.
+	// Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
+	// (counter), for the cascade supersede fire and the gate-pass marker. Reads
+	// runs.definition — NOT pipelines.definition — so gate->env resolution matches the
+	// shape the run was materialised from even after a later ApplyProject edits the
+	// live pipeline.
 	GetRunSupersedeContext(ctx context.Context, id pgtype.UUID) (GetRunSupersedeContextRow, error)
 	// For a downstream run, extracts upstream_run_id + upstream pipeline
 	// name from cause_detail JSON. Empty string / null UUID when this run
@@ -751,6 +753,10 @@ type Querier interface {
 	// ref (migration 00065) is the supersede LANE key — the triggering branch,
 	// snapshotted at create time from the same trigger context (drift-safe like the
 	// others). Appended last so the existing positional params keep their order.
+	// definition (migration 00067) snapshots the effective pipeline definition the run
+	// is materialised from, so the supersede gate-governance graph (gate -> deploy env)
+	// is resolved at approve / cascade time against the run's OWN shape, not a
+	// since-drifted pipelines.definition. Same drift-safety as the snapshots above.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	// Recompute the daily terminal-run counts for the same window the delete cleared.
 	// Bucketed by finished_at::date. runs_failed folds 'failed' + 'errored';

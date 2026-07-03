@@ -264,6 +264,11 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		HasServices:  len(def.Services) > 0,
 		ServiceNames: serviceNames(def),
 		Ref:          capRef(in.Ref),
+		// Snapshot the effective definition (#97): gate->env resolution at approve /
+		// cascade time reads THIS, not the since-drifted pipelines.definition. Same
+		// bytes we just decoded into `def`, so the snapshot can't disagree with the
+		// stages/jobs we materialise.
+		Definition: pipelineRow.Definition,
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)

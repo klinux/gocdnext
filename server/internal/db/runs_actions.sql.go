@@ -246,9 +246,9 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 }
 
 const getRunSupersedeContext = `-- name: GetRunSupersedeContext :one
-SELECT r.pipeline_id, p.definition, r.ref, r.counter
-FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
-WHERE r.id = $1
+SELECT pipeline_id, definition, ref, counter
+FROM runs
+WHERE id = $1
 `
 
 type GetRunSupersedeContextRow struct {
@@ -258,9 +258,11 @@ type GetRunSupersedeContextRow struct {
 	Counter    int64
 }
 
-// Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
-// cascade supersede fire. The definition is the drift-safe snapshot the run was
-// materialised from — same source insertRunSkeleton decodes.
+// Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
+// (counter), for the cascade supersede fire and the gate-pass marker. Reads
+// runs.definition — NOT pipelines.definition — so gate->env resolution matches the
+// shape the run was materialised from even after a later ApplyProject edits the
+// live pipeline.
 func (q *Queries) GetRunSupersedeContext(ctx context.Context, id pgtype.UUID) (GetRunSupersedeContextRow, error) {
 	row := q.db.QueryRow(ctx, getRunSupersedeContext, id)
 	var i GetRunSupersedeContextRow
