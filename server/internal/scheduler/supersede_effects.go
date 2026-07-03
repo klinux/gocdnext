@@ -6,7 +6,6 @@ import (
 	"github.com/google/uuid"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
-	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -27,6 +26,21 @@ func (s *Scheduler) FireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 }
 
 func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
+	// Claim first so exactly one worker fires the effects: a second replica's
+	// listener, or the periodic replay, gets claimed=false and backs off. A claim
+	// past its lease (the prior claimer crashed mid-effects) is reclaimable, so no
+	// effects are permanently lost. MarkSupersedeEffectsDone at the end ends the
+	// retry loop — the idempotent audit + naturally-idempotent frames/cleanup/check
+	// keep a lease-expiry retry safe.
+	claimed, err := s.store.ClaimSupersedeEffects(ctx, runID)
+	if err != nil {
+		s.log.Warn("supersede effects: claim", "run_id", runID, "err", err)
+		return
+	}
+	if !claimed {
+		return // another live claim owns it, or the effects already completed
+	}
+
 	jobs, err := s.store.ListRunningCancelRequestedForRun(ctx, runID)
 	if err != nil {
 		s.log.Warn("supersede effects: list running jobs", "run_id", runID, "err", err)
@@ -57,6 +71,29 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 	if s.checks != nil {
 		s.checks.ReportRunCompleted(ctx, runID, string(domain.StatusCanceled))
 	}
+
+	// Effects landed — end the lease/replay retry loop. (The check close is
+	// fire-and-forget, but it self-heals via the reporter's own re-read on any later
+	// path, so marking done here doesn't strand it.)
+	if err := s.store.MarkSupersedeEffectsDone(ctx, runID); err != nil {
+		s.log.Warn("supersede effects: mark done", "run_id", runID, "err", err)
+	}
+}
+
+// replaySupersedeEffects re-fires effects for superseded runs the NOTIFY path
+// missed (channel-full drop, scheduler restart) or a claimer abandoned past its
+// lease. Runs on the tick alongside drainQueued; each run re-enters
+// fireSupersedeEffects which re-claims under the lease, so a healthy in-flight claim
+// is left alone. Bounded per tick.
+func (s *Scheduler) replaySupersedeEffects(ctx context.Context) {
+	ids, err := s.store.ListPendingSupersedeEffects(ctx, 100)
+	if err != nil {
+		s.log.Warn("supersede effects: replay list", "err", err)
+		return
+	}
+	for _, id := range ids {
+		s.fireSupersedeEffects(ctx, id)
+	}
 }
 
 // emitSupersedeAudit records the run.superseded audit once per victim, unified here
@@ -73,15 +110,12 @@ func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) {
 	if !ok {
 		return // not (or no longer) superseded — nothing to record
 	}
-	if _, err := s.store.EmitAuditEvent(ctx, store.AuditEmit{
-		Action:     store.AuditActionRunSuperseded,
-		TargetType: "run",
-		TargetID:   runID.String(),
-		Metadata: map[string]any{
-			"superseded_counter": info.SupersededCounter,
-			"by_run_id":          info.BySupersedingRunID.String(),
-			"by_counter":         info.ByCounter,
-		},
+	// Idempotent (partial unique index): a replica race or a lease-expiry replay
+	// re-running this is a clean no-op.
+	if err := s.store.EmitRunSupersededAudit(ctx, runID, map[string]any{
+		"superseded_counter": info.SupersededCounter,
+		"by_run_id":          info.BySupersedingRunID.String(),
+		"by_counter":         info.ByCounter,
 	}); err != nil {
 		s.log.Warn("supersede effects: audit emit", "run_id", runID, "err", err)
 	}

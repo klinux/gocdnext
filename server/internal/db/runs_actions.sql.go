@@ -59,6 +59,54 @@ func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtyp
 	return id, err
 }
 
+const claimSupersedeEffects = `-- name: ClaimSupersedeEffects :one
+UPDATE runs
+SET supersede_effects_claimed_at = NOW()
+WHERE id = $1
+  AND superseded_by IS NOT NULL
+  AND supersede_effects_at IS NULL
+  AND (supersede_effects_claimed_at IS NULL
+       OR supersede_effects_claimed_at < NOW() - $2::INTERVAL)
+RETURNING id
+`
+
+type ClaimSupersedeEffectsParams struct {
+	ID    pgtype.UUID
+	Lease pgtype.Interval
+}
+
+// Claim the right to fire a superseded run's external effects. Succeeds when the
+// effects aren't already done AND no LIVE claim holds it — a claim older than the
+// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
+// so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
+// duplicate audit across replicas; the returned id means "you own the effects now".
+func (q *Queries) ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, claimSupersedeEffects, arg.ID, arg.Lease)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const emitRunSupersededAudit = `-- name: EmitRunSupersededAudit :exec
+INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
+VALUES (NULL, '', 'run.superseded', 'run', $1, $2)
+ON CONFLICT (target_id) WHERE action = 'run.superseded' DO NOTHING
+`
+
+type EmitRunSupersededAuditParams struct {
+	TargetID string
+	Metadata []byte
+}
+
+// Idempotent run.superseded audit — system actor, counters + superseding id only
+// (never a branch/ref value). The partial unique index (target_id WHERE
+// action='run.superseded') makes a second writer — a racing replica or a
+// lease-expiry replay — a clean no-op.
+func (q *Queries) EmitRunSupersededAudit(ctx context.Context, arg EmitRunSupersededAuditParams) error {
+	_, err := q.db.Exec(ctx, emitRunSupersededAudit, arg.TargetID, arg.Metadata)
+	return err
+}
+
 const getJobRunForCancel = `-- name: GetJobRunForCancel :one
 SELECT id, run_id, stage_run_id, name, status, agent_id, attempt, cancel_requested_at
 FROM job_runs
@@ -290,6 +338,36 @@ func (q *Queries) ListPendingCancelsForAgent(ctx context.Context, agentID pgtype
 	return items, nil
 }
 
+const listPendingSupersedeEffects = `-- name: ListPendingSupersedeEffects :many
+SELECT id FROM runs
+WHERE superseded_by IS NOT NULL AND supersede_effects_at IS NULL
+ORDER BY finished_at
+LIMIT $1
+`
+
+// Superseded runs whose effects haven't completed — the replay work-list (missed
+// NOTIFY or a claim past its lease). Oldest-first, bounded so one tick can't stall.
+// Rides runs_supersede_effects_pending_idx.
+func (q *Queries) ListPendingSupersedeEffects(ctx context.Context, maxRows int32) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPendingSupersedeEffects, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunningCancelRequestedForRun = `-- name: ListRunningCancelRequestedForRun :many
 SELECT id, agent_id
 FROM job_runs
@@ -327,6 +405,18 @@ func (q *Queries) ListRunningCancelRequestedForRun(ctx context.Context, runID pg
 		return nil, err
 	}
 	return items, nil
+}
+
+const markSupersedeEffectsDone = `-- name: MarkSupersedeEffectsDone :exec
+UPDATE runs SET supersede_effects_at = NOW() WHERE id = $1
+`
+
+// Mark a superseded run's effects COMPLETE, after frames/cleanup/check/audit all
+// ran. Until this lands the replay keeps retrying (via the lease), so a crash
+// between claim and here is recovered rather than silently dropped.
+func (q *Queries) MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markSupersedeEffectsDone, id)
+	return err
 }
 
 const reclaimPendingCancelsForOfflineAgent = `-- name: ReclaimPendingCancelsForOfflineAgent :many

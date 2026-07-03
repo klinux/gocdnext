@@ -8,12 +8,38 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// markSuperseded inserts a newer superseding run and flips `victim` to
+// canceled+superseded_by it — the DB state fireSupersedeEffects requires to claim
+// (the effects only fire for actually-superseded runs). Returns the superseding id.
+func markSuperseded(t *testing.T, pool *pgxpool.Pool, victim uuid.UUID) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var pipelineID uuid.UUID
+	var counter int64
+	if err := pool.QueryRow(ctx, `SELECT pipeline_id, counter FROM runs WHERE id=$1`, victim).
+		Scan(&pipelineID, &counter); err != nil {
+		t.Fatalf("victim row: %v", err)
+	}
+	var superseding uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO runs (pipeline_id, counter, cause, revisions, ref) VALUES ($1,$2,'webhook','{}','main') RETURNING id`,
+		pipelineID, counter+1).Scan(&superseding); err != nil {
+		t.Fatalf("insert superseding run: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2 WHERE id=$1`, victim, superseding); err != nil {
+		t.Fatalf("mark superseded: %v", err)
+	}
+	return superseding
+}
 
 // spyChecks satisfies the scheduler's checksReporter (structurally — the interface
 // is unexported) so the test can assert the supersede-cancel closes the check.
@@ -39,6 +65,7 @@ func TestFireSupersedeEffects_PushesCancelToRunningJob(t *testing.T) {
 	ctx := context.Background()
 
 	runID, _ := seed(t, pool)
+	markSuperseded(t, pool, runID)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
 
@@ -80,24 +107,8 @@ func TestFireSupersedeEffects_EmitsAudit(t *testing.T) {
 	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
 	ctx := context.Background()
 
-	victim, _ := seed(t, pool) // counter 1
-	var pipelineID uuid.UUID
-	var victimCounter int64
-	if err := pool.QueryRow(ctx, `SELECT pipeline_id, counter FROM runs WHERE id=$1`, victim).
-		Scan(&pipelineID, &victimCounter); err != nil {
-		t.Fatalf("victim row: %v", err)
-	}
-	// A newer superseding run + mark the victim superseded by it.
-	var superseding uuid.UUID
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO runs (pipeline_id, counter, cause, revisions, ref) VALUES ($1,$2,'webhook','{}','main') RETURNING id`,
-		pipelineID, victimCounter+1).Scan(&superseding); err != nil {
-		t.Fatalf("insert superseding run: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`UPDATE runs SET status='canceled', superseded_by=$2 WHERE id=$1`, victim, superseding); err != nil {
-		t.Fatalf("mark superseded: %v", err)
-	}
+	victim, _ := seed(t, pool)
+	markSuperseded(t, pool, victim)
 
 	sched.FireSupersedeEffects(ctx, victim)
 
@@ -127,6 +138,7 @@ func TestFireSupersedeEffects_ClosesGithubCheck(t *testing.T) {
 	ctx := context.Background()
 
 	runID, _ := seed(t, pool)
+	markSuperseded(t, pool, runID)
 	sched.FireSupersedeEffects(ctx, runID)
 
 	spy.mu.Lock()
@@ -135,6 +147,58 @@ func TestFireSupersedeEffects_ClosesGithubCheck(t *testing.T) {
 	if len(spy.completed) != 1 || spy.completed[0] != want {
 		t.Fatalf("checks.ReportRunCompleted calls = %v, want [%s]", spy.completed, want)
 	}
+}
+
+// pt.5d durability: the claim makes effects fire exactly once — a second
+// FireSupersedeEffects (a replica's NOTIFY, or the replay) is a no-op — and once
+// done the run drops off the replay work-list.
+func TestFireSupersedeEffects_ClaimOnceThenDone(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	spy := &spyChecks{}
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN).WithChecksReporter(spy)
+	ctx := context.Background()
+
+	runID, _ := seed(t, pool)
+	markSuperseded(t, pool, runID)
+
+	// Before firing, the run is on the replay work-list.
+	pending, err := s.ListPendingSupersedeEffects(ctx, 100)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if !containsRun(pending, runID) {
+		t.Fatalf("run should be pending effects before firing")
+	}
+
+	sched.FireSupersedeEffects(ctx, runID)
+	sched.FireSupersedeEffects(ctx, runID) // second (replica/replay) must no-op
+
+	spy.mu.Lock()
+	n := len(spy.completed)
+	spy.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("check closed %d times, want exactly 1 (claim not idempotent)", n)
+	}
+
+	// Effects done → no longer on the replay work-list.
+	pending, err = s.ListPendingSupersedeEffects(ctx, 100)
+	if err != nil {
+		t.Fatalf("list pending after: %v", err)
+	}
+	if containsRun(pending, runID) {
+		t.Fatalf("run still pending effects after completion — MarkSupersedeEffectsDone didn't land")
+	}
+}
+
+func containsRun(ids []uuid.UUID, want uuid.UUID) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 // A run with no running cancel-requested jobs (the common gate-pending victim)
@@ -147,6 +211,7 @@ func TestFireSupersedeEffects_NoRunningJobsNoFrames(t *testing.T) {
 	ctx := context.Background()
 
 	runID, _ := seed(t, pool)
+	markSuperseded(t, pool, runID)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
 

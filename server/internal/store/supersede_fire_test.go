@@ -143,6 +143,79 @@ func TestCascadeFire_SupersedesOnStageComplete(t *testing.T) {
 	}
 }
 
+// ClaimSupersedeEffects is exactly-one-claimer with a lease: a live claim blocks a
+// second, a claim past the lease is reclaimable (crashed claimer), and once
+// MarkSupersedeEffectsDone lands no further claim succeeds (#97 pt.5d).
+func TestClaimSupersedeEffects_LeaseReclaim(t *testing.T) {
+	f := newGateFixture(t, "claimlease")
+	victim := f.createRun(t, "main")
+	other := f.createRun(t, "main")
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2 WHERE id=$1`,
+		victim.RunID, other.RunID); err != nil {
+		t.Fatalf("mark superseded: %v", err)
+	}
+
+	claim := func() bool {
+		t.Helper()
+		ok, err := f.s.ClaimSupersedeEffects(f.ctx, victim.RunID)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		return ok
+	}
+
+	if !claim() {
+		t.Fatal("first claim should succeed")
+	}
+	if claim() {
+		t.Fatal("second claim within the lease must fail (a live claim holds it)")
+	}
+	// Backdate the claim beyond the lease → the prior claimer looks crashed.
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE runs SET supersede_effects_claimed_at = NOW() - INTERVAL '10 minutes' WHERE id=$1`, victim.RunID); err != nil {
+		t.Fatalf("backdate claim: %v", err)
+	}
+	if !claim() {
+		t.Fatal("a claim past the lease must be reclaimable")
+	}
+	// Effects done → no further claim, even after a lease would expire.
+	if err := f.s.MarkSupersedeEffectsDone(f.ctx, victim.RunID); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE runs SET supersede_effects_claimed_at = NOW() - INTERVAL '10 minutes' WHERE id=$1`, victim.RunID); err != nil {
+		t.Fatalf("backdate claim 2: %v", err)
+	}
+	if claim() {
+		t.Fatal("no claim should succeed once effects are marked done")
+	}
+}
+
+// EmitRunSupersededAudit is idempotent (partial unique index) so a lease-reclaim
+// replay — which re-claims and re-runs the effects — can't duplicate the audit.
+func TestEmitRunSupersededAudit_Idempotent(t *testing.T) {
+	f := newGateFixture(t, "auditonce")
+	victim := f.createRun(t, "main")
+	meta := map[string]any{"superseded_counter": int64(1), "by_counter": int64(2), "by_run_id": other()}
+	for i := 0; i < 2; i++ {
+		if err := f.s.EmitRunSupersededAudit(f.ctx, victim.RunID, meta); err != nil {
+			t.Fatalf("emit %d: %v", i, err)
+		}
+	}
+	var n int
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT count(*) FROM audit_events WHERE target_id=$1 AND action='run.superseded'`,
+		victim.RunID.String()).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("run.superseded audit rows = %d, want 1 (idempotent)", n)
+	}
+}
+
+func other() string { return uuid.New().String() }
+
 // supersede: off is a no-op at creation — the older run stays pending.
 func TestCreationFire_OffIsNoop(t *testing.T) {
 	f := newStage0GateFixture(t, "fireoff", domain.SupersedeOff)

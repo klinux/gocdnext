@@ -5,14 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
+
+// supersedeEffectsLease bounds how long a claimed-but-unfinished effects run blocks
+// a retry: a crashed claimer's run is re-fired by the replay after this window.
+// Comfortably longer than the effects (a few frame dispatches + a check PATCH) take.
+const supersedeEffectsLease = 2 * time.Minute
 
 // SupersededRun is one run that a supersede pass canceled. The store does the DB
 // terminalization in the caller's tx; the caller (a fire point at the api/grpc
@@ -199,6 +206,63 @@ func (s *Store) supersedeAfterCascade(ctx context.Context, tx pgx.Tx, runID uuid
 		ReadyEnvs:    readyEnvs,
 		Def:          def,
 	})
+}
+
+// ClaimSupersedeEffects atomically claims the right to fire a superseded run's
+// external effects. Returns true when THIS caller owns them now (fire, then call
+// MarkSupersedeEffectsDone); false when another live claim holds it or the effects
+// already completed. A claim older than the lease is reclaimed (crashed claimer).
+func (s *Store) ClaimSupersedeEffects(ctx context.Context, runID uuid.UUID) (bool, error) {
+	_, err := s.q.ClaimSupersedeEffects(ctx, db.ClaimSupersedeEffectsParams{
+		ID:    pgUUID(runID),
+		Lease: pgtype.Interval{Microseconds: supersedeEffectsLease.Microseconds(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: claim supersede effects: %w", err)
+	}
+	return true, nil
+}
+
+// MarkSupersedeEffectsDone records that a superseded run's effects completed, ending
+// the lease/replay retry loop for it.
+func (s *Store) MarkSupersedeEffectsDone(ctx context.Context, runID uuid.UUID) error {
+	if err := s.q.MarkSupersedeEffectsDone(ctx, pgUUID(runID)); err != nil {
+		return fmt.Errorf("store: mark supersede effects done: %w", err)
+	}
+	return nil
+}
+
+// ListPendingSupersedeEffects returns superseded runs whose effects haven't
+// completed — the scheduler's periodic replay work-list (missed NOTIFY / expired
+// claim). Bounded by max.
+func (s *Store) ListPendingSupersedeEffects(ctx context.Context, max int32) ([]uuid.UUID, error) {
+	rows, err := s.q.ListPendingSupersedeEffects(ctx, max)
+	if err != nil {
+		return nil, fmt.Errorf("store: list pending supersede effects: %w", err)
+	}
+	out := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromPgUUID(r))
+	}
+	return out, nil
+}
+
+// EmitRunSupersededAudit writes the idempotent run.superseded audit (once per victim
+// via the partial unique index) — system actor, the counter/id trio as metadata.
+func (s *Store) EmitRunSupersededAudit(ctx context.Context, runID uuid.UUID, metadata map[string]any) error {
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("store: marshal supersede audit meta: %w", err)
+	}
+	if err := s.q.EmitRunSupersededAudit(ctx, db.EmitRunSupersededAuditParams{
+		TargetID: runID.String(), Metadata: raw,
+	}); err != nil {
+		return fmt.Errorf("store: emit run superseded audit: %w", err)
+	}
+	return nil
 }
 
 // SupersededAuditInfo returns the counters the run.superseded audit needs — the

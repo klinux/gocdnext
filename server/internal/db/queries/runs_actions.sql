@@ -53,6 +53,45 @@ WHERE r.pipeline_id = $1 AND r.counter < $2
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
 ORDER BY r.counter DESC;
 
+-- name: ClaimSupersedeEffects :one
+-- Claim the right to fire a superseded run's external effects. Succeeds when the
+-- effects aren't already done AND no LIVE claim holds it — a claim older than the
+-- lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
+-- so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
+-- duplicate audit across replicas; the returned id means "you own the effects now".
+UPDATE runs
+SET supersede_effects_claimed_at = NOW()
+WHERE id = $1
+  AND superseded_by IS NOT NULL
+  AND supersede_effects_at IS NULL
+  AND (supersede_effects_claimed_at IS NULL
+       OR supersede_effects_claimed_at < NOW() - sqlc.arg(lease)::INTERVAL)
+RETURNING id;
+
+-- name: MarkSupersedeEffectsDone :exec
+-- Mark a superseded run's effects COMPLETE, after frames/cleanup/check/audit all
+-- ran. Until this lands the replay keeps retrying (via the lease), so a crash
+-- between claim and here is recovered rather than silently dropped.
+UPDATE runs SET supersede_effects_at = NOW() WHERE id = $1;
+
+-- name: ListPendingSupersedeEffects :many
+-- Superseded runs whose effects haven't completed — the replay work-list (missed
+-- NOTIFY or a claim past its lease). Oldest-first, bounded so one tick can't stall.
+-- Rides runs_supersede_effects_pending_idx.
+SELECT id FROM runs
+WHERE superseded_by IS NOT NULL AND supersede_effects_at IS NULL
+ORDER BY finished_at
+LIMIT sqlc.arg(max_rows);
+
+-- name: EmitRunSupersededAudit :exec
+-- Idempotent run.superseded audit — system actor, counters + superseding id only
+-- (never a branch/ref value). The partial unique index (target_id WHERE
+-- action='run.superseded') makes a second writer — a racing replica or a
+-- lease-expiry replay — a clean no-op.
+INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
+VALUES (NULL, '', 'run.superseded', 'run', $1, $2)
+ON CONFLICT (target_id) WHERE action = 'run.superseded' DO NOTHING;
+
 -- name: GetRunSupersedeContext :one
 -- Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
 -- cascade supersede fire. The definition is the drift-safe snapshot the run was

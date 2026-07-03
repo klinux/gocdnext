@@ -229,6 +229,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-ticker.C:
 			s.drainQueued(ctx)
 			s.refreshQueueDepth(ctx)
+			s.replaySupersedeEffects(ctx)
 		}
 	}
 }

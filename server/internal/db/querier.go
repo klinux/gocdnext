@@ -97,6 +97,12 @@ type Querier interface {
 	// FOR UPDATE SKIP LOCKED makes this safe to run from multiple
 	// schedulers/sweepers at once; each gets a disjoint batch.
 	ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifactsForSweepParams) ([]ClaimArtifactsForSweepRow, error)
+	// Claim the right to fire a superseded run's external effects. Succeeds when the
+	// effects aren't already done AND no LIVE claim holds it — a claim older than the
+	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
+	// so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
+	// duplicate audit across replicas; the returned id means "you own the effects now".
+	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (pgtype.UUID, error)
 	// Clears queue_reason. Called by the scheduler when a run transitions
 	// to running (predecessor finished, run is dispatchable). Also called
 	// by terminal-transition paths so a canceled-while-queued run doesn't
@@ -333,6 +339,11 @@ type Querier interface {
 	// whose project carries the key, the gap to the next SUCCESS in the same
 	// environment (lateral index probe per failure).
 	DoraWindowMTTR(ctx context.Context, arg DoraWindowMTTRParams) (float64, error)
+	// Idempotent run.superseded audit — system actor, counters + superseding id only
+	// (never a branch/ref value). The partial unique index (target_id WHERE
+	// action='run.superseded') makes a second writer — a racing replica or a
+	// lease-expiry replay — a clean no-op.
+	EmitRunSupersededAudit(ctx context.Context, arg EmitRunSupersededAuditParams) error
 	// Scope guard: confirm an environment id is owned by a project before
 	// serving its deployments through that project's URL.
 	EnvironmentBelongsToProject(ctx context.Context, arg EnvironmentBelongsToProjectParams) (bool, error)
@@ -1026,6 +1037,10 @@ type Querier interface {
 	// index-only on the WHERE clause makes this a sub-millisecond
 	// lookup even on a job_runs table in the millions.
 	ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error)
+	// Superseded runs whose effects haven't completed — the replay work-list (missed
+	// NOTIFY or a claim past its lease). Oldest-first, bounded so one tick can't stall.
+	// Rides runs_supersede_effects_pending_idx.
+	ListPendingSupersedeEffects(ctx context.Context, maxRows int32) ([]pgtype.UUID, error)
 	// Governance reconciliation: each pipeline's id/name plus whether it is the
 	// server-owned synthetic pipeline (system_managed). Repo pipelines are those
 	// with system_managed = false. Ordered by name so the apply path's
@@ -1260,6 +1275,10 @@ type Querier interface {
 	MarkPullRequestMerged(ctx context.Context, arg MarkPullRequestMergedParams) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
+	// Mark a superseded run's effects COMPLETE, after frames/cleanup/check/audit all
+	// ran. Until this lands the replay keeps retrying (via the lease), so a crash
+	// between claim and here is recovered rather than silently dropped.
+	MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Returns the run_id of an in-flight predecessor blocking the
 	// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
