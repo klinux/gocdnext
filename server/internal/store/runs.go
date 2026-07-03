@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,6 +22,13 @@ import (
 // RunQueuedChannel is the PostgreSQL NOTIFY channel the scheduler listens on
 // to pick up freshly queued runs. Payload is the run_id as a plain UUID string.
 const RunQueuedChannel = "run_queued"
+
+// SupersededRunChannel is the NOTIFY channel supersede emits on (in-tx, per
+// victim) so the scheduler fires the external effects of a supersede-cancel —
+// CancelJob frames to still-running jobs + service cleanup. Payload is the
+// superseded run_id as a plain UUID string. Transactional: a victim rolled back
+// by the per-victim savepoint (lock-timeout bail) emits nothing.
+const SupersededRunChannel = "run_superseded"
 
 // CreateRunFromModificationInput bundles everything needed to spawn a run
 // triggered by a matched modification (typically a webhook push). It is kept
@@ -60,6 +70,11 @@ type RunCreated struct {
 	Counter   int64
 	StageRuns []StageRunRef
 	JobRuns   []JobRunRef
+	// Superseded lists older lane siblings this run's creation-time supersede
+	// pass canceled (#97, empty unless supersede is on and a stage-0 gate is
+	// ready). The caller fires the external effects post-commit — CancelJob
+	// frames to RunningJobs, service cleanup — mirroring CancelRunResult.
+	Superseded []SupersededRun
 }
 
 // CreateRunFromModification materializes a queued run triggered by a matched
@@ -94,12 +109,24 @@ func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromM
 	if cause == "" {
 		cause = string(domain.CauseWebhook)
 	}
+	// Supersede lane key (#97): the branch, EXCEPT for a pull_request where the
+	// lane is pr:<number>. Two PRs (or forks) can share a head-ref name
+	// ("fix/foo"); keying PR runs by number keeps each PR its own lane so a new
+	// commit to PR #5 supersedes only PR #5, never PR #6. A missing/malformed
+	// pr_number falls back to the branch lane rather than minting a garbage lane.
+	laneRef := in.Branch
+	if cause == string(domain.CausePullRequest) {
+		if pr, ok := prLaneRef(base["pr_number"]); ok {
+			laneRef = pr
+		}
+	}
 	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
 		PipelineID:  in.PipelineID,
 		Cause:       cause,
 		CauseDetail: causeDetail,
 		Revisions:   revisions,
 		TriggeredBy: in.TriggeredBy,
+		Ref:         laneRef,
 	})
 }
 
@@ -111,6 +138,70 @@ type insertRunSkeletonInput struct {
 	CauseDetail json.RawMessage
 	Revisions   json.RawMessage
 	TriggeredBy string
+	// Ref is the supersede lane key — the triggering branch (#97). Empty for
+	// tag / manual-no-branch → one lane per pipeline. Capped at maxRefLen at
+	// stamp time (the single write point) so the lane index can't hit the
+	// Postgres btree entry limit on a pathological webhook ref.
+	Ref string
+}
+
+// maxRefLen caps the stamped runs.ref. Git refs are far shorter; truncation
+// only ever WIDENS a lane (over-supersede — the safe direction).
+const maxRefLen = 255
+
+func capRef(ref string) string {
+	if len(ref) <= maxRefLen {
+		return ref
+	}
+	// Truncate on a rune boundary — a byte cut mid-rune would emit invalid
+	// UTF-8 and Postgres would reject the TEXT insert.
+	cut := maxRefLen
+	for cut > 0 && !utf8.RuneStart(ref[cut]) {
+		cut--
+	}
+	return ref[:cut]
+}
+
+// prLaneRef derives the "pr:<n>" supersede lane from a webhook's pr_number,
+// accepting only a positive INTEGER (a JSON number decodes to float64, but
+// json.Number / int / a clean decimal string are tolerated too). Anything else
+// — non-integer, zero/negative, malformed — returns ok=false so the caller
+// falls back to the branch lane instead of minting a garbage identity like
+// "pr:5.0" or "pr:abc". The lane is a correctness-critical supersede key.
+func prLaneRef(prNumber any) (string, bool) {
+	var n int64
+	switch v := prNumber.(type) {
+	case float64:
+		if v < 1 || v != math.Trunc(v) {
+			return "", false
+		}
+		n = int64(v)
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil || i < 1 {
+			return "", false
+		}
+		n = i
+	case int:
+		if v < 1 {
+			return "", false
+		}
+		n = int64(v)
+	case int64:
+		if v < 1 {
+			return "", false
+		}
+		n = v
+	case string:
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || i < 1 {
+			return "", false
+		}
+		n = i
+	default:
+		return "", false
+	}
+	return "pr:" + strconv.FormatInt(n, 10), true
 }
 
 // serviceNames extracts the declared service names from a pipeline
@@ -172,6 +263,12 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		TriggeredBy:  nullableString(in.TriggeredBy),
 		HasServices:  len(def.Services) > 0,
 		ServiceNames: serviceNames(def),
+		Ref:          capRef(in.Ref),
+		// Snapshot the effective definition (#97): gate->env resolution at approve /
+		// cascade time reads THIS, not the since-drifted pipelines.definition. Same
+		// bytes we just decoded into `def`, so the snapshot can't disagree with the
+		// stages/jobs we materialise.
+		Definition: pipelineRow.Definition,
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)
@@ -307,6 +404,39 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				Name:       job.Name,
 				MatrixKey:  key,
 			})
+		}
+	}
+
+	// #97 supersede fire point (creation). If this pipeline opts in AND the new
+	// run is now a pending contender at a stage-0 approval gate, clear older lane
+	// siblings pending for the same env. Stage-0 gates are the only gates "ready"
+	// at creation (nothing precedes them); inline gates fire later from the
+	// completion cascade. Guarded by the cheap Supersede check so non-opted
+	// pipelines pay nothing. supersedeLaneSiblings runs in THIS tx (atomic DB
+	// terminalization); external effects fire post-commit off result.Superseded.
+	if def.Supersede == domain.SupersedeBranch || def.Supersede == domain.SupersedePipeline {
+		if readyEnvs, ready := def.ReadyGateEnvsAtStart(); ready {
+			laneRef := ""
+			if def.Supersede == domain.SupersedeBranch {
+				laneRef = capRef(in.Ref)
+			}
+			victims, err := s.supersedeLaneSiblings(ctx, tx, supersedeInput{
+				PipelineID:   in.PipelineID,
+				Ref:          laneRef,
+				LaneMode:     def.Supersede,
+				NewerRunID:   result.RunID,
+				NewerCounter: result.Counter,
+				ReadyEnvs:    readyEnvs,
+				Def:          def,
+			})
+			if err != nil {
+				return RunCreated{}, fmt.Errorf("store: supersede lane siblings: %w", err)
+			}
+			// External effects (CancelJob frames, service cleanup, run.superseded
+			// audit) fire uniformly from the scheduler's run_superseded listener,
+			// which supersedeLaneSiblings NOTIFYs per victim — no per-fire-point
+			// audit drain here (the cascade fire has none either).
+			result.Superseded = victims
 		}
 	}
 

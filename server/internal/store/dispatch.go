@@ -63,8 +63,15 @@ type RunForDispatch struct {
 	Counter     int64
 	Status      string
 	Revisions   json.RawMessage
-	Definition  json.RawMessage
-	ConfigPath  string
+	// Ref is the supersede lane key (runs.ref) — read by the Phase 2 dispatch
+	// backstop to scope the newer-passed-gate lookup (#97).
+	Ref string
+	// ServiceGeneration is the run's service-pod generation (#97), stamped onto each
+	// `services:` pod's name + label by the k8s engine so a revived run (RerunJob
+	// bumps it) builds a fresh pod set immune to a stale supersede/terminal cleanup.
+	ServiceGeneration int64
+	Definition        json.RawMessage
+	ConfigPath        string
 	// ProjectNotifications is the owning project's notifications
 	// JSONB, pulled in the same round-trip as Definition so the
 	// synth-notification dispatch path can fall back to it when
@@ -174,6 +181,20 @@ func (s *Store) SetRunQueueReason(ctx context.Context, runID uuid.UUID, reason s
 		QueueReason: &reason,
 	}); err != nil {
 		return fmt.Errorf("store: set queue_reason: %w", err)
+	}
+	return nil
+}
+
+// SetActiveRunQueueReason records a queue/backpressure reason on an in-flight run
+// that may already be running. Used by dispatch-time gates after earlier stages
+// have promoted the run out of queued.
+func (s *Store) SetActiveRunQueueReason(ctx context.Context, runID uuid.UUID, reason string) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE runs
+		SET queue_reason = $2
+		WHERE id = $1 AND status IN ('queued', 'running')
+	`, pgUUID(runID), reason); err != nil {
+		return fmt.Errorf("store: set active queue_reason: %w", err)
 	}
 	return nil
 }
@@ -358,6 +379,8 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		Counter:              row.Counter,
 		Status:               row.Status,
 		Revisions:            row.Revisions,
+		Ref:                  row.Ref,
+		ServiceGeneration:    row.ServiceGeneration,
 		Definition:           row.Definition,
 		ConfigPath:           row.ConfigPath,
 		ProjectNotifications: row.ProjectNotifications,

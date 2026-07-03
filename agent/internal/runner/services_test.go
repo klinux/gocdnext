@@ -18,13 +18,14 @@ import (
 // caller-controlled ServicesWireup. Used to drive startServices'
 // dispatch without dragging k8s/docker into a unit test.
 type stubEngine struct {
-	name           string
-	ensureCalls    int
-	ensureSawSpecs []engine.ServiceSpec
-	ensureSawRunID string
-	ensureSawJobID string
-	wireup         engine.ServicesWireup
-	wireupErr      error
+	name                string
+	ensureCalls         int
+	ensureSawSpecs      []engine.ServiceSpec
+	ensureSawRunID      string
+	ensureSawJobID      string
+	ensureSawGeneration int64
+	wireup              engine.ServicesWireup
+	wireupErr           error
 }
 
 func (s *stubEngine) Name() string { return s.name }
@@ -37,6 +38,7 @@ func (s *stubEngine) EnsureServices(
 	_ context.Context,
 	services []engine.ServiceSpec,
 	runID, jobID string,
+	generation int64,
 	_ func(string, string),
 	_ func(engine.ServiceLifecycleEvent),
 ) (engine.ServicesWireup, error) {
@@ -44,6 +46,7 @@ func (s *stubEngine) EnsureServices(
 	s.ensureSawSpecs = append([]engine.ServiceSpec(nil), services...)
 	s.ensureSawRunID = runID
 	s.ensureSawJobID = jobID
+	s.ensureSawGeneration = generation
 	if s.wireupErr != nil {
 		// Mirror the real-engine contract: even on error, callers
 		// must be able to safely invoke Cleanup.
@@ -58,7 +61,7 @@ func (s *stubEngine) EnsureServices(
 	return s.wireup, nil
 }
 
-func (s *stubEngine) CleanupRunServices(context.Context, string, func(engine.ServiceLifecycleEvent)) (int, error) {
+func (s *stubEngine) CleanupRunServices(context.Context, string, int64, func(engine.ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }
 

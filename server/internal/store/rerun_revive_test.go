@@ -112,6 +112,103 @@ func TestRerunJob_RevivesFailFastCanceledGate(t *testing.T) {
 	}
 }
 
+// TestRerunJob_BumpsServiceGenerationOnRevive pins the server half of the
+// generation-aware service cleanup (#97): reviving a TERMINAL run under the same
+// run_id bumps runs.service_generation, so the revived run's dispatch names+labels its
+// service pods under the new generation and a still-pending supersede/terminal cleanup
+// (which carries the older generation) can't tear them down.
+func TestRerunJob_BumpsServiceGenerationOnRevive(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID := seedApprovalPipeline(t, pool, "gen-bump", []string{"alice"})
+	res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID, ModificationID: 1,
+		Revision: "deadbeef", Branch: "main", Provider: "github",
+		Delivery: "t", TriggeredBy: "test",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	var unitJobID uuid.UUID
+	for _, jr := range res.JobRuns {
+		if jr.Name == "unit" {
+			unitJobID = jr.ID
+		}
+	}
+	if unitJobID == uuid.Nil {
+		t.Fatal("unit job missing from RunCreated")
+	}
+
+	// A fresh run starts at generation 0.
+	if got := scalarInt(t, pool, `SELECT service_generation FROM runs WHERE id=$1`, res.RunID); got != 0 {
+		t.Fatalf("initial service_generation = %d, want 0", got)
+	}
+
+	// Fail the upstream → the run finalizes terminal (the reopen guard fires only on
+	// a terminal run), which is exactly the state a revive races a cleanup in.
+	if _, ok, err := s.FailJobWithReason(ctx, unitJobID, "secrets: not set"); err != nil || !ok {
+		t.Fatalf("FailJobWithReason: ok=%v err=%v", ok, err)
+	}
+	if got := scalarStr(t, pool, `SELECT status FROM runs WHERE id=$1`, res.RunID); got != "failed" {
+		t.Fatalf("precondition: run status = %q, want failed (terminal before revive)", got)
+	}
+
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{JobRunID: unitJobID, TriggeredBy: "user:test"}); err != nil {
+		t.Fatalf("RerunJob: %v", err)
+	}
+
+	// Revive of a terminal run bumps the generation 0 → 1.
+	if got := scalarInt(t, pool, `SELECT service_generation FROM runs WHERE id=$1`, res.RunID); got != 1 {
+		t.Errorf("service_generation after revive = %d, want 1", got)
+	}
+	// The run is live again; a job-rerun WITHIN a running run must NOT bump (the guard
+	// scopes the bump to genuine revives, so live sibling jobs keep reusing their
+	// current-generation pod — no split pod set). RerunJob on the now-queued unit is a
+	// no-op reopen; assert the generation held at 1.
+	if got := scalarStr(t, pool, `SELECT status FROM runs WHERE id=$1`, res.RunID); got != "running" {
+		t.Fatalf("run status after revive = %q, want running", got)
+	}
+	if got := scalarInt(t, pool, `SELECT service_generation FROM runs WHERE id=$1`, res.RunID); got != 1 {
+		t.Errorf("service_generation drifted after revive without a second rerun = %d, want 1", got)
+	}
+}
+
+// TestCancelRun_CapturesServiceGeneration pins the cancel half of the HIGH fix (#97):
+// CancelRun returns the run's service_generation captured in the SAME UPDATE that flips
+// it to canceled, so the cancel service cleanup carries the pre-revive generation. A
+// value re-read after the cancel commits could see a revive's bumped value and delete
+// the revived pods.
+func TestCancelRun_CapturesServiceGeneration(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID := seedApprovalPipeline(t, pool, "cancel-gen", []string{"alice"})
+	res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID, ModificationID: 1,
+		Revision: "deadbeef", Branch: "main", Provider: "github",
+		Delivery: "t", TriggeredBy: "test",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	// Bump the generation before cancel so the assertion proves CancelRun returns the
+	// VALUE captured in the RETURNING, not just 0.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET service_generation = 4 WHERE id=$1`, res.RunID); err != nil {
+		t.Fatalf("bump gen: %v", err)
+	}
+
+	out, err := s.CancelRun(ctx, res.RunID)
+	if err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	if out.ServiceGeneration != 4 {
+		t.Errorf("CancelRun captured service_generation = %d, want 4", out.ServiceGeneration)
+	}
+}
+
 // TestRerunRun_PreservesTagCauseForCIVars is the regression for the
 // vanishing CI_TAG_NAME: a tag-triggered release run rerun via RerunRun
 // used to be demoted to cause="manual" with no tag_name, so
@@ -192,6 +289,15 @@ func scalarStr(t *testing.T, pool *pgxpool.Pool, query string, args ...any) stri
 	var out string
 	if err := pool.QueryRow(context.Background(), query, args...).Scan(&out); err != nil {
 		t.Fatalf("scalarStr %q: %v", query, err)
+	}
+	return out
+}
+
+func scalarInt(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int64 {
+	t.Helper()
+	var out int64
+	if err := pool.QueryRow(context.Background(), query, args...).Scan(&out); err != nil {
+		t.Fatalf("scalarInt %q: %v", query, err)
 	}
 	return out
 }

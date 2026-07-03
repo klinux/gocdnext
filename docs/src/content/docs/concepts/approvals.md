@@ -1,6 +1,6 @@
 ---
 title: Approval gates
-description: Halt a run at a job until N members of an approver group sign off — basics, groups, quorum.
+description: Halt a run at a job until N members of an approver group sign off — basics, groups, quorum, and latest-wins supersede.
 ---
 
 Approval gates pause a run at a specific job until human(s) click
@@ -296,6 +296,59 @@ jobs:
 
 After 24h the job is killed (`failed` with a timeout reason); the
 run terminates.
+
+## Latest-wins supersede
+
+Push three commits to a branch in a minute and you get three runs, all
+parking at the same approval gate. Approving the *oldest* would then deploy
+a **stale revision** over newer ones. `supersede:` fixes this: when a newer
+run in the same lane becomes a pending contender at a gate, older pending
+runs in that lane are canceled — so the pending pile normally clears to just
+the newest. This pile-clear is best-effort (under lock contention it may skip
+a victim and retry); the **hard guarantee that a stale deploy can never ship**
+is the dispatch backstop described below.
+
+Opt in per pipeline (off by default):
+
+```yaml
+name: api
+supersede: branch   # off | branch | pipeline
+stages: [build, approve-prod, deploy-prod]
+```
+
+- **`off`** (default) — every run waits independently; nothing is canceled.
+- **`branch`** — the lane is `(pipeline, branch)`. Each feature branch is an
+  independent lane; a new push to `main` only supersedes older `main` runs.
+- **`pipeline`** — the lane is the whole pipeline (branch ignored). Use it
+  when only one revision should ever be in flight regardless of branch.
+
+Tag and manual runs (no branch) fall into a single per-pipeline lane.
+
+### What actually gets superseded
+
+Supersede is **environment-aware**. A gate's "environment" is resolved from
+the deploy jobs it governs downstream — following stage order and explicit
+`needs:` edges, stopping at the next gate on each path. So in
+`build → approve-staging → deploy-staging → approve-prod → deploy-prod`,
+`approve-staging` governs `staging` and `approve-prod` governs `prod`.
+
+A newer run at the **staging** gate cancels older runs pending at staging,
+but leaves alone an older run that already passed staging and is waiting at
+**prod** — that contest is decided at the prod gate. A gate that governs no
+deploy at all (a pure-approval pipeline) clears the whole pending pile.
+
+### The hard guarantee
+
+Even if the pile-clear races an approval, the dispatch path is the backstop:
+a deploy is **refused** at dispatch if a newer, non-canceled run in the lane
+(queued, running, or already deployed) has cleared the gate for that same
+environment. This is fail-closed — on
+any doubt the deploy is held, never shipped. Rollbacks are exempt (rolling
+back to an older revision is an explicit, intended action).
+
+A superseded run shows as **canceled** with a muted `superseded by #N` badge
+linking to the run that won; the audit trail records `run.superseded` with
+the counters (never a branch or ref value).
 
 ## Audit trail
 

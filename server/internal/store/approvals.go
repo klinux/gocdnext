@@ -28,6 +28,14 @@ var ErrApprovalNotPending = errors.New("store: approval gate is not pending")
 // approvers allow-list. Callers map this to 403.
 var ErrApproverNotAllowed = errors.New("store: user not in approvers list")
 
+// ErrApprovalSuperseded signals the gate is no longer pending because its RUN was
+// superseded (a newer revision won the lane) — distinct from a normal
+// already-decided gate. Callers map it to 409 with a superseded-specific message so
+// the UI can say "this run was superseded" rather than "already decided". Detected
+// under the gate row lock BEFORE recording a vote, so a superseded gate never
+// accrues an orphan vote (#97 Phase 2).
+var ErrApprovalSuperseded = errors.New("store: approval gate's run was superseded")
+
 // ApprovalDecision bundles the per-call inputs for Approve/Reject.
 // Keeping them in a struct lets the HTTP layer pass both in one
 // store call without a multi-arg signature that rots when fields
@@ -126,12 +134,24 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		required       int32
 		parentRun      pgtype.UUID
 		stageRunID     pgtype.UUID
+		gateName       string
+		runSuperseded  bool
 	)
+	// FOR UPDATE OF j locks ONLY the gate row (not the run) so the gate's status
+	// can't flip under us between this read and the vote/flip below — closing the
+	// orphan-vote window where a concurrent supersede cancels the gate after we read
+	// it as pending. Locking only the job row keeps the global order job_runs ->
+	// (nothing here) intact; we deliberately do NOT lock runs (that would invert the
+	// job->runs order the result cascade uses and could deadlock). r.superseded_by
+	// tells "not pending because superseded" apart from a normal already-decided gate.
 	err = tx.QueryRow(ctx, `
-		SELECT approval_gate, status, approvers, approver_groups, approval_required, run_id, stage_run_id
-		FROM job_runs
-		WHERE id = $1
-	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID)
+		SELECT j.approval_gate, j.status, j.approvers, j.approver_groups, j.approval_required,
+		       j.run_id, j.stage_run_id, j.name, (r.superseded_by IS NOT NULL)
+		FROM job_runs j
+		JOIN runs r ON r.id = j.run_id
+		WHERE j.id = $1
+		FOR UPDATE OF j
+	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID, &gateName, &runSuperseded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
@@ -142,6 +162,11 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
 	if status != "awaiting_approval" {
+		// A superseded run's gates are canceled by the supersede terminalizer; report
+		// that distinctly (and BEFORE any vote insert, so no orphan vote accrues).
+		if runSuperseded {
+			return ApprovalResult{}, ErrApprovalSuperseded
+		}
 		return ApprovalResult{}, ErrApprovalNotPending
 	}
 	if required < 1 {
@@ -251,9 +276,29 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	// promotes its stage (and onto the run) exactly like a
 	// regular job's success would, and a rejection fans out as
 	// a stage failure that cancels downstream queued work.
+	// #97 Phase 2: on approval, record the gate-pass marker for every concrete env
+	// this gate now clears (once all its governing gates passed), under the lane-env
+	// advisory lock. Fail-closed — a supersede pipeline must not approve a deploy
+	// without the backstop marker. No-op on reject (nextStatus='failed') and for
+	// supersede=off. Runs BEFORE the cascade so the marker lands with the flip.
+	if decision == "approved" {
+		if err := s.writeGatePassMarkers(ctx, tx, gateName, fromPgUUID(parentRun)); err != nil {
+			return ApprovalResult{}, err
+		}
+	}
+
 	q := s.q.WithTx(tx)
 	var comp JobCompletion
 	if err := cascadeAfterJobCompletion(ctx, q, stageRunID, parentRun, &comp); err != nil {
+		return ApprovalResult{}, err
+	}
+
+	// #97 cascade supersede fire: approving a gate can complete its stage and make
+	// the NEXT stage's gate reachable (a gate chain), clearing older lane siblings
+	// pending for that gate's env. Same-tx, effects via the run_superseded NOTIFY.
+	// A rejection fails the stage, so supersedeAfterCascade's success-only guard
+	// makes it a no-op there.
+	if _, err := s.supersedeAfterCascade(ctx, tx, fromPgUUID(parentRun), fromPgUUID(stageRunID), &comp); err != nil {
 		return ApprovalResult{}, err
 	}
 

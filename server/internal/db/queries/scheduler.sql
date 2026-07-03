@@ -97,6 +97,11 @@ JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1
   AND j.status = 'queued'
   AND j.agent_id IS NULL
+  -- An approval gate is a state transition, never dispatched (#97 defence in
+  -- depth): even if some path leaves a gate 'queued' — e.g. a rerun of the gate
+  -- row — the scheduler must never hand it to an agent, where a task-less job
+  -- would "pass" it without the allow-list / quorum / gate-pass marker.
+  AND j.approval_gate = false
   AND s.ordinal = (SELECT ordinal FROM active_stage)
 ORDER BY j.name, j.matrix_key NULLS FIRST;
 
@@ -209,8 +214,8 @@ WHERE run_id = $1
 -- Adding the columns here costs one extra row width on a hot path
 -- query that already loads the JSONB definition — negligible vs.
 -- the round trip we'd otherwise need to fetch them separately.
-SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
-       r.cause, r.cause_detail,
+SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions, r.ref,
+       r.cause, r.cause_detail, r.service_generation,
        p.definition, p.config_path,
        pr.notifications AS project_notifications,
        pr.slug AS project_slug

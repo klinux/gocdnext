@@ -24,6 +24,11 @@ var (
 	ErrJobRunNotFound            = errors.New("store: job_run not found")
 	ErrJobRunActive              = errors.New("store: job_run still active (queued/running)")
 	ErrJobRunTerminal            = errors.New("store: job_run already terminal")
+	// ErrCannotRerunGate rejects rerunning an approval gate directly (#97): a gate
+	// is a state transition, not an executable job, so re-queueing it would let it
+	// dispatch as a task-less job and "pass" without the allow-list/quorum/marker.
+	// Re-arm a gate through the normal approve/reject path, not rerun.
+	ErrCannotRerunGate = errors.New("store: cannot rerun an approval gate")
 	// ErrSnapshotStale is returned by snapshot-CAS write paths
 	// (currently WriteTestResults) when the row's current
 	// (agent_id, attempt) no longer matches what the caller
@@ -47,6 +52,12 @@ type RunningJobRef struct {
 // room for future signals (e.g. "queued jobs we skipped").
 type CancelRunResult struct {
 	RunningJobs []RunningJobRef
+	// ServiceGeneration is the run's service_generation captured in the cancel UPDATE
+	// (#97). The cancel service cleanup carries it as max_generation so a rerun that
+	// revives the run into a higher generation keeps its fresh pods. Captured
+	// atomically with the flip to canceled — never re-read after, which could see the
+	// bumped (post-revive) value and delete the revived pods.
+	ServiceGeneration int64
 }
 
 // CancelRun marks a run and its queued/running descendants as
@@ -73,35 +84,12 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 		return CancelRunResult{}, ErrRunAlreadyTerminal
 	}
 
-	// Snapshot the set of jobs we need to push Cancel messages to
-	// BEFORE touching run/stage state. Doing it after would race
-	// the agent's own JobResult (which clears agent_id).
-	running, err := s.listRunningJobsForRun(ctx, runID)
+	// Cancel the run row FIRST so any racing scheduler pass sees the new
+	// status before it tries to claim the next job. CancelActiveRun is a no-op
+	// if the status moved away under us between the SELECT above and this UPDATE
+	// — the downstream stage/job cancellations still gate on status='queued'.
+	canceled, err := s.q.CancelActiveRun(ctx, pgUUID(runID))
 	if err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: list running: %w", err)
-	}
-
-	// Persist the cancel INTENT on every running job belonging to
-	// this run, BEFORE the handler tries to push CancelJob frames
-	// to their owning agents' sessions. Same posture as the
-	// job-scoped CancelJobRun: if Dispatch lands in the
-	// Revoke→Register race window for any agent, the row's
-	// cancel_requested_at survives, the agent's next Register
-	// drains it via the replay path, and the reaper finalises
-	// stragglers. Without this stamp, a CancelRun with a flaky
-	// agent fleet would leave half the jobs running and the
-	// already-canceled run with cancel-pending children — exactly
-	// the inconsistency the job-scoped fix closed.
-	if _, err := s.q.StampCancelRequestedAtForRun(ctx, pgUUID(runID)); err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: stamp pending: %w", err)
-	}
-
-	// Cancel the run row first so any racing scheduler pass sees the
-	// new status before it tries to claim the next job. CancelActiveRun
-	// is a no-op if the status moved away under us between the SELECT
-	// above and this UPDATE — the downstream stage/job cancellations
-	// are still safe because they gate on status='queued'.
-	if _, err := s.q.CancelActiveRun(ctx, pgUUID(runID)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CancelRunResult{}, ErrRunAlreadyTerminal
 		}
@@ -114,34 +102,29 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 	if err := s.q.CancelQueuedJobsInRun(ctx, pgUUID(runID)); err != nil {
 		return CancelRunResult{}, fmt.Errorf("store: cancel run: jobs: %w", err)
 	}
-	return CancelRunResult{RunningJobs: running}, nil
-}
 
-// listRunningJobsForRun returns (job_run_id, agent_id) pairs for
-// every running job under a run that's actually been dispatched.
-// Raw SQL — not worth a sqlc entry for a single query that's only
-// used from CancelRun. `agent_id IS NOT NULL` guard skips queued
-// jobs that hadn't reached an agent yet; those are handled by
-// CancelQueuedJobsInRun.
-func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]RunningJobRef, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id
-		FROM job_runs
-		WHERE run_id = $1 AND status = 'running' AND agent_id IS NOT NULL
-	`, runID)
+	// Snapshot + stamp running jobs AFTER the queued cancel (review MED, mirrors
+	// supersede's terminalizer). AssignJob is a bare `status='queued'` CAS that
+	// never checks runs.status, so a job queued when we started can flip to
+	// running concurrently. Snapshotting BEFORE the cancel would miss it AND
+	// CancelQueuedJobsInRun would skip it (now running) — leaving a job executing
+	// inside a canceled run with no CancelJob frame. Canceling first forces the
+	// contention onto the shared job_runs row; by now every job is either canceled
+	// (above) or committed-running, and StampCancelRequestedAtForRun stamps the
+	// cancel intent AND RETURNS (id, agent_id) as the exact CancelJob work-list.
+	// The intent stamp is what lets a Dispatch landing in the Revoke→Register race
+	// window survive: the agent's next Register replays it, the reaper finalises
+	// stragglers. A job whose JobResult already cleared agent_id is terminal and
+	// correctly absent (it finished; no frame needed).
+	stamped, err := s.q.StampCancelRequestedAtForRun(ctx, pgUUID(runID))
 	if err != nil {
-		return nil, err
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: stamp pending: %w", err)
 	}
-	defer rows.Close()
-	var out []RunningJobRef
-	for rows.Next() {
-		var jobID, agentID uuid.UUID
-		if err := rows.Scan(&jobID, &agentID); err != nil {
-			return nil, err
-		}
-		out = append(out, RunningJobRef{JobID: jobID, AgentID: agentID})
+	running := make([]RunningJobRef, 0, len(stamped))
+	for _, r := range stamped {
+		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
 	}
-	return out, rows.Err()
+	return CancelRunResult{RunningJobs: running, ServiceGeneration: canceled.ServiceGeneration}, nil
 }
 
 // CancelJobRunResult surfaces what CancelJobRun did. The handler
@@ -720,14 +703,22 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	// below and bails with ErrJobRunActive.
 	var runID, stageRunID uuid.UUID
 	var status string
+	var isGate bool
 	err = tx.QueryRow(ctx, `
-		SELECT run_id, stage_run_id, status FROM job_runs WHERE id = $1 FOR UPDATE
-	`, in.JobRunID).Scan(&runID, &stageRunID, &status)
+		SELECT run_id, stage_run_id, status, approval_gate FROM job_runs WHERE id = $1 FOR UPDATE
+	`, in.JobRunID).Scan(&runID, &stageRunID, &status, &isGate)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RerunJobResult{}, ErrJobRunNotFound
 	}
 	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: lookup: %w", err)
+	}
+	// An approval gate can be non-terminal (awaiting_approval) or terminal
+	// (success/failed/canceled), so the active-status guard below wouldn't catch it.
+	// Rerunning it would re-queue a gate the dispatch path would run as a task-less
+	// job — bypassing approval entirely. Refuse; gates re-arm via approve/reject.
+	if isGate {
+		return RerunJobResult{}, ErrCannotRerunGate
 	}
 	if status == "queued" || status == "running" {
 		return RerunJobResult{}, ErrJobRunActive
@@ -816,9 +807,26 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	`, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen stage: %w", err)
 	}
+	// Reviving a run also clears any supersede state (#97): a run that was superseded
+	// (canceled + superseded_by) and then rerun is a live run again, not "superseded
+	// by #N". Resetting supersede_effects_{claimed,}_at too is load-bearing — without
+	// it a LATER re-supersede of this run could never claim its effects (the claim
+	// requires effects_at IS NULL), so its CancelJob frames / cleanup / audit would
+	// never fire.
+	//
+	// Bumping service_generation here is what makes the generation-aware service
+	// cleanup work (#97): a still-pending supersede/terminal CleanupRunServices carries
+	// the OLD generation, and the revived run now dispatches its `services:` pods under
+	// generation+1 (fresh name + label), so the stale cleanup (delete <= old gen) can't
+	// touch them. The `status IN (terminal)` guard scopes the bump to a genuine REVIVE:
+	// rerunning one job of an already-'running' run matches 0 rows here, so live
+	// siblings keep reusing their current-generation pod (no split-pod set).
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
-		SET status = 'running', finished_at = NULL
+		SET status = 'running', finished_at = NULL,
+		    superseded_by = NULL, cancel_reason = NULL,
+		    supersede_effects_claimed_at = NULL, supersede_effects_at = NULL,
+		    service_generation = service_generation + 1
 		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
 	`, runID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen run: %w", err)
@@ -859,7 +867,7 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	`, runID, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: revive downstream jobs: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	rearmRows, err := tx.Query(ctx, `
 		UPDATE job_runs
 		SET status = 'awaiting_approval', awaiting_since = NOW(),
 		    agent_id = NULL, started_at = NULL, finished_at = NULL,
@@ -874,8 +882,27 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 		      WHERE run_id = $1
 		        AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
 		  )
-	`, runID, stageRunID); err != nil {
+		RETURNING id
+	`, runID, stageRunID)
+	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: re-arm downstream gates: %w", err)
+	}
+	rearmedGates, err := pgx.CollectRows(rearmRows, func(r pgx.CollectableRow) (uuid.UUID, error) {
+		var id uuid.UUID
+		return id, r.Scan(&id)
+	})
+	if err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: collect re-armed gates: %w", err)
+	}
+	// A re-armed gate is approved from scratch: drop the votes it accrued before the
+	// cancel/supersede. Votes are keyed only by (job_run_id, user_id), so without
+	// this a stale pre-cancel vote counts toward the fresh quorum — a quorum=2 gate
+	// with 1 old vote would pass on a single new one, bypassing the intended quorum.
+	if len(rearmedGates) > 0 {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM job_run_approvals WHERE job_run_id = ANY($1::uuid[])`, rearmedGates); err != nil {
+			return RerunJobResult{}, fmt.Errorf("store: rerun job: clear re-armed gate votes: %w", err)
+		}
 	}
 	// Reopen the stages that just got a job back so GetRunProgress counts
 	// them as unfinished again (it keys on queued/running). A downstream
@@ -894,6 +921,13 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 		  )
 	`, runID, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen downstream stages: %w", err)
+	}
+
+	// Drop gate-pass markers invalidated by the re-armed gates (#97): those gates are
+	// awaiting_approval again, so the run's "cleared env" claim for them is stale and
+	// must be re-earned through approval. Runs after the re-arm so it sees them.
+	if err := s.clearRevivedGatePassMarkers(ctx, tx, runID); err != nil {
+		return RerunJobResult{}, err
 	}
 
 	// Notify the scheduler the same way a fresh run does — it'll

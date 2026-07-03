@@ -48,7 +48,11 @@ type Querier interface {
 	// runs list. Doing it in this UPDATE (vs a follow-up
 	// ClearRunQueueReason call) keeps the cancel atomic and saves a
 	// round-trip.
-	CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	// service_generation returned in the SAME UPDATE (#97): the cancel cleanup carries it
+	// as max_generation, so a rerun that revives this run into a higher generation keeps
+	// its fresh pods. Capturing it atomically with the flip to canceled (not a separate
+	// post-cancel read) closes the window where a revive bumps it before the read.
+	CancelActiveRun(ctx context.Context, id pgtype.UUID) (CancelActiveRunRow, error)
 	// Flips a single job_run to 'canceled' ONLY when it's still queued.
 	// `running` jobs go through the agent's gRPC CancelJob → JobResult
 	// path so the audit trail records the actual stop time. Returns the
@@ -97,6 +101,19 @@ type Querier interface {
 	// FOR UPDATE SKIP LOCKED makes this safe to run from multiple
 	// schedulers/sweepers at once; each gets a disjoint batch.
 	ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifactsForSweepParams) ([]ClaimArtifactsForSweepRow, error)
+	// Claim the right to fire a superseded run's external effects. Succeeds when the
+	// effects aren't already done AND no LIVE claim holds it — a claim older than the
+	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
+	// so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
+	// duplicate audit across replicas; a returned row means "you own the effects now".
+	//
+	// Returns first_claim = whether this is the FIRST-ever claim (no prior claimed_at)
+	// vs a lease-expiry RECLAIM. The CTE reads the pre-update claimed_at under FOR
+	// UPDATE so the caller can count gocdnext_runs_superseded_total exactly once per
+	// supersede event — a reclaim that re-fires effects (e.g. cleanup had no target yet)
+	// must not re-count. (A run revived then re-superseded clears claimed_at, so its
+	// next first claim counts again — correctly, it's a new supersede event.)
+	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error)
 	// Clears queue_reason. Called by the scheduler when a run transitions
 	// to running (predecessor finished, run is dispatchable). Also called
 	// by terminal-transition paths so a canceled-while-queued run doesn't
@@ -175,6 +192,12 @@ type Querier interface {
 	// callers dedupe and zero the omitted count). Cheap row count
 	// against the same (job_run_id, seq) index TailLogLinesByJob hits.
 	CountLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) (int64, error)
+	// How many of the named approval gates of a run have reached 'success'. The marker
+	// for an env is written only when this equals the count of gates governing it (all
+	// governing gates passed) — the just-approved gate is visible as success in the
+	// caller's tx. Gates are never matrix (parser rejects approval+matrix), so name
+	// uniquely identifies each gate's job_run.
+	CountPassedGates(ctx context.Context, arg CountPassedGatesParams) (int64, error)
 	CountRunsByPipeline(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Paired with ListRunsGlobal so /runs can render "N of M" with the
 	// same filter args. Returned as bigint to fit any table; UI only
@@ -267,6 +290,10 @@ type Querier interface {
 	// <= 0 clears ALL history (full rebuild); otherwise the trailing window
 	// [current_date - since_days, today].
 	DeleteRunDailyWindow(ctx context.Context, sinceDays int32) error
+	// Drop a run's gate-pass markers for the given envs — used on rerun-revive, when a
+	// re-armed gate makes the run's "cleared env" claim stale. Scoped to the run + the
+	// specific envs so markers for still-passed (upstream) gates survive.
+	DeleteRunGatePassForEnvs(ctx context.Context, arg DeleteRunGatePassForEnvsParams) error
 	// Caller MUST check no pipeline definition references this profile
 	// before issuing the delete; the scheduler resolves profiles by
 	// name at dispatch and a missing name fails the run.
@@ -333,6 +360,11 @@ type Querier interface {
 	// whose project carries the key, the gap to the next SUCCESS in the same
 	// environment (lateral index probe per failure).
 	DoraWindowMTTR(ctx context.Context, arg DoraWindowMTTRParams) (float64, error)
+	// Idempotent run.superseded audit — system actor, counters + superseding id only
+	// (never a branch/ref value). The partial unique index (target_id WHERE
+	// action='run.superseded') makes a second writer — a racing replica or a
+	// lease-expiry replay — a clean no-op.
+	EmitRunSupersededAudit(ctx context.Context, arg EmitRunSupersededAuditParams) error
 	// Scope guard: confirm an environment id is owned by a project before
 	// serving its deployments through that project's URL.
 	EnvironmentBelongsToProject(ctx context.Context, arg EnvironmentBelongsToProjectParams) (bool, error)
@@ -578,6 +610,18 @@ type Querier interface {
 	// the round trip we'd otherwise need to fetch them separately.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
+	// Current service_generation of a run (#97). Read INSIDE the completion tx by
+	// cascadeAfterJobCompletion so the run-terminal service cleanup carries the pre-revive
+	// generation (a rerun that revives the run into a higher generation keeps its fresh
+	// pods). The API-cancel path captures its own generation via CancelActiveRun's
+	// RETURNING; the supersede path uses GetSupersededRunGeneration.
+	GetRunServiceGeneration(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
+	// (counter), for the cascade supersede fire and the gate-pass marker. Reads
+	// runs.definition — NOT pipelines.definition — so gate->env resolution matches the
+	// shape the run was materialised from even after a later ApplyProject edits the
+	// live pipeline.
+	GetRunSupersedeContext(ctx context.Context, id pgtype.UUID) (GetRunSupersedeContextRow, error)
 	// For a downstream run, extracts upstream_run_id + upstream pipeline
 	// name from cause_detail JSON. Empty string / null UUID when this run
 	// was NOT triggered by an upstream material (cause is 'webhook' /
@@ -618,9 +662,19 @@ type Querier interface {
 	// the caller uses to decide whether to promote the stage. `awaiting_approval`
 	// is unfinished too: the gate hasn't decided yet, so the stage can't close.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
+	// The 0-based ordinal of a stage_run within its run. The cascade fire uses the
+	// just-completed stage's ordinal to find the NEXT stage's ready gates.
+	GetStageRunOrdinal(ctx context.Context, id pgtype.UUID) (int32, error)
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
+	// The service_generation of a run ONLY while it is still superseded (#97). Returns
+	// no row once RerunJob revives it (clears superseded_by). The supersede cleanup uses
+	// this as a combined "still superseded?" + "which generation am I tearing down?" read:
+	// gating the generation on superseded_by IN ONE ROW is load-bearing, because a revive
+	// clears superseded_by AND bumps service_generation in a single UPDATE — reading the
+	// two separately could straddle the revive and tear down the revived generation's pods.
+	GetSupersededRunGeneration(ctx context.Context, id pgtype.UUID) (int64, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	// Returns the stored preferences blob for a user. Callers treat
 	// the "no row" case as "empty preferences" (pgx.ErrNoRows); this
@@ -724,6 +778,13 @@ type Querier interface {
 	// reason — so the pipelines list can show WHICH services a run
 	// declared, not just whether it declared any. Appended last so the
 	// existing positional params keep their order.
+	// ref (migration 00065) is the supersede LANE key — the triggering branch,
+	// snapshotted at create time from the same trigger context (drift-safe like the
+	// others). Appended last so the existing positional params keep their order.
+	// definition (migration 00067) snapshots the effective pipeline definition the run
+	// is materialised from, so the supersede gate-governance graph (gate -> deploy env)
+	// is resolved at approve / cascade time against the run's OWN shape, not a
+	// since-drifted pipelines.definition. Same drift-safety as the snapshots above.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	// Recompute the daily terminal-run counts for the same window the delete cleared.
 	// Bucketed by finished_at::date. runs_failed folds 'failed' + 'errored';
@@ -731,6 +792,11 @@ type Querier interface {
 	// guard (the window was just deleted in this tx and the advisory lock serialises
 	// refreshers, so a conflict shouldn't arise).
 	InsertRunDailyWindow(ctx context.Context, sinceDays int32) error
+	// Record that a run cleared the approval gate(s) governing a concrete deploy env
+	// (#97 Phase 2). Written at approve time under the lane-env advisory lock; the
+	// dispatch backstop reads it to refuse a stale deploy. ON CONFLICT DO NOTHING makes
+	// a re-approve / replica race idempotent (a run passes a given env exactly once).
+	InsertRunGatePass(ctx context.Context, arg InsertRunGatePassParams) error
 	InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error)
 	InsertSecurityFindings(ctx context.Context, arg []InsertSecurityFindingsParams) (int64, error)
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) (ServiceAccount, error)
@@ -838,6 +904,10 @@ type Querier interface {
 	// the boolean so admins can see disabled providers they can re-
 	// enable later.
 	ListAuthProviders(ctx context.Context) ([]AuthProvider, error)
+	// The names of a run's still-pending approval gates. Supersede resolves the
+	// deploy environments a run is awaiting clearance for from these (via the
+	// gate-governance graph), to intersect against the newer run's ready gate.
+	ListAwaitingGateNamesForRun(ctx context.Context, runID pgtype.UUID) ([]string, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	// credential_enc is intentionally NOT selected — the list/detail
 	// surface is write-only, the credential never leaves the server.
@@ -1012,6 +1082,12 @@ type Querier interface {
 	// index-only on the WHERE clause makes this a sub-millisecond
 	// lookup even on a job_runs table in the millions.
 	ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error)
+	// Superseded runs whose effects haven't completed AND are claimable right now — the
+	// replay work-list (missed NOTIFY or a claim past its lease). Filtering out LIVE
+	// claims (within the lease) matters: with LIMIT, a block of in-flight claims would
+	// otherwise starve later never-notified rows. Oldest-first, bounded. Rides
+	// runs_supersede_effects_pending_idx.
+	ListPendingSupersedeEffects(ctx context.Context, arg ListPendingSupersedeEffectsParams) ([]pgtype.UUID, error)
 	// Governance reconciliation: each pipeline's id/name plus whether it is the
 	// server-owned synthetic pipeline (system_managed). Repo pipelines are those
 	// with system_managed = false. Ordered by name so the apply path's
@@ -1082,6 +1158,12 @@ type Querier interface {
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
+	// Running jobs of a run that carry a pending cancel intent (supersede stamped
+	// cancel_requested_at). The supersede effects listener pushes a CancelJob frame
+	// per row so the container stops promptly instead of waiting for the agent's next
+	// reconnect. agent_id is non-null by the predicate, so the listener can address a
+	// frame to it directly.
+	ListRunningCancelRequestedForRun(ctx context.Context, runID pgtype.UUID) ([]ListRunningCancelRequestedForRunRow, error)
 	// Every running job currently assigned to a given agent_id. The
 	// register-fence path uses this: when an agent re-registers (= the
 	// prior process is gone), every still-'running' row attributed to it
@@ -1240,6 +1322,12 @@ type Querier interface {
 	MarkPullRequestMerged(ctx context.Context, arg MarkPullRequestMergedParams) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
+	// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
+	// which the replay stops retrying. Guarded on superseded_by so the method can't mark
+	// a non-superseded row done if ever misused. Until this lands the replay keeps
+	// retrying (via the lease), so a crash — or a cleanup that had no target yet — is
+	// recovered rather than silently dropped.
+	MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Returns the run_id of an in-flight predecessor blocking the
 	// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
@@ -1416,6 +1504,11 @@ type Querier interface {
 	// than fail-open here — operator can run manual sweep if a stale
 	// leak surfaces).
 	RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error)
+	// Whether a run is still marked superseded. The effects worker re-checks this right
+	// before the DESTRUCTIVE service cleanup: RerunJob can revive a run (clearing
+	// superseded_by) after a worker claimed its effects, and a stale cleanup keyed on
+	// the same run_id would delete the revived run's pods.
+	RunHasSupersededBy(ctx context.Context, id pgtype.UUID) (bool, error)
 	// The run's reconciled scanner series — from security_scans (NOT findings), so a
 	// clean scan still registers. Drives has_scans / delta_available / unbaselined.
 	RunScanSeries(ctx context.Context, runID pgtype.UUID) ([]RunScanSeriesRow, error)
@@ -1525,6 +1618,24 @@ type Querier interface {
 	// Returns (id, agent_id) per stamped row so the handler can
 	// correlate Dispatch failures with their owning agent.
 	StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error)
+	// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
+	// the supersede victim candidates for `supersede: branch`. counter DESC so
+	// concurrent supersede passes lock runs.id rows in one consistent descending
+	// order (current is the highest, already locked by its own tx) and can't cycle.
+	SupersedeCandidatesBranch(ctx context.Context, arg SupersedeCandidatesBranchParams) ([]SupersedeCandidatesBranchRow, error)
+	// Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
+	// rides the (pipeline_id, counter) partial index.
+	SupersedeCandidatesPipeline(ctx context.Context, arg SupersedeCandidatesPipelineParams) ([]SupersedeCandidatesPipelineRow, error)
+	// Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
+	// superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —
+	// a second call on a terminal run returns 0 rows), plus superseded_by so the UI
+	// renders "superseded by #N" and the Phase-2 backstop's active-marker check can
+	// exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
+	SupersedeRun(ctx context.Context, arg SupersedeRunParams) (pgtype.UUID, error)
+	// Counters for the run.superseded audit the effects listener emits: the victim's
+	// own counter, plus the superseding run's id + counter (via superseded_by). One
+	// row only when the run is actually superseded, so a spurious NOTIFY emits nothing.
+	SupersededAuditInfo(ctx context.Context, id pgtype.UUID) (SupersededAuditInfoRow, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)

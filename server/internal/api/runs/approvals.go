@@ -128,6 +128,8 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		})
 	case errors.Is(err, store.ErrApprovalGateNotFound):
 		http.Error(w, "approval gate not found", http.StatusNotFound)
+	case errors.Is(err, store.ErrApprovalSuperseded):
+		http.Error(w, "run was superseded by a newer revision", http.StatusConflict)
 	case errors.Is(err, store.ErrApprovalNotPending):
 		http.Error(w, "gate already decided", http.StatusConflict)
 	case errors.Is(err, store.ErrApproverNotAllowed):

@@ -446,6 +446,11 @@ func main() {
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
+	if checksReporter != nil {
+		// Same reporter the AgentService uses, so a supersede-cancel closes the
+		// same check run the JobResult path would have (#97).
+		sched = sched.WithChecksReporter(checksReporter)
+	}
 	reaper := scheduler.NewReaper(st, logger).WithSessionFencer(sessions)
 	sweeper := retention.New(st, artifactStore, logger).
 		WithKeepLast(cfg.ArtifactsKeepLast).

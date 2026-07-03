@@ -154,6 +154,19 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		return nil, fmt.Errorf("concurrency: unknown value %q (want \"parallel\" or \"serial\")", f.Concurrency)
 	}
 
+	// supersede: latest-wins for gated pipelines (#97). Empty parses as off,
+	// stored as "" (the default/off form) so a non-supersede pipeline carries
+	// no value in the snapshot the scheduler reads.
+	supersede := strings.ToLower(strings.TrimSpace(f.Supersede))
+	switch supersede {
+	case "", domain.SupersedeOff:
+		supersede = ""
+	case domain.SupersedeBranch, domain.SupersedePipeline:
+		// OK
+	default:
+		return nil, fmt.Errorf("supersede: unknown value %q (want \"off\", \"branch\" or \"pipeline\")", f.Supersede)
+	}
+
 	// _notifications is a reserved stage name: at run materialization
 	// time the store appends a synthetic stage with that exact name
 	// to hold notification jobs. Colliding with it would break
@@ -171,6 +184,7 @@ func ParseNamed(r io.Reader, projectID, fallbackName string) (*domain.Pipeline, 
 		Variables:   f.Variables,
 		Template:    f.Template,
 		Concurrency: concurrency,
+		Supersede:   supersede,
 	}
 	if f.When != nil && len(f.When.Event) > 0 {
 		if err := validatePipelineEvents(f.When.Event); err != nil {

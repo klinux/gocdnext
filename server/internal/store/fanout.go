@@ -29,6 +29,10 @@ type CreateRunFromUpstreamInput struct {
 	// when a real checkout happens on the downstream, the scheduler's
 	// assignment builder picks whichever entry matches the material UUID.
 	UpstreamRevisions json.RawMessage
+	// UpstreamRef is the upstream run's supersede lane key (runs.ref),
+	// propagated so prod deploy runs triggered by the same `main` build share
+	// one lane (#97). Empty when the upstream had no ref.
+	UpstreamRef string
 }
 
 // CreateRunFromUpstream is idempotent: calling it twice for the same
@@ -71,6 +75,7 @@ func (s *Store) CreateRunFromUpstream(ctx context.Context, in CreateRunFromUpstr
 		CauseDetail: causeDetail,
 		Revisions:   revisions,
 		TriggeredBy: "system:upstream",
+		Ref:         in.UpstreamRef, // propagate the lane (#97 — was lost as "")
 	})
 	if err != nil {
 		return RunCreated{}, false, err
@@ -115,6 +120,7 @@ func (s *Store) FanoutFromStage(ctx context.Context, stageRunID uuid.UUID) ([]Fa
 			UpstreamPipelineName: summary.PipelineName,
 			UpstreamStageName:    summary.StageName,
 			UpstreamRevisions:    summary.Revisions,
+			UpstreamRef:          summary.Ref, // propagate the lane (#97)
 		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("downstream pipeline %s: %w", fromPgUUID(m.DownstreamPipelineID), err))

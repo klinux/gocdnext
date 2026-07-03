@@ -17,8 +17,13 @@ SET status = 'canceled',
     finished_at = COALESCE(finished_at, NOW()),
     queue_reason = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id
+RETURNING id, service_generation
 `
+
+type CancelActiveRunRow struct {
+	ID                pgtype.UUID
+	ServiceGeneration int64
+}
 
 // Flips a run to 'canceled' only if it was still active. Idempotent:
 // a second call on a terminal run returns no rows so the handler
@@ -30,10 +35,15 @@ RETURNING id
 // runs list. Doing it in this UPDATE (vs a follow-up
 // ClearRunQueueReason call) keeps the cancel atomic and saves a
 // round-trip.
-func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+// service_generation returned in the SAME UPDATE (#97): the cancel cleanup carries it
+// as max_generation, so a rerun that revives this run into a higher generation keeps
+// its fresh pods. Capturing it atomically with the flip to canceled (not a separate
+// post-cancel read) closes the window where a revive bumps it before the read.
+func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (CancelActiveRunRow, error) {
 	row := q.db.QueryRow(ctx, cancelActiveRun, id)
-	err := row.Scan(&id)
-	return id, err
+	var i CancelActiveRunRow
+	err := row.Scan(&i.ID, &i.ServiceGeneration)
+	return i, err
 }
 
 const cancelQueuedJobRun = `-- name: CancelQueuedJobRun :one
@@ -57,6 +67,108 @@ func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtyp
 	row := q.db.QueryRow(ctx, cancelQueuedJobRun, id)
 	err := row.Scan(&id)
 	return id, err
+}
+
+const claimSupersedeEffects = `-- name: ClaimSupersedeEffects :one
+WITH cur AS (
+    SELECT runs.id AS run_id,
+           runs.supersede_effects_claimed_at AS prev_claim,
+           runs.supersede_effects_at AS effects_at,
+           runs.superseded_by AS superseded_by
+    FROM runs WHERE runs.id = $1 FOR UPDATE
+)
+UPDATE runs r
+SET supersede_effects_claimed_at = NOW()
+FROM cur
+WHERE r.id = cur.run_id
+  AND cur.superseded_by IS NOT NULL
+  AND cur.effects_at IS NULL
+  AND (cur.prev_claim IS NULL
+       OR cur.prev_claim < NOW() - $2::INTERVAL)
+RETURNING (cur.prev_claim IS NULL)::boolean AS first_claim
+`
+
+type ClaimSupersedeEffectsParams struct {
+	ID    pgtype.UUID
+	Lease pgtype.Interval
+}
+
+// Claim the right to fire a superseded run's external effects. Succeeds when the
+// effects aren't already done AND no LIVE claim holds it — a claim older than the
+// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
+// so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
+// duplicate audit across replicas; a returned row means "you own the effects now".
+//
+// Returns first_claim = whether this is the FIRST-ever claim (no prior claimed_at)
+// vs a lease-expiry RECLAIM. The CTE reads the pre-update claimed_at under FOR
+// UPDATE so the caller can count gocdnext_runs_superseded_total exactly once per
+// supersede event — a reclaim that re-fires effects (e.g. cleanup had no target yet)
+// must not re-count. (A run revived then re-superseded clears claimed_at, so its
+// next first claim counts again — correctly, it's a new supersede event.)
+func (q *Queries) ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, claimSupersedeEffects, arg.ID, arg.Lease)
+	var first_claim bool
+	err := row.Scan(&first_claim)
+	return first_claim, err
+}
+
+const countPassedGates = `-- name: CountPassedGates :one
+SELECT count(*) FROM job_runs
+WHERE run_id = $1 AND name = ANY($2::text[]) AND approval_gate = true AND status = 'success'
+`
+
+type CountPassedGatesParams struct {
+	RunID   pgtype.UUID
+	Column2 []string
+}
+
+// How many of the named approval gates of a run have reached 'success'. The marker
+// for an env is written only when this equals the count of gates governing it (all
+// governing gates passed) — the just-approved gate is visible as success in the
+// caller's tx. Gates are never matrix (parser rejects approval+matrix), so name
+// uniquely identifies each gate's job_run.
+func (q *Queries) CountPassedGates(ctx context.Context, arg CountPassedGatesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countPassedGates, arg.RunID, arg.Column2)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteRunGatePassForEnvs = `-- name: DeleteRunGatePassForEnvs :exec
+DELETE FROM run_gate_pass WHERE run_id = $1 AND environment = ANY($2::text[])
+`
+
+type DeleteRunGatePassForEnvsParams struct {
+	RunID   pgtype.UUID
+	Column2 []string
+}
+
+// Drop a run's gate-pass markers for the given envs — used on rerun-revive, when a
+// re-armed gate makes the run's "cleared env" claim stale. Scoped to the run + the
+// specific envs so markers for still-passed (upstream) gates survive.
+func (q *Queries) DeleteRunGatePassForEnvs(ctx context.Context, arg DeleteRunGatePassForEnvsParams) error {
+	_, err := q.db.Exec(ctx, deleteRunGatePassForEnvs, arg.RunID, arg.Column2)
+	return err
+}
+
+const emitRunSupersededAudit = `-- name: EmitRunSupersededAudit :exec
+INSERT INTO audit_events (actor_id, actor_email, action, target_type, target_id, metadata)
+VALUES (NULL, '', 'run.superseded', 'run', $1, $2)
+ON CONFLICT (target_id) WHERE action = 'run.superseded' DO NOTHING
+`
+
+type EmitRunSupersededAuditParams struct {
+	TargetID string
+	Metadata []byte
+}
+
+// Idempotent run.superseded audit — system actor, counters + superseding id only
+// (never a branch/ref value). The partial unique index (target_id WHERE
+// action='run.superseded') makes a second writer — a racing replica or a
+// lease-expiry replay — a clean no-op.
+func (q *Queries) EmitRunSupersededAudit(ctx context.Context, arg EmitRunSupersededAuditParams) error {
+	_, err := q.db.Exec(ctx, emitRunSupersededAudit, arg.TargetID, arg.Metadata)
+	return err
 }
 
 const getJobRunForCancel = `-- name: GetJobRunForCancel :one
@@ -175,6 +287,139 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 	return i, err
 }
 
+const getRunServiceGeneration = `-- name: GetRunServiceGeneration :one
+SELECT service_generation FROM runs WHERE id = $1
+`
+
+// Current service_generation of a run (#97). Read INSIDE the completion tx by
+// cascadeAfterJobCompletion so the run-terminal service cleanup carries the pre-revive
+// generation (a rerun that revives the run into a higher generation keeps its fresh
+// pods). The API-cancel path captures its own generation via CancelActiveRun's
+// RETURNING; the supersede path uses GetSupersededRunGeneration.
+func (q *Queries) GetRunServiceGeneration(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, getRunServiceGeneration, id)
+	var service_generation int64
+	err := row.Scan(&service_generation)
+	return service_generation, err
+}
+
+const getRunSupersedeContext = `-- name: GetRunSupersedeContext :one
+SELECT pipeline_id, definition, ref, counter
+FROM runs
+WHERE id = $1
+`
+
+type GetRunSupersedeContextRow struct {
+	PipelineID pgtype.UUID
+	Definition []byte
+	Ref        string
+	Counter    int64
+}
+
+// Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
+// (counter), for the cascade supersede fire and the gate-pass marker. Reads
+// runs.definition — NOT pipelines.definition — so gate->env resolution matches the
+// shape the run was materialised from even after a later ApplyProject edits the
+// live pipeline.
+func (q *Queries) GetRunSupersedeContext(ctx context.Context, id pgtype.UUID) (GetRunSupersedeContextRow, error) {
+	row := q.db.QueryRow(ctx, getRunSupersedeContext, id)
+	var i GetRunSupersedeContextRow
+	err := row.Scan(
+		&i.PipelineID,
+		&i.Definition,
+		&i.Ref,
+		&i.Counter,
+	)
+	return i, err
+}
+
+const getStageRunOrdinal = `-- name: GetStageRunOrdinal :one
+SELECT ordinal FROM stage_runs WHERE id = $1
+`
+
+// The 0-based ordinal of a stage_run within its run. The cascade fire uses the
+// just-completed stage's ordinal to find the NEXT stage's ready gates.
+func (q *Queries) GetStageRunOrdinal(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, getStageRunOrdinal, id)
+	var ordinal int32
+	err := row.Scan(&ordinal)
+	return ordinal, err
+}
+
+const getSupersededRunGeneration = `-- name: GetSupersededRunGeneration :one
+SELECT service_generation FROM runs WHERE id = $1 AND superseded_by IS NOT NULL
+`
+
+// The service_generation of a run ONLY while it is still superseded (#97). Returns
+// no row once RerunJob revives it (clears superseded_by). The supersede cleanup uses
+// this as a combined "still superseded?" + "which generation am I tearing down?" read:
+// gating the generation on superseded_by IN ONE ROW is load-bearing, because a revive
+// clears superseded_by AND bumps service_generation in a single UPDATE — reading the
+// two separately could straddle the revive and tear down the revived generation's pods.
+func (q *Queries) GetSupersededRunGeneration(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, getSupersededRunGeneration, id)
+	var service_generation int64
+	err := row.Scan(&service_generation)
+	return service_generation, err
+}
+
+const insertRunGatePass = `-- name: InsertRunGatePass :exec
+INSERT INTO run_gate_pass (run_id, pipeline_id, ref, counter, environment)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (run_id, environment) DO NOTHING
+`
+
+type InsertRunGatePassParams struct {
+	RunID       pgtype.UUID
+	PipelineID  pgtype.UUID
+	Ref         string
+	Counter     int64
+	Environment string
+}
+
+// Record that a run cleared the approval gate(s) governing a concrete deploy env
+// (#97 Phase 2). Written at approve time under the lane-env advisory lock; the
+// dispatch backstop reads it to refuse a stale deploy. ON CONFLICT DO NOTHING makes
+// a re-approve / replica race idempotent (a run passes a given env exactly once).
+func (q *Queries) InsertRunGatePass(ctx context.Context, arg InsertRunGatePassParams) error {
+	_, err := q.db.Exec(ctx, insertRunGatePass,
+		arg.RunID,
+		arg.PipelineID,
+		arg.Ref,
+		arg.Counter,
+		arg.Environment,
+	)
+	return err
+}
+
+const listAwaitingGateNamesForRun = `-- name: ListAwaitingGateNamesForRun :many
+SELECT name FROM job_runs
+WHERE run_id = $1 AND approval_gate = true AND status = 'awaiting_approval'
+`
+
+// The names of a run's still-pending approval gates. Supersede resolves the
+// deploy environments a run is awaiting clearance for from these (via the
+// gate-governance graph), to intersect against the newer run's ready gate.
+func (q *Queries) ListAwaitingGateNamesForRun(ctx context.Context, runID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAwaitingGateNamesForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingCancelsForAgent = `-- name: ListPendingCancelsForAgent :many
 SELECT id, run_id
 FROM job_runs
@@ -219,6 +464,99 @@ func (q *Queries) ListPendingCancelsForAgent(ctx context.Context, agentID pgtype
 		return nil, err
 	}
 	return items, nil
+}
+
+const listPendingSupersedeEffects = `-- name: ListPendingSupersedeEffects :many
+SELECT id FROM runs
+WHERE superseded_by IS NOT NULL AND supersede_effects_at IS NULL
+  AND (supersede_effects_claimed_at IS NULL
+       OR supersede_effects_claimed_at < NOW() - $1::INTERVAL)
+ORDER BY finished_at
+LIMIT $2
+`
+
+type ListPendingSupersedeEffectsParams struct {
+	Lease   pgtype.Interval
+	MaxRows int32
+}
+
+// Superseded runs whose effects haven't completed AND are claimable right now — the
+// replay work-list (missed NOTIFY or a claim past its lease). Filtering out LIVE
+// claims (within the lease) matters: with LIMIT, a block of in-flight claims would
+// otherwise starve later never-notified rows. Oldest-first, bounded. Rides
+// runs_supersede_effects_pending_idx.
+func (q *Queries) ListPendingSupersedeEffects(ctx context.Context, arg ListPendingSupersedeEffectsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPendingSupersedeEffects, arg.Lease, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunningCancelRequestedForRun = `-- name: ListRunningCancelRequestedForRun :many
+SELECT id, agent_id
+FROM job_runs
+WHERE run_id = $1
+  AND status = 'running'
+  AND agent_id IS NOT NULL
+  AND cancel_requested_at IS NOT NULL
+`
+
+type ListRunningCancelRequestedForRunRow struct {
+	ID      pgtype.UUID
+	AgentID pgtype.UUID
+}
+
+// Running jobs of a run that carry a pending cancel intent (supersede stamped
+// cancel_requested_at). The supersede effects listener pushes a CancelJob frame
+// per row so the container stops promptly instead of waiting for the agent's next
+// reconnect. agent_id is non-null by the predicate, so the listener can address a
+// frame to it directly.
+func (q *Queries) ListRunningCancelRequestedForRun(ctx context.Context, runID pgtype.UUID) ([]ListRunningCancelRequestedForRunRow, error) {
+	rows, err := q.db.Query(ctx, listRunningCancelRequestedForRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunningCancelRequestedForRunRow{}
+	for rows.Next() {
+		var i ListRunningCancelRequestedForRunRow
+		if err := rows.Scan(&i.ID, &i.AgentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markSupersedeEffectsDone = `-- name: MarkSupersedeEffectsDone :exec
+UPDATE runs SET supersede_effects_at = NOW()
+WHERE id = $1 AND superseded_by IS NOT NULL
+`
+
+// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
+// which the replay stops retrying. Guarded on superseded_by so the method can't mark
+// a non-superseded row done if ever misused. Until this lands the replay keeps
+// retrying (via the lease), so a crash — or a cleanup that had no target yet — is
+// recovered rather than silently dropped.
+func (q *Queries) MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markSupersedeEffectsDone, id)
+	return err
 }
 
 const reclaimPendingCancelsForOfflineAgent = `-- name: ReclaimPendingCancelsForOfflineAgent :many
@@ -314,6 +652,21 @@ func (q *Queries) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, grac
 	return items, nil
 }
 
+const runHasSupersededBy = `-- name: RunHasSupersededBy :one
+SELECT (superseded_by IS NOT NULL)::boolean FROM runs WHERE id = $1
+`
+
+// Whether a run is still marked superseded. The effects worker re-checks this right
+// before the DESTRUCTIVE service cleanup: RerunJob can revive a run (clearing
+// superseded_by) after a worker claimed its effects, and a stale cleanup keyed on
+// the same run_id would delete the revived run's pods.
+func (q *Queries) RunHasSupersededBy(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, runHasSupersededBy, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const stampCancelRequestedAt = `-- name: StampCancelRequestedAt :one
 UPDATE job_runs
 SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
@@ -401,4 +754,142 @@ func (q *Queries) StampCancelRequestedAtForRun(ctx context.Context, runID pgtype
 		return nil, err
 	}
 	return items, nil
+}
+
+const supersedeCandidatesBranch = `-- name: SupersedeCandidatesBranch :many
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.ref = $2 AND r.counter < $3
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC
+`
+
+type SupersedeCandidatesBranchParams struct {
+	PipelineID pgtype.UUID
+	Ref        string
+	Counter    int64
+}
+
+type SupersedeCandidatesBranchRow struct {
+	ID      pgtype.UUID
+	Counter int64
+}
+
+// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
+// the supersede victim candidates for `supersede: branch`. counter DESC so
+// concurrent supersede passes lock runs.id rows in one consistent descending
+// order (current is the highest, already locked by its own tx) and can't cycle.
+func (q *Queries) SupersedeCandidatesBranch(ctx context.Context, arg SupersedeCandidatesBranchParams) ([]SupersedeCandidatesBranchRow, error) {
+	rows, err := q.db.Query(ctx, supersedeCandidatesBranch, arg.PipelineID, arg.Ref, arg.Counter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersedeCandidatesBranchRow{}
+	for rows.Next() {
+		var i SupersedeCandidatesBranchRow
+		if err := rows.Scan(&i.ID, &i.Counter); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supersedeCandidatesPipeline = `-- name: SupersedeCandidatesPipeline :many
+SELECT r.id, r.counter
+FROM runs r
+WHERE r.pipeline_id = $1 AND r.counter < $2
+  AND r.status IN ('queued', 'running')
+  AND EXISTS (SELECT 1 FROM job_runs j
+              WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
+ORDER BY r.counter DESC
+`
+
+type SupersedeCandidatesPipelineParams struct {
+	PipelineID pgtype.UUID
+	Counter    int64
+}
+
+type SupersedeCandidatesPipelineRow struct {
+	ID      pgtype.UUID
+	Counter int64
+}
+
+// Same, for `supersede: pipeline` (lane ignores ref) — no ref predicate so it
+// rides the (pipeline_id, counter) partial index.
+func (q *Queries) SupersedeCandidatesPipeline(ctx context.Context, arg SupersedeCandidatesPipelineParams) ([]SupersedeCandidatesPipelineRow, error) {
+	rows, err := q.db.Query(ctx, supersedeCandidatesPipeline, arg.PipelineID, arg.Counter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersedeCandidatesPipelineRow{}
+	for rows.Next() {
+		var i SupersedeCandidatesPipelineRow
+		if err := rows.Scan(&i.ID, &i.Counter); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supersedeRun = `-- name: SupersedeRun :one
+UPDATE runs
+SET status = 'canceled',
+    finished_at = COALESCE(finished_at, NOW()),
+    queue_reason = NULL,
+    superseded_by = $2,
+    cancel_reason = $3
+WHERE id = $1 AND status IN ('queued', 'running')
+RETURNING id
+`
+
+type SupersedeRunParams struct {
+	ID           pgtype.UUID
+	SupersededBy pgtype.UUID
+	CancelReason *string
+}
+
+// Latest-wins supersede (#97): flip an older pending run to canceled + stamp the
+// superseding run id + reason. Same shape/guard as CancelActiveRun (idempotent —
+// a second call on a terminal run returns 0 rows), plus superseded_by so the UI
+// renders "superseded by #N" and the Phase-2 backstop's active-marker check can
+// exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
+func (q *Queries) SupersedeRun(ctx context.Context, arg SupersedeRunParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, supersedeRun, arg.ID, arg.SupersededBy, arg.CancelReason)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const supersededAuditInfo = `-- name: SupersededAuditInfo :one
+SELECT v.counter AS superseded_counter, v.superseded_by AS by_run_id, n.counter AS by_counter
+FROM runs v JOIN runs n ON n.id = v.superseded_by
+WHERE v.id = $1 AND v.superseded_by IS NOT NULL
+`
+
+type SupersededAuditInfoRow struct {
+	SupersededCounter int64
+	ByRunID           pgtype.UUID
+	ByCounter         int64
+}
+
+// Counters for the run.superseded audit the effects listener emits: the victim's
+// own counter, plus the superseding run's id + counter (via superseded_by). One
+// row only when the run is actually superseded, so a spurious NOTIFY emits nothing.
+func (q *Queries) SupersededAuditInfo(ctx context.Context, id pgtype.UUID) (SupersededAuditInfoRow, error) {
+	row := q.db.QueryRow(ctx, supersededAuditInfo, id)
+	var i SupersededAuditInfoRow
+	err := row.Scan(&i.SupersededCounter, &i.ByRunID, &i.ByCounter)
+	return i, err
 }

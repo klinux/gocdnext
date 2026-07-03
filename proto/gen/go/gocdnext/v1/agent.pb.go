@@ -2068,8 +2068,16 @@ func (*ServerMessage_CleanupRunServices) isServerMessage_Kind() {}
 // already-cleaned run is a successful no-op (NotFound on a
 // concurrent race is treated as success).
 type CleanupRunServices struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	RunId string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Delete only service pods whose generation label (gocdnext.io/service-generation)
+	// is <= this value. Every run carries a service_generation that bumps each time the
+	// run is revived (RerunJob) under the SAME run_id, and each generation's pods get a
+	// fresh name+label. A supersede/terminal cleanup captures the generation being torn
+	// down, so a run revived into a HIGHER generation keeps its new pods (their label is
+	// > max_generation) — closing the cleanup-vs-revive race (#97). Zero is a valid
+	// generation (a never-revived run); the server always sets this explicitly.
+	MaxGeneration int64 `protobuf:"varint,2,opt,name=max_generation,json=maxGeneration,proto3" json:"max_generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2109,6 +2117,13 @@ func (x *CleanupRunServices) GetRunId() string {
 		return x.RunId
 	}
 	return ""
+}
+
+func (x *CleanupRunServices) GetMaxGeneration() int64 {
+	if x != nil {
+		return x.MaxGeneration
+	}
+	return 0
 }
 
 type JobAssignment struct {
@@ -2226,8 +2241,16 @@ type JobAssignment struct {
 	// scanner (exit-code 1 on a finding) still publish its SARIF so the
 	// Security dashboard sees the findings that failed the job.
 	ArtifactsWhen string `protobuf:"bytes,25,opt,name=artifacts_when,json=artifactsWhen,proto3" json:"artifacts_when,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// ServiceGeneration is the run's service-pod generation at dispatch time. The
+	// Kubernetes engine stamps it into each `services:` pod's name + generation
+	// label so a run revived under the same run_id (RerunJob bumps the generation)
+	// builds a FRESH pod set, and a stale supersede/terminal CleanupRunServices —
+	// which carries the older generation it tore down — cannot delete the revived
+	// pods (#97). Zero for a never-revived run. Kubernetes engine only; Shell +
+	// Docker ignore it.
+	ServiceGeneration int64 `protobuf:"varint,26,opt,name=service_generation,json=serviceGeneration,proto3" json:"service_generation,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *JobAssignment) Reset() {
@@ -2426,6 +2449,13 @@ func (x *JobAssignment) GetArtifactsWhen() string {
 		return x.ArtifactsWhen
 	}
 	return ""
+}
+
+func (x *JobAssignment) GetServiceGeneration() int64 {
+	if x != nil {
+		return x.ServiceGeneration
+	}
+	return 0
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so
@@ -3322,9 +3352,10 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\x06cancel\x18\x02 \x01(\v2\x16.gocdnext.v1.CancelJobH\x00R\x06cancel\x12'\n" +
 	"\x04pong\x18\x03 \x01(\v2\x11.gocdnext.v1.PongH\x00R\x04pong\x12S\n" +
 	"\x14cleanup_run_services\x18\x04 \x01(\v2\x1f.gocdnext.v1.CleanupRunServicesH\x00R\x12cleanupRunServicesB\x06\n" +
-	"\x04kind\"+\n" +
+	"\x04kind\"R\n" +
 	"\x12CleanupRunServices\x12\x15\n" +
-	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\x8d\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12%\n" +
+	"\x0emax_generation\x18\x02 \x01(\x03R\rmaxGeneration\"\xbc\n" +
 	"\n" +
 	"\rJobAssignment\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x15\n" +
@@ -3351,7 +3382,8 @@ const file_gocdnext_v1_agent_proto_rawDesc = "" +
 	"\rnode_selector\x18\x15 \x03(\v2,.gocdnext.v1.JobAssignment.NodeSelectorEntryR\fnodeSelector\x129\n" +
 	"\vtolerations\x18\x16 \x03(\v2\x17.gocdnext.v1.TolerationR\vtolerations\x12H\n" +
 	"\x0fcoverage_report\x18\x18 \x01(\v2\x1f.gocdnext.v1.CoverageReportSpecR\x0ecoverageReport\x12%\n" +
-	"\x0eartifacts_when\x18\x19 \x01(\tR\rartifactsWhen\x1a6\n" +
+	"\x0eartifacts_when\x18\x19 \x01(\tR\rartifactsWhen\x12-\n" +
+	"\x12service_generation\x18\x1a \x01(\x03R\x11serviceGeneration\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +

@@ -13,7 +13,27 @@ import (
 // it here keeps queue/coalesce/saturation tests in the _test
 // package without making the production surface public.
 func (c *Client) EnqueueRunCleanupForTest(runID string) {
-	c.enqueueRunCleanup(runID)
+	// Generation 0: the coalesce/saturation tests exercise queue mechanics,
+	// not the supersede generation filter. EnqueueRunCleanupWithGenForTest
+	// covers the max_generation threading.
+	c.enqueueRunCleanup(runID, 0)
+}
+
+// EnqueueRunCleanupWithGenForTest drives the enqueue path with a specific
+// max_generation so a test can assert the ceiling is carried into the
+// per-run side-map that runCleanup reads for the engine call (and that
+// coalesce keeps the highest one).
+func (c *Client) EnqueueRunCleanupWithGenForTest(runID string, maxGeneration int64) {
+	c.enqueueRunCleanup(runID, maxGeneration)
+}
+
+// CleanupMaxGenForTest returns the stored generation ceiling for a runID
+// (0 if none) so a test can prove the frame's max_generation reached the
+// side-map keyed by runID.
+func (c *Client) CleanupMaxGenForTest(runID string) int64 {
+	c.cleanupMu.Lock()
+	defer c.cleanupMu.Unlock()
+	return c.cleanupMaxGen[runID]
 }
 
 // CleanupPendingLenForTest reports the size of the in-progress /
