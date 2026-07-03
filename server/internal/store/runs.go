@@ -100,6 +100,7 @@ func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromM
 		CauseDetail: causeDetail,
 		Revisions:   revisions,
 		TriggeredBy: in.TriggeredBy,
+		Ref:         in.Branch, // supersede lane key (#97)
 	})
 }
 
@@ -111,6 +112,22 @@ type insertRunSkeletonInput struct {
 	CauseDetail json.RawMessage
 	Revisions   json.RawMessage
 	TriggeredBy string
+	// Ref is the supersede lane key — the triggering branch (#97). Empty for
+	// tag / manual-no-branch → one lane per pipeline. Capped at maxRefLen at
+	// stamp time (the single write point) so the lane index can't hit the
+	// Postgres btree entry limit on a pathological webhook ref.
+	Ref string
+}
+
+// maxRefLen caps the stamped runs.ref. Git refs are far shorter; truncation
+// only ever WIDENS a lane (over-supersede — the safe direction).
+const maxRefLen = 255
+
+func capRef(ref string) string {
+	if len(ref) > maxRefLen {
+		return ref[:maxRefLen]
+	}
+	return ref
 }
 
 // serviceNames extracts the declared service names from a pipeline
@@ -172,6 +189,7 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		TriggeredBy:  nullableString(in.TriggeredBy),
 		HasServices:  len(def.Services) > 0,
 		ServiceNames: serviceNames(def),
+		Ref:          capRef(in.Ref),
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)

@@ -114,9 +114,9 @@ func (q *Queries) InsertJobRun(ctx context.Context, arg InsertJobRunParams) (Ins
 const insertRun = `-- name: InsertRun :one
 INSERT INTO runs (
     pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
-    has_services, service_names
+    has_services, service_names, ref
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6, $7, $8
+    $1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9
 )
 RETURNING id, pipeline_id, counter, cause, status, created_at
 `
@@ -130,6 +130,7 @@ type InsertRunParams struct {
 	TriggeredBy  *string
 	HasServices  bool
 	ServiceNames []string
+	Ref          string
 }
 
 type InsertRunRow struct {
@@ -156,6 +157,9 @@ type InsertRunRow struct {
 // reason — so the pipelines list can show WHICH services a run
 // declared, not just whether it declared any. Appended last so the
 // existing positional params keep their order.
+// ref (migration 00065) is the supersede LANE key — the triggering branch,
+// snapshotted at create time from the same trigger context (drift-safe like the
+// others). Appended last so the existing positional params keep their order.
 func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error) {
 	row := q.db.QueryRow(ctx, insertRun,
 		arg.PipelineID,
@@ -166,6 +170,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRun
 		arg.TriggeredBy,
 		arg.HasServices,
 		arg.ServiceNames,
+		arg.Ref,
 	)
 	var i InsertRunRow
 	err := row.Scan(

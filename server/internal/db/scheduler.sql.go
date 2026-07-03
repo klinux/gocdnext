@@ -77,7 +77,7 @@ func (q *Queries) ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
 }
 
 const getRunForDispatch = `-- name: GetRunForDispatch :one
-SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions,
+SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions, r.ref,
        r.cause, r.cause_detail,
        p.definition, p.config_path,
        pr.notifications AS project_notifications,
@@ -96,6 +96,7 @@ type GetRunForDispatchRow struct {
 	Counter              int64
 	Status               string
 	Revisions            []byte
+	Ref                  string
 	Cause                string
 	CauseDetail          []byte
 	Definition           []byte
@@ -125,6 +126,7 @@ func (q *Queries) GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRun
 		&i.Counter,
 		&i.Status,
 		&i.Revisions,
+		&i.Ref,
 		&i.Cause,
 		&i.CauseDetail,
 		&i.Definition,

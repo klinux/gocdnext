@@ -63,8 +63,11 @@ type RunForDispatch struct {
 	Counter     int64
 	Status      string
 	Revisions   json.RawMessage
-	Definition  json.RawMessage
-	ConfigPath  string
+	// Ref is the supersede lane key (runs.ref) — read by the Phase 2 dispatch
+	// backstop to scope the newer-passed-gate lookup (#97).
+	Ref        string
+	Definition json.RawMessage
+	ConfigPath string
 	// ProjectNotifications is the owning project's notifications
 	// JSONB, pulled in the same round-trip as Definition so the
 	// synth-notification dispatch path can fall back to it when
@@ -358,6 +361,7 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		Counter:              row.Counter,
 		Status:               row.Status,
 		Revisions:            row.Revisions,
+		Ref:                  row.Ref,
 		Definition:           row.Definition,
 		ConfigPath:           row.ConfigPath,
 		ProjectNotifications: row.ProjectNotifications,

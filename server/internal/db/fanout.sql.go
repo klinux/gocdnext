@@ -89,7 +89,7 @@ func (q *Queries) FindRunByUpstream(ctx context.Context, arg FindRunByUpstreamPa
 
 const getStageSummary = `-- name: GetStageSummary :one
 SELECT s.id AS stage_run_id, s.name AS stage_name,
-       r.id AS run_id, r.pipeline_id, r.counter, r.revisions,
+       r.id AS run_id, r.pipeline_id, r.counter, r.revisions, r.ref,
        p.name AS pipeline_name
 FROM stage_runs s
 JOIN runs r ON r.id = s.run_id
@@ -105,6 +105,7 @@ type GetStageSummaryRow struct {
 	PipelineID   pgtype.UUID
 	Counter      int64
 	Revisions    []byte
+	Ref          string
 	PipelineName string
 }
 
@@ -120,6 +121,7 @@ func (q *Queries) GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStage
 		&i.PipelineID,
 		&i.Counter,
 		&i.Revisions,
+		&i.Ref,
 		&i.PipelineName,
 	)
 	return i, err

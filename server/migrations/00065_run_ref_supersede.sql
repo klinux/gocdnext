@@ -10,6 +10,13 @@
 -- to (pipeline_id, ref) for `supersede: branch`, or (pipeline_id) for
 -- `supersede: pipeline`. Empty '' = one lane per pipeline (tags / manual-no-branch).
 --
+-- ref stays TEXT (no length CHECK — a CHECK would hard-fail run creation on a
+-- pathological branch name). It is bounded at the SINGLE write point
+-- (store.insertRunSkeleton caps at 255 chars): git refs are far shorter than
+-- that, the store is the only writer, and truncation only ever WIDENS a lane
+-- (over-supersede — the safe direction), so the composite lane index can't hit
+-- the Postgres btree entry limit even on a raw self-hosted webhook.
+--
 -- superseded_by points at the newer run that made this one moot; the run's
 -- status stays 'canceled' (no new terminal status — see the design). cancel_reason
 -- is shared with manual cancel and cites the superseding run's counter (#N), never
