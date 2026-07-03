@@ -192,6 +192,34 @@ func TestFireSupersedeEffects_ClaimOnceThenDone(t *testing.T) {
 	}
 }
 
+// The pt.5d durability promise (review MED): a superseded run WITH services but no
+// k8s agent connected yet must NOT be marked done — cleanup couldn't reach a
+// receiver, so the replay has to retry (once an agent reconnects) rather than leak
+// the pods forever.
+func TestFireSupersedeEffects_ServicesNoTargetStaysPending(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN)
+	ctx := context.Background()
+
+	runID, _ := seed(t, pool)
+	markSuperseded(t, pool, runID)
+	if _, err := pool.Exec(ctx, `UPDATE runs SET has_services=true WHERE id=$1`, runID); err != nil {
+		t.Fatalf("set has_services: %v", err)
+	}
+
+	sched.FireSupersedeEffects(ctx, runID) // no k8s agent connected → cleanup can't resolve
+
+	var doneAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT supersede_effects_at FROM runs WHERE id=$1`, runID).Scan(&doneAt); err != nil {
+		t.Fatalf("read effects_at: %v", err)
+	}
+	if doneAt != nil {
+		t.Fatalf("effects marked done with services + no cleanup target — would leak pods with no retry")
+	}
+}
+
 func containsRun(ids []uuid.UUID, want uuid.UUID) bool {
 	for _, id := range ids {
 		if id == want {

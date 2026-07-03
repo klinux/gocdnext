@@ -1037,10 +1037,12 @@ type Querier interface {
 	// index-only on the WHERE clause makes this a sub-millisecond
 	// lookup even on a job_runs table in the millions.
 	ListPendingCancelsForAgent(ctx context.Context, agentID pgtype.UUID) ([]ListPendingCancelsForAgentRow, error)
-	// Superseded runs whose effects haven't completed — the replay work-list (missed
-	// NOTIFY or a claim past its lease). Oldest-first, bounded so one tick can't stall.
-	// Rides runs_supersede_effects_pending_idx.
-	ListPendingSupersedeEffects(ctx context.Context, maxRows int32) ([]pgtype.UUID, error)
+	// Superseded runs whose effects haven't completed AND are claimable right now — the
+	// replay work-list (missed NOTIFY or a claim past its lease). Filtering out LIVE
+	// claims (within the lease) matters: with LIMIT, a block of in-flight claims would
+	// otherwise starve later never-notified rows. Oldest-first, bounded. Rides
+	// runs_supersede_effects_pending_idx.
+	ListPendingSupersedeEffects(ctx context.Context, arg ListPendingSupersedeEffectsParams) ([]pgtype.UUID, error)
 	// Governance reconciliation: each pipeline's id/name plus whether it is the
 	// server-owned synthetic pipeline (system_managed). Repo pipelines are those
 	// with system_managed = false. Ordered by name so the apply path's
@@ -1275,9 +1277,11 @@ type Querier interface {
 	MarkPullRequestMerged(ctx context.Context, arg MarkPullRequestMergedParams) error
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
-	// Mark a superseded run's effects COMPLETE, after frames/cleanup/check/audit all
-	// ran. Until this lands the replay keeps retrying (via the lease), so a crash
-	// between claim and here is recovered rather than silently dropped.
+	// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
+	// which the replay stops retrying. Guarded on superseded_by so the method can't mark
+	// a non-superseded row done if ever misused. Until this lands the replay keeps
+	// retrying (via the lease), so a crash — or a cleanup that had no target yet — is
+	// recovered rather than silently dropped.
 	MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Returns the run_id of an in-flight predecessor blocking the

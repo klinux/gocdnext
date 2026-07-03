@@ -61,22 +61,33 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 				"run_id", runID, "job_id", j.JobID, "agent_id", j.AgentID, "err", err)
 		}
 	}
-	s.cleanupSupersededServices(ctx, runID)
-	s.emitSupersedeAudit(ctx, runID)
+	// DURABLE effects gate the done-marker: cleanup (pods must actually be reachable)
+	// and audit (a DB write). If either can't resolve now — the classic case is a run
+	// with services when no k8s agent is connected yet — we do NOT mark done, so the
+	// lease-expiry replay retries until it resolves. Both are idempotent, so a retry
+	// that re-runs an already-succeeded one is harmless.
+	cleanupResolved := s.cleanupSupersededServices(ctx, runID)
+	auditResolved := s.emitSupersedeAudit(ctx, runID)
 
 	// Close the run's GitHub check. Supersede terminalizes straight to canceled,
 	// skipping the JobResult path that normally reports completion — without this a
 	// check created for the old run stays in_progress forever. Nil-safe + re-reads
-	// the run's current status (canceled → conclusion=cancelled), fire-and-forget.
+	// the run's current status (canceled → conclusion=cancelled). Explicitly
+	// BEST-EFFORT (fire-and-forget GitHub PATCH): it does NOT gate the done-marker —
+	// coupling internal retry to GitHub uptime isn't worth it, and a stale
+	// in_progress check is cosmetic vs. leaked pods. Re-fired (idempotently) on each
+	// retry that a durable effect triggers, so it gets extra chances anyway.
 	if s.checks != nil {
 		s.checks.ReportRunCompleted(ctx, runID, string(domain.StatusCanceled))
 	}
 
-	// Effects landed — end the lease/replay retry loop. (The check close is
-	// fire-and-forget, but it self-heals via the reporter's own re-read on any later
-	// path, so marking done here doesn't strand it.)
-	if err := s.store.MarkSupersedeEffectsDone(ctx, runID); err != nil {
-		s.log.Warn("supersede effects: mark done", "run_id", runID, "err", err)
+	// Mark done only when the durable effects truly resolved (or didn't apply).
+	// Otherwise leave effects_at NULL — the replay reclaims after the lease and
+	// retries (e.g. once a k8s agent reconnects).
+	if cleanupResolved && auditResolved {
+		if err := s.store.MarkSupersedeEffectsDone(ctx, runID); err != nil {
+			s.log.Warn("supersede effects: mark done", "run_id", runID, "err", err)
+		}
 	}
 }
 
@@ -98,17 +109,17 @@ func (s *Scheduler) replaySupersedeEffects(ctx context.Context) {
 
 // emitSupersedeAudit records the run.superseded audit once per victim, unified here
 // so BOTH fire points (creation + cascade) get identical audit off the same NOTIFY.
-// Counters + the superseding run id only — never a branch/ref value. Best-effort:
-// the superseded_by column is the durable record; a missed audit doesn't change
-// state (matches the audit posture everywhere else).
-func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) {
+// Counters + the superseding run id only — never a branch/ref value. Returns
+// whether the audit RESOLVED (written, or a clean ON CONFLICT no-op, or nothing to
+// record) — false only on a transient error worth a replay retry.
+func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) bool {
 	info, ok, err := s.store.SupersededAuditInfo(ctx, runID)
 	if err != nil {
 		s.log.Warn("supersede effects: audit info", "run_id", runID, "err", err)
-		return
+		return false // transient read error — retry
 	}
 	if !ok {
-		return // not (or no longer) superseded — nothing to record
+		return true // not superseded — nothing to record, don't block done
 	}
 	// Idempotent (partial unique index): a replica race or a lease-expiry replay
 	// re-running this is a clean no-op.
@@ -118,7 +129,9 @@ func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) {
 		"by_counter":         info.ByCounter,
 	}); err != nil {
 		s.log.Warn("supersede effects: audit emit", "run_id", runID, "err", err)
+		return false
 	}
+	return true
 }
 
 // cleanupSupersededServices broadcasts CleanupRunServices to (agents that ran a
@@ -128,7 +141,14 @@ func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) {
 // broadcast the API cancel handler and the AgentService run-terminal cascade do —
 // duplicated rather than shared because each holds a different session handle
 // (SessionStore vs the api dispatcher interface); a future refactor could unify.
-func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UUID) {
+//
+// Returns whether the cleanup RESOLVED: true when the run has no services (nothing
+// to clean) or the broadcast reached at least one k8s agent; false when the run HAS
+// services but no agent could receive the frame yet — the durability case the replay
+// must retry (else a run whose pods outlive every connected agent leaks until a
+// manual sweep). CleanupRunServices is cluster-scoped + idempotent, so reaching any
+// one k8s agent is sufficient, and a retry after more reconnect is harmless.
+func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UUID) bool {
 	hasServices, err := s.store.RunHasServices(ctx, runID)
 	if err != nil {
 		// Fail-open: one extra empty List beats leaking pods.
@@ -136,7 +156,7 @@ func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UU
 		hasServices = true
 	}
 	if !hasServices {
-		return
+		return true // nothing to clean
 	}
 	ran, err := s.store.ListAgentsForRun(ctx, runID)
 	if err != nil {
@@ -157,17 +177,24 @@ func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UU
 		}
 	}
 	if len(targets) == 0 {
-		s.log.Warn("supersede effects: cleanup has no targets; pods may leak until manual cleanup", "run_id", runID)
-		return
+		s.log.Warn("supersede effects: cleanup has no target yet; will retry via replay", "run_id", runID)
+		return false // has services but no receiver — retry when an agent reconnects
 	}
 	msg := &gocdnextv1.ServerMessage{
 		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
 			CleanupRunServices: &gocdnextv1.CleanupRunServices{RunId: runID.String()},
 		},
 	}
+	delivered := false
 	for _, id := range targets {
 		if err := s.sessions.Dispatch(id, msg); err != nil {
 			s.log.Warn("supersede effects: cleanup dispatch failed", "run_id", runID, "agent_id", id, "err", err)
+			continue
 		}
+		delivered = true
 	}
+	if !delivered {
+		s.log.Warn("supersede effects: cleanup reached no agent (all dispatches failed); will retry via replay", "run_id", runID)
+	}
+	return delivered // resolved only if the frame reached at least one k8s agent
 }

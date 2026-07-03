@@ -341,15 +341,24 @@ func (q *Queries) ListPendingCancelsForAgent(ctx context.Context, agentID pgtype
 const listPendingSupersedeEffects = `-- name: ListPendingSupersedeEffects :many
 SELECT id FROM runs
 WHERE superseded_by IS NOT NULL AND supersede_effects_at IS NULL
+  AND (supersede_effects_claimed_at IS NULL
+       OR supersede_effects_claimed_at < NOW() - $1::INTERVAL)
 ORDER BY finished_at
-LIMIT $1
+LIMIT $2
 `
 
-// Superseded runs whose effects haven't completed — the replay work-list (missed
-// NOTIFY or a claim past its lease). Oldest-first, bounded so one tick can't stall.
-// Rides runs_supersede_effects_pending_idx.
-func (q *Queries) ListPendingSupersedeEffects(ctx context.Context, maxRows int32) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listPendingSupersedeEffects, maxRows)
+type ListPendingSupersedeEffectsParams struct {
+	Lease   pgtype.Interval
+	MaxRows int32
+}
+
+// Superseded runs whose effects haven't completed AND are claimable right now — the
+// replay work-list (missed NOTIFY or a claim past its lease). Filtering out LIVE
+// claims (within the lease) matters: with LIMIT, a block of in-flight claims would
+// otherwise starve later never-notified rows. Oldest-first, bounded. Rides
+// runs_supersede_effects_pending_idx.
+func (q *Queries) ListPendingSupersedeEffects(ctx context.Context, arg ListPendingSupersedeEffectsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPendingSupersedeEffects, arg.Lease, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -408,12 +417,15 @@ func (q *Queries) ListRunningCancelRequestedForRun(ctx context.Context, runID pg
 }
 
 const markSupersedeEffectsDone = `-- name: MarkSupersedeEffectsDone :exec
-UPDATE runs SET supersede_effects_at = NOW() WHERE id = $1
+UPDATE runs SET supersede_effects_at = NOW()
+WHERE id = $1 AND superseded_by IS NOT NULL
 `
 
-// Mark a superseded run's effects COMPLETE, after frames/cleanup/check/audit all
-// ran. Until this lands the replay keeps retrying (via the lease), so a crash
-// between claim and here is recovered rather than silently dropped.
+// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
+// which the replay stops retrying. Guarded on superseded_by so the method can't mark
+// a non-superseded row done if ever misused. Until this lands the replay keeps
+// retrying (via the lease), so a crash — or a cleanup that had no target yet — is
+// recovered rather than silently dropped.
 func (q *Queries) MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markSupersedeEffectsDone, id)
 	return err

@@ -239,7 +239,10 @@ func (s *Store) MarkSupersedeEffectsDone(ctx context.Context, runID uuid.UUID) e
 // completed — the scheduler's periodic replay work-list (missed NOTIFY / expired
 // claim). Bounded by max.
 func (s *Store) ListPendingSupersedeEffects(ctx context.Context, max int32) ([]uuid.UUID, error) {
-	rows, err := s.q.ListPendingSupersedeEffects(ctx, max)
+	rows, err := s.q.ListPendingSupersedeEffects(ctx, db.ListPendingSupersedeEffectsParams{
+		Lease:   pgtype.Interval{Microseconds: supersedeEffectsLease.Microseconds(), Valid: true},
+		MaxRows: max,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list pending supersede effects: %w", err)
 	}
