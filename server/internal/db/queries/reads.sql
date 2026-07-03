@@ -130,7 +130,8 @@ ORDER BY pl.name;
 
 -- name: ListRunsByProjectSlug :many
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
-       r.counter, r.cause, r.status, r.queue_reason, r.has_services, r.service_names,
+       r.counter, r.cause, r.status, r.queue_reason,
+       r.cancel_reason, r.superseded_by, r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -201,7 +202,8 @@ ORDER BY r.pipeline_id, r.created_at DESC;
 -- response but avoids a per-run "did this pipeline have
 -- notifications?" lookup.
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
-       r.counter, r.cause, r.cause_detail, r.status, r.queue_reason, r.revisions,
+       r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
+       r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
        pl.definition AS pipeline_definition

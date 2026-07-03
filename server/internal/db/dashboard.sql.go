@@ -200,6 +200,8 @@ SELECT r.id,
        r.counter,
        r.cause,
        r.status,
+       r.cancel_reason,
+       r.superseded_by,
        r.has_services,
        r.service_names,
        r.created_at,
@@ -234,6 +236,8 @@ type ListRunsGlobalRow struct {
 	Counter      int64
 	Cause        string
 	Status       string
+	CancelReason *string
+	SupersededBy pgtype.UUID
 	HasServices  bool
 	ServiceNames []string
 	CreatedAt    pgtype.Timestamptz
@@ -272,6 +276,8 @@ func (q *Queries) ListRunsGlobal(ctx context.Context, arg ListRunsGlobalParams) 
 			&i.Counter,
 			&i.Cause,
 			&i.Status,
+			&i.CancelReason,
+			&i.SupersededBy,
 			&i.HasServices,
 			&i.ServiceNames,
 			&i.CreatedAt,

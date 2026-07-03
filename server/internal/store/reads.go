@@ -241,11 +241,20 @@ type RunSummary struct {
 	// extend the vocabulary without an API contract change.
 	// Empty for runs not currently blocked — the UI uses presence
 	// to decide whether to render the "waiting on …" pill.
-	QueueReason string     `json:"queue_reason,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	FinishedAt  *time.Time `json:"finished_at,omitempty"`
-	TriggeredBy string     `json:"triggered_by,omitempty"`
+	QueueReason string `json:"queue_reason,omitempty"`
+	// CancelReason is the operator-visible reason a run was canceled. For a
+	// supersede it's "superseded by #N" (counter only, never a branch/ref) — the UI
+	// renders it as a muted "superseded by #N" badge in the canceled tone. Empty for
+	// runs that weren't canceled. Pairs with SupersededBy (#97).
+	CancelReason string `json:"cancel_reason,omitempty"`
+	// SupersededBy is the id of the newer run that superseded this one (set only
+	// when a supersede canceled it; ON DELETE SET NULL if that run is GC'd). Lets the
+	// "superseded by #N" badge link to the winning run. Null otherwise.
+	SupersededBy *uuid.UUID `json:"superseded_by,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	TriggeredBy  string     `json:"triggered_by,omitempty"`
 }
 
 type ProjectDetail struct {
@@ -767,6 +776,8 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			HasServices:  r.HasServices,
 			ServiceNames: r.ServiceNames,
 			QueueReason:  stringValue(r.QueueReason),
+			CancelReason: stringValue(r.CancelReason),
+			SupersededBy: pgUUIDPtr(r.SupersededBy),
 			CreatedAt:    r.CreatedAt.Time,
 			StartedAt:    pgTimePtr(r.StartedAt),
 			FinishedAt:   pgTimePtr(r.FinishedAt),
@@ -952,6 +963,8 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			HasServices:  run.HasServices,
 			ServiceNames: run.ServiceNames,
 			QueueReason:  stringValue(run.QueueReason),
+			CancelReason: stringValue(run.CancelReason),
+			SupersededBy: pgUUIDPtr(run.SupersededBy),
 			CreatedAt:    run.CreatedAt.Time,
 			StartedAt:    pgTimePtr(run.StartedAt),
 			FinishedAt:   pgTimePtr(run.FinishedAt),

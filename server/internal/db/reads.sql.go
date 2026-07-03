@@ -63,7 +63,8 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProject
 
 const getRunWithPipeline = `-- name: GetRunWithPipeline :one
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
-       r.counter, r.cause, r.cause_detail, r.status, r.queue_reason, r.revisions,
+       r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
+       r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
        pl.definition AS pipeline_definition
@@ -84,6 +85,8 @@ type GetRunWithPipelineRow struct {
 	CauseDetail        []byte
 	Status             string
 	QueueReason        *string
+	CancelReason       *string
+	SupersededBy       pgtype.UUID
 	Revisions          []byte
 	HasServices        bool
 	ServiceNames       []string
@@ -112,6 +115,8 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.CauseDetail,
 		&i.Status,
 		&i.QueueReason,
+		&i.CancelReason,
+		&i.SupersededBy,
 		&i.Revisions,
 		&i.HasServices,
 		&i.ServiceNames,
@@ -742,7 +747,8 @@ func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWit
 
 const listRunsByProjectSlug = `-- name: ListRunsByProjectSlug :many
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
-       r.counter, r.cause, r.status, r.queue_reason, r.has_services, r.service_names,
+       r.counter, r.cause, r.status, r.queue_reason,
+       r.cancel_reason, r.superseded_by, r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -765,6 +771,8 @@ type ListRunsByProjectSlugRow struct {
 	Cause        string
 	Status       string
 	QueueReason  *string
+	CancelReason *string
+	SupersededBy pgtype.UUID
 	HasServices  bool
 	ServiceNames []string
 	CreatedAt    pgtype.Timestamptz
@@ -790,6 +798,8 @@ func (q *Queries) ListRunsByProjectSlug(ctx context.Context, arg ListRunsByProje
 			&i.Cause,
 			&i.Status,
 			&i.QueueReason,
+			&i.CancelReason,
+			&i.SupersededBy,
 			&i.HasServices,
 			&i.ServiceNames,
 			&i.CreatedAt,

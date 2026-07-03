@@ -450,6 +450,40 @@ func TestRunStillSuperseded(t *testing.T) {
 	}
 }
 
+// Phase 3: the run-detail read path exposes cancel_reason + superseded_by so the UI
+// can render the "superseded by #N" badge and link to the winning run.
+func TestGetRunDetail_ExposesSupersedeFields(t *testing.T) {
+	f := newGateFixture(t, "detailsup")
+	v := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2, cancel_reason='superseded by #2' WHERE id=$1`,
+		v.RunID, newer.RunID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	detail, err := f.s.GetRunDetail(f.ctx, v.RunID, 0, nil)
+	if err != nil {
+		t.Fatalf("get run detail: %v", err)
+	}
+	if detail.CancelReason != "superseded by #2" {
+		t.Fatalf("cancel_reason = %q, want 'superseded by #2'", detail.CancelReason)
+	}
+	if detail.SupersededBy == nil || *detail.SupersededBy != newer.RunID {
+		t.Fatalf("superseded_by = %v, want %s", detail.SupersededBy, newer.RunID)
+	}
+
+	// A non-superseded run exposes neither (omitempty in JSON).
+	live := f.createRun(t, "main")
+	liveDetail, err := f.s.GetRunDetail(f.ctx, live.RunID, 0, nil)
+	if err != nil {
+		t.Fatalf("get live detail: %v", err)
+	}
+	if liveDetail.CancelReason != "" || liveDetail.SupersededBy != nil {
+		t.Fatalf("live run leaked supersede fields: reason=%q by=%v", liveDetail.CancelReason, liveDetail.SupersededBy)
+	}
+}
+
 func multiGateFixture(t *testing.T, slug string) gateFixture {
 	return newMarkerFixture(t, slug, domain.Pipeline{
 		Name: "p1", Supersede: domain.SupersedeBranch,
