@@ -53,6 +53,13 @@ WHERE r.pipeline_id = $1 AND r.counter < $2
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
 ORDER BY r.counter DESC;
 
+-- name: RunHasSupersededBy :one
+-- Whether a run is still marked superseded. The effects worker re-checks this right
+-- before the DESTRUCTIVE service cleanup: RerunJob can revive a run (clearing
+-- superseded_by) after a worker claimed its effects, and a stale cleanup keyed on
+-- the same run_id would delete the revived run's pods.
+SELECT (superseded_by IS NOT NULL)::boolean FROM runs WHERE id = $1;
+
 -- name: ClaimSupersedeEffects :one
 -- Claim the right to fire a superseded run's external effects. Succeeds when the
 -- effects aren't already done AND no LIVE claim holds it — a claim older than the

@@ -208,6 +208,18 @@ func (s *Store) supersedeAfterCascade(ctx context.Context, tx pgx.Tx, runID uuid
 	})
 }
 
+// RunStillSuperseded reports whether a run is still marked superseded — the effects
+// worker re-checks it before the destructive service cleanup so a run revived by a
+// rerun (superseded_by cleared) doesn't get its new pods torn down by a stale
+// cleanup keyed on the same run_id.
+func (s *Store) RunStillSuperseded(ctx context.Context, runID uuid.UUID) (bool, error) {
+	yes, err := s.q.RunHasSupersededBy(ctx, pgUUID(runID))
+	if err != nil {
+		return false, fmt.Errorf("store: run still superseded: %w", err)
+	}
+	return yes, nil
+}
+
 // ClaimSupersedeEffects atomically claims the right to fire a superseded run's
 // external effects. Returns true when THIS caller owns them now (fire, then call
 // MarkSupersedeEffectsDone); false when another live claim holds it or the effects

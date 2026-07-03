@@ -97,6 +97,11 @@ JOIN stage_runs s ON s.id = j.stage_run_id
 WHERE j.run_id = $1
   AND j.status = 'queued'
   AND j.agent_id IS NULL
+  -- An approval gate is a state transition, never dispatched (#97 defence in
+  -- depth): even if some path leaves a gate 'queued' — e.g. a rerun of the gate
+  -- row — the scheduler must never hand it to an agent, where a task-less job
+  -- would "pass" it without the allow-list / quorum / gate-pass marker.
+  AND j.approval_gate = false
   AND s.ordinal = (SELECT ordinal FROM active_stage)
 ORDER BY j.name, j.matrix_key NULLS FIRST;
 

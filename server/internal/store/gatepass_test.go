@@ -351,6 +351,105 @@ func TestRerunRevive_ClearsDownstreamMarkersKeepsUpstream(t *testing.T) {
 	}
 }
 
+// HIGH #1 layer 1: an approval gate can never be rerun (it would re-queue and then
+// dispatch as a task-less job, bypassing approval).
+func TestRerunJob_RefusesApprovalGate(t *testing.T) {
+	f := newGateFixture(t, "rerungate")
+	v := f.createRun(t, "main")
+	_, err := f.s.RerunJob(f.ctx, RerunJobInput{JobRunID: f.gateJobID(t, v.RunID, "approve-staging"), TriggeredBy: "u"})
+	if !errors.Is(err, ErrCannotRerunGate) {
+		t.Fatalf("rerun of a gate = %v, want ErrCannotRerunGate", err)
+	}
+}
+
+// HIGH #1 layer 2: even a gate somehow left 'queued' is never returned by the
+// dispatch query.
+func TestListDispatchableJobs_ExcludesApprovalGate(t *testing.T) {
+	f := newGateFixture(t, "dispgate")
+	v := f.createRun(t, "main")
+	gate := f.gateJobID(t, v.RunID, "approve-staging")
+	// Make the gate's stage the active one and force the gate to 'queued' (the bug shape).
+	if _, err := f.pool.Exec(f.ctx, `UPDATE job_runs SET status='success' WHERE run_id=$1 AND name='compile'`, v.RunID); err != nil {
+		t.Fatalf("finish build: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE stage_runs SET status='success' WHERE run_id=$1 AND name='build'`, v.RunID); err != nil {
+		t.Fatalf("finish build stage: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE job_runs SET status='queued' WHERE id=$1`, gate); err != nil {
+		t.Fatalf("force gate queued: %v", err)
+	}
+	jobs, err := f.s.ListDispatchableJobs(f.ctx, v.RunID)
+	if err != nil {
+		t.Fatalf("list dispatchable: %v", err)
+	}
+	for _, j := range jobs {
+		if j.ID == gate {
+			t.Fatalf("dispatch query returned an approval gate (%s) — would run as a task-less job", gate)
+		}
+	}
+}
+
+// HIGH #2: re-arming a gate on rerun drops the stale votes it held, so an old
+// pre-cancel vote can't count toward the fresh quorum.
+func TestRerunRevive_ClearsReArmedGateVotes(t *testing.T) {
+	f := newGateFixture(t, "revvotes")
+	v := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+	prodGate := f.gateJobID(t, v.RunID, "approve-prod")
+
+	var userID uuid.UUID
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO users (provider, external_id, email) VALUES ('test','ext-1','a@acme.test') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO job_run_approvals (job_run_id, user_id, user_label, decision) VALUES ($1,$2,'alice','approved')`,
+		prodGate, userID); err != nil {
+		t.Fatalf("seed vote: %v", err)
+	}
+
+	// Supersede v with approve-staging passed; rerun dep-staging (stage 2) re-arms
+	// approve-prod (stage 3).
+	if _, err := f.pool.Exec(f.ctx, `UPDATE job_runs SET status='success' WHERE run_id=$1 AND name IN ('compile','approve-staging')`, v.RunID); err != nil {
+		t.Fatalf("pass upstream: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE job_runs SET status='canceled' WHERE run_id=$1 AND name IN ('dep-staging','approve-prod','dep-prod')`, v.RunID); err != nil {
+		t.Fatalf("cancel downstream: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx, `UPDATE runs SET status='canceled', finished_at=NOW(), superseded_by=$2 WHERE id=$1`, v.RunID, newer.RunID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	if _, err := f.s.RerunJob(f.ctx, RerunJobInput{JobRunID: f.gateJobID(t, v.RunID, "dep-staging"), TriggeredBy: "u"}); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+
+	var votes int
+	if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FROM job_run_approvals WHERE job_run_id=$1`, prodGate).Scan(&votes); err != nil {
+		t.Fatalf("count votes: %v", err)
+	}
+	if votes != 0 {
+		t.Fatalf("re-armed gate kept %d stale votes (quorum bypass)", votes)
+	}
+}
+
+// MED primitive: RunStillSuperseded distinguishes a superseded run from a revived one
+// (used by the effects worker to skip a cleanup that would tear down a revived run).
+func TestRunStillSuperseded(t *testing.T) {
+	f := newGateFixture(t, "stillsup")
+	v := f.createRun(t, "main")
+	if yes, err := f.s.RunStillSuperseded(f.ctx, v.RunID); err != nil || yes {
+		t.Fatalf("fresh run: superseded=%v err=%v, want false", yes, err)
+	}
+	newer := f.createRun(t, "main")
+	if _, err := f.pool.Exec(f.ctx, `UPDATE runs SET superseded_by=$2 WHERE id=$1`, v.RunID, newer.RunID); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if yes, err := f.s.RunStillSuperseded(f.ctx, v.RunID); err != nil || !yes {
+		t.Fatalf("superseded run: superseded=%v err=%v, want true", yes, err)
+	}
+}
+
 func multiGateFixture(t *testing.T, slug string) gateFixture {
 	return newMarkerFixture(t, slug, domain.Pipeline{
 		Name: "p1", Supersede: domain.SupersedeBranch,

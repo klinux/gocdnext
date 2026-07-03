@@ -149,6 +149,20 @@ func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) boo
 // manual sweep). CleanupRunServices is cluster-scoped + idempotent, so reaching any
 // one k8s agent is sufficient, and a retry after more reconnect is harmless.
 func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UUID) bool {
+	// Revive-race guard (review MED): RerunJob can clear superseded_by after a worker
+	// claimed the effects. Re-check right before the DESTRUCTIVE cleanup — a revived +
+	// re-dispatched run reuses the same run_id, so a stale cleanup would delete its
+	// new pods. If it's no longer superseded, skip (resolved: nothing to clean). On a
+	// re-check error, return not-resolved so the replay retries rather than risk
+	// deleting a live run's pods.
+	stillSuperseded, err := s.store.RunStillSuperseded(ctx, runID)
+	if err != nil {
+		s.log.Warn("supersede effects: revive re-check failed; skipping cleanup this pass", "run_id", runID, "err", err)
+		return false
+	}
+	if !stillSuperseded {
+		return true // revived under us — do NOT tear down the revived run's services
+	}
 	hasServices, err := s.store.RunHasServices(ctx, runID)
 	if err != nil {
 		// Fail-open: one extra empty List beats leaking pods.

@@ -504,6 +504,8 @@ func (h *Handler) RerunJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job_run not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrJobRunActive):
 		http.Error(w, "job is still active — cancel first", http.StatusConflict)
+	case errors.Is(err, store.ErrCannotRerunGate):
+		http.Error(w, "an approval gate cannot be rerun — approve or reject it instead", http.StatusConflict)
 	default:
 		h.log.Error("rerun job", "job_run_id", jobRunID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

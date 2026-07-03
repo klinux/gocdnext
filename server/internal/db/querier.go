@@ -1480,6 +1480,11 @@ type Querier interface {
 	// than fail-open here — operator can run manual sweep if a stale
 	// leak surfaces).
 	RunHasServices(ctx context.Context, id pgtype.UUID) (bool, error)
+	// Whether a run is still marked superseded. The effects worker re-checks this right
+	// before the DESTRUCTIVE service cleanup: RerunJob can revive a run (clearing
+	// superseded_by) after a worker claimed its effects, and a stale cleanup keyed on
+	// the same run_id would delete the revived run's pods.
+	RunHasSupersededBy(ctx context.Context, id pgtype.UUID) (bool, error)
 	// The run's reconciled scanner series — from security_scans (NOT findings), so a
 	// clean scan still registers. Drives has_scans / delta_available / unbaselined.
 	RunScanSeries(ctx context.Context, runID pgtype.UUID) ([]RunScanSeriesRow, error)

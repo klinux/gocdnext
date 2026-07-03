@@ -594,6 +594,21 @@ func (q *Queries) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, grac
 	return items, nil
 }
 
+const runHasSupersededBy = `-- name: RunHasSupersededBy :one
+SELECT (superseded_by IS NOT NULL)::boolean FROM runs WHERE id = $1
+`
+
+// Whether a run is still marked superseded. The effects worker re-checks this right
+// before the DESTRUCTIVE service cleanup: RerunJob can revive a run (clearing
+// superseded_by) after a worker claimed its effects, and a stale cleanup keyed on
+// the same run_id would delete the revived run's pods.
+func (q *Queries) RunHasSupersededBy(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, runHasSupersededBy, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const stampCancelRequestedAt = `-- name: StampCancelRequestedAt :one
 UPDATE job_runs
 SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())

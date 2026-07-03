@@ -24,6 +24,11 @@ var (
 	ErrJobRunNotFound            = errors.New("store: job_run not found")
 	ErrJobRunActive              = errors.New("store: job_run still active (queued/running)")
 	ErrJobRunTerminal            = errors.New("store: job_run already terminal")
+	// ErrCannotRerunGate rejects rerunning an approval gate directly (#97): a gate
+	// is a state transition, not an executable job, so re-queueing it would let it
+	// dispatch as a task-less job and "pass" without the allow-list/quorum/marker.
+	// Re-arm a gate through the normal approve/reject path, not rerun.
+	ErrCannotRerunGate = errors.New("store: cannot rerun an approval gate")
 	// ErrSnapshotStale is returned by snapshot-CAS write paths
 	// (currently WriteTestResults) when the row's current
 	// (agent_id, attempt) no longer matches what the caller
@@ -691,14 +696,22 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	// below and bails with ErrJobRunActive.
 	var runID, stageRunID uuid.UUID
 	var status string
+	var isGate bool
 	err = tx.QueryRow(ctx, `
-		SELECT run_id, stage_run_id, status FROM job_runs WHERE id = $1 FOR UPDATE
-	`, in.JobRunID).Scan(&runID, &stageRunID, &status)
+		SELECT run_id, stage_run_id, status, approval_gate FROM job_runs WHERE id = $1 FOR UPDATE
+	`, in.JobRunID).Scan(&runID, &stageRunID, &status, &isGate)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RerunJobResult{}, ErrJobRunNotFound
 	}
 	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: lookup: %w", err)
+	}
+	// An approval gate can be non-terminal (awaiting_approval) or terminal
+	// (success/failed/canceled), so the active-status guard below wouldn't catch it.
+	// Rerunning it would re-queue a gate the dispatch path would run as a task-less
+	// job — bypassing approval entirely. Refuse; gates re-arm via approve/reject.
+	if isGate {
+		return RerunJobResult{}, ErrCannotRerunGate
 	}
 	if status == "queued" || status == "running" {
 		return RerunJobResult{}, ErrJobRunActive
@@ -838,7 +851,7 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	`, runID, stageRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: revive downstream jobs: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	rearmRows, err := tx.Query(ctx, `
 		UPDATE job_runs
 		SET status = 'awaiting_approval', awaiting_since = NOW(),
 		    agent_id = NULL, started_at = NULL, finished_at = NULL,
@@ -853,8 +866,27 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 		      WHERE run_id = $1
 		        AND ordinal > (SELECT ordinal FROM stage_runs WHERE id = $2)
 		  )
-	`, runID, stageRunID); err != nil {
+		RETURNING id
+	`, runID, stageRunID)
+	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: re-arm downstream gates: %w", err)
+	}
+	rearmedGates, err := pgx.CollectRows(rearmRows, func(r pgx.CollectableRow) (uuid.UUID, error) {
+		var id uuid.UUID
+		return id, r.Scan(&id)
+	})
+	if err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: collect re-armed gates: %w", err)
+	}
+	// A re-armed gate is approved from scratch: drop the votes it accrued before the
+	// cancel/supersede. Votes are keyed only by (job_run_id, user_id), so without
+	// this a stale pre-cancel vote counts toward the fresh quorum — a quorum=2 gate
+	// with 1 old vote would pass on a single new one, bypassing the intended quorum.
+	if len(rearmedGates) > 0 {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM job_run_approvals WHERE job_run_id = ANY($1::uuid[])`, rearmedGates); err != nil {
+			return RerunJobResult{}, fmt.Errorf("store: rerun job: clear re-armed gate votes: %w", err)
+		}
 	}
 	// Reopen the stages that just got a job back so GetRunProgress counts
 	// them as unfinished again (it keys on queued/running). A downstream

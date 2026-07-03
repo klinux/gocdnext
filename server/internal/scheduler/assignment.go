@@ -65,6 +65,15 @@ func BuildAssignment(
 		}
 	}
 
+	// #97 defence in depth (last layer): an approval gate is a state transition,
+	// never an executable job. RerunJob refuses to rerun a gate and the dispatch
+	// query filters approval_gate=false, but if either is ever bypassed, refuse to
+	// build the assignment — dispatching a gate would let it "pass" as a task-less
+	// job without the allow-list / quorum / gate-pass marker.
+	if jobDef.Approval != nil {
+		return nil, nil, fmt.Errorf("scheduler: refusing to dispatch approval gate %q", job.Name)
+	}
+
 	revs := map[string]revisionSnapshot{}
 	if len(run.Revisions) > 0 {
 		if err := json.Unmarshal(run.Revisions, &revs); err != nil {
