@@ -54,6 +54,45 @@ func newStage0GateFixture(t *testing.T, slug, mode string) gateFixture {
 	return gateFixture{s, pool, ctx, applied.Pipelines[0].PipelineID, materialID, def}
 }
 
+// TestSupersededRunServiceGeneration_AtomicWithReviveState pins the read the
+// generation-aware cleanup depends on (#97): while a run is superseded it returns the
+// service generation being torn down; once a revive clears superseded_by it reports
+// NOT superseded, so the cleanup skips rather than deleting the revived pods. Gating
+// the generation on superseded_by in one row is what makes that atomic.
+func TestSupersededRunServiceGeneration_AtomicWithReviveState(t *testing.T) {
+	f := newStage0GateFixture(t, "gensupersede", domain.SupersedeBranch)
+	older := f.createRun(t, "main")
+	f.createRun(t, "main") // newer supersedes older (canceled + superseded_by set)
+
+	// Give the superseded run a non-zero generation so the read proves it returns the
+	// VALUE, not merely presence.
+	if _, err := f.pool.Exec(f.ctx, `UPDATE runs SET service_generation = 3 WHERE id = $1`, older.RunID); err != nil {
+		t.Fatalf("bump gen: %v", err)
+	}
+
+	gen, superseded, err := f.s.SupersededRunServiceGeneration(f.ctx, older.RunID)
+	if err != nil {
+		t.Fatalf("SupersededRunServiceGeneration: %v", err)
+	}
+	if !superseded || gen != 3 {
+		t.Fatalf("while superseded: got (gen=%d, superseded=%v), want (3, true)", gen, superseded)
+	}
+	// RunServiceGeneration (the terminal-site read) returns the current gen regardless.
+	if g, err := f.s.RunServiceGeneration(f.ctx, older.RunID); err != nil || g != 3 {
+		t.Fatalf("RunServiceGeneration = (%d, %v), want (3, nil)", g, err)
+	}
+
+	// Simulate a revive clearing superseded_by: the combined read must now report NOT
+	// superseded so the cleanup skips (a separate still-superseded + generation read
+	// could straddle the revive and delete the revived generation's pods).
+	if _, err := f.pool.Exec(f.ctx, `UPDATE runs SET superseded_by = NULL WHERE id = $1`, older.RunID); err != nil {
+		t.Fatalf("clear superseded_by: %v", err)
+	}
+	if gen, superseded, err := f.s.SupersededRunServiceGeneration(f.ctx, older.RunID); err != nil || superseded || gen != 0 {
+		t.Fatalf("after revive: got (gen=%d, superseded=%v, err=%v), want (0, false, nil)", gen, superseded, err)
+	}
+}
+
 // Creating a newer run in a lane clears the older run pending at the same ready
 // stage-0 gate, in the SAME create tx — the caller gets the victims on RunCreated.
 func TestCreationFire_SupersedesOlderStage0Gate(t *testing.T) {

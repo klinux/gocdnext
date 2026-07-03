@@ -157,25 +157,20 @@ func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) boo
 // manual sweep). CleanupRunServices is cluster-scoped + idempotent, so reaching any
 // one k8s agent is sufficient, and a retry after more reconnect is harmless.
 func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UUID) bool {
-	// Revive-race guard (review MED): RerunJob can clear superseded_by after a worker
-	// claimed the effects. Re-check right before the DESTRUCTIVE cleanup — a revived +
-	// re-dispatched run reuses the same run_id, so a stale cleanup would delete its
-	// new pods. If it's no longer superseded, skip (resolved: nothing to clean). On a
-	// re-check error, return not-resolved so the replay retries rather than risk
-	// deleting a live run's pods.
-	//
-	// KNOWN LIMITATION (#97): this NARROWS but does not fully close the race. The
-	// CleanupRunServices frame carries only run_id and is delivered + processed
-	// asynchronously by the agent (label-delete by run_id), so a revive that lands
-	// AFTER this check but BEFORE the agent processes the frame can still lose its
-	// new pods. Reachable only for a superseded run with LIVE services that is then
-	// rerun — narrow, and recoverable (the revived run's services die and the job is
-	// rerun). The robust fix is a generation-aware cleanup: add a created_before
-	// timestamp to CleanupRunServices and have the k8s engine delete only pods with
-	// CreationTimestamp < created_before (new pods survive). Deferred as a follow-up
-	// (proto + agent engine change); waiting on effects_at alone is insufficient —
-	// it means "frame delivered", not "cleanup executed".
-	stillSuperseded, err := s.store.RunStillSuperseded(ctx, runID)
+	// Revive-race guard (review MED/HIGH): RerunJob can clear superseded_by after a
+	// worker claimed the effects. This one read does double duty — it re-checks the
+	// supersede state AND captures the generation being torn down, atomically:
+	//   - not superseded (revived under us) → skip (resolved: nothing to clean).
+	//   - still superseded → gen is the SUPERSEDED generation (the revive that would
+	//     bump it also clears superseded_by in the same UPDATE, so a "still superseded"
+	//     result is guaranteed to predate any revive).
+	// The frame carries max_generation = gen, and the k8s engine deletes only pods
+	// whose generation label is <= gen. A revive that lands AFTER this read dispatches
+	// its pods under gen+1 (fresh name + label), so this stale cleanup can't touch them
+	// — closing the async cleanup-vs-revive race that a wall-clock cutoff could not
+	// (pod reuse by deterministic name reused a pre-cutoff pod). On a read error, return
+	// not-resolved so the replay retries rather than risk a wrong-generation delete.
+	generation, stillSuperseded, err := s.store.SupersededRunServiceGeneration(ctx, runID)
 	if err != nil {
 		s.log.Warn("supersede effects: revive re-check failed; skipping cleanup this pass", "run_id", runID, "err", err)
 		return false
@@ -216,7 +211,14 @@ func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UU
 	}
 	msg := &gocdnextv1.ServerMessage{
 		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
-			CleanupRunServices: &gocdnextv1.CleanupRunServices{RunId: runID.String()},
+			// max_generation = the superseded generation: the agent's k8s cleanup
+			// deletes only pods labeled generation <= this, so a run revived under the
+			// same run_id (dispatched at generation+1 with fresh pod names) keeps its
+			// new pods — closing the cleanup-vs-revive race (#97).
+			CleanupRunServices: &gocdnextv1.CleanupRunServices{
+				RunId:         runID.String(),
+				MaxGeneration: generation,
+			},
 		},
 	}
 	delivered := false

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"time"
 
@@ -372,10 +373,22 @@ func (h *Handler) dispatchCleanupServices(runID uuid.UUID) {
 		return
 	}
 
+	// Generation-aware cleanup (#97): delete only pods up to the run's current
+	// service generation, so a rerun that revives this run into a higher generation
+	// keeps its fresh pods. On read error, fall back to delete-all — a leaked pod is
+	// worse than the narrow revive race on a deliberate cancel (same fail-open posture
+	// as the has-services check above).
+	maxGen, err := h.store.RunServiceGeneration(ctx, runID)
+	if err != nil {
+		h.log.Warn("cancel: service-generation read failed; cleaning up all generations",
+			"run_id", runID, "err", err)
+		maxGen = math.MaxInt64
+	}
 	msg := &gocdnextv1.ServerMessage{
 		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
 			CleanupRunServices: &gocdnextv1.CleanupRunServices{
-				RunId: runID.String(),
+				RunId:         runID.String(),
+				MaxGeneration: maxGen,
 			},
 		},
 	}

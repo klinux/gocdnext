@@ -32,6 +32,7 @@ type blockableEngine struct {
 
 type recordedCall struct {
 	RunID         string
+	MaxGeneration int64 // supersede generation ceiling threaded from the frame
 	Deadline      time.Time
 	HadCtx        bool
 	ErrAtEntry    error // ctx.Err() right when the engine received the call
@@ -50,10 +51,10 @@ func (e *blockableEngine) Name() string { return "kubernetes" }
 func (e *blockableEngine) RunScript(context.Context, engine.ScriptSpec) (int, error) {
 	return 0, nil
 }
-func (e *blockableEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
+func (e *blockableEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, int64, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
 	return engine.ServicesWireup{Cleanup: func() {}}, nil
 }
-func (e *blockableEngine) CleanupRunServices(ctx context.Context, runID string, _ func(engine.ServiceLifecycleEvent)) (int, error) {
+func (e *blockableEngine) CleanupRunServices(ctx context.Context, runID string, maxGeneration int64, _ func(engine.ServiceLifecycleEvent)) (int, error) {
 	dl, ok := ctx.Deadline()
 	errAtEntry := ctx.Err()
 	start := time.Now()
@@ -63,10 +64,11 @@ func (e *blockableEngine) CleanupRunServices(ctx context.Context, runID string, 
 	e.mu.Lock()
 	idx := len(e.seen)
 	e.seen = append(e.seen, recordedCall{
-		RunID:      runID,
-		Deadline:   dl,
-		HadCtx:     ok,
-		ErrAtEntry: errAtEntry,
+		RunID:         runID,
+		MaxGeneration: maxGeneration,
+		Deadline:      dl,
+		HadCtx:        ok,
+		ErrAtEntry:    errAtEntry,
 	})
 	e.mu.Unlock()
 
@@ -678,4 +680,92 @@ func TestCleanupWorker_SteadyStateRemovesPending(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Errorf("pending not cleared after steady-state run; got %d", c.CleanupPendingLenForTest())
+}
+
+// TestCleanupWorker_ThreadsGenerationCeiling proves the supersede
+// generation ceiling (max_generation) survives the enqueue → per-run
+// side-map → worker → engine hop. This is the agent half of the
+// generation-aware cleanup (#97): the server stamps the superseded
+// generation on the CleanupRunServices frame so the k8s engine spares a
+// revived run's higher-generation pods. If the side-map wiring drops the
+// value, the engine would get 0 and delete only generation-0 pods (or,
+// via coalesce, the wrong ceiling) — so this asserts the exact value
+// arrives AND the side-map entry is cleared afterward.
+func TestCleanupWorker_ThreadsGenerationCeiling(t *testing.T) {
+	eng := newBlockableEngine()
+	c := rpc.New(rpc.Config{
+		ServerAddr: "ignored", AgentID: "a", Token: "t",
+		Engine: eng,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	close(eng.release) // unblock all calls immediately
+	shutdown := c.StartCleanupWorkersForTest()
+	defer shutdown()
+
+	const maxGen int64 = 7
+	c.EnqueueRunCleanupWithGenForTest("run-gen", maxGen)
+
+	// The side-map must hold the ceiling between enqueue and the
+	// engine call (runCleanup reads it there).
+	if got := c.CleanupMaxGenForTest("run-gen"); got != maxGen {
+		t.Fatalf("side-map max_generation = %d, want %d", got, maxGen)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eng.finished.Load() >= 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if eng.finished.Load() == 0 {
+		t.Fatal("engine never saw the cleanup call within 2s")
+	}
+
+	calls := eng.calls()
+	if len(calls) != 1 {
+		t.Fatalf("engine calls = %d, want 1", len(calls))
+	}
+	if calls[0].MaxGeneration != maxGen {
+		t.Errorf("engine received max_generation = %d, want %d", calls[0].MaxGeneration, maxGen)
+	}
+
+	// The worker's defer must delete the side-map entry so it can't
+	// leak across a later same-runID revive/cleanup (which would ship
+	// a stale ceiling). Poll: removal can lag the engine-return. Zero is
+	// the map's absent value, so "cleared" reads as 0 here.
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if c.CleanupMaxGenForTest("run-gen") == 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Errorf("side-map max_generation not cleared after cleanup; still %d",
+		c.CleanupMaxGenForTest("run-gen"))
+}
+
+// TestEnqueueRunCleanup_CoalesceKeepsHighestGeneration pins the review
+// MED fix (#97): when a cleanup for a run is already queued and another
+// arrives (coalesced), the HIGHEST max_generation must win — a terminal
+// delete-all landing after a revive must not be masked by an earlier
+// lower-generation supersede cleanup, which would leak the revived
+// generation's pods.
+func TestEnqueueRunCleanup_CoalesceKeepsHighestGeneration(t *testing.T) {
+	// No engine + no workers: the item stays queued (pending), so the
+	// second enqueue takes the coalesce branch deterministically.
+	c := rpc.New(rpc.Config{
+		ServerAddr: "ignored", AgentID: "a", Token: "t",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	c.EnqueueRunCleanupWithGenForTest("run-x", 3)
+	c.EnqueueRunCleanupWithGenForTest("run-x", 9) // higher → wins
+	c.EnqueueRunCleanupWithGenForTest("run-x", 5) // lower  → ignored
+
+	if got := c.CleanupMaxGenForTest("run-x"); got != 9 {
+		t.Fatalf("coalesced max_generation = %d, want 9 (highest wins)", got)
+	}
+	if got := c.CleanupPendingLenForTest(); got != 1 {
+		t.Fatalf("pending len = %d, want 1 (coalesced to one slot)", got)
+	}
 }

@@ -82,7 +82,14 @@ type Client struct {
 	// the same agent for the same run count as 1 backlog slot.
 	cleanupQueue   chan string
 	cleanupPending map[string]struct{}
-	cleanupMu      sync.Mutex
+	// cleanupMaxGen carries the per-run service-generation ceiling (#97) alongside the
+	// queued run id without widening the string queue: the k8s cleanup deletes only
+	// pods whose generation is <= this, so a revived run's higher-generation pods
+	// survive a stale cleanup. On coalesce the HIGHEST value wins (a later post-revive
+	// terminal cleanup must not be masked by an earlier lower-generation supersede).
+	// Guarded by cleanupMu with cleanupPending.
+	cleanupMaxGen map[string]int64
+	cleanupMu     sync.Mutex
 	cleanupWG      sync.WaitGroup
 	// drainBudget is a Background-rooted ctx with
 	// cleanupShutdownDrainBudget as its deadline, installed by
@@ -162,6 +169,7 @@ func New(cfg Config, log *slog.Logger) *Client {
 		log:            log,
 		cleanupQueue:   make(chan string, cleanupQueueCap),
 		cleanupPending: make(map[string]struct{}),
+		cleanupMaxGen:  make(map[string]int64),
 	}
 }
 
@@ -574,7 +582,7 @@ func (c *Client) handleServerMessage(ctx context.Context, msg *gocdnextv1.Server
 		// duplicates of the same runID are NOT drops, they're
 		// idempotent no-ops on the agent side because the k8s
 		// label-selector delete is already idempotent.
-		c.enqueueRunCleanup(k.CleanupRunServices.GetRunId())
+		c.enqueueRunCleanup(k.CleanupRunServices.GetRunId(), k.CleanupRunServices.GetMaxGeneration())
 	default:
 		c.log.Warn("unknown server message kind")
 	}
@@ -600,13 +608,21 @@ func (c *Client) handleServerMessage(ctx context.Context, msg *gocdnextv1.Server
 // reset the backlog or restart workers. Pending set + queue have
 // aligned lifetimes via the remove-on-finish step in
 // processCleanupBounded → runCleanup.
-func (c *Client) enqueueRunCleanup(runID string) {
+func (c *Client) enqueueRunCleanup(runID string, maxGeneration int64) {
 	if runID == "" {
 		return
 	}
 	c.cleanupMu.Lock()
 	defer c.cleanupMu.Unlock()
 	if _, dup := c.cleanupPending[runID]; dup {
+		// Coalesced: the label-selector delete is idempotent, so one backlog slot
+		// per run is enough — but keep the HIGHEST max_generation seen (#97). A
+		// terminal cleanup arriving after a revive carries a higher generation than
+		// an earlier supersede cleanup; masking it (delete <= lower) would leak the
+		// revived generation's pods once THEY become terminal.
+		if maxGeneration > c.cleanupMaxGen[runID] {
+			c.cleanupMaxGen[runID] = maxGeneration
+		}
 		c.log.Debug("cleanup run services: coalesced duplicate", "run_id", runID)
 		return
 	}
@@ -618,6 +634,7 @@ func (c *Client) enqueueRunCleanup(runID string) {
 	select {
 	case c.cleanupQueue <- runID:
 		c.cleanupPending[runID] = struct{}{}
+		c.cleanupMaxGen[runID] = maxGeneration
 	default:
 		c.log.Warn("cleanup run services: queue saturated, dropping; pods may leak until manual cleanup",
 			"run_id", runID, "queue_cap", cleanupQueueCap)
@@ -839,9 +856,13 @@ func (c *Client) serviceLifecycleAck(runID string) func(engine.ServiceLifecycleE
 // knows it dispatched the broadcast, not whether any agent
 // actually deleted anything.
 func (c *Client) runCleanup(ctx context.Context, runID string) {
+	c.cleanupMu.Lock()
+	maxGeneration := c.cleanupMaxGen[runID]
+	c.cleanupMu.Unlock()
 	defer func() {
 		c.cleanupMu.Lock()
 		delete(c.cleanupPending, runID)
+		delete(c.cleanupMaxGen, runID)
 		c.cleanupMu.Unlock()
 	}()
 	if c.cfg.Engine == nil {
@@ -851,7 +872,7 @@ func (c *Client) runCleanup(ctx context.Context, runID string) {
 		// ack either — there's no result to report.
 		return
 	}
-	deleted, err := c.cfg.Engine.CleanupRunServices(ctx, runID, c.serviceLifecycleAck(runID))
+	deleted, err := c.cfg.Engine.CleanupRunServices(ctx, runID, maxGeneration, c.serviceLifecycleAck(runID))
 	if err != nil {
 		c.log.Warn("cleanup run services failed", "run_id", runID, "err", err)
 		c.sendCleanupAck(runID, deleted, err)

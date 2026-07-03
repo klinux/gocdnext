@@ -29,11 +29,11 @@ func (c *captureEngine) RunScript(_ context.Context, spec engine.ScriptSpec) (in
 	return 0, nil
 }
 
-func (c *captureEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
+func (c *captureEngine) EnsureServices(context.Context, []engine.ServiceSpec, string, string, int64, func(string, string), func(engine.ServiceLifecycleEvent)) (engine.ServicesWireup, error) {
 	return engine.ServicesWireup{Cleanup: func() {}}, nil
 }
 
-func (c *captureEngine) CleanupRunServices(context.Context, string, func(engine.ServiceLifecycleEvent)) (int, error) {
+func (c *captureEngine) CleanupRunServices(context.Context, string, int64, func(engine.ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }
 

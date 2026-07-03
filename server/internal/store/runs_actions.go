@@ -806,11 +806,20 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 	// it a LATER re-supersede of this run could never claim its effects (the claim
 	// requires effects_at IS NULL), so its CancelJob frames / cleanup / audit would
 	// never fire.
+	//
+	// Bumping service_generation here is what makes the generation-aware service
+	// cleanup work (#97): a still-pending supersede/terminal CleanupRunServices carries
+	// the OLD generation, and the revived run now dispatches its `services:` pods under
+	// generation+1 (fresh name + label), so the stale cleanup (delete <= old gen) can't
+	// touch them. The `status IN (terminal)` guard scopes the bump to a genuine REVIVE:
+	// rerunning one job of an already-'running' run matches 0 rows here, so live
+	// siblings keep reusing their current-generation pod (no split-pod set).
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
 		SET status = 'running', finished_at = NULL,
 		    superseded_by = NULL, cancel_reason = NULL,
-		    supersede_effects_claimed_at = NULL, supersede_effects_at = NULL
+		    supersede_effects_claimed_at = NULL, supersede_effects_at = NULL,
+		    service_generation = service_generation + 1
 		WHERE id = $1 AND status IN ('success', 'failed', 'canceled')
 	`, runID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: reopen run: %w", err)

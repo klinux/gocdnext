@@ -65,9 +65,13 @@ type RunForDispatch struct {
 	Revisions   json.RawMessage
 	// Ref is the supersede lane key (runs.ref) — read by the Phase 2 dispatch
 	// backstop to scope the newer-passed-gate lookup (#97).
-	Ref        string
-	Definition json.RawMessage
-	ConfigPath string
+	Ref string
+	// ServiceGeneration is the run's service-pod generation (#97), stamped onto each
+	// `services:` pod's name + label by the k8s engine so a revived run (RerunJob
+	// bumps it) builds a fresh pod set immune to a stale supersede/terminal cleanup.
+	ServiceGeneration int64
+	Definition        json.RawMessage
+	ConfigPath        string
 	// ProjectNotifications is the owning project's notifications
 	// JSONB, pulled in the same round-trip as Definition so the
 	// synth-notification dispatch path can fall back to it when
@@ -376,6 +380,7 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		Status:               row.Status,
 		Revisions:            row.Revisions,
 		Ref:                  row.Ref,
+		ServiceGeneration:    row.ServiceGeneration,
 		Definition:           row.Definition,
 		ConfigPath:           row.ConfigPath,
 		ProjectNotifications: row.ProjectNotifications,

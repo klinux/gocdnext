@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -1025,10 +1026,21 @@ func (a *AgentService) dispatchRunServiceCleanup(ctx context.Context, log logger
 		return
 	}
 
+	// Generation-aware cleanup (#97): tear down only pods up to the run's current
+	// service generation, so a rerun that revives this run into a higher generation
+	// keeps its fresh pods. On read error, fall back to delete-all — a leaked pod is
+	// worse than the narrow revive race on a run-terminal cascade.
+	maxGen, err := a.store.RunServiceGeneration(ctx, runID)
+	if err != nil {
+		log.Warn("cleanup run services: service-generation read failed; cleaning up all generations",
+			"run_id", runID, "err", err)
+		maxGen = math.MaxInt64
+	}
 	msg := &gocdnextv1.ServerMessage{
 		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
 			CleanupRunServices: &gocdnextv1.CleanupRunServices{
-				RunId: runID.String(),
+				RunId:         runID.String(),
+				MaxGeneration: maxGen,
 			},
 		},
 	}

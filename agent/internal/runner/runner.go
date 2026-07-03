@@ -7,6 +7,7 @@ package runner
 import (
 	"context"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -102,7 +103,10 @@ func New(cfg Config) *Runner {
 // service_runs row.
 func (r *Runner) CleanupRunServices(ctx context.Context, runID string) (int, error) {
 	emit := r.serviceLifecycleEmitter(runID)
-	return r.cfg.Engine.CleanupRunServices(ctx, runID, emit)
+	// math.MaxInt64 = delete every generation: this is the run-terminal teardown
+	// (isolated mode), not a supersede cleanup, so there's no revived-run generation
+	// to preserve (#97).
+	return r.cfg.Engine.CleanupRunServices(ctx, runID, math.MaxInt64, emit)
 }
 
 // serviceLifecycleEmitter returns a callback that translates

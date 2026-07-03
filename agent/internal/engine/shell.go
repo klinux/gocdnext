@@ -41,11 +41,11 @@ func (*Shell) Name() string { return "shell" }
 // so cleanup is a no-op. Returning 0 lets the runner's RPC handler
 // log "agent cleaned up 0 services" without needing engine-specific
 // branches.
-func (*Shell) CleanupRunServices(_ context.Context, _ string, _ func(ServiceLifecycleEvent)) (int, error) {
+func (*Shell) CleanupRunServices(_ context.Context, _ string, _ int64, _ func(ServiceLifecycleEvent)) (int, error) {
 	return 0, nil
 }
 
-func (*Shell) EnsureServices(_ context.Context, services []ServiceSpec, _, _ string, _ func(string, string), _ func(ServiceLifecycleEvent)) (ServicesWireup, error) {
+func (*Shell) EnsureServices(_ context.Context, services []ServiceSpec, _, _ string, _ int64, _ func(string, string), _ func(ServiceLifecycleEvent)) (ServicesWireup, error) {
 	if len(services) == 0 {
 		return ServicesWireup{Cleanup: func() {}}, nil
 	}

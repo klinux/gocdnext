@@ -60,6 +60,21 @@ ORDER BY r.counter DESC;
 -- the same run_id would delete the revived run's pods.
 SELECT (superseded_by IS NOT NULL)::boolean FROM runs WHERE id = $1;
 
+-- name: GetSupersededRunGeneration :one
+-- The service_generation of a run ONLY while it is still superseded (#97). Returns
+-- no row once RerunJob revives it (clears superseded_by). The supersede cleanup uses
+-- this as a combined "still superseded?" + "which generation am I tearing down?" read:
+-- gating the generation on superseded_by IN ONE ROW is load-bearing, because a revive
+-- clears superseded_by AND bumps service_generation in a single UPDATE — reading the
+-- two separately could straddle the revive and tear down the revived generation's pods.
+SELECT service_generation FROM runs WHERE id = $1 AND superseded_by IS NOT NULL;
+
+-- name: GetRunServiceGeneration :one
+-- Current service_generation of a run (#97). The terminal cleanup paths (API cancel,
+-- run-terminal cascade) stamp it onto the CleanupRunServices frame so a rerun that
+-- revives the run into a higher generation keeps its fresh pods.
+SELECT service_generation FROM runs WHERE id = $1;
+
 -- name: ClaimSupersedeEffects :one
 -- Claim the right to fire a superseded run's external effects. Succeeds when the
 -- effects aren't already done AND no LIVE claim holds it — a claim older than the

@@ -215,7 +215,7 @@ WHERE run_id = $1
 -- query that already loads the JSONB definition — negligible vs.
 -- the round trip we'd otherwise need to fetch them separately.
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions, r.ref,
-       r.cause, r.cause_detail,
+       r.cause, r.cause_detail, r.service_generation,
        p.definition, p.config_path,
        pr.notifications AS project_notifications,
        pr.slug AS project_slug

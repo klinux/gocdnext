@@ -606,6 +606,10 @@ type Querier interface {
 	// the round trip we'd otherwise need to fetch them separately.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
+	// Current service_generation of a run (#97). The terminal cleanup paths (API cancel,
+	// run-terminal cascade) stamp it onto the CleanupRunServices frame so a rerun that
+	// revives the run into a higher generation keeps its fresh pods.
+	GetRunServiceGeneration(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
 	// (counter), for the cascade supersede fire and the gate-pass marker. Reads
 	// runs.definition — NOT pipelines.definition — so gate->env resolution matches the
@@ -658,6 +662,13 @@ type Querier interface {
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
+	// The service_generation of a run ONLY while it is still superseded (#97). Returns
+	// no row once RerunJob revives it (clears superseded_by). The supersede cleanup uses
+	// this as a combined "still superseded?" + "which generation am I tearing down?" read:
+	// gating the generation on superseded_by IN ONE ROW is load-bearing, because a revive
+	// clears superseded_by AND bumps service_generation in a single UPDATE — reading the
+	// two separately could straddle the revive and tear down the revived generation's pods.
+	GetSupersededRunGeneration(ctx context.Context, id pgtype.UUID) (int64, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	// Returns the stored preferences blob for a user. Callers treat
 	// the "no row" case as "empty preferences" (pgx.ErrNoRows); this

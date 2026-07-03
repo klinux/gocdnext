@@ -220,6 +220,37 @@ func (s *Store) RunStillSuperseded(ctx context.Context, runID uuid.UUID) (bool, 
 	return yes, nil
 }
 
+// SupersededRunServiceGeneration returns a run's service_generation AND whether it is
+// still superseded, in one atomic read (#97). The supersede cleanup uses it both as
+// the revive re-check (superseded=false → skip, the run was revived under us) and to
+// learn which generation it is tearing down. Gating the generation on superseded_by in
+// a SINGLE row is load-bearing: a revive clears superseded_by and bumps
+// service_generation in one UPDATE, so reading the two separately could straddle the
+// revive and report the revived (higher) generation — which would delete the revived
+// run's fresh pods, the exact race this closes.
+func (s *Store) SupersededRunServiceGeneration(ctx context.Context, runID uuid.UUID) (generation int64, superseded bool, err error) {
+	gen, err := s.q.GetSupersededRunGeneration(ctx, pgUUID(runID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("store: superseded run generation: %w", err)
+	}
+	return gen, true, nil
+}
+
+// RunServiceGeneration returns a run's current service_generation (#97). The terminal
+// cleanup paths (API cancel, run-terminal cascade) stamp it onto the
+// CleanupRunServices frame so a rerun that revives the run into a higher generation
+// keeps its fresh pods (their generation label is > the frame's max_generation).
+func (s *Store) RunServiceGeneration(ctx context.Context, runID uuid.UUID) (int64, error) {
+	gen, err := s.q.GetRunServiceGeneration(ctx, pgUUID(runID))
+	if err != nil {
+		return 0, fmt.Errorf("store: run service generation: %w", err)
+	}
+	return gen, nil
+}
+
 // ClaimSupersedeEffects atomically claims the right to fire a superseded run's
 // external effects. claimed is true when THIS caller owns them now (fire, then call
 // MarkSupersedeEffectsDone); false when another live claim holds it or the effects

@@ -406,6 +406,7 @@ type Run struct {
 	SupersedeEffectsClaimedAt pgtype.Timestamptz
 	SupersedeEffectsAt        pgtype.Timestamptz
 	Definition                []byte
+	ServiceGeneration         int64
 }
 
 type RunGatePass struct {

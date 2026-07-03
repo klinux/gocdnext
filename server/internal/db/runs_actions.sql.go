@@ -277,6 +277,20 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 	return i, err
 }
 
+const getRunServiceGeneration = `-- name: GetRunServiceGeneration :one
+SELECT service_generation FROM runs WHERE id = $1
+`
+
+// Current service_generation of a run (#97). The terminal cleanup paths (API cancel,
+// run-terminal cascade) stamp it onto the CleanupRunServices frame so a rerun that
+// revives the run into a higher generation keeps its fresh pods.
+func (q *Queries) GetRunServiceGeneration(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, getRunServiceGeneration, id)
+	var service_generation int64
+	err := row.Scan(&service_generation)
+	return service_generation, err
+}
+
 const getRunSupersedeContext = `-- name: GetRunSupersedeContext :one
 SELECT pipeline_id, definition, ref, counter
 FROM runs
@@ -318,6 +332,23 @@ func (q *Queries) GetStageRunOrdinal(ctx context.Context, id pgtype.UUID) (int32
 	var ordinal int32
 	err := row.Scan(&ordinal)
 	return ordinal, err
+}
+
+const getSupersededRunGeneration = `-- name: GetSupersededRunGeneration :one
+SELECT service_generation FROM runs WHERE id = $1 AND superseded_by IS NOT NULL
+`
+
+// The service_generation of a run ONLY while it is still superseded (#97). Returns
+// no row once RerunJob revives it (clears superseded_by). The supersede cleanup uses
+// this as a combined "still superseded?" + "which generation am I tearing down?" read:
+// gating the generation on superseded_by IN ONE ROW is load-bearing, because a revive
+// clears superseded_by AND bumps service_generation in a single UPDATE — reading the
+// two separately could straddle the revive and tear down the revived generation's pods.
+func (q *Queries) GetSupersededRunGeneration(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, getSupersededRunGeneration, id)
+	var service_generation int64
+	err := row.Scan(&service_generation)
+	return service_generation, err
 }
 
 const insertRunGatePass = `-- name: InsertRunGatePass :exec
