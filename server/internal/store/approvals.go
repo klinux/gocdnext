@@ -257,6 +257,15 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		return ApprovalResult{}, err
 	}
 
+	// #97 cascade supersede fire: approving a gate can complete its stage and make
+	// the NEXT stage's gate reachable (a gate chain), clearing older lane siblings
+	// pending for that gate's env. Same-tx, effects via the run_superseded NOTIFY.
+	// A rejection fails the stage, so supersedeAfterCascade's success-only guard
+	// makes it a no-op there.
+	if _, err := s.supersedeAfterCascade(ctx, tx, fromPgUUID(parentRun), fromPgUUID(stageRunID), &comp); err != nil {
+		return ApprovalResult{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return ApprovalResult{}, fmt.Errorf("store: approval commit: %w", err)
 	}

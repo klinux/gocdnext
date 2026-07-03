@@ -578,6 +578,10 @@ type Querier interface {
 	// the round trip we'd otherwise need to fetch them separately.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
+	// Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
+	// cascade supersede fire. The definition is the drift-safe snapshot the run was
+	// materialised from — same source insertRunSkeleton decodes.
+	GetRunSupersedeContext(ctx context.Context, id pgtype.UUID) (GetRunSupersedeContextRow, error)
 	// For a downstream run, extracts upstream_run_id + upstream pipeline
 	// name from cause_detail JSON. Empty string / null UUID when this run
 	// was NOT triggered by an upstream material (cause is 'webhook' /
@@ -618,6 +622,9 @@ type Querier interface {
 	// the caller uses to decide whether to promote the stage. `awaiting_approval`
 	// is unfinished too: the gate hasn't decided yet, so the stage can't close.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
+	// The 0-based ordinal of a stage_run within its run. The cascade fire uses the
+	// just-completed stage's ordinal to find the NEXT stage's ready gates.
+	GetStageRunOrdinal(ctx context.Context, id pgtype.UUID) (int32, error)
 	// Everything the fanout trigger needs to identify this stage's position
 	// (pipeline + run + counter + revisions) without multiple round-trips.
 	GetStageSummary(ctx context.Context, id pgtype.UUID) (GetStageSummaryRow, error)
@@ -1552,6 +1559,10 @@ type Querier interface {
 	// renders "superseded by #N" and the Phase-2 backstop's active-marker check can
 	// exclude it. cancel_reason cites the counter (#N) only — never a branch/ref value.
 	SupersedeRun(ctx context.Context, arg SupersedeRunParams) (pgtype.UUID, error)
+	// Counters for the run.superseded audit the effects listener emits: the victim's
+	// own counter, plus the superseding run's id + counter (via superseded_by). One
+	// row only when the run is actually superseded, so a spurious NOTIFY emits nothing.
+	SupersededAuditInfo(ctx context.Context, id pgtype.UUID) (SupersededAuditInfoRow, error)
 	// Returns the tail (up to $2 lines) of a job's logs, oldest-first within the
 	// returned window, so the UI can append-only render.
 	TailLogLinesByJob(ctx context.Context, arg TailLogLinesByJobParams) ([]TailLogLinesByJobRow, error)

@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -72,29 +70,8 @@ func TestCreationFire_SupersedesOlderStage0Gate(t *testing.T) {
 	if st := f.stateOf(t, newer.RunID); st.status != "queued" {
 		t.Fatalf("newer run status = %q, want queued", st.status)
 	}
-
-	// Audit: a system-actor run.superseded targeting the older run, counters only.
-	var action string
-	var actorID *uuid.UUID
-	var metaRaw []byte
-	if err := f.pool.QueryRow(f.ctx,
-		`SELECT action, actor_id, metadata FROM audit_events WHERE target_id=$1 AND action='run.superseded'`,
-		older.RunID.String()).Scan(&action, &actorID, &metaRaw); err != nil {
-		t.Fatalf("read audit: %v", err)
-	}
-	if actorID != nil {
-		t.Fatalf("run.superseded actor_id = %v, want NULL (system)", actorID)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(metaRaw, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["by_counter"] == nil || meta["superseded_counter"] == nil {
-		t.Fatalf("audit metadata missing counters: %v", meta)
-	}
-	if s, _ := json.Marshal(meta); strings.Contains(string(s), "main") {
-		t.Fatalf("audit metadata leaks the ref: %s", s)
-	}
+	// (run.superseded audit is emitted by the effects listener off the NOTIFY, not
+	// here — covered in the scheduler suite.)
 }
 
 // The creation fire emits run_superseded (transactional NOTIFY) with the victim's
@@ -126,6 +103,43 @@ func TestCreationFire_EmitsSupersededNotify(t *testing.T) {
 	if note.Channel != SupersededRunChannel || note.Payload != older.RunID.String() {
 		t.Fatalf("notify = {chan:%s payload:%s}, want {chan:%s payload:%s}",
 			note.Channel, note.Payload, SupersededRunChannel, older.RunID)
+	}
+}
+
+// The PRIMARY case: in a build→approve→deploy pipeline the gate sits at stage 1, so
+// the creation fire doesn't cover it. Completing a run's build stage makes its
+// approve-staging gate reachable and fires the cascade supersede, clearing the older
+// lane sibling pending at that gate.
+func TestCascadeFire_SupersedesOnStageComplete(t *testing.T) {
+	f := newGateFixture(t, "cascade") // build → gate-staging → deploy-staging → gate-prod → deploy-prod
+	older := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+
+	// Drive newer's single build job (compile) to success via the real CompleteJob
+	// path so the cascade + supersedeAfterCascade run exactly as in production.
+	var jobID uuid.UUID
+	var attempt int32
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT id, attempt FROM job_runs WHERE run_id=$1 AND name='compile'`, newer.RunID).Scan(&jobID, &attempt); err != nil {
+		t.Fatalf("compile job: %v", err)
+	}
+	agentID := uuid.New()
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE job_runs SET status='running', agent_id=$2, started_at=NOW() WHERE id=$1`, jobID, agentID); err != nil {
+		t.Fatalf("assign compile: %v", err)
+	}
+	comp, ok, err := f.s.CompleteJob(f.ctx, CompleteJobInput{
+		JobRunID: jobID, Status: "success", ExpectedAgentID: agentID, ExpectedAttempt: attempt,
+	})
+	if err != nil || !ok {
+		t.Fatalf("CompleteJob: ok=%v err=%v", ok, err)
+	}
+	if !comp.StageCompleted {
+		t.Fatalf("build stage (single job) should have completed")
+	}
+
+	if st := f.stateOf(t, older.RunID); st.status != "canceled" || st.supersededBy == nil || *st.supersededBy != newer.RunID {
+		t.Fatalf("older run not superseded by the cascade fire: %+v", st)
 	}
 }
 

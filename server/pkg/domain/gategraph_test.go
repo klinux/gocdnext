@@ -75,6 +75,53 @@ func TestReadyGateEnvsAtStart(t *testing.T) {
 	}
 }
 
+func TestReadyGateEnvsAfterStage(t *testing.T) {
+	// build → approve-staging → deploy-staging → approve-prod → deploy-prod
+	p := &Pipeline{
+		Stages: []string{"build", "approve-staging", "deploy-staging", "approve-prod", "deploy-prod"},
+		Jobs: []Job{
+			{Name: "compile", Stage: "build"},
+			gate("approve-staging", "approve-staging"),
+			deploy("deploy-staging", "deploy-staging", "staging"),
+			gate("approve-prod", "approve-prod"),
+			deploy("deploy-prod", "deploy-prod", "prod"),
+		},
+	}
+	tests := []struct {
+		name         string
+		completedOrd int
+		wantEnvs     []string
+		wantReady    bool
+	}{
+		{"build done → staging gate ready", 0, []string{"staging"}, true},
+		{"deploy-staging done → prod gate ready", 2, []string{"prod"}, true},
+		{"staging gate stage done → next is a deploy, no gate", 1, nil, false},
+		{"last stage done → no next stage", 4, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			envs, ready := p.ReadyGateEnvsAfterStage(tt.completedOrd)
+			if ready != tt.wantReady || !reflect.DeepEqual(envs, tt.wantEnvs) {
+				t.Fatalf("ReadyGateEnvsAfterStage(%d) = (%v,%v), want (%v,%v)",
+					tt.completedOrd, envs, ready, tt.wantEnvs, tt.wantReady)
+			}
+		})
+	}
+
+	// A gate whose need is still in its own (not-yet-run) stage isn't ready.
+	pNeeds := &Pipeline{
+		Stages: []string{"build", "review"},
+		Jobs: []Job{
+			{Name: "compile", Stage: "build"},
+			{Name: "scan", Stage: "review"},
+			gate("approve", "review", "scan"), // needs a same-stage job → not ready after build
+		},
+	}
+	if _, ready := pNeeds.ReadyGateEnvsAfterStage(0); ready {
+		t.Fatalf("gate needing a same-stage job must not be ready after the prior stage")
+	}
+}
+
 func TestGateGraph_LinearStagingProd(t *testing.T) {
 	p := &Pipeline{
 		Stages: []string{"build", "approve-staging", "deploy-staging", "approve-prod", "deploy-prod"},

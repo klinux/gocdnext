@@ -53,6 +53,27 @@ WHERE r.pipeline_id = $1 AND r.counter < $2
               WHERE j.run_id = r.id AND j.approval_gate = true AND j.status = 'awaiting_approval')
 ORDER BY r.counter DESC;
 
+-- name: GetRunSupersedeContext :one
+-- Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
+-- cascade supersede fire. The definition is the drift-safe snapshot the run was
+-- materialised from — same source insertRunSkeleton decodes.
+SELECT r.pipeline_id, p.definition, r.ref, r.counter
+FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+WHERE r.id = $1;
+
+-- name: GetStageRunOrdinal :one
+-- The 0-based ordinal of a stage_run within its run. The cascade fire uses the
+-- just-completed stage's ordinal to find the NEXT stage's ready gates.
+SELECT ordinal FROM stage_runs WHERE id = $1;
+
+-- name: SupersededAuditInfo :one
+-- Counters for the run.superseded audit the effects listener emits: the victim's
+-- own counter, plus the superseding run's id + counter (via superseded_by). One
+-- row only when the run is actually superseded, so a spurious NOTIFY emits nothing.
+SELECT v.counter AS superseded_counter, v.superseded_by AS by_run_id, n.counter AS by_counter
+FROM runs v JOIN runs n ON n.id = v.superseded_by
+WHERE v.id = $1 AND v.superseded_by IS NOT NULL;
+
 -- name: ListRunningCancelRequestedForRun :many
 -- Running jobs of a run that carry a pending cancel intent (supersede stamped
 -- cancel_requested_at). The supersede effects listener pushes a CancelJob frame

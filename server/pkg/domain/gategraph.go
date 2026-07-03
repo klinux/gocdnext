@@ -152,6 +152,54 @@ func (p *Pipeline) ReadyGateEnvsAtStart() (envs []string, ready bool) {
 	return envs, ready
 }
 
+// ReadyGateEnvsAfterStage returns the concrete deploy envs governed by the approval
+// gates that become READY the moment the stage at completedOrdinal finishes — gates
+// in the NEXT stage whose needs are all satisfied by then (needs pointing only at
+// jobs in already-finished stages, ordinal <= completedOrdinal). Used by the #97
+// cascade supersede fire: stages run sequentially, so the frontier advances one
+// stage per completion; a gate deeper down fires when ITS predecessor completes.
+// `ready` is false when the next stage has no reachable gate (or there is no next
+// stage). Same empty-envs-but-ready semantics as ReadyGateEnvsAtStart (pure-approval
+// gate = whole-run scope).
+func (p *Pipeline) ReadyGateEnvsAfterStage(completedOrdinal int) (envs []string, ready bool) {
+	next := completedOrdinal + 1
+	if next <= 0 || next >= len(p.Stages) {
+		return nil, false
+	}
+	nextStage := p.Stages[next]
+	sidx := p.stageIndex()
+	byName := p.byName()
+	seen := make(map[string]struct{})
+	for _, j := range p.Jobs {
+		if j.Approval == nil || j.Stage != nextStage || !gateNeedsSatisfied(sidx, byName, j, completedOrdinal) {
+			continue
+		}
+		ready = true
+		for _, e := range p.GovernedEnvs(j.Name) {
+			if _, dup := seen[e]; !dup {
+				seen[e] = struct{}{}
+				envs = append(envs, e)
+			}
+		}
+	}
+	sort.Strings(envs)
+	return envs, ready
+}
+
+// gateNeedsSatisfied reports whether every direct need of gate g points at a job in
+// a stage that has already finished (ordinal <= completedOrdinal). A need on a
+// same-stage job (the gate's own stage) isn't done yet, so the gate isn't ready
+// this tick; an unknown need is treated as unsatisfied (play safe, don't fire).
+func gateNeedsSatisfied(sidx map[string]int, byName map[string]Job, g Job, completedOrdinal int) bool {
+	for _, n := range g.Needs {
+		dep, ok := byName[n]
+		if !ok || sidx[dep.Stage] > completedOrdinal {
+			return false
+		}
+	}
+	return true
+}
+
 // GoverningGates returns the sorted approval-gate job names that govern a deploy
 // to `env`. A run is cleared to deploy env once ALL of these have passed (the
 // Phase 2 marker is written only then).

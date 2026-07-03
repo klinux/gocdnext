@@ -330,6 +330,15 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 		return JobCompletion{}, false, err
 	}
 
+	// #97 cascade supersede fire: if this completion finished a stage and made a
+	// downstream approval gate reachable, clear older lane siblings pending for
+	// that gate's env — in THIS tx, so the supersede + its NOTIFY commit atomically
+	// with the completion. Effects (frames/service cleanup/audit) fire via the
+	// run_superseded NOTIFY; the caller needn't propagate the victims.
+	if _, err := s.supersedeAfterCascade(ctx, tx, fromPgUUID(row.RunID), fromPgUUID(row.StageRunID), &comp); err != nil {
+		return JobCompletion{}, false, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return JobCompletion{}, false, fmt.Errorf("store: complete job: commit: %w", err)
 	}

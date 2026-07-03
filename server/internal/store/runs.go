@@ -427,21 +427,11 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 			if err != nil {
 				return RunCreated{}, fmt.Errorf("store: supersede lane siblings: %w", err)
 			}
+			// External effects (CancelJob frames, service cleanup, run.superseded
+			// audit) fire uniformly from the scheduler's run_superseded listener,
+			// which supersedeLaneSiblings NOTIFYs per victim — no per-fire-point
+			// audit drain here (the cascade fire has none either).
 			result.Superseded = victims
-			for _, v := range victims {
-				// Audit cites counters + the superseding run id only — never a
-				// branch/ref value (same discipline as cancel_reason).
-				pendingAuditEmits = append(pendingAuditEmits, AuditEmit{
-					Action:     AuditActionRunSuperseded,
-					TargetType: "run",
-					TargetID:   v.RunID.String(),
-					Metadata: map[string]any{
-						"superseded_counter": v.Counter,
-						"by_run_id":          result.RunID.String(),
-						"by_counter":         result.Counter,
-					},
-				})
-			}
 		}
 	}
 

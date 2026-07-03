@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
 // FireSupersedeEffects fires the external side effects of a supersede-cancel that
@@ -46,6 +47,35 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 		}
 	}
 	s.cleanupSupersededServices(ctx, runID)
+	s.emitSupersedeAudit(ctx, runID)
+}
+
+// emitSupersedeAudit records the run.superseded audit once per victim, unified here
+// so BOTH fire points (creation + cascade) get identical audit off the same NOTIFY.
+// Counters + the superseding run id only — never a branch/ref value. Best-effort:
+// the superseded_by column is the durable record; a missed audit doesn't change
+// state (matches the audit posture everywhere else).
+func (s *Scheduler) emitSupersedeAudit(ctx context.Context, runID uuid.UUID) {
+	info, ok, err := s.store.SupersededAuditInfo(ctx, runID)
+	if err != nil {
+		s.log.Warn("supersede effects: audit info", "run_id", runID, "err", err)
+		return
+	}
+	if !ok {
+		return // not (or no longer) superseded — nothing to record
+	}
+	if _, err := s.store.EmitAuditEvent(ctx, store.AuditEmit{
+		Action:     store.AuditActionRunSuperseded,
+		TargetType: "run",
+		TargetID:   runID.String(),
+		Metadata: map[string]any{
+			"superseded_counter": info.SupersededCounter,
+			"by_run_id":          info.BySupersedingRunID.String(),
+			"by_counter":         info.ByCounter,
+		},
+	}); err != nil {
+		s.log.Warn("supersede effects: audit emit", "run_id", runID, "err", err)
+	}
 }
 
 // cleanupSupersededServices broadcasts CleanupRunServices to (agents that ran a

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -149,6 +150,82 @@ func (s *Store) supersedeLaneSiblings(ctx context.Context, tx pgx.Tx, in superse
 		}
 	}
 	return out, nil
+}
+
+// supersedeAfterCascade fires the #97 inline-gate supersede when a stage completion
+// just made a downstream approval gate reachable. Called by CompleteJob
+// (agent-driven) and decideGate (human-driven) AFTER cascadeAfterJobCompletion, in
+// the SAME tx, so the supersede + its NOTIFY commit atomically with the completion.
+// No-op unless a stage completed successfully, the pipeline opts into supersede, and
+// the newly-frontier stage has a ready approval gate. Returns the victims (for the
+// caller to surface/log); external effects fire via the run_superseded NOTIFY.
+//
+// The def load is gated behind comp.StageCompleted, so a job completion that doesn't
+// finish a stage (the common case) pays nothing.
+func (s *Store) supersedeAfterCascade(ctx context.Context, tx pgx.Tx, runID uuid.UUID, stageRunID uuid.UUID, comp *JobCompletion) ([]SupersededRun, error) {
+	if !comp.StageCompleted || comp.StageStatus != string(domain.StatusSuccess) {
+		return nil, nil
+	}
+	q := s.q.WithTx(tx)
+	rc, err := q.GetRunSupersedeContext(ctx, pgUUID(runID))
+	if err != nil {
+		return nil, fmt.Errorf("store: supersede cascade context: %w", err)
+	}
+	var def domain.Pipeline
+	if err := json.Unmarshal(rc.Definition, &def); err != nil {
+		return nil, fmt.Errorf("store: supersede cascade decode: %w", err)
+	}
+	if def.Supersede != domain.SupersedeBranch && def.Supersede != domain.SupersedePipeline {
+		return nil, nil
+	}
+	ordinal, err := q.GetStageRunOrdinal(ctx, pgUUID(stageRunID))
+	if err != nil {
+		return nil, fmt.Errorf("store: supersede cascade ordinal: %w", err)
+	}
+	readyEnvs, ready := def.ReadyGateEnvsAfterStage(int(ordinal))
+	if !ready {
+		return nil, nil
+	}
+	laneRef := ""
+	if def.Supersede == domain.SupersedeBranch {
+		laneRef = rc.Ref
+	}
+	return s.supersedeLaneSiblings(ctx, tx, supersedeInput{
+		PipelineID:   fromPgUUID(rc.PipelineID),
+		Ref:          laneRef,
+		LaneMode:     def.Supersede,
+		NewerRunID:   runID,
+		NewerCounter: rc.Counter,
+		ReadyEnvs:    readyEnvs,
+		Def:          def,
+	})
+}
+
+// SupersededAuditInfo returns the counters the run.superseded audit needs — the
+// victim's own counter plus the superseding run's id + counter — for a run that
+// was actually superseded. ok=false when the run has no superseded_by (a spurious
+// or stale NOTIFY emits no audit). Used by the effects listener.
+func (s *Store) SupersededAuditInfo(ctx context.Context, runID uuid.UUID) (SupersedeAuditInfo, bool, error) {
+	row, err := s.q.SupersededAuditInfo(ctx, pgUUID(runID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SupersedeAuditInfo{}, false, nil
+	}
+	if err != nil {
+		return SupersedeAuditInfo{}, false, fmt.Errorf("store: superseded audit info: %w", err)
+	}
+	return SupersedeAuditInfo{
+		SupersededCounter:  row.SupersededCounter,
+		BySupersedingRunID: fromPgUUID(row.ByRunID),
+		ByCounter:          row.ByCounter,
+	}, true, nil
+}
+
+// SupersedeAuditInfo is the counter/id trio for the run.superseded audit — never a
+// branch/ref value.
+type SupersedeAuditInfo struct {
+	SupersededCounter  int64
+	BySupersedingRunID uuid.UUID
+	ByCounter          int64
 }
 
 // ListRunningCancelRequestedForRun returns the still-running, cancel-requested

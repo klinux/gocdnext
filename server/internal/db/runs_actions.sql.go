@@ -175,6 +175,47 @@ func (q *Queries) GetRunForAction(ctx context.Context, id pgtype.UUID) (GetRunFo
 	return i, err
 }
 
+const getRunSupersedeContext = `-- name: GetRunSupersedeContext :one
+SELECT r.pipeline_id, p.definition, r.ref, r.counter
+FROM runs r JOIN pipelines p ON p.id = r.pipeline_id
+WHERE r.id = $1
+`
+
+type GetRunSupersedeContextRow struct {
+	PipelineID pgtype.UUID
+	Definition []byte
+	Ref        string
+	Counter    int64
+}
+
+// Stored pipeline definition + lane key (ref) + order (counter) for a run, for the
+// cascade supersede fire. The definition is the drift-safe snapshot the run was
+// materialised from — same source insertRunSkeleton decodes.
+func (q *Queries) GetRunSupersedeContext(ctx context.Context, id pgtype.UUID) (GetRunSupersedeContextRow, error) {
+	row := q.db.QueryRow(ctx, getRunSupersedeContext, id)
+	var i GetRunSupersedeContextRow
+	err := row.Scan(
+		&i.PipelineID,
+		&i.Definition,
+		&i.Ref,
+		&i.Counter,
+	)
+	return i, err
+}
+
+const getStageRunOrdinal = `-- name: GetStageRunOrdinal :one
+SELECT ordinal FROM stage_runs WHERE id = $1
+`
+
+// The 0-based ordinal of a stage_run within its run. The cascade fire uses the
+// just-completed stage's ordinal to find the NEXT stage's ready gates.
+func (q *Queries) GetStageRunOrdinal(ctx context.Context, id pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, getStageRunOrdinal, id)
+	var ordinal int32
+	err := row.Scan(&ordinal)
+	return ordinal, err
+}
+
 const listAwaitingGateNamesForRun = `-- name: ListAwaitingGateNamesForRun :many
 SELECT name FROM job_runs
 WHERE run_id = $1 AND approval_gate = true AND status = 'awaiting_approval'
@@ -584,4 +625,26 @@ func (q *Queries) SupersedeRun(ctx context.Context, arg SupersedeRunParams) (pgt
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const supersededAuditInfo = `-- name: SupersededAuditInfo :one
+SELECT v.counter AS superseded_counter, v.superseded_by AS by_run_id, n.counter AS by_counter
+FROM runs v JOIN runs n ON n.id = v.superseded_by
+WHERE v.id = $1 AND v.superseded_by IS NOT NULL
+`
+
+type SupersededAuditInfoRow struct {
+	SupersededCounter int64
+	ByRunID           pgtype.UUID
+	ByCounter         int64
+}
+
+// Counters for the run.superseded audit the effects listener emits: the victim's
+// own counter, plus the superseding run's id + counter (via superseded_by). One
+// row only when the run is actually superseded, so a spurious NOTIFY emits nothing.
+func (q *Queries) SupersededAuditInfo(ctx context.Context, id pgtype.UUID) (SupersededAuditInfoRow, error) {
+	row := q.db.QueryRow(ctx, supersededAuditInfo, id)
+	var i SupersededAuditInfoRow
+	err := row.Scan(&i.SupersededCounter, &i.ByRunID, &i.ByCounter)
+	return i, err
 }
