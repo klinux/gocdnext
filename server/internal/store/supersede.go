@@ -106,11 +106,23 @@ func (s *Store) supersedeLaneSiblings(ctx context.Context, tx pgx.Tx, in superse
 	// to its savepoint and is skipped, left pending for the next fire to retry (the
 	// Phase-2 backstop is the hard guarantee; Phase-1 is a best-effort pile-clear).
 	// This also kills the stale-cancel risk — an in-flight approval holds the gate
-	// row, so supersede times out and bails instead of racing its decision. Set once
-	// on the tx (SET LOCAL auto-resets at commit); it covers every victim below.
-	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '75ms'`); err != nil {
-		return nil, fmt.Errorf("store: supersede lock_timeout: %w", err)
+	// row, so supersede times out and bails instead of racing its decision. Scope
+	// it to this pass with save+restore: a fire point that keeps writing on the SAME
+	// tx after supersede must NOT inherit the short timeout (its writes would fail
+	// with 55P03 unrelated to supersede). set_config(...,true) == SET LOCAL.
+	var prevLockTimeout string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('lock_timeout')`).Scan(&prevLockTimeout); err != nil {
+		return nil, fmt.Errorf("store: supersede read lock_timeout: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '75ms'`); err != nil {
+		return nil, fmt.Errorf("store: supersede set lock_timeout: %w", err)
+	}
+	defer func() {
+		// Best-effort: on an error return the caller rolls back the whole tx, so a
+		// failed restore is harmless; on the success path this hands the outer tx
+		// back its original timeout.
+		_, _ = tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, prevLockTimeout)
+	}()
 
 	var out []SupersededRun
 	for _, c := range candidates { // already counter DESC from SQL

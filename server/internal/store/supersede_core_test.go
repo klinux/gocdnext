@@ -498,6 +498,108 @@ func TestSupersede_InFlightApprovalBails(t *testing.T) {
 	_ = txAppr.Rollback(f.ctx)
 }
 
+// The short lock_timeout supersede sets must be scoped to the pass: after
+// supersedeLaneSiblings returns, the SAME outer tx must see its original timeout so
+// later writes (fire points share the tx) don't inherit 55P03-on-contention.
+func TestSupersede_LockTimeoutRestoredOnTx(t *testing.T) {
+	f := newGateFixture(t, "suptimeout")
+	newer := f.createRun(t, "main") // lone run → zero candidates, fast path
+
+	tx, err := f.pool.BeginTx(f.ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(f.ctx) }()
+
+	if _, err := f.s.supersedeLaneSiblings(f.ctx, tx, supersedeInput{
+		PipelineID: f.pipelineID, Ref: "main", LaneMode: domain.SupersedeBranch,
+		NewerRunID: newer.RunID, NewerCounter: newer.Counter,
+		ReadyEnvs: []string{"staging"}, Def: f.def,
+	}); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	var lt string
+	if err := tx.QueryRow(f.ctx, `SELECT current_setting('lock_timeout')`).Scan(&lt); err != nil {
+		t.Fatalf("read lock_timeout: %v", err)
+	}
+	if lt != "0" {
+		t.Fatalf("lock_timeout leaked to outer tx: %q, want 0 (restored)", lt)
+	}
+}
+
+// The most delicate bail: the lock timeout fires AFTER partial terminalization —
+// the run flip + queued-stage/job cancels have run, then StampCancelRequestedAtForRun
+// blocks on a running job row another tx holds. The per-victim savepoint must roll
+// back ALL of it: run stays queued, the gate stays awaiting, nothing superseded.
+func TestSupersede_TimeoutMidTerminalizeRollsBack(t *testing.T) {
+	f := newGateFixture(t, "suprollback")
+	victim := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+
+	var compileID uuid.UUID
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT id FROM job_runs WHERE run_id=$1 AND name='compile'`, victim.RunID).Scan(&compileID); err != nil {
+		t.Fatalf("compile id: %v", err)
+	}
+	// Put the victim's compile into 'running' (committed) so StampCancelRequestedAtForRun
+	// has a row to lock during terminalization.
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE job_runs SET status='running', agent_id=$2, started_at=NOW() WHERE id=$1`,
+		compileID, uuid.New()); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+
+	// Hold the running compile row so the terminalizer blocks at the stamp step —
+	// AFTER it has already flipped the run + canceled the awaiting gate in its savepoint.
+	txHold, err := f.pool.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("begin hold tx: %v", err)
+	}
+	defer func() { _ = txHold.Rollback(f.ctx) }()
+	var held uuid.UUID
+	if err := txHold.QueryRow(f.ctx,
+		`SELECT id FROM job_runs WHERE id=$1 FOR UPDATE`, compileID).Scan(&held); err != nil {
+		t.Fatalf("hold compile row: %v", err)
+	}
+
+	type result struct {
+		victims []SupersededRun
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, e := f.runSupersedeE(newer, "main", []string{"staging"})
+		ch <- result{out, e}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("supersede errored instead of bailing: %v", r.err)
+		}
+		if len(r.victims) != 0 {
+			t.Fatalf("victims = %d, want 0 (rolled back)", len(r.victims))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("supersede hung mid-terminalize — savepoint bail not working")
+	}
+
+	// Everything the savepoint touched must be undone.
+	if st := f.stateOf(t, victim.RunID); st.status != "queued" || st.supersededBy != nil {
+		t.Fatalf("run not rolled back: %+v", st)
+	}
+	var gateStatus string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT status FROM job_runs WHERE run_id=$1 AND name='approve-staging'`, victim.RunID).Scan(&gateStatus); err != nil {
+		t.Fatalf("gate status: %v", err)
+	}
+	if gateStatus != "awaiting_approval" {
+		t.Fatalf("gate status = %q, want awaiting_approval (cancel rolled back)", gateStatus)
+	}
+	_ = txHold.Rollback(f.ctx)
+}
+
 // waitUntilBlockedBy polls until some backend is waiting on a lock held
 // specifically by blockerPID (the txSched backend), so the barrier can't be
 // satisfied by an unrelated waiter.
