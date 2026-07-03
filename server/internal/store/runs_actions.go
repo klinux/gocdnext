@@ -73,34 +73,10 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 		return CancelRunResult{}, ErrRunAlreadyTerminal
 	}
 
-	// Snapshot the set of jobs we need to push Cancel messages to
-	// BEFORE touching run/stage state. Doing it after would race
-	// the agent's own JobResult (which clears agent_id).
-	running, err := s.listRunningJobsForRun(ctx, runID)
-	if err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: list running: %w", err)
-	}
-
-	// Persist the cancel INTENT on every running job belonging to
-	// this run, BEFORE the handler tries to push CancelJob frames
-	// to their owning agents' sessions. Same posture as the
-	// job-scoped CancelJobRun: if Dispatch lands in the
-	// Revoke→Register race window for any agent, the row's
-	// cancel_requested_at survives, the agent's next Register
-	// drains it via the replay path, and the reaper finalises
-	// stragglers. Without this stamp, a CancelRun with a flaky
-	// agent fleet would leave half the jobs running and the
-	// already-canceled run with cancel-pending children — exactly
-	// the inconsistency the job-scoped fix closed.
-	if _, err := s.q.StampCancelRequestedAtForRun(ctx, pgUUID(runID)); err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: stamp pending: %w", err)
-	}
-
-	// Cancel the run row first so any racing scheduler pass sees the
-	// new status before it tries to claim the next job. CancelActiveRun
-	// is a no-op if the status moved away under us between the SELECT
-	// above and this UPDATE — the downstream stage/job cancellations
-	// are still safe because they gate on status='queued'.
+	// Cancel the run row FIRST so any racing scheduler pass sees the new
+	// status before it tries to claim the next job. CancelActiveRun is a no-op
+	// if the status moved away under us between the SELECT above and this UPDATE
+	// — the downstream stage/job cancellations still gate on status='queued'.
 	if _, err := s.q.CancelActiveRun(ctx, pgUUID(runID)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CancelRunResult{}, ErrRunAlreadyTerminal
@@ -114,34 +90,29 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 	if err := s.q.CancelQueuedJobsInRun(ctx, pgUUID(runID)); err != nil {
 		return CancelRunResult{}, fmt.Errorf("store: cancel run: jobs: %w", err)
 	}
-	return CancelRunResult{RunningJobs: running}, nil
-}
 
-// listRunningJobsForRun returns (job_run_id, agent_id) pairs for
-// every running job under a run that's actually been dispatched.
-// Raw SQL — not worth a sqlc entry for a single query that's only
-// used from CancelRun. `agent_id IS NOT NULL` guard skips queued
-// jobs that hadn't reached an agent yet; those are handled by
-// CancelQueuedJobsInRun.
-func (s *Store) listRunningJobsForRun(ctx context.Context, runID uuid.UUID) ([]RunningJobRef, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id
-		FROM job_runs
-		WHERE run_id = $1 AND status = 'running' AND agent_id IS NOT NULL
-	`, runID)
+	// Snapshot + stamp running jobs AFTER the queued cancel (review MED, mirrors
+	// supersede's terminalizer). AssignJob is a bare `status='queued'` CAS that
+	// never checks runs.status, so a job queued when we started can flip to
+	// running concurrently. Snapshotting BEFORE the cancel would miss it AND
+	// CancelQueuedJobsInRun would skip it (now running) — leaving a job executing
+	// inside a canceled run with no CancelJob frame. Canceling first forces the
+	// contention onto the shared job_runs row; by now every job is either canceled
+	// (above) or committed-running, and StampCancelRequestedAtForRun stamps the
+	// cancel intent AND RETURNS (id, agent_id) as the exact CancelJob work-list.
+	// The intent stamp is what lets a Dispatch landing in the Revoke→Register race
+	// window survive: the agent's next Register replays it, the reaper finalises
+	// stragglers. A job whose JobResult already cleared agent_id is terminal and
+	// correctly absent (it finished; no frame needed).
+	stamped, err := s.q.StampCancelRequestedAtForRun(ctx, pgUUID(runID))
 	if err != nil {
-		return nil, err
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: stamp pending: %w", err)
 	}
-	defer rows.Close()
-	var out []RunningJobRef
-	for rows.Next() {
-		var jobID, agentID uuid.UUID
-		if err := rows.Scan(&jobID, &agentID); err != nil {
-			return nil, err
-		}
-		out = append(out, RunningJobRef{JobID: jobID, AgentID: agentID})
+	running := make([]RunningJobRef, 0, len(stamped))
+	for _, r := range stamped {
+		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
 	}
-	return out, rows.Err()
+	return CancelRunResult{RunningJobs: running}, nil
 }
 
 // CancelJobRunResult surfaces what CancelJobRun did. The handler
