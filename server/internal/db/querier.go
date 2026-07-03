@@ -724,6 +724,9 @@ type Querier interface {
 	// reason — so the pipelines list can show WHICH services a run
 	// declared, not just whether it declared any. Appended last so the
 	// existing positional params keep their order.
+	// ref (migration 00065) is the supersede LANE key — the triggering branch,
+	// snapshotted at create time from the same trigger context (drift-safe like the
+	// others). Appended last so the existing positional params keep their order.
 	InsertRun(ctx context.Context, arg InsertRunParams) (InsertRunRow, error)
 	// Recompute the daily terminal-run counts for the same window the delete cleared.
 	// Bucketed by finished_at::date. runs_failed folds 'failed' + 'errored';

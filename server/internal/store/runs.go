@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -94,13 +95,23 @@ func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromM
 	if cause == "" {
 		cause = string(domain.CauseWebhook)
 	}
+	// Supersede lane key (#97): the branch, EXCEPT for a pull_request where the
+	// lane is pr:<number>. Two PRs (or forks) can share a head-ref name
+	// ("fix/foo"); keying PR runs by number keeps each PR its own lane so a new
+	// commit to PR #5 supersedes only PR #5, never PR #6.
+	laneRef := in.Branch
+	if cause == string(domain.CausePullRequest) {
+		if n, ok := base["pr_number"]; ok {
+			laneRef = fmt.Sprintf("pr:%v", n)
+		}
+	}
 	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
 		PipelineID:  in.PipelineID,
 		Cause:       cause,
 		CauseDetail: causeDetail,
 		Revisions:   revisions,
 		TriggeredBy: in.TriggeredBy,
-		Ref:         in.Branch, // supersede lane key (#97)
+		Ref:         laneRef,
 	})
 }
 
@@ -124,10 +135,16 @@ type insertRunSkeletonInput struct {
 const maxRefLen = 255
 
 func capRef(ref string) string {
-	if len(ref) > maxRefLen {
-		return ref[:maxRefLen]
+	if len(ref) <= maxRefLen {
+		return ref
 	}
-	return ref
+	// Truncate on a rune boundary — a byte cut mid-rune would emit invalid
+	// UTF-8 and Postgres would reject the TEXT insert.
+	cut := maxRefLen
+	for cut > 0 && !utf8.RuneStart(ref[cut]) {
+		cut--
+	}
+	return ref[:cut]
 }
 
 // serviceNames extracts the declared service names from a pipeline
