@@ -147,15 +147,19 @@ func (s *Store) supersedeOne(ctx context.Context, tx pgx.Tx, q *db.Queries, id u
 		return nil, nil // different environment — not superseded (staging ≠ prod)
 	}
 
-	// Snapshot running jobs BEFORE flipping state so the caller can push
-	// CancelJob frames (the agent's own JobResult clears agent_id).
-	running, err := listRunningJobsForRunTx(ctx, tx, id)
-	if err != nil {
-		return nil, fmt.Errorf("store: supersede list running: %w", err)
-	}
-	if _, err := q.StampCancelRequestedAtForRun(ctx, pgUUID(id)); err != nil {
-		return nil, fmt.Errorf("store: supersede stamp pending: %w", err)
-	}
+	// Terminalize. THE ORDER IS LOAD-BEARING (review HIGH): flip the run + cancel
+	// its queued stages/jobs BEFORE snapshotting running jobs. The scheduler's
+	// AssignJob (scheduler.sql) is a bare `status='queued' AND agent_id IS NULL`
+	// CAS that never checks runs.status and never locks the runs row — so our
+	// `runs FOR UPDATE` does NOT serialize against it. CancelQueuedJobsInRun's
+	// UPDATE contends on the same job_runs row instead: a job AssignJob won before
+	// we locked it is committed-running and surfaces in the post-cancel stamp
+	// below (→ CancelJob frame); a job we cancel first blocks a racing AssignJob,
+	// which then re-evaluates its `status='queued'` predicate against the canceled
+	// row and fails. Snapshotting FIRST reopens the gap where a job flips
+	// queued→running between snapshot and cancel and keeps executing inside a
+	// canceled run with no frame sent. (Deadlock-free: AssignJob is a single
+	// autocommit statement that never also takes the runs lock — dispatch.go.)
 	reason := fmt.Sprintf("superseded by #%d", in.NewerCounter)
 	if _, err := q.SupersedeRun(ctx, db.SupersedeRunParams{
 		ID:           pgUUID(id),
@@ -163,7 +167,7 @@ func (s *Store) supersedeOne(ctx context.Context, tx pgx.Tx, q *db.Queries, id u
 		CancelReason: &reason,
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil // lost the flip race
+			return nil, nil // can't happen under our FOR UPDATE; guarded anyway
 		}
 		return nil, fmt.Errorf("store: supersede run: %w", err)
 	}
@@ -173,29 +177,20 @@ func (s *Store) supersedeOne(ctx context.Context, tx pgx.Tx, q *db.Queries, id u
 	if err := q.CancelQueuedJobsInRun(ctx, pgUUID(id)); err != nil {
 		return nil, fmt.Errorf("store: supersede jobs: %w", err)
 	}
-	return &SupersededRun{RunID: id, Counter: counter, RunningJobs: running}, nil
-}
-
-// listRunningJobsForRunTx is the tx-scoped twin of listRunningJobsForRun.
-func listRunningJobsForRunTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID) ([]RunningJobRef, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT id, agent_id
-		FROM job_runs
-		WHERE run_id = $1 AND status = 'running' AND agent_id IS NOT NULL
-	`, runID)
+	// Snapshot AFTER cancel: one UPDATE stamps cancel_requested_at on every
+	// still-running job and RETURNS its (id, agent_id) as the CancelJob work-list.
+	// By now every job of the run is either canceled (above) or committed-running
+	// (AssignJob won the row before our cancel locked it), so this captures
+	// exactly the jobs the caller must signal — no queued→running gap left.
+	stamped, err := q.StampCancelRequestedAtForRun(ctx, pgUUID(id))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: supersede stamp pending: %w", err)
 	}
-	defer rows.Close()
-	var out []RunningJobRef
-	for rows.Next() {
-		var jobID, agentID uuid.UUID
-		if err := rows.Scan(&jobID, &agentID); err != nil {
-			return nil, err
-		}
-		out = append(out, RunningJobRef{JobID: jobID, AgentID: agentID})
+	running := make([]RunningJobRef, 0, len(stamped))
+	for _, r := range stamped {
+		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
 	}
-	return out, rows.Err()
+	return &SupersededRun{RunID: id, Counter: counter, RunningJobs: running}, nil
 }
 
 // envSetsIntersect reports whether two governed-env sets overlap. An empty set

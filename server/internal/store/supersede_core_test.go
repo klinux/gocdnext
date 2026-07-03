@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -119,13 +120,13 @@ func (f gateFixture) stateOf(t *testing.T, id uuid.UUID) runState {
 	return st
 }
 
-// runSupersede opens a tx, runs supersedeLaneSiblings for `newer` in branch mode,
-// commits, and returns the terminalized victims.
-func (f gateFixture) runSupersede(t *testing.T, newer RunCreated, ref string, readyEnvs []string) []SupersededRun {
-	t.Helper()
+// runSupersedeE opens a tx, runs supersedeLaneSiblings for `newer` in branch mode,
+// commits, and returns the victims or an error. Goroutine-safe (no t.Fatalf) so
+// concurrent tests can funnel failures through a channel to the main goroutine.
+func (f gateFixture) runSupersedeE(newer RunCreated, ref string, readyEnvs []string) ([]SupersededRun, error) {
 	tx, err := f.pool.BeginTx(f.ctx, pgx.TxOptions{})
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback(f.ctx) }()
 	out, err := f.s.supersedeLaneSiblings(f.ctx, tx, supersedeInput{
@@ -138,10 +139,20 @@ func (f gateFixture) runSupersede(t *testing.T, newer RunCreated, ref string, re
 		Def:          f.def,
 	})
 	if err != nil {
-		t.Fatalf("supersedeLaneSiblings: %v", err)
+		return nil, err
 	}
 	if err := tx.Commit(f.ctx); err != nil {
-		t.Fatalf("commit: %v", err)
+		return nil, err
+	}
+	return out, nil
+}
+
+// runSupersede is the main-goroutine wrapper that fails the test on error.
+func (f gateFixture) runSupersede(t *testing.T, newer RunCreated, ref string, readyEnvs []string) []SupersededRun {
+	t.Helper()
+	out, err := f.runSupersedeE(newer, ref, readyEnvs)
+	if err != nil {
+		t.Fatalf("supersedeLaneSiblings: %v", err)
 	}
 	return out
 }
@@ -284,11 +295,18 @@ func TestSupersede_ConcurrentNoDeadlock(t *testing.T) {
 	r4 := f.createRun(t, "main")
 
 	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
 	wg.Add(2)
 	// A supersedes for #3 (victims #2,#1); B supersedes for #4 (victims #3,#2,#1).
-	go func() { defer wg.Done(); f.runSupersede(t, r3, "main", []string{"staging"}) }()
-	go func() { defer wg.Done(); f.runSupersede(t, r4, "main", []string{"staging"}) }()
+	go func() { defer wg.Done(); _, err := f.runSupersedeE(r3, "main", []string{"staging"}); errCh <- err }()
+	go func() { defer wg.Done(); _, err := f.runSupersedeE(r4, "main", []string{"staging"}); errCh <- err }()
 	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent supersede errored (possible deadlock/abort): %v", err)
+		}
+	}
 
 	for _, r := range []RunCreated{r1, r2, r3} {
 		if st := f.stateOf(t, r.RunID); st.status != "canceled" {
@@ -298,4 +316,137 @@ func TestSupersede_ConcurrentNoDeadlock(t *testing.T) {
 	if st := f.stateOf(t, r4.RunID); st.status != "queued" {
 		t.Fatalf("newest run #%d status = %q, want queued (never a victim)", r4.Counter, st.status)
 	}
+}
+
+// The HIGH: a queued victim job that the scheduler's AssignJob flips to running
+// CONCURRENTLY with the supersede must still be terminalized — the post-cancel
+// snapshot has to return it so the caller sends a CancelJob frame. AssignJob is a
+// bare `status='queued'` CAS that never checks runs.status, so cancel-before-
+// snapshot ordering is the only thing that closes the gap; snapshot-first would
+// miss the job and leave it executing inside a canceled/superseded run.
+func TestSupersede_RacingAssignJobStillCanceled(t *testing.T) {
+	f := newGateFixture(t, "suprace3")
+	victim := f.createRun(t, "main")
+	newer := f.createRun(t, "main")
+
+	var compileID uuid.UUID
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT id FROM job_runs WHERE run_id=$1 AND name='compile'`, victim.RunID).Scan(&compileID); err != nil {
+		t.Fatalf("compile job id: %v", err)
+	}
+	agentID := uuid.New()
+
+	// Scheduler wins AssignJob on the queued job but holds the row lock uncommitted,
+	// mirroring the production UPDATE (dispatch.go / scheduler.sql AssignJob).
+	txSched, err := f.pool.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("begin sched tx: %v", err)
+	}
+	defer func() { _ = txSched.Rollback(f.ctx) }()
+	ct, err := txSched.Exec(f.ctx,
+		`UPDATE job_runs SET status='running', agent_id=$2, started_at=NOW()
+		 WHERE id=$1 AND status='queued' AND agent_id IS NULL`, compileID, agentID)
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if ct.RowsAffected() != 1 {
+		t.Fatalf("assign affected %d rows, want 1", ct.RowsAffected())
+	}
+
+	// supersede runs concurrently; CancelQueuedJobsInRun blocks on the row lock
+	// txSched holds, forcing the "AssignJob mid-terminalize" interleaving.
+	type result struct {
+		victims []SupersededRun
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		tx, e := f.pool.BeginTx(f.ctx, pgx.TxOptions{})
+		if e != nil {
+			ch <- result{err: e}
+			return
+		}
+		defer func() { _ = tx.Rollback(f.ctx) }()
+		out, e := f.s.supersedeLaneSiblings(f.ctx, tx, supersedeInput{
+			PipelineID: f.pipelineID, Ref: "main", LaneMode: domain.SupersedeBranch,
+			NewerRunID: newer.RunID, NewerCounter: newer.Counter,
+			ReadyEnvs: []string{"staging"}, Def: f.def,
+		})
+		if e != nil {
+			ch <- result{err: e}
+			return
+		}
+		if e := tx.Commit(f.ctx); e != nil {
+			ch <- result{err: e}
+			return
+		}
+		ch <- result{victims: out}
+	}()
+
+	// Deterministic barrier: wait until the supersede backend is actually blocked
+	// on txSched's row lock before we let AssignJob commit.
+	waitUntilBlocked(t, f.pool, f.ctx)
+
+	// Let AssignJob win: compile is now committed-running.
+	if err := txSched.Commit(f.ctx); err != nil {
+		t.Fatalf("commit sched: %v", err)
+	}
+
+	r := <-ch
+	if r.err != nil {
+		t.Fatalf("supersede: %v", r.err)
+	}
+	if len(r.victims) != 1 {
+		t.Fatalf("victims = %d, want 1", len(r.victims))
+	}
+	found := false
+	for _, j := range r.victims[0].RunningJobs {
+		if j.JobID == compileID {
+			found = true
+			if j.AgentID != agentID {
+				t.Fatalf("running job agent = %s, want %s", j.AgentID, agentID)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("racing AssignJob'd job %s missing from RunningJobs — would run inside a canceled run", compileID)
+	}
+
+	// The job stays running (AssignJob won the CAS) with cancel_requested_at
+	// stamped; the caller's CancelJob frame + the agent's JobResult finalize it.
+	var status string
+	var reqAt *time.Time
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT status, cancel_requested_at FROM job_runs WHERE id=$1`, compileID).Scan(&status, &reqAt); err != nil {
+		t.Fatalf("read compile: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("compile status = %q, want running (AssignJob won the CAS)", status)
+	}
+	if reqAt == nil {
+		t.Fatalf("compile cancel_requested_at not stamped — caller can't finalize the cancel")
+	}
+	if st := f.stateOf(t, victim.RunID); st.status != "canceled" || st.supersededBy == nil {
+		t.Fatalf("victim run state = %+v, want canceled + superseded_by", st)
+	}
+}
+
+// waitUntilBlocked polls until some backend is waiting on a lock held by another
+// (pg_blocking_pids). Tests here run sequentially against a freshly-truncated DB,
+// so the only lock-blocked backend is the supersede goroutine.
+func waitUntilBlocked(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
+	t.Helper()
+	for i := 0; i < 250; i++ {
+		var blocked bool
+		if err := pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0)`,
+		).Scan(&blocked); err != nil {
+			t.Fatalf("poll pg_blocking_pids: %v", err)
+		}
+		if blocked {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the supersede backend to block on the row lock")
 }
