@@ -156,19 +156,19 @@ func TestClaimSupersedeEffects_LeaseReclaim(t *testing.T) {
 		t.Fatalf("mark superseded: %v", err)
 	}
 
-	claim := func() bool {
+	claim := func() (bool, bool) {
 		t.Helper()
-		ok, err := f.s.ClaimSupersedeEffects(f.ctx, victim.RunID)
+		ok, first, err := f.s.ClaimSupersedeEffects(f.ctx, victim.RunID)
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
-		return ok
+		return ok, first
 	}
 
-	if !claim() {
-		t.Fatal("first claim should succeed")
+	if ok, first := claim(); !ok || !first {
+		t.Fatalf("first claim should succeed AND be first (ok=%v first=%v)", ok, first)
 	}
-	if claim() {
+	if ok, _ := claim(); ok {
 		t.Fatal("second claim within the lease must fail (a live claim holds it)")
 	}
 	// Backdate the claim beyond the lease → the prior claimer looks crashed.
@@ -176,8 +176,10 @@ func TestClaimSupersedeEffects_LeaseReclaim(t *testing.T) {
 		`UPDATE runs SET supersede_effects_claimed_at = NOW() - INTERVAL '10 minutes' WHERE id=$1`, victim.RunID); err != nil {
 		t.Fatalf("backdate claim: %v", err)
 	}
-	if !claim() {
-		t.Fatal("a claim past the lease must be reclaimable")
+	// A lease-expiry RECLAIM succeeds but is NOT the first claim — so the metric
+	// isn't re-counted for the same supersede event.
+	if ok, first := claim(); !ok || first {
+		t.Fatalf("reclaim past lease should succeed but NOT be first (ok=%v first=%v)", ok, first)
 	}
 	// Effects done → no further claim, even after a lease would expire.
 	if err := f.s.MarkSupersedeEffectsDone(f.ctx, victim.RunID); err != nil {
@@ -187,7 +189,7 @@ func TestClaimSupersedeEffects_LeaseReclaim(t *testing.T) {
 		`UPDATE runs SET supersede_effects_claimed_at = NOW() - INTERVAL '10 minutes' WHERE id=$1`, victim.RunID); err != nil {
 		t.Fatalf("backdate claim 2: %v", err)
 	}
-	if claim() {
+	if ok, _ := claim(); ok {
 		t.Fatal("no claim should succeed once effects are marked done")
 	}
 }

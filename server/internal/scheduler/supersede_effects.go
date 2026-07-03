@@ -33,7 +33,7 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 	// effects are permanently lost. MarkSupersedeEffectsDone at the end ends the
 	// retry loop — the idempotent audit + naturally-idempotent frames/cleanup/check
 	// keep a lease-expiry retry safe.
-	claimed, err := s.store.ClaimSupersedeEffects(ctx, runID)
+	claimed, firstClaim, err := s.store.ClaimSupersedeEffects(ctx, runID)
 	if err != nil {
 		s.log.Warn("supersede effects: claim", "run_id", runID, "err", err)
 		return
@@ -41,9 +41,13 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 	if !claimed {
 		return // another live claim owns it, or the effects already completed
 	}
-	// Exactly-once per superseded run (the claim gates it) — count it here rather
-	// than in the in-tx terminalizer, which could roll back under a lock-timeout bail.
-	metrics.RunsSuperseded.Inc()
+	// Count exactly once per supersede event: only the FIRST claim, not a
+	// lease-expiry reclaim (a run whose cleanup keeps failing gets re-claimed and
+	// re-fires effects, but must not re-count). Not in the in-tx terminalizer, which
+	// could roll back under a lock-timeout bail.
+	if firstClaim {
+		metrics.RunsSuperseded.Inc()
+	}
 
 	jobs, err := s.store.ListRunningCancelRequestedForRun(ctx, runID)
 	if err != nil {

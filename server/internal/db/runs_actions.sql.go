@@ -60,14 +60,22 @@ func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtyp
 }
 
 const claimSupersedeEffects = `-- name: ClaimSupersedeEffects :one
-UPDATE runs
+WITH cur AS (
+    SELECT runs.id AS run_id,
+           runs.supersede_effects_claimed_at AS prev_claim,
+           runs.supersede_effects_at AS effects_at,
+           runs.superseded_by AS superseded_by
+    FROM runs WHERE runs.id = $1 FOR UPDATE
+)
+UPDATE runs r
 SET supersede_effects_claimed_at = NOW()
-WHERE id = $1
-  AND superseded_by IS NOT NULL
-  AND supersede_effects_at IS NULL
-  AND (supersede_effects_claimed_at IS NULL
-       OR supersede_effects_claimed_at < NOW() - $2::INTERVAL)
-RETURNING id
+FROM cur
+WHERE r.id = cur.run_id
+  AND cur.superseded_by IS NOT NULL
+  AND cur.effects_at IS NULL
+  AND (cur.prev_claim IS NULL
+       OR cur.prev_claim < NOW() - $2::INTERVAL)
+RETURNING (cur.prev_claim IS NULL)::boolean AS first_claim
 `
 
 type ClaimSupersedeEffectsParams struct {
@@ -79,12 +87,19 @@ type ClaimSupersedeEffectsParams struct {
 // effects aren't already done AND no LIVE claim holds it — a claim older than the
 // lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
 // so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
-// duplicate audit across replicas; the returned id means "you own the effects now".
-func (q *Queries) ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (pgtype.UUID, error) {
+// duplicate audit across replicas; a returned row means "you own the effects now".
+//
+// Returns first_claim = whether this is the FIRST-ever claim (no prior claimed_at)
+// vs a lease-expiry RECLAIM. The CTE reads the pre-update claimed_at under FOR
+// UPDATE so the caller can count gocdnext_runs_superseded_total exactly once per
+// supersede event — a reclaim that re-fires effects (e.g. cleanup had no target yet)
+// must not re-count. (A run revived then re-superseded clears claimed_at, so its
+// next first claim counts again — correctly, it's a new supersede event.)
+func (q *Queries) ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error) {
 	row := q.db.QueryRow(ctx, claimSupersedeEffects, arg.ID, arg.Lease)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+	var first_claim bool
+	err := row.Scan(&first_claim)
+	return first_claim, err
 }
 
 const countPassedGates = `-- name: CountPassedGates :one

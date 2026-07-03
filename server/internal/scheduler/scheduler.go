@@ -347,6 +347,15 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
+		// releaseDeployGuard drops the lane-env advisory lock; called explicitly on
+		// EVERY exit of this iteration (lost-CAS, revision error, dispatch error,
+		// success). It is idempotent (nils the guard). It is deliberately NOT a
+		// per-iteration `defer` — that would defer to FUNCTION return and hold the
+		// lock across later iterations. A panic between acquire and release isn't
+		// handled here because there is no recover() anywhere in the scheduler path
+		// (verified), so a panic crashes the process and the OS closes the pooled
+		// conn — releasing the session-level lock. If a recover is ever added
+		// upstack, wrap the guard-holding span in a closure with its own defer.
 		var deployGuard *store.DeploymentRevisionGuard
 		releaseDeployGuard := func() {
 			if deployGuard == nil {

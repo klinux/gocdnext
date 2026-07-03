@@ -303,8 +303,10 @@ Push three commits to a branch in a minute and you get three runs, all
 parking at the same approval gate. Approving the *oldest* would then deploy
 a **stale revision** over newer ones. `supersede:` fixes this: when a newer
 run in the same lane becomes a pending contender at a gate, older pending
-runs in that lane are canceled — so at most one run waits per gate, the
-newest, and it's impossible to dispatch a stale deploy.
+runs in that lane are canceled — so the pending pile normally clears to just
+the newest. This pile-clear is best-effort (under lock contention it may skip
+a victim and retry); the **hard guarantee that a stale deploy can never ship**
+is the dispatch backstop described below.
 
 Opt in per pipeline (off by default):
 

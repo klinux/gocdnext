@@ -221,21 +221,24 @@ func (s *Store) RunStillSuperseded(ctx context.Context, runID uuid.UUID) (bool, 
 }
 
 // ClaimSupersedeEffects atomically claims the right to fire a superseded run's
-// external effects. Returns true when THIS caller owns them now (fire, then call
+// external effects. claimed is true when THIS caller owns them now (fire, then call
 // MarkSupersedeEffectsDone); false when another live claim holds it or the effects
 // already completed. A claim older than the lease is reclaimed (crashed claimer).
-func (s *Store) ClaimSupersedeEffects(ctx context.Context, runID uuid.UUID) (bool, error) {
-	_, err := s.q.ClaimSupersedeEffects(ctx, db.ClaimSupersedeEffectsParams{
+// firstClaim distinguishes the FIRST-ever claim from a lease-expiry reclaim, so the
+// caller counts gocdnext_runs_superseded_total exactly once per supersede event (a
+// reclaim that re-fires effects must not re-count).
+func (s *Store) ClaimSupersedeEffects(ctx context.Context, runID uuid.UUID) (claimed, firstClaim bool, err error) {
+	first, err := s.q.ClaimSupersedeEffects(ctx, db.ClaimSupersedeEffectsParams{
 		ID:    pgUUID(runID),
 		Lease: pgtype.Interval{Microseconds: supersedeEffectsLease.Microseconds(), Valid: true},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("store: claim supersede effects: %w", err)
+		return false, false, fmt.Errorf("store: claim supersede effects: %w", err)
 	}
-	return true, nil
+	return true, first, nil
 }
 
 // MarkSupersedeEffectsDone records that a superseded run's effects completed, ending

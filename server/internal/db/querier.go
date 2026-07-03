@@ -101,8 +101,15 @@ type Querier interface {
 	// effects aren't already done AND no LIVE claim holds it — a claim older than the
 	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
 	// so a concurrent replica/replay backs off. Exactly-one-claimer is what stops
-	// duplicate audit across replicas; the returned id means "you own the effects now".
-	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (pgtype.UUID, error)
+	// duplicate audit across replicas; a returned row means "you own the effects now".
+	//
+	// Returns first_claim = whether this is the FIRST-ever claim (no prior claimed_at)
+	// vs a lease-expiry RECLAIM. The CTE reads the pre-update claimed_at under FOR
+	// UPDATE so the caller can count gocdnext_runs_superseded_total exactly once per
+	// supersede event — a reclaim that re-fires effects (e.g. cleanup had no target yet)
+	// must not re-count. (A run revived then re-superseded clears claimed_at, so its
+	// next first claim counts again — correctly, it's a new supersede event.)
+	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error)
 	// Clears queue_reason. Called by the scheduler when a run transitions
 	// to running (predecessor finished, run is dispatchable). Also called
 	// by terminal-transition paths so a canceled-while-queued run doesn't
