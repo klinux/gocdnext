@@ -48,7 +48,11 @@ type Querier interface {
 	// runs list. Doing it in this UPDATE (vs a follow-up
 	// ClearRunQueueReason call) keeps the cancel atomic and saves a
 	// round-trip.
-	CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	// service_generation returned in the SAME UPDATE (#97): the cancel cleanup carries it
+	// as max_generation, so a rerun that revives this run into a higher generation keeps
+	// its fresh pods. Capturing it atomically with the flip to canceled (not a separate
+	// post-cancel read) closes the window where a revive bumps it before the read.
+	CancelActiveRun(ctx context.Context, id pgtype.UUID) (CancelActiveRunRow, error)
 	// Flips a single job_run to 'canceled' ONLY when it's still queued.
 	// `running` jobs go through the agent's gRPC CancelJob → JobResult
 	// path so the audit trail records the actual stop time. Returns the
@@ -606,9 +610,11 @@ type Querier interface {
 	// the round trip we'd otherwise need to fetch them separately.
 	GetRunForDispatch(ctx context.Context, id pgtype.UUID) (GetRunForDispatchRow, error)
 	GetRunProgress(ctx context.Context, runID pgtype.UUID) (GetRunProgressRow, error)
-	// Current service_generation of a run (#97). The terminal cleanup paths (API cancel,
-	// run-terminal cascade) stamp it onto the CleanupRunServices frame so a rerun that
-	// revives the run into a higher generation keeps its fresh pods.
+	// Current service_generation of a run (#97). Read INSIDE the completion tx by
+	// cascadeAfterJobCompletion so the run-terminal service cleanup carries the pre-revive
+	// generation (a rerun that revives the run into a higher generation keeps its fresh
+	// pods). The API-cancel path captures its own generation via CancelActiveRun's
+	// RETURNING; the supersede path uses GetSupersededRunGeneration.
 	GetRunServiceGeneration(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Run's OWN definition snapshot (migration 00067) + lane key (ref) + order
 	// (counter), for the cascade supersede fire and the gate-pass marker. Reads

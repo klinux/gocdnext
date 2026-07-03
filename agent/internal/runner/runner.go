@@ -7,7 +7,6 @@ package runner
 import (
 	"context"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -91,30 +90,12 @@ func New(cfg Config) *Runner {
 	return &Runner{cfg: cfg, inflight: map[string]context.CancelFunc{}}
 }
 
-// Cancel signals the in-flight job with the given ID to stop. Returns
-// true when a matching job was running (and its context was canceled),
-// false when the job had already finished or never registered. Safe to
-// call concurrently with Execute from the gRPC message dispatch loop.
-// CleanupRunServices is the runner-side entry point for the
-// server's CleanupRunServices RPC (handled in rpc/client.go).
-// Delegates to the engine and translates emitted lifecycle
-// events into ServiceLifecycle messages on the outbound gRPC
-// channel so the server can stamp stopped_at on the
-// service_runs row.
-func (r *Runner) CleanupRunServices(ctx context.Context, runID string) (int, error) {
-	emit := r.serviceLifecycleEmitter(runID)
-	// math.MaxInt64 = delete every generation: this is the run-terminal teardown
-	// (isolated mode), not a supersede cleanup, so there's no revived-run generation
-	// to preserve (#97).
-	return r.cfg.Engine.CleanupRunServices(ctx, runID, math.MaxInt64, emit)
-}
-
 // serviceLifecycleEmitter returns a callback that translates
 // engine.ServiceLifecycleEvent into a ServiceLifecycle proto
 // message and pushes it through cfg.Send (the outbound gRPC
 // channel). nil Send → noop. Returns a fresh closure per call
 // so a future per-run filter (e.g. dedup) can be added without
-// rewriting both EnsureServices and CleanupRunServices callers.
+// rewriting the EnsureServices caller.
 func (r *Runner) serviceLifecycleEmitter(runID string) func(engine.ServiceLifecycleEvent) {
 	if r.cfg.Send == nil {
 		return func(engine.ServiceLifecycleEvent) {}
@@ -136,6 +117,10 @@ func (r *Runner) serviceLifecycleEmitter(runID string) func(engine.ServiceLifecy
 	}
 }
 
+// Cancel signals the in-flight job with the given ID to stop. Returns
+// true when a matching job was running (and its context was canceled),
+// false when the job had already finished or never registered. Safe to
+// call concurrently with Execute from the gRPC message dispatch loop.
 func (r *Runner) Cancel(jobID string) bool {
 	r.inflightMu.Lock()
 	cancel, ok := r.inflight[jobID]

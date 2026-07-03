@@ -856,30 +856,55 @@ func (c *Client) serviceLifecycleAck(runID string) func(engine.ServiceLifecycleE
 // knows it dispatched the broadcast, not whether any agent
 // actually deleted anything.
 func (c *Client) runCleanup(ctx context.Context, runID string) {
-	c.cleanupMu.Lock()
-	maxGeneration := c.cleanupMaxGen[runID]
-	c.cleanupMu.Unlock()
-	defer func() {
-		c.cleanupMu.Lock()
-		delete(c.cleanupPending, runID)
-		delete(c.cleanupMaxGen, runID)
-		c.cleanupMu.Unlock()
-	}()
 	if c.cfg.Engine == nil {
 		// Boot path / DB-only mode: no engine, no cleanup to do.
-		// The pending entry still gets removed via the defer so
-		// the next message with the same runID can re-enter. No
-		// ack either — there's no result to report.
+		// The pending entry still gets removed so the next message
+		// with the same runID can re-enter. No ack — no result to report.
+		c.clearCleanupEntry(runID)
 		return
 	}
-	deleted, err := c.cfg.Engine.CleanupRunServices(ctx, runID, maxGeneration, c.serviceLifecycleAck(runID))
-	if err != nil {
-		c.log.Warn("cleanup run services failed", "run_id", runID, "err", err)
-		c.sendCleanupAck(runID, deleted, err)
-		return
+	// Loop until the generation ceiling stabilises (#97 review MED). A higher
+	// max_generation can coalesce into cleanupMaxGen WHILE this engine call is running
+	// (a post-revive terminal cleanup arriving during a supersede cleanup). enqueue
+	// keeps the pending entry, so the raised ceiling lands in the map — but the engine
+	// already got the lower value. Re-checking after each pass and re-running with the
+	// raised ceiling stops the revived generation's pods from leaking. processed starts
+	// below 0 (service_generation is always >= 0) so the first pass always runs.
+	var processed int64 = -1
+	for {
+		c.cleanupMu.Lock()
+		maxGeneration := c.cleanupMaxGen[runID]
+		if maxGeneration <= processed {
+			// No higher ceiling arrived during the last pass. Delete under the SAME
+			// lock hold as the check so a concurrent enqueue can't slip a higher
+			// ceiling in between (which would then be wiped unprocessed).
+			delete(c.cleanupPending, runID)
+			delete(c.cleanupMaxGen, runID)
+			c.cleanupMu.Unlock()
+			return
+		}
+		c.cleanupMu.Unlock()
+
+		deleted, err := c.cfg.Engine.CleanupRunServices(ctx, runID, maxGeneration, c.serviceLifecycleAck(runID))
+		if err != nil {
+			c.log.Warn("cleanup run services failed", "run_id", runID, "err", err)
+			c.sendCleanupAck(runID, deleted, err)
+			c.clearCleanupEntry(runID)
+			return
+		}
+		c.log.Info("cleanup run services", "run_id", runID, "deleted", deleted, "max_generation", maxGeneration)
+		c.sendCleanupAck(runID, deleted, nil)
+		processed = maxGeneration
 	}
-	c.log.Info("cleanup run services", "run_id", runID, "deleted", deleted)
-	c.sendCleanupAck(runID, deleted, nil)
+}
+
+// clearCleanupEntry drops a run's pending + generation-ceiling side-map entries so a
+// later CleanupRunServices for the same runID can re-enter the queue.
+func (c *Client) clearCleanupEntry(runID string) {
+	c.cleanupMu.Lock()
+	delete(c.cleanupPending, runID)
+	delete(c.cleanupMaxGen, runID)
+	c.cleanupMu.Unlock()
 }
 
 // sendCleanupAck pushes a CleanupRunServicesResult up the per-stream

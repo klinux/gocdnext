@@ -77,10 +77,6 @@ func TestSupersededRunServiceGeneration_AtomicWithReviveState(t *testing.T) {
 	if !superseded || gen != 3 {
 		t.Fatalf("while superseded: got (gen=%d, superseded=%v), want (3, true)", gen, superseded)
 	}
-	// RunServiceGeneration (the terminal-site read) returns the current gen regardless.
-	if g, err := f.s.RunServiceGeneration(f.ctx, older.RunID); err != nil || g != 3 {
-		t.Fatalf("RunServiceGeneration = (%d, %v), want (3, nil)", g, err)
-	}
 
 	// Simulate a revive clearing superseded_by: the combined read must now report NOT
 	// superseded so the cleanup skips (a separate still-superseded + generation read

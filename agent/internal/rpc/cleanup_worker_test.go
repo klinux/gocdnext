@@ -769,3 +769,62 @@ func TestEnqueueRunCleanup_CoalesceKeepsHighestGeneration(t *testing.T) {
 		t.Fatalf("pending len = %d, want 1 (coalesced to one slot)", got)
 	}
 }
+
+// TestCleanupWorker_ReprocessesHigherGenerationMidFlight pins the review MED
+// interleaving fix (#97): a higher max_generation that coalesces WHILE the lower
+// cleanup is already executing in the engine must trigger a SECOND engine pass — the
+// worker can't just discard it, or the revived generation's pods leak on the
+// post-revive terminal cleanup. Drives it deterministically with a blockable engine.
+func TestCleanupWorker_ReprocessesHigherGenerationMidFlight(t *testing.T) {
+	eng := newBlockableEngine()
+	c := rpc.New(rpc.Config{
+		ServerAddr: "ignored", AgentID: "a", Token: "t",
+		Engine: eng,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	shutdown := c.StartCleanupWorkersForTest()
+	defer shutdown()
+
+	// gen-0 cleanup: the worker picks it up and BLOCKS inside the engine call.
+	c.EnqueueRunCleanupWithGenForTest("run-x", 0)
+	select {
+	case <-eng.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gen-0 engine call never started")
+	}
+
+	// A higher-generation (post-revive terminal) cleanup coalesces mid-flight.
+	c.EnqueueRunCleanupWithGenForTest("run-x", 9)
+
+	// Release: gen-0 returns; the worker must re-run with gen 9.
+	close(eng.release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eng.finished.Load() >= 2 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	calls := eng.calls()
+	if len(calls) < 2 {
+		t.Fatalf("engine calls = %d, want >= 2 (second pass for the raised ceiling)", len(calls))
+	}
+	if calls[0].MaxGeneration != 0 {
+		t.Errorf("first pass max_generation = %d, want 0", calls[0].MaxGeneration)
+	}
+	if calls[1].MaxGeneration != 9 {
+		t.Errorf("second pass max_generation = %d, want 9 (the raised ceiling)", calls[1].MaxGeneration)
+	}
+
+	// Side-map cleared once the ceiling stabilised.
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if c.CleanupMaxGenForTest("run-x") == 0 && c.CleanupPendingLenForTest() == 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Errorf("side-map not cleared after ceiling stabilised: maxGen=%d pending=%d",
+		c.CleanupMaxGenForTest("run-x"), c.CleanupPendingLenForTest())
+}

@@ -52,6 +52,12 @@ type RunningJobRef struct {
 // room for future signals (e.g. "queued jobs we skipped").
 type CancelRunResult struct {
 	RunningJobs []RunningJobRef
+	// ServiceGeneration is the run's service_generation captured in the cancel UPDATE
+	// (#97). The cancel service cleanup carries it as max_generation so a rerun that
+	// revives the run into a higher generation keeps its fresh pods. Captured
+	// atomically with the flip to canceled — never re-read after, which could see the
+	// bumped (post-revive) value and delete the revived pods.
+	ServiceGeneration int64
 }
 
 // CancelRun marks a run and its queued/running descendants as
@@ -82,7 +88,8 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 	// status before it tries to claim the next job. CancelActiveRun is a no-op
 	// if the status moved away under us between the SELECT above and this UPDATE
 	// — the downstream stage/job cancellations still gate on status='queued'.
-	if _, err := s.q.CancelActiveRun(ctx, pgUUID(runID)); err != nil {
+	canceled, err := s.q.CancelActiveRun(ctx, pgUUID(runID))
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CancelRunResult{}, ErrRunAlreadyTerminal
 		}
@@ -117,7 +124,7 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 	for _, r := range stamped {
 		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
 	}
-	return CancelRunResult{RunningJobs: running}, nil
+	return CancelRunResult{RunningJobs: running, ServiceGeneration: canceled.ServiceGeneration}, nil
 }
 
 // CancelJobRunResult surfaces what CancelJobRun did. The handler

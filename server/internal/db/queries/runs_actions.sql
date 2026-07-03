@@ -70,9 +70,11 @@ SELECT (superseded_by IS NOT NULL)::boolean FROM runs WHERE id = $1;
 SELECT service_generation FROM runs WHERE id = $1 AND superseded_by IS NOT NULL;
 
 -- name: GetRunServiceGeneration :one
--- Current service_generation of a run (#97). The terminal cleanup paths (API cancel,
--- run-terminal cascade) stamp it onto the CleanupRunServices frame so a rerun that
--- revives the run into a higher generation keeps its fresh pods.
+-- Current service_generation of a run (#97). Read INSIDE the completion tx by
+-- cascadeAfterJobCompletion so the run-terminal service cleanup carries the pre-revive
+-- generation (a rerun that revives the run into a higher generation keeps its fresh
+-- pods). The API-cancel path captures its own generation via CancelActiveRun's
+-- RETURNING; the supersede path uses GetSupersededRunGeneration.
 SELECT service_generation FROM runs WHERE id = $1;
 
 -- name: ClaimSupersedeEffects :one
@@ -212,7 +214,11 @@ SET status = 'canceled',
     finished_at = COALESCE(finished_at, NOW()),
     queue_reason = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id;
+-- service_generation returned in the SAME UPDATE (#97): the cancel cleanup carries it
+-- as max_generation, so a rerun that revives this run into a higher generation keeps
+-- its fresh pods. Capturing it atomically with the flip to canceled (not a separate
+-- post-cancel read) closes the window where a revive bumps it before the read.
+RETURNING id, service_generation;
 
 -- name: GetJobRunForCancel :one
 -- Thin row used by the job-scoped cancel handler. Returns the

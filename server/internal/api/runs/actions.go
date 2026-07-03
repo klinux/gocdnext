@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"time"
 
@@ -50,7 +49,7 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		// disconnects after CancelRun committed the DB mutation,
 		// the cleanup needs to keep running, otherwise the pods
 		// leak. A short fixed timeout bounds the work.
-		go h.dispatchCleanupServices(runID)
+		go h.dispatchCleanupServices(runID, res.ServiceGeneration)
 		audit.Emit(r.Context(), h.log, h.store,
 			store.AuditActionRunCancel, "run", runID.String(),
 			map[string]any{"signaled_jobs": len(res.RunningJobs)})
@@ -321,7 +320,7 @@ func (h *Handler) dispatchCancel(runID uuid.UUID, jobs []store.RunningJobRef) {
 // is logged but doesn't escalate. When the target set is empty
 // OR every dispatch fails, we surface a warn-level log so the
 // operator can grep for "pods may leak".
-func (h *Handler) dispatchCleanupServices(runID uuid.UUID) {
+func (h *Handler) dispatchCleanupServices(runID uuid.UUID, maxGeneration int64) {
 	if h.dispatcher == nil {
 		return
 	}
@@ -373,22 +372,14 @@ func (h *Handler) dispatchCleanupServices(runID uuid.UUID) {
 		return
 	}
 
-	// Generation-aware cleanup (#97): delete only pods up to the run's current
-	// service generation, so a rerun that revives this run into a higher generation
-	// keeps its fresh pods. On read error, fall back to delete-all — a leaked pod is
-	// worse than the narrow revive race on a deliberate cancel (same fail-open posture
-	// as the has-services check above).
-	maxGen, err := h.store.RunServiceGeneration(ctx, runID)
-	if err != nil {
-		h.log.Warn("cancel: service-generation read failed; cleaning up all generations",
-			"run_id", runID, "err", err)
-		maxGen = math.MaxInt64
-	}
+	// Generation-aware cleanup (#97): maxGeneration was captured in the cancel UPDATE
+	// (CancelRunResult.ServiceGeneration), so it's the generation this run was canceled
+	// at — a rerun that later revives it into a higher generation keeps its fresh pods.
 	msg := &gocdnextv1.ServerMessage{
 		Kind: &gocdnextv1.ServerMessage_CleanupRunServices{
 			CleanupRunServices: &gocdnextv1.CleanupRunServices{
 				RunId:         runID.String(),
-				MaxGeneration: maxGen,
+				MaxGeneration: maxGeneration,
 			},
 		},
 	}

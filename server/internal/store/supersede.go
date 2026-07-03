@@ -239,18 +239,6 @@ func (s *Store) SupersededRunServiceGeneration(ctx context.Context, runID uuid.U
 	return gen, true, nil
 }
 
-// RunServiceGeneration returns a run's current service_generation (#97). The terminal
-// cleanup paths (API cancel, run-terminal cascade) stamp it onto the
-// CleanupRunServices frame so a rerun that revives the run into a higher generation
-// keeps its fresh pods (their generation label is > the frame's max_generation).
-func (s *Store) RunServiceGeneration(ctx context.Context, runID uuid.UUID) (int64, error) {
-	gen, err := s.q.GetRunServiceGeneration(ctx, pgUUID(runID))
-	if err != nil {
-		return 0, fmt.Errorf("store: run service generation: %w", err)
-	}
-	return gen, nil
-}
-
 // ClaimSupersedeEffects atomically claims the right to fire a superseded run's
 // external effects. claimed is true when THIS caller owns them now (fire, then call
 // MarkSupersedeEffectsDone); false when another live claim holds it or the effects

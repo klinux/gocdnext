@@ -175,6 +175,40 @@ func TestRerunJob_BumpsServiceGenerationOnRevive(t *testing.T) {
 	}
 }
 
+// TestCancelRun_CapturesServiceGeneration pins the cancel half of the HIGH fix (#97):
+// CancelRun returns the run's service_generation captured in the SAME UPDATE that flips
+// it to canceled, so the cancel service cleanup carries the pre-revive generation. A
+// value re-read after the cancel commits could see a revive's bumped value and delete
+// the revived pods.
+func TestCancelRun_CapturesServiceGeneration(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID := seedApprovalPipeline(t, pool, "cancel-gen", []string{"alice"})
+	res, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: pipelineID, MaterialID: materialID, ModificationID: 1,
+		Revision: "deadbeef", Branch: "main", Provider: "github",
+		Delivery: "t", TriggeredBy: "test",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	// Bump the generation before cancel so the assertion proves CancelRun returns the
+	// VALUE captured in the RETURNING, not just 0.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET service_generation = 4 WHERE id=$1`, res.RunID); err != nil {
+		t.Fatalf("bump gen: %v", err)
+	}
+
+	out, err := s.CancelRun(ctx, res.RunID)
+	if err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	if out.ServiceGeneration != 4 {
+		t.Errorf("CancelRun captured service_generation = %d, want 4", out.ServiceGeneration)
+	}
+}
+
 // TestRerunRun_PreservesTagCauseForCIVars is the regression for the
 // vanishing CI_TAG_NAME: a tag-triggered release run rerun via RerunRun
 // used to be demoted to cause="manual" with no tag_name, so

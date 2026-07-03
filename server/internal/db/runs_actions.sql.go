@@ -17,8 +17,13 @@ SET status = 'canceled',
     finished_at = COALESCE(finished_at, NOW()),
     queue_reason = NULL
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id
+RETURNING id, service_generation
 `
+
+type CancelActiveRunRow struct {
+	ID                pgtype.UUID
+	ServiceGeneration int64
+}
 
 // Flips a run to 'canceled' only if it was still active. Idempotent:
 // a second call on a terminal run returns no rows so the handler
@@ -30,10 +35,15 @@ RETURNING id
 // runs list. Doing it in this UPDATE (vs a follow-up
 // ClearRunQueueReason call) keeps the cancel atomic and saves a
 // round-trip.
-func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+// service_generation returned in the SAME UPDATE (#97): the cancel cleanup carries it
+// as max_generation, so a rerun that revives this run into a higher generation keeps
+// its fresh pods. Capturing it atomically with the flip to canceled (not a separate
+// post-cancel read) closes the window where a revive bumps it before the read.
+func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (CancelActiveRunRow, error) {
 	row := q.db.QueryRow(ctx, cancelActiveRun, id)
-	err := row.Scan(&id)
-	return id, err
+	var i CancelActiveRunRow
+	err := row.Scan(&i.ID, &i.ServiceGeneration)
+	return i, err
 }
 
 const cancelQueuedJobRun = `-- name: CancelQueuedJobRun :one
@@ -281,9 +291,11 @@ const getRunServiceGeneration = `-- name: GetRunServiceGeneration :one
 SELECT service_generation FROM runs WHERE id = $1
 `
 
-// Current service_generation of a run (#97). The terminal cleanup paths (API cancel,
-// run-terminal cascade) stamp it onto the CleanupRunServices frame so a rerun that
-// revives the run into a higher generation keeps its fresh pods.
+// Current service_generation of a run (#97). Read INSIDE the completion tx by
+// cascadeAfterJobCompletion so the run-terminal service cleanup carries the pre-revive
+// generation (a rerun that revives the run into a higher generation keeps its fresh
+// pods). The API-cancel path captures its own generation via CancelActiveRun's
+// RETURNING; the supersede path uses GetSupersededRunGeneration.
 func (q *Queries) GetRunServiceGeneration(ctx context.Context, id pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, getRunServiceGeneration, id)
 	var service_generation int64
