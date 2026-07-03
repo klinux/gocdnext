@@ -31,6 +31,9 @@ type File struct {
 	// runs) or "serial" (one run at a time — subsequent triggers
 	// queue behind the running one).
 	Concurrency string `yaml:"concurrency,omitempty"`
+	// Supersede: "" / "off" (default) | "branch" | "pipeline" — latest-wins
+	// for approval-gated pipelines (#97). See domain.Supersede* constants.
+	Supersede string `yaml:"supersede,omitempty"`
 	// When configures the pipeline's implicit project material (the
 	// git source bound via scm_source). Mirrors the job-level
 	// WhenDef shape. Today only `event:` is wired — drives which
