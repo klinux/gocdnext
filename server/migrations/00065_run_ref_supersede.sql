@@ -45,8 +45,9 @@ WHERE r.status IN ('queued', 'running');
 
 -- run_gate_pass records, per (run, CONCRETE deploy environment), that the run has
 -- cleared the approval gate(s) governing that environment. The dispatch backstop
--- reads it: a deploy for env E is refused when a NEWER still-active run in the lane
--- already passed the gate for E. Concrete env only (no '' wildcard) so the advisory
+-- reads it: a deploy for env E is refused when a NEWER non-canceled run in the lane
+-- (queued/running/success/failed — a superseded run is canceled, so exempt) already
+-- passed the gate for E. Concrete env only (no '' wildcard) so the advisory
 -- lock key is identical between the approve-time marker write and the dispatch
 -- guard (the TOCTOU serialization). A gate governing no deploy job writes no row.
 CREATE TABLE IF NOT EXISTS run_gate_pass (

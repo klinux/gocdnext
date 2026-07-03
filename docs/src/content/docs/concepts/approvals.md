@@ -340,8 +340,9 @@ deploy at all (a pure-approval pipeline) clears the whole pending pile.
 ### The hard guarantee
 
 Even if the pile-clear races an approval, the dispatch path is the backstop:
-a deploy is **refused** at dispatch if a newer, still-active run in the lane
-already cleared the gate for that same environment. This is fail-closed — on
+a deploy is **refused** at dispatch if a newer, non-canceled run in the lane
+(queued, running, or already deployed) has cleared the gate for that same
+environment. This is fail-closed — on
 any doubt the deploy is held, never shipped. Rollbacks are exempt (rolling
 back to an older revision is an explicit, intended action).
 
