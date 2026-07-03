@@ -374,17 +374,22 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 					Environment: deployTarget.Environment,
 				})
 				if err != nil {
+					// Fail-closed guard/infra error: the deploy is NOT dispatched.
+					metrics.SupersedeBackstopErrors.Inc()
 					s.log.Warn("scheduler: deployment guard",
 						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
 					continue
 				}
 				if status == store.DeploymentRevisionGuardLockBusy {
+					metrics.SupersedeLockBusy.Inc()
 					reason := "supersede-lock-busy:" + deployTarget.Environment
 					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
 						s.log.Warn("scheduler: set supersede lock-busy queue_reason",
 							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
 					}
-					s.log.Info("scheduler: deployment guard lock busy",
+					// Debug, not Info: fires every tick a lane-env stays contended,
+					// so a higher level would spam the log (the metric is the signal).
+					s.log.Debug("scheduler: deployment guard lock busy",
 						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
 					continue
 				}

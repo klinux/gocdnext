@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -40,6 +41,9 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 	if !claimed {
 		return // another live claim owns it, or the effects already completed
 	}
+	// Exactly-once per superseded run (the claim gates it) — count it here rather
+	// than in the in-tx terminalizer, which could roll back under a lock-timeout bail.
+	metrics.RunsSuperseded.Inc()
 
 	jobs, err := s.store.ListRunningCancelRequestedForRun(ctx, runID)
 	if err != nil {

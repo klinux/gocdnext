@@ -20,6 +20,9 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 	RetentionDroppedLogPartitions.Inc()
 	WebhookDeliveries.WithLabelValues("github", "accepted").Inc()
 	JobDurationSeconds.WithLabelValues("success").Observe(1.5)
+	RunsSuperseded.Inc()
+	SupersedeBackstopErrors.Inc()
+	SupersedeLockBusy.Inc()
 
 	resp, err := http.Get(srv.URL)
 	if err != nil {
@@ -41,6 +44,9 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 		"gocdnext_log_archive_jobs_total",
 		"gocdnext_retention_dropped_log_partitions_total",
 		"gocdnext_webhook_deliveries_total",
+		"gocdnext_runs_superseded_total",
+		"gocdnext_supersede_backstop_errors_total",
+		"gocdnext_supersede_lock_busy_total",
 		"go_goroutines",           // runtime collector wired
 		"process_resident_memory", // process collector wired
 	}
