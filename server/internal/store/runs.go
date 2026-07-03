@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -98,11 +100,12 @@ func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromM
 	// Supersede lane key (#97): the branch, EXCEPT for a pull_request where the
 	// lane is pr:<number>. Two PRs (or forks) can share a head-ref name
 	// ("fix/foo"); keying PR runs by number keeps each PR its own lane so a new
-	// commit to PR #5 supersedes only PR #5, never PR #6.
+	// commit to PR #5 supersedes only PR #5, never PR #6. A missing/malformed
+	// pr_number falls back to the branch lane rather than minting a garbage lane.
 	laneRef := in.Branch
 	if cause == string(domain.CausePullRequest) {
-		if n, ok := base["pr_number"]; ok {
-			laneRef = fmt.Sprintf("pr:%v", n)
+		if pr, ok := prLaneRef(base["pr_number"]); ok {
+			laneRef = pr
 		}
 	}
 	return s.insertRunSkeleton(ctx, insertRunSkeletonInput{
@@ -145,6 +148,48 @@ func capRef(ref string) string {
 		cut--
 	}
 	return ref[:cut]
+}
+
+// prLaneRef derives the "pr:<n>" supersede lane from a webhook's pr_number,
+// accepting only a positive INTEGER (a JSON number decodes to float64, but
+// json.Number / int / a clean decimal string are tolerated too). Anything else
+// — non-integer, zero/negative, malformed — returns ok=false so the caller
+// falls back to the branch lane instead of minting a garbage identity like
+// "pr:5.0" or "pr:abc". The lane is a correctness-critical supersede key.
+func prLaneRef(prNumber any) (string, bool) {
+	var n int64
+	switch v := prNumber.(type) {
+	case float64:
+		if v < 1 || v != math.Trunc(v) {
+			return "", false
+		}
+		n = int64(v)
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil || i < 1 {
+			return "", false
+		}
+		n = i
+	case int:
+		if v < 1 {
+			return "", false
+		}
+		n = int64(v)
+	case int64:
+		if v < 1 {
+			return "", false
+		}
+		n = v
+	case string:
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || i < 1 {
+			return "", false
+		}
+		n = i
+	default:
+		return "", false
+	}
+	return "pr:" + strconv.FormatInt(n, 10), true
 }
 
 // serviceNames extracts the declared service names from a pipeline
