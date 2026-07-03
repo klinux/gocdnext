@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,19 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// spyChecks satisfies the scheduler's checksReporter (structurally — the interface
+// is unexported) so the test can assert the supersede-cancel closes the check.
+type spyChecks struct {
+	mu        sync.Mutex
+	completed []string // "runID:status"
+}
+
+func (s *spyChecks) ReportRunCompleted(_ context.Context, runID uuid.UUID, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completed = append(s.completed, runID.String()+":"+status)
+}
 
 // FireSupersedeEffects pushes a CancelJob frame to the agent running a job of a
 // superseded run so the container stops promptly (the store already stamped
@@ -99,6 +113,27 @@ func TestFireSupersedeEffects_EmitsAudit(t *testing.T) {
 	}
 	if !strings.Contains(string(metaRaw), "by_counter") || strings.Contains(string(metaRaw), "main") {
 		t.Fatalf("audit metadata wrong (missing counters or leaks ref): %s", metaRaw)
+	}
+}
+
+// A supersede-cancel closes the run's GitHub check (the JobResult completion path
+// that normally reports it is skipped on supersede — HIGH).
+func TestFireSupersedeEffects_ClosesGithubCheck(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	spy := &spyChecks{}
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN).WithChecksReporter(spy)
+	ctx := context.Background()
+
+	runID, _ := seed(t, pool)
+	sched.FireSupersedeEffects(ctx, runID)
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	want := runID.String() + ":canceled"
+	if len(spy.completed) != 1 || spy.completed[0] != want {
+		t.Fatalf("checks.ReportRunCompleted calls = %v, want [%s]", spy.completed, want)
 	}
 }
 

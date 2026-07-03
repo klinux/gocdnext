@@ -64,6 +64,21 @@ func TestReadyGateEnvsAtStart(t *testing.T) {
 			},
 			wantEnvs: nil, wantReady: true,
 		},
+		{
+			// SHADOWED pre-gate (#97 review): stage-0 gate governs no env because a
+			// downstream gate shadows it, NOT because the pipeline lacks deploys. Must
+			// be a no-op (the prod gate fires later) — not whole-run scope.
+			name: "shadowed stage-0 pre-gate: not ready (deploy governed by a later gate)",
+			p: &Pipeline{
+				Stages: []string{"approve-security", "approve-prod", "deploy-prod"},
+				Jobs: []Job{
+					gate("approve-security", "approve-security"),
+					gate("approve-prod", "approve-prod"),
+					deploy("deploy-prod", "deploy-prod", "prod"),
+				},
+			},
+			wantEnvs: nil, wantReady: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +121,25 @@ func TestReadyGateEnvsAfterStage(t *testing.T) {
 					tt.completedOrd, envs, ready, tt.wantEnvs, tt.wantReady)
 			}
 		})
+	}
+
+	// Shadowed chain (#97 review): after build, the next stage's gate is
+	// approve-security, shadowed by approve-prod → governs no env, pipeline HAS a
+	// deploy → NOT ready (no-op). The prod gate fires when ITS stage becomes ready.
+	chain := &Pipeline{
+		Stages: []string{"build", "approve-security", "approve-prod", "deploy-prod"},
+		Jobs: []Job{
+			{Name: "compile", Stage: "build"},
+			gate("approve-security", "approve-security"),
+			gate("approve-prod", "approve-prod"),
+			deploy("deploy-prod", "deploy-prod", "prod"),
+		},
+	}
+	if _, ready := chain.ReadyGateEnvsAfterStage(0); ready { // build done → security gate ready, but shadowed
+		t.Fatalf("shadowed pre-gate must be a no-op after the prior stage")
+	}
+	if envs, ready := chain.ReadyGateEnvsAfterStage(1); !ready || !reflect.DeepEqual(envs, []string{"prod"}) {
+		t.Fatalf("after the security stage the prod gate must be ready with {prod}, got (%v,%v)", envs, ready)
 	}
 
 	// A gate whose need is still in its own (not-yet-run) stage isn't ready.

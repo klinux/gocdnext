@@ -148,6 +148,9 @@ func (p *Pipeline) ReadyGateEnvsAtStart() (envs []string, ready bool) {
 			}
 		}
 	}
+	if ready && len(envs) == 0 && p.hasGovernedDeploy() {
+		return nil, false // shadowed pre-gate — the closer deploy-governing gate fires later
+	}
 	sort.Strings(envs)
 	return envs, ready
 }
@@ -182,8 +185,27 @@ func (p *Pipeline) ReadyGateEnvsAfterStage(completedOrdinal int) (envs []string,
 			}
 		}
 	}
+	if ready && len(envs) == 0 && p.hasGovernedDeploy() {
+		return nil, false // shadowed pre-gate — the closer deploy-governing gate fires later
+	}
 	sort.Strings(envs)
 	return envs, ready
+}
+
+// hasGovernedDeploy reports whether the pipeline has any deploy job bound to an
+// environment. When false the pipeline is pure-approval: a ready gate governing no
+// env legitimately clears the whole run (one approval queue, latest-wins). When
+// true, a ready gate governing no env is SHADOWED by a downstream gate — that closer
+// gate does the supersede when it becomes ready; firing whole-run here would cancel
+// further-along runs (already past this pre-gate, pending the real deploy gate) too
+// early (#97 review). Both ready-gate resolvers treat empty-envs-but-ready this way.
+func (p *Pipeline) hasGovernedDeploy() bool {
+	for _, j := range p.Jobs {
+		if j.Deploy != nil && j.Deploy.Environment != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // gateNeedsSatisfied reports whether every direct need of gate g points at a job in

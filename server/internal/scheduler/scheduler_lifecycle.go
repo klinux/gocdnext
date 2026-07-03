@@ -77,6 +77,15 @@ func (s *Scheduler) resolveCloneTokens(ctx context.Context, materials []store.Ma
 	return out
 }
 
+// WithChecksReporter wires the GitHub Checks reporter so a supersede-cancel closes
+// the old run's check (the JobResult completion path is skipped on supersede). nil
+// = feature off; the effects listener guards on it. Pass the SAME reporter the
+// AgentService gets so both paths report to the same check runs.
+func (s *Scheduler) WithChecksReporter(r checksReporter) *Scheduler {
+	s.checks = r
+	return s
+}
+
 // WithTickInterval overrides the backstop tick. Mainly for tests.
 func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 	if d > 0 {

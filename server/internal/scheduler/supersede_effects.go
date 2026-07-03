@@ -7,6 +7,7 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // FireSupersedeEffects fires the external side effects of a supersede-cancel that
@@ -48,6 +49,14 @@ func (s *Scheduler) fireSupersedeEffects(ctx context.Context, runID uuid.UUID) {
 	}
 	s.cleanupSupersededServices(ctx, runID)
 	s.emitSupersedeAudit(ctx, runID)
+
+	// Close the run's GitHub check. Supersede terminalizes straight to canceled,
+	// skipping the JobResult path that normally reports completion — without this a
+	// check created for the old run stays in_progress forever. Nil-safe + re-reads
+	// the run's current status (canceled → conclusion=cancelled), fire-and-forget.
+	if s.checks != nil {
+		s.checks.ReportRunCompleted(ctx, runID, string(domain.StatusCanceled))
+	}
 }
 
 // emitSupersedeAudit records the run.superseded audit once per victim, unified here

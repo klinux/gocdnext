@@ -64,6 +64,19 @@ type Scheduler struct {
 	// fail dispatch loud (configuration error, same contract as
 	// secrets/artifacts above).
 	idTokens IDTokenMinter
+
+	// checks closes a superseded run's GitHub check (the JobResult path that
+	// normally reports run completion is skipped on supersede). nil = GitHub
+	// checks disabled; the effects listener guards on it. Interface (not the
+	// concrete *checks.Reporter) so tests can spy.
+	checks checksReporter
+}
+
+// checksReporter is the slice of the GitHub checks reporter the supersede effects
+// need. *checks.Reporter satisfies it. Kept minimal + local so the scheduler
+// doesn't hard-depend on the checks package's full surface and tests can fake it.
+type checksReporter interface {
+	ReportRunCompleted(ctx context.Context, runID uuid.UUID, status string)
 }
 
 func (s *Scheduler) DispatchRun(ctx context.Context, runID uuid.UUID) {
