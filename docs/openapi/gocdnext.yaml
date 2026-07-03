@@ -2007,6 +2007,15 @@ components:
         # services without the per-run /services fetch. Defaulted to
         # an empty array, so not listed under `required`.
         service_names: { type: array, items: { type: string } }
+        # Reason a run was canceled. For a supersede (#97) it's
+        # "superseded by #N" (counter only) — clients render it as a
+        # muted "superseded by #N" badge. Absent for non-canceled runs.
+        cancel_reason: { type: string }
+        # Id of the newer run that superseded this one (#97). Present
+        # only for a supersede-cancel; may be absent even when
+        # cancel_reason is set if the winning run was garbage-collected
+        # (ON DELETE SET NULL). Lets the badge link to the winner.
+        superseded_by: { type: string, format: uuid }
         git_ref: { type: string, nullable: true }
         commit_sha: { type: string, nullable: true }
         triggered_by: { type: string, nullable: true }
