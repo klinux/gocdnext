@@ -400,18 +400,6 @@ type Run struct {
 	HasServices bool
 	// Snapshot of pipeline.definition->Services names at run create. Mirrors has_services; immutable post-insert.
 	ServiceNames []string
-	Ref          string
-	SupersededBy pgtype.UUID
-	CancelReason *string
-}
-
-type RunGatePass struct {
-	RunID       pgtype.UUID
-	PipelineID  pgtype.UUID
-	Ref         string
-	Counter     int64
-	Environment string
-	PassedAt    pgtype.Timestamptz
 }
 
 type RunnerProfile struct {

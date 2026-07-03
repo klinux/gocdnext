@@ -23,7 +23,6 @@ type CreateRunFromUpstreamInput struct {
 	UpstreamRunCounter   int64
 	UpstreamPipelineName string
 	UpstreamStageName    string
-	UpstreamRef          string
 
 	// UpstreamRevisions is the raw JSONB from runs.revisions. Shallow-merged
 	// into the downstream run so shared materials propagate the same commit —
@@ -71,7 +70,6 @@ func (s *Store) CreateRunFromUpstream(ctx context.Context, in CreateRunFromUpstr
 		Cause:       string(domain.CauseUpstream),
 		CauseDetail: causeDetail,
 		Revisions:   revisions,
-		Ref:         in.UpstreamRef,
 		TriggeredBy: "system:upstream",
 	})
 	if err != nil {
@@ -116,7 +114,6 @@ func (s *Store) FanoutFromStage(ctx context.Context, stageRunID uuid.UUID) ([]Fa
 			UpstreamRunCounter:   summary.Counter,
 			UpstreamPipelineName: summary.PipelineName,
 			UpstreamStageName:    summary.StageName,
-			UpstreamRef:          summary.UpstreamRef,
 			UpstreamRevisions:    summary.Revisions,
 		})
 		if err != nil {

@@ -18,7 +18,7 @@ ORDER BY down.name;
 -- Everything the fanout trigger needs to identify this stage's position
 -- (pipeline + run + counter + revisions) without multiple round-trips.
 SELECT s.id AS stage_run_id, s.name AS stage_name,
-       r.id AS run_id, r.pipeline_id, r.counter, r.revisions, r.ref AS upstream_ref,
+       r.id AS run_id, r.pipeline_id, r.counter, r.revisions,
        p.name AS pipeline_name
 FROM stage_runs s
 JOIN runs r ON r.id = s.run_id
