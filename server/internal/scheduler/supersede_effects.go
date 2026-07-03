@@ -155,6 +155,18 @@ func (s *Scheduler) cleanupSupersededServices(ctx context.Context, runID uuid.UU
 	// new pods. If it's no longer superseded, skip (resolved: nothing to clean). On a
 	// re-check error, return not-resolved so the replay retries rather than risk
 	// deleting a live run's pods.
+	//
+	// KNOWN LIMITATION (#97): this NARROWS but does not fully close the race. The
+	// CleanupRunServices frame carries only run_id and is delivered + processed
+	// asynchronously by the agent (label-delete by run_id), so a revive that lands
+	// AFTER this check but BEFORE the agent processes the frame can still lose its
+	// new pods. Reachable only for a superseded run with LIVE services that is then
+	// rerun — narrow, and recoverable (the revived run's services die and the job is
+	// rerun). The robust fix is a generation-aware cleanup: add a created_before
+	// timestamp to CleanupRunServices and have the k8s engine delete only pods with
+	// CreationTimestamp < created_before (new pods survive). Deferred as a follow-up
+	// (proto + agent engine change); waiting on effects_at alone is insufficient —
+	// it means "frame delivered", not "cleanup executed".
 	stillSuperseded, err := s.store.RunStillSuperseded(ctx, runID)
 	if err != nil {
 		s.log.Warn("supersede effects: revive re-check failed; skipping cleanup this pass", "run_id", runID, "err", err)
