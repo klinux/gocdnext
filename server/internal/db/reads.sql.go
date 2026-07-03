@@ -361,6 +361,7 @@ func (q *Queries) LatestRunMetaPerProject(ctx context.Context) ([]LatestRunMetaP
 const latestRunPerPipelineByProjectSlug = `-- name: LatestRunPerPipelineByProjectSlug :many
 SELECT DISTINCT ON (r.pipeline_id)
   r.pipeline_id, r.id, r.counter, r.cause, r.status,
+  r.cancel_reason, r.superseded_by,
   r.created_at, r.started_at, r.finished_at, r.triggered_by,
   r.has_services, r.service_names
 FROM runs r
@@ -376,6 +377,8 @@ type LatestRunPerPipelineByProjectSlugRow struct {
 	Counter      int64
 	Cause        string
 	Status       string
+	CancelReason *string
+	SupersededBy pgtype.UUID
 	CreatedAt    pgtype.Timestamptz
 	StartedAt    pgtype.Timestamptz
 	FinishedAt   pgtype.Timestamptz
@@ -410,6 +413,8 @@ func (q *Queries) LatestRunPerPipelineByProjectSlug(ctx context.Context, slug st
 			&i.Counter,
 			&i.Cause,
 			&i.Status,
+			&i.CancelReason,
+			&i.SupersededBy,
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,

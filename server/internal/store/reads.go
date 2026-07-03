@@ -693,6 +693,8 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Status:       lr.Status,
 			HasServices:  lr.HasServices,
 			ServiceNames: lr.ServiceNames,
+			CancelReason: stringValue(lr.CancelReason),
+			SupersededBy: pgUUIDPtr(lr.SupersededBy),
 			CreatedAt:    lr.CreatedAt.Time,
 			StartedAt:    pgTimePtr(lr.StartedAt),
 			FinishedAt:   pgTimePtr(lr.FinishedAt),

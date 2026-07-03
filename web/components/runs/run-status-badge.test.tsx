@@ -22,6 +22,19 @@ describe("RunStatusBadge", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 
+  it("omits the winner link when linkWinner is false (inside a row-link)", () => {
+    render(
+      <RunStatusBadge
+        status="canceled"
+        cancelReason="superseded by #5"
+        supersededBy="run-5-id"
+        linkWinner={false}
+      />,
+    );
+    expect(screen.getByText("superseded by #5")).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
   it("renders the normal status badge for a live run", () => {
     render(<RunStatusBadge status="running" />);
     expect(screen.getByText(/running/i)).toBeTruthy();

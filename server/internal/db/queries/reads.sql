@@ -187,6 +187,7 @@ ORDER BY run_id, ordinal;
 -- can label them without that fetch.
 SELECT DISTINCT ON (r.pipeline_id)
   r.pipeline_id, r.id, r.counter, r.cause, r.status,
+  r.cancel_reason, r.superseded_by,
   r.created_at, r.started_at, r.finished_at, r.triggered_by,
   r.has_services, r.service_names
 FROM runs r

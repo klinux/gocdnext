@@ -10,6 +10,9 @@ type Props = {
   cancelReason?: string;
   supersededBy?: string;
   className?: string;
+  // When false, never wrap the superseded badge in a link — use inside a row that is
+  // ALREADY a link (avoids nesting <a> in <a>). Default true.
+  linkWinner?: boolean;
 };
 
 // RunStatusBadge renders the normal run-status badge, EXCEPT for a supersede-canceled
@@ -22,6 +25,7 @@ export function RunStatusBadge({
   cancelReason,
   supersededBy,
   className,
+  linkWinner = true,
 }: Props) {
   const superseded =
     status === "canceled" && (Boolean(supersededBy) || Boolean(cancelReason));
@@ -43,7 +47,7 @@ export function RunStatusBadge({
     </Badge>
   );
 
-  if (!supersededBy) {
+  if (!supersededBy || !linkWinner) {
     return badge;
   }
   return (
