@@ -101,15 +101,18 @@ func TestCreateRunFromModification_CreatesRunStagesJobs(t *testing.T) {
 		t.Fatalf("jobs = %d, want 2", len(got.JobRuns))
 	}
 
-	var status, cause string
+	var status, cause, ref string
 	var revisions []byte
 	if err := pool.QueryRow(ctx,
-		`SELECT status, cause, revisions FROM runs WHERE id = $1`, got.RunID,
-	).Scan(&status, &cause, &revisions); err != nil {
+		`SELECT status, cause, ref, revisions FROM runs WHERE id = $1`, got.RunID,
+	).Scan(&status, &cause, &ref, &revisions); err != nil {
 		t.Fatalf("run row: %v", err)
 	}
 	if status != "queued" || cause != "webhook" {
 		t.Fatalf("run status=%s cause=%s", status, cause)
+	}
+	if got.Ref != "main" || ref != "main" {
+		t.Fatalf("run ref result=%q row=%q, want main", got.Ref, ref)
 	}
 	var revMap map[string]any
 	_ = json.Unmarshal(revisions, &revMap)

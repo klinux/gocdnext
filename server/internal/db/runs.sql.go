@@ -114,11 +114,11 @@ func (q *Queries) InsertJobRun(ctx context.Context, arg InsertJobRunParams) (Ins
 const insertRun = `-- name: InsertRun :one
 INSERT INTO runs (
     pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
-    has_services, service_names
+    has_services, service_names, ref
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6, $7, $8
+    $1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9
 )
-RETURNING id, pipeline_id, counter, cause, status, created_at
+RETURNING id, pipeline_id, counter, cause, status, ref, created_at
 `
 
 type InsertRunParams struct {
@@ -130,6 +130,7 @@ type InsertRunParams struct {
 	TriggeredBy  *string
 	HasServices  bool
 	ServiceNames []string
+	Ref          string
 }
 
 type InsertRunRow struct {
@@ -138,6 +139,7 @@ type InsertRunRow struct {
 	Counter    int64
 	Cause      string
 	Status     string
+	Ref        string
 	CreatedAt  pgtype.Timestamptz
 }
 
@@ -166,6 +168,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRun
 		arg.TriggeredBy,
 		arg.HasServices,
 		arg.ServiceNames,
+		arg.Ref,
 	)
 	var i InsertRunRow
 	err := row.Scan(
@@ -174,6 +177,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (InsertRun
 		&i.Counter,
 		&i.Cause,
 		&i.Status,
+		&i.Ref,
 		&i.CreatedAt,
 	)
 	return i, err

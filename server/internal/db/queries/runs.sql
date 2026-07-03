@@ -35,11 +35,11 @@ WHERE pipeline_id = $1;
 -- existing positional params keep their order.
 INSERT INTO runs (
     pipeline_id, counter, cause, cause_detail, status, revisions, triggered_by,
-    has_services, service_names
+    has_services, service_names, ref
 ) VALUES (
-    $1, $2, $3, $4, 'queued', $5, $6, $7, $8
+    $1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9
 )
-RETURNING id, pipeline_id, counter, cause, status, created_at;
+RETURNING id, pipeline_id, counter, cause, status, ref, created_at;
 
 -- name: InsertStageRun :one
 INSERT INTO stage_runs (run_id, name, ordinal)

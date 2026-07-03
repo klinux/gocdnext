@@ -58,6 +58,7 @@ type JobRunRef struct {
 type RunCreated struct {
 	RunID     uuid.UUID
 	Counter   int64
+	Ref       string
 	StageRuns []StageRunRef
 	JobRuns   []JobRunRef
 }
@@ -110,6 +111,10 @@ type insertRunSkeletonInput struct {
 	Cause       string
 	CauseDetail json.RawMessage
 	Revisions   json.RawMessage
+	// Ref overrides the branch lane derived from Revisions. Fan-out uses it to
+	// carry the upstream run's lane without polluting the synthetic upstream
+	// material entry (whose revision is a run UUID, not a commit SHA).
+	Ref         string
 	TriggeredBy string
 }
 
@@ -127,6 +132,33 @@ func serviceNames(def domain.Pipeline) []string {
 		names = append(names, svc.Name)
 	}
 	return names
+}
+
+// runRefFromRevisions derives the branch lane key stamped onto runs.ref for
+// branch-scoped supersede. It intentionally mirrors scheduler.primaryRevision's
+// "first non-empty branch by material key" rule so upstream material entries
+// (which carry branch="") don't steal the lane from the real git checkout.
+func runRefFromRevisions(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var parsed map[string]struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return ""
+	}
+	keys := make([]string, 0, len(parsed))
+	for k := range parsed {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if branch := strings.TrimSpace(parsed[k].Branch); branch != "" {
+			return branch
+		}
+	}
+	return ""
 }
 
 // insertRunSkeleton runs the full "create run + stages + jobs + NOTIFY" dance
@@ -163,6 +195,10 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	// stages/jobs we materialise below. Without this care, READ
 	// COMMITTED would let two SELECTs against pipelines.definition
 	// return different values within the same store call.
+	ref := strings.TrimSpace(in.Ref)
+	if ref == "" {
+		ref = runRefFromRevisions(in.Revisions)
+	}
 	runRow, err := q.InsertRun(ctx, db.InsertRunParams{
 		PipelineID:   pipelineRow.ID,
 		Counter:      counter,
@@ -172,12 +208,13 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		TriggeredBy:  nullableString(in.TriggeredBy),
 		HasServices:  len(def.Services) > 0,
 		ServiceNames: serviceNames(def),
+		Ref:          ref,
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)
 	}
 
-	result := RunCreated{RunID: fromPgUUID(runRow.ID), Counter: runRow.Counter}
+	result := RunCreated{RunID: fromPgUUID(runRow.ID), Counter: runRow.Counter, Ref: runRow.Ref}
 
 	// pendingAuditEmits is filled inside the gate-materialisation
 	// loop and drained AFTER tx.Commit. Audit must not couple the

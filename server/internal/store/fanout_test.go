@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
@@ -173,6 +174,54 @@ func TestFanoutFromStage_TriggersDownstreams(t *testing.T) {
 		if upstreamRunID != coreRunID.String() {
 			t.Fatalf("downstream %s has upstream_run_id=%q, want %s",
 				tr.DownstreamPipelineID, upstreamRunID, coreRunID)
+		}
+	}
+}
+
+func TestFanoutFromStage_PropagatesRunRefWithoutPollutingUpstreamMaterial(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	coreID, _, _, coreMat := seedFanoutProject(t, pool)
+	coreRunID, testStageID := completeUpstreamTestStage(t, pool, coreID, coreMat)
+
+	triggered, err := s.FanoutFromStage(ctx, testStageID)
+	if err != nil {
+		t.Fatalf("fanout: %v", err)
+	}
+	if len(triggered) == 0 {
+		t.Fatal("fanout produced no downstream runs")
+	}
+
+	for _, tr := range triggered {
+		if tr.Run.Ref != "main" {
+			t.Fatalf("downstream %s result ref = %q, want main", tr.DownstreamPipelineID, tr.Run.Ref)
+		}
+		var ref string
+		var raw []byte
+		if err := pool.QueryRow(ctx,
+			`SELECT ref, revisions FROM runs WHERE id = $1`, tr.Run.RunID,
+		).Scan(&ref, &raw); err != nil {
+			t.Fatalf("downstream row: %v", err)
+		}
+		if ref != "main" {
+			t.Fatalf("downstream %s row ref = %q, want main", tr.DownstreamPipelineID, ref)
+		}
+
+		var revs map[string]struct {
+			Revision string `json:"revision"`
+			Branch   string `json:"branch"`
+		}
+		if err := json.Unmarshal(raw, &revs); err != nil {
+			t.Fatalf("decode revisions: %v", err)
+		}
+		upstreamMaterial := revs[tr.DownstreamMaterialID.String()]
+		if upstreamMaterial.Revision != coreRunID.String() {
+			t.Fatalf("upstream material revision = %q, want %s", upstreamMaterial.Revision, coreRunID)
+		}
+		if upstreamMaterial.Branch != "" {
+			t.Fatalf("upstream material branch = %q, want empty so CI_COMMIT_SHA never picks a run UUID", upstreamMaterial.Branch)
 		}
 	}
 }

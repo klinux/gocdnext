@@ -11,6 +11,28 @@ import (
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
+func TestGetRunForDispatch_CarriesRunRef(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	in := baseTriggerInput(pipelineID, materialID, 1)
+	in.Branch = "release/2026.07"
+	res, err := s.CreateRunFromModification(ctx, in)
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	run, err := s.GetRunForDispatch(ctx, res.RunID)
+	if err != nil {
+		t.Fatalf("GetRunForDispatch: %v", err)
+	}
+	if run.Ref != "release/2026.07" {
+		t.Fatalf("run.Ref = %q, want release/2026.07", run.Ref)
+	}
+}
+
 func TestListDispatchableJobs_ReturnsActiveStageOnly(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

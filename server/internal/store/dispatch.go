@@ -63,8 +63,12 @@ type RunForDispatch struct {
 	Counter     int64
 	Status      string
 	Revisions   json.RawMessage
-	Definition  json.RawMessage
-	ConfigPath  string
+	// Ref is the lane key stamped on run creation. For branch-scoped
+	// supersede it is the branch name; for tag/manual/no-branch runs it is
+	// empty and all such runs share the pipeline lane.
+	Ref        string
+	Definition json.RawMessage
+	ConfigPath string
 	// ProjectNotifications is the owning project's notifications
 	// JSONB, pulled in the same round-trip as Definition so the
 	// synth-notification dispatch path can fall back to it when
@@ -358,6 +362,7 @@ func (s *Store) GetRunForDispatch(ctx context.Context, runID uuid.UUID) (RunForD
 		Counter:              row.Counter,
 		Status:               row.Status,
 		Revisions:            row.Revisions,
+		Ref:                  row.Ref,
 		Definition:           row.Definition,
 		ConfigPath:           row.ConfigPath,
 		ProjectNotifications: row.ProjectNotifications,
