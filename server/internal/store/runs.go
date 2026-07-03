@@ -63,6 +63,11 @@ type RunCreated struct {
 	Counter   int64
 	StageRuns []StageRunRef
 	JobRuns   []JobRunRef
+	// Superseded lists older lane siblings this run's creation-time supersede
+	// pass canceled (#97, empty unless supersede is on and a stage-0 gate is
+	// ready). The caller fires the external effects post-commit — CancelJob
+	// frames to RunningJobs, service cleanup — mirroring CancelRunResult.
+	Superseded []SupersededRun
 }
 
 // CreateRunFromModification materializes a queued run triggered by a matched
@@ -387,6 +392,49 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				Name:       job.Name,
 				MatrixKey:  key,
 			})
+		}
+	}
+
+	// #97 supersede fire point (creation). If this pipeline opts in AND the new
+	// run is now a pending contender at a stage-0 approval gate, clear older lane
+	// siblings pending for the same env. Stage-0 gates are the only gates "ready"
+	// at creation (nothing precedes them); inline gates fire later from the
+	// completion cascade. Guarded by the cheap Supersede check so non-opted
+	// pipelines pay nothing. supersedeLaneSiblings runs in THIS tx (atomic DB
+	// terminalization); external effects fire post-commit off result.Superseded.
+	if def.Supersede == domain.SupersedeBranch || def.Supersede == domain.SupersedePipeline {
+		if readyEnvs, ready := def.ReadyGateEnvsAtStart(); ready {
+			laneRef := ""
+			if def.Supersede == domain.SupersedeBranch {
+				laneRef = capRef(in.Ref)
+			}
+			victims, err := s.supersedeLaneSiblings(ctx, tx, supersedeInput{
+				PipelineID:   in.PipelineID,
+				Ref:          laneRef,
+				LaneMode:     def.Supersede,
+				NewerRunID:   result.RunID,
+				NewerCounter: result.Counter,
+				ReadyEnvs:    readyEnvs,
+				Def:          def,
+			})
+			if err != nil {
+				return RunCreated{}, fmt.Errorf("store: supersede lane siblings: %w", err)
+			}
+			result.Superseded = victims
+			for _, v := range victims {
+				// Audit cites counters + the superseding run id only — never a
+				// branch/ref value (same discipline as cancel_reason).
+				pendingAuditEmits = append(pendingAuditEmits, AuditEmit{
+					Action:     AuditActionRunSuperseded,
+					TargetType: "run",
+					TargetID:   v.RunID.String(),
+					Metadata: map[string]any{
+						"superseded_counter": v.Counter,
+						"by_run_id":          result.RunID.String(),
+						"by_counter":         result.Counter,
+					},
+				})
+			}
 		}
 	}
 

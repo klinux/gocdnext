@@ -12,6 +12,69 @@ func deploy(name, stage, env string, needs ...string) Job {
 	return Job{Name: name, Stage: stage, Needs: needs, Deploy: &DeploySpec{Environment: env}}
 }
 
+func TestReadyGateEnvsAtStart(t *testing.T) {
+	tests := []struct {
+		name      string
+		p         *Pipeline
+		wantEnvs  []string
+		wantReady bool
+	}{
+		{
+			name: "gate-first pipeline: stage-0 staging gate is ready",
+			p: &Pipeline{
+				Stages: []string{"approve-staging", "deploy-staging", "approve-prod", "deploy-prod"},
+				Jobs: []Job{
+					gate("approve-staging", "approve-staging"),
+					deploy("deploy-staging", "deploy-staging", "staging"),
+					gate("approve-prod", "approve-prod"),
+					deploy("deploy-prod", "deploy-prod", "prod"),
+				},
+			},
+			wantEnvs: []string{"staging"}, wantReady: true, // prod gate is stage 2, NOT ready at start
+		},
+		{
+			name: "build-first pipeline: stage-0 has no gate → not ready",
+			p: &Pipeline{
+				Stages: []string{"build", "approve-staging", "deploy-staging"},
+				Jobs: []Job{
+					{Name: "compile", Stage: "build"},
+					gate("approve-staging", "approve-staging"),
+					deploy("deploy-staging", "deploy-staging", "staging"),
+				},
+			},
+			wantEnvs: nil, wantReady: false,
+		},
+		{
+			name: "stage-0 gate with needs → not ready at start",
+			p: &Pipeline{
+				Stages: []string{"first", "deploy-prod"},
+				Jobs: []Job{
+					{Name: "seed", Stage: "first"},
+					gate("approve", "first", "seed"), // needs seed → not reachable at creation
+					deploy("deploy-prod", "deploy-prod", "prod"),
+				},
+			},
+			wantEnvs: nil, wantReady: false,
+		},
+		{
+			name: "pure-approval stage-0 gate: ready, governs no deploy (whole-run scope)",
+			p: &Pipeline{
+				Stages: []string{"approve"},
+				Jobs:   []Job{gate("approve", "approve")},
+			},
+			wantEnvs: nil, wantReady: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			envs, ready := tt.p.ReadyGateEnvsAtStart()
+			if ready != tt.wantReady || !reflect.DeepEqual(envs, tt.wantEnvs) {
+				t.Fatalf("ReadyGateEnvsAtStart() = (%v, %v), want (%v, %v)", envs, ready, tt.wantEnvs, tt.wantReady)
+			}
+		})
+	}
+}
+
 func TestGateGraph_LinearStagingProd(t *testing.T) {
 	p := &Pipeline{
 		Stages: []string{"build", "approve-staging", "deploy-staging", "approve-prod", "deploy-prod"},

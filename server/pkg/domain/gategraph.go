@@ -120,6 +120,38 @@ func (p *Pipeline) GovernedEnvs(gateName string) []string {
 	return out
 }
 
+// ReadyGateEnvsAtStart returns the concrete deploy envs governed by the approval
+// gates that are READY the instant a run is created — gates in the first stage with
+// no unmet needs (nothing precedes them). Used by the #97 creation supersede fire:
+// a new run pending at such a gate clears older lane siblings pending for the same
+// env. `ready` is false when the run has NO gate ready at creation (fire nothing);
+// `ready` true with an EMPTY env set means the ready gate governs no deploy — a
+// whole-run pile-clear scope, distinct from "no ready gate". Inline gates (later
+// stages) become ready mid-run and fire from the completion cascade instead.
+func (p *Pipeline) ReadyGateEnvsAtStart() (envs []string, ready bool) {
+	if len(p.Stages) == 0 {
+		return nil, false
+	}
+	first := p.Stages[0]
+	seen := make(map[string]struct{})
+	for _, j := range p.Jobs {
+		// A gate with any needs can't be ready at creation — nothing has run yet,
+		// so no need is satisfied. Only a needs-free first-stage gate is reachable.
+		if j.Approval == nil || j.Stage != first || len(j.Needs) > 0 {
+			continue
+		}
+		ready = true
+		for _, e := range p.GovernedEnvs(j.Name) {
+			if _, dup := seen[e]; !dup {
+				seen[e] = struct{}{}
+				envs = append(envs, e)
+			}
+		}
+	}
+	sort.Strings(envs)
+	return envs, ready
+}
+
 // GoverningGates returns the sorted approval-gate job names that govern a deploy
 // to `env`. A run is cleared to deploy env once ALL of these have passed (the
 // Phase 2 marker is written only then).
