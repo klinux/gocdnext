@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.71.1 — 2026-07-04
+
+### Fixed
+
+- **Pipelines toolbar no longer wraps/misaligns at narrower widths (e.g. a
+  MacBook's default resolution).** The DURATION trend pill plus a fixed-width
+  search formed an `ml-auto` cluster inside a wrapping flex row, so below a certain
+  content width the whole cluster dropped to a second, right-aligned line. The
+  cluster now flexes into the row and the search is elastic (shrinks, capped at
+  16rem), keeping the toolbar on one line; wide screens and mobile are unchanged.
+
 ## v0.71.0 — 2026-07-03
 
 ### Added
