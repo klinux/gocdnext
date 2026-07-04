@@ -8,6 +8,40 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.71.0 — 2026-07-03
+
+### Added
+
+- **Latest-wins supersede for approval-gated pipelines (#97).** Opt-in per
+  pipeline via `supersede: off | branch | pipeline` (default `off`). With
+  `concurrency: parallel`, N triggers used to pile N runs up at an approval gate
+  — and approving an older one could deploy a stale revision over a newer. Now,
+  when a newer run in a lane becomes a pending contender at a gate, older pending
+  runs in that lane are cleared (canceled + `superseded_by`, rendered as a muted
+  "superseded by #N" badge that links to the winner). A **lane** is
+  `(pipeline, ref)` for `branch` and `(pipeline)` for `pipeline`
+  (tag/manual → per-pipeline), so feature branches are independent lanes. The
+  supersede is env-aware: a newer run at the *staging* gate does not clear an
+  older run pending the *prod* gate.
+
+  The hard guarantee is at dispatch — a **backstop** makes it impossible to
+  dispatch a stale deploy. At approve, a gate-pass marker is written per
+  `(lane, environment)` under an advisory lock; at dispatch, a deploy is refused
+  when a newer non-canceled run in the lane already cleared the gate for that
+  environment. Fail-closed, drift-safe (the gate→env graph resolves against a
+  definition snapshot on the run), and rollbacks are exempt. Superseded runs'
+  effects — CancelJob frames, service cleanup, GitHub check close, a unified
+  `run.superseded` audit — fire exactly-once via a durable claim/lease/replay.
+
+  Service pods are generation-aware: `runs.service_generation` bumps on a
+  same-`run_id` revive (RerunJob) and rides on each pod's name + label, and every
+  cleanup carries the generation it was decided at (captured atomically with the
+  supersede/cancel/completion). A revived run therefore builds fresh
+  higher-generation pods that a stale cleanup cannot tear down.
+
+  Three low-cardinality metrics land alongside: `gocdnext_runs_superseded_total`,
+  `gocdnext_supersede_backstop_errors_total`, `gocdnext_supersede_lock_busy_total`.
+
 ## v0.70.1 — 2026-07-01
 
 ### Fixed
