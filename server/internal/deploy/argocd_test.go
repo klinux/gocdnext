@@ -45,6 +45,28 @@ func TestParseApplicationStatus(t *testing.T) {
 			raw:  `{"status":{"sync":{"status":"OutOfSync"},"health":{"status":"Progressing"}}}`,
 			want: DeployState{Sync: SyncOutOfSync, Health: HealthProgressing},
 		},
+		{
+			name: "operationState phase Succeeded",
+			raw:  `{"status":{"sync":{"status":"Synced","revision":"r"},"health":{"status":"Healthy"},"operationState":{"phase":"Succeeded"}}}`,
+			want: DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "r", OperationPhase: OpSucceeded},
+		},
+		{
+			name: "operationState phase Running",
+			raw:  `{"status":{"sync":{"status":"OutOfSync"},"health":{"status":"Progressing"},"operationState":{"phase":"Running"}}}`,
+			want: DeployState{Sync: SyncOutOfSync, Health: HealthProgressing, OperationPhase: OpRunning},
+		},
+		{
+			name: "unrecognized operation phase → empty",
+			raw:  `{"status":{"sync":{"status":"Synced"},"health":{"status":"Healthy"},"operationState":{"phase":"Frobnicating"}}}`,
+			want: DeployState{Sync: SyncSynced, Health: HealthHealthy, OperationPhase: ""},
+		},
+		{
+			// Multi-source Application: .sync.revisions present, .sync.revision empty
+			// → ObservedRev stays "" (out of scope; fail-closed).
+			name: "multi-source revisions → empty observed rev",
+			raw:  `{"status":{"sync":{"status":"Synced","revisions":["r1","r2"]},"health":{"status":"Healthy"}}}`,
+			want: DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: ""},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -80,7 +102,7 @@ func TestObserve(t *testing.T) {
 	target := DeploymentTarget{Provider: "argocd", Cluster: "prod", Application: "checkout", Namespace: "argocd"}
 
 	t.Run("parses the fetched application", func(t *testing.T) {
-		p := NewArgoProvider(fakeFetcher{raw: []byte(`{"status":{"sync":{"status":"Synced","revision":"r1"},"health":{"status":"Healthy"}}}`)})
+		p := newArgoProviderWith(fakeFetcher{raw: []byte(`{"status":{"sync":{"status":"Synced","revision":"r1"},"health":{"status":"Healthy"}}}`)})
 		got, err := p.Observe(context.Background(), target)
 		if err != nil {
 			t.Fatalf("Observe: %v", err)
@@ -93,7 +115,7 @@ func TestObserve(t *testing.T) {
 
 	t.Run("wraps a fetch error", func(t *testing.T) {
 		sentinel := errors.New("boom")
-		p := NewArgoProvider(fakeFetcher{err: sentinel})
+		p := newArgoProviderWith(fakeFetcher{err: sentinel})
 		if _, err := p.Observe(context.Background(), target); !errors.Is(err, sentinel) {
 			t.Fatalf("Observe error = %v, want it to wrap %v", err, sentinel)
 		}
