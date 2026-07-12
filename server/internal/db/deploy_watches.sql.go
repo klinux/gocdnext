@@ -36,8 +36,10 @@ type ClaimDeployWatchesParams struct {
 
 // Atomically claim a batch of claimable watches — never claimed, or lease-expired
 // (the prior watcher crashed) — assigning each a fresh fencing token. The join to
-// deployment_revisions asserts the deploy is still in_progress (a defensive GC of
-// any watch whose revision went terminal out-of-band). FOR UPDATE OF ... SKIP
+// deployment_revisions filters to still-in_progress deploys: a backstop, since the
+// terminalizers (FinalizeDeploymentRevision / FinalizeDeployWatch) already delete the
+// watch — so a terminal-revision watch never reaches a watcher even if one lingered.
+// FOR UPDATE OF ... SKIP
 // LOCKED lets replicas claim disjoint batches without contending. Each row gets its
 // OWN claim_id (gen_random_uuid is volatile, evaluated per row).
 func (q *Queries) ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatchesParams) ([]DeployWatch, error) {

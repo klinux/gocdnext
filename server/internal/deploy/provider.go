@@ -11,6 +11,7 @@ package deploy
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -63,6 +64,20 @@ type DeployState struct {
 	// with this deploy's Sync (post-Sync + matching revision), to fast-fail a
 	// genuinely-failed sync and to avoid trusting a pre-Sync snapshot.
 	OperationPhase OpPhase
+	// OperationStartedAt is `.status.operationState.startedAt` — when the LAST sync
+	// operation began. Zero when absent or unparseable. It is the correlation anchor:
+	// the watch loop trusts the operationState (phase, syncResult) as THIS deploy's
+	// only if OperationStartedAt is at/after the deploy's own Sync trigger
+	// (sync_requested_at). A zero value therefore fails closed — a pre-Sync snapshot
+	// is never mistaken for this deploy's result. Parsed from RFC3339, so equal
+	// timestamps compare equal under `==`.
+	OperationStartedAt time.Time
+	// SyncResultRevision is `.status.operationState.syncResult.revision` — the
+	// revision the last operation actually synced to (which can differ from the live
+	// `.status.sync.revision`). Paired with OperationStartedAt, the loop trusts the
+	// operationState only if this equals the deploy's expected revision, so a stale
+	// operation for a different revision can neither fast-fail nor false-succeed it.
+	SyncResultRevision string
 }
 
 // OpPhase mirrors an ArgoCD Application's `.status.operationState.phase`. Empty
