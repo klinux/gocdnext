@@ -28,6 +28,10 @@ var ErrClusterNotFound = errors.New("store: cluster not found")
 // race-proof backstop for the handler's usage pre-check.
 var ErrClusterInUse = errors.New("store: cluster in use")
 
+// ErrClusterNotAuthorized is returned when a project isn't in a cluster's
+// allowed_projects — a typed error so callers map it to 403 without string-matching.
+var ErrClusterNotAuthorized = errors.New("store: project not authorized for cluster")
+
 // pgForeignKeyViolation is Postgres SQLSTATE 23503.
 const pgForeignKeyViolation = "23503"
 
@@ -313,7 +317,7 @@ func (s *Store) ResolveClusterForDispatch(ctx context.Context, projectID uuid.UU
 		return "", false, nil, fmt.Errorf("store: resolve cluster %q: %w", name, err)
 	}
 	if !projectAllowed(r.AllowedProjects, projectID) {
-		return "", false, nil, fmt.Errorf("store: project not authorized for cluster %q", name)
+		return "", false, nil, fmt.Errorf("%w %q", ErrClusterNotAuthorized, name)
 	}
 	switch r.AuthType {
 	case ClusterAuthInCluster:

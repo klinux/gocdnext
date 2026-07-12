@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -46,8 +47,13 @@ func TestDoClusterAPIGet(t *testing.T) {
 		}))
 		defer srv.Close()
 		ep := kubeEndpoint{server: srv.URL, bearer: "t", caPEM: caPEMof(t, srv)}
-		if _, err := doClusterAPIGet(context.Background(), ep, "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/missing"); err == nil {
-			t.Fatal("expected an error on 404, got nil")
+		_, err := doClusterAPIGet(context.Background(), ep, "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/missing")
+		var se *ClusterAPIStatusError
+		if !errors.As(err, &se) {
+			t.Fatalf("err = %v, want a *ClusterAPIStatusError", err)
+		}
+		if se.Status != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", se.Status)
 		}
 	})
 

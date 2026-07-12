@@ -27,6 +27,18 @@ const clusterAPITimeout = 10 * time.Second
 // making the control plane read an unbounded stream.
 const maxClusterAPIResponse = 4 << 20 // 4 MiB
 
+// ClusterAPIStatusError is a non-2xx response from a cluster API GET. It carries
+// the status so callers can map it (404 -> not found, 401/403 -> forbidden) without
+// string-matching.
+type ClusterAPIStatusError struct {
+	Status int
+	Path   string
+}
+
+func (e *ClusterAPIStatusError) Error() string {
+	return fmt.Sprintf("cluster API GET %s: unexpected status %d", e.Path, e.Status)
+}
+
 // ClusterAPIGet issues an authenticated GET to path on a registered cluster's k8s
 // API and returns the response body. projectID gates access (allowed_projects) via
 // ResolveClusterForDispatch; in_cluster clusters are not reachable from the
@@ -78,7 +90,7 @@ func doClusterAPIGet(ctx context.Context, ep kubeEndpoint, path string) ([]byte,
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxClusterAPIResponse))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cluster API GET %s: unexpected status %d", path, resp.StatusCode)
+		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Path: path}
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("cluster API GET %s: read body: %w", path, readErr)

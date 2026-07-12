@@ -69,13 +69,13 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
 	namespace := deploy.NormalizeNamespace(in.Namespace)
 
 	if in.ProjectID == uuid.Nil {
-		return errors.New("deploysvc: project is required")
+		return &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: project is required")}
 	}
 	if environment == "" {
-		return errors.New("deploysvc: environment is required")
+		return &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: environment is required")}
 	}
 	if err := deploy.ValidateTargetFields(provider, cluster, application, syncMode); err != nil {
-		return err
+		return &Fault{Kind: FaultInvalid, Err: err}
 	}
 
 	target := deploy.DeploymentTarget{
@@ -89,12 +89,12 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
 	}
 	// Fetch + authorize + single-source check BEFORE any DB write.
 	if err := r.provider.ValidateSingleSource(ctx, target); err != nil {
-		return err
+		return classifyValidateErr(err)
 	}
 
 	envID, err := r.registry.EnsureEnvironment(ctx, in.ProjectID, environment)
 	if err != nil {
-		return fmt.Errorf("deploysvc: ensure environment: %w", err)
+		return &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: ensure environment: %w", err)}
 	}
 	if err := r.registry.UpsertDeployTarget(ctx, store.DeployTargetInput{
 		EnvironmentID: envID,
@@ -105,7 +105,7 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
 		SyncMode:      syncMode,
 		CreatedBy:     in.CreatedBy,
 	}); err != nil {
-		return fmt.Errorf("deploysvc: upsert deploy target: %w", err)
+		return &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: upsert deploy target: %w", err)}
 	}
 	return nil
 }
