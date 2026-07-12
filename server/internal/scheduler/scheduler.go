@@ -256,6 +256,20 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
+		// Native deploy takeover (ADR-0001, Model A): a `deploy:` job with a registered
+		// target is server-managed (server drives the sync + watch) and uses NO agent —
+		// so it MUST be attempted BEFORE FindIdleWithTags, or it would sit queued forever
+		// waiting for an idle agent it doesn't need. Falls through to the plugin/agent
+		// path only when no target is registered (or the deployer isn't wired).
+		if s.native != nil && !job.DeployRollback {
+			if jobDef, derr := jobDefFromDefinition(run.Definition, job.Name); derr == nil && jobDef.Deploy != nil {
+				if s.tryNativeDeploy(ctx, run, job, jobDef) {
+					continue
+				}
+				// fallthrough: no registered target → plugin/agent path below.
+			}
+		}
+
 		requiredTags, tagsErr := JobTagsFromDefinition(run.Definition, job.Name)
 		if tagsErr != nil {
 			s.log.Warn("scheduler: read job tags", "job_id", job.ID, "err", tagsErr)
@@ -381,90 +395,15 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			}
 			deployGuard = nil
 		}
+		// Supersede guard for the plugin/agent deploy path (#97). Native deploys were
+		// already guarded + handled in tryNativeDeploy above; a deploy job reaching here
+		// is a plugin fallback (or native is off), and still needs the same protection.
 		if deployTarget != nil && !job.DeployRollback {
-			laneMode, err := supersedeModeFromDefinition(run.Definition)
-			if err != nil {
-				s.log.Warn("scheduler: read supersede mode for deployment guard",
-					"run_id", runID, "job_id", job.ID, "err", err)
-				continue
+			guard, outcome := s.beginDeployGuard(ctx, run, job, deployTarget.Environment)
+			if outcome != guardProceed {
+				continue // blocked / busy / fail-closed — queue_reason set or logged
 			}
-			if laneMode == domain.SupersedeBranch || laneMode == domain.SupersedePipeline {
-				guard, status, err := s.store.BeginDeploymentRevisionGuard(ctx, store.BeginDeploymentRevisionGuardInput{
-					PipelineID:  run.PipelineID,
-					Counter:     run.Counter,
-					Ref:         run.Ref,
-					LaneMode:    laneMode,
-					Environment: deployTarget.Environment,
-				})
-				if err != nil {
-					// Fail-closed guard/infra error: the deploy is NOT dispatched.
-					metrics.SupersedeBackstopErrors.Inc()
-					s.log.Warn("scheduler: deployment guard",
-						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-					continue
-				}
-				if status == store.DeploymentRevisionGuardLockBusy {
-					metrics.SupersedeLockBusy.Inc()
-					reason := "supersede-lock-busy:" + deployTarget.Environment
-					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
-						s.log.Warn("scheduler: set supersede lock-busy queue_reason",
-							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-					}
-					// Debug, not Info: fires every tick a lane-env stays contended,
-					// so a higher level would spam the log (the metric is the signal).
-					s.log.Debug("scheduler: deployment guard lock busy",
-						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
-					continue
-				}
-				if status == store.DeploymentRevisionGuardBlocked {
-					reason := "supersede-blocked:" + deployTarget.Environment
-					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
-						s.log.Warn("scheduler: set supersede blocked queue_reason",
-							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-					}
-					s.log.Info("scheduler: deployment blocked by newer gate-pass",
-						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
-					continue
-				}
-				deployGuard = guard
-			}
-		}
-
-		// Native deploy takeover (ADR-0001, Model A): if a deploy_target is registered
-		// for this env, the server drives the sync + watch and marks the job
-		// server-managed — no agent dispatch. Runs BEFORE AssignJob, while the supersede
-		// advisory lock (if any) is still held, so the #97 TOCTOU guarantee is unchanged.
-		// Rollbacks are exempt (they re-run a past deploy via the existing path).
-		if s.native != nil && deployTarget != nil && !job.DeployRollback {
-			res, err := s.native.TakeOver(ctx, deploysvc.NativeDeployInput{
-				ProjectID:   run.ProjectID,
-				RunID:       run.ID,
-				JobRunID:    job.ID,
-				Environment: deployTarget.Environment,
-				Version:     deployTarget.Version,
-				Now:         time.Now(),
-			})
-			if err != nil {
-				// Fail-closed: a real registry/DB failure — dispatch NOTHING (not even the
-				// plugin) and retry next tick.
-				releaseDeployGuard()
-				s.log.Warn("scheduler: native deploy takeover",
-					"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-				continue
-			}
-			switch res.Decision {
-			case deploysvc.DecisionNative:
-				releaseDeployGuard()
-				s.log.Info("scheduler: native deploy dispatched",
-					"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment,
-					"application", res.Application, "sync_mode", res.SyncMode)
-				continue // job is server-managed; skip AssignJob + agent dispatch
-			case deploysvc.DecisionSkip:
-				releaseDeployGuard()
-				continue // lost the dispatch CAS to another tick/replica
-			case deploysvc.DecisionFallback:
-				// No registered target → fall through to the plugin dispatch path below.
-			}
+			deployGuard = guard
 		}
 
 		assigned, ok, err := s.store.AssignJob(ctx, job.ID, agentID)

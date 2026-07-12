@@ -62,7 +62,9 @@ func triggerTarget() store.DeployTarget {
 func input() NativeDeployInput {
 	return NativeDeployInput{
 		ProjectID: uuid.New(), RunID: uuid.New(), JobRunID: uuid.New(),
-		Environment: "production", Version: "abc123", DeployedBy: "svc", Now: time.Now(),
+		Environment: "production", Version: "v1.2.3",
+		Revision:   "abc0123456789abc0123456789abc0123456789a", // full SHA
+		DeployedBy: "svc", Now: time.Now(),
 	}
 }
 
@@ -111,9 +113,13 @@ func TestTakeOver_TriggerSuccess_SyncsAndStamps(t *testing.T) {
 	if res.Decision != DecisionNative || res.RevisionID != revID || res.Attempt != 2 {
 		t.Fatalf("res = %+v, want native takeover", res)
 	}
-	// The revision passed to Sync + the anchor stamp.
-	if !sync.called || sync.gotRev != "abc123" {
-		t.Errorf("sync called=%v rev=%q, want the version synced", sync.called, sync.gotRev)
+	// The FULL SHA (Revision) is what gets synced + correlated — never the display Version.
+	if !sync.called || sync.gotRev != "abc0123456789abc0123456789abc0123456789a" {
+		t.Errorf("sync called=%v rev=%q, want the full-SHA Revision synced (not the display Version)", sync.called, sync.gotRev)
+	}
+	if st.gotStartIn.ExpectedRevision != "abc0123456789abc0123456789abc0123456789a" || st.gotStartIn.Version != "v1.2.3" {
+		t.Errorf("start input: ExpectedRevision=%q Version=%q, want full-SHA correlation + semver display",
+			st.gotStartIn.ExpectedRevision, st.gotStartIn.Version)
 	}
 	if !st.stampCalled {
 		t.Error("trigger success must stamp sync_requested_at")
