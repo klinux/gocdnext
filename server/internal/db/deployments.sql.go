@@ -146,10 +146,11 @@ func (q *Queries) FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDe
 	return count, err
 }
 
-const finalizeDeploymentRevisionByID = `-- name: FinalizeDeploymentRevisionByID :execrows
+const finalizeDeploymentRevisionByID = `-- name: FinalizeDeploymentRevisionByID :one
 UPDATE deployment_revisions
 SET status = $2, finished_at = NOW()
 WHERE id = $1 AND status = 'in_progress'
+RETURNING job_run_id, attempt
 `
 
 type FinalizeDeploymentRevisionByIDParams struct {
@@ -157,16 +158,21 @@ type FinalizeDeploymentRevisionByIDParams struct {
 	Status string
 }
 
-// Terminalize a specific revision by id (the deploy watcher's convergence verdict).
-// Guarded on status='in_progress' so a re-delivered/duplicate finalize is a no-op.
-// The watcher's FinalizeDeployWatch deletes the deploy_watch (fenced) in the same
-// tx before calling this, so no watch cleanup is needed here.
-func (q *Queries) FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finalizeDeploymentRevisionByID, arg.ID, arg.Status)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+type FinalizeDeploymentRevisionByIDRow struct {
+	JobRunID pgtype.UUID
+	Attempt  int32
+}
+
+// Terminalize a specific revision by id (the deploy watcher's convergence verdict)
+// and return its job link so the SAME tx can complete the server-managed deploy
+// job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
+// finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
+// deploy_watch (fenced) in the same tx before calling this.
+func (q *Queries) FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (FinalizeDeploymentRevisionByIDRow, error) {
+	row := q.db.QueryRow(ctx, finalizeDeploymentRevisionByID, arg.ID, arg.Status)
+	var i FinalizeDeploymentRevisionByIDRow
+	err := row.Scan(&i.JobRunID, &i.Attempt)
+	return i, err
 }
 
 const getDeploymentRevision = `-- name: GetDeploymentRevision :one

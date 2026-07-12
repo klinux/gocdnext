@@ -47,14 +47,16 @@ WITH finalized AS (
 )
 SELECT count(*) FROM finalized;
 
--- name: FinalizeDeploymentRevisionByID :execrows
--- Terminalize a specific revision by id (the deploy watcher's convergence verdict).
--- Guarded on status='in_progress' so a re-delivered/duplicate finalize is a no-op.
--- The watcher's FinalizeDeployWatch deletes the deploy_watch (fenced) in the same
--- tx before calling this, so no watch cleanup is needed here.
+-- name: FinalizeDeploymentRevisionByID :one
+-- Terminalize a specific revision by id (the deploy watcher's convergence verdict)
+-- and return its job link so the SAME tx can complete the server-managed deploy
+-- job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
+-- finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
+-- deploy_watch (fenced) in the same tx before calling this.
 UPDATE deployment_revisions
 SET status = $2, finished_at = NOW()
-WHERE id = $1 AND status = 'in_progress';
+WHERE id = $1 AND status = 'in_progress'
+RETURNING job_run_id, attempt;
 
 -- name: ListEnvironmentsByProject :many
 SELECT id, project_id, name, description, created_at, updated_at

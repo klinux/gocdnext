@@ -63,13 +63,14 @@ func (f *fakeObserver) Observe(_ context.Context, t deploy.DeploymentTarget) (de
 // renewSeq drives successive Renew returns per revision (default true); setOK/finalOK
 // default true.
 type fakeWatchStore struct {
-	toClaim   []store.DeployWatch
-	renewSeq  map[uuid.UUID][]bool
-	renewIdx  map[uuid.UUID]int
-	setOK     map[uuid.UUID]bool
-	finalOK   map[uuid.UUID]bool
-	finalized map[uuid.UUID]string
-	log       *[]string
+	toClaim       []store.DeployWatch
+	renewSeq      map[uuid.UUID][]bool
+	renewIdx      map[uuid.UUID]int
+	setOK         map[uuid.UUID]bool
+	finalOK       map[uuid.UUID]bool
+	finalized     map[uuid.UUID]string
+	finalizeRunID uuid.UUID // returned as DeployWatchFinalizeResult.RunID
+	log           *[]string
 }
 
 func newFakeStore(log *[]string, watches ...store.DeployWatch) *fakeWatchStore {
@@ -105,13 +106,18 @@ func (f *fakeWatchStore) ClearDeployWatchDegraded(_ context.Context, _, _ uuid.U
 	return true, nil
 }
 
-func (f *fakeWatchStore) FinalizeDeployWatch(_ context.Context, revID, _ uuid.UUID, status string) (bool, error) {
+func (f *fakeWatchStore) FinalizeDeployWatch(_ context.Context, revID, _ uuid.UUID, status, _ string) (store.DeployWatchFinalizeResult, error) {
 	*f.log = append(*f.log, "finalize:"+status)
 	ok := okDefaultTrue(f.finalOK, revID)
 	if ok {
 		f.finalized[revID] = status
 	}
-	return ok, nil
+	return store.DeployWatchFinalizeResult{Finalized: ok, RunID: f.finalizeRunID}, nil
+}
+
+func (f *fakeWatchStore) NotifyRunQueued(_ context.Context, runID uuid.UUID) error {
+	*f.log = append(*f.log, "notify:"+runID.String())
+	return nil
 }
 
 func okDefaultTrue(m map[uuid.UUID]bool, id uuid.UUID) bool {
@@ -148,6 +154,25 @@ func TestWatcher_Success_OrderAndFinalize(t *testing.T) {
 	}
 	if st.finalized[w.DeploymentRevisionID] != store.DeployStatusSuccess {
 		t.Fatalf("finalized = %q, want success", st.finalized[w.DeploymentRevisionID])
+	}
+}
+
+// After a successful finalize that completed a server-managed job, the watcher
+// NOTIFYs the run so the scheduler advances the next stage promptly.
+func TestWatcher_Finalize_NotifiesRun(t *testing.T) {
+	var log []string
+	w := mkWatch("app")
+	runID := uuid.New()
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: convergedState}}, log: &log}
+	st := newFakeStore(&log, w)
+	st.finalizeRunID = runID
+	runTick(obs, st)
+
+	if !contains(log, "finalize:success") {
+		t.Fatalf("did not finalize: %v", log)
+	}
+	if !contains(log, "notify:"+runID.String()) {
+		t.Fatalf("did not NOTIFY the run after finalize: %v", log)
 	}
 }
 

@@ -25,7 +25,8 @@ type WatchStore interface {
 	RenewDeployWatch(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
 	SetDeployWatchDegradedSince(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
 	ClearDeployWatchDegraded(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
-	FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status string) (bool, error)
+	FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (store.DeployWatchFinalizeResult, error)
+	NotifyRunQueued(ctx context.Context, runID uuid.UUID) error
 }
 
 // Watcher cadence/lease defaults. The lease TTL must comfortably exceed one watch's
@@ -220,18 +221,26 @@ func (w *Watcher) finalize(ctx context.Context, dw store.DeployWatch, status, re
 		w.log.Info("watch_lease_lost", append(watchAttrs(dw), "phase", "renew_finalize")...)
 		return
 	}
-	done, err := w.store.FinalizeDeployWatch(ctx, dw.DeploymentRevisionID, dw.ClaimID, status)
+	res, err := w.store.FinalizeDeployWatch(ctx, dw.DeploymentRevisionID, dw.ClaimID, status, reason)
 	if err != nil {
 		w.log.Error("watch_error", append(watchAttrs(dw), "phase", "finalize", "err", err)...)
 		return
 	}
-	if !done {
+	if !res.Finalized {
 		// Lease lost, or the job/reaper path already terminalized this revision (its
 		// cleanup deleted the watch). Either way we're done with it.
 		w.log.Info("watch_lease_lost", append(watchAttrs(dw), "phase", "finalize")...)
 		return
 	}
 	w.log.Info("watch_finalize", append(watchAttrs(dw), "status", status, "reason", reason)...)
+	// Post-commit effect: nudge the run so the scheduler advances the next stage
+	// promptly (the DB cascade already committed; this is a latency optimization —
+	// idempotent, best-effort, the scheduler's periodic tick would catch it anyway).
+	if res.RunID != uuid.Nil {
+		if err := w.store.NotifyRunQueued(ctx, res.RunID); err != nil {
+			w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "notify", "err", err)...)
+		}
+	}
 }
 
 func targetOf(dw store.DeployWatch) deploy.DeploymentTarget {

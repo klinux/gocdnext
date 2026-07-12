@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -99,8 +100,8 @@ func TestDeployWatch_ClaimRenewFinalize_Fencing(t *testing.T) {
 	if ok, err := s.RenewDeployWatch(ctx, revID, c1); err != nil || ok {
 		t.Fatalf("stale renew: ok=%v err=%v, want ok=false", ok, err)
 	}
-	if fin, err := s.FinalizeDeployWatch(ctx, revID, c1, "success"); err != nil || fin {
-		t.Fatalf("stale finalize: finalized=%v err=%v, want finalized=false", fin, err)
+	if res, err := s.FinalizeDeployWatch(ctx, revID, c1, "success", ""); err != nil || res.Finalized {
+		t.Fatalf("stale finalize: finalized=%v err=%v, want finalized=false", res.Finalized, err)
 	}
 	// The stale finalize must NOT have terminalized the deploy or removed the watch.
 	if got, err := s.GetDeployWatch(ctx, revID); err != nil {
@@ -110,8 +111,8 @@ func TestDeployWatch_ClaimRenewFinalize_Fencing(t *testing.T) {
 	}
 
 	// The live watcher terminalizes atomically: revision → success, watch removed.
-	if fin, err := s.FinalizeDeployWatch(ctx, revID, c2, "success"); err != nil || !fin {
-		t.Fatalf("live finalize: finalized=%v err=%v, want true", fin, err)
+	if res, err := s.FinalizeDeployWatch(ctx, revID, c2, "success", ""); err != nil || !res.Finalized {
+		t.Fatalf("live finalize: finalized=%v err=%v, want true", res.Finalized, err)
 	}
 	if _, err := s.GetDeployWatch(ctx, revID); err != store.ErrDeployWatchNotFound {
 		t.Fatalf("GetDeployWatch after finalize = %v, want ErrDeployWatchNotFound", err)
@@ -234,6 +235,142 @@ func TestFinalizeDeploymentRevision_DeletesWatch(t *testing.T) {
 	}
 }
 
+// seedServerManagedDeploy sets up a running deploy job with NO agent (Model A) +
+// its revision + a claimed watch, and returns (runID, jobID, revID, claimID).
+func seedServerManagedDeploy(t *testing.T, s *store.Store, pool *pgxpool.Pool) (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	runID, _, _, jobID, _ := seedRunningJob(t, pool)
+	if _, err := pool.Exec(ctx, `UPDATE job_runs SET agent_id=NULL, started_at=NOW() WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("orphan job: %v", err)
+	}
+	projectID := projectIDForRun(t, pool, runID)
+	if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("cluster: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("env: %v", err)
+	}
+	revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "v1", DeployedBy: "svc",
+	})
+	if err != nil {
+		t.Fatalf("revision: %v", err)
+	}
+	if _, err := s.CreateDeployWatch(ctx, store.DeployWatchInput{
+		DeploymentRevisionID: revID, ProjectID: projectID, SyncMode: "trigger",
+		Cluster: "prod-gke", Application: "checkout", Namespace: "argocd",
+		ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	claimed, err := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v (%v)", claimed, err)
+	}
+	return runID, jobID, revID, claimed[0].ClaimID
+}
+
+// FinalizeDeployWatch completes the server-managed job_run atomically with the watch
+// + revision, so the job status equals the deploy outcome (ADR-0001, Model A).
+func TestFinalizeDeployWatch_CompletesServerManagedJob(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	runID, jobID, revID, claimID := seedServerManagedDeploy(t, s, pool)
+
+	res, err := s.FinalizeDeployWatch(ctx, revID, claimID, store.DeployStatusSuccess, "")
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if !res.Finalized || res.RunID != runID {
+		t.Fatalf("res = %+v, want finalized with run %v", res, runID)
+	}
+	var jobStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus)
+	if jobStatus != "success" {
+		t.Fatalf("job status = %q, want success (watcher completed it)", jobStatus)
+	}
+	if rev, _ := s.GetDeploymentRevision(ctx, revID); rev.Status != store.DeployStatusSuccess {
+		t.Fatalf("revision = %q, want success", rev.Status)
+	}
+	if _, err := s.GetDeployWatch(ctx, revID); err != store.ErrDeployWatchNotFound {
+		t.Fatalf("watch not gone: %v", err)
+	}
+}
+
+func TestFinalizeDeployWatch_FailedJobCarriesReason(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	_, jobID, revID, claimID := seedServerManagedDeploy(t, s, pool)
+
+	if _, err := s.FinalizeDeployWatch(ctx, revID, claimID, store.DeployStatusFailed, "degraded beyond debounce window"); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	var status string
+	var errMsg *string
+	var exit *int32
+	_ = pool.QueryRow(ctx, `SELECT status, error, exit_code FROM job_runs WHERE id=$1`, jobID).Scan(&status, &errMsg, &exit)
+	if status != "failed" || errMsg == nil || *errMsg != "degraded beyond debounce window" {
+		t.Fatalf("job = %q err=%v, want failed + the reason", status, errMsg)
+	}
+	if exit == nil || *exit != 1 {
+		t.Fatalf("exit_code = %v, want 1 for a failed deploy", exit)
+	}
+}
+
+// A deploy job that still has an AGENT (not server-managed) must NOT be completed by
+// the watcher — only the revision + watch terminalize; the job is left to its agent.
+func TestFinalizeDeployWatch_LeavesAgentRunJobAlone(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	cipher := newAuthCipher(t)
+	s.SetAuthCipher(cipher)
+	ctx := context.Background()
+
+	runID, _, _, jobID, _ := seedRunningJob(t, pool) // compile is running WITH an agent
+	projectID := projectIDForRun(t, pool, runID)
+	if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("cluster: %v", err)
+	}
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+	revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "v1", DeployedBy: "svc",
+	})
+	if err != nil {
+		t.Fatalf("revision: %v", err)
+	}
+	if _, err := s.CreateDeployWatch(ctx, store.DeployWatchInput{
+		DeploymentRevisionID: revID, ProjectID: projectID, SyncMode: "trigger",
+		Cluster: "prod-gke", Application: "checkout", Namespace: "argocd",
+		ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	claimed, _ := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+
+	res, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, store.DeployStatusSuccess, "")
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if !res.Finalized || res.RunID != uuid.Nil {
+		t.Fatalf("res = %+v, want finalized with NO run (agent-run job untouched)", res)
+	}
+	var jobStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus)
+	if jobStatus != "running" {
+		t.Fatalf("agent-run job status = %q, want running (untouched)", jobStatus)
+	}
+}
+
 // CreateDeployWatch refuses to watch an already-terminal revision (a late/duplicate
 // create): there is nothing to observe.
 func TestCreateDeployWatch_RejectsTerminalRevision(t *testing.T) {
@@ -248,8 +385,8 @@ func TestCreateDeployWatch_RejectsTerminalRevision(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim: %v (err %v)", claimed, err)
 	}
-	if fin, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "success"); err != nil || !fin {
-		t.Fatalf("finalize: fin=%v err=%v", fin, err)
+	if res, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "success", ""); err != nil || !res.Finalized {
+		t.Fatalf("finalize: fin=%v err=%v", res.Finalized, err)
 	}
 
 	// The revision is terminal now → a new watch is refused.
@@ -270,7 +407,7 @@ func TestFinalizeDeployWatch_InvalidStatus(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim: %v (err %v)", claimed, err)
 	}
-	if _, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "canceled"); err == nil {
+	if _, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "canceled", ""); err == nil {
 		t.Fatal("finalize with invalid status = nil error, want a validation error")
 	}
 	// The watch must survive (validation happened before any DB effect).
