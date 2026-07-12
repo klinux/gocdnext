@@ -38,18 +38,23 @@ func (f *k8sAppFetcher) fetchApplication(ctx context.Context, target DeploymentT
 	if err := validateTarget(target); err != nil {
 		return nil, err
 	}
+	return f.get.ClusterAPIGet(ctx, target.Cluster, target.ProjectID, applicationCRDPath(target))
+}
+
+// applicationCRDPath is the k8s API path of the target's ArgoCD Application CR,
+// shared by the read (fetch) and write (sync) paths. PathEscape the segments
+// defensively: names come from the platform-registered target (validated at
+// registration too), but escaping shuts the door on a path-traversal name slipping
+// into the k8s API URL.
+func applicationCRDPath(target DeploymentTarget) string {
 	ns := target.Namespace
 	if ns == "" {
 		ns = defaultAppNamespace
 	}
-	// PathEscape the segments defensively: names come from the platform-registered
-	// target (validated at registration too), but escaping shuts the door on a
-	// path-traversal name slipping into the k8s API URL.
-	path := fmt.Sprintf(
+	return fmt.Sprintf(
 		"/apis/argoproj.io/v1alpha1/namespaces/%s/applications/%s",
 		url.PathEscape(ns), url.PathEscape(target.Application),
 	)
-	return f.get.ClusterAPIGet(ctx, target.Cluster, target.ProjectID, path)
 }
 
 // validateTarget fail-closes on a target that would build a dangerous or useless
