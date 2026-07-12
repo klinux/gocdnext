@@ -43,6 +43,8 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/deploy"
+	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
@@ -371,6 +373,11 @@ func main() {
 			"plugins", len(pluginCatalog.Names()))
 	}
 	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
+	// Native deploy-target registrar (ADR-0001): the store satisfies both the
+	// provider's ClusterGetter (reads Applications via the cluster registry) and
+	// the registrar's Registry (environment + target persistence).
+	projectsHandler = projectsHandler.WithDeployRegistrar(
+		deploysvc.New(deploy.NewArgoProvider(st), st))
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it
@@ -699,6 +706,7 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/labels", projectsHandler.ListLabels)
 		p.Get("/api/v1/projects/{slug}/findings", projectsHandler.ListFindings)
 		p.Get("/api/v1/projects/{slug}/environments", projectsHandler.ListEnvironments)
+		p.Get("/api/v1/projects/{slug}/deploy-targets", projectsHandler.ListDeployTargets)
 		p.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", projectsHandler.ListEnvironmentDeployments)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
@@ -755,6 +763,8 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
 		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", projectsHandler.RollbackEnvironment)
+		p.Post("/api/v1/projects/{slug}/deploy-targets", projectsHandler.SetDeployTarget)
+		p.Delete("/api/v1/projects/{slug}/deploy-targets/{env}", projectsHandler.DeleteDeployTarget)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
