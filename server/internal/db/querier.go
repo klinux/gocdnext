@@ -965,6 +965,11 @@ type Querier interface {
 	// dozen at most, so scanning in-process is fine.
 	ListCronMaterials(ctx context.Context) ([]ListCronMaterialsRow, error)
 	ListDeployTargetsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployTargetsForProjectRow, error)
+	// In-flight native deploys for a project (one row per still-in_progress revision),
+	// joined to the environment name + display version for the UI live-status endpoint.
+	// Config fields (cluster/application/sync_mode) are returned here but sanitised by
+	// role at the HTTP layer — viewers never see them.
+	ListDeployWatchesForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployWatchesForProjectRow, error)
 	// Timeline for one environment, all statuses, newest first.
 	ListDeploymentHistory(ctx context.Context, arg ListDeploymentHistoryParams) ([]DeploymentRevision, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or

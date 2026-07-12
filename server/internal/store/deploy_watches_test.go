@@ -188,6 +188,38 @@ func TestDeployWatch_CountActiveForCluster(t *testing.T) {
 	}
 }
 
+// ListDeployWatchesForProject returns the project's in-flight native deploys joined to
+// the environment name + display version.
+func TestListDeployWatchesForProject(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-list")
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+
+	views, err := s.ListDeployWatchesForProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	v := views[0]
+	if v.Environment != "production" || v.Version != "v1" || v.ExpectedRevision != "abc123" ||
+		v.Application != "checkout" || v.Cluster != "prod-gke" || v.SyncMode != "trigger" {
+		t.Fatalf("view = %+v, want the seeded in-flight deploy", v)
+	}
+	if v.SyncRequestedAt != nil {
+		t.Errorf("SyncRequestedAt = %v, want nil (pre-Sync)", v.SyncRequestedAt)
+	}
+
+	// A different project sees none of it.
+	other := seedProject(t, s, "watch-list-other")
+	if got, err := s.ListDeployWatchesForProject(ctx, other); err != nil || len(got) != 0 {
+		t.Fatalf("other project views = %v (err %v), want none", got, err)
+	}
+}
+
 // A revision terminalized by the JOB/reaper path (not the watcher's own
 // FinalizeDeployWatch) must still delete its watch atomically — otherwise the watch
 // lingers in the live queue forever and falsely blocks deleting its cluster.

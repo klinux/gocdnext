@@ -559,6 +559,31 @@ paths:
         "204": { description: deleted }
         "404": { description: project or deploy target not found }
 
+  /api/v1/projects/{slug}/deploy-watches:
+    get:
+      tags: [projects]
+      summary: In-flight native deploys for the project (viewer-readable, for polling).
+      description: >
+        One entry per still-in-progress native deploy, for the UI to poll live state
+        (syncing / degraded / deadline). Viewer-readable, but ROLE-SANITISED: the
+        config fields (application, cluster, sync_mode) are returned only to
+        maintainers — the same fields protected on /deploy-targets — and omitted for
+        viewers.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: in-flight native deploys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deploy_watches:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeployWatch" }
+        "404": { description: project not found }
+
   /api/v1/projects/{slug}/findings:
     get:
       tags: [projects]
@@ -1799,6 +1824,24 @@ components:
         application: { type: string }
         namespace: { type: string, description: "defaults to argocd when empty" }
         sync_mode: { type: string, enum: [trigger, observe] }
+
+    DeployWatch:
+      type: object
+      description: >
+        One in-flight native deploy (ADR-0001). Live-state fields are viewer-readable;
+        application/cluster/sync_mode are maintainer-only (omitted for viewers).
+      required: [environment, version, expected_revision, watch_started_at, deadline_at]
+      properties:
+        environment: { type: string }
+        version: { type: string, description: display/ledger version }
+        expected_revision: { type: string, description: full git SHA the watch correlates against (may be empty) }
+        watch_started_at: { type: string, format: date-time }
+        sync_requested_at: { type: string, format: date-time, description: set once the sync was triggered }
+        deadline_at: { type: string, format: date-time, description: progress deadline }
+        degraded_since: { type: string, format: date-time, description: set while the rollout is Degraded }
+        application: { type: string, description: maintainer-only }
+        cluster: { type: string, description: maintainer-only }
+        sync_mode: { type: string, enum: [trigger, observe], description: maintainer-only }
 
     Finding:
       type: object
