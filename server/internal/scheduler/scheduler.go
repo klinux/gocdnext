@@ -12,6 +12,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
@@ -70,6 +71,10 @@ type Scheduler struct {
 	// checks disabled; the effects listener guards on it. Interface (not the
 	// concrete *checks.Reporter) so tests can spy.
 	checks checksReporter
+
+	// native, when set, takes over a `deploy:` job with a registered deploy_target
+	// (ADR-0001, Model A) instead of dispatching the plugin. nil = plugin-only.
+	native nativeDeployer
 }
 
 // checksReporter is the slice of the GitHub checks reporter the supersede effects
@@ -77,6 +82,15 @@ type Scheduler struct {
 // doesn't hard-depend on the checks package's full surface and tests can fake it.
 type checksReporter interface {
 	ReportRunCompleted(ctx context.Context, runID uuid.UUID, status string)
+}
+
+// nativeDeployer decides + performs the native deploy takeover (ADR-0001): a
+// `deploy:` job whose env has a registered deploy_target becomes server-managed
+// (sync + watch) instead of dispatching the plugin to an agent. *deploysvc.NativeDeployer
+// satisfies it. nil = feature off (every deploy uses the plugin path). Local interface
+// so tests can fake the decision without a live provider.
+type nativeDeployer interface {
+	TakeOver(ctx context.Context, in deploysvc.NativeDeployInput) (deploysvc.NativeDeployResult, error)
 }
 
 func (s *Scheduler) DispatchRun(ctx context.Context, runID uuid.UUID) {
@@ -413,6 +427,43 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 					continue
 				}
 				deployGuard = guard
+			}
+		}
+
+		// Native deploy takeover (ADR-0001, Model A): if a deploy_target is registered
+		// for this env, the server drives the sync + watch and marks the job
+		// server-managed — no agent dispatch. Runs BEFORE AssignJob, while the supersede
+		// advisory lock (if any) is still held, so the #97 TOCTOU guarantee is unchanged.
+		// Rollbacks are exempt (they re-run a past deploy via the existing path).
+		if s.native != nil && deployTarget != nil && !job.DeployRollback {
+			res, err := s.native.TakeOver(ctx, deploysvc.NativeDeployInput{
+				ProjectID:   run.ProjectID,
+				RunID:       run.ID,
+				JobRunID:    job.ID,
+				Environment: deployTarget.Environment,
+				Version:     deployTarget.Version,
+				Now:         time.Now(),
+			})
+			if err != nil {
+				// Fail-closed: a real registry/DB failure — dispatch NOTHING (not even the
+				// plugin) and retry next tick.
+				releaseDeployGuard()
+				s.log.Warn("scheduler: native deploy takeover",
+					"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
+				continue
+			}
+			switch res.Decision {
+			case deploysvc.DecisionNative:
+				releaseDeployGuard()
+				s.log.Info("scheduler: native deploy dispatched",
+					"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment,
+					"application", res.Application, "sync_mode", res.SyncMode)
+				continue // job is server-managed; skip AssignJob + agent dispatch
+			case deploysvc.DecisionSkip:
+				releaseDeployGuard()
+				continue // lost the dispatch CAS to another tick/replica
+			case deploysvc.DecisionFallback:
+				// No registered target → fall through to the plugin dispatch path below.
 			}
 		}
 
