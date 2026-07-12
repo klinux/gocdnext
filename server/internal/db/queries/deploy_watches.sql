@@ -1,11 +1,17 @@
 -- name: CreateDeployWatch :one
 -- Create the control-loop record for a freshly-created in_progress deployment
 -- revision. Unclaimed (claim_* NULL) and sync_requested_at NULL: the row exists
--- BEFORE Sync fires so a crash between create and Sync is recoverable.
+-- BEFORE Sync fires so a crash between create and Sync is recoverable. The
+-- WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
+-- duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
 INSERT INTO deploy_watches (
     deployment_revision_id, project_id, sync_mode, cluster, application,
     namespace, expected_revision, deadline_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8
+WHERE EXISTS (
+    SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
+)
 RETURNING *;
 
 -- name: GetDeployWatch :one
