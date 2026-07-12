@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { Rocket } from "lucide-react";
 
 import { EnvironmentCard } from "@/components/environments/environment-card.client";
+import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
 import { env } from "@/lib/env";
 import {
   GocdnextAPIError,
@@ -70,17 +71,24 @@ export default async function EnvironmentsPage({
       {environments.length === 0 ? (
         <EmptyState />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {environments.map((e) => (
-            <EnvironmentCard
-              key={e.id}
-              slug={slug}
-              environment={e}
-              deployTarget={targetByEnv.get(e.name)}
-              apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
-            />
-          ))}
-        </div>
+        // Client provider polls this project's in-flight native deploys once and feeds
+        // each card its live chip; the cards stay RSC-composed here.
+        <DeployWatchesProvider
+          slug={slug}
+          apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            {environments.map((e) => (
+              <EnvironmentCard
+                key={e.id}
+                slug={slug}
+                environment={e}
+                deployTarget={targetByEnv.get(e.name)}
+                apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
+              />
+            ))}
+          </div>
+        </DeployWatchesProvider>
       )}
     </section>
   );
