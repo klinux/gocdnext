@@ -297,6 +297,46 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 	return res, nil
 }
 
+// DeployWatchView is one in-flight native deploy, joined to its environment + display
+// version, for the read-only live-status endpoint. Cluster/Application/SyncMode are
+// config (sanitised by role at the HTTP layer); the rest is live state.
+type DeployWatchView struct {
+	Environment      string
+	Version          string
+	ExpectedRevision string
+	SyncMode         string
+	Cluster          string
+	Application      string
+	WatchStartedAt   time.Time
+	SyncRequestedAt  *time.Time
+	DeadlineAt       time.Time
+	DegradedSince    *time.Time
+}
+
+// ListDeployWatchesForProject returns the project's in-flight native deploys.
+func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.UUID) ([]DeployWatchView, error) {
+	rows, err := s.q.ListDeployWatchesForProject(ctx, pgUUID(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list deploy watches for project %s: %w", projectID, err)
+	}
+	out := make([]DeployWatchView, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, DeployWatchView{
+			Environment:      r.Environment,
+			Version:          r.Version,
+			ExpectedRevision: r.ExpectedRevision,
+			SyncMode:         r.SyncMode,
+			Cluster:          r.Cluster,
+			Application:      r.Application,
+			WatchStartedAt:   r.WatchStartedAt.Time,
+			SyncRequestedAt:  pgTimePtr(r.SyncRequestedAt),
+			DeadlineAt:       r.DeadlineAt.Time,
+			DegradedSince:    pgTimePtr(r.DegradedSince),
+		})
+	}
+	return out, nil
+}
+
 // CountActiveWatchesForCluster backs the cluster delete-guard (an in-flight watch
 // also RESTRICTs the cluster FK).
 func (s *Store) CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error) {

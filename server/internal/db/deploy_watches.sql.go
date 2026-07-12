@@ -218,6 +218,65 @@ func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtyp
 	return i, err
 }
 
+const listDeployWatchesForProject = `-- name: ListDeployWatchesForProject :many
+SELECT e.name AS environment, dr.version, dw.expected_revision, dw.sync_mode,
+       dw.cluster, dw.application, dw.watch_started_at, dw.sync_requested_at,
+       dw.deadline_at, dw.degraded_since
+FROM deploy_watches dw
+JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+JOIN environments e ON e.id = dr.environment_id
+WHERE dw.project_id = $1
+ORDER BY e.name
+`
+
+type ListDeployWatchesForProjectRow struct {
+	Environment      string
+	Version          string
+	ExpectedRevision string
+	SyncMode         string
+	Cluster          string
+	Application      string
+	WatchStartedAt   pgtype.Timestamptz
+	SyncRequestedAt  pgtype.Timestamptz
+	DeadlineAt       pgtype.Timestamptz
+	DegradedSince    pgtype.Timestamptz
+}
+
+// In-flight native deploys for a project (one row per still-in_progress revision),
+// joined to the environment name + display version for the UI live-status endpoint.
+// Config fields (cluster/application/sync_mode) are returned here but sanitised by
+// role at the HTTP layer — viewers never see them.
+func (q *Queries) ListDeployWatchesForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployWatchesForProjectRow, error) {
+	rows, err := q.db.Query(ctx, listDeployWatchesForProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeployWatchesForProjectRow{}
+	for rows.Next() {
+		var i ListDeployWatchesForProjectRow
+		if err := rows.Scan(
+			&i.Environment,
+			&i.Version,
+			&i.ExpectedRevision,
+			&i.SyncMode,
+			&i.Cluster,
+			&i.Application,
+			&i.WatchStartedAt,
+			&i.SyncRequestedAt,
+			&i.DeadlineAt,
+			&i.DegradedSince,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markDeployWatchSyncRequested = `-- name: MarkDeployWatchSyncRequested :execrows
 UPDATE deploy_watches
 SET sync_requested_at = NOW()

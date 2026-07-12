@@ -713,6 +713,9 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/findings", projectsHandler.ListFindings)
 		p.Get("/api/v1/projects/{slug}/environments", projectsHandler.ListEnvironments)
 		p.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", projectsHandler.ListEnvironmentDeployments)
+		// Live in-flight native deploys (ADR-0001). Viewer-readable but role-sanitised
+		// in the handler — viewers get live state, maintainers also get the config.
+		p.Get("/api/v1/projects/{slug}/deploy-watches", projectsHandler.ListDeployWatches)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
 		p.Get("/api/v1/runs/{id}/jobs/{jobId}/log.txt", runsHandler.LogExport)

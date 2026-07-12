@@ -86,3 +86,17 @@ WHERE deployment_revision_id = $1 AND claim_id = $2;
 -- Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
 -- (FK), this gives the friendly message before the DELETE fails.
 SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1;
+
+-- name: ListDeployWatchesForProject :many
+-- In-flight native deploys for a project (one row per still-in_progress revision),
+-- joined to the environment name + display version for the UI live-status endpoint.
+-- Config fields (cluster/application/sync_mode) are returned here but sanitised by
+-- role at the HTTP layer — viewers never see them.
+SELECT e.name AS environment, dr.version, dw.expected_revision, dw.sync_mode,
+       dw.cluster, dw.application, dw.watch_started_at, dw.sync_requested_at,
+       dw.deadline_at, dw.degraded_since
+FROM deploy_watches dw
+JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+JOIN environments e ON e.id = dr.environment_id
+WHERE dw.project_id = $1
+ORDER BY e.name;
