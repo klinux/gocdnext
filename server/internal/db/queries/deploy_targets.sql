@@ -14,9 +14,10 @@ RETURNING id;
 
 -- name: ResolveDeployTarget :one
 -- Resolve `deploy: { to: <env> }` for a project: join the environment to its
--- target and return everything the provider needs.
+-- target and return everything the provider + native takeover need (incl. the
+-- environment id for the deployment_revision FK).
 SELECT dt.provider, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
-       e.project_id, e.name AS environment
+       e.project_id, e.id AS environment_id, e.name AS environment
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
 WHERE e.project_id = $1 AND e.name = $2;

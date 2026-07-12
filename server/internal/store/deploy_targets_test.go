@@ -35,7 +35,7 @@ func TestDeployTargets_UpsertResolveCount(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	want := store.DeployTarget{
-		ProjectID: projectID, Environment: "production", Provider: "argocd",
+		ProjectID: projectID, EnvironmentID: envID, Environment: "production", Provider: "argocd",
 		Cluster: "prod-gke", Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
 	}
 	if tgt != want {

@@ -22,13 +22,14 @@ var ErrDeployTargetNotFound = errors.New("store: deploy target not found")
 // DeployTarget is a resolved target: the registered row joined to its environment
 // so it carries the owning project + environment name the provider needs.
 type DeployTarget struct {
-	ProjectID   uuid.UUID
-	Environment string
-	Provider    string
-	Cluster     string
-	Application string
-	Namespace   string
-	SyncMode    string
+	ProjectID     uuid.UUID
+	EnvironmentID uuid.UUID // populated by ResolveDeployTarget (for the revision FK)
+	Environment   string
+	Provider      string
+	Cluster       string
+	Application   string
+	Namespace     string
+	SyncMode      string
 }
 
 // DeployTargetInput is the write shape for registering/updating a target. The
@@ -56,13 +57,14 @@ func (s *Store) ResolveDeployTarget(ctx context.Context, projectID uuid.UUID, en
 		return DeployTarget{}, fmt.Errorf("store: resolve deploy target %s/%s: %w", projectID, envName, err)
 	}
 	return DeployTarget{
-		ProjectID:   fromPgUUID(row.ProjectID),
-		Environment: row.Environment,
-		Provider:    row.Provider,
-		Cluster:     row.Cluster,
-		Application: row.Application,
-		Namespace:   row.Namespace,
-		SyncMode:    row.SyncMode,
+		ProjectID:     fromPgUUID(row.ProjectID),
+		EnvironmentID: fromPgUUID(row.EnvironmentID),
+		Environment:   row.Environment,
+		Provider:      row.Provider,
+		Cluster:       row.Cluster,
+		Application:   row.Application,
+		Namespace:     row.Namespace,
+		SyncMode:      row.SyncMode,
 	}, nil
 }
 
