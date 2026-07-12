@@ -57,6 +57,62 @@ func TestReclaimStaleJobs_NoopWhenAgentIsHealthy(t *testing.T) {
 	}
 }
 
+// A server-managed native deploy job (no agent, old started_at — normally reaped as
+// a Category-2 orphan) must be SKIPPED by the reaper while its deploy_watch is alive:
+// the watcher owns it (ADR-0001).
+func TestReclaimStaleJobs_SkipsJobWithActiveDeployWatch(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	cipher := newAuthCipher(t)
+	s.SetAuthCipher(cipher)
+	ctx := context.Background()
+
+	runID, _, _, jobID, _ := seedRunningJob(t, pool)
+	// Make the job look like a server-managed deploy: no agent, started long ago.
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET agent_id=NULL, started_at=NOW()-INTERVAL '10 minutes' WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("orphan the job: %v", err)
+	}
+
+	// Build the revision + live watch that mark the server as owner.
+	projectID := projectIDForRun(t, pool, runID)
+	if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert cluster: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("ensure env: %v", err)
+	}
+	revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "v1", DeployedBy: "svc",
+	})
+	if err != nil {
+		t.Fatalf("create revision: %v", err)
+	}
+	if _, err := s.CreateDeployWatch(ctx, store.DeployWatchInput{
+		DeploymentRevisionID: revID, ProjectID: projectID, SyncMode: "trigger",
+		Cluster: "prod-gke", Application: "checkout", Namespace: "argocd",
+		ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+
+	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
+	if err != nil {
+		t.Fatalf("ReclaimStaleJobs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("reclaimed %d jobs, want 0 (watcher owns the deploy job)", len(got))
+	}
+	var status string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&status)
+	if status != "running" {
+		t.Fatalf("job status = %q, want running (untouched by the reaper)", status)
+	}
+}
+
 func TestReclaimStaleJobs_RequeuesWhenAgentOffline(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
