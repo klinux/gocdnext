@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // appFetcher returns the raw ArgoCD Application resource JSON for a target. The
@@ -60,7 +61,11 @@ type applicationStatus struct {
 			Status string `json:"status"`
 		} `json:"health"`
 		OperationState struct {
-			Phase string `json:"phase"`
+			Phase      string `json:"phase"`
+			StartedAt  string `json:"startedAt"`
+			SyncResult struct {
+				Revision string `json:"revision"`
+			} `json:"syncResult"`
 		} `json:"operationState"`
 	} `json:"status"`
 }
@@ -71,11 +76,30 @@ func parseApplicationStatus(raw []byte) (DeployState, error) {
 		return DeployState{}, fmt.Errorf("deploy: decode application status: %w", err)
 	}
 	return DeployState{
-		Sync:           normalizeSync(app.Status.Sync.Status),
-		Health:         normalizeHealth(app.Status.Health.Status),
-		ObservedRev:    app.Status.Sync.Revision,
-		OperationPhase: normalizeOpPhase(app.Status.OperationState.Phase),
+		Sync:               normalizeSync(app.Status.Sync.Status),
+		Health:             normalizeHealth(app.Status.Health.Status),
+		ObservedRev:        app.Status.Sync.Revision,
+		OperationPhase:     normalizeOpPhase(app.Status.OperationState.Phase),
+		OperationStartedAt: parseK8sTime(app.Status.OperationState.StartedAt),
+		SyncResultRevision: app.Status.OperationState.SyncResult.Revision,
 	}, nil
+}
+
+// parseK8sTime parses an ArgoCD/Kubernetes RFC3339 timestamp (e.g.
+// `.status.operationState.startedAt`). An absent or unparseable value yields the
+// zero time — the watch loop treats that as "no reliable operation timestamp" and
+// fails closed (won't correlate the operation to this deploy), never as a spurious
+// match. A malformed timestamp must not drop the otherwise-valid observation, so
+// this never errors.
+func parseK8sTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func normalizeSync(s string) SyncStatus {

@@ -4,7 +4,17 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
+
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("mustTime %q: %v", s, err)
+	}
+	return ts
+}
 
 func TestParseApplicationStatus(t *testing.T) {
 	tests := []struct {
@@ -66,6 +76,36 @@ func TestParseApplicationStatus(t *testing.T) {
 			name: "multi-source revisions → empty observed rev",
 			raw:  `{"status":{"sync":{"status":"Synced","revisions":["r1","r2"]},"health":{"status":"Healthy"}}}`,
 			want: DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: ""},
+		},
+		{
+			// The correlation anchors: startedAt + syncResult.revision, read for the
+			// watch loop to tie an operationState to THIS deploy.
+			name: "operationState with startedAt + syncResult revision",
+			raw:  `{"status":{"sync":{"status":"Synced","revision":"r"},"health":{"status":"Healthy"},"operationState":{"phase":"Succeeded","startedAt":"2026-01-02T03:04:05Z","syncResult":{"revision":"r"}}}}`,
+			want: DeployState{
+				Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "r", OperationPhase: OpSucceeded,
+				OperationStartedAt: mustTime(t, "2026-01-02T03:04:05Z"), SyncResultRevision: "r",
+			},
+		},
+		{
+			// syncResult.revision (what was synced) can differ from the live
+			// .sync.revision (what the app tracks now); the loop correlates on the former.
+			name: "syncResult revision differs from observed",
+			raw:  `{"status":{"sync":{"status":"Synced","revision":"new"},"health":{"status":"Healthy"},"operationState":{"phase":"Succeeded","startedAt":"2026-01-02T03:04:05Z","syncResult":{"revision":"old"}}}}`,
+			want: DeployState{
+				Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "new", OperationPhase: OpSucceeded,
+				OperationStartedAt: mustTime(t, "2026-01-02T03:04:05Z"), SyncResultRevision: "old",
+			},
+		},
+		{
+			// A malformed startedAt yields the zero time (loop fails closed) — it must
+			// NOT error out the otherwise-valid observation.
+			name: "malformed startedAt → zero time, rest still parses",
+			raw:  `{"status":{"sync":{"status":"Synced","revision":"r"},"health":{"status":"Healthy"},"operationState":{"phase":"Running","startedAt":"not-a-time","syncResult":{"revision":"r"}}}}`,
+			want: DeployState{
+				Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "r", OperationPhase: OpRunning,
+				SyncResultRevision: "r", // OperationStartedAt is the zero time
+			},
 		},
 	}
 	for _, tt := range tests {
