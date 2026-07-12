@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -71,6 +72,63 @@ func TestDoClusterAPIGet(t *testing.T) {
 	t.Run("http:// endpoint is rejected before any request", func(t *testing.T) {
 		ep := kubeEndpoint{server: "http://insecure.example", bearer: "t"}
 		if _, err := doClusterAPIGet(context.Background(), ep, "/x"); err == nil {
+			t.Fatal("expected an error for a non-HTTPS api_server, got nil")
+		}
+	})
+}
+
+func TestDoClusterAPIWrite(t *testing.T) {
+	t.Run("PATCH forwards method, content-type, body; 2xx returns body", func(t *testing.T) {
+		var gotMethod, gotCT, gotAuth string
+		var gotBody []byte
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod, gotCT, gotAuth = r.Method, r.Header.Get("Content-Type"), r.Header.Get("Authorization")
+			gotBody, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte(`{"metadata":{"name":"checkout"}}`))
+		}))
+		defer srv.Close()
+
+		ep := kubeEndpoint{server: srv.URL, bearer: "tok123", caPEM: caPEMof(t, srv)}
+		body, err := doClusterAPIWrite(context.Background(), ep, http.MethodPatch,
+			"application/merge-patch+json", "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/checkout",
+			[]byte(`{"operation":{"sync":{}}}`))
+		if err != nil {
+			t.Fatalf("doClusterAPIWrite: %v", err)
+		}
+		if gotMethod != http.MethodPatch {
+			t.Errorf("method = %q, want PATCH", gotMethod)
+		}
+		if gotCT != "application/merge-patch+json" {
+			t.Errorf("content-type = %q", gotCT)
+		}
+		if gotAuth != "Bearer tok123" {
+			t.Errorf("auth = %q", gotAuth)
+		}
+		if string(gotBody) != `{"operation":{"sync":{}}}` {
+			t.Errorf("server saw body %q", gotBody)
+		}
+		if string(body) != `{"metadata":{"name":"checkout"}}` {
+			t.Errorf("response body = %q", body)
+		}
+	})
+
+	t.Run("non-2xx is a ClusterAPIStatusError", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "conflict", http.StatusConflict)
+		}))
+		defer srv.Close()
+		ep := kubeEndpoint{server: srv.URL, bearer: "t", caPEM: caPEMof(t, srv)}
+		_, err := doClusterAPIWrite(context.Background(), ep, http.MethodPatch,
+			"application/merge-patch+json", "/x", []byte(`{}`))
+		var se *ClusterAPIStatusError
+		if !errors.As(err, &se) || se.Status != http.StatusConflict {
+			t.Fatalf("err = %v, want a *ClusterAPIStatusError with 409", err)
+		}
+	})
+
+	t.Run("http:// endpoint is rejected before any request", func(t *testing.T) {
+		ep := kubeEndpoint{server: "http://insecure.example", bearer: "t"}
+		if _, err := doClusterAPIWrite(context.Background(), ep, http.MethodPatch, "application/merge-patch+json", "/x", []byte(`{}`)); err == nil {
 			t.Fatal("expected an error for a non-HTTPS api_server, got nil")
 		}
 	})

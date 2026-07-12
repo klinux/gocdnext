@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -13,25 +14,37 @@ type appFetcher interface {
 	fetchApplication(ctx context.Context, target DeploymentTarget) ([]byte, error)
 }
 
-// ArgoProvider is the ArgoCD-backed provider. It observes an Application and (in
-// the sync increment) triggers a sync, never reconciling desired state itself.
-// It implements Observe today; Sync — and thus the full DeploymentProvider
-// interface — lands with the sync increment.
+// appSyncer triggers a sync for a target (behind the same test seam as the fetcher).
+type appSyncer interface {
+	syncApplication(ctx context.Context, target DeploymentTarget, revision string) error
+}
+
+// ArgoProvider is the ArgoCD-backed provider. It observes an Application and, for
+// trigger-mode targets, actuates a sync by writing its `.operation` — never
+// reconciling desired state itself (that is ArgoCD's job). It satisfies the full
+// DeploymentProvider interface (Sync + Observe).
 type ArgoProvider struct {
 	fetch appFetcher
+	sync  appSyncer
 }
 
 // NewArgoProvider wires the provider over the store-backed k8s-CRD transport: the
-// server passes its cluster registry (as a ClusterGetter) and gets a provider
-// that reads Applications through the target cluster's k8s API.
-func NewArgoProvider(g ClusterGetter) *ArgoProvider {
-	return &ArgoProvider{fetch: newK8sAppFetcher(g)}
+// server passes its cluster registry (a ClusterAPI: read for Observe, patch for
+// Sync) and gets a provider that reads/actuates Applications through the target
+// cluster's k8s API.
+func NewArgoProvider(api ClusterAPI) *ArgoProvider {
+	return &ArgoProvider{fetch: newK8sAppFetcher(api), sync: newK8sAppSyncer(api)}
 }
 
 // newArgoProviderWith injects an appFetcher directly — for tests that exercise
 // Observe with a fixture fetcher, no cluster involved.
 func newArgoProviderWith(f appFetcher) *ArgoProvider {
 	return &ArgoProvider{fetch: f}
+}
+
+// newArgoProviderWithSync injects both seams for Sync tests.
+func newArgoProviderWithSync(f appFetcher, s appSyncer) *ArgoProvider {
+	return &ArgoProvider{fetch: f, sync: s}
 }
 
 // Observe fetches the target's Application and returns one convergence snapshot.
@@ -41,6 +54,22 @@ func (a *ArgoProvider) Observe(ctx context.Context, target DeploymentTarget) (De
 		return DeployState{}, fmt.Errorf("deploy: fetch application %s/%s: %w", target.Namespace, target.Application, err)
 	}
 	return parseApplicationStatus(raw)
+}
+
+// Sync actuates the target toward revision by writing the Application's `.operation`.
+// It is a no-op for observe-mode targets (gocdnext issues no sync — it only watches
+// an auto-synced app). An empty revision syncs to the Application's targetRevision.
+func (a *ArgoProvider) Sync(ctx context.Context, target DeploymentTarget, revision string) error {
+	if target.SyncMode == SyncModeObserve {
+		return nil
+	}
+	if a.sync == nil {
+		return errors.New("deploy: provider has no syncer configured")
+	}
+	if err := a.sync.syncApplication(ctx, target, revision); err != nil {
+		return fmt.Errorf("deploy: sync application %s/%s: %w", target.Namespace, target.Application, err)
+	}
+	return nil
 }
 
 // applicationStatus is the minimal slice of an ArgoCD Application resource this

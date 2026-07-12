@@ -6,6 +6,7 @@ package store
 // the HTTP call lives here, and the caller receives only the response body.
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -96,6 +97,64 @@ func doClusterAPIGet(ctx context.Context, ep kubeEndpoint, path string) ([]byte,
 		return nil, fmt.Errorf("cluster API GET %s: read body: %w", path, readErr)
 	}
 	return body, nil
+}
+
+// ClusterAPIPatch issues an authenticated merge-patch PATCH to path on a registered
+// cluster's k8s API with body, returning the response body. Same authz + transport
+// as ClusterAPIGet (project-gated, in_cluster rejected, credential stays here). Used
+// by the native provider's Sync to set an ArgoCD Application's `.operation`.
+// Satisfies deploy.ClusterPatcher.
+func (s *Store) ClusterAPIPatch(ctx context.Context, cluster string, projectID uuid.UUID, path string, body []byte) ([]byte, error) {
+	kubeconfig, inCluster, _, err := s.ResolveClusterForDispatch(ctx, projectID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	if inCluster {
+		return nil, fmt.Errorf("store: cluster %q is in_cluster — not reachable from the control plane for Application writes", cluster)
+	}
+	ep, err := parseKubeconfigEndpoint([]byte(kubeconfig))
+	if err != nil {
+		return nil, fmt.Errorf("store: cluster %q: %w", cluster, err)
+	}
+	return doClusterAPIWrite(ctx, ep, http.MethodPatch, "application/merge-patch+json", path, body)
+}
+
+// doClusterAPIWrite performs a body-carrying request (PATCH/PUT/POST) against
+// <ep.server><path> with the same TLS/credential/redirect-refusal posture as the GET
+// path. Any 2xx → body; anything else → *ClusterAPIStatusError.
+func doClusterAPIWrite(ctx context.Context, ep kubeEndpoint, method, contentType, path string, body []byte) ([]byte, error) {
+	server := strings.TrimRight(strings.TrimSpace(ep.server), "/")
+	if err := validateHTTPSURL(server, "api_server"); err != nil {
+		return nil, err
+	}
+	client, err := kubeHTTPClient(ep.caPEM, ep.clientCert, ep.insecure, clusterAPITimeout)
+	if err != nil {
+		return nil, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, clusterAPITimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, method, server+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("cluster API: build request: %w", err)
+	}
+	if ep.bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+ep.bearer)
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cluster API %s: %w", method, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxClusterAPIResponse))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Path: path}
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("cluster API %s %s: read body: %w", method, path, readErr)
+	}
+	return respBody, nil
 }
 
 // kubeHTTPClient builds an HTTPS client for a k8s API endpoint: TLS from the CA
