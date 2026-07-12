@@ -40,6 +40,11 @@ CREATE TABLE deploy_targets (
         CHECK (btrim(namespace) <> '')
 );
 
+-- Index the cluster FK column: FK integrity checks and the cluster delete-guard
+-- (CountDeployTargetsForCluster) both filter by cluster, which would otherwise
+-- scan the table.
+CREATE INDEX idx_deploy_targets_cluster ON deploy_targets (cluster);
+
 -- +goose StatementEnd
 
 -- +goose Down
