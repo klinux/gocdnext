@@ -59,6 +59,10 @@ func NormalizeNamespace(ns string) string {
 	return defaultAppNamespace
 }
 
+// ErrMultiSource marks a rejection of a multi-source Application, so the caller can
+// map it to a distinct HTTP status without string-matching the message.
+var ErrMultiSource = errors.New("deploy: application is multi-source")
+
 // applicationIsMultiSource reports whether an ArgoCD Application uses multiple
 // sources (`spec.sources`, a list). Multi-source is out of scope for this slice —
 // the single-source `.status.sync.revision` the watch relies on is empty for
@@ -90,7 +94,7 @@ func (a *ArgoProvider) ValidateSingleSource(ctx context.Context, target Deployme
 		return err
 	}
 	if multi {
-		return fmt.Errorf("deploy: application %q is multi-source (spec.sources) — not supported; register a single-source Application", target.Application)
+		return fmt.Errorf("%w: %q (spec.sources) — register a single-source Application", ErrMultiSource, target.Application)
 	}
 	return nil
 }
