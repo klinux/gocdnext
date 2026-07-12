@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"gopkg.in/yaml.v3"
 
@@ -21,6 +22,14 @@ import (
 
 // ErrClusterNotFound is returned when a cluster id/name doesn't resolve.
 var ErrClusterNotFound = errors.New("store: cluster not found")
+
+// ErrClusterInUse is returned when a cluster can't be deleted because a row still
+// references it through a RESTRICT foreign key (e.g. a deploy_target) — the
+// race-proof backstop for the handler's usage pre-check.
+var ErrClusterInUse = errors.New("store: cluster in use")
+
+// pgForeignKeyViolation is Postgres SQLSTATE 23503.
+const pgForeignKeyViolation = "23503"
 
 // Cluster auth types. kubeconfig/token carry a sealed credential;
 // in_cluster carries none (the job pod's mounted SA is used).
@@ -240,6 +249,13 @@ func (s *Store) UpdateCluster(ctx context.Context, cipher *crypto.Cipher, id uui
 func (s *Store) DeleteCluster(ctx context.Context, id uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM clusters WHERE id = $1`, pgUUID(id))
 	if err != nil {
+		// A referencing row (e.g. a deploy_target) created between the caller's
+		// usage pre-check and this delete trips the RESTRICT FK; surface it as
+		// "in use" (→ 409), not a generic 500.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgForeignKeyViolation {
+			return ErrClusterInUse
+		}
 		return fmt.Errorf("store: delete cluster %s: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {

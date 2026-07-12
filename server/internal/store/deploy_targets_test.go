@@ -91,7 +91,7 @@ func TestDeployTargets_ClusterDeleteRestrictedByFK(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.DeleteCluster(ctx, c.ID); err == nil {
-		t.Fatal("expected deleting a cluster referenced by a deploy target to fail (FK RESTRICT), got nil")
+	if err := s.DeleteCluster(ctx, c.ID); !errors.Is(err, store.ErrClusterInUse) {
+		t.Fatalf("delete of a referenced cluster = %v, want ErrClusterInUse (FK RESTRICT mapped)", err)
 	}
 }
