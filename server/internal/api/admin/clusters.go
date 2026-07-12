@@ -268,6 +268,20 @@ func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, formatClusterUsageError(usage), http.StatusConflict)
 		return
 	}
+	// A cluster referenced by a deploy_target is FK-RESTRICTed at the DB — surface a
+	// friendly 409 here rather than letting the DELETE fail as a raw 500.
+	targets, err := h.store.CountDeployTargetsForCluster(r.Context(), existing.Name)
+	if err != nil {
+		h.log.Error("admin clusters: count deploy targets", "name", existing.Name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if targets > 0 {
+		http.Error(w, fmt.Sprintf(
+			"cluster is referenced by %d deploy target(s) — remove them before deleting", targets),
+			http.StatusConflict)
+		return
+	}
 	if err := h.store.DeleteCluster(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrClusterNotFound) {
 			http.Error(w, "cluster not found", http.StatusNotFound)
