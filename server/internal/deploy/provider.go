@@ -56,9 +56,12 @@ type DeployState struct {
 	// rejects multi-source): an empty ObservedRev makes the revision check below
 	// fail-closed (Pending, never a false success) rather than matching.
 	ObservedRev string
-	// OperationPhase is `.status.operationState.phase` — the last sync operation's
-	// state. A Failed/Error operation is a hard deploy failure; a Running one means
-	// a sync is still in flight (so a stale Synced+Healthy must not read as done).
+	// OperationPhase is `.status.operationState.phase` — the LAST sync operation's
+	// state. It persists across syncs and can be STALE/unrelated to this deploy, so
+	// it is NOT consulted by the pure Evaluate (a stale Failed op must not fail a
+	// Synced+Healthy app on the right revision). The watch loop reads it, correlated
+	// with this deploy's Sync (post-Sync + matching revision), to fast-fail a
+	// genuinely-failed sync and to avoid trusting a pre-Sync snapshot.
 	OperationPhase OpPhase
 }
 
