@@ -26,7 +26,7 @@ type DeployTarget struct {
 	Environment string
 	Provider    string
 	Cluster     string
-	Application  string
+	Application string
 	Namespace   string
 	SyncMode    string
 }
@@ -60,7 +60,7 @@ func (s *Store) ResolveDeployTarget(ctx context.Context, projectID uuid.UUID, en
 		Environment: row.Environment,
 		Provider:    row.Provider,
 		Cluster:     row.Cluster,
-		Application:  row.Application,
+		Application: row.Application,
 		Namespace:   row.Namespace,
 		SyncMode:    row.SyncMode,
 	}, nil
@@ -80,6 +80,51 @@ func (s *Store) UpsertDeployTarget(ctx context.Context, in DeployTargetInput) er
 		return fmt.Errorf("store: upsert deploy target: %w", err)
 	}
 	return nil
+}
+
+// DeployTargetListItem is one row for the per-project deploy-targets listing.
+type DeployTargetListItem struct {
+	ID          uuid.UUID
+	Environment string
+	Provider    string
+	Cluster     string
+	Application string
+	Namespace   string
+	SyncMode    string
+}
+
+// ListDeployTargets returns a project's registered targets, ordered by environment.
+func (s *Store) ListDeployTargets(ctx context.Context, projectID uuid.UUID) ([]DeployTargetListItem, error) {
+	rows, err := s.q.ListDeployTargetsForProject(ctx, pgUUID(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list deploy targets: %w", err)
+	}
+	out := make([]DeployTargetListItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, DeployTargetListItem{
+			ID:          fromPgUUID(r.ID),
+			Environment: r.Environment,
+			Provider:    r.Provider,
+			Cluster:     r.Cluster,
+			Application: r.Application,
+			Namespace:   r.Namespace,
+			SyncMode:    r.SyncMode,
+		})
+	}
+	return out, nil
+}
+
+// DeleteDeployTargetByEnvironment removes a project environment's target. Returns
+// whether a row was deleted (false → nothing to delete → the handler 404s).
+func (s *Store) DeleteDeployTargetByEnvironment(ctx context.Context, projectID uuid.UUID, envName string) (bool, error) {
+	n, err := s.q.DeleteDeployTargetByEnvironment(ctx, db.DeleteDeployTargetByEnvironmentParams{
+		ProjectID: pgUUID(projectID),
+		Name:      envName,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: delete deploy target %s/%s: %w", projectID, envName, err)
+	}
+	return n > 0, nil
 }
 
 // CountDeployTargetsForCluster backs the cluster delete-guard.
