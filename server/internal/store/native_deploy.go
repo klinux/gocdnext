@@ -65,6 +65,19 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 		return StartNativeDeployResult{}, fmt.Errorf("store: start server-managed job: %w", err)
 	}
 
+	// Promote the stage + run to running in the SAME tx (the agent path does this
+	// after dispatch, but native never touches that path). Idempotent (guarded on
+	// status='queued'), so a stage/run already running from a sibling job is a no-op.
+	// Atomic with the job flip → the invariant "server-managed job running implies
+	// stage/run running" holds, so serial gating (which keys on runs.status='running')
+	// can't start another run while this deploy is in flight.
+	if err := q.MarkStageRunningIfQueued(ctx, job.StageRunID); err != nil {
+		return StartNativeDeployResult{}, fmt.Errorf("store: native deploy mark stage running: %w", err)
+	}
+	if err := q.MarkRunRunningIfQueued(ctx, job.RunID); err != nil {
+		return StartNativeDeployResult{}, fmt.Errorf("store: native deploy mark run running: %w", err)
+	}
+
 	revID, err := q.CreateDeploymentRevision(ctx, db.CreateDeploymentRevisionParams{
 		EnvironmentID: pgUUID(in.EnvironmentID),
 		RunID:         nullableUUID(in.RunID),

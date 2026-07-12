@@ -66,6 +66,18 @@ func TestStartNativeDeploy_Atomic(t *testing.T) {
 	if w.SyncRequestedAt != nil || w.Application != "checkout" || w.ExpectedRevision != "v1" {
 		t.Fatalf("watch = %+v, want pre-Sync with the target", w)
 	}
+	// The stage AND run are promoted to running in the same tx (invariant:
+	// server-managed job running ⇒ stage/run running; serial gating keys on it).
+	var stageStatus, runStatus string
+	_ = pool.QueryRow(ctx, `
+		SELECT sr.status, r.status
+		FROM job_runs j
+		JOIN stage_runs sr ON sr.id = j.stage_run_id
+		JOIN runs r ON r.id = j.run_id
+		WHERE j.id = $1`, jobUnitID).Scan(&stageStatus, &runStatus)
+	if stageStatus != "running" || runStatus != "running" {
+		t.Fatalf("stage=%q run=%q, want both running after native takeover", stageStatus, runStatus)
+	}
 }
 
 // A job that isn't dispatchable (already running) → Started=false, nothing created.

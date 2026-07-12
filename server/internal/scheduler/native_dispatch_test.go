@@ -127,6 +127,13 @@ func TestDispatchRun_NativeTakeover_NoIdleAgent(t *testing.T) {
 	if status != "running" || agent != nil {
 		t.Fatalf("job = %q agent=%v, want running + no agent (taken over WITHOUT an idle agent)", status, agent)
 	}
+	// The run itself is promoted to running — serial gating keys on runs.status, so a
+	// native deploy in flight must not read as queued (another run could start).
+	var runStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, run.RunID).Scan(&runStatus)
+	if runStatus != "running" {
+		t.Fatalf("run status = %q, want running after native takeover", runStatus)
+	}
 	if sync.calls != 1 {
 		t.Fatalf("sync called %d times, want 1", sync.calls)
 	}
