@@ -821,6 +821,21 @@ export type EnvironmentsList = { environments: EnvironmentSummary[] };
 
 export type DeploymentsList = { deployments: DeploymentRecord[] };
 
+// Native deployment target (ADR-0001): how an environment deploys — which provider
+// Application on which registered cluster, and whether gocdnext triggers the sync or
+// only observes. 1:1 with an environment. The GET is MAINTAINER-gated, so this config
+// (cluster/application/sync_mode) is only fetched for maintainers; viewers never see it.
+export type DeployTarget = {
+  environment: string;
+  provider: string; // "argocd"
+  cluster: string;
+  application: string;
+  namespace: string;
+  sync_mode: "trigger" | "observe";
+};
+
+export type DeployTargetsList = { deploy_targets: DeployTarget[] };
+
 // Security finding ingested from a SARIF scanner artifact (#71).
 export type Finding = {
   id: number;
