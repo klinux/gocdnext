@@ -26,15 +26,18 @@ func TestEvaluate(t *testing.T) {
 		{"synced+healthy, rev mismatch (stale)", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "OLD"}, rev, OutcomePending},
 		{"synced+healthy, observed rev empty (multi-source)", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: ""}, rev, OutcomePending},
 
-		// A still-running sync operation means a stale Synced+Healthy isn't done yet.
-		{"synced+healthy but operation Running", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: rev, OperationPhase: OpRunning}, rev, OutcomePending},
-		{"synced+healthy but operation Terminating", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: rev, OperationPhase: OpTerminating}, rev, OutcomePending},
-		{"synced+healthy, operation Succeeded, rev matches", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: rev, OperationPhase: OpSucceeded}, rev, OutcomeSucceeded},
+		// THE MED FIX (review round 2): a stale operationState.phase must NOT override
+		// a genuinely-good state. operationState persists the last op, which can be an
+		// old/unrelated Failed sync; a Synced+Healthy app on the right revision is a
+		// success regardless. (Operation-failure fast-fail, correlated to THIS deploy,
+		// is the loop's job — not the pure classifier's.)
+		{"synced+healthy, rev matches, STALE operation Failed", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: rev, OperationPhase: OpFailed}, rev, OutcomeSucceeded},
+		{"synced+healthy, rev matches, STALE operation Error", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: rev, OperationPhase: OpError}, rev, OutcomeSucceeded},
+		{"synced+healthy, rev matches, operation Running", DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: rev, OperationPhase: OpRunning}, rev, OutcomeSucceeded},
 
-		// Hard failures.
-		{"degraded is a failure regardless of sync", DeployState{Sync: SyncSynced, Health: HealthDegraded, ObservedRev: rev}, rev, OutcomeFailed},
-		{"sync operation Failed", DeployState{Sync: SyncOutOfSync, Health: HealthProgressing, OperationPhase: OpFailed}, rev, OutcomeFailed},
-		{"sync operation Error", DeployState{Sync: SyncOutOfSync, Health: HealthProgressing, OperationPhase: OpError}, rev, OutcomeFailed},
+		// Hard failure — health is live, so Degraded is a current failure (Evaluate
+		// classifies per-snapshot; the loop debounces transient flaps).
+		{"degraded is a failure regardless of sync/op", DeployState{Sync: SyncSynced, Health: HealthDegraded, ObservedRev: rev, OperationPhase: OpSucceeded}, rev, OutcomeFailed},
 
 		// In-flight / transient — keep watching.
 		{"synced+progressing", DeployState{Sync: SyncSynced, Health: HealthProgressing, ObservedRev: rev}, rev, OutcomePending},

@@ -1,33 +1,34 @@
 package deploy
 
 // Evaluate classifies one Application convergence snapshot against the revision
-// the deploy is waiting for. It is pure and per-snapshot; the watch loop layers
-// timeout, flap-debounce, and — for trigger mode — "observe a POST-Sync operation
-// before trusting a Succeeded phase" on top.
+// the deploy is waiting for. It is PURE and per-snapshot: sync + health + the
+// observed revision.
 //
-// expectedRev is the git revision the deploy should converge to, or "" when it
-// isn't pinned (best-effort). Rules, in order:
+// It deliberately does NOT consult OperationPhase. `.status.operationState.phase`
+// persists the LAST sync operation and can be stale or unrelated to this deploy —
+// a Synced+Healthy app on the right revision can still carry an old Failed op, so
+// keying failure off it would false-fail a healthy deploy. Correlating the
+// operation with THIS deploy (post-Sync, matching revision/timestamp) needs the
+// watch loop's timing context, so operation-based fast-fail lives THERE (it reads
+// DeployState.OperationPhase), not here.
 //
-//   - Degraded health, or a Failed/Error sync operation → Failed. The desired
-//     state is unhealthy or the sync itself failed.
-//   - Not (Synced AND Healthy) → Pending. The only success needs the live state
-//     to match the desired state and be healthy.
-//   - Operation still Running/Terminating → Pending. A sync is in flight, so a
-//     currently-reported Synced+Healthy may predate it.
-//   - expectedRev set AND ObservedRev != expectedRev → Pending. FAIL-CLOSED
-//     against declaring success on a stale/other revision: a healthy app on the
-//     OLD revision (right after Sync, before the controller reconciles) or
-//     observe-mode drift is not "done". A persistent mismatch is caught by the
-//     loop's timeout, not swallowed here.
+// Rules:
+//   - Degraded health → Failed. Health is computed live from the resources, so a
+//     Degraded app is unhealthy NOW (the loop debounces transient flaps).
+//   - not (Synced AND Healthy) → Pending.
+//   - expectedRev set AND ObservedRev != expectedRev → Pending. Fail-closed
+//     against declaring success on a stale/other revision (a healthy app on the
+//     OLD revision right after Sync, or observe-mode drift).
 //   - otherwise → Succeeded.
+//
+// When expectedRev is "" (unpinned), a Synced+Healthy snapshot is trusted as-is;
+// the caller must only evaluate snapshots taken AFTER its own Sync operation has
+// been observed, so a stale pre-Sync snapshot isn't mistaken for success.
 func Evaluate(s DeployState, expectedRev string) DeployOutcome {
-	if s.Health == HealthDegraded || s.OperationPhase == OpFailed || s.OperationPhase == OpError {
+	if s.Health == HealthDegraded {
 		return OutcomeFailed
 	}
 	if s.Sync != SyncSynced || s.Health != HealthHealthy {
-		return OutcomePending
-	}
-	if s.OperationPhase == OpRunning || s.OperationPhase == OpTerminating {
 		return OutcomePending
 	}
 	if expectedRev != "" && s.ObservedRev != expectedRev {
