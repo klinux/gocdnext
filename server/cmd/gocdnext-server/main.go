@@ -451,7 +451,11 @@ func main() {
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).
 		WithSecretResolver(resolver).
 		WithCipher(cipher).
-		WithGitTokens(vcsRegistry)
+		WithGitTokens(vcsRegistry).
+		// Native deploy takeover (ADR-0001): a `deploy:` job with a registered
+		// deploy_target becomes server-managed (sync + watch), reusing the same argo
+		// provider the registrar + watcher use.
+		WithNativeDeployer(deploysvc.NewNativeDeployer(argoProvider, st, logger))
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
