@@ -17,7 +17,6 @@ package store
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -248,19 +247,11 @@ func probeKubeAPI(ctx context.Context, server string, caPEM []byte, bearer strin
 		return ClusterProbeResult{Status: ClusterProbeError, Message: err.Error()}
 	}
 
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	switch {
-	case insecure:
-		tlsCfg.InsecureSkipVerify = true // explicit per the kubeconfig; the operator chose it
-	case len(caPEM) > 0:
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			return ClusterProbeResult{Status: ClusterProbeError, Message: "CA certificate is not valid PEM"}
-		}
-		tlsCfg.RootCAs = pool
-	}
-	if clientCert != nil {
-		tlsCfg.Certificates = []tls.Certificate{*clientCert}
+	// Shared client build (TLS from CA / insecure, optional client cert, redirect
+	// refusal so a credentialed probe never replays to a 3xx target).
+	client, cerr := kubeHTTPClient(caPEM, clientCert, insecure, clusterProbeTimeout)
+	if cerr != nil {
+		return ClusterProbeResult{Status: ClusterProbeError, Message: cerr.Error()}
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, clusterProbeTimeout)
@@ -271,15 +262,6 @@ func probeKubeAPI(ctx context.Context, server string, caPEM []byte, bearer strin
 	}
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
-	}
-
-	client := &http.Client{
-		Timeout:   clusterProbeTimeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		// Never follow a redirect: a credentialed probe must not replay
-		// the bearer/client-cert to wherever a 3xx points (possibly
-		// another host). Stop and surface the 3xx as an error.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	resp, err := client.Do(req)
 	if err != nil {
