@@ -279,3 +279,21 @@ func (q *Queries) SetDeployWatchDegradedSince(ctx context.Context, arg SetDeploy
 	}
 	return result.RowsAffected(), nil
 }
+
+const stampDeployWatchSyncRequested = `-- name: StampDeployWatchSyncRequested :execrows
+UPDATE deploy_watches
+SET sync_requested_at = NOW()
+WHERE deployment_revision_id = $1 AND sync_requested_at IS NULL
+`
+
+// UNFENCED stamp of the correlation anchor at dispatch, before any watcher has
+// claimed the watch (so the fenced MarkDeployWatchSyncRequested can't be used yet).
+// Monotonic: `WHERE sync_requested_at IS NULL` — a later dispatch/retry never reopens
+// the anchor. 0 rows → already stamped or gone; the caller logs and continues.
+func (q *Queries) StampDeployWatchSyncRequested(ctx context.Context, deploymentRevisionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, stampDeployWatchSyncRequested, deploymentRevisionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
