@@ -15,6 +15,11 @@ import (
 // ErrDeployWatchNotFound is returned when no deploy_watch exists for a revision.
 var ErrDeployWatchNotFound = errors.New("store: deploy watch not found")
 
+// ErrRevisionNotInProgress is returned by CreateDeployWatch when the target
+// revision is already terminal (a late or duplicate create) — there is nothing to
+// watch.
+var ErrRevisionNotInProgress = errors.New("store: deployment revision is not in_progress")
+
 // DeployWatch is the durable control-loop record for one in-flight deploy
 // (ADR-0001, Inc.6). ClaimID is the fencing token — uuid.Nil when the watch is
 // unclaimed. SyncRequestedAt/DegradedSince/ClaimedAt are nil until set.
@@ -84,6 +89,11 @@ func (s *Store) CreateDeployWatch(ctx context.Context, in DeployWatchInput) (Dep
 		DeadlineAt:           pgTimestamptzFromPtr(&in.DeadlineAt),
 	})
 	if err != nil {
+		// 0 rows (the WHERE EXISTS guard rejected a terminal revision) surfaces as
+		// ErrNoRows — the revision isn't in_progress, so there's nothing to watch.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DeployWatch{}, ErrRevisionNotInProgress
+		}
 		return DeployWatch{}, fmt.Errorf("store: create deploy watch: %w", err)
 	}
 	return deployWatchFromRow(w), nil
@@ -172,6 +182,11 @@ func (s *Store) ClearDeployWatchDegraded(ctx context.Context, revID, claimID uui
 // rows) — the fencing guarantee: a reclaimed watcher can't terminalize. status is
 // "success" or "failed".
 func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status string) (bool, error) {
+	// Validate up front (mirrors FinalizeDeploymentRevision) — a clean error rather
+	// than letting the revision's status CHECK abort the tx.
+	if status != DeployStatusSuccess && status != DeployStatusFailed {
+		return false, fmt.Errorf("store: finalize deploy watch: invalid status %q", status)
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return false, fmt.Errorf("store: finalize deploy watch begin: %w", err)

@@ -108,10 +108,17 @@ func (q *Queries) EnvironmentBelongsToProject(ctx context.Context, arg Environme
 	return exists, err
 }
 
-const finalizeDeploymentRevision = `-- name: FinalizeDeploymentRevision :execrows
-UPDATE deployment_revisions
-SET status = $3, finished_at = NOW()
-WHERE job_run_id = $1 AND attempt = $2 AND status = 'in_progress'
+const finalizeDeploymentRevision = `-- name: FinalizeDeploymentRevision :one
+WITH finalized AS (
+    UPDATE deployment_revisions
+    SET status = $3, finished_at = NOW()
+    WHERE job_run_id = $1 AND attempt = $2 AND status = 'in_progress'
+    RETURNING id
+), cleaned AS (
+    DELETE FROM deploy_watches
+    WHERE deployment_revision_id IN (SELECT id FROM finalized)
+)
+SELECT count(*) FROM finalized
 `
 
 type FinalizeDeploymentRevisionParams struct {
@@ -125,13 +132,18 @@ type FinalizeDeploymentRevisionParams struct {
 // to success/failed and stamps finished_at. Keyed on attempt so a
 // success on attempt 1 never finalises a stale attempt-0 row. Guarded
 // on status='in_progress' so a re-delivered result is a no-op. Returns
-// rows affected (0 = the job had no deploy: block, or already final).
+// the count finalized (0 = the job had no deploy: block, or already final).
+//
+// The `cleaned` data-modifying CTE atomically removes any deploy_watch for the
+// finalized revision: a native-provider deploy may be terminalized by THIS
+// job/reaper path (not only by the watcher's own FinalizeDeployWatch), and a watch
+// left behind would linger forever in the live-watch queue (never claimable — the
+// claim scan filters status='in_progress') and falsely block deleting its cluster.
 func (q *Queries) FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDeploymentRevisionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finalizeDeploymentRevision, arg.JobRunID, arg.Attempt, arg.Status)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	row := q.db.QueryRow(ctx, finalizeDeploymentRevision, arg.JobRunID, arg.Attempt, arg.Status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const finalizeDeploymentRevisionByID = `-- name: FinalizeDeploymentRevisionByID :execrows
@@ -147,6 +159,8 @@ type FinalizeDeploymentRevisionByIDParams struct {
 
 // Terminalize a specific revision by id (the deploy watcher's convergence verdict).
 // Guarded on status='in_progress' so a re-delivered/duplicate finalize is a no-op.
+// The watcher's FinalizeDeployWatch deletes the deploy_watch (fenced) in the same
+// tx before calling this, so no watch cleanup is needed here.
 func (q *Queries) FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (int64, error) {
 	result, err := q.db.Exec(ctx, finalizeDeploymentRevisionByID, arg.ID, arg.Status)
 	if err != nil {

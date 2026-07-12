@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -183,5 +184,97 @@ func TestDeployWatch_CountActiveForCluster(t *testing.T) {
 	}
 	if n, err := s.CountActiveWatchesForCluster(ctx, "prod-gke"); err != nil || n != 1 {
 		t.Fatalf("count after = %d (err %v), want 1", n, err)
+	}
+}
+
+// A revision terminalized by the JOB/reaper path (not the watcher's own
+// FinalizeDeployWatch) must still delete its watch atomically — otherwise the watch
+// lingers in the live queue forever and falsely blocks deleting its cluster.
+func TestFinalizeDeploymentRevision_DeletesWatch(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	cipher := newAuthCipher(t)
+	s.SetAuthCipher(cipher)
+	ctx := context.Background()
+
+	runID, _, _, jobID, _ := seedRunningJob(t, pool)
+	projectID := projectIDForRun(t, pool, runID)
+	if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert cluster: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("ensure environment: %v", err)
+	}
+	revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "v1", DeployedBy: "alice",
+	})
+	if err != nil {
+		t.Fatalf("create revision: %v", err)
+	}
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	if n, _ := s.CountActiveWatchesForCluster(ctx, "prod-gke"); n != 1 {
+		t.Fatalf("precondition watches = %d, want 1", n)
+	}
+
+	// Terminalize via the JOB path.
+	if n, err := s.FinalizeDeploymentRevision(ctx, jobID, 0, store.DeployStatusSuccess); err != nil || n != 1 {
+		t.Fatalf("finalize by job = %d (err %v), want 1", n, err)
+	}
+	// The watch is atomically gone — not orphaned in the live queue or the count.
+	if _, err := s.GetDeployWatch(ctx, revID); err != store.ErrDeployWatchNotFound {
+		t.Fatalf("watch after job-finalize = %v, want ErrDeployWatchNotFound", err)
+	}
+	if n, _ := s.CountActiveWatchesForCluster(ctx, "prod-gke"); n != 0 {
+		t.Fatalf("watches after job-finalize = %d, want 0 (orphan cleaned)", n)
+	}
+}
+
+// CreateDeployWatch refuses to watch an already-terminal revision (a late/duplicate
+// create): there is nothing to observe.
+func TestCreateDeployWatch_RejectsTerminalRevision(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-terminal")
+
+	// Drive the revision terminal through a full watch cycle.
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	claimed, err := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v (err %v)", claimed, err)
+	}
+	if fin, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "success"); err != nil || !fin {
+		t.Fatalf("finalize: fin=%v err=%v", fin, err)
+	}
+
+	// The revision is terminal now → a new watch is refused.
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != store.ErrRevisionNotInProgress {
+		t.Fatalf("create watch on terminal revision = %v, want ErrRevisionNotInProgress", err)
+	}
+}
+
+// FinalizeDeployWatch validates status up front (mirrors FinalizeDeploymentRevision),
+// leaving the watch untouched rather than aborting on the DB status CHECK.
+func TestFinalizeDeployWatch_InvalidStatus(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-badstatus")
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	claimed, err := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v (err %v)", claimed, err)
+	}
+	if _, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "canceled"); err == nil {
+		t.Fatal("finalize with invalid status = nil error, want a validation error")
+	}
+	// The watch must survive (validation happened before any DB effect).
+	if _, err := s.GetDeployWatch(ctx, revID); err != nil {
+		t.Fatalf("watch gone after an invalid-status finalize: %v", err)
 	}
 }

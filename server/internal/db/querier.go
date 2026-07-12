@@ -246,7 +246,9 @@ type Querier interface {
 	CoverageTrendByPipeline(ctx context.Context, arg CoverageTrendByPipelineParams) ([]CoverageTrendByPipelineRow, error)
 	// Create the control-loop record for a freshly-created in_progress deployment
 	// revision. Unclaimed (claim_* NULL) and sync_requested_at NULL: the row exists
-	// BEFORE Sync fires so a crash between create and Sync is recoverable.
+	// BEFORE Sync fires so a crash between create and Sync is recoverable. The
+	// WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
+	// duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
 	CreateDeployWatch(ctx context.Context, arg CreateDeployWatchParams) (DeployWatch, error)
 	// Recorded at dispatch with the resolved version, status in_progress,
 	// tagged with the dispatch attempt so retries don't collide.
@@ -451,10 +453,18 @@ type Querier interface {
 	// to success/failed and stamps finished_at. Keyed on attempt so a
 	// success on attempt 1 never finalises a stale attempt-0 row. Guarded
 	// on status='in_progress' so a re-delivered result is a no-op. Returns
-	// rows affected (0 = the job had no deploy: block, or already final).
+	// the count finalized (0 = the job had no deploy: block, or already final).
+	//
+	// The `cleaned` data-modifying CTE atomically removes any deploy_watch for the
+	// finalized revision: a native-provider deploy may be terminalized by THIS
+	// job/reaper path (not only by the watcher's own FinalizeDeployWatch), and a watch
+	// left behind would linger forever in the live-watch queue (never claimable — the
+	// claim scan filters status='in_progress') and falsely block deleting its cluster.
 	FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDeploymentRevisionParams) (int64, error)
 	// Terminalize a specific revision by id (the deploy watcher's convergence verdict).
 	// Guarded on status='in_progress' so a re-delivered/duplicate finalize is a no-op.
+	// The watcher's FinalizeDeployWatch deletes the deploy_watch (fenced) in the same
+	// tx before calling this, so no watch cleanup is needed here.
 	FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (int64, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// Same shape as ListAgentsWithRunning but for one row — reused by
