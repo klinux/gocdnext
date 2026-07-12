@@ -375,9 +375,11 @@ func main() {
 	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
 	// Native deploy-target registrar (ADR-0001): the store satisfies both the
 	// provider's ClusterGetter (reads Applications via the cluster registry) and
-	// the registrar's Registry (environment + target persistence).
+	// the registrar's Registry (environment + target persistence). The same provider
+	// backs the deploy watcher (Observe) started below.
+	argoProvider := deploy.NewArgoProvider(st)
 	projectsHandler = projectsHandler.WithDeployRegistrar(
-		deploysvc.New(deploy.NewArgoProvider(st), st))
+		deploysvc.New(argoProvider, st))
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it
@@ -929,6 +931,20 @@ func main() {
 	go func() {
 		if err := reaper.Run(ctx); err != nil {
 			logger.Error("reaper exited", "err", err)
+		}
+	}()
+
+	// Deploy watcher (ADR-0001, Inc.6): claims in-flight deploy_watches and drives
+	// each to convergence. Idle (claims nothing) until a `deploy:` job creates a
+	// watch. worker id = hostname so a restarted replica reclaims its own leases.
+	watcherID, _ := os.Hostname()
+	if watcherID == "" {
+		watcherID = "gocdnext-server"
+	}
+	deployWatcher := deploysvc.NewWatcher(argoProvider, st, watcherID, logger)
+	go func() {
+		if err := deployWatcher.Run(ctx); err != nil {
+			logger.Error("deploy watcher exited", "err", err)
 		}
 	}()
 
