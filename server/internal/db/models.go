@@ -177,6 +177,19 @@ type CronState struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type DeployTarget struct {
+	ID            pgtype.UUID
+	EnvironmentID pgtype.UUID
+	Provider      string
+	Cluster       string
+	Application   string
+	Namespace     string
+	SyncMode      string
+	CreatedBy     string
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type DeploymentRevision struct {
 	ID            pgtype.UUID
 	EnvironmentID pgtype.UUID

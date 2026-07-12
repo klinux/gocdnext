@@ -171,6 +171,9 @@ type Querier interface {
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	// Backs the cluster delete-guard: a cluster referenced by any target can't be
+	// deleted (also enforced by the FK's ON DELETE RESTRICT, this gives the message).
+	CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error)
 	CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error)
 	// Real total of fixed identities (the list above is capped); the header count
 	// must not understate when a removed scanner retires a large prior set.
@@ -261,6 +264,7 @@ type Querier interface {
 	// lock (TryRollupLock, shared with the run rollup). since_days <= 0 = full
 	// rebuild.
 	DeleteDeployDailyWindow(ctx context.Context, sinceDays int32) error
+	DeleteDeployTargetByEnvironment(ctx context.Context, arg DeleteDeployTargetByEnvironmentParams) (int64, error)
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
@@ -924,6 +928,7 @@ type Querier interface {
 	// by `pipelines × cron_materials_per_pipeline`, typically a few
 	// dozen at most, so scanning in-process is fine.
 	ListCronMaterials(ctx context.Context) ([]ListCronMaterialsRow, error)
+	ListDeployTargetsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployTargetsForProjectRow, error)
 	// Timeline for one environment, all statuses, newest first.
 	ListDeploymentHistory(ctx context.Context, arg ListDeploymentHistoryParams) ([]DeploymentRevision, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
@@ -1446,6 +1451,9 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
+	// Resolve `deploy: { to: <env> }` for a project: join the environment to its
+	// target and return everything the provider needs.
+	ResolveDeployTarget(ctx context.Context, arg ResolveDeployTargetParams) (ResolveDeployTargetRow, error)
 	// What-if preview: every enabled policy that WOULD apply to a project carrying
 	// the given framework set — global (applies_to_all) or targeting any of them.
 	// An empty array yields only global policies (a project with no frameworks).
@@ -1776,6 +1784,9 @@ type Querier interface {
 	// right after dispatching a run so a crashed server doesn't re-
 	// fire the same tick when it comes back.
 	UpsertCronFired(ctx context.Context, arg UpsertCronFiredParams) error
+	// Register/update the deploy target for an environment (1:1). The admin API
+	// EnsureEnvironment's the environment first, then upserts here.
+	UpsertDeployTarget(ctx context.Context, arg UpsertDeployTargetParams) (pgtype.UUID, error)
 	// Lazy-create: the first dispatch of a job with deploy:{environment:X}
 	// inserts the row; later dispatches just bump updated_at. Returns the
 	// id so the dispatch path can attach a revision regardless of which
