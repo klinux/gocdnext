@@ -34,6 +34,13 @@ UPDATE deployment_revisions
 SET status = $3, finished_at = NOW()
 WHERE job_run_id = $1 AND attempt = $2 AND status = 'in_progress';
 
+-- name: FinalizeDeploymentRevisionByID :execrows
+-- Terminalize a specific revision by id (the deploy watcher's convergence verdict).
+-- Guarded on status='in_progress' so a re-delivered/duplicate finalize is a no-op.
+UPDATE deployment_revisions
+SET status = $2, finished_at = NOW()
+WHERE id = $1 AND status = 'in_progress';
+
 -- name: ListEnvironmentsByProject :many
 SELECT id, project_id, name, description, created_at, updated_at
 FROM environments
