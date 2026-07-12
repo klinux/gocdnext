@@ -153,6 +153,18 @@ func (s *Store) MarkDeployWatchSyncRequested(ctx context.Context, revID, claimID
 	return n > 0, nil
 }
 
+// StampDeployWatchSyncRequested is the UNFENCED, monotonic stamp used at dispatch
+// (before any watcher has claimed the watch). Returns false when it stamped nothing
+// (already set, or the watch is gone) — the caller logs and continues; it never
+// reopens the anchor.
+func (s *Store) StampDeployWatchSyncRequested(ctx context.Context, revID uuid.UUID) (bool, error) {
+	n, err := s.q.StampDeployWatchSyncRequested(ctx, pgUUID(revID))
+	if err != nil {
+		return false, fmt.Errorf("store: stamp deploy watch sync-requested: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SetDeployWatchDegradedSince opens the debounce window on the first Degraded tick
 // (COALESCE keeps the earliest). Fenced.
 func (s *Store) SetDeployWatchDegradedSince(ctx context.Context, revID, claimID uuid.UUID) (bool, error) {

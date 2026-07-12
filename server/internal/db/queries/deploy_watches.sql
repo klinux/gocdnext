@@ -54,6 +54,15 @@ UPDATE deploy_watches
 SET sync_requested_at = NOW()
 WHERE deployment_revision_id = $1 AND claim_id = $2;
 
+-- name: StampDeployWatchSyncRequested :execrows
+-- UNFENCED stamp of the correlation anchor at dispatch, before any watcher has
+-- claimed the watch (so the fenced MarkDeployWatchSyncRequested can't be used yet).
+-- Monotonic: `WHERE sync_requested_at IS NULL` — a later dispatch/retry never reopens
+-- the anchor. 0 rows → already stamped or gone; the caller logs and continues.
+UPDATE deploy_watches
+SET sync_requested_at = NOW()
+WHERE deployment_revision_id = $1 AND sync_requested_at IS NULL;
+
 -- name: SetDeployWatchDegradedSince :execrows
 -- Open the debounce window on the first Degraded tick (COALESCE keeps the earliest).
 -- Fenced on claim_id.
