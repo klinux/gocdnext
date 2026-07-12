@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EnvironmentCard } from "./environment-card.client";
-import type { EnvironmentSummary } from "@/types/api";
+import type { DeployTarget, EnvironmentSummary } from "@/types/api";
 
 // The history rows mount RollbackButton, which calls useRouter and
 // imports the rollback server action — stub both so the card tests
@@ -59,6 +59,37 @@ describe("EnvironmentCard", () => {
     };
     render(<EnvironmentCard slug="acme" environment={rolled} apiBaseURL="" />);
     expect(screen.getAllByText("rollback").length).toBeGreaterThan(0);
+  });
+
+  const target: DeployTarget = {
+    environment: "production",
+    provider: "argocd",
+    cluster: "prod-gke",
+    application: "checkout",
+    namespace: "argocd",
+    sync_mode: "trigger",
+  };
+
+  it("shows the native provider target when one is registered (maintainer)", () => {
+    render(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        deployTarget={target}
+        apiBaseURL=""
+      />,
+    );
+    expect(screen.getByText("Native")).toBeTruthy();
+    expect(screen.getByText("ArgoCD")).toBeTruthy();
+    expect(screen.getByText("checkout")).toBeTruthy();
+    expect(screen.getByText("prod-gke")).toBeTruthy();
+    expect(screen.getByText("trigger")).toBeTruthy();
+  });
+
+  it("omits the native row when there is no target (or the viewer can't see it)", () => {
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" />);
+    expect(screen.queryByText("Native")).toBeNull();
+    expect(screen.queryByText("checkout")).toBeNull();
   });
 
   it("lazily fetches history on expand and lists past deploys", async () => {
