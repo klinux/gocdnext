@@ -9,7 +9,11 @@
 // registry) and the concrete ArgoCD client land in sibling files.
 package deploy
 
-import "context"
+import (
+	"context"
+
+	"github.com/google/uuid"
+)
 
 // SyncMode selects how gocdnext actuates a target.
 //
@@ -31,12 +35,13 @@ const (
 // Application), so the same credential serves the Application (this slice) and
 // the Rollout CR (a later slice).
 type DeploymentTarget struct {
-	Environment string   // "prod" — the gocdnext environment this target deploys
-	Provider    string   // "argocd" (the only provider today)
-	Cluster     string   // cluster-registry name whose k8s API hosts the Application CR
-	Application string   // ArgoCD Application name
-	Namespace   string   // Application namespace (typically "argocd")
-	SyncMode    SyncMode // trigger | observe
+	ProjectID   uuid.UUID // owning project — gates cluster access (allowed_projects)
+	Environment string    // "prod" — the gocdnext environment this target deploys
+	Provider    string    // "argocd" (the only provider today)
+	Cluster     string    // cluster-registry name whose k8s API hosts the Application CR
+	Application string    // ArgoCD Application name
+	Namespace   string    // Application namespace (typically "argocd")
+	SyncMode    SyncMode  // trigger | observe
 }
 
 // DeployState is one convergence snapshot the provider reports, mirroring the
