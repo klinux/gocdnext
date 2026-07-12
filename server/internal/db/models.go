@@ -190,6 +190,24 @@ type DeployTarget struct {
 	UpdatedAt     pgtype.Timestamptz
 }
 
+type DeployWatch struct {
+	DeploymentRevisionID pgtype.UUID
+	ProjectID            pgtype.UUID
+	SyncMode             string
+	Cluster              string
+	Application          string
+	Namespace            string
+	ExpectedRevision     string
+	WatchStartedAt       pgtype.Timestamptz
+	SyncRequestedAt      pgtype.Timestamptz
+	DeadlineAt           pgtype.Timestamptz
+	DegradedSince        pgtype.Timestamptz
+	ClaimID              pgtype.UUID
+	ClaimedBy            *string
+	ClaimedAt            pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+}
+
 type DeploymentRevision struct {
 	ID            pgtype.UUID
 	EnvironmentID pgtype.UUID

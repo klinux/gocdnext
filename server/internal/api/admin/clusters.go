@@ -282,6 +282,20 @@ func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
 			http.StatusConflict)
 		return
 	}
+	// An in-flight deploy watch also FK-RESTRICTs the cluster; block with a friendly
+	// 409 (a live deploy is watching this cluster) rather than a raw FK 500.
+	watches, err := h.store.CountActiveWatchesForCluster(r.Context(), existing.Name)
+	if err != nil {
+		h.log.Error("admin clusters: count active watches", "name", existing.Name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if watches > 0 {
+		http.Error(w, fmt.Sprintf(
+			"cluster has %d in-flight deploy(s) — wait for them to finish before deleting", watches),
+			http.StatusConflict)
+		return
+	}
 	if err := h.store.DeleteCluster(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrClusterNotFound) {
 			http.Error(w, "cluster not found", http.StatusNotFound)
