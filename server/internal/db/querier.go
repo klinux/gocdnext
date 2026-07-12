@@ -463,11 +463,12 @@ type Querier interface {
 	// left behind would linger forever in the live-watch queue (never claimable — the
 	// claim scan filters status='in_progress') and falsely block deleting its cluster.
 	FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDeploymentRevisionParams) (int64, error)
-	// Terminalize a specific revision by id (the deploy watcher's convergence verdict).
-	// Guarded on status='in_progress' so a re-delivered/duplicate finalize is a no-op.
-	// The watcher's FinalizeDeployWatch deletes the deploy_watch (fenced) in the same
-	// tx before calling this, so no watch cleanup is needed here.
-	FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (int64, error)
+	// Terminalize a specific revision by id (the deploy watcher's convergence verdict)
+	// and return its job link so the SAME tx can complete the server-managed deploy
+	// job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
+	// finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
+	// deploy_watch (fenced) in the same tx before calling this.
+	FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (FinalizeDeploymentRevisionByIDRow, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// Same shape as ListAgentsWithRunning but for one row — reused by
 	// the /agents/{id} page. Returns ErrNoRows when the UUID is not
@@ -1492,7 +1493,8 @@ type Querier interface {
 	// stolen (another replica reclaimed) and this watcher must drop the work.
 	RenewDeployWatch(ctx context.Context, arg RenewDeployWatchParams) (int64, error)
 	// Resolve `deploy: { to: <env> }` for a project: join the environment to its
-	// target and return everything the provider needs.
+	// target and return everything the provider + native takeover need (incl. the
+	// environment id for the deployment_revision FK).
 	ResolveDeployTarget(ctx context.Context, arg ResolveDeployTargetParams) (ResolveDeployTargetRow, error)
 	// What-if preview: every enabled policy that WOULD apply to a project carrying
 	// the given framework set — global (applies_to_all) or targeting any of them.
@@ -1669,6 +1671,19 @@ type Querier interface {
 	// Returns (id, agent_id) per stamped row so the handler can
 	// correlate Dispatch failures with their owning agent.
 	StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error)
+	// UNFENCED stamp of the correlation anchor at dispatch, before any watcher has
+	// claimed the watch (so the fenced MarkDeployWatchSyncRequested can't be used yet).
+	// Monotonic: `WHERE sync_requested_at IS NULL` — a later dispatch/retry never reopens
+	// the anchor. 0 rows → already stamped or gone; the caller logs and continues.
+	StampDeployWatchSyncRequested(ctx context.Context, deploymentRevisionID pgtype.UUID) (int64, error)
+	// Moves a queued job to running with NO agent — the native deploy takeover
+	// (ADR-0001, Model A): the server drives the sync + watch instead of an agent.
+	// Same queued+unassigned predicate as AssignJob (races between ticks resolve to one
+	// winner), and it returns the CURRENT attempt (AssignJob doesn't bump either) so the
+	// deployment_revision's (job_run_id, attempt) key stays consistent with the rest of
+	// the system. The caller creates the revision + deploy_watch in the SAME tx, so the
+	// reaper never observes a running-no-agent job without its owning watch.
+	StartServerManagedJob(ctx context.Context, id pgtype.UUID) (StartServerManagedJobRow, error)
 	// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
 	// the supersede victim candidates for `supersede: branch`. counter DESC so
 	// concurrent supersede passes lock runs.id rows in one consistent descending
