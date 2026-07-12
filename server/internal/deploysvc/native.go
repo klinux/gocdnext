@@ -50,9 +50,17 @@ type NativeDeployInput struct {
 	RunID       uuid.UUID
 	JobRunID    uuid.UUID
 	Environment string
-	Version     string // resolved deploy version → sync revision + correlation anchor
-	DeployedBy  string
-	Now         time.Time // dispatch time; the convergence deadline is Now + deadline
+	// Version is the human-facing deploy version stored in deployment_revisions and
+	// shown in the UI (e.g. a semver or the commit short sha).
+	Version string
+	// Revision is the git revision ArgoCD is expected to report in
+	// .status.sync.revision / operationState.syncResult.revision — the FULL commit
+	// SHA. It is what the watch correlates + Evaluate matches for success, so it must
+	// be the full SHA (NOT the short-sha display Version, which would never match).
+	// Empty ("") leaves the watch unpinned (success on any Synced+Healthy).
+	Revision   string
+	DeployedBy string
+	Now        time.Time // dispatch time; the convergence deadline is Now + deadline
 }
 
 // NativeDeployResult tells the scheduler what happened (and carries fields for its
@@ -116,7 +124,7 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 		Cluster:          tgt.Cluster,
 		Application:      tgt.Application,
 		Namespace:        tgt.Namespace,
-		ExpectedRevision: in.Version,
+		ExpectedRevision: in.Revision, // full SHA for correlation, NOT the display Version
 		DeadlineAt:       in.Now.Add(d.deadline),
 	})
 	if err != nil {
@@ -137,7 +145,7 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 			ProjectID: in.ProjectID, Provider: tgt.Provider, Cluster: tgt.Cluster,
 			Application: tgt.Application, Namespace: tgt.Namespace, SyncMode: deploy.SyncMode(tgt.SyncMode),
 		}
-		if err := d.sync.Sync(ctx, syncTarget, in.Version); err != nil {
+		if err := d.sync.Sync(ctx, syncTarget, in.Revision); err != nil {
 			// Conservative: do NOT complete the job here. Leaving sync_requested_at NULL,
 			// the watcher deadline-fails and completes job + revision together — a single
 			// terminalizer. The takeover still happened (running job owned by the watch).

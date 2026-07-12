@@ -101,6 +101,48 @@ func TestDispatchRun_NativeTakeover(t *testing.T) {
 	}
 }
 
+// The core HIGH-2 fix: a native deploy needs NO agent. With a target registered and
+// NO idle agent in the pool, it must still be taken over (server-managed), not sit
+// queued waiting for an agent it never uses.
+func TestDispatchRun_NativeTakeover_NoIdleAgent(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore() // deliberately EMPTY — no agent
+	sync := &fakeSyncer{}
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN).
+		WithNativeDeployer(deploysvc.NewNativeDeployer(sync, s, quietLogger()))
+	ctx := context.Background()
+
+	_, run, _ := seedDeployRuns(t, pool, "native-noagent", domain.SupersedeOff)
+	jobID := soleJobID(t, run)
+	registerDeployTarget(t, s, projectIDForSlug(t, pool, "native-noagent"), "prod", "trigger")
+
+	sched.DispatchRun(ctx, run.RunID)
+
+	var status string
+	var agent *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT status, agent_id FROM job_runs WHERE id=$1`, jobID).Scan(&status, &agent); err != nil {
+		t.Fatalf("job row: %v", err)
+	}
+	if status != "running" || agent != nil {
+		t.Fatalf("job = %q agent=%v, want running + no agent (taken over WITHOUT an idle agent)", status, agent)
+	}
+	if sync.calls != 1 {
+		t.Fatalf("sync called %d times, want 1", sync.calls)
+	}
+	// The correlation anchor is the FULL commit SHA (not the short-sha display version).
+	var expectedRev string
+	if err := pool.QueryRow(ctx, `
+		SELECT dw.expected_revision FROM deploy_watches dw
+		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+		WHERE dr.job_run_id=$1`, jobID).Scan(&expectedRev); err != nil {
+		t.Fatalf("watch expected_revision: %v", err)
+	}
+	if expectedRev != "aaa0123456789aaa0123456789aaa0123456789a" {
+		t.Fatalf("expected_revision = %q, want the full commit SHA (HIGH 3)", expectedRev)
+	}
+}
+
 // With the native deployer wired but NO target registered, the deploy job falls back
 // to the plugin path — a normal agent dispatch.
 func TestDispatchRun_NativeFallbackWhenNoTarget(t *testing.T) {
