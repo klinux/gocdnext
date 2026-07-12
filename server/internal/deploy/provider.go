@@ -45,12 +45,34 @@ type DeploymentTarget struct {
 }
 
 // DeployState is one convergence snapshot the provider reports, mirroring the
-// fields of an ArgoCD Application's `.status`.
+// fields of an ArgoCD Application's `.status`. It is intentionally comparable
+// (no slice/map fields) so tests and Evaluate can use `==`.
 type DeployState struct {
-	Sync        SyncStatus
-	Health      HealthStatus
-	ObservedRev string // git revision / image the controller reports live
+	Sync   SyncStatus
+	Health HealthStatus
+	// ObservedRev is the single-source git revision the controller reports live
+	// (`.status.sync.revision`). Empty for a multi-source Application
+	// (`.status.sync.revisions`, out of scope for this slice — the target registry
+	// rejects multi-source): an empty ObservedRev makes the revision check below
+	// fail-closed (Pending, never a false success) rather than matching.
+	ObservedRev string
+	// OperationPhase is `.status.operationState.phase` — the last sync operation's
+	// state. A Failed/Error operation is a hard deploy failure; a Running one means
+	// a sync is still in flight (so a stale Synced+Healthy must not read as done).
+	OperationPhase OpPhase
 }
+
+// OpPhase mirrors an ArgoCD Application's `.status.operationState.phase`. Empty
+// means no operation has been recorded.
+type OpPhase string
+
+const (
+	OpRunning     OpPhase = "Running"
+	OpSucceeded   OpPhase = "Succeeded"
+	OpFailed      OpPhase = "Failed"
+	OpError       OpPhase = "Error"
+	OpTerminating OpPhase = "Terminating"
+)
 
 // SyncStatus mirrors an ArgoCD Application's `.status.sync.status`.
 type SyncStatus string

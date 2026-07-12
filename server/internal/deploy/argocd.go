@@ -7,22 +7,30 @@ import (
 )
 
 // appFetcher returns the raw ArgoCD Application resource JSON for a target. The
-// transport lives behind this seam — a later increment wires it to the k8s
-// Application CRD reached through the cluster registry (the same credential that
-// will later serve the Rollout CR). Observe only parses; tests inject fixtures.
+// transport lives behind this seam; tests inject fixtures.
 type appFetcher interface {
 	fetchApplication(ctx context.Context, target DeploymentTarget) ([]byte, error)
 }
 
-// ArgoProvider is the ArgoCD-backed DeploymentProvider. It observes and (in a
-// later increment) syncs an Application, never reconciling desired state itself.
+// ArgoProvider is the ArgoCD-backed provider. It observes an Application and (in
+// the sync increment) triggers a sync, never reconciling desired state itself.
+// It implements Observe today; Sync — and thus the full DeploymentProvider
+// interface — lands with the sync increment.
 type ArgoProvider struct {
 	fetch appFetcher
 }
 
-// NewArgoProvider builds the provider over a transport (fetcher).
-func NewArgoProvider(fetch appFetcher) *ArgoProvider {
-	return &ArgoProvider{fetch: fetch}
+// NewArgoProvider wires the provider over the store-backed k8s-CRD transport: the
+// server passes its cluster registry (as a ClusterGetter) and gets a provider
+// that reads Applications through the target cluster's k8s API.
+func NewArgoProvider(g ClusterGetter) *ArgoProvider {
+	return &ArgoProvider{fetch: newK8sAppFetcher(g)}
+}
+
+// newArgoProviderWith injects an appFetcher directly — for tests that exercise
+// Observe with a fixture fetcher, no cluster involved.
+func newArgoProviderWith(f appFetcher) *ArgoProvider {
+	return &ArgoProvider{fetch: f}
 }
 
 // Observe fetches the target's Application and returns one convergence snapshot.
@@ -35,9 +43,13 @@ func (a *ArgoProvider) Observe(ctx context.Context, target DeploymentTarget) (De
 }
 
 // applicationStatus is the minimal slice of an ArgoCD Application resource this
-// provider reads. Extra fields (and unknown enum values) are tolerated by design
-// — unrecognized statuses normalize to Unknown so a controller-version drift
-// degrades to "keep watching", never a false success or a crash.
+// provider reads. Extra fields (and unknown enum values) are tolerated by design.
+//
+// Note on multi-source: multi-source Applications report `.status.sync.revisions`
+// (a list) and leave `.status.sync.revision` empty. Multi-source is OUT OF SCOPE
+// for this slice — the target registry rejects it — so we read only the
+// single-source `.revision`. A multi-source app therefore yields ObservedRev="",
+// which keeps the revision check fail-closed (Pending, never a false success).
 type applicationStatus struct {
 	Status struct {
 		Sync struct {
@@ -47,6 +59,9 @@ type applicationStatus struct {
 		Health struct {
 			Status string `json:"status"`
 		} `json:"health"`
+		OperationState struct {
+			Phase string `json:"phase"`
+		} `json:"operationState"`
 	} `json:"status"`
 }
 
@@ -56,9 +71,10 @@ func parseApplicationStatus(raw []byte) (DeployState, error) {
 		return DeployState{}, fmt.Errorf("deploy: decode application status: %w", err)
 	}
 	return DeployState{
-		Sync:        normalizeSync(app.Status.Sync.Status),
-		Health:      normalizeHealth(app.Status.Health.Status),
-		ObservedRev: app.Status.Sync.Revision,
+		Sync:           normalizeSync(app.Status.Sync.Status),
+		Health:         normalizeHealth(app.Status.Health.Status),
+		ObservedRev:    app.Status.Sync.Revision,
+		OperationPhase: normalizeOpPhase(app.Status.OperationState.Phase),
 	}, nil
 }
 
@@ -77,5 +93,17 @@ func normalizeHealth(s string) HealthStatus {
 		return HealthStatus(s)
 	default:
 		return HealthUnknown
+	}
+}
+
+// normalizeOpPhase maps `.status.operationState.phase` to a known OpPhase. An
+// absent operationState (no sync yet) or an unrecognized value is "" — Evaluate
+// then relies on sync/health/revision alone, never a false failure from drift.
+func normalizeOpPhase(s string) OpPhase {
+	switch OpPhase(s) {
+	case OpRunning, OpSucceeded, OpFailed, OpError, OpTerminating:
+		return OpPhase(s)
+	default:
+		return ""
 	}
 }
