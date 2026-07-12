@@ -287,6 +287,11 @@ func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cluster not found", http.StatusNotFound)
 			return
 		}
+		// Race backstop: a target created after the pre-check trips the FK.
+		if errors.Is(err, store.ErrClusterInUse) {
+			http.Error(w, "cluster is referenced by a deploy target — remove it before deleting", http.StatusConflict)
+			return
+		}
 		h.log.Error("admin clusters: delete", "id", id, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
