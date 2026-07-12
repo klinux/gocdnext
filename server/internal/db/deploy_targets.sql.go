@@ -93,7 +93,7 @@ func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgt
 
 const resolveDeployTarget = `-- name: ResolveDeployTarget :one
 SELECT dt.provider, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
-       e.project_id, e.name AS environment
+       e.project_id, e.id AS environment_id, e.name AS environment
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
 WHERE e.project_id = $1 AND e.name = $2
@@ -105,17 +105,19 @@ type ResolveDeployTargetParams struct {
 }
 
 type ResolveDeployTargetRow struct {
-	Provider    string
-	Cluster     string
-	Application string
-	Namespace   string
-	SyncMode    string
-	ProjectID   pgtype.UUID
-	Environment string
+	Provider      string
+	Cluster       string
+	Application   string
+	Namespace     string
+	SyncMode      string
+	ProjectID     pgtype.UUID
+	EnvironmentID pgtype.UUID
+	Environment   string
 }
 
 // Resolve `deploy: { to: <env> }` for a project: join the environment to its
-// target and return everything the provider needs.
+// target and return everything the provider + native takeover need (incl. the
+// environment id for the deployment_revision FK).
 func (q *Queries) ResolveDeployTarget(ctx context.Context, arg ResolveDeployTargetParams) (ResolveDeployTargetRow, error) {
 	row := q.db.QueryRow(ctx, resolveDeployTarget, arg.ProjectID, arg.Name)
 	var i ResolveDeployTargetRow
@@ -126,6 +128,7 @@ func (q *Queries) ResolveDeployTarget(ctx context.Context, arg ResolveDeployTarg
 		&i.Namespace,
 		&i.SyncMode,
 		&i.ProjectID,
+		&i.EnvironmentID,
 		&i.Environment,
 	)
 	return i, err
