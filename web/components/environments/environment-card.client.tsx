@@ -15,6 +15,8 @@ import {
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RollbackButton } from "@/components/environments/rollback-button.client";
+import { useDeployWatch } from "@/components/environments/deploy-watches-provider.client";
+import { NativeWatchChip } from "@/components/environments/native-watch-chip.client";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type {
@@ -64,6 +66,7 @@ export function EnvironmentCard({
 }: Props) {
   const { current } = environment;
   const tone: StatusTone = current ? statusTone(current.status) : "neutral";
+  const watch = useDeployWatch(environment.name);
   const [history, setHistory] = useState<HistoryState>({ phase: "idle" });
   const [open, setOpen] = useState(false);
 
@@ -106,11 +109,14 @@ export function EnvironmentCard({
           <Rocket className="size-4 text-muted-foreground" aria-hidden />
           {environment.name}
         </CardTitle>
-        {current ? (
-          <StatusBadge status={current.status} />
-        ) : (
-          <span className="text-xs text-muted-foreground">no deploys yet</span>
-        )}
+        <div className="flex items-center gap-2">
+          {watch ? <NativeWatchChip watch={watch} /> : null}
+          {current ? (
+            <StatusBadge status={current.status} />
+          ) : (
+            <span className="text-xs text-muted-foreground">no deploys yet</span>
+          )}
+        </div>
       </CardHeader>
 
       <CardContent className="space-y-3">
