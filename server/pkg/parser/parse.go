@@ -41,7 +41,6 @@ const (
 // match.
 var approvalLabelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 
-
 // jobClusterRE bounds a `cluster:` reference — must match the store's
 // clusterNameRE so a name that parses also resolves. Lowercase
 // DNS-ish; keeps it safe in the jsonpath usage query + log lines.
