@@ -176,45 +176,113 @@ func (s *Store) ClearDeployWatchDegraded(ctx context.Context, revID, claimID uui
 	return n > 0, nil
 }
 
-// FinalizeDeployWatch atomically terminalizes the deploy: it deletes the watch
-// (fenced on claimID) and, in the SAME tx, flips the revision to status. Returns
-// false WITHOUT any effect when the lease was lost (the fenced delete matched 0
-// rows) — the fencing guarantee: a reclaimed watcher can't terminalize. status is
-// "success" or "failed".
-func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status string) (bool, error) {
+// DeployWatchFinalizeResult reports what FinalizeDeployWatch did. Finalized is false
+// only when the lease was lost (the fenced delete matched 0 rows). RunID is the run
+// whose server-managed deploy job was completed — the caller NOTIFYs it post-commit
+// so the run advances promptly; uuid.Nil when no job_run was completed.
+type DeployWatchFinalizeResult struct {
+	Finalized bool
+	RunID     uuid.UUID
+}
+
+// FinalizeDeployWatch atomically terminalizes a server-managed deploy (ADR-0001,
+// Model A) in ONE tx: it deletes the watch (fenced on claimID), flips the revision to
+// status, and completes the deploy's job_run (with the stage/run cascade) so the job
+// status equals the deploy outcome. Doing all three together closes the crash gap
+// where the watch is gone but the job is left running (which the reaper would then
+// reclaim). Returns Finalized=false with NO effect when the lease was lost — the
+// fencing guarantee: a reclaimed watcher can't terminalize. status is "success" or
+// "failed"; reason annotates a failed job_run.
+func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (DeployWatchFinalizeResult, error) {
 	// Validate up front (mirrors FinalizeDeploymentRevision) — a clean error rather
 	// than letting the revision's status CHECK abort the tx.
 	if status != DeployStatusSuccess && status != DeployStatusFailed {
-		return false, fmt.Errorf("store: finalize deploy watch: invalid status %q", status)
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch: invalid status %q", status)
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return false, fmt.Errorf("store: finalize deploy watch begin: %w", err)
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
 
-	// Fenced delete FIRST: 0 rows → lease lost → abort without touching the revision.
+	// Fenced delete FIRST: 0 rows → lease lost → abort without touching anything else.
 	del, err := q.DeleteDeployWatchClaimed(ctx, db.DeleteDeployWatchClaimedParams{
 		DeploymentRevisionID: pgUUID(revID), ClaimID: pgUUID(claimID),
 	})
 	if err != nil {
-		return false, fmt.Errorf("store: finalize deploy watch delete: %w", err)
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch delete: %w", err)
 	}
 	if del == 0 {
-		return false, nil
+		return DeployWatchFinalizeResult{Finalized: false}, nil
 	}
-	// Lease held: terminalize the revision (idempotent — a re-delivered finalize on
-	// an already-final revision affects 0 rows, but the watch is correctly gone).
-	if _, err := q.FinalizeDeploymentRevisionByID(ctx, db.FinalizeDeploymentRevisionByIDParams{
+
+	// Lease held: terminalize the revision and learn its job link.
+	rev, err := q.FinalizeDeploymentRevisionByID(ctx, db.FinalizeDeploymentRevisionByIDParams{
 		ID: pgUUID(revID), Status: status,
-	}); err != nil {
-		return false, fmt.Errorf("store: finalize deploy watch revision: %w", err)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The revision was already terminal (e.g. the job/reaper path finalized it,
+			// which also deleted the watch — so this delete would have matched 0; being
+			// here means a rare interleave). The watch is gone; commit and move on.
+			if err := tx.Commit(ctx); err != nil {
+				return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
+			}
+			return DeployWatchFinalizeResult{Finalized: true}, nil
+		}
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch revision: %w", err)
 	}
+
+	res := DeployWatchFinalizeResult{Finalized: true}
+	// Complete the server-managed deploy job_run in the SAME tx. It runs with NO agent
+	// (Model A), so expected_agent_id=NULL matches via IS NOT DISTINCT FROM. ErrNoRows
+	// means it's already terminal or agent-run (not server-managed) — the revision
+	// terminalization stands regardless.
+	if rev.JobRunID.Valid {
+		exit := int32(0)
+		var jobErr *string
+		if status == DeployStatusFailed {
+			exit = 1
+			jobErr = &reason
+		}
+		row, cerr := q.CompleteJobRun(ctx, db.CompleteJobRunParams{
+			ID:              rev.JobRunID,
+			Status:          status,
+			ExitCode:        &exit,
+			Error:           jobErr,
+			Outputs:         nil,
+			ExpectedAgentID: nullableUUID(uuid.Nil), // server-managed: no agent
+			ExpectedAttempt: rev.Attempt,
+		})
+		switch {
+		case cerr == nil:
+			comp := JobCompletion{
+				JobRunID:   fromPgUUID(row.ID),
+				RunID:      fromPgUUID(row.RunID),
+				StageRunID: fromPgUUID(row.StageRunID),
+				JobName:    row.Name,
+			}
+			if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+				return DeployWatchFinalizeResult{}, err
+			}
+			// Match the normal completion path: a deploy job finishing can make a
+			// downstream gate reachable → clear older lane siblings (#97), in-tx.
+			if _, err := s.supersedeAfterCascade(ctx, tx, comp.RunID, comp.StageRunID, &comp); err != nil {
+				return DeployWatchFinalizeResult{}, err
+			}
+			res.RunID = comp.RunID
+		case errors.Is(cerr, pgx.ErrNoRows):
+			// not a server-managed running job — nothing to complete.
+		default:
+			return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch job: %w", cerr)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("store: finalize deploy watch commit: %w", err)
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
 	}
-	return true, nil
+	return res, nil
 }
 
 // CountActiveWatchesForCluster backs the cluster delete-guard (an in-flight watch
