@@ -99,7 +99,8 @@ func TestRegister_HappyPath_OrderAndFields(t *testing.T) {
 	reg := &fakeRegistry{envID: envID}
 	r, log := newRegistrar(p, reg)
 
-	if err := r.Register(context.Background(), validInput()); err != nil {
+	tgt, err := r.Register(context.Background(), validInput())
+	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	// Order is load-bearing: validate the Application, THEN ensure env, THEN upsert.
@@ -108,6 +109,10 @@ func TestRegister_HappyPath_OrderAndFields(t *testing.T) {
 	}
 	if reg.gotUpsert.EnvironmentID != envID {
 		t.Errorf("upsert env id = %v, want the EnsureEnvironment result %v", reg.gotUpsert.EnvironmentID, envID)
+	}
+	// Register returns the canonical target (no read-back needed by the caller).
+	if tgt.Environment != "production" || tgt.Namespace != "argocd" || tgt.Cluster != "prod-gke" || tgt.SyncMode != "trigger" {
+		t.Errorf("Register returned = %+v, want the canonical target", tgt)
 	}
 }
 
@@ -121,15 +126,20 @@ func TestRegister_DefaultsAndTrims(t *testing.T) {
 	in.Cluster = "  prod-gke  "     // trimmed
 	in.Application = "  checkout  " // trimmed
 	in.Environment = "  production "
-	if err := r.Register(context.Background(), in); err != nil {
+	tgt, err := r.Register(context.Background(), in)
+	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	// The fetched target and the upserted row must both carry canonical values.
+	// The fetched target, the upserted row, AND the returned target must all carry
+	// canonical values.
 	if p.gotTarget.Cluster != "prod-gke" || p.gotTarget.Application != "checkout" || p.gotTarget.Namespace != "argocd" || p.gotTarget.Environment != "production" {
 		t.Errorf("fetched target not normalized: %+v", p.gotTarget)
 	}
 	if reg.gotUpsert.Cluster != "prod-gke" || reg.gotUpsert.Application != "checkout" || reg.gotUpsert.Namespace != "argocd" {
 		t.Errorf("upsert not normalized: %+v", reg.gotUpsert)
+	}
+	if tgt.Cluster != "prod-gke" || tgt.Namespace != "argocd" || tgt.Environment != "production" {
+		t.Errorf("returned target not normalized: %+v", tgt)
 	}
 }
 
@@ -138,7 +148,7 @@ func TestRegister_MultiSourceOrAuthzError_DoesNotTouchDB(t *testing.T) {
 	reg := &fakeRegistry{envID: uuid.New()}
 	r, log := newRegistrar(p, reg)
 
-	err := r.Register(context.Background(), validInput())
+	_, err := r.Register(context.Background(), validInput())
 	if err == nil {
 		t.Fatal("expected an error from ValidateSingleSource")
 	}
@@ -157,7 +167,7 @@ func TestRegister_FieldValidationError_BeforeAnyEffect(t *testing.T) {
 
 	in := validInput()
 	in.SyncMode = "auto" // invalid enum
-	err := r.Register(context.Background(), in)
+	_, err := r.Register(context.Background(), in)
 	if err == nil {
 		t.Fatal("expected a validation error")
 	}
@@ -174,7 +184,7 @@ func TestRegister_EnsureEnvironmentError_SkipsUpsert(t *testing.T) {
 	reg := &fakeRegistry{ensureErr: errors.New("db down")}
 	r, log := newRegistrar(p, reg)
 
-	err := r.Register(context.Background(), validInput())
+	_, err := r.Register(context.Background(), validInput())
 	if err == nil {
 		t.Fatal("expected an error from EnsureEnvironment")
 	}
@@ -183,6 +193,29 @@ func TestRegister_EnsureEnvironmentError_SkipsUpsert(t *testing.T) {
 	}
 	if want := []string{"validate-source", "ensure-env"}; !equal(*log, want) {
 		t.Fatalf("call log = %v, want %v (no upsert after a failed ensure)", *log, want)
+	}
+}
+
+// The registry must reject an environment name the pipeline parser would reject
+// (same bound), so a target can't be created for an env no deploy could reference
+// — and a '/' can't break the DELETE route.
+func TestRegister_InvalidEnvironmentName(t *testing.T) {
+	for _, bad := range []string{"bad/name", "-leading", "a b", ""} {
+		p := &fakeProvider{}
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, log := newRegistrar(p, reg)
+		in := validInput()
+		in.Environment = bad
+		_, err := r.Register(context.Background(), in)
+		if err == nil {
+			t.Fatalf("env %q: expected a validation error", bad)
+		}
+		if kindOf(t, err) != FaultInvalid {
+			t.Errorf("env %q: kind = %v, want Invalid", bad, kindOf(t, err))
+		}
+		if len(*log) != 0 {
+			t.Errorf("env %q: call log = %v, want empty (rejected before the fetch)", bad, *log)
+		}
 	}
 }
 

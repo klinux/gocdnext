@@ -706,7 +706,6 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/labels", projectsHandler.ListLabels)
 		p.Get("/api/v1/projects/{slug}/findings", projectsHandler.ListFindings)
 		p.Get("/api/v1/projects/{slug}/environments", projectsHandler.ListEnvironments)
-		p.Get("/api/v1/projects/{slug}/deploy-targets", projectsHandler.ListDeployTargets)
 		p.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", projectsHandler.ListEnvironmentDeployments)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
@@ -763,6 +762,10 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
 		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", projectsHandler.RollbackEnvironment)
+		// Deploy targets reveal cluster/application/namespace/sync_mode — all three
+		// verbs are maintainer-gated (read included), consistent with treating the
+		// target as maintainer-owned config.
+		p.Get("/api/v1/projects/{slug}/deploy-targets", projectsHandler.ListDeployTargets)
 		p.Post("/api/v1/projects/{slug}/deploy-targets", projectsHandler.SetDeployTarget)
 		p.Delete("/api/v1/projects/{slug}/deploy-targets/{env}", projectsHandler.DeleteDeployTarget)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)

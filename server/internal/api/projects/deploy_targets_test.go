@@ -2,6 +2,7 @@ package projects_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -107,6 +108,25 @@ func TestSetDeployTarget_FaultMapping(t *testing.T) {
 			`{"environment":"production","cluster":"prod","application":"checkout","sync_mode":"auto"}`)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("transport error -> 422 with a non-leaky message", func(t *testing.T) {
+		// A validation/transport failure (not multi-source) must not echo the
+		// cluster's internal API-server URL back to the client.
+		leaky := errors.New(`Get "https://internal-api.svc:6443/apis/argoproj.io/v1alpha1/...": dial tcp 10.0.0.5:6443: i/o timeout`)
+		r, s := newDeployTargetsRouter(t, leaky, true)
+		seedProjectAndCluster(t, s)
+		rr := doReq(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets",
+			`{"environment":"production","cluster":"prod","application":"checkout","sync_mode":"trigger"}`)
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422, body=%s", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "internal-api") || strings.Contains(rr.Body.String(), "10.0.0.5") {
+			t.Errorf("response leaked the internal cluster URL: %s", rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "could not be validated") {
+			t.Errorf("want a generic public message, got: %s", rr.Body.String())
 		}
 	})
 

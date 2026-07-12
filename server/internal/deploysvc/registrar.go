@@ -16,6 +16,7 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/deploy"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // Provider inspects an ArgoCD Application (existence, reachability, single-source),
@@ -60,7 +61,7 @@ type RegisterInput struct {
 // request never touches the registry. All string fields are trimmed here so the
 // stored + fetched values are canonical (ValidateTargetFields only checks
 // non-empty; it doesn't normalize).
-func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
+func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.DeployTarget, error) {
 	provider := strings.TrimSpace(in.Provider)
 	cluster := strings.TrimSpace(in.Cluster)
 	application := strings.TrimSpace(in.Application)
@@ -69,13 +70,17 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
 	namespace := deploy.NormalizeNamespace(in.Namespace)
 
 	if in.ProjectID == uuid.Nil {
-		return &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: project is required")}
+		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: project is required")}
 	}
-	if environment == "" {
-		return &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: environment is required")}
+	// Same bound the pipeline parser enforces on deploy.environment — so the API
+	// can't register a target for a name no pipeline could reference, and a name
+	// with '/' can't break the DELETE route.
+	if !domain.ValidEnvironmentName(environment) {
+		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: fmt.Errorf(
+			"deploysvc: environment %q is invalid — start alphanumeric, then alphanumeric + . _ - (max 64)", in.Environment)}
 	}
 	if err := deploy.ValidateTargetFields(provider, cluster, application, syncMode); err != nil {
-		return &Fault{Kind: FaultInvalid, Err: err}
+		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: err}
 	}
 
 	target := deploy.DeploymentTarget{
@@ -89,12 +94,12 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
 	}
 	// Fetch + authorize + single-source check BEFORE any DB write.
 	if err := r.provider.ValidateSingleSource(ctx, target); err != nil {
-		return classifyValidateErr(err)
+		return store.DeployTarget{}, classifyValidateErr(err)
 	}
 
 	envID, err := r.registry.EnsureEnvironment(ctx, in.ProjectID, environment)
 	if err != nil {
-		return &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: ensure environment: %w", err)}
+		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: ensure environment: %w", err)}
 	}
 	if err := r.registry.UpsertDeployTarget(ctx, store.DeployTargetInput{
 		EnvironmentID: envID,
@@ -105,7 +110,16 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) error {
 		SyncMode:      syncMode,
 		CreatedBy:     in.CreatedBy,
 	}); err != nil {
-		return &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: upsert deploy target: %w", err)}
+		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: upsert deploy target: %w", err)}
 	}
-	return nil
+	// Return the canonical (normalized) target so the caller needn't re-read it.
+	return store.DeployTarget{
+		ProjectID:   in.ProjectID,
+		Environment: environment,
+		Provider:    provider,
+		Cluster:     cluster,
+		Application: application,
+		Namespace:   namespace,
+		SyncMode:    syncMode,
+	}, nil
 }

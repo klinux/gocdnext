@@ -5,13 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	"github.com/gocdnext/gocdnext/server/internal/audit"
+	"github.com/gocdnext/gocdnext/server/internal/deploy"
 	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -66,7 +66,7 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		createdBy = u.ID.String()
 	}
 
-	if err := h.deployRegistrar.Register(r.Context(), deploysvc.RegisterInput{
+	tgt, err := h.deployRegistrar.Register(r.Context(), deploysvc.RegisterInput{
 		ProjectID:   projectID,
 		Environment: req.Environment,
 		Provider:    "argocd",
@@ -75,23 +75,17 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		Namespace:   req.Namespace,
 		SyncMode:    req.SyncMode,
 		CreatedBy:   createdBy,
-	}); err != nil {
+	})
+	if err != nil {
 		writeFault(w, h.log, err)
 		return
 	}
 
-	env := strings.TrimSpace(req.Environment)
+	// Register returns the canonical (normalized) target — no read-back needed, so
+	// the 200 body is always the promised DTO.
 	audit.Emit(r.Context(), h.log, h.store,
-		store.AuditActionDeployTargetSet, "environment", env,
-		map[string]any{"slug": slug, "cluster": strings.TrimSpace(req.Cluster),
-			"application": strings.TrimSpace(req.Application), "sync_mode": strings.TrimSpace(req.SyncMode)})
-
-	// Read the canonical (normalized) target back for the response body.
-	tgt, err := h.store.ResolveDeployTarget(r.Context(), projectID, env)
-	if err != nil {
-		w.WriteHeader(http.StatusOK) // registered; couldn't read back — still success
-		return
-	}
+		store.AuditActionDeployTargetSet, "environment", tgt.Environment,
+		map[string]any{"slug": slug, "cluster": tgt.Cluster, "application": tgt.Application, "sync_mode": tgt.SyncMode})
 	writeJSON(w, http.StatusOK, deployTargetDTO{
 		Environment: tgt.Environment, Provider: tgt.Provider, Cluster: tgt.Cluster,
 		Application: tgt.Application, Namespace: tgt.Namespace, SyncMode: tgt.SyncMode,
@@ -176,7 +170,15 @@ func writeFault(w http.ResponseWriter, log *slog.Logger, err error) {
 	case deploysvc.FaultForbidden:
 		http.Error(w, f.Error(), http.StatusForbidden)
 	case deploysvc.FaultUnprocessable:
-		http.Error(w, f.Error(), http.StatusUnprocessableEntity)
+		// A multi-source rejection is safe to echo; a transport failure may carry the
+		// cluster's internal API-server URL, so return a short public message and log
+		// the full error.
+		if errors.Is(err, deploy.ErrMultiSource) {
+			http.Error(w, f.Error(), http.StatusUnprocessableEntity)
+		} else {
+			log.Error("deploy targets: application could not be validated", "err", f.Err)
+			http.Error(w, "the deploy target could not be validated — check the cluster is reachable and the application exists", http.StatusUnprocessableEntity)
+		}
 	default: // FaultInternal
 		log.Error("deploy targets: register failed", "err", f.Err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
