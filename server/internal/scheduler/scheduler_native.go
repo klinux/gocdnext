@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
@@ -100,8 +101,10 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 	if err != nil {
 		release()
 		// Terminal version errors match the plugin path's contract (#39) — fail the
-		// job loud rather than retrying an unresolvable config forever.
-		if errors.Is(err, ErrDeployVersionEmpty) || errors.Is(err, ErrDeployVersionUnresolved) {
+		// job loud rather than retrying an unresolvable config forever. A
+		// non-correlatable explicit version (native-only) is terminal too.
+		if errors.Is(err, ErrDeployVersionEmpty) || errors.Is(err, ErrDeployVersionUnresolved) ||
+			errors.Is(err, ErrDeployVersionNotCorrelatable) {
 			s.failJobWithError(ctx, job, err.Error())
 		} else {
 			s.log.Warn("scheduler: native deploy marker",
@@ -160,5 +163,13 @@ func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.Run
 	if err != nil {
 		return "", "", err
 	}
-	return version, ciVars["CI_COMMIT_SHA"], nil
+	// Version is the display/ledger string as-is. Revision is the FULL SHA ArgoCD
+	// reports — resolved from the explicit deploy.version when it's a git SHA, else the
+	// run's commit; a non-correlatable explicit version fails the deploy (terminal).
+	explicit := strings.TrimSpace(jobDef.Deploy.Version) != ""
+	revision, cerr := correlationRevision(job.Name, version, explicit, ciVars["CI_COMMIT_SHA"])
+	if cerr != nil {
+		return "", "", cerr
+	}
+	return version, revision, nil
 }

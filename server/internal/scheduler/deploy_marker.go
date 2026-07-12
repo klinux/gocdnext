@@ -1,11 +1,54 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
+
+// ErrDeployVersionNotCorrelatable is a terminal config error for a NATIVE deploy: the
+// user registered an ArgoCD target and set deploy.version to something that isn't a
+// git commit SHA (a semver/tag/branch, or a short hex we can't expand without git
+// access). Native needs the FULL SHA ArgoCD reports to confirm the RIGHT commit
+// deployed; an unpinned watch could accept stale Synced+Healthy state. A retry would
+// fail identically, so the dispatcher terminalises the job loud (#39-style).
+var ErrDeployVersionNotCorrelatable = errors.New("deploy.version is not a correlatable git commit SHA for a native deploy; use the full/short commit SHA, or leave version empty to use the run's commit")
+
+var (
+	fullSHARE = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+	hexShaRE  = regexp.MustCompile(`^[0-9a-fA-F]{4,40}$`)
+)
+
+// correlationRevision resolves the FULL git SHA the native watch correlates against
+// (ArgoCD reports the full SHA in .status.sync.revision / syncResult.revision), given
+// the resolved display version. `explicit` is whether the user set deploy.version;
+// fullSHA is the run's own commit (CI_COMMIT_SHA). Rules (reviewer-pinned):
+//   - default (not explicit)      → the run's commit (fullSHA)
+//   - explicit full 40-hex SHA    → that SHA, lowercased (a deliberately pinned commit)
+//   - explicit short hex that prefixes the run's commit → expand to fullSHA
+//   - anything else               → ErrDeployVersionNotCorrelatable (terminal)
+//
+// Version stays the display/ledger string untouched; only the correlation anchor is
+// resolved here.
+func correlationRevision(jobName, display string, explicit bool, fullSHA string) (string, error) {
+	if !explicit {
+		return fullSHA, nil
+	}
+	v := strings.ToLower(strings.TrimSpace(display))
+	full := strings.ToLower(strings.TrimSpace(fullSHA))
+	switch {
+	case fullSHARE.MatchString(v):
+		return v, nil
+	case hexShaRE.MatchString(v) && full != "" && strings.HasPrefix(full, v):
+		return full, nil
+	default:
+		return "", fmt.Errorf("%w: job %s deploy.version %q", ErrDeployVersionNotCorrelatable, jobName, display)
+	}
+}
 
 // buildMatrixDims builds the MatrixDimNames table (issue #21) for the upstreams that
 // have matrix rows — the substitution layer needs it to resolve the `matrix[apac]`
