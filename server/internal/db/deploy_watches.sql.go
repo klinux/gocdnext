@@ -21,6 +21,8 @@ SET gate_id                = gen_random_uuid(),
     gate_rollout_name      = $4
 WHERE deployment_revision_id = $5
   AND claim_id = $6
+  -- Idempotent re-arm guard. The COMPLETE-pin invariant is enforced at the store edge
+  -- (ArmRolloutGate rejects an empty cluster/namespace/name before this runs).
   AND gate_id IS NULL
 `
 
@@ -188,6 +190,10 @@ SET deadline_at = CASE
     gate_actioned_at       = NULL
 WHERE deployment_revision_id = $1
   AND claim_id = $2
+  -- Only a REAL armed round is clearable — a spurious ClearGate on an unarmed watch
+  -- must not "succeed" (and then delete this deploy's votes). gate_id is stamped by
+  -- ArmRolloutGate and nulled here, so it marks exactly an armed round.
+  AND gate_id IS NOT NULL
 `
 
 type ClearRolloutGateColumnsParams struct {

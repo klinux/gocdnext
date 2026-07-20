@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -96,6 +97,41 @@ func TestArmRolloutGate(t *testing.T) {
 	}
 	if g := readGate(t, ctx2, pool2, revID2); g.gateID != nil {
 		t.Errorf("fenced arm still stamped a gate: %+v", g)
+	}
+}
+
+// An incomplete pin (any of cluster/namespace/name empty) must be rejected at the store
+// edge — never stamp gate_id for a gate that could never be Promoted/Aborted (and, with
+// gate_id set, could never re-arm with a correct pin).
+func TestArmRolloutGate_RejectsIncompletePin(t *testing.T) {
+	s, pool, ctx, revID, claimID := armedGateStore(t)
+	for _, mut := range []func(*store.ArmRolloutGateInput){
+		func(in *store.ArmRolloutGateInput) { in.RolloutCluster = "" },
+		func(in *store.ArmRolloutGateInput) { in.RolloutNamespace = "" },
+		func(in *store.ArmRolloutGateInput) { in.RolloutName = "" },
+		func(in *store.ArmRolloutGateInput) { in.PausedStep = -1 },
+	} {
+		in := armInput()
+		mut(&in)
+		ok, err := s.ArmRolloutGate(ctx, revID, claimID, in)
+		if !errors.Is(err, store.ErrIncompleteGatePin) || ok {
+			t.Fatalf("arm(%+v) = ok:%v err:%v, want ErrIncompleteGatePin", in, ok, err)
+		}
+	}
+	if g := readGate(t, ctx, pool, revID); g.gateID != nil {
+		t.Errorf("an incomplete pin still stamped a gate_id: %+v", g)
+	}
+}
+
+// ClearRolloutGate on a watch with NO armed gate is a no-op (false) — it must not
+// "succeed" (which, in the full flow, would then delete this deploy's votes).
+func TestClearRolloutGate_UnarmedIsNoOp(t *testing.T) {
+	s, pool, ctx, revID, claimID := armedGateStore(t) // claimed but never armed
+	if ok, err := s.ClearRolloutGate(ctx, revID, claimID); err != nil || ok {
+		t.Fatalf("clear an unarmed gate = ok:%v err:%v, want no-op (false)", ok, err)
+	}
+	if g := readGate(t, ctx, pool, revID); g.gateID != nil {
+		t.Errorf("unexpected gate after a no-op clear: %+v", g)
 	}
 }
 

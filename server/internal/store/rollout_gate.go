@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -14,6 +15,12 @@ import (
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
 )
+
+// ErrIncompleteGatePin is returned when ArmRolloutGate is asked to arm without a
+// complete, actionable Rollout identity. It's a contract violation (the watcher must
+// resolve the full pin before arming), surfaced loudly rather than persisting a gate
+// that could never be Promoted/Aborted.
+var ErrIncompleteGatePin = errors.New("store: arm rollout gate requires a complete pinned identity (cluster/namespace/name) and a non-negative step")
 
 // ArmRolloutGateInput is the resolved, COMPLETE Rollout identity + step the gate pins.
 // The watcher only arms with all three identity fields set (Promote/Abort act on them,
@@ -31,6 +38,12 @@ type ArmRolloutGateInput struct {
 // `gate_id IS NULL` makes a re-arm a no-op. Returns whether it armed (false = lease lost
 // or already armed).
 func (s *Store) ArmRolloutGate(ctx context.Context, revID, claimID uuid.UUID, in ArmRolloutGateInput) (bool, error) {
+	// A gate must be armed with an actionable pin — an empty cluster/namespace/name would
+	// stamp gate_id yet leave nothing to Promote/Abort, and (gate_id now set) it could
+	// never re-arm with a correct pin. Reject at the edge (the query trusts this).
+	if in.RolloutCluster == "" || in.RolloutNamespace == "" || in.RolloutName == "" || in.PausedStep < 0 {
+		return false, ErrIncompleteGatePin
+	}
 	step := int32(in.PausedStep)
 	n, err := s.q.ArmRolloutGate(ctx, db.ArmRolloutGateParams{
 		DeploymentRevisionID: pgUUID(revID),

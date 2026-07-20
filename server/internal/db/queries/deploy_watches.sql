@@ -56,6 +56,8 @@ SET gate_id                = gen_random_uuid(),
     gate_rollout_name      = sqlc.arg(gate_rollout_name)
 WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
   AND claim_id = sqlc.arg(claim_id)
+  -- Idempotent re-arm guard. The COMPLETE-pin invariant is enforced at the store edge
+  -- (ArmRolloutGate rejects an empty cluster/namespace/name before this runs).
   AND gate_id IS NULL;
 
 -- name: MarkGateActioned :execrows
@@ -94,7 +96,11 @@ SET deadline_at = CASE
     gate_decided_at        = NULL,
     gate_actioned_at       = NULL
 WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
-  AND claim_id = sqlc.arg(claim_id);
+  AND claim_id = sqlc.arg(claim_id)
+  -- Only a REAL armed round is clearable — a spurious ClearGate on an unarmed watch
+  -- must not "succeed" (and then delete this deploy's votes). gate_id is stamped by
+  -- ArmRolloutGate and nulled here, so it marks exactly an armed round.
+  AND gate_id IS NOT NULL;
 
 -- name: DeleteDeployGateVotes :exec
 -- Delete the current arm's approval votes so the next step's gate starts fresh. Votes
