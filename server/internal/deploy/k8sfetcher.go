@@ -41,6 +41,27 @@ func (f *k8sAppFetcher) fetchApplication(ctx context.Context, target DeploymentT
 	return f.get.ClusterAPIGet(ctx, target.Cluster, target.ProjectID, applicationCRDPath(target))
 }
 
+// fetchRollout GETs an Argo Rollouts Rollout CR on the workload's destination
+// cluster (ADR-0001 Phase 2). cluster is the RESOLVED rollout cluster (the target's
+// RolloutCluster, or its Cluster when unset) — a registered cluster, so the same
+// credentialed transport + allowed_projects authz apply.
+func (f *k8sAppFetcher) fetchRollout(ctx context.Context, projectID uuid.UUID, cluster, namespace, name string) ([]byte, error) {
+	if cluster == "" || namespace == "" || name == "" || projectID == uuid.Nil {
+		return nil, errors.New("deploy: incomplete rollout target")
+	}
+	return f.get.ClusterAPIGet(ctx, cluster, projectID, rolloutCRDPath(namespace, name))
+}
+
+// rolloutCRDPath is the k8s API path of a Rollout CR (same group/version as the
+// Application, kind rollouts). Segments PathEscaped defensively. The `/status`
+// subresource (promote/abort, Phase 2 control) appends "/status" to this.
+func rolloutCRDPath(namespace, name string) string {
+	return fmt.Sprintf(
+		"/apis/argoproj.io/v1alpha1/namespaces/%s/rollouts/%s",
+		url.PathEscape(namespace), url.PathEscape(name),
+	)
+}
+
 // applicationCRDPath is the k8s API path of the target's ArgoCD Application CR,
 // shared by the read (fetch) and write (sync) paths. PathEscape the segments
 // defensively: names come from the platform-registered target (validated at

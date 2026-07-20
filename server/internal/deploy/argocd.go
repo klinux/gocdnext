@@ -6,12 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // appFetcher returns the raw ArgoCD Application resource JSON for a target. The
 // transport lives behind this seam; tests inject fixtures.
 type appFetcher interface {
 	fetchApplication(ctx context.Context, target DeploymentTarget) ([]byte, error)
+}
+
+// rolloutFetcher returns the raw Argo Rollouts Rollout CR JSON on the workload's
+// destination cluster (ADR-0001 Phase 2). Same test seam as appFetcher.
+type rolloutFetcher interface {
+	fetchRollout(ctx context.Context, projectID uuid.UUID, cluster, namespace, name string) ([]byte, error)
 }
 
 // appSyncer triggers a sync for a target (behind the same test seam as the fetcher).
@@ -25,8 +33,9 @@ type appSyncer interface {
 // reconciling desired state itself (that is ArgoCD's job). It satisfies the full
 // DeploymentProvider interface (Sync + Observe).
 type ArgoProvider struct {
-	fetch appFetcher
-	sync  appSyncer
+	fetch   appFetcher
+	rollout rolloutFetcher
+	sync    appSyncer
 }
 
 // NewArgoProvider wires the provider over the store-backed k8s-CRD transport: the
@@ -34,7 +43,8 @@ type ArgoProvider struct {
 // Sync) and gets a provider that reads/actuates Applications through the target
 // cluster's k8s API.
 func NewArgoProvider(api ClusterAPI) *ArgoProvider {
-	return &ArgoProvider{fetch: newK8sAppFetcher(api), sync: newK8sAppSyncer(api)}
+	f := newK8sAppFetcher(api)
+	return &ArgoProvider{fetch: f, rollout: f, sync: newK8sAppSyncer(api)}
 }
 
 // newArgoProviderWith injects an appFetcher directly — for tests that exercise
@@ -49,12 +59,71 @@ func newArgoProviderWithSync(f appFetcher, s appSyncer) *ArgoProvider {
 }
 
 // Observe fetches the target's Application and returns one convergence snapshot.
+// When the target is RolloutAware it ALSO resolves + reads the Rollout the
+// Application manages and reports it in state.Rollout. A rollout-resolution failure
+// does NOT fail Observe (the Application read succeeded) — it leaves
+// RolloutObserved=false and records a short sanitized reason in state.RolloutError,
+// which the watcher persists and (in control mode) treats as fail-closed. Only an
+// Application fetch/parse failure returns an error.
 func (a *ArgoProvider) Observe(ctx context.Context, target DeploymentTarget) (DeployState, error) {
 	raw, err := a.fetch.fetchApplication(ctx, target)
 	if err != nil {
 		return DeployState{}, fmt.Errorf("deploy: fetch application %s/%s: %w", target.Namespace, target.Application, err)
 	}
-	return parseApplicationStatus(raw)
+	state, err := parseApplicationStatus(raw)
+	if err != nil {
+		return DeployState{}, err
+	}
+	if target.RolloutAware {
+		if rollout, reason := a.observeRollout(ctx, target, raw); reason == "" {
+			state.Rollout, state.RolloutObserved = rollout, true
+		} else {
+			state.RolloutError = reason
+		}
+	}
+	return state, nil
+}
+
+// observeRollout resolves the target's Rollout (explicit name/namespace, else
+// group-filtered auto-discovery from the Application's `.status.resources[]`), reads
+// it from the resolved cluster, and parses it. Returns ("" reason) on success, or a
+// short SANITIZED reason on any failure — never the raw transport error (which can
+// carry the internal API-server URL).
+func (a *ArgoProvider) observeRollout(ctx context.Context, target DeploymentTarget, appRaw []byte) (RolloutState, string) {
+	if a.rollout == nil {
+		return RolloutState{}, "rollout transport not configured"
+	}
+	ns, name := target.RolloutNamespace, target.RolloutName
+	if ns == "" || name == "" {
+		dns, dname, derr := discoverRollout(appRaw)
+		if derr != nil {
+			return RolloutState{}, derr.Error() // ErrRolloutNotFound / ErrMultipleRollouts — safe messages
+		}
+		if ns == "" {
+			ns = dns
+		}
+		if name == "" {
+			name = dname
+		}
+	}
+	cluster := target.RolloutCluster
+	if cluster == "" {
+		cluster = target.Cluster
+	}
+	raw, ferr := a.rollout.fetchRollout(ctx, target.ProjectID, cluster, ns, name)
+	if ferr != nil {
+		// SANITIZED: the raw transport error can carry the internal API-server URL,
+		// so never surface it. The specific reason (404 vs transport) has no
+		// behavioural effect (both fail closed in control mode), so one generic
+		// message suffices for the UI.
+		return RolloutState{}, "the rollout could not be read from the cluster"
+	}
+	st, perr := parseRolloutState(raw)
+	if perr != nil {
+		return RolloutState{}, "rollout status could not be parsed"
+	}
+	st.ResolvedCluster, st.ResolvedNamespace, st.ResolvedName = cluster, ns, name
+	return st, ""
 }
 
 // Sync actuates the target toward revision by writing the Application's `.operation`.
