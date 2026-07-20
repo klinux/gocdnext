@@ -827,6 +827,15 @@ export type DeploymentsList = { deployments: DeploymentRecord[] };
 // Application on which registered cluster, and whether gocdnext triggers the sync or
 // only observes. 1:1 with an environment. The GET is MAINTAINER-gated, so this config
 // (cluster/application/sync_mode) is only fetched for maintainers; viewers never see it.
+// GoverningGate is the approval-gate config on a target (control mode). Maintainer-
+// readable so the edit form can round-trip it; changing it is admin-only (server-side).
+export type GoverningGate = {
+  approvers?: string[];
+  approver_groups?: string[];
+  required: number;
+  description?: string;
+};
+
 export type DeployTarget = {
   environment: string;
   provider: string; // "argocd"
@@ -840,6 +849,8 @@ export type DeployTarget = {
   rollout_cluster?: string;
   rollout_namespace?: string;
   rollout_name?: string;
+  // Approval gate (control mode). Present => gated.
+  governing_gate?: GoverningGate;
 };
 
 export type DeployTargetsList = { deploy_targets: DeployTarget[] };

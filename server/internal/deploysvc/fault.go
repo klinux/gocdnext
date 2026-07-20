@@ -16,8 +16,9 @@ const (
 	FaultInternal      FaultKind = iota // 500
 	FaultInvalid                        // 400 — bad input (fields/enums)
 	FaultNotFound                       // 404 — application or cluster missing
-	FaultForbidden                      // 403 — project not allowed the cluster
+	FaultForbidden                      // 403 — project not allowed the cluster / SoD
 	FaultUnprocessable                  // 422 — multi-source, or can't validate (unreachable)
+	FaultConflict                       // 409 — target changed since authorization (SoD TOCTOU)
 )
 
 // Fault wraps a Register error with its classification. Public, when set, is a

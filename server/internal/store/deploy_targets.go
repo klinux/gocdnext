@@ -19,6 +19,32 @@ import (
 // ErrDeployTargetNotFound is returned when a project/environment has no target.
 var ErrDeployTargetNotFound = errors.New("store: deploy target not found")
 
+// ErrDeployTargetConflict is returned by UpsertDeployTargetGuarded when the row's
+// gate/routing changed between the caller's separation-of-duties read and this write
+// (the TOCTOU backstop) — the write is refused so a stale non-admin request can't
+// clobber a concurrent admin gate change. The caller maps it to 409.
+var ErrDeployTargetConflict = errors.New("store: deploy target changed since authorization")
+
+// DeployTargetSoDGuard is the prior (SoD-authorized) gate + routing that a non-admin
+// upsert must still match at write time. Captured at the SoD read; if the row no longer
+// matches, UpsertDeployTargetGuarded refuses the write (ErrDeployTargetConflict).
+type DeployTargetSoDGuard struct {
+	Gate             *GoverningGate
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
+}
+
+// DeleteTargetOutcome is the atomic result of DeleteUngatedDeployTargetByEnvironment.
+type DeleteTargetOutcome string
+
+const (
+	DeleteTargetDeleted DeleteTargetOutcome = "deleted" // was ungated, removed
+	DeleteTargetGated   DeleteTargetOutcome = "gated"   // exists + gated → admin-only (403)
+	DeleteTargetAbsent  DeleteTargetOutcome = "absent"  // no such target (404)
+)
+
 // DeployTarget is a resolved target: the registered row joined to its environment
 // so it carries the owning project + environment name the provider needs.
 type DeployTarget struct {
@@ -119,6 +145,47 @@ func (s *Store) UpsertDeployTarget(ctx context.Context, in DeployTargetInput) er
 	return nil
 }
 
+// UpsertDeployTargetGuarded is the non-admin upsert: the update applies only if the
+// row's gate + routing still equal the SoD-authorized snapshot (guard). A 0-row result
+// (the guard failed → a concurrent admin gate/routing change) maps to
+// ErrDeployTargetConflict. A fresh create (no conflict) is unguarded and succeeds.
+func (s *Store) UpsertDeployTargetGuarded(ctx context.Context, in DeployTargetInput, guard DeployTargetSoDGuard) error {
+	gate, err := marshalGoverningGate(in.GoverningGate)
+	if err != nil {
+		return err
+	}
+	expected, err := marshalGoverningGate(guard.Gate)
+	if err != nil {
+		return err
+	}
+	_, err = s.q.UpsertDeployTargetGuarded(ctx, db.UpsertDeployTargetGuardedParams{
+		EnvironmentID:            pgUUID(in.EnvironmentID),
+		Provider:                 in.Provider,
+		Cluster:                  in.Cluster,
+		Application:              in.Application,
+		Namespace:                in.Namespace,
+		SyncMode:                 in.SyncMode,
+		CreatedBy:                in.CreatedBy,
+		RolloutAware:             in.RolloutAware,
+		RolloutCluster:           nullableString(in.RolloutCluster),
+		RolloutNamespace:         nullableString(in.RolloutNamespace),
+		RolloutName:              nullableString(in.RolloutName),
+		GoverningGate:            gate,
+		ExpectedGate:             expected,
+		ExpectedRolloutAware:     guard.RolloutAware,
+		ExpectedRolloutCluster:   nullableString(guard.RolloutCluster),
+		ExpectedRolloutNamespace: nullableString(guard.RolloutNamespace),
+		ExpectedRolloutName:      nullableString(guard.RolloutName),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrDeployTargetConflict
+	}
+	if err != nil {
+		return fmt.Errorf("store: upsert deploy target (guarded): %w", err)
+	}
+	return nil
+}
+
 // DeployTargetListItem is one row for the per-project deploy-targets listing.
 type DeployTargetListItem struct {
 	ID          uuid.UUID
@@ -177,6 +244,20 @@ func (s *Store) DeleteDeployTargetByEnvironment(ctx context.Context, projectID u
 		return false, fmt.Errorf("store: delete deploy target %s/%s: %w", projectID, envName, err)
 	}
 	return n > 0, nil
+}
+
+// DeleteUngatedDeployTargetByEnvironment is the non-admin delete: it removes the target
+// only if it is UNGATED and reports the outcome atomically (deleted | gated | absent),
+// so the handler needn't do a separate racy read to distinguish 403 (gated) from 404.
+func (s *Store) DeleteUngatedDeployTargetByEnvironment(ctx context.Context, projectID uuid.UUID, envName string) (DeleteTargetOutcome, error) {
+	out, err := s.q.DeleteUngatedDeployTargetByEnvironment(ctx, db.DeleteUngatedDeployTargetByEnvironmentParams{
+		ProjectID: pgUUID(projectID),
+		Name:      envName,
+	})
+	if err != nil {
+		return "", fmt.Errorf("store: delete ungated deploy target %s/%s: %w", projectID, envName, err)
+	}
+	return DeleteTargetOutcome(out), nil
 }
 
 // CountDeployTargetsForCluster backs the cluster delete-guard.

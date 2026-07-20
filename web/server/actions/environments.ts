@@ -92,6 +92,7 @@ export async function setDeployTarget(
     rollout_cluster,
     rollout_namespace,
     rollout_name,
+    governing_gate,
   } = parsed.data;
   try {
     const url =
@@ -118,6 +119,10 @@ export async function setDeployTarget(
         ...(rollout_aware && rollout_cluster ? { rollout_cluster } : {}),
         ...(rollout_aware && rollout_namespace ? { rollout_namespace } : {}),
         ...(rollout_aware && rollout_name ? { rollout_name } : {}),
+        // Round-trip the gate verbatim: the server reads an ABSENT governing_gate as
+        // "remove it" (admin-only), so an edit that isn't touching the gate must send
+        // it back unchanged, else a maintainer editing a non-gate field would 403.
+        ...(governing_gate ? { governing_gate } : {}),
       }),
     });
     if (!res.ok) {

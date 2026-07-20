@@ -81,14 +81,16 @@ func (f *fakeProvider) ValidateSingleSource(_ context.Context, t deploy.Deployme
 }
 
 type fakeRegistry struct {
-	envID        uuid.UUID
-	ensureErr    error
-	upsertErr    error
-	authorizeErr error               // returned by AuthorizeClusterForProject (rollout_cluster check)
-	existing     *store.DeployTarget // ResolveDeployTarget result; nil => ErrDeployTargetNotFound (a create)
-	resolveErr   error               // overrides existing: ResolveDeployTarget returns this
-	gotUpsert    store.DeployTargetInput
-	log          *[]string
+	envID         uuid.UUID
+	ensureErr     error
+	upsertErr     error
+	authorizeErr  error               // returned by AuthorizeClusterForProject (rollout_cluster check)
+	existing      *store.DeployTarget // ResolveDeployTarget result; nil => ErrDeployTargetNotFound (a create)
+	resolveErr    error               // overrides existing: ResolveDeployTarget returns this
+	guardConflict bool                // when true, UpsertDeployTargetGuarded returns ErrDeployTargetConflict
+	gotUpsert     store.DeployTargetInput
+	gotGuard      store.DeployTargetSoDGuard
+	log           *[]string
 }
 
 func (f *fakeRegistry) EnsureEnvironment(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
@@ -115,6 +117,15 @@ func (f *fakeRegistry) AuthorizeClusterForProject(_ context.Context, _ uuid.UUID
 func (f *fakeRegistry) UpsertDeployTarget(_ context.Context, in store.DeployTargetInput) error {
 	*f.log = append(*f.log, "upsert")
 	f.gotUpsert = in
+	return f.upsertErr
+}
+
+func (f *fakeRegistry) UpsertDeployTargetGuarded(_ context.Context, in store.DeployTargetInput, guard store.DeployTargetSoDGuard) error {
+	*f.log = append(*f.log, "upsert-guarded")
+	f.gotUpsert, f.gotGuard = in, guard
+	if f.guardConflict {
+		return store.ErrDeployTargetConflict
+	}
 	return f.upsertErr
 }
 
@@ -381,10 +392,68 @@ func regErr(t *testing.T, r *Registrar, in RegisterInput) error {
 func assertNoWrite(t *testing.T, log []string) {
 	t.Helper()
 	for _, c := range log {
-		if c == "ensure-env" || c == "upsert" {
+		if c == "ensure-env" || c == "upsert" || c == "upsert-guarded" {
 			t.Fatalf("a write happened despite a forbidden request: %v", log)
 		}
 	}
+}
+
+// The TOCTOU backstop: a non-admin write goes through the GUARDED upsert (which carries
+// the SoD-authorized snapshot), and a store conflict (a concurrent admin gate change)
+// surfaces as FaultConflict (409), never a silent clobber.
+func TestRegister_GuardedUpsert(t *testing.T) {
+	t.Run("non-admin uses the guarded upsert, threading the authorized snapshot", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true
+		in.GoverningGate = gate(2, "alice@example.com") // unchanged → allowed
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		var sawGuarded bool
+		for _, c := range *log {
+			if c == "upsert-guarded" {
+				sawGuarded = true
+			}
+			if c == "upsert" {
+				t.Fatalf("non-admin used the UNGUARDED upsert: %v", *log)
+			}
+		}
+		if !sawGuarded {
+			t.Fatalf("non-admin write did not go through the guarded upsert: %v", *log)
+		}
+		// The guard carries the authorized prior snapshot (the gate + routing read).
+		if !store.GoverningGateEqual(reg.gotGuard.Gate, gate(2, "alice@example.com")) {
+			t.Errorf("guard gate = %+v, want the read gate", reg.gotGuard.Gate)
+		}
+	})
+
+	t.Run("a store conflict (concurrent admin gate change) -> 409, not a clobber", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget(), guardConflict: true}
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true
+		in.GoverningGate = gate(2, "alice@example.com")
+		if kindOf(t, regErr(t, r, in)) != FaultConflict {
+			t.Fatalf("want FaultConflict on a guarded-upsert conflict")
+		}
+	})
+
+	t.Run("admin uses the UNGUARDED upsert", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		if _, err := r.Register(context.Background(), validInput()); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		for _, c := range *log {
+			if c == "upsert-guarded" {
+				t.Fatalf("admin used the guarded upsert: %v", *log)
+			}
+		}
+	})
 }
 
 func TestRegister_DefaultsAndTrims(t *testing.T) {

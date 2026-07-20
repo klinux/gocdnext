@@ -78,6 +78,30 @@ describe("DeployTargetDialog", () => {
     expect(setDeployTarget.mock.calls[0]?.[0]).toMatchObject({ rollout_aware: false });
   });
 
+  it("round-trips governing_gate unchanged when editing a gated target", async () => {
+    // A maintainer editing a non-gate field on a gated target must send the gate back
+    // verbatim — the server reads an absent gate as "remove it" (admin-only) → 403.
+    const gated: DeployTarget = {
+      ...target,
+      rollout_aware: true,
+      governing_gate: { required: 2, approvers: ["alice@example.com"] },
+    };
+    render(
+      <DeployTargetDialog slug="acme" initial={gated} trigger={<button type="button">Edit</button>} />,
+    );
+    open(/edit/i);
+    fireEvent.change(await screen.findByLabelText(/ArgoCD Application/), {
+      target: { value: "checkout-v2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+    await flush();
+
+    expect(setDeployTarget.mock.calls[0]?.[0]).toMatchObject({
+      application: "checkout-v2",
+      governing_gate: { required: 2, approvers: ["alice@example.com"] },
+    });
+  });
+
   it("sends rollout_aware + routing when the rollout toggle is on", async () => {
     render(
       <DeployTargetDialog

@@ -343,6 +343,13 @@ type Querier interface {
 	// this one targets the "same job_run_id, later agent attempt"
 	// case where the row survives but its results shouldn't.
 	DeleteTestResultsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error
+	// The NON-ADMIN delete: removes the target only if it is UNGATED, and reports the
+	// precise outcome in one atomic statement (one snapshot — no TOCTOU) so the handler can
+	// pick the right status without a separate racy read:
+	//   'deleted' — was ungated, removed;
+	//   'gated'   — exists but has a gate (deleting a gated target is admin-only) -> 403;
+	//   'absent'  — no such target -> 404.
+	DeleteUngatedDeployTargetByEnvironment(ctx context.Context, arg DeleteUngatedDeployTargetByEnvironmentParams) (string, error)
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
@@ -1867,6 +1874,16 @@ type Querier interface {
 	// the JSONB gate config (NULL => no gate); the caller's separation-of-duties check
 	// (admin-only to change a gate/routing on a gated target) runs BEFORE this write.
 	UpsertDeployTarget(ctx context.Context, arg UpsertDeployTargetParams) (pgtype.UUID, error)
+	// The NON-ADMIN upsert: same as UpsertDeployTarget, but the ON CONFLICT UPDATE applies
+	// ONLY if the row's gate + routing still equal what the caller's separation-of-duties
+	// check authorized against (the expected_* params, captured at the SoD read). This is
+	// the optimistic-concurrency backstop for the TOCTOU between that read and this write:
+	// if an admin changed the gate/routing in between, the guard fails, 0 rows return, and
+	// the store maps that to ErrDeployTargetConflict (409) — a stale non-admin write can
+	// never clobber a concurrent admin gate change. The INSERT branch (a fresh create) is
+	// unguarded (no existing gate to protect); the registrar's SoD check independently
+	// rejects a non-admin CREATING a gate.
+	UpsertDeployTargetGuarded(ctx context.Context, arg UpsertDeployTargetGuardedParams) (pgtype.UUID, error)
 	// Lazy-create: the first dispatch of a job with deploy:{environment:X}
 	// inserts the row; later dispatches just bump updated_at. Returns the
 	// id so the dispatch path can attach a revision regardless of which
