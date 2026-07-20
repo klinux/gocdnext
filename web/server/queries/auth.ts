@@ -24,9 +24,14 @@ async function forwardCookieFetch(path: string): Promise<Response> {
 
 // AuthState is the combined truth the dashboard layout uses to
 // decide: render the app, redirect to /login, or stay anonymous (dev
-// mode where auth is disabled server-side).
+// mode where auth is disabled server-side). "unknown" = the auth config
+// couldn't be determined (the /auth/providers probe errored and no user
+// resolved) — the layout still renders (it only redirects on "anonymous"),
+// but privilege gates MUST fail closed on it rather than treat it as
+// "disabled" (which grants everything).
 export type AuthState =
   | { mode: "disabled" }
+  | { mode: "unknown" }
   | { mode: "anonymous"; providers: AuthProvidersResponse["providers"] }
   | { mode: "authenticated"; user: CurrentUser };
 
@@ -36,10 +41,22 @@ export async function resolveAuthState(): Promise<AuthState> {
     forwardCookieFetch("/api/v1/me"),
   ]);
 
-  const providers: AuthProvidersResponse = providersRes.ok
-    ? ((await providersRes.json()) as AuthProvidersResponse)
-    : { enabled: false, providers: [] };
+  // A non-OK /auth/providers must NOT masquerade as "auth disabled": that
+  // would fail OPEN on privilege gates (a viewer briefly seeing maintainer
+  // actions during a transient 500). Only a clean response lets us tell
+  // "genuinely disabled" from "config unreachable".
+  if (!providersRes.ok) {
+    // A resolved user is still authoritative (auth is on, role known) even if
+    // the providers probe flaked; otherwise we can't distinguish disabled from
+    // logged-out, so fail closed to "unknown".
+    if (meRes.ok) {
+      const payload = (await meRes.json()) as { user: CurrentUser };
+      return { mode: "authenticated", user: payload.user };
+    }
+    return { mode: "unknown" };
+  }
 
+  const providers = (await providersRes.json()) as AuthProvidersResponse;
   if (!providers.enabled) {
     return { mode: "disabled" };
   }
