@@ -8,7 +8,6 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
@@ -254,26 +253,9 @@ func BuildAssignment(
 		}
 	}
 
-	// Build the MatrixDimNames table the substitution layer needs
-	// to resolve the `matrix[apac]` 1-dim shortcut (issue #21).
-	// Only upstreams that actually have rows in matrixNeedsOutputs
-	// need an entry — for other jobs the lookup is irrelevant.
-	// Dimension order in the slice is lex-sorted so 1-dim
-	// shortcut behaviour stays deterministic regardless of YAML
-	// declaration order.
-	matrixDims := make(MatrixDimNames, len(matrixNeedsOutputs))
-	for upstreamName := range matrixNeedsOutputs {
-		upstream, ok := findJob(def.Jobs, upstreamName)
-		if !ok || len(upstream.Matrix) == 0 {
-			continue
-		}
-		dims := make([]string, 0, len(upstream.Matrix))
-		for d := range upstream.Matrix {
-			dims = append(dims, d)
-		}
-		sort.Strings(dims)
-		matrixDims[upstreamName] = dims
-	}
+	// MatrixDimNames the substitution layer needs for the `matrix[apac]` 1-dim
+	// shortcut (issue #21) — shared with the native deploy-marker path.
+	matrixDims := buildMatrixDims(def, matrixNeedsOutputs)
 
 	// CI_* built-ins (CI_BRANCH, CI_COMMIT_SHORT_SHA, CI_RUN_COUNTER, …)
 	// land in env BEFORE substitution so a pipeline variable like
@@ -316,26 +298,13 @@ func BuildAssignment(
 	// and surfaced in the Environments UI (a secret-bearing version
 	// would leak). An empty version defaults to the commit short sha.
 	// The caller records the revision once the job actually dispatches.
+	// Deploy marker (#39): resolve the recorded version (shared with the native
+	// takeover). The caller records the revision once the job actually dispatches.
 	var deployTarget *DeployTarget
 	if jobDef.Deploy != nil {
-		version := jobDef.Deploy.Version
-		if version == "" {
-			// Default: the commit short sha. buildCIVars omits the key
-			// entirely when the run has no git revision (manual run, no
-			// material), so an empty result here is a real config error
-			// for THIS run — fail terminally (ErrDeployVersionEmpty in
-			// the dispatcher) rather than recording a blank version.
-			version = ciVars["CI_COMMIT_SHORT_SHA"]
-		} else {
-			version, err = resolveDeployVersion(version, needsOutputs, matrixNeedsOutputs, matrixDims, ciVars)
-			if err != nil {
-				// Wrapped in ErrDeployVersionUnresolved — terminal.
-				return nil, nil, fmt.Errorf("scheduler: job %s: %w", job.Name, err)
-			}
-		}
-		if version == "" {
-			return nil, nil, fmt.Errorf("%w: job %s deploy.environment %q",
-				ErrDeployVersionEmpty, job.Name, jobDef.Deploy.Environment)
+		version, verr := resolveDeployMarkerVersion(job.Name, jobDef, needsOutputs, matrixNeedsOutputs, matrixDims, ciVars)
+		if verr != nil {
+			return nil, nil, verr
 		}
 		deployTarget = &DeployTarget{Environment: jobDef.Deploy.Environment, Version: version}
 	}

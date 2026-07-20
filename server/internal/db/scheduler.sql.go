@@ -446,6 +446,41 @@ func (q *Queries) SetRunQueueReason(ctx context.Context, arg SetRunQueueReasonPa
 	return err
 }
 
+const startServerManagedJob = `-- name: StartServerManagedJob :one
+UPDATE job_runs
+SET status = 'running', started_at = NOW()
+WHERE id = $1 AND status = 'queued' AND agent_id IS NULL
+RETURNING id, run_id, stage_run_id, name, attempt
+`
+
+type StartServerManagedJobRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	Name       string
+	Attempt    int32
+}
+
+// Moves a queued job to running with NO agent — the native deploy takeover
+// (ADR-0001, Model A): the server drives the sync + watch instead of an agent.
+// Same queued+unassigned predicate as AssignJob (races between ticks resolve to one
+// winner), and it returns the CURRENT attempt (AssignJob doesn't bump either) so the
+// deployment_revision's (job_run_id, attempt) key stays consistent with the rest of
+// the system. The caller creates the revision + deploy_watch in the SAME tx, so the
+// reaper never observes a running-no-agent job without its owning watch.
+func (q *Queries) StartServerManagedJob(ctx context.Context, id pgtype.UUID) (StartServerManagedJobRow, error) {
+	row := q.db.QueryRow(ctx, startServerManagedJob, id)
+	var i StartServerManagedJobRow
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StageRunID,
+		&i.Name,
+		&i.Attempt,
+	)
+	return i, err
+}
+
 const unassignJob = `-- name: UnassignJob :one
 UPDATE job_runs
 SET status = 'queued',

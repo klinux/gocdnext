@@ -3,8 +3,14 @@ import type { Metadata } from "next";
 import { Rocket } from "lucide-react";
 
 import { EnvironmentCard } from "@/components/environments/environment-card.client";
+import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
 import { env } from "@/lib/env";
-import { GocdnextAPIError, listEnvironments } from "@/server/queries/projects";
+import {
+  GocdnextAPIError,
+  listDeployTargets,
+  listEnvironments,
+} from "@/server/queries/projects";
+import type { DeployTarget } from "@/types/api";
 
 type Params = { slug: string };
 
@@ -29,15 +35,26 @@ export default async function EnvironmentsPage({
 }) {
   const { slug } = await params;
 
-  // Single request: the environments endpoint resolves the project and
-  // 404s itself, so we skip a redundant getProjectDetail round-trip.
+  // The environments endpoint resolves the project and 404s itself, so we skip a
+  // redundant getProjectDetail round-trip. Fetch the native deploy targets in
+  // parallel; that call is maintainer-gated and 403-tolerant (viewers get an empty
+  // list), so the page stays viewer-readable and only maintainers see the native row.
   let environments;
+  let targets: DeployTarget[] = [];
   try {
-    ({ environments } = await listEnvironments(slug));
+    const [envList, targetList] = await Promise.all([
+      listEnvironments(slug),
+      listDeployTargets(slug),
+    ]);
+    environments = envList.environments;
+    targets = targetList.deploy_targets;
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 404) notFound();
     throw err;
   }
+
+  // deploy_targets are 1:1 with an environment by name.
+  const targetByEnv = new Map(targets.map((t) => [t.environment, t]));
 
   return (
     <section className="space-y-6">
@@ -46,24 +63,32 @@ export default async function EnvironmentsPage({
           What&apos;s deployed where, right now. An environment appears the
           first time a job with a <code className="text-xs">deploy:</code>{" "}
           block ships to it; the current version is the latest successful
-          deploy. gocdnext tracks the deploy — your plugin (Argo, Helm,
-          kubectl) performs it.
+          deploy. gocdnext tracks the deploy — a registered native provider
+          (ArgoCD) drives it, or your plugin (Helm, kubectl) performs it.
         </p>
       </header>
 
       {environments.length === 0 ? (
         <EmptyState />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {environments.map((e) => (
-            <EnvironmentCard
-              key={e.id}
-              slug={slug}
-              environment={e}
-              apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
-            />
-          ))}
-        </div>
+        // Client provider polls this project's in-flight native deploys once and feeds
+        // each card its live chip; the cards stay RSC-composed here.
+        <DeployWatchesProvider
+          slug={slug}
+          apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            {environments.map((e) => (
+              <EnvironmentCard
+                key={e.id}
+                slug={slug}
+                environment={e}
+                deployTarget={targetByEnv.get(e.name)}
+                apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
+              />
+            ))}
+          </div>
+        </DeployWatchesProvider>
       )}
     </section>
   );

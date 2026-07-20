@@ -43,6 +43,8 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	cronpkg "github.com/gocdnext/gocdnext/server/internal/cron"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/deploy"
+	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
@@ -371,6 +373,13 @@ func main() {
 			"plugins", len(pluginCatalog.Names()))
 	}
 	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
+	// Native deploy-target registrar (ADR-0001): the store satisfies both the
+	// provider's ClusterGetter (reads Applications via the cluster registry) and
+	// the registrar's Registry (environment + target persistence). The same provider
+	// backs the deploy watcher (Observe) started below.
+	argoProvider := deploy.NewArgoProvider(st)
+	projectsHandler = projectsHandler.WithDeployRegistrar(
+		deploysvc.New(argoProvider, st))
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it
@@ -442,7 +451,11 @@ func main() {
 	sched := scheduler.New(st, sessions, logger, cfg.DatabaseURL).
 		WithSecretResolver(resolver).
 		WithCipher(cipher).
-		WithGitTokens(vcsRegistry)
+		WithGitTokens(vcsRegistry).
+		// Native deploy takeover (ADR-0001): a `deploy:` job with a registered
+		// deploy_target becomes server-managed (sync + watch), reusing the same argo
+		// provider the registrar + watcher use.
+		WithNativeDeployer(deploysvc.NewNativeDeployer(argoProvider, st, logger))
 	if artifactStore != nil {
 		sched = sched.WithArtifactStore(artifactStore, 30*time.Minute)
 	}
@@ -700,6 +713,9 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/findings", projectsHandler.ListFindings)
 		p.Get("/api/v1/projects/{slug}/environments", projectsHandler.ListEnvironments)
 		p.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", projectsHandler.ListEnvironmentDeployments)
+		// Live in-flight native deploys (ADR-0001). Viewer-readable but role-sanitised
+		// in the handler — viewers get live state, maintainers also get the config.
+		p.Get("/api/v1/projects/{slug}/deploy-watches", projectsHandler.ListDeployWatches)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
 		p.Get("/api/v1/runs/{id}/jobs/{jobId}/log.txt", runsHandler.LogExport)
@@ -755,6 +771,12 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
 		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", projectsHandler.RollbackEnvironment)
+		// Deploy targets reveal cluster/application/namespace/sync_mode — all three
+		// verbs are maintainer-gated (read included), consistent with treating the
+		// target as maintainer-owned config.
+		p.Get("/api/v1/projects/{slug}/deploy-targets", projectsHandler.ListDeployTargets)
+		p.Post("/api/v1/projects/{slug}/deploy-targets", projectsHandler.SetDeployTarget)
+		p.Delete("/api/v1/projects/{slug}/deploy-targets/{env}", projectsHandler.DeleteDeployTarget)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
@@ -916,6 +938,20 @@ func main() {
 	go func() {
 		if err := reaper.Run(ctx); err != nil {
 			logger.Error("reaper exited", "err", err)
+		}
+	}()
+
+	// Deploy watcher (ADR-0001, Inc.6): claims in-flight deploy_watches and drives
+	// each to convergence. Idle (claims nothing) until a `deploy:` job creates a
+	// watch. worker id = hostname so a restarted replica reclaims its own leases.
+	watcherID, _ := os.Hostname()
+	if watcherID == "" {
+		watcherID = "gocdnext-server"
+	}
+	deployWatcher := deploysvc.NewWatcher(argoProvider, st, watcherID, logger)
+	go func() {
+		if err := deployWatcher.Run(ctx); err != nil {
+			logger.Error("deploy watcher exited", "err", err)
 		}
 	}()
 

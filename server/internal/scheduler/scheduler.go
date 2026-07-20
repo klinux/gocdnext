@@ -12,6 +12,7 @@ import (
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/server/internal/artifacts"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/secrets"
@@ -70,6 +71,10 @@ type Scheduler struct {
 	// checks disabled; the effects listener guards on it. Interface (not the
 	// concrete *checks.Reporter) so tests can spy.
 	checks checksReporter
+
+	// native, when set, takes over a `deploy:` job with a registered deploy_target
+	// (ADR-0001, Model A) instead of dispatching the plugin. nil = plugin-only.
+	native nativeDeployer
 }
 
 // checksReporter is the slice of the GitHub checks reporter the supersede effects
@@ -77,6 +82,15 @@ type Scheduler struct {
 // doesn't hard-depend on the checks package's full surface and tests can fake it.
 type checksReporter interface {
 	ReportRunCompleted(ctx context.Context, runID uuid.UUID, status string)
+}
+
+// nativeDeployer decides + performs the native deploy takeover (ADR-0001): a
+// `deploy:` job whose env has a registered deploy_target becomes server-managed
+// (sync + watch) instead of dispatching the plugin to an agent. *deploysvc.NativeDeployer
+// satisfies it. nil = feature off (every deploy uses the plugin path). Local interface
+// so tests can fake the decision without a live provider.
+type nativeDeployer interface {
+	TakeOver(ctx context.Context, in deploysvc.NativeDeployInput) (deploysvc.NativeDeployResult, error)
 }
 
 func (s *Scheduler) DispatchRun(ctx context.Context, runID uuid.UUID) {
@@ -242,6 +256,20 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
+		// Native deploy takeover (ADR-0001, Model A): a `deploy:` job with a registered
+		// target is server-managed (server drives the sync + watch) and uses NO agent —
+		// so it MUST be attempted BEFORE FindIdleWithTags, or it would sit queued forever
+		// waiting for an idle agent it doesn't need. Falls through to the plugin/agent
+		// path only when no target is registered (or the deployer isn't wired).
+		if s.native != nil && !job.DeployRollback {
+			if jobDef, derr := jobDefFromDefinition(run.Definition, job.Name); derr == nil && jobDef.Deploy != nil {
+				if s.tryNativeDeploy(ctx, run, job, jobDef) {
+					continue
+				}
+				// fallthrough: no registered target → plugin/agent path below.
+			}
+		}
+
 		requiredTags, tagsErr := JobTagsFromDefinition(run.Definition, job.Name)
 		if tagsErr != nil {
 			s.log.Warn("scheduler: read job tags", "job_id", job.ID, "err", tagsErr)
@@ -367,53 +395,15 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			}
 			deployGuard = nil
 		}
+		// Supersede guard for the plugin/agent deploy path (#97). Native deploys were
+		// already guarded + handled in tryNativeDeploy above; a deploy job reaching here
+		// is a plugin fallback (or native is off), and still needs the same protection.
 		if deployTarget != nil && !job.DeployRollback {
-			laneMode, err := supersedeModeFromDefinition(run.Definition)
-			if err != nil {
-				s.log.Warn("scheduler: read supersede mode for deployment guard",
-					"run_id", runID, "job_id", job.ID, "err", err)
-				continue
+			guard, outcome := s.beginDeployGuard(ctx, run, job, deployTarget.Environment)
+			if outcome != guardProceed {
+				continue // blocked / busy / fail-closed — queue_reason set or logged
 			}
-			if laneMode == domain.SupersedeBranch || laneMode == domain.SupersedePipeline {
-				guard, status, err := s.store.BeginDeploymentRevisionGuard(ctx, store.BeginDeploymentRevisionGuardInput{
-					PipelineID:  run.PipelineID,
-					Counter:     run.Counter,
-					Ref:         run.Ref,
-					LaneMode:    laneMode,
-					Environment: deployTarget.Environment,
-				})
-				if err != nil {
-					// Fail-closed guard/infra error: the deploy is NOT dispatched.
-					metrics.SupersedeBackstopErrors.Inc()
-					s.log.Warn("scheduler: deployment guard",
-						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-					continue
-				}
-				if status == store.DeploymentRevisionGuardLockBusy {
-					metrics.SupersedeLockBusy.Inc()
-					reason := "supersede-lock-busy:" + deployTarget.Environment
-					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
-						s.log.Warn("scheduler: set supersede lock-busy queue_reason",
-							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-					}
-					// Debug, not Info: fires every tick a lane-env stays contended,
-					// so a higher level would spam the log (the metric is the signal).
-					s.log.Debug("scheduler: deployment guard lock busy",
-						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
-					continue
-				}
-				if status == store.DeploymentRevisionGuardBlocked {
-					reason := "supersede-blocked:" + deployTarget.Environment
-					if err := s.store.SetActiveRunQueueReason(ctx, runID, reason); err != nil {
-						s.log.Warn("scheduler: set supersede blocked queue_reason",
-							"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment, "err", err)
-					}
-					s.log.Info("scheduler: deployment blocked by newer gate-pass",
-						"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
-					continue
-				}
-				deployGuard = guard
-			}
+			deployGuard = guard
 		}
 
 		assigned, ok, err := s.store.AssignJob(ctx, job.ID, agentID)

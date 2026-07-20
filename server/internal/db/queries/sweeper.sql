@@ -42,6 +42,17 @@ SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id,
 FROM job_runs j
 LEFT JOIN agents a ON a.id = j.agent_id
 WHERE j.status = 'running'
+  -- Server-managed native deploy (ADR-0001): a `deploy:` job with a registered
+  -- target runs with NO agent (the server drives the sync + watch), so it would
+  -- otherwise trip Category 2 below. While a deploy_watch is alive the WATCHER owns
+  -- this job and completes it on convergence — the reaper must not reap it as an
+  -- orphan. When the watch terminalizes (or, as a recovery path, ever vanishes with
+  -- the job still running) this guard lifts and the reaper sees the job again.
+  AND NOT EXISTS (
+    SELECT 1 FROM deploy_watches dw
+    JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+    WHERE dr.job_run_id = j.id
+  )
   AND (
     -- Category 1: has agent + agent is stale.
     (a.id IS NOT NULL AND (

@@ -10,6 +10,7 @@ import type {
   AgentSummary,
   CachesList,
   DashboardMetrics,
+  DeployTargetsList,
   EnvironmentsList,
   FindingsList,
   GlobalRunSummary,
@@ -199,6 +200,29 @@ export async function listEnvironments(
   return readJSON<EnvironmentsList>(
     `/api/v1/projects/${encodeURIComponent(slug)}/environments`,
   );
+}
+
+// Native deploy targets (ADR-0001). The endpoint is MAINTAINER-gated, so a viewer's
+// RSC fetch 403s — we tolerate that (and a 501 when the native registrar isn't wired,
+// or 401 anonymous) by returning no targets, so the Environments page stays
+// viewer-readable and simply omits the maintainer-only native row. Any other status
+// (e.g. 500) still throws.
+export async function listDeployTargets(
+  slug: string,
+): Promise<DeployTargetsList> {
+  try {
+    return await readJSON<DeployTargetsList>(
+      `/api/v1/projects/${encodeURIComponent(slug)}/deploy-targets`,
+    );
+  } catch (err) {
+    if (
+      err instanceof GocdnextAPIError &&
+      (err.status === 401 || err.status === 403 || err.status === 501)
+    ) {
+      return { deploy_targets: [] };
+    }
+    throw err;
+  }
 }
 
 // listFindings reads the project's security findings (latest run per pipeline),

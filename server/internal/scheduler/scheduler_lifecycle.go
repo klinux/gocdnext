@@ -86,6 +86,13 @@ func (s *Scheduler) WithChecksReporter(r checksReporter) *Scheduler {
 	return s
 }
 
+// WithNativeDeployer wires the native deploy takeover (ADR-0001). nil (the default)
+// keeps every deploy on the plugin path.
+func (s *Scheduler) WithNativeDeployer(d nativeDeployer) *Scheduler {
+	s.native = d
+	return s
+}
+
 // WithTickInterval overrides the backstop tick. Mainly for tests.
 func (s *Scheduler) WithTickInterval(d time.Duration) *Scheduler {
 	if d > 0 {

@@ -18,6 +18,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
+	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -46,6 +47,10 @@ type Handler struct {
 	// "on" project flag can't archive when the backend is absent.
 	logArchivePolicy   string
 	hasArtifactBackend bool
+
+	// deployRegistrar registers native deploy targets (ADR-0001). nil when the
+	// server didn't wire it — the endpoints then answer 501.
+	deployRegistrar *deploysvc.Registrar
 }
 
 // WithPluginCatalog plugs the catalog used to validate `with:`

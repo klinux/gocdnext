@@ -23,16 +23,40 @@ RETURNING id;
 DELETE FROM deployment_revisions
 WHERE id = $1 AND status = 'in_progress';
 
--- name: FinalizeDeploymentRevision :execrows
+-- name: FinalizeDeploymentRevision :one
 -- Called on the job's terminal result (or by the reaper for a dead
 -- attempt): flips the in_progress revision of THIS (job_run, attempt)
 -- to success/failed and stamps finished_at. Keyed on attempt so a
 -- success on attempt 1 never finalises a stale attempt-0 row. Guarded
 -- on status='in_progress' so a re-delivered result is a no-op. Returns
--- rows affected (0 = the job had no deploy: block, or already final).
+-- the count finalized (0 = the job had no deploy: block, or already final).
+--
+-- The `cleaned` data-modifying CTE atomically removes any deploy_watch for the
+-- finalized revision: a native-provider deploy may be terminalized by THIS
+-- job/reaper path (not only by the watcher's own FinalizeDeployWatch), and a watch
+-- left behind would linger forever in the live-watch queue (never claimable — the
+-- claim scan filters status='in_progress') and falsely block deleting its cluster.
+WITH finalized AS (
+    UPDATE deployment_revisions
+    SET status = $3, finished_at = NOW()
+    WHERE job_run_id = $1 AND attempt = $2 AND status = 'in_progress'
+    RETURNING id
+), cleaned AS (
+    DELETE FROM deploy_watches
+    WHERE deployment_revision_id IN (SELECT id FROM finalized)
+)
+SELECT count(*) FROM finalized;
+
+-- name: FinalizeDeploymentRevisionByID :one
+-- Terminalize a specific revision by id (the deploy watcher's convergence verdict)
+-- and return its job link so the SAME tx can complete the server-managed deploy
+-- job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
+-- finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
+-- deploy_watch (fenced) in the same tx before calling this.
 UPDATE deployment_revisions
-SET status = $3, finished_at = NOW()
-WHERE job_run_id = $1 AND attempt = $2 AND status = 'in_progress';
+SET status = $2, finished_at = NOW()
+WHERE id = $1 AND status = 'in_progress'
+RETURNING job_run_id, attempt;
 
 -- name: ListEnvironmentsByProject :many
 SELECT id, project_id, name, description, created_at, updated_at
