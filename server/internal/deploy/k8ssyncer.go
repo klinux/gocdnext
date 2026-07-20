@@ -32,11 +32,11 @@ func newK8sAppSyncer(p ClusterPatcher) *k8sAppSyncer {
 	return &k8sAppSyncer{patch: p}
 }
 
-func (s *k8sAppSyncer) syncApplication(ctx context.Context, target DeploymentTarget, revision string) error {
+func (s *k8sAppSyncer) syncApplication(ctx context.Context, target DeploymentTarget, revision string, syncOptions []string) error {
 	if err := validateTarget(target); err != nil {
 		return err
 	}
-	body, err := syncOperationBody(revision)
+	body, err := syncOperationBody(revision, syncOptions)
 	if err != nil {
 		return err
 	}
@@ -48,10 +48,15 @@ func (s *k8sAppSyncer) syncApplication(ctx context.Context, target DeploymentTar
 // sync. An empty revision syncs to the Application's own targetRevision; a pinned
 // revision syncs exactly that SHA (what the watch correlates against). initiatedBy
 // records gocdnext as the actor for the ArgoCD audit trail.
-func syncOperationBody(revision string) ([]byte, error) {
+func syncOperationBody(revision string, syncOptions []string) ([]byte, error) {
 	sync := map[string]any{}
 	if revision != "" {
 		sync["revision"] = revision
+	}
+	// Carry the app's sync options (e.g. CreateNamespace=true) so the manual operation
+	// behaves like the app's own sync — a bare operation drops them.
+	if len(syncOptions) > 0 {
+		sync["syncOptions"] = syncOptions
 	}
 	return json.Marshal(map[string]any{
 		"operation": map[string]any{
