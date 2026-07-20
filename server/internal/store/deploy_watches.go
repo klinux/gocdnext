@@ -407,16 +407,30 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 // version, for the read-only live-status endpoint. Cluster/Application/SyncMode are
 // config (sanitised by role at the HTTP layer); the rest is live state.
 type DeployWatchView struct {
-	Environment      string
-	Version          string
-	ExpectedRevision string
-	SyncMode         string
-	Cluster          string
-	Application      string
-	WatchStartedAt   time.Time
-	SyncRequestedAt  *time.Time
-	DeadlineAt       time.Time
-	DegradedSince    *time.Time
+	DeploymentRevisionID uuid.UUID // the endpoint's per-deploy key (Phase 2 approve/reject)
+	Environment          string
+	Version              string
+	ExpectedRevision     string
+	SyncMode             string
+	Cluster              string
+	Application          string
+	WatchStartedAt       time.Time
+	SyncRequestedAt      *time.Time
+	DeadlineAt           time.Time
+	DegradedSince        *time.Time
+
+	// Observed rollout snapshot (Phase 2). RolloutObservedAt nil = not yet observed;
+	// RolloutStepKnown=false = the controller step index was absent.
+	RolloutAware       bool
+	RolloutPhase       string
+	RolloutMessage     string
+	RolloutPauseReason string
+	RolloutCurrentStep int
+	RolloutStepKnown   bool
+	RolloutStepCount   int
+	RolloutAborted     bool
+	RolloutError       string
+	RolloutObservedAt  *time.Time
 }
 
 // ListDeployWatchesForProject returns the project's in-flight native deploys.
@@ -428,16 +442,27 @@ func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.
 	out := make([]DeployWatchView, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, DeployWatchView{
-			Environment:      r.Environment,
-			Version:          r.Version,
-			ExpectedRevision: r.ExpectedRevision,
-			SyncMode:         r.SyncMode,
-			Cluster:          r.Cluster,
-			Application:      r.Application,
-			WatchStartedAt:   r.WatchStartedAt.Time,
-			SyncRequestedAt:  pgTimePtr(r.SyncRequestedAt),
-			DeadlineAt:       r.DeadlineAt.Time,
-			DegradedSince:    pgTimePtr(r.DegradedSince),
+			DeploymentRevisionID: fromPgUUID(r.DeploymentRevisionID),
+			Environment:          r.Environment,
+			Version:              r.Version,
+			ExpectedRevision:     r.ExpectedRevision,
+			SyncMode:             r.SyncMode,
+			Cluster:              r.Cluster,
+			Application:          r.Application,
+			WatchStartedAt:       r.WatchStartedAt.Time,
+			SyncRequestedAt:      pgTimePtr(r.SyncRequestedAt),
+			DeadlineAt:           r.DeadlineAt.Time,
+			DegradedSince:        pgTimePtr(r.DegradedSince),
+			RolloutAware:         r.RolloutAware,
+			RolloutPhase:         stringValue(r.RolloutPhase),
+			RolloutMessage:       stringValue(r.RolloutMessage),
+			RolloutPauseReason:   stringValue(r.RolloutPauseReason),
+			RolloutCurrentStep:   int32Value(r.RolloutCurrentStep),
+			RolloutStepKnown:     r.RolloutCurrentStep != nil,
+			RolloutStepCount:     int32Value(r.RolloutStepCount),
+			RolloutAborted:       r.RolloutAborted != nil && *r.RolloutAborted,
+			RolloutError:         stringValue(r.RolloutError),
+			RolloutObservedAt:    pgTimePtr(r.RolloutObservedAt),
 		})
 	}
 	return out, nil

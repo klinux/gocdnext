@@ -15,13 +15,27 @@ import (
 // sync_mode) are MAINTAINER-only — the same fields protected on /deploy-targets — and
 // omitted for viewers via omitempty.
 type deployWatchDTO struct {
-	Environment      string     `json:"environment"`
-	Version          string     `json:"version"`
-	ExpectedRevision string     `json:"expected_revision"`
-	WatchStartedAt   time.Time  `json:"watch_started_at"`
-	SyncRequestedAt  *time.Time `json:"sync_requested_at,omitempty"`
-	DeadlineAt       time.Time  `json:"deadline_at"`
-	DegradedSince    *time.Time `json:"degraded_since,omitempty"`
+	DeploymentRevisionID string     `json:"deployment_revision_id"`
+	Environment          string     `json:"environment"`
+	Version              string     `json:"version"`
+	ExpectedRevision     string     `json:"expected_revision"`
+	WatchStartedAt       time.Time  `json:"watch_started_at"`
+	SyncRequestedAt      *time.Time `json:"sync_requested_at,omitempty"`
+	DeadlineAt           time.Time  `json:"deadline_at"`
+	DegradedSince        *time.Time `json:"degraded_since,omitempty"`
+
+	// Rollout live state (viewer-readable — progress, not config). Absent when the
+	// deploy isn't rollout-aware or hasn't been observed. RolloutCurrentStep is a
+	// pointer so an unknown controller step index renders distinctly from step 0.
+	RolloutAware       bool       `json:"rollout_aware,omitempty"`
+	RolloutPhase       string     `json:"rollout_phase,omitempty"`
+	RolloutMessage     string     `json:"rollout_message,omitempty"`
+	RolloutPauseReason string     `json:"rollout_pause_reason,omitempty"`
+	RolloutCurrentStep *int       `json:"rollout_current_step,omitempty"`
+	RolloutStepCount   int        `json:"rollout_step_count,omitempty"`
+	RolloutAborted     bool       `json:"rollout_aborted,omitempty"`
+	RolloutError       string     `json:"rollout_error,omitempty"`
+	RolloutObservedAt  *time.Time `json:"rollout_observed_at,omitempty"`
 
 	// Maintainer-only config.
 	Application string `json:"application,omitempty"`
@@ -54,13 +68,26 @@ func (h *Handler) ListDeployWatches(w http.ResponseWriter, r *http.Request) {
 	dtos := make([]deployWatchDTO, 0, len(watches))
 	for _, wch := range watches {
 		d := deployWatchDTO{
-			Environment:      wch.Environment,
-			Version:          wch.Version,
-			ExpectedRevision: wch.ExpectedRevision,
-			WatchStartedAt:   wch.WatchStartedAt,
-			SyncRequestedAt:  wch.SyncRequestedAt,
-			DeadlineAt:       wch.DeadlineAt,
-			DegradedSince:    wch.DegradedSince,
+			DeploymentRevisionID: wch.DeploymentRevisionID.String(),
+			Environment:          wch.Environment,
+			Version:              wch.Version,
+			ExpectedRevision:     wch.ExpectedRevision,
+			WatchStartedAt:       wch.WatchStartedAt,
+			SyncRequestedAt:      wch.SyncRequestedAt,
+			DeadlineAt:           wch.DeadlineAt,
+			DegradedSince:        wch.DegradedSince,
+			RolloutAware:         wch.RolloutAware,
+			RolloutPhase:         wch.RolloutPhase,
+			RolloutMessage:       wch.RolloutMessage,
+			RolloutPauseReason:   wch.RolloutPauseReason,
+			RolloutStepCount:     wch.RolloutStepCount,
+			RolloutAborted:       wch.RolloutAborted,
+			RolloutError:         wch.RolloutError,
+			RolloutObservedAt:    wch.RolloutObservedAt,
+		}
+		if wch.RolloutStepKnown {
+			step := wch.RolloutCurrentStep
+			d.RolloutCurrentStep = &step
 		}
 		if showConfig {
 			d.Application = wch.Application
