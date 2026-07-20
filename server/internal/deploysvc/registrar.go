@@ -82,6 +82,12 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	rolloutCluster := strings.TrimSpace(in.RolloutCluster)
 	rolloutNamespace := strings.TrimSpace(in.RolloutNamespace)
 	rolloutName := strings.TrimSpace(in.RolloutName)
+	// Rollout routing is meaningless when observation is off — drop it so a disabled
+	// route can't authorize/persist a cluster reference (which the FK would then let
+	// block that cluster's delete).
+	if !in.RolloutAware {
+		rolloutCluster, rolloutNamespace, rolloutName = "", "", ""
+	}
 
 	if in.ProjectID == uuid.Nil {
 		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: project is required")}

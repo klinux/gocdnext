@@ -58,7 +58,9 @@ func IsClusterUnavailable(err error) bool {
 // caller presents a single caller-safe message (see IsClusterUnavailable). This does
 // NOT read the Rollout CR — that stays a lazy observe-time concern.
 func (s *Store) AuthorizeClusterForProject(ctx context.Context, projectID uuid.UUID, name string) error {
-	r, err := s.q.GetClusterForDispatch(ctx, name)
+	// Narrow query: existence + allowed_projects only — never loads credential_enc
+	// into memory on this authorization-only path.
+	r, err := s.q.GetClusterAuthorizationByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrClusterNotFound
 	}

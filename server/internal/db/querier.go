@@ -177,8 +177,9 @@ type Querier interface {
 	// Single-use: delete as we read. Returning nothing = no such state
 	// (or it expired and the sweeper got to it first).
 	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
-	// Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
-	// (FK), this gives the friendly message before the DELETE fails.
+	// Backs the cluster delete-guard: an in-flight watch referencing the cluster (as its
+	// Application cluster OR its Rollout cluster) RESTRICTs it (both FKs); this gives the
+	// friendly message before the DELETE fails.
 	CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error)
 	// Matching total for the same filter set ListAuditEvents reads.
 	// Surfaces the absolute count so the UI can render a
@@ -534,6 +535,10 @@ type Querier interface {
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
 	GetAuthProviderByID(ctx context.Context, id pgtype.UUID) (AuthProvider, error)
 	GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow, error)
+	// Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
+	// sealed credential — for validating a rollout_cluster reference at registration
+	// (no need to decrypt or even load credential_enc into memory).
+	GetClusterAuthorizationByName(ctx context.Context, name string) (GetClusterAuthorizationByNameRow, error)
 	// Used by Update's preserve-sentinel path to re-seal the existing
 	// credential when the operator edits a cluster without re-entering it.
 	GetClusterCredentialEnc(ctx context.Context, id pgtype.UUID) ([]byte, error)

@@ -175,10 +175,30 @@ func TestRegister_RolloutClusterAuthorization(t *testing.T) {
 		}
 	})
 
+	t.Run("rollout_aware=false drops rollout routing (no authz, no FK reference)", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.RolloutAware = false
+		in.RolloutCluster, in.RolloutNamespace, in.RolloutName = "some-cluster", "ns", "r"
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		for _, c := range *log {
+			if strings.HasPrefix(c, "authorize-cluster") {
+				t.Fatalf("authorized a cluster with rollout_aware=false: %v", *log)
+			}
+		}
+		if reg.gotUpsert.RolloutCluster != "" || reg.gotUpsert.RolloutNamespace != "" || reg.gotUpsert.RolloutName != "" {
+			t.Errorf("rollout routing persisted with rollout_aware=false: %+v", reg.gotUpsert)
+		}
+	})
+
 	t.Run("unauthorized rollout_cluster fails closed (collapsed) before any write", func(t *testing.T) {
 		reg := &fakeRegistry{envID: uuid.New(), authorizeErr: fmt.Errorf("x: %w", store.ErrClusterNotAuthorized)}
 		r, log := newRegistrar(&fakeProvider{}, reg)
 		in := validInput()
+		in.RolloutAware = true
 		in.RolloutCluster = "secret-cluster"
 		_, err := r.Register(context.Background(), in)
 		if kindOf(t, err) != FaultNotFound { // collapsed, oracle-safe (#155)
