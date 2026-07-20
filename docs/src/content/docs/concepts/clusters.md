@@ -360,6 +360,12 @@ upstream and a [`deploy:` marker](/gocdnext/docs/concepts/deployments/)
 on the apply job to get gating + environment tracking on the same
 step.
 
+A registered cluster also serves as the **ArgoCD hub** for a
+[native deploy target](/gocdnext/docs/concepts/native-deploy/) — there
+the cluster is where the ArgoCD `Application` CR lives (not the plugin
+job's destination), and gocdnext reads/patches it directly instead of
+running a job. `in_cluster` credentials aren't eligible for that path.
+
 ## Migrating from a kubeconfig secret
 
 If you ship today via a per-project secret and

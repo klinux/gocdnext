@@ -92,6 +92,7 @@ export default defineConfig({
             { label: "Compliance pipelines", link: "/concepts/compliance/" },
             { label: "Security dashboard", link: "/concepts/security/" },
             { label: "Deployments & rollback", link: "/concepts/deployments/" },
+            { label: "Native deploys (ArgoCD)", link: "/concepts/native-deploy/" },
             { label: "DORA analytics", link: "/concepts/analytics/" },
             { label: "OIDC id_tokens", link: "/concepts/id-tokens/" },
             { label: "Database migrations", link: "/concepts/migrations/" },
