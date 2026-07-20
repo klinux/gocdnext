@@ -1,10 +1,13 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { Rocket } from "lucide-react";
+import { Plus, Rocket } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { EnvironmentCard } from "@/components/environments/environment-card.client";
+import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
 import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
 import { env } from "@/lib/env";
+import { type AuthState, resolveAuthState } from "@/server/queries/auth";
 import {
   GocdnextAPIError,
   listDeployTargets,
@@ -36,36 +39,64 @@ export default async function EnvironmentsPage({
   const { slug } = await params;
 
   // The environments endpoint resolves the project and 404s itself, so we skip a
-  // redundant getProjectDetail round-trip. Fetch the native deploy targets in
-  // parallel; that call is maintainer-gated and 403-tolerant (viewers get an empty
-  // list), so the page stays viewer-readable and only maintainers see the native row.
+  // redundant getProjectDetail round-trip. Fetch the native deploy targets +
+  // the auth state in parallel; the targets call is maintainer-gated and
+  // 403-tolerant (viewers get an empty list), so the page stays viewer-readable
+  // and only maintainers see the native row. resolveAuthState never rejects on
+  // an HTTP error (it returns a mode) but can reject on a network fault, so it's
+  // caught to a fail-closed "unknown" rather than breaking this viewer-critical
+  // page.
   let environments;
   let targets: DeployTarget[] = [];
+  let auth: AuthState = { mode: "unknown" };
   try {
-    const [envList, targetList] = await Promise.all([
+    const [envList, targetList, authState] = await Promise.all([
       listEnvironments(slug),
       listDeployTargets(slug),
+      resolveAuthState().catch((): AuthState => ({ mode: "unknown" })),
     ]);
     environments = envList.environments;
     targets = targetList.deploy_targets;
+    auth = authState;
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 404) notFound();
     throw err;
   }
+
+  // Managing native targets is maintainer+ (or auth genuinely disabled) —
+  // matches the RequireMinRole(maintainer) gate on the deploy-targets
+  // endpoints. The gate is here because absence of a target is ambiguous
+  // (viewer vs no-target-yet). Fails closed: "unknown"/"anonymous" grant
+  // nothing, so a flaky auth probe can't surface maintainer actions to a viewer.
+  const canManage =
+    auth.mode === "disabled" ||
+    (auth.mode === "authenticated" &&
+      (auth.user.role === "admin" || auth.user.role === "maintainer"));
 
   // deploy_targets are 1:1 with an environment by name.
   const targetByEnv = new Map(targets.map((t) => [t.environment, t]));
 
   return (
     <section className="space-y-6">
-      <header>
-        <p className="text-sm text-muted-foreground">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <p className="max-w-3xl text-sm text-muted-foreground">
           What&apos;s deployed where, right now. An environment appears the
           first time a job with a <code className="text-xs">deploy:</code>{" "}
           block ships to it; the current version is the latest successful
           deploy. gocdnext tracks the deploy — a registered native provider
           (ArgoCD) drives it, or your plugin (Helm, kubectl) performs it.
         </p>
+        {canManage ? (
+          <DeployTargetDialog
+            slug={slug}
+            trigger={
+              <Button size="sm" className="shrink-0">
+                <Plus className="mr-1 size-4" aria-hidden /> Register native
+                target
+              </Button>
+            }
+          />
+        ) : null}
       </header>
 
       {environments.length === 0 ? (
@@ -84,6 +115,7 @@ export default async function EnvironmentsPage({
                 slug={slug}
                 environment={e}
                 deployTarget={targetByEnv.get(e.name)}
+                canManage={canManage}
                 apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
               />
             ))}

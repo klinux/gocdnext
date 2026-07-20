@@ -3,9 +3,19 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { ChevronDown, ChevronUp, Eye, RefreshCw, Rocket, RotateCcw } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Rocket,
+  RotateCcw,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
 import {
   Card,
   CardContent,
@@ -33,6 +43,10 @@ type Props = {
   // viewer may see it — the query is maintainer-gated, so viewers get undefined and
   // the native row is omitted.
   deployTarget?: DeployTarget;
+  // Whether the current user may register/edit/remove native targets (maintainer
+  // or admin, or auth disabled). Gates the edit/add affordances — absence of a
+  // target alone is ambiguous (viewer vs maintainer-with-no-target).
+  canManage: boolean;
   // Browser-facing API base; "" = same-origin. Threaded from the RSC
   // page so the lazy history fetch hits the right host.
   apiBaseURL: string;
@@ -62,6 +76,7 @@ export function EnvironmentCard({
   slug,
   environment,
   deployTarget,
+  canManage,
   apiBaseURL,
 }: Props) {
   const { current } = environment;
@@ -132,7 +147,27 @@ export function EnvironmentCard({
           </p>
         )}
 
-        {deployTarget ? <NativeTargetRow target={deployTarget} /> : null}
+        {deployTarget ? (
+          <NativeTargetRow
+            slug={slug}
+            target={deployTarget}
+            canManage={canManage}
+          />
+        ) : canManage ? (
+          <DeployTargetDialog
+            slug={slug}
+            presetEnvironment={environment.name}
+            trigger={
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 w-full justify-start text-xs text-muted-foreground"
+              >
+                <Plus className="mr-1 size-3.5" aria-hidden /> Add native target
+              </Button>
+            }
+          />
+        ) : null}
 
         <div>
           <Button
@@ -167,8 +202,17 @@ const PROVIDER_LABELS: Record<string, string> = { argocd: "ArgoCD" };
 
 // The registered native provider target for this env. Maintainer-only (the parent
 // only passes it when the maintainer-gated fetch succeeded). Config, not live state —
-// live sync/degraded status lands in a later increment via a polled endpoint.
-function NativeTargetRow({ target }: { target: DeployTarget }) {
+// live sync/degraded status lands in a later increment via a polled endpoint. When
+// the viewer may manage targets, an inline Edit opens the dialog (edit + remove).
+function NativeTargetRow({
+  slug,
+  target,
+  canManage,
+}: {
+  slug: string;
+  target: DeployTarget;
+  canManage: boolean;
+}) {
   const SyncIcon = target.sync_mode === "observe" ? Eye : RefreshCw;
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
@@ -189,6 +233,22 @@ function NativeTargetRow({ target }: { target: DeployTarget }) {
         <SyncIcon className="size-3" aria-hidden />
         {target.sync_mode}
       </span>
+      {canManage ? (
+        <DeployTargetDialog
+          slug={slug}
+          initial={target}
+          trigger={
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto size-6 text-muted-foreground"
+              aria-label={`Edit native target for ${target.environment}`}
+            >
+              <Pencil className="size-3.5" aria-hidden />
+            </Button>
+          }
+        />
+      ) : null}
     </div>
   );
 }

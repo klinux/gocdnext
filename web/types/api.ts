@@ -19,7 +19,9 @@ export type CurrentUser = {
   avatar_url?: string;
   provider: string;
   external_id: string;
-  role: "admin" | "user" | "viewer";
+  // Matches the server RBAC roles (store.RoleAdmin/Maintainer/Viewer). The
+  // wire value for a mid-tier user is "maintainer", not "user".
+  role: "admin" | "maintainer" | "viewer";
   last_login_at?: string;
   created_at: string;
   updated_at: string;
