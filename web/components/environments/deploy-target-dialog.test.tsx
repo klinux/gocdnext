@@ -76,6 +76,32 @@ describe("DeployTargetDialog", () => {
     });
   });
 
+  it("clears the fields after a successful register (no stale values on reopen)", async () => {
+    render(
+      <DeployTargetDialog
+        slug="acme"
+        trigger={<button type="button">Register native target</button>}
+      />,
+    );
+    open(/register native target/i);
+    fireEvent.change(await screen.findByLabelText("Environment"), {
+      target: { value: "staging" },
+    });
+    fireEvent.change(screen.getByLabelText(/Cluster/), {
+      target: { value: "hub" },
+    });
+    fireEvent.change(screen.getByLabelText(/ArgoCD Application/), {
+      target: { value: "app" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Register$/ }));
+    await waitFor(() => expect(setDeployTarget).toHaveBeenCalled());
+
+    // Reopen — the environment field must be back to empty, not "staging".
+    open(/register native target/i);
+    const env = (await screen.findByLabelText("Environment")) as HTMLInputElement;
+    expect(env.value).toBe("");
+  });
+
   it("rejects an invalid environment name without dispatching", async () => {
     const { toast } = await import("sonner");
     render(

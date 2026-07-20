@@ -7,7 +7,7 @@ import { EnvironmentCard } from "@/components/environments/environment-card.clie
 import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
 import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
 import { env } from "@/lib/env";
-import { resolveAuthState } from "@/server/queries/auth";
+import { type AuthState, resolveAuthState } from "@/server/queries/auth";
 import {
   GocdnextAPIError,
   listDeployTargets,
@@ -39,38 +39,39 @@ export default async function EnvironmentsPage({
   const { slug } = await params;
 
   // The environments endpoint resolves the project and 404s itself, so we skip a
-  // redundant getProjectDetail round-trip. Fetch the native deploy targets in
-  // parallel; that call is maintainer-gated and 403-tolerant (viewers get an empty
-  // list), so the page stays viewer-readable and only maintainers see the native row.
+  // redundant getProjectDetail round-trip. Fetch the native deploy targets +
+  // the auth state in parallel; the targets call is maintainer-gated and
+  // 403-tolerant (viewers get an empty list), so the page stays viewer-readable
+  // and only maintainers see the native row. resolveAuthState never rejects on
+  // an HTTP error (it returns a mode) but can reject on a network fault, so it's
+  // caught to a fail-closed "unknown" rather than breaking this viewer-critical
+  // page.
   let environments;
   let targets: DeployTarget[] = [];
+  let auth: AuthState = { mode: "unknown" };
   try {
-    const [envList, targetList] = await Promise.all([
+    const [envList, targetList, authState] = await Promise.all([
       listEnvironments(slug),
       listDeployTargets(slug),
+      resolveAuthState().catch((): AuthState => ({ mode: "unknown" })),
     ]);
     environments = envList.environments;
     targets = targetList.deploy_targets;
+    auth = authState;
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 404) notFound();
     throw err;
   }
 
-  // Managing native targets is maintainer+ (or auth disabled) — matches the
-  // RequireMinRole(maintainer) gate on the deploy-targets endpoints. The gate
-  // is here because absence of a target is ambiguous (viewer vs no-target-yet).
-  // Fail closed to read-only if the auth probe errors — this page is
-  // viewer-critical, so it must render even when /me is unreachable.
-  let canManage = false;
-  try {
-    const auth = await resolveAuthState();
-    canManage =
-      auth.mode === "disabled" ||
-      (auth.mode === "authenticated" &&
-        (auth.user.role === "admin" || auth.user.role === "maintainer"));
-  } catch {
-    canManage = false;
-  }
+  // Managing native targets is maintainer+ (or auth genuinely disabled) —
+  // matches the RequireMinRole(maintainer) gate on the deploy-targets
+  // endpoints. The gate is here because absence of a target is ambiguous
+  // (viewer vs no-target-yet). Fails closed: "unknown"/"anonymous" grant
+  // nothing, so a flaky auth probe can't surface maintainer actions to a viewer.
+  const canManage =
+    auth.mode === "disabled" ||
+    (auth.mode === "authenticated" &&
+      (auth.user.role === "admin" || auth.user.role === "maintainer"));
 
   // deploy_targets are 1:1 with an environment by name.
   const targetByEnv = new Map(targets.map((t) => [t.environment, t]));

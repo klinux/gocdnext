@@ -82,6 +82,14 @@ export function DeployTargetDialog({
     setConfirmingRemove(false);
   };
 
+  // Programmatic close (a successful submit/remove) doesn't fire the Dialog's
+  // onOpenChange, so reset explicitly here — otherwise reopening "Register"
+  // would show the previously-entered values.
+  const closeAndReset = () => {
+    setOpen(false);
+    reset();
+  };
+
   const submit = () => {
     const candidate = {
       environment: environment.trim(),
@@ -104,7 +112,7 @@ export function DeployTargetDialog({
       toast.success(
         `Native target ${isEdit ? "updated" : "registered"} for ${candidate.environment}`,
       );
-      setOpen(false);
+      closeAndReset();
       router.refresh();
     });
   };
@@ -120,7 +128,7 @@ export function DeployTargetDialog({
         return;
       }
       toast.success(`Native target removed from ${environment.trim()}`);
-      setOpen(false);
+      closeAndReset();
       router.refresh();
     });
   };
