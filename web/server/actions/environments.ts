@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { env } from "@/lib/env";
+import { deployTargetFormSchema } from "@/lib/deploy-target";
 
 const rollbackSchema = z.object({
   slug: z.string().min(1),
@@ -53,6 +54,106 @@ export async function rollbackEnvironment(
       };
     }
     revalidatePath(`/projects/${parsed.data.slug}/environments`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const setDeployTargetSchema = deployTargetFormSchema.extend({
+  slug: z.string().min(1),
+});
+
+// setDeployTarget registers or updates the native deploy target (ADR-0001)
+// for an environment — a maintainer-gated upsert keyed 1:1 on the environment
+// name. `provider` is never sent; the server hardcodes "argocd". The server
+// re-validates every field AND fetches the ArgoCD Application (existence,
+// reachability, single-source) before writing, so a 4xx here carries a
+// user-ready message (e.g. a multi-source rejection, or "check the cluster is
+// reachable and the application exists") which we surface verbatim.
+export async function setDeployTarget(
+  input: z.infer<typeof setDeployTargetSchema>,
+): Promise<ActionResult> {
+  const parsed = setDeployTargetSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  const { slug, environment, cluster, application, namespace, sync_mode } =
+    parsed.data;
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(slug)}/deploy-targets`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      // Omit an empty namespace so the server applies its "argocd" default.
+      body: JSON.stringify({
+        environment,
+        cluster,
+        application,
+        sync_mode,
+        ...(namespace ? { namespace } : {}),
+      }),
+    });
+    if (!res.ok) {
+      // The control plane writes human-readable, safe messages per status for
+      // this endpoint, so surface the body directly rather than a code.
+      const body = (await res.text()).trim();
+      return { ok: false, error: body || `server error (${res.status})` };
+    }
+    revalidatePath(`/projects/${slug}/environments`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const deleteDeployTargetSchema = z.object({
+  slug: z.string().min(1),
+  environment: z.string().min(1),
+});
+
+// deleteDeployTarget removes an environment's native target, reverting it to a
+// tracking-layer deploy (the pipeline's own script/plugin runs again). 404
+// ("deploy target not found") is surfaced as an error so a double-delete is
+// visible rather than silently "succeeding".
+export async function deleteDeployTarget(
+  input: z.infer<typeof deleteDeployTargetSchema>,
+): Promise<ActionResult> {
+  const parsed = deleteDeployTargetSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  const { slug, environment } = parsed.data;
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(slug)}/deploy-targets/${encodeURIComponent(environment)}`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "DELETE",
+      cache: "no-store",
+      headers: {
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const body = (await res.text()).trim();
+      return { ok: false, error: body || `server error (${res.status})` };
+    }
+    revalidatePath(`/projects/${slug}/environments`);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

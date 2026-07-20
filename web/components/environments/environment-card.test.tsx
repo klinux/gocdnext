@@ -12,7 +12,10 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/server/actions/environments", () => ({
   rollbackEnvironment: vi.fn(),
+  setDeployTarget: vi.fn(),
+  deleteDeployTarget: vi.fn(),
 }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const withCurrent: EnvironmentSummary = {
   id: "env-1",
@@ -38,7 +41,7 @@ afterEach(() => {
 
 describe("EnvironmentCard", () => {
   it("shows the current version, deployer and a run link", () => {
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
     expect(screen.getByText("1.42.abc123")).toBeTruthy();
     expect(screen.getByText(/by alice/)).toBeTruthy();
     const runLink = screen.getByRole("link", { name: "run" });
@@ -47,7 +50,7 @@ describe("EnvironmentCard", () => {
 
   it("renders the empty state when nothing has deployed", () => {
     const empty: EnvironmentSummary = { ...withCurrent, current: null };
-    render(<EnvironmentCard slug="acme" environment={empty} apiBaseURL="" />);
+    render(<EnvironmentCard slug="acme" environment={empty} apiBaseURL="" canManage={false} />);
     expect(screen.getByText("no deploys yet")).toBeTruthy();
     expect(screen.getByText(/Nothing has shipped/)).toBeTruthy();
   });
@@ -57,7 +60,7 @@ describe("EnvironmentCard", () => {
       ...withCurrent,
       current: { ...withCurrent.current!, is_rollback: true },
     };
-    render(<EnvironmentCard slug="acme" environment={rolled} apiBaseURL="" />);
+    render(<EnvironmentCard slug="acme" environment={rolled} apiBaseURL="" canManage={false} />);
     expect(screen.getAllByText("rollback").length).toBeGreaterThan(0);
   });
 
@@ -76,6 +79,7 @@ describe("EnvironmentCard", () => {
         slug="acme"
         environment={withCurrent}
         deployTarget={target}
+        canManage={false}
         apiBaseURL=""
       />,
     );
@@ -87,9 +91,52 @@ describe("EnvironmentCard", () => {
   });
 
   it("omits the native row when there is no target (or the viewer can't see it)", () => {
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
     expect(screen.queryByText("Native")).toBeNull();
     expect(screen.queryByText("checkout")).toBeNull();
+  });
+
+  it("offers an Edit affordance on the native row for managers", () => {
+    render(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        deployTarget={target}
+        canManage
+        apiBaseURL=""
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /Edit native target for production/i }),
+    ).toBeTruthy();
+  });
+
+  it("offers 'Add native target' on a target-less env for managers", () => {
+    render(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        canManage
+        apiBaseURL=""
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /Add native target/i }),
+    ).toBeTruthy();
+  });
+
+  it("hides management affordances from non-managers", () => {
+    render(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        deployTarget={target}
+        canManage={false}
+        apiBaseURL=""
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /Edit native target/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add native target/i })).toBeNull();
   });
 
   it("lazily fetches history on expand and lists past deploys", async () => {
@@ -123,7 +170,7 @@ describe("EnvironmentCard", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
     // History is NOT fetched until the operator expands it.
     expect(fetchMock).not.toHaveBeenCalled();
 
@@ -138,7 +185,7 @@ describe("EnvironmentCard", () => {
 
   it("surfaces a history fetch error without crashing", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
     await waitFor(() => expect(screen.getByText(/Couldn't load history/)).toBeTruthy());
   });

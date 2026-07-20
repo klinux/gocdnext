@@ -1,10 +1,13 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { Rocket } from "lucide-react";
+import { Plus, Rocket } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { EnvironmentCard } from "@/components/environments/environment-card.client";
+import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
 import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
 import { env } from "@/lib/env";
+import { resolveAuthState } from "@/server/queries/auth";
 import {
   GocdnextAPIError,
   listDeployTargets,
@@ -53,19 +56,46 @@ export default async function EnvironmentsPage({
     throw err;
   }
 
+  // Managing native targets is maintainer+ (or auth disabled) — matches the
+  // RequireMinRole(maintainer) gate on the deploy-targets endpoints. The gate
+  // is here because absence of a target is ambiguous (viewer vs no-target-yet).
+  // Fail closed to read-only if the auth probe errors — this page is
+  // viewer-critical, so it must render even when /me is unreachable.
+  let canManage = false;
+  try {
+    const auth = await resolveAuthState();
+    canManage =
+      auth.mode === "disabled" ||
+      (auth.mode === "authenticated" &&
+        (auth.user.role === "admin" || auth.user.role === "maintainer"));
+  } catch {
+    canManage = false;
+  }
+
   // deploy_targets are 1:1 with an environment by name.
   const targetByEnv = new Map(targets.map((t) => [t.environment, t]));
 
   return (
     <section className="space-y-6">
-      <header>
-        <p className="text-sm text-muted-foreground">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <p className="max-w-3xl text-sm text-muted-foreground">
           What&apos;s deployed where, right now. An environment appears the
           first time a job with a <code className="text-xs">deploy:</code>{" "}
           block ships to it; the current version is the latest successful
           deploy. gocdnext tracks the deploy — a registered native provider
           (ArgoCD) drives it, or your plugin (Helm, kubectl) performs it.
         </p>
+        {canManage ? (
+          <DeployTargetDialog
+            slug={slug}
+            trigger={
+              <Button size="sm" className="shrink-0">
+                <Plus className="mr-1 size-4" aria-hidden /> Register native
+                target
+              </Button>
+            }
+          />
+        ) : null}
       </header>
 
       {environments.length === 0 ? (
@@ -84,6 +114,7 @@ export default async function EnvironmentsPage({
                 slug={slug}
                 environment={e}
                 deployTarget={targetByEnv.get(e.name)}
+                canManage={canManage}
                 apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
               />
             ))}
