@@ -118,10 +118,27 @@ func pausedAtArmedStep(state DeployState, w WatchAnchors) bool {
 }
 
 // hasKnownAbortTarget reports whether the watcher can name a Rollout to abort — the
-// gate pin (armed) or the identity Observe resolved this tick. Under an Observe error
-// with no pin, there is no target: don't invent one (stay pending).
+// gate pin (armed) or the COMPLETE identity Observe resolved this tick. A partial
+// observed identity (any of cluster/namespace/name empty) is not actionable — the
+// actuator would fail closed on it, so treat it as "no target" here and stay pending.
 func hasKnownAbortTarget(state DeployState, w WatchAnchors) bool {
-	return w.HasPinnedRolloutTarget || (state.RolloutObserved && state.Rollout.ResolvedName != "")
+	if w.HasPinnedRolloutTarget {
+		return true
+	}
+	return state.RolloutObserved &&
+		state.Rollout.ResolvedCluster != "" &&
+		state.Rollout.ResolvedNamespace != "" &&
+		state.Rollout.ResolvedName != ""
+}
+
+// gateActuatable enforces the "act via the pin" contract on a DECIDED gate: a gate
+// decision may only drive Promote/Abort when the gate is actually armed AND its Rollout
+// identity was pinned (ArmGate stamps both together). If a decided-but-unarmed/unpinned
+// state ever arises (a persistence/migration/wiring bug — never in normal flow), Decide
+// must NOT actuate on an unknown target and must NOT fall through to a success finalize.
+// It fails closed: the rejected/approved deploy waits for the resumed deadline instead.
+func gateActuatable(w WatchAnchors) bool {
+	return w.GateArmedAt != nil && w.HasPinnedRolloutTarget
 }
 
 // Decide is the pure brain of the watch loop. Given one convergence snapshot, the
@@ -166,9 +183,12 @@ func Decide(state DeployState, w WatchAnchors, now time.Time, degradedWindow tim
 	}
 
 	// (2) Gate REJECT — abort-safe. Fires even under a control-mode Observe error, via
-	// the pinned identity. Skip a redundant Abort if we already observe it aborted.
+	// the pinned identity. Skip a redundant Abort if we already observe it aborted. The
+	// Abort is emitted ONLY with an armed+pinned gate (the "via pin" contract); without
+	// it we never actuate on an unknown target — the reject still terminalizes on an
+	// observed abort or the deadline (fail-closed), never a success.
 	if w.Gated && w.GateDecision == GateRejected {
-		if w.GateActionedAt == nil && !rolloutObservedAborted(state) {
+		if gateActuatable(w) && w.GateActionedAt == nil && !rolloutObservedAborted(state) {
 			return Verdict{Effect: Abort, Reason: ReasonRejected}
 		}
 		if rolloutObservedAborted(state) || pastDeadline {
@@ -194,8 +214,14 @@ func Decide(state DeployState, w WatchAnchors, now time.Time, degradedWindow tim
 		return Verdict{Effect: Continue}
 	}
 
-	// (6) Gate APPROVE — only reachable on a healthy observe (past (5)).
+	// (6) Gate APPROVE — only reachable on a healthy observe (past (5)). Promote only
+	// with an armed+pinned gate; a decided-but-unpinned state (bug) must not promote an
+	// unknown target nor fall through to success — fail closed, wait for the (resumed,
+	// since decided) deadline.
 	if w.Gated && w.GateDecision == GateApproved {
+		if !gateActuatable(w) {
+			return Verdict{Effect: Continue}
+		}
 		if w.GateActionedAt == nil {
 			return Verdict{Effect: Promote}
 		}

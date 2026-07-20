@@ -208,12 +208,17 @@ func TestDecideRolloutGate(t *testing.T) {
 	appOK := func(r RolloutState, observed bool) DeployState {
 		return DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "rev1", Rollout: r, RolloutObserved: observed}
 	}
-	// Rollout snapshots.
-	pausedIndef := RolloutState{Phase: RolloutPaused, PauseReason: PauseReasonCanaryStep, CurrentStepIndex: 1, CurrentStepKnown: true, StepCount: 3, PausedIndefinitely: true, StableHash: "a", PodHash: "b", ResolvedName: "ro"}
-	pausedTimed := RolloutState{Phase: RolloutPaused, PauseReason: PauseReasonCanaryStep, CurrentStepIndex: 1, CurrentStepKnown: true, StepCount: 3, PausedIndefinitely: false, ResolvedName: "ro"}
-	promoted := RolloutState{Phase: RolloutHealthy, CurrentStepIndex: 3, CurrentStepKnown: true, StepCount: 3, FullyPromoted: true, StableHash: "b", PodHash: "b", ResolvedName: "ro"}
-	progressing := RolloutState{Phase: RolloutProgressing, CurrentStepIndex: 2, CurrentStepKnown: true, StepCount: 3, ResolvedName: "ro"}
-	aborted := RolloutState{Phase: RolloutDegraded, Aborted: true, ResolvedName: "ro"}
+	// Rollout snapshots. Observe always resolves the full identity (cluster/ns/name), so
+	// the fixtures carry all three — the abort target is actionable.
+	id := func(r RolloutState) RolloutState {
+		r.ResolvedCluster, r.ResolvedNamespace, r.ResolvedName = "dest", "ns", "ro"
+		return r
+	}
+	pausedIndef := id(RolloutState{Phase: RolloutPaused, PauseReason: PauseReasonCanaryStep, CurrentStepIndex: 1, CurrentStepKnown: true, StepCount: 3, PausedIndefinitely: true, StableHash: "a", PodHash: "b"})
+	pausedTimed := id(RolloutState{Phase: RolloutPaused, PauseReason: PauseReasonCanaryStep, CurrentStepIndex: 1, CurrentStepKnown: true, StepCount: 3, PausedIndefinitely: false})
+	promoted := id(RolloutState{Phase: RolloutHealthy, CurrentStepIndex: 3, CurrentStepKnown: true, StepCount: 3, FullyPromoted: true, StableHash: "b", PodHash: "b"})
+	progressing := id(RolloutState{Phase: RolloutProgressing, CurrentStepIndex: 2, CurrentStepKnown: true, StepCount: 3})
+	aborted := id(RolloutState{Phase: RolloutDegraded, Aborted: true})
 
 	// Base anchors: rollout-aware + gated, sync fired, deadline 1h out.
 	base := WatchAnchors{
@@ -299,6 +304,21 @@ func TestDecideRolloutGate(t *testing.T) {
 			appOK(aborted, true), abortActioned(cancel(base)), Verdict{Effect: FinalizeFailed, Reason: ReasonCanceled}},
 		{"cancel, actioned, not yet aborted → continue",
 			appOK(progressing, true), abortActioned(cancel(base)), Verdict{Effect: Continue}},
+
+		// ---- defensive: a DECIDED gate must not actuate without an armed+pinned identity ----
+		// (an impossible/corrupt state — persistence/migration/wiring bug). Fail closed:
+		// never Promote/Abort an unknown target, never fall through to a success finalize.
+		{"approved but NOT armed/pinned → continue (no Promote on an unknown target)",
+			appOK(pausedIndef, true), approved(base), Verdict{Effect: Continue}},
+		{"rejected but NOT armed/pinned → continue (no Abort on an unknown target)",
+			appOK(pausedIndef, true), rejected(base), Verdict{Effect: Continue}},
+		{"rejected but NOT armed/pinned, past deadline → fail closed (not success)",
+			appOK(promoted, true), withDeadline(rejected(base), now.Add(-time.Second)),
+			Verdict{Effect: FinalizeFailed, Reason: ReasonRejected}},
+		{"cancel with an INCOMPLETE observed identity (no namespace) → continue (not a target)",
+			DeployState{Sync: SyncSynced, Health: HealthHealthy, ObservedRev: "rev1", RolloutObserved: true,
+				Rollout: RolloutState{Phase: RolloutPaused, ResolvedCluster: "c", ResolvedNamespace: "", ResolvedName: "ro"}},
+			cancel(base), Verdict{Effect: Continue}},
 	}
 
 	for _, tt := range tests {
