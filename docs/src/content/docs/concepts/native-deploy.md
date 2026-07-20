@@ -108,6 +108,106 @@ deadline (**15 min** default) the deploy fails with a progress-deadline
 error; a `Degraded` health is debounced briefly before failing, to ride
 out a transient blip.
 
+## End-to-end examples
+
+### Gated deploy in `trigger` mode (build → approve → native sync)
+
+Register the target once (maintainer):
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $GOCDNEXT_TOKEN" \
+  -H "Content-Type: application/json" \
+  https://gocdnext.example.com/api/v1/projects/shop/deploy-targets \
+  -d '{"environment":"production","cluster":"argocd-hub","application":"shop-prod","sync_mode":"trigger"}'
+```
+
+Then the pipeline — a gate, then the deploy job:
+
+```yaml
+jobs:
+  build:
+    stage: build
+    image: golang:1.23
+    script: ["make build"]
+
+  promote-prod:
+    stage: deploy
+    approval:
+      description: "Promote to production"
+      approver_groups: [release-approvers]
+
+  ship-prod:
+    stage: deploy
+    needs: [promote-prod]
+    # The body is the FALLBACK — it runs only if `production` has NO
+    # registered target. With the target above registered, gocdnext
+    # syncs ArgoCD itself and this `uses:` never runs.
+    uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
+    with:
+      command: "app sync shop-prod"
+    deploy:
+      environment: production
+      # No `version:` → correlates against THIS run's commit
+      # (CI_COMMIT_SHA) — the SHA ArgoCD reports as synced.
+```
+
+On this run: `build` runs on an agent, `promote-prod` blocks for the
+approval, and once approved `ship-prod` is taken over by the server —
+**no agent** — which patches the Application's `.operation` to sync
+`shop-prod`, then watches it to `Synced + Healthy` at the run's commit.
+The gate precedes the sync, which is exactly what `trigger` mode is for.
+
+:::caution[The `deploy:` job always needs a body — it's your fallback]
+The parser rejects a `deploy:` job with no `script:` / `uses:` /
+`image:+settings:`. That body is **the fallback deploy**: with a native
+target registered it never executes (the server syncs instead); remove
+the target and the same job degrades to running the body on an agent.
+So you can adopt — or back out of — native deploys **without touching
+the pipeline**. A natural body is the [`argocd` plugin](/gocdnext/docs/reference/plugins/#argocd)
+(as above) or your existing `kubectl`/`helm` step.
+:::
+
+:::caution[`version:` must be a git SHA for native deploys]
+A native deploy correlates success against the **full git commit SHA
+ArgoCD reports** as synced. So `version:` must be a commit SHA — or
+omitted, which uses the run's own commit (`CI_COMMIT_SHA`), the common
+case. An **image tag or semver** (e.g. `${{ needs.build.outputs.image-tag }}`,
+fine for a [tracking-layer deploy](/gocdnext/docs/concepts/deployments/))
+**fails a native deploy terminally** — it can't be tied to a commit. If
+your manifests live in a separate GitOps repo at a different SHA, pin
+`version:` to that commit's full/short SHA.
+:::
+
+### Watch-only in `observe` mode (auto-sync app)
+
+For an Application that ArgoCD already **auto-syncs** (an external
+GitOps writer commits the manifests), register the target as `observe`:
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $GOCDNEXT_TOKEN" -H "Content-Type: application/json" \
+  https://gocdnext.example.com/api/v1/projects/shop/deploy-targets \
+  -d '{"environment":"staging","cluster":"argocd-hub","application":"shop-staging","sync_mode":"observe"}'
+```
+
+```yaml
+jobs:
+  watch-staging:
+    stage: deploy
+    uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1   # fallback only
+    with:
+      command: "app wait shop-staging --health"
+    deploy:
+      environment: staging
+```
+
+gocdnext issues **no** sync here — it just watches `shop-staging` to
+`Synced + Healthy` at the run's commit and finalizes the job on
+convergence (or fails on the deadline). Use `observe` when something
+else owns the sync and you only want gocdnext to gate the pipeline on
+the real rollout landing.
+
 ## Centralized ArgoCD: `cluster:` is the hub, not the destination
 
 This is the part worth being explicit about. In the target,
