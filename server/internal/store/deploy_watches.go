@@ -39,6 +39,24 @@ type DeployWatch struct {
 	ClaimedBy            string
 	ClaimedAt            *time.Time
 	CreatedAt            time.Time
+
+	// Rollout routing (denormalized) so the watcher rebuilds a complete target.
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
+
+	// Observed rollout snapshot (restamped each tick; RolloutObservedAt nil = never
+	// observed). RolloutStepKnown=false means the controller step index was absent.
+	RolloutPhase       string
+	RolloutMessage     string
+	RolloutPauseReason string
+	RolloutCurrentStep int
+	RolloutStepKnown   bool
+	RolloutStepCount   int
+	RolloutAborted     bool
+	RolloutError       string
+	RolloutObservedAt  *time.Time
 }
 
 // DeployWatchInput is the create-time payload. The watch is created unclaimed and
@@ -72,7 +90,28 @@ func deployWatchFromRow(w db.DeployWatch) DeployWatch {
 		ClaimedBy:            stringValue(w.ClaimedBy),
 		ClaimedAt:            pgTimePtr(w.ClaimedAt),
 		CreatedAt:            w.CreatedAt.Time,
+		RolloutAware:         w.RolloutAware,
+		RolloutCluster:       stringValue(w.RolloutCluster),
+		RolloutNamespace:     stringValue(w.RolloutNamespace),
+		RolloutName:          stringValue(w.RolloutName),
+		RolloutPhase:         stringValue(w.RolloutPhase),
+		RolloutMessage:       stringValue(w.RolloutMessage),
+		RolloutPauseReason:   stringValue(w.RolloutPauseReason),
+		RolloutCurrentStep:   int32Value(w.RolloutCurrentStep),
+		RolloutStepKnown:     w.RolloutCurrentStep != nil,
+		RolloutStepCount:     int32Value(w.RolloutStepCount),
+		RolloutAborted:       w.RolloutAborted != nil && *w.RolloutAborted,
+		RolloutError:         stringValue(w.RolloutError),
+		RolloutObservedAt:    pgTimePtr(w.RolloutObservedAt),
 	}
+}
+
+// int32Value dereferences a nullable int32 to int (0 when NULL).
+func int32Value(p *int32) int {
+	if p == nil {
+		return 0
+	}
+	return int(*p)
 }
 
 // CreateDeployWatch inserts the control-loop record for a fresh in_progress
@@ -109,6 +148,64 @@ func (s *Store) GetDeployWatch(ctx context.Context, revID uuid.UUID) (DeployWatc
 		return DeployWatch{}, fmt.Errorf("store: get deploy watch: %w", err)
 	}
 	return deployWatchFromRow(w), nil
+}
+
+// rolloutTextMax bounds cluster-supplied message/error so a giant status can't bloat
+// the DB/UI (runes, so truncation never splits a UTF-8 sequence).
+const rolloutTextMax = 500
+
+// RolloutObservationInput is the observed Rollout snapshot the watcher persists each
+// tick. Observed=false means the Rollout couldn't be read/resolved this tick — only
+// Error is meaningful then. StepKnown=false NULLs rollout_current_step (an absent
+// controller index must not read as step 0).
+type RolloutObservationInput struct {
+	Observed    bool
+	Phase       string
+	Message     string
+	PauseReason string
+	CurrentStep int
+	StepKnown   bool
+	StepCount   int
+	Aborted     bool
+	Error       string
+}
+
+// StampRolloutObservation persists the snapshot onto the watch, fenced on claimID
+// (false → lease lost). A good observe clears rollout_error; a failed one records the
+// (already sanitized) Error and NULLs the rest.
+func (s *Store) StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in RolloutObservationInput) (bool, error) {
+	p := db.StampRolloutObservationParams{
+		DeploymentRevisionID: pgUUID(revID),
+		ClaimID:              pgUUID(claimID),
+	}
+	if in.Observed {
+		p.RolloutPhase = nullableString(in.Phase)
+		p.RolloutMessage = nullableString(truncateRunes(in.Message, rolloutTextMax))
+		p.RolloutPauseReason = nullableString(in.PauseReason)
+		if in.StepKnown {
+			v := int32(in.CurrentStep)
+			p.RolloutCurrentStep = &v
+		}
+		sc := int32(in.StepCount)
+		p.RolloutStepCount = &sc
+		ab := in.Aborted
+		p.RolloutAborted = &ab
+	} else {
+		p.RolloutError = nullableString(truncateRunes(in.Error, rolloutTextMax))
+	}
+	n, err := s.q.StampRolloutObservation(ctx, p)
+	if err != nil {
+		return false, fmt.Errorf("store: stamp rollout observation: %w", err)
+	}
+	return n > 0, nil
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }
 
 // ClaimDeployWatches claims up to max never-claimed-or-lease-expired watches for

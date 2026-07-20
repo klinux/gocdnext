@@ -53,6 +53,14 @@ type RegisterInput struct {
 	Namespace   string
 	SyncMode    string
 	CreatedBy   string
+
+	// Rollout awareness (Phase 2). Routing empty = defaults (App's cluster /
+	// auto-discover). No register-time rollout validation in observe-only PR1: the
+	// observe path resolves the Rollout each tick and degrades/fails-closed there.
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 // Register validates and persists a deploy target. Order is load-bearing: field
@@ -68,6 +76,9 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	environment := strings.TrimSpace(in.Environment)
 	syncMode := strings.TrimSpace(in.SyncMode)
 	namespace := deploy.NormalizeNamespace(in.Namespace)
+	rolloutCluster := strings.TrimSpace(in.RolloutCluster)
+	rolloutNamespace := strings.TrimSpace(in.RolloutNamespace)
+	rolloutName := strings.TrimSpace(in.RolloutName)
 
 	if in.ProjectID == uuid.Nil {
 		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: errors.New("deploysvc: project is required")}
@@ -84,15 +95,20 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	}
 
 	target := deploy.DeploymentTarget{
-		ProjectID:   in.ProjectID,
-		Environment: environment,
-		Provider:    provider,
-		Cluster:     cluster,
-		Application: application,
-		Namespace:   namespace,
-		SyncMode:    deploy.SyncMode(syncMode),
+		ProjectID:        in.ProjectID,
+		Environment:      environment,
+		Provider:         provider,
+		Cluster:          cluster,
+		Application:      application,
+		Namespace:        namespace,
+		SyncMode:         deploy.SyncMode(syncMode),
+		RolloutAware:     in.RolloutAware,
+		RolloutCluster:   rolloutCluster,
+		RolloutNamespace: rolloutNamespace,
+		RolloutName:      rolloutName,
 	}
-	// Fetch + authorize + single-source check BEFORE any DB write.
+	// Fetch + authorize + single-source check BEFORE any DB write. (Validates the
+	// Application; the Rollout is resolved lazily at observe time.)
 	if err := r.provider.ValidateSingleSource(ctx, target); err != nil {
 		return store.DeployTarget{}, classifyValidateErr(err)
 	}
@@ -102,24 +118,32 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: ensure environment: %w", err)}
 	}
 	if err := r.registry.UpsertDeployTarget(ctx, store.DeployTargetInput{
-		EnvironmentID: envID,
-		Provider:      provider,
-		Cluster:       cluster,
-		Application:   application,
-		Namespace:     namespace,
-		SyncMode:      syncMode,
-		CreatedBy:     in.CreatedBy,
+		EnvironmentID:    envID,
+		Provider:         provider,
+		Cluster:          cluster,
+		Application:      application,
+		Namespace:        namespace,
+		SyncMode:         syncMode,
+		CreatedBy:        in.CreatedBy,
+		RolloutAware:     in.RolloutAware,
+		RolloutCluster:   rolloutCluster,
+		RolloutNamespace: rolloutNamespace,
+		RolloutName:      rolloutName,
 	}); err != nil {
 		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: upsert deploy target: %w", err)}
 	}
 	// Return the canonical (normalized) target so the caller needn't re-read it.
 	return store.DeployTarget{
-		ProjectID:   in.ProjectID,
-		Environment: environment,
-		Provider:    provider,
-		Cluster:     cluster,
-		Application: application,
-		Namespace:   namespace,
-		SyncMode:    syncMode,
+		ProjectID:        in.ProjectID,
+		Environment:      environment,
+		Provider:         provider,
+		Cluster:          cluster,
+		Application:      application,
+		Namespace:        namespace,
+		SyncMode:         syncMode,
+		RolloutAware:     in.RolloutAware,
+		RolloutCluster:   rolloutCluster,
+		RolloutNamespace: rolloutNamespace,
+		RolloutName:      rolloutName,
 	}, nil
 }
