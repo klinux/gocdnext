@@ -84,7 +84,9 @@ type fakeRegistry struct {
 	envID        uuid.UUID
 	ensureErr    error
 	upsertErr    error
-	authorizeErr error // returned by AuthorizeClusterForProject (rollout_cluster check)
+	authorizeErr error               // returned by AuthorizeClusterForProject (rollout_cluster check)
+	existing     *store.DeployTarget // ResolveDeployTarget result; nil => ErrDeployTargetNotFound (a create)
+	resolveErr   error               // overrides existing: ResolveDeployTarget returns this
 	gotUpsert    store.DeployTargetInput
 	log          *[]string
 }
@@ -92,6 +94,17 @@ type fakeRegistry struct {
 func (f *fakeRegistry) EnsureEnvironment(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
 	*f.log = append(*f.log, "ensure-env")
 	return f.envID, f.ensureErr
+}
+
+func (f *fakeRegistry) ResolveDeployTarget(_ context.Context, _ uuid.UUID, _ string) (store.DeployTarget, error) {
+	*f.log = append(*f.log, "resolve-existing")
+	if f.resolveErr != nil {
+		return store.DeployTarget{}, f.resolveErr
+	}
+	if f.existing == nil {
+		return store.DeployTarget{}, store.ErrDeployTargetNotFound
+	}
+	return *f.existing, nil
 }
 
 func (f *fakeRegistry) AuthorizeClusterForProject(_ context.Context, _ uuid.UUID, cluster string) error {
@@ -112,11 +125,19 @@ func newRegistrar(p *fakeProvider, r *fakeRegistry) (*Registrar, *[]string) {
 }
 
 func validInput() RegisterInput {
+	// Admin by default: the baseline register is an ordinary admin operation, so the
+	// separation-of-duties path (which reads the existing target) is skipped and the
+	// call-order assertions below see only validate/ensure/upsert. The SoD tests set
+	// CallerIsAdmin=false explicitly.
 	return RegisterInput{
 		ProjectID: uuid.New(), Environment: "production", Provider: "argocd",
 		Cluster: "prod-gke", Application: "checkout", Namespace: "argocd",
-		SyncMode: "trigger", CreatedBy: "admin@example.com",
+		SyncMode: "trigger", CreatedBy: "admin@example.com", CallerIsAdmin: true,
 	}
+}
+
+func gate(required int, approvers ...string) *store.GoverningGate {
+	return &store.GoverningGate{Required: required, Approvers: approvers}
 }
 
 func TestRegister_HappyPath_OrderAndFields(t *testing.T) {
@@ -210,6 +231,160 @@ func TestRegister_RolloutClusterAuthorization(t *testing.T) {
 			}
 		}
 	})
+}
+
+// gatedTarget is an existing rollout-aware target under a gate, for the SoD tests.
+func gatedTarget() *store.DeployTarget {
+	return &store.DeployTarget{
+		Environment: "production", Provider: "argocd", Cluster: "prod-gke",
+		Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
+		RolloutAware: true, GoverningGate: gate(2, "alice@example.com"),
+	}
+}
+
+func TestRegister_GateSoD(t *testing.T) {
+	// A gate with nothing to observe is rejected up front (400), regardless of role.
+	t.Run("governing_gate requires rollout_aware", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput() // admin
+		in.GoverningGate = gate(1)
+		in.RolloutAware = false
+		if kindOf(t, regErr(t, r, in)) != FaultInvalid {
+			t.Fatalf("want FaultInvalid for gate-without-rollout")
+		}
+	})
+
+	t.Run("required < 1 is rejected", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.RolloutAware = true
+		in.GoverningGate = &store.GoverningGate{Required: 0}
+		if kindOf(t, regErr(t, r, in)) != FaultInvalid {
+			t.Fatalf("want FaultInvalid for required<1")
+		}
+	})
+
+	// Non-admin: creating a gate (nil -> set) is forbidden.
+	t.Run("non-admin creating a gate is forbidden", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()} // no existing target
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true
+		in.GoverningGate = gate(1, "bob@example.com")
+		if kindOf(t, regErr(t, r, in)) != FaultForbidden {
+			t.Fatalf("want FaultForbidden for non-admin creating a gate")
+		}
+	})
+
+	// Non-admin: removing the gate (set -> nil) is forbidden.
+	t.Run("non-admin removing a gate is forbidden", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true
+		in.GoverningGate = nil // strip it
+		if kindOf(t, regErr(t, r, in)) != FaultForbidden {
+			t.Fatalf("want FaultForbidden for non-admin removing a gate")
+		}
+		assertNoWrite(t, *log)
+	})
+
+	// Non-admin: same gate but rerouting the rollout is forbidden.
+	t.Run("non-admin rerouting a gated target is forbidden", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true
+		in.GoverningGate = gate(2, "alice@example.com") // unchanged
+		in.RolloutCluster = "other-cluster"             // reroute
+		if kindOf(t, regErr(t, r, in)) != FaultForbidden {
+			t.Fatalf("want FaultForbidden for non-admin reroute of a gated target")
+		}
+		assertNoWrite(t, *log)
+	})
+
+	// Non-admin: disabling rollout_aware on a gated target is a routing change -> forbidden.
+	t.Run("non-admin disabling rollout_aware on a gated target is forbidden", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget()}
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = false
+		in.GoverningGate = nil // must drop the gate too (gate needs rollout_aware) — still a gate change -> 403
+		if kindOf(t, regErr(t, r, in)) != FaultForbidden {
+			t.Fatalf("want FaultForbidden")
+		}
+	})
+
+	// Non-admin: same gate + same routing, editing a NON-gate field (application) is allowed.
+	t.Run("non-admin editing a non-gate field on a gated target is allowed", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget()}
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true
+		in.GoverningGate = gate(2, "alice@example.com") // round-tripped unchanged
+		in.Application = "checkout-v2"                  // a non-gate, non-routing edit
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if !store.GoverningGateEqual(reg.gotUpsert.GoverningGate, gate(2, "alice@example.com")) {
+			t.Errorf("gate not persisted on the upsert: %+v", reg.gotUpsert.GoverningGate)
+		}
+	})
+
+	// Non-admin: on an UNGATED target, changing routing stays allowed (PR1 behavior).
+	t.Run("non-admin routing edit on an ungated target is allowed", func(t *testing.T) {
+		ungated := &store.DeployTarget{Environment: "production", RolloutAware: false}
+		reg := &fakeRegistry{envID: uuid.New(), existing: ungated}
+		r, _ := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.CallerIsAdmin = false
+		in.RolloutAware = true // turn observation on — no gate involved
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+	})
+
+	// Admin: any gate/routing change is allowed and does NOT read the existing target.
+	t.Run("admin changes a gate without a SoD read", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), existing: gatedTarget()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput() // admin
+		in.RolloutAware = true
+		in.GoverningGate = gate(3, "carol@example.com") // changed
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		for _, c := range *log {
+			if c == "resolve-existing" {
+				t.Fatalf("admin path read the existing target (unnecessary): %v", *log)
+			}
+		}
+	})
+}
+
+func regErr(t *testing.T, r *Registrar, in RegisterInput) error {
+	t.Helper()
+	_, err := r.Register(context.Background(), in)
+	if err == nil {
+		t.Fatal("want an error, got nil")
+	}
+	return err
+}
+
+func assertNoWrite(t *testing.T, log []string) {
+	t.Helper()
+	for _, c := range log {
+		if c == "ensure-env" || c == "upsert" {
+			t.Fatalf("a write happened despite a forbidden request: %v", log)
+		}
+	}
 }
 
 func TestRegister_DefaultsAndTrims(t *testing.T) {

@@ -36,6 +36,9 @@ type DeployTarget struct {
 	RolloutCluster   string
 	RolloutNamespace string
 	RolloutName      string
+	// GoverningGate is the approval-gate config (nil = no gate = observe-only). Its
+	// presence puts the target in control mode.
+	GoverningGate *GoverningGate
 }
 
 // DeployTargetInput is the write shape for registering/updating a target. The
@@ -53,6 +56,7 @@ type DeployTargetInput struct {
 	RolloutCluster   string
 	RolloutNamespace string
 	RolloutName      string
+	GoverningGate    *GoverningGate
 }
 
 // ResolveDeployTarget looks up the target for a project's environment by name.
@@ -64,6 +68,10 @@ func (s *Store) ResolveDeployTarget(ctx context.Context, projectID uuid.UUID, en
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DeployTarget{}, ErrDeployTargetNotFound
 	}
+	if err != nil {
+		return DeployTarget{}, fmt.Errorf("store: resolve deploy target %s/%s: %w", projectID, envName, err)
+	}
+	gate, err := unmarshalGoverningGate(row.GoverningGate)
 	if err != nil {
 		return DeployTarget{}, fmt.Errorf("store: resolve deploy target %s/%s: %w", projectID, envName, err)
 	}
@@ -80,11 +88,18 @@ func (s *Store) ResolveDeployTarget(ctx context.Context, projectID uuid.UUID, en
 		RolloutCluster:   stringValue(row.RolloutCluster),
 		RolloutNamespace: stringValue(row.RolloutNamespace),
 		RolloutName:      stringValue(row.RolloutName),
+		GoverningGate:    gate,
 	}, nil
 }
 
-// UpsertDeployTarget registers or updates the target for an environment (1:1).
+// UpsertDeployTarget registers or updates the target for an environment (1:1). The
+// caller's separation-of-duties check (a gate/routing change on a gated target is
+// admin-only) runs BEFORE this write — the store just persists.
 func (s *Store) UpsertDeployTarget(ctx context.Context, in DeployTargetInput) error {
+	gate, err := marshalGoverningGate(in.GoverningGate)
+	if err != nil {
+		return err
+	}
 	if _, err := s.q.UpsertDeployTarget(ctx, db.UpsertDeployTargetParams{
 		EnvironmentID:    pgUUID(in.EnvironmentID),
 		Provider:         in.Provider,
@@ -97,6 +112,7 @@ func (s *Store) UpsertDeployTarget(ctx context.Context, in DeployTargetInput) er
 		RolloutCluster:   nullableString(in.RolloutCluster),
 		RolloutNamespace: nullableString(in.RolloutNamespace),
 		RolloutName:      nullableString(in.RolloutName),
+		GoverningGate:    gate,
 	}); err != nil {
 		return fmt.Errorf("store: upsert deploy target: %w", err)
 	}
@@ -117,6 +133,7 @@ type DeployTargetListItem struct {
 	RolloutCluster   string
 	RolloutNamespace string
 	RolloutName      string
+	GoverningGate    *GoverningGate
 }
 
 // ListDeployTargets returns a project's registered targets, ordered by environment.
@@ -127,6 +144,10 @@ func (s *Store) ListDeployTargets(ctx context.Context, projectID uuid.UUID) ([]D
 	}
 	out := make([]DeployTargetListItem, 0, len(rows))
 	for _, r := range rows {
+		gate, err := unmarshalGoverningGate(r.GoverningGate)
+		if err != nil {
+			return nil, fmt.Errorf("store: list deploy targets: %w", err)
+		}
 		out = append(out, DeployTargetListItem{
 			ID:               fromPgUUID(r.ID),
 			Environment:      r.Environment,
@@ -139,6 +160,7 @@ func (s *Store) ListDeployTargets(ctx context.Context, projectID uuid.UUID) ([]D
 			RolloutCluster:   stringValue(r.RolloutCluster),
 			RolloutNamespace: stringValue(r.RolloutNamespace),
 			RolloutName:      stringValue(r.RolloutName),
+			GoverningGate:    gate,
 		})
 	}
 	return out, nil

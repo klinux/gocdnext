@@ -1,11 +1,13 @@
 -- name: UpsertDeployTarget :one
 -- Register/update the deploy target for an environment (1:1). The admin API
--- EnsureEnvironment's the environment first, then upserts here.
+-- EnsureEnvironment's the environment first, then upserts here. governing_gate is
+-- the JSONB gate config (NULL => no gate); the caller's separation-of-duties check
+-- (admin-only to change a gate/routing on a gated target) runs BEFORE this write.
 INSERT INTO deploy_targets (
     environment_id, provider, cluster, application, namespace, sync_mode, created_by,
-    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name, governing_gate
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (environment_id) DO UPDATE SET
     provider = EXCLUDED.provider,
     cluster = EXCLUDED.cluster,
@@ -16,6 +18,7 @@ ON CONFLICT (environment_id) DO UPDATE SET
     rollout_cluster = EXCLUDED.rollout_cluster,
     rollout_namespace = EXCLUDED.rollout_namespace,
     rollout_name = EXCLUDED.rollout_name,
+    governing_gate = EXCLUDED.governing_gate,
     updated_at = NOW()
 RETURNING id;
 
@@ -25,6 +28,7 @@ RETURNING id;
 -- environment id for the deployment_revision FK).
 SELECT dt.provider, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
        dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,
+       dt.governing_gate,
        e.project_id, e.id AS environment_id, e.name AS environment
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
@@ -33,7 +37,8 @@ WHERE e.project_id = $1 AND e.name = $2;
 -- name: ListDeployTargetsForProject :many
 SELECT dt.id, e.name AS environment, dt.provider, dt.cluster, dt.application,
        dt.namespace, dt.sync_mode,
-       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name
+       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,
+       dt.governing_gate
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
 WHERE e.project_id = $1

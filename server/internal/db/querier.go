@@ -253,6 +253,10 @@ type Querier interface {
 	// BEFORE Sync fires so a crash between create and Sync is recoverable. The
 	// WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
 	// duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
+	// The gate_* CONFIG columns are the target's governing_gate denormalized here at
+	// creation (an immutable per-deploy snapshot; a mid-flight target edit must not change
+	// an in-flight deploy's gate). gate_required NULL => this deploy is not gated. The
+	// per-arm / decision / action gate columns stay NULL until the watcher arms a step.
 	CreateDeployWatch(ctx context.Context, arg CreateDeployWatchParams) (DeployWatch, error)
 	// Recorded at dispatch with the resolved version, status in_progress,
 	// tagged with the dispatch attempt so retries don't collide.
@@ -1859,7 +1863,9 @@ type Querier interface {
 	// fire the same tick when it comes back.
 	UpsertCronFired(ctx context.Context, arg UpsertCronFiredParams) error
 	// Register/update the deploy target for an environment (1:1). The admin API
-	// EnsureEnvironment's the environment first, then upserts here.
+	// EnsureEnvironment's the environment first, then upserts here. governing_gate is
+	// the JSONB gate config (NULL => no gate); the caller's separation-of-duties check
+	// (admin-only to change a gate/routing on a gated target) runs BEFORE this write.
 	UpsertDeployTarget(ctx context.Context, arg UpsertDeployTargetParams) (pgtype.UUID, error)
 	// Lazy-create: the first dispatch of a job with deploy:{environment:X}
 	// inserts the row; later dispatches just bump updated_at. Returns the

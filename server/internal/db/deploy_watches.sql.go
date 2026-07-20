@@ -25,7 +25,7 @@ WHERE w.deployment_revision_id IN (
     FOR UPDATE OF dw SKIP LOCKED
     LIMIT $3
 )
-RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at
+RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at
 `
 
 type ClaimDeployWatchesParams struct {
@@ -79,6 +79,21 @@ func (q *Queries) ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatches
 			&i.RolloutAborted,
 			&i.RolloutError,
 			&i.RolloutObservedAt,
+			&i.GateApprovers,
+			&i.GateApproverGroups,
+			&i.GateRequired,
+			&i.GateDescription,
+			&i.GateID,
+			&i.GateArmedAt,
+			&i.GatePausedStep,
+			&i.GateRolloutCluster,
+			&i.GateRolloutNamespace,
+			&i.GateRolloutName,
+			&i.GateDecision,
+			&i.GateDecidedBy,
+			&i.GateDecidedAt,
+			&i.GateActionedAt,
+			&i.RolloutAbortActionedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -128,13 +143,16 @@ const createDeployWatch = `-- name: CreateDeployWatch :one
 INSERT INTO deploy_watches (
     deployment_revision_id, project_id, sync_mode, cluster, application,
     namespace, expected_revision, deadline_at,
-    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name,
+    gate_approvers, gate_approver_groups, gate_required, gate_description
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+       $13, $14,
+       $15, $16
 WHERE EXISTS (
     SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
 )
-RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at
+RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at
 `
 
 type CreateDeployWatchParams struct {
@@ -150,6 +168,10 @@ type CreateDeployWatchParams struct {
 	RolloutCluster       *string
 	RolloutNamespace     *string
 	RolloutName          *string
+	GateApprovers        []string
+	GateApproverGroups   []string
+	GateRequired         *int32
+	GateDescription      *string
 }
 
 // Create the control-loop record for a freshly-created in_progress deployment
@@ -157,6 +179,10 @@ type CreateDeployWatchParams struct {
 // BEFORE Sync fires so a crash between create and Sync is recoverable. The
 // WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
 // duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
+// The gate_* CONFIG columns are the target's governing_gate denormalized here at
+// creation (an immutable per-deploy snapshot; a mid-flight target edit must not change
+// an in-flight deploy's gate). gate_required NULL => this deploy is not gated. The
+// per-arm / decision / action gate columns stay NULL until the watcher arms a step.
 func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchParams) (DeployWatch, error) {
 	row := q.db.QueryRow(ctx, createDeployWatch,
 		arg.DeploymentRevisionID,
@@ -171,6 +197,10 @@ func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchPa
 		arg.RolloutCluster,
 		arg.RolloutNamespace,
 		arg.RolloutName,
+		arg.GateApprovers,
+		arg.GateApproverGroups,
+		arg.GateRequired,
+		arg.GateDescription,
 	)
 	var i DeployWatch
 	err := row.Scan(
@@ -201,6 +231,21 @@ func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchPa
 		&i.RolloutAborted,
 		&i.RolloutError,
 		&i.RolloutObservedAt,
+		&i.GateApprovers,
+		&i.GateApproverGroups,
+		&i.GateRequired,
+		&i.GateDescription,
+		&i.GateID,
+		&i.GateArmedAt,
+		&i.GatePausedStep,
+		&i.GateRolloutCluster,
+		&i.GateRolloutNamespace,
+		&i.GateRolloutName,
+		&i.GateDecision,
+		&i.GateDecidedBy,
+		&i.GateDecidedAt,
+		&i.GateActionedAt,
+		&i.RolloutAbortActionedAt,
 	)
 	return i, err
 }
@@ -226,7 +271,7 @@ func (q *Queries) DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeploy
 }
 
 const getDeployWatch = `-- name: GetDeployWatch :one
-SELECT deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at FROM deploy_watches WHERE deployment_revision_id = $1
+SELECT deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at FROM deploy_watches WHERE deployment_revision_id = $1
 `
 
 func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtype.UUID) (DeployWatch, error) {
@@ -260,6 +305,21 @@ func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtyp
 		&i.RolloutAborted,
 		&i.RolloutError,
 		&i.RolloutObservedAt,
+		&i.GateApprovers,
+		&i.GateApproverGroups,
+		&i.GateRequired,
+		&i.GateDescription,
+		&i.GateID,
+		&i.GateArmedAt,
+		&i.GatePausedStep,
+		&i.GateRolloutCluster,
+		&i.GateRolloutNamespace,
+		&i.GateRolloutName,
+		&i.GateDecision,
+		&i.GateDecidedBy,
+		&i.GateDecidedAt,
+		&i.GateActionedAt,
+		&i.RolloutAbortActionedAt,
 	)
 	return i, err
 }

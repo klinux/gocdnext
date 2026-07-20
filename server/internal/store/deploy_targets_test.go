@@ -67,6 +67,65 @@ func TestDeployTargets_UpsertResolveCount(t *testing.T) {
 	}
 }
 
+// A governing_gate (JSONB) round-trips through upsert -> resolve -> list, and clearing
+// it (nil) persists as SQL NULL (observe-only again).
+func TestDeployTargets_GoverningGateRoundtrip(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	projectID := seedProject(t, s, "deploy-gate")
+	if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert cluster: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("ensure environment: %v", err)
+	}
+
+	wantGate := &store.GoverningGate{
+		Approvers:      []string{"alice@example.com"},
+		ApproverGroups: []string{"sre"},
+		Required:       2,
+		Description:    "prod canary sign-off",
+	}
+	if err := s.UpsertDeployTarget(ctx, store.DeployTargetInput{
+		EnvironmentID: envID, Provider: "argocd", Cluster: "prod-gke",
+		Application: "checkout", Namespace: "argocd", SyncMode: "trigger", CreatedBy: "admin@example.com",
+		RolloutAware: true, GoverningGate: wantGate,
+	}); err != nil {
+		t.Fatalf("upsert gated: %v", err)
+	}
+
+	tgt, err := s.ResolveDeployTarget(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !store.GoverningGateEqual(tgt.GoverningGate, wantGate) {
+		t.Fatalf("resolved gate = %+v, want %+v", tgt.GoverningGate, wantGate)
+	}
+	items, err := s.ListDeployTargets(ctx, projectID)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("list = %d items (err %v), want 1", len(items), err)
+	}
+	if !store.GoverningGateEqual(items[0].GoverningGate, wantGate) {
+		t.Errorf("listed gate = %+v, want %+v", items[0].GoverningGate, wantGate)
+	}
+
+	// Clearing the gate (nil) persists as NULL — the target is observe-only again.
+	if err := s.UpsertDeployTarget(ctx, store.DeployTargetInput{
+		EnvironmentID: envID, Provider: "argocd", Cluster: "prod-gke",
+		Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
+		RolloutAware: true, GoverningGate: nil,
+	}); err != nil {
+		t.Fatalf("upsert ungated: %v", err)
+	}
+	tgt2, _ := s.ResolveDeployTarget(ctx, projectID, "production")
+	if tgt2.GoverningGate != nil {
+		t.Errorf("gate after clear = %+v, want nil", tgt2.GoverningGate)
+	}
+}
+
 // The FK deploy_targets.cluster -> clusters(name) ON DELETE RESTRICT keeps a
 // referenced cluster from being deleted out from under a target (the friendly
 // store-level guard, counting via CountDeployTargetsForCluster, lands next).

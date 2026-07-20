@@ -4,12 +4,19 @@
 -- BEFORE Sync fires so a crash between create and Sync is recoverable. The
 -- WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
 -- duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
+-- The gate_* CONFIG columns are the target's governing_gate denormalized here at
+-- creation (an immutable per-deploy snapshot; a mid-flight target edit must not change
+-- an in-flight deploy's gate). gate_required NULL => this deploy is not gated. The
+-- per-arm / decision / action gate columns stay NULL until the watcher arms a step.
 INSERT INTO deploy_watches (
     deployment_revision_id, project_id, sync_mode, cluster, application,
     namespace, expected_revision, deadline_at,
-    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name,
+    gate_approvers, gate_approver_groups, gate_required, gate_description
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+       sqlc.narg(gate_approvers), sqlc.narg(gate_approver_groups),
+       sqlc.narg(gate_required), sqlc.narg(gate_description)
 WHERE EXISTS (
     SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
 )
