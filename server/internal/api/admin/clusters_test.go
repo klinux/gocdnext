@@ -414,6 +414,42 @@ func TestClusters_DeleteBlockedByUsage(t *testing.T) {
 	}
 }
 
+// A cluster referenced by a deploy_target must 409 (friendly), not fail as a raw
+// 500 from the FK ON DELETE RESTRICT.
+func TestClusters_DeleteBlockedByDeployTarget(t *testing.T) {
+	s, _, srv := newClusterHandler(t)
+	ctx := context.Background()
+
+	created, err := s.InsertCluster(ctx, nil, store.ClusterInput{
+		Name: "tgt-cluster", AuthType: store.ClusterAuthInCluster,
+	})
+	if err != nil {
+		t.Fatalf("seed cluster: %v", err)
+	}
+	apply, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "demo-tgt", Pipelines: []*domain.Pipeline{}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, apply.ProjectID, "production")
+	if err != nil {
+		t.Fatalf("ensure environment: %v", err)
+	}
+	if err := s.UpsertDeployTarget(ctx, store.DeployTargetInput{
+		EnvironmentID: envID, Provider: "argocd", Cluster: "tgt-cluster",
+		Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
+	}); err != nil {
+		t.Fatalf("upsert deploy target: %v", err)
+	}
+
+	rr := request(srv, http.MethodDelete, "/api/v1/admin/clusters/"+created.ID.String(), nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("delete status = %d, want 409, body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "deploy target") {
+		t.Errorf("error message did not mention deploy target(s): %q", rr.Body.String())
+	}
+}
+
 func auditHasTarget(events []store.AuditEvent, targetID string) bool {
 	for _, e := range events {
 		if e.TargetID == targetID {

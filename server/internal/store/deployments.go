@@ -445,6 +445,22 @@ func (s *Store) ListDeploymentHistory(ctx context.Context, envID uuid.UUID, limi
 	return out, nil
 }
 
+// ErrDeploymentRevisionNotFound is returned when no revision matches the id.
+var ErrDeploymentRevisionNotFound = errors.New("store: deployment revision not found")
+
+// GetDeploymentRevision fetches a single revision by id (used by the deploy watcher
+// to read back a terminalized deploy's status).
+func (s *Store) GetDeploymentRevision(ctx context.Context, id uuid.UUID) (DeploymentRevision, error) {
+	r, err := s.q.GetDeploymentRevision(ctx, pgUUID(id))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DeploymentRevision{}, ErrDeploymentRevisionNotFound
+		}
+		return DeploymentRevision{}, fmt.Errorf("store: get deployment revision: %w", err)
+	}
+	return revisionFromRow(r), nil
+}
+
 func revisionFromRow(r db.DeploymentRevision) DeploymentRevision {
 	return DeploymentRevision{
 		ID:            fromPgUUID(r.ID),

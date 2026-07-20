@@ -101,6 +101,15 @@ type Querier interface {
 	// FOR UPDATE SKIP LOCKED makes this safe to run from multiple
 	// schedulers/sweepers at once; each gets a disjoint batch.
 	ClaimArtifactsForSweep(ctx context.Context, arg ClaimArtifactsForSweepParams) ([]ClaimArtifactsForSweepRow, error)
+	// Atomically claim a batch of claimable watches — never claimed, or lease-expired
+	// (the prior watcher crashed) — assigning each a fresh fencing token. The join to
+	// deployment_revisions filters to still-in_progress deploys: a backstop, since the
+	// terminalizers (FinalizeDeploymentRevision / FinalizeDeployWatch) already delete the
+	// watch — so a terminal-revision watch never reaches a watcher even if one lingered.
+	// FOR UPDATE OF ... SKIP
+	// LOCKED lets replicas claim disjoint batches without contending. Each row gets its
+	// OWN claim_id (gen_random_uuid is volatile, evaluated per row).
+	ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatchesParams) ([]DeployWatch, error)
 	// Claim the right to fire a superseded run's external effects. Succeeds when the
 	// effects aren't already done AND no LIVE claim holds it — a claim older than the
 	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
@@ -114,6 +123,8 @@ type Querier interface {
 	// must not re-count. (A run revived then re-superseded clears claimed_at, so its
 	// next first claim counts again — correctly, it's a new supersede event.)
 	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error)
+	// Health recovered before the debounce elapsed: reset the anchor. Fenced on claim_id.
+	ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployWatchDegradedParams) (int64, error)
 	// Clears queue_reason. Called by the scheduler when a run transitions
 	// to running (predecessor finished, run is dispatchable). Also called
 	// by terminal-transition paths so a canceled-while-queued run doesn't
@@ -166,11 +177,17 @@ type Querier interface {
 	// Single-use: delete as we read. Returning nothing = no such state
 	// (or it expired and the sweeper got to it first).
 	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
+	// Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
+	// (FK), this gives the friendly message before the DELETE fails.
+	CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error)
 	// Matching total for the same filter set ListAuditEvents reads.
 	// Surfaces the absolute count so the UI can render a
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	// Backs the cluster delete-guard: a cluster referenced by any target can't be
+	// deleted (also enforced by the FK's ON DELETE RESTRICT, this gives the message).
+	CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error)
 	CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error)
 	// Real total of fixed identities (the list above is capped); the header count
 	// must not understate when a removed scanner retires a large prior set.
@@ -229,6 +246,12 @@ type Querier interface {
 	// partition keeps each series complete; the per-series cap is the
 	// limit arg. Newest-first; caller flips for charting.
 	CoverageTrendByPipeline(ctx context.Context, arg CoverageTrendByPipelineParams) ([]CoverageTrendByPipelineRow, error)
+	// Create the control-loop record for a freshly-created in_progress deployment
+	// revision. Unclaimed (claim_* NULL) and sync_requested_at NULL: the row exists
+	// BEFORE Sync fires so a crash between create and Sync is recoverable. The
+	// WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
+	// duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
+	CreateDeployWatch(ctx context.Context, arg CreateDeployWatchParams) (DeployWatch, error)
 	// Recorded at dispatch with the resolved version, status in_progress,
 	// tagged with the dispatch attempt so retries don't collide.
 	CreateDeploymentRevision(ctx context.Context, arg CreateDeploymentRevisionParams) (pgtype.UUID, error)
@@ -261,6 +284,10 @@ type Querier interface {
 	// lock (TryRollupLock, shared with the run rollup). since_days <= 0 = full
 	// rebuild.
 	DeleteDeployDailyWindow(ctx context.Context, sinceDays int32) error
+	DeleteDeployTargetByEnvironment(ctx context.Context, arg DeleteDeployTargetByEnvironmentParams) (int64, error)
+	// Fenced delete used by the atomic terminal tx: 0 rows means the lease was lost, so
+	// the caller MUST NOT terminalize the deploy (fencing guarantee).
+	DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeployWatchClaimedParams) (int64, error)
 	// Removes a revision created at dispatch when the dispatch then failed
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
@@ -428,8 +455,20 @@ type Querier interface {
 	// to success/failed and stamps finished_at. Keyed on attempt so a
 	// success on attempt 1 never finalises a stale attempt-0 row. Guarded
 	// on status='in_progress' so a re-delivered result is a no-op. Returns
-	// rows affected (0 = the job had no deploy: block, or already final).
+	// the count finalized (0 = the job had no deploy: block, or already final).
+	//
+	// The `cleaned` data-modifying CTE atomically removes any deploy_watch for the
+	// finalized revision: a native-provider deploy may be terminalized by THIS
+	// job/reaper path (not only by the watcher's own FinalizeDeployWatch), and a watch
+	// left behind would linger forever in the live-watch queue (never claimable — the
+	// claim scan filters status='in_progress') and falsely block deleting its cluster.
 	FinalizeDeploymentRevision(ctx context.Context, arg FinalizeDeploymentRevisionParams) (int64, error)
+	// Terminalize a specific revision by id (the deploy watcher's convergence verdict)
+	// and return its job link so the SAME tx can complete the server-managed deploy
+	// job_run (ADR-0001, Model A). Guarded on status='in_progress' so a re-delivered
+	// finalize is a no-op (ErrNoRows). The watcher's FinalizeDeployWatch deletes the
+	// deploy_watch (fenced) in the same tx before calling this.
+	FinalizeDeploymentRevisionByID(ctx context.Context, arg FinalizeDeploymentRevisionByIDParams) (FinalizeDeploymentRevisionByIDRow, error)
 	FindAgentByName(ctx context.Context, name string) (Agent, error)
 	// Same shape as ListAgentsWithRunning but for one row — reused by
 	// the /agents/{id} page. Returns ErrNoRows when the UUID is not
@@ -504,6 +543,7 @@ type Querier interface {
 	GetClusterForDispatch(ctx context.Context, name string) (GetClusterForDispatchRow, error)
 	GetComplianceFramework(ctx context.Context, id pgtype.UUID) (ComplianceFramework, error)
 	GetCompliancePolicy(ctx context.Context, id pgtype.UUID) (CompliancePolicy, error)
+	GetDeployWatch(ctx context.Context, deploymentRevisionID pgtype.UUID) (DeployWatch, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
@@ -924,6 +964,12 @@ type Querier interface {
 	// by `pipelines × cron_materials_per_pipeline`, typically a few
 	// dozen at most, so scanning in-process is fine.
 	ListCronMaterials(ctx context.Context) ([]ListCronMaterialsRow, error)
+	ListDeployTargetsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployTargetsForProjectRow, error)
+	// In-flight native deploys for a project (one row per still-in_progress revision),
+	// joined to the environment name + display version for the UI live-status endpoint.
+	// Config fields (cluster/application/sync_mode) are returned here but sanitised by
+	// role at the HTTP layer — viewers never see them.
+	ListDeployWatchesForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployWatchesForProjectRow, error)
 	// Timeline for one environment, all statuses, newest first.
 	ListDeploymentHistory(ctx context.Context, arg ListDeploymentHistoryParams) ([]DeploymentRevision, error)
 	// Returns queued jobs in the lowest-ordinal stage that still has queued or
@@ -1302,6 +1348,8 @@ type Querier interface {
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.
 	MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error)
+	// Stamp the correlation anchor right after Sync fires. Fenced on claim_id.
+	MarkDeployWatchSyncRequested(ctx context.Context, arg MarkDeployWatchSyncRequestedParams) (int64, error)
 	// Flips the link's lifecycle flag after the check is PATCHed to a terminal
 	// state on GitHub. A later rerun reads this to decide reuse vs. recreate:
 	// GitHub won't cleanly reopen a completed check (completed_at is set-once), so
@@ -1446,6 +1494,13 @@ type Querier interface {
 	// was already gone). Removes the DB row.
 	RemoveArtifactRow(ctx context.Context, id pgtype.UUID) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
+	// Heartbeat: extend the lease. Fenced on claim_id — 0 rows means the lease was
+	// stolen (another replica reclaimed) and this watcher must drop the work.
+	RenewDeployWatch(ctx context.Context, arg RenewDeployWatchParams) (int64, error)
+	// Resolve `deploy: { to: <env> }` for a project: join the environment to its
+	// target and return everything the provider + native takeover need (incl. the
+	// environment id for the deployment_revision FK).
+	ResolveDeployTarget(ctx context.Context, arg ResolveDeployTargetParams) (ResolveDeployTargetRow, error)
 	// What-if preview: every enabled policy that WOULD apply to a project carrying
 	// the given framework set — global (applies_to_all) or targeting any of them.
 	// An empty array yields only global policies (a project with no frameworks).
@@ -1546,6 +1601,9 @@ type Querier interface {
 	// are LEFT-merged in Go so a clean/zero group still appears.
 	SecurityRollupGroups(ctx context.Context, labelKey string) ([]SecurityRollupGroupsRow, error)
 	SetAuthProviderEnabled(ctx context.Context, arg SetAuthProviderEnabledParams) error
+	// Open the debounce window on the first Degraded tick (COALESCE keeps the earliest).
+	// Fenced on claim_id.
+	SetDeployWatchDegradedSince(ctx context.Context, arg SetDeployWatchDegradedSinceParams) (int64, error)
 	// Update a finding identity's human state (open|dismissed|false_positive|
 	// accepted). Scoped to project_id (the handler resolves slug → project) so a
 	// maintainer of one project can't mutate another's findings. Returns the id when
@@ -1618,6 +1676,19 @@ type Querier interface {
 	// Returns (id, agent_id) per stamped row so the handler can
 	// correlate Dispatch failures with their owning agent.
 	StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error)
+	// UNFENCED stamp of the correlation anchor at dispatch, before any watcher has
+	// claimed the watch (so the fenced MarkDeployWatchSyncRequested can't be used yet).
+	// Monotonic: `WHERE sync_requested_at IS NULL` — a later dispatch/retry never reopens
+	// the anchor. 0 rows → already stamped or gone; the caller logs and continues.
+	StampDeployWatchSyncRequested(ctx context.Context, deploymentRevisionID pgtype.UUID) (int64, error)
+	// Moves a queued job to running with NO agent — the native deploy takeover
+	// (ADR-0001, Model A): the server drives the sync + watch instead of an agent.
+	// Same queued+unassigned predicate as AssignJob (races between ticks resolve to one
+	// winner), and it returns the CURRENT attempt (AssignJob doesn't bump either) so the
+	// deployment_revision's (job_run_id, attempt) key stays consistent with the rest of
+	// the system. The caller creates the revision + deploy_watch in the SAME tx, so the
+	// reaper never observes a running-no-agent job without its owning watch.
+	StartServerManagedJob(ctx context.Context, id pgtype.UUID) (StartServerManagedJobRow, error)
 	// Older pending runs in a (pipeline, ref) lane that still hold a pending gate —
 	// the supersede victim candidates for `supersede: branch`. counter DESC so
 	// concurrent supersede passes lock runs.id rows in one consistent descending
@@ -1776,6 +1847,9 @@ type Querier interface {
 	// right after dispatching a run so a crashed server doesn't re-
 	// fire the same tick when it comes back.
 	UpsertCronFired(ctx context.Context, arg UpsertCronFiredParams) error
+	// Register/update the deploy target for an environment (1:1). The admin API
+	// EnsureEnvironment's the environment first, then upserts here.
+	UpsertDeployTarget(ctx context.Context, arg UpsertDeployTargetParams) (pgtype.UUID, error)
 	// Lazy-create: the first dispatch of a job with deploy:{environment:X}
 	// inserts the row; later dispatches just bump updated_at. Returns the
 	// id so the dispatch path can attach a revision regardless of which

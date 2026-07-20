@@ -268,9 +268,43 @@ func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, formatClusterUsageError(usage), http.StatusConflict)
 		return
 	}
+	// A cluster referenced by a deploy_target is FK-RESTRICTed at the DB — surface a
+	// friendly 409 here rather than letting the DELETE fail as a raw 500.
+	targets, err := h.store.CountDeployTargetsForCluster(r.Context(), existing.Name)
+	if err != nil {
+		h.log.Error("admin clusters: count deploy targets", "name", existing.Name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if targets > 0 {
+		http.Error(w, fmt.Sprintf(
+			"cluster is referenced by %d deploy target(s) — remove them before deleting", targets),
+			http.StatusConflict)
+		return
+	}
+	// An in-flight deploy watch also FK-RESTRICTs the cluster; block with a friendly
+	// 409 (a live deploy is watching this cluster) rather than a raw FK 500.
+	watches, err := h.store.CountActiveWatchesForCluster(r.Context(), existing.Name)
+	if err != nil {
+		h.log.Error("admin clusters: count active watches", "name", existing.Name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if watches > 0 {
+		http.Error(w, fmt.Sprintf(
+			"cluster has %d in-flight deploy(s) — wait for them to finish before deleting", watches),
+			http.StatusConflict)
+		return
+	}
 	if err := h.store.DeleteCluster(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrClusterNotFound) {
 			http.Error(w, "cluster not found", http.StatusNotFound)
+			return
+		}
+		// Race backstop: a deploy target or an in-flight deploy watch created after the
+		// pre-checks trips the FK — cover both generically rather than naming just one.
+		if errors.Is(err, store.ErrClusterInUse) {
+			http.Error(w, "cluster is still in use (deploy target or in-flight deploy) — remove/wait before deleting", http.StatusConflict)
 			return
 		}
 		h.log.Error("admin clusters: delete", "id", id, "err", err)

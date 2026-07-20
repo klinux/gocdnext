@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { ChevronDown, ChevronUp, Rocket, RotateCcw } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, RefreshCw, Rocket, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -15,13 +15,24 @@ import {
 import { RelativeTime } from "@/components/shared/relative-time";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { RollbackButton } from "@/components/environments/rollback-button.client";
+import { useDeployWatch } from "@/components/environments/deploy-watches-provider.client";
+import { NativeWatchChip } from "@/components/environments/native-watch-chip.client";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
-import type { DeploymentRecord, DeploymentsList, EnvironmentSummary } from "@/types/api";
+import type {
+  DeploymentRecord,
+  DeploymentsList,
+  DeployTarget,
+  EnvironmentSummary,
+} from "@/types/api";
 
 type Props = {
   slug: string;
   environment: EnvironmentSummary;
+  // The registered native deploy target (ADR-0001), when this env has one AND the
+  // viewer may see it — the query is maintainer-gated, so viewers get undefined and
+  // the native row is omitted.
+  deployTarget?: DeployTarget;
   // Browser-facing API base; "" = same-origin. Threaded from the RSC
   // page so the lazy history fetch hits the right host.
   apiBaseURL: string;
@@ -47,9 +58,15 @@ type HistoryState =
   | { phase: "loaded"; rows: DeploymentRecord[] }
   | { phase: "error"; message: string };
 
-export function EnvironmentCard({ slug, environment, apiBaseURL }: Props) {
+export function EnvironmentCard({
+  slug,
+  environment,
+  deployTarget,
+  apiBaseURL,
+}: Props) {
   const { current } = environment;
   const tone: StatusTone = current ? statusTone(current.status) : "neutral";
+  const watch = useDeployWatch(environment.name);
   const [history, setHistory] = useState<HistoryState>({ phase: "idle" });
   const [open, setOpen] = useState(false);
 
@@ -92,11 +109,14 @@ export function EnvironmentCard({ slug, environment, apiBaseURL }: Props) {
           <Rocket className="size-4 text-muted-foreground" aria-hidden />
           {environment.name}
         </CardTitle>
-        {current ? (
-          <StatusBadge status={current.status} />
-        ) : (
-          <span className="text-xs text-muted-foreground">no deploys yet</span>
-        )}
+        <div className="flex items-center gap-2">
+          {watch ? <NativeWatchChip watch={watch} /> : null}
+          {current ? (
+            <StatusBadge status={current.status} />
+          ) : (
+            <span className="text-xs text-muted-foreground">no deploys yet</span>
+          )}
+        </div>
       </CardHeader>
 
       <CardContent className="space-y-3">
@@ -111,6 +131,8 @@ export function EnvironmentCard({ slug, environment, apiBaseURL }: Props) {
             Nothing has shipped to this environment yet.
           </p>
         )}
+
+        {deployTarget ? <NativeTargetRow target={deployTarget} /> : null}
 
         <div>
           <Button
@@ -138,6 +160,44 @@ export function EnvironmentCard({ slug, environment, apiBaseURL }: Props) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+const PROVIDER_LABELS: Record<string, string> = { argocd: "ArgoCD" };
+
+// The registered native provider target for this env. Maintainer-only (the parent
+// only passes it when the maintainer-gated fetch succeeded). Config, not live state —
+// live sync/degraded status lands in a later increment via a polled endpoint.
+function NativeTargetRow({ target }: { target: DeployTarget }) {
+  const SyncIcon = target.sync_mode === "observe" ? Eye : RefreshCw;
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+      <span className="font-medium text-foreground">Native</span>
+      <Dot />
+      <span>{PROVIDER_LABELS[target.provider] ?? target.provider}</span>
+      <Dot />
+      <span>
+        app <span className="font-mono text-foreground">{target.application}</span>
+      </span>
+      <Dot />
+      <span>
+        cluster{" "}
+        <span className="font-mono text-foreground">{target.cluster}</span>
+      </span>
+      <Dot />
+      <span className="inline-flex items-center gap-1">
+        <SyncIcon className="size-3" aria-hidden />
+        {target.sync_mode}
+      </span>
+    </div>
+  );
+}
+
+function Dot() {
+  return (
+    <span aria-hidden className="text-muted-foreground/50">
+      ·
+    </span>
   );
 }
 

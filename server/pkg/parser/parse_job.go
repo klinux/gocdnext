@@ -388,7 +388,7 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 		if env == "" {
 			return domain.Job{}, fmt.Errorf("job %q: deploy.environment is required", name)
 		}
-		if !deployEnvRE.MatchString(env) {
+		if !domain.ValidEnvironmentName(env) {
 			return domain.Job{}, fmt.Errorf(
 				"job %q: deploy.environment %q has forbidden characters — start alphanumeric, then alphanumeric + . _ - (max 64)",
 				name, jd.Deploy.Environment)

@@ -277,8 +277,11 @@ func TestClusters_AllowedProjects_Scoping(t *testing.T) {
 	if _, _, _, err := s.ResolveClusterForDispatch(ctx, projA, "scoped"); err != nil {
 		t.Fatalf("authorized project rejected: %v", err)
 	}
-	if _, _, _, err := s.ResolveClusterForDispatch(ctx, projB, "scoped"); err == nil {
-		t.Fatal("expected unauthorized project to be refused")
+	// The denial must carry the ErrClusterNotAuthorized sentinel — the deploy-target
+	// registration maps it to 403 via errors.Is, so a regression to a string error
+	// would silently break that mapping.
+	if _, _, _, err := s.ResolveClusterForDispatch(ctx, projB, "scoped"); !errors.Is(err, store.ErrClusterNotAuthorized) {
+		t.Fatalf("unauthorized project = %v, want ErrClusterNotAuthorized", err)
 	}
 }
 

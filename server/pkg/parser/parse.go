@@ -41,13 +41,6 @@ const (
 // match.
 var approvalLabelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*$`)
 
-// deployEnvRE bounds a deploy environment name (#39). Starts with an
-// alphanumeric, then alphanumerics + `.` `_` `-`, max 64 chars. The
-// bound + charset keep the name safe in URLs, audit payloads, and the
-// unique (project_id, name) key — and reject shell metas/spaces that
-// a `deploy: {environment: "prod; rm -rf"}` typo would smuggle in.
-var deployEnvRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
-
 // jobClusterRE bounds a `cluster:` reference — must match the store's
 // clusterNameRE so a name that parses also resolves. Lowercase
 // DNS-ish; keeps it safe in the jsonpath usage query + log lines.
