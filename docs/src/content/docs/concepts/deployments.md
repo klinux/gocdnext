@@ -11,11 +11,20 @@ this run shipped `version` to `environment`. That record powers the
 Environments tab — current version per environment, full history,
 and one-click rollback.
 
-This is deliberately a tracking layer, not an executor. gocdnext
-never invents a deploy mechanism (no built-in `kubectl apply`, no
+By default this is a tracking layer, not an executor. gocdnext
+doesn't invent a deploy mechanism (no built-in `kubectl apply`, no
 implicit Helm) — your job already knows how to deploy. The primitive
 adds the *visibility* a CD tool owes you: what's live where, when it
 changed, and who can roll it back.
+
+The **exception is opt-in**: register a
+[native deploy target](/gocdnext/docs/concepts/native-deploy/) for an
+environment and gocdnext *does* execute the deploy for it — driving an
+ArgoCD sync and watching the Application to `Synced + Healthy`,
+server-side with no agent. The `deploy:` block below is identical
+either way; the environment having a registered target is what turns
+it native. Everything else on this page describes the tracking-layer
+default.
 
 ## Declaring a deployment
 
@@ -120,8 +129,11 @@ action isn't offered: there's nothing immutable left to replay.
 
 ## What this is not
 
-- **Not an executor.** No environment-level config, no built-in apply
-  step, no drift detection. Your `script:` owns the mechanism.
+- **Not an executor** — *unless* the environment has a
+  [native deploy target](/gocdnext/docs/concepts/native-deploy/). By
+  default there's no environment-level config, no built-in apply step,
+  no drift detection; your `script:` owns the mechanism. A native
+  target is the deliberate opt-in that makes gocdnext drive the deploy.
 - **Not a gate.** Gating a deploy is the job of an
   [approval](/gocdnext/docs/concepts/approvals/) on a *separate* job
   upstream of the deploy.
