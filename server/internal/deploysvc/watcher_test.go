@@ -47,8 +47,12 @@ type obsResult struct {
 }
 
 type fakeObserver struct {
-	byApp map[string]obsResult
-	log   *[]string
+	byApp      map[string]obsResult
+	promoteErr error
+	abortErr   error
+	gotPromote *deploy.DeploymentTarget
+	gotAbort   *deploy.DeploymentTarget
+	log        *[]string
 }
 
 func (f *fakeObserver) Observe(_ context.Context, t deploy.DeploymentTarget) (deploy.DeployState, error) {
@@ -58,6 +62,20 @@ func (f *fakeObserver) Observe(_ context.Context, t deploy.DeploymentTarget) (de
 		panic("observe boom")
 	}
 	return r.state, r.err
+}
+
+func (f *fakeObserver) Promote(_ context.Context, t deploy.DeploymentTarget) error {
+	*f.log = append(*f.log, "promote:"+t.RolloutName)
+	tt := t
+	f.gotPromote = &tt
+	return f.promoteErr
+}
+
+func (f *fakeObserver) Abort(_ context.Context, t deploy.DeploymentTarget) error {
+	*f.log = append(*f.log, "abort:"+t.RolloutName)
+	tt := t
+	f.gotAbort = &tt
+	return f.abortErr
 }
 
 // fakeWatchStore records the driver's calls and controls each fenced op's result.
@@ -72,6 +90,10 @@ type fakeWatchStore struct {
 	finalized     map[uuid.UUID]string
 	finalizeRunID uuid.UUID // returned as DeployWatchFinalizeResult.RunID
 	lastRollout   store.RolloutObservationInput
+	armOK         map[uuid.UUID]bool
+	actionedOK    map[uuid.UUID]bool
+	clearOK       map[uuid.UUID]bool
+	lastArm       store.ArmRolloutGateInput
 	log           *[]string
 }
 
@@ -128,6 +150,22 @@ func (f *fakeWatchStore) NotifyRunQueued(_ context.Context, runID uuid.UUID) err
 	return nil
 }
 
+func (f *fakeWatchStore) ArmRolloutGate(_ context.Context, revID, _ uuid.UUID, in store.ArmRolloutGateInput) (bool, error) {
+	*f.log = append(*f.log, "arm_gate:"+in.RolloutName)
+	f.lastArm = in
+	return okDefaultTrue(f.armOK, revID), nil
+}
+
+func (f *fakeWatchStore) MarkGateActioned(_ context.Context, revID, _ uuid.UUID) (bool, error) {
+	*f.log = append(*f.log, "mark_actioned")
+	return okDefaultTrue(f.actionedOK, revID), nil
+}
+
+func (f *fakeWatchStore) ClearRolloutGate(_ context.Context, revID, _ uuid.UUID) (bool, error) {
+	*f.log = append(*f.log, "clear_gate")
+	return okDefaultTrue(f.clearOK, revID), nil
+}
+
 func okDefaultTrue(m map[uuid.UUID]bool, id uuid.UUID) bool {
 	if v, ok := m[id]; ok {
 		return v
@@ -144,7 +182,7 @@ func contains(xs []string, s string) bool {
 	return false
 }
 
-func runTick(obs Observer, st WatchStore) {
+func runTick(obs DeployProvider, st WatchStore) {
 	NewWatcher(obs, st, "worker", testLogger()).Tick(context.Background())
 }
 
@@ -372,4 +410,168 @@ func TestWatcher_Isolation_PanicDoesNotStallBatch(t *testing.T) {
 	if st.finalized[b.DeploymentRevisionID] != store.DeployStatusSuccess {
 		t.Fatalf("watch B not finalized after A panicked; log=%v finalized=%v", log, st.finalized)
 	}
+}
+
+// --- Phase 2 gate effect dispatch ---
+
+func rolloutObs(r deploy.RolloutState) deploy.DeployState {
+	return deploy.DeployState{Sync: deploy.SyncSynced, Health: deploy.HealthHealthy, ObservedRev: "rev1", Rollout: r, RolloutObserved: true}
+}
+
+func obsIdentity(r deploy.RolloutState) deploy.RolloutState {
+	r.ResolvedCluster, r.ResolvedNamespace, r.ResolvedName = "dest", "ns", "ro"
+	return r
+}
+
+var (
+	obsPausedIndef = obsIdentity(deploy.RolloutState{Phase: deploy.RolloutPaused, PauseReason: deploy.PauseReasonCanaryStep, CurrentStepIndex: 1, CurrentStepKnown: true, StepCount: 3, PausedIndefinitely: true, StableHash: "a", PodHash: "b"})
+	obsProgressing = obsIdentity(deploy.RolloutState{Phase: deploy.RolloutProgressing, CurrentStepIndex: 2, CurrentStepKnown: true, StepCount: 3})
+	obsPromoted    = obsIdentity(deploy.RolloutState{Phase: deploy.RolloutHealthy, CurrentStepIndex: 3, CurrentStepKnown: true, StepCount: 3, FullyPromoted: true, StableHash: "b", PodHash: "b"})
+)
+
+func mkRolloutWatch(app string) store.DeployWatch {
+	w := mkWatch(app)
+	w.RolloutAware = true
+	return w
+}
+func gatedW(w store.DeployWatch) store.DeployWatch { w.Gated = true; return w }
+func armedW(w store.DeployWatch) store.DeployWatch {
+	at := time.Now().Add(-5 * time.Minute)
+	w.GateArmedAt = &at
+	w.GatePausedStep, w.GatePausedStepKnown = 1, true
+	// A distinct PINNED name so a test can prove Promote/Abort use the pin, not the
+	// this-tick observed identity.
+	w.GateRolloutCluster, w.GateRolloutNamespace, w.GateRolloutName = "dest", "ns", "ro-pinned"
+	return w
+}
+func decidedW(w store.DeployWatch, d string) store.DeployWatch { w.GateDecision = d; return w }
+
+// indexOf returns the position of s in xs, or -1.
+func indexOf(xs []string, s string) int {
+	for i, x := range xs {
+		if x == s {
+			return i
+		}
+	}
+	return -1
+}
+
+// An indefinite pause on a gated deploy arms the gate with the OBSERVED identity + step.
+func TestWatcher_ArmGate(t *testing.T) {
+	var log []string
+	w := gatedW(mkRolloutWatch("app"))
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if !contains(log, "arm_gate:ro") {
+		t.Fatalf("expected arm_gate with the observed identity; log=%v", log)
+	}
+	if st.lastArm.PausedStep != 1 || st.lastArm.RolloutCluster != "dest" || st.lastArm.RolloutNamespace != "ns" || st.lastArm.RolloutName != "ro" {
+		t.Errorf("arm input = %+v, want step 1 + observed dest/ns/ro", st.lastArm)
+	}
+}
+
+// An approved gate promotes ONCE via the PINNED identity, renewing right before the
+// actuation, then marks it actioned.
+func TestWatcher_Promote_RenewsAndUsesPin(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "approved")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if !contains(log, "promote:ro-pinned") {
+		t.Fatalf("expected promote via the PINNED name; log=%v", log)
+	}
+	// renew right before the actuation, and mark actioned only after it.
+	promote := indexOf(log, "promote:ro-pinned")
+	if last := lastRenewBefore(log, promote); last < 0 || last != promote-1 {
+		t.Errorf("no renew immediately before promote; log=%v", log)
+	}
+	if mark := indexOf(log, "mark_actioned"); mark < 0 || mark < promote {
+		t.Errorf("mark_actioned missing or before promote; log=%v", log)
+	}
+	if obs.gotPromote == nil || obs.gotPromote.RolloutName != "ro-pinned" {
+		t.Errorf("promote target = %+v, want the pin ro-pinned", obs.gotPromote)
+	}
+}
+
+// A rejected gate aborts via the pin, then marks actioned.
+func TestWatcher_Reject_Aborts(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "rejected")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if !contains(log, "abort:ro-pinned") || !contains(log, "mark_actioned") {
+		t.Fatalf("expected abort(pin)+mark_actioned; log=%v", log)
+	}
+}
+
+// If the actuation itself fails, gate_actioned_at is NOT stamped (retry next tick).
+func TestWatcher_Promote_ActuationFailure_NoMark(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "approved")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, promoteErr: errors.New("api down"), log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if !contains(log, "promote:ro-pinned") {
+		t.Fatalf("expected the promote attempt; log=%v", log)
+	}
+	if contains(log, "mark_actioned") {
+		t.Errorf("marked actioned despite a failed actuation; log=%v", log)
+	}
+}
+
+// An approved+actioned gate whose rollout LEFT the step clears the gate.
+func TestWatcher_ClearGate_AfterAdvance(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "approved")
+	at := time.Now()
+	w.GateActionedAt = &at // already promoted
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsProgressing)}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if !contains(log, "clear_gate") {
+		t.Fatalf("expected clear_gate after the rollout advanced; log=%v", log)
+	}
+}
+
+// No early finalize: rollout-aware + observed + App Synced+Healthy but NOT FullyPromoted
+// → Continue, no finalize.
+func TestWatcher_NoEarlyFinalize(t *testing.T) {
+	var log []string
+	w := mkRolloutWatch("app") // rollout-aware, not gated
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsProgressing)}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if len(st.finalized) != 0 {
+		t.Fatalf("finalized while the canary was mid-progress: %v", st.finalized)
+	}
+	// FullyPromoted → success.
+	var log2 []string
+	obs2 := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPromoted)}}, log: &log2}
+	st2 := newFakeStore(&log2, mkRolloutWatch("app2"))
+	// map the app name
+	obs2.byApp["app2"] = obs2.byApp["app"]
+	NewWatcher(obs2, st2, "worker", testLogger()).Tick(context.Background())
+	if !contains(log2, "finalize:success") {
+		t.Fatalf("FullyPromoted rollout did not finalize success; log=%v", log2)
+	}
+}
+
+// lastRenewBefore returns the index of the last "renew" strictly before pos, or -1.
+func lastRenewBefore(log []string, pos int) int {
+	last := -1
+	for i := 0; i < pos && i < len(log); i++ {
+		if log[i] == "renew" {
+			last = i
+		}
+	}
+	return last
 }

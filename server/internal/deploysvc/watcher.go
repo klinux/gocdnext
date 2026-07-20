@@ -11,10 +11,14 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// Observer is the provider capability the watcher needs: one convergence snapshot
-// for a target. *deploy.ArgoProvider satisfies it.
-type Observer interface {
+// DeployProvider is the provider capability the watcher drives: one convergence
+// snapshot for a target, plus (Phase 2 gate control) Promote/Abort of the canary.
+// Promote/Abort act on the target's PINNED Rollout identity; both are idempotent.
+// *deploy.ArgoProvider satisfies it.
+type DeployProvider interface {
 	Observe(ctx context.Context, target deploy.DeploymentTarget) (deploy.DeployState, error)
+	Promote(ctx context.Context, target deploy.DeploymentTarget) error
+	Abort(ctx context.Context, target deploy.DeploymentTarget) error
 }
 
 // WatchStore is the persistence the watcher drives. *store.Store satisfies it. Every
@@ -28,6 +32,11 @@ type WatchStore interface {
 	StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in store.RolloutObservationInput) (bool, error)
 	FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (store.DeployWatchFinalizeResult, error)
 	NotifyRunQueued(ctx context.Context, runID uuid.UUID) error
+
+	// Gate control (Phase 2), all fenced on the claim token.
+	ArmRolloutGate(ctx context.Context, revID, claimID uuid.UUID, in store.ArmRolloutGateInput) (bool, error)
+	MarkGateActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	ClearRolloutGate(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
 }
 
 // Watcher cadence/lease defaults. The lease TTL must comfortably exceed one watch's
@@ -55,7 +64,7 @@ const (
 //
 // Prometheus is deferred; the structured watch_* log events are the stable surface.
 type Watcher struct {
-	obs   Observer
+	obs   DeployProvider
 	store WatchStore
 	log   *slog.Logger
 
@@ -68,7 +77,7 @@ type Watcher struct {
 
 // NewWatcher builds a watcher for workerID (the lease holder identity — use a stable
 // per-replica id so a restart reclaims its own leases cleanly).
-func NewWatcher(obs Observer, s WatchStore, workerID string, log *slog.Logger) *Watcher {
+func NewWatcher(obs DeployProvider, s WatchStore, workerID string, log *slog.Logger) *Watcher {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -189,7 +198,8 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		"sync", state.Sync, "health", state.Health, "observed_rev", state.ObservedRev, "op_phase", state.OperationPhase)...)
 
 	// Persist the observed Rollout snapshot each tick so the UI (which reads the DB)
-	// renders canary progress. Observe-only in PR1 — it does NOT feed Decide yet.
+	// renders canary progress. The same live snapshot (state.Rollout) also feeds Decide
+	// below — arm/promote/abort/clear + the no-early-finalize guard.
 	if dw.RolloutAware {
 		w.stampRollout(ctx, dw, state)
 	}
@@ -204,6 +214,14 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		w.applyDegraded(ctx, dw, "set", w.store.SetDeployWatchDegradedSince)
 	case deploy.ClearDegraded:
 		w.applyDegraded(ctx, dw, "clear", w.store.ClearDeployWatchDegraded)
+	case deploy.ArmGate:
+		w.armGate(ctx, dw, state)
+	case deploy.Promote:
+		w.actuateGate(ctx, dw, deploy.Promote)
+	case deploy.Abort:
+		w.actuateGate(ctx, dw, deploy.Abort)
+	case deploy.ClearGate:
+		w.clearGate(ctx, dw)
 	case deploy.FinalizeSuccess:
 		w.finalize(ctx, dw, store.DeployStatusSuccess, "")
 	case deploy.FinalizeFailed:
@@ -307,6 +325,18 @@ func anchorsOf(dw store.DeployWatch) deploy.WatchAnchors {
 		SyncRequestedAt:  dw.SyncRequestedAt,
 		DeadlineAt:       dw.DeadlineAt,
 		DegradedSince:    dw.DegradedSince,
+
+		// Gate control (Phase 2). CancelRequested is wired in the cancel/supersede chunk.
+		RolloutAware:   dw.RolloutAware,
+		Gated:          dw.Gated,
+		GateArmedAt:    dw.GateArmedAt,
+		GateDecision:   deploy.GateDecision(dw.GateDecision),
+		GateActionedAt: dw.GateActionedAt,
+		GatePausedStep: gatePausedStepPtr(dw),
+		// A COMPLETE pinned tuple — a partial pin is not actionable (the store rejects
+		// arming with one), so it must not read as "pinned".
+		HasPinnedRolloutTarget: dw.GateRolloutCluster != "" && dw.GateRolloutNamespace != "" && dw.GateRolloutName != "",
+		RolloutAbortActionedAt: dw.RolloutAbortActionedAt,
 	}
 }
 

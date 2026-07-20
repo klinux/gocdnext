@@ -105,3 +105,61 @@ func (s *Store) ClearRolloutGate(ctx context.Context, revID, claimID uuid.UUID) 
 	}
 	return true, nil
 }
+
+// rolloutTextMax bounds cluster-supplied message/error so a giant status can't bloat
+// the DB/UI (runes, so truncation never splits a UTF-8 sequence).
+const rolloutTextMax = 500
+
+// RolloutObservationInput is the observed Rollout snapshot the watcher persists each
+// tick. Observed=false means the Rollout couldn't be read/resolved this tick — only
+// Error is meaningful then. StepKnown=false NULLs rollout_current_step (an absent
+// controller index must not read as step 0).
+type RolloutObservationInput struct {
+	Observed    bool
+	Phase       string
+	Message     string
+	PauseReason string
+	CurrentStep int
+	StepKnown   bool
+	StepCount   int
+	Aborted     bool
+	Error       string
+}
+
+// StampRolloutObservation persists the snapshot onto the watch, fenced on claimID
+// (false → lease lost). A good observe clears rollout_error; a failed one records the
+// (already sanitized) Error and NULLs the rest.
+func (s *Store) StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in RolloutObservationInput) (bool, error) {
+	p := db.StampRolloutObservationParams{
+		DeploymentRevisionID: pgUUID(revID),
+		ClaimID:              pgUUID(claimID),
+	}
+	if in.Observed {
+		p.RolloutPhase = nullableString(in.Phase)
+		p.RolloutMessage = nullableString(truncateRunes(in.Message, rolloutTextMax))
+		p.RolloutPauseReason = nullableString(in.PauseReason)
+		if in.StepKnown {
+			v := int32(in.CurrentStep)
+			p.RolloutCurrentStep = &v
+		}
+		sc := int32(in.StepCount)
+		p.RolloutStepCount = &sc
+		ab := in.Aborted
+		p.RolloutAborted = &ab
+	} else {
+		p.RolloutError = nullableString(truncateRunes(in.Error, rolloutTextMax))
+	}
+	n, err := s.q.StampRolloutObservation(ctx, p)
+	if err != nil {
+		return false, fmt.Errorf("store: stamp rollout observation: %w", err)
+	}
+	return n > 0, nil
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
