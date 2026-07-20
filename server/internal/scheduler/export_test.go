@@ -27,6 +27,13 @@ func SubstituteNeedsRefsMap(in map[string]string, needs NeedsOutputs, matrix Mat
 	return substituteNeedsRefsMap(in, needs, matrix, dims)
 }
 
+// ClusterDispatchError exposes the pure oracle-collapsing helper for the
+// dispatch-time `cluster:` error path (#155) so black-box tests can lock the
+// collapse without spinning the full scheduler.
+func ClusterDispatchError(err error) (string, bool) {
+	return clusterDispatchError(err)
+}
+
 // MintIDTokensForTest exposes the dispatch-path id_token resolution
 // for black-box tests: fast-path gating, claims construction per
 // cause, and the issuer-disabled configuration error.

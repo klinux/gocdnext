@@ -4,9 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// clusterDispatchError builds the caller-facing job error for a failed `cluster:`
+// resolution at dispatch. It collapses the missing-vs-unauthorized existence
+// oracle (store.IsClusterUnavailable) to one generic message; `collapsed` is true
+// so the caller logs the specific error for operators. A non-oracle failure
+// (transport/unexpected) keeps its detail — it isn't an existence oracle and the
+// operator needs it in the run log.
+func clusterDispatchError(err error) (msg string, collapsed bool) {
+	if store.IsClusterUnavailable(err) {
+		return "cluster: " + store.ClusterUnavailableMessage, true
+	}
+	return fmt.Sprintf("cluster: %v", err), false
+}
 
 // resolveClusterKubeconfig resolves a job's `cluster:` reference into a
 // kubeconfig string to inject as PLUGIN_KUBECONFIG plus the log masks

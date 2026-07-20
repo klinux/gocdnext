@@ -20,10 +20,15 @@ const (
 	FaultUnprocessable                  // 422 — multi-source, or can't validate (unreachable)
 )
 
-// Fault wraps a Register error with its classification.
+// Fault wraps a Register error with its classification. Public, when set, is a
+// caller-safe message that the handler emits INSTEAD of the internal Err (which
+// it logs). It exists so a fault can carry full detail for operators while the
+// response body stays oracle-safe — e.g. the collapsed cluster missing-vs-
+// unauthorized case (see classifyValidateErr).
 type Fault struct {
-	Kind FaultKind
-	Err  error
+	Kind   FaultKind
+	Err    error
+	Public string
 }
 
 func (f *Fault) Error() string { return f.Err.Error() }
@@ -37,10 +42,12 @@ func classifyValidateErr(err error) *Fault {
 	switch {
 	case errors.Is(err, deploy.ErrMultiSource):
 		return &Fault{Kind: FaultUnprocessable, Err: err}
-	case errors.Is(err, store.ErrClusterNotAuthorized):
-		return &Fault{Kind: FaultForbidden, Err: err}
-	case errors.Is(err, store.ErrClusterNotFound):
-		return &Fault{Kind: FaultNotFound, Err: err}
+	case store.IsClusterUnavailable(err):
+		// Collapse "cluster missing" (404) and "cluster not authorized for this
+		// project" (was 403) into ONE oracle-safe response — distinguishing them
+		// lets a maintainer enumerate cluster names across projects. 404 for both
+		// (hide existence); the specific error is kept in Err for the handler to log.
+		return &Fault{Kind: FaultNotFound, Err: err, Public: store.ClusterUnavailableMessage}
 	}
 	var se *store.ClusterAPIStatusError
 	if errors.As(err, &se) {
