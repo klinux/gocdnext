@@ -497,6 +497,93 @@ paths:
         "204": { description: replaced }
         "400": { description: invalid labels (key required, no ':', bounds) }
         "404": { description: project not found }
+
+  /api/v1/projects/{slug}/deploy-targets:
+    get:
+      tags: [projects]
+      summary: List a project's deploy targets (maintainer+).
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: deploy targets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deploy_targets:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeployTarget" }
+        "404": { description: project not found }
+    post:
+      tags: [projects]
+      summary: Register or update the deploy target for an environment (maintainer+).
+      description: >
+        Registers how a project environment deploys — which ArgoCD Application on
+        which registered cluster, and whether gocdnext triggers the sync or only
+        observes. Upsert by environment. Registration fetches the Application to
+        confirm it exists, is reachable with the project's cluster access, and is
+        single-source.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeployTargetInput" }
+      responses:
+        "200":
+          description: registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeployTarget" }
+        "400": { description: invalid provider/sync_mode/environment/cluster/application }
+        "403": { description: project not authorized for the cluster }
+        "404": { description: project, cluster, or Application not found }
+        "422": { description: multi-source Application, or the target could not be validated }
+        "501": { description: deploy targets not configured on this server }
+
+  /api/v1/projects/{slug}/deploy-targets/{env}:
+    delete:
+      tags: [projects]
+      summary: Remove a project environment's deploy target (maintainer+).
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: path
+          name: env
+          required: true
+          schema: { type: string }
+          description: environment name
+      responses:
+        "204": { description: deleted }
+        "404": { description: project or deploy target not found }
+
+  /api/v1/projects/{slug}/deploy-watches:
+    get:
+      tags: [projects]
+      summary: In-flight native deploys for the project (viewer-readable, for polling).
+      description: >
+        One entry per still-in-progress native deploy, for the UI to poll live state
+        (syncing / degraded / deadline). Viewer-readable, but ROLE-SANITISED: the
+        config fields (application, cluster, sync_mode) are returned only to
+        maintainers — the same fields protected on /deploy-targets — and omitted for
+        viewers.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+      responses:
+        "200":
+          description: in-flight native deploys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deploy_watches:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeployWatch" }
+        "404": { description: project not found }
+
   /api/v1/projects/{slug}/findings:
     get:
       tags: [projects]
@@ -1712,6 +1799,49 @@ components:
       properties:
         key: { type: string, description: "non-empty, no ':'" }
         value: { type: string, description: "may be empty (flat tag)" }
+
+    DeployTarget:
+      type: object
+      description: How a project environment deploys (ADR-0001), 1:1 with the environment.
+      required: [environment, provider, cluster, application, namespace, sync_mode]
+      properties:
+        environment: { type: string, example: production }
+        provider: { type: string, enum: [argocd] }
+        cluster: { type: string, description: registered cluster name (the k8s API hosting the Application) }
+        application: { type: string, description: ArgoCD Application name }
+        namespace: { type: string, example: argocd }
+        sync_mode:
+          type: string
+          enum: [trigger, observe]
+          description: "trigger = gocdnext syncs after any gate; observe = gocdnext only watches an auto-synced app"
+
+    DeployTargetInput:
+      type: object
+      required: [environment, cluster, application, sync_mode]
+      properties:
+        environment: { type: string, description: "valid deploy env name (start alphanumeric, then [A-Za-z0-9._-], max 64)" }
+        cluster: { type: string }
+        application: { type: string }
+        namespace: { type: string, description: "defaults to argocd when empty" }
+        sync_mode: { type: string, enum: [trigger, observe] }
+
+    DeployWatch:
+      type: object
+      description: >
+        One in-flight native deploy (ADR-0001). Live-state fields are viewer-readable;
+        application/cluster/sync_mode are maintainer-only (omitted for viewers).
+      required: [environment, version, expected_revision, watch_started_at, deadline_at]
+      properties:
+        environment: { type: string }
+        version: { type: string, description: display/ledger version }
+        expected_revision: { type: string, description: full git SHA the watch correlates against (may be empty) }
+        watch_started_at: { type: string, format: date-time }
+        sync_requested_at: { type: string, format: date-time, description: set once the sync was triggered }
+        deadline_at: { type: string, format: date-time, description: progress deadline }
+        degraded_since: { type: string, format: date-time, description: set while the rollout is Degraded }
+        application: { type: string, description: maintainer-only }
+        cluster: { type: string, description: maintainer-only }
+        sync_mode: { type: string, enum: [trigger, observe], description: maintainer-only }
 
     Finding:
       type: object
