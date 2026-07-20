@@ -90,6 +90,28 @@ func TestParseRolloutState_malformed(t *testing.T) {
 	}
 }
 
+// An ABSENT currentStepIndex must NOT be trusted as step 0: a CanaryPauseStep with
+// step[0]=pause:{} must NOT become PausedIndefinitely (would arm a gate on
+// incomplete controller state).
+func TestParseRolloutState_absentStepIndexNotIndefinite(t *testing.T) {
+	const spec = `"spec":{"strategy":{"canary":{"steps":[{"pause":{}},{"setWeight":50}]}}}`
+	raw := `{` + spec + `,"status":{"phase":"Paused","pauseConditions":[{"reason":"CanaryPauseStep"}]}}` // no currentStepIndex
+	got, err := parseRolloutState([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentStepKnown {
+		t.Error("CurrentStepKnown should be false when the controller didn't report it")
+	}
+	if got.PausedIndefinitely {
+		t.Error("PausedIndefinitely must be false on an unknown step index (no false gate)")
+	}
+	// A null index behaves the same as absent.
+	if g, _ := parseRolloutState([]byte(`{` + spec + `,"status":{"phase":"Paused","currentStepIndex":null,"pauseConditions":[{"reason":"CanaryPauseStep"}]}}`)); g.PausedIndefinitely || g.CurrentStepKnown {
+		t.Error("null currentStepIndex must be treated as unknown")
+	}
+}
+
 func TestDiscoverRollout(t *testing.T) {
 	one := `{"status":{"resources":[
 		{"group":"","version":"v1","kind":"Service","namespace":"gb","name":"svc"},
@@ -117,5 +139,12 @@ func TestDiscoverRollout(t *testing.T) {
 	]}}`
 	if _, _, err := discoverRollout([]byte(multi)); !errors.Is(err, ErrMultipleRollouts) {
 		t.Errorf("multiple → %v, want ErrMultipleRollouts", err)
+	}
+
+	// An incomplete entry (missing namespace or name) is not a resolvable target →
+	// fail closed as not-found here, not late as a generic fetch error.
+	incomplete := `{"status":{"resources":[{"group":"argoproj.io","kind":"Rollout","name":"r1"}]}}`
+	if _, _, err := discoverRollout([]byte(incomplete)); !errors.Is(err, ErrRolloutNotFound) {
+		t.Errorf("incomplete entry → %v, want ErrRolloutNotFound", err)
 	}
 }

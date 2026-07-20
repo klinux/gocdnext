@@ -47,7 +47,10 @@ func discoverRollout(appRaw []byte) (namespace, name string, err error) {
 	}
 	found := 0
 	for _, r := range app.Status.Resources {
-		if r.Group == rolloutGroup && r.Kind == rolloutKind {
+		// Require a COMPLETE entry (group+kind AND namespace+name) — an entry missing
+		// namespace/name isn't a resolvable target, so it fails closed here as
+		// "not found" rather than late as a generic fetch error.
+		if r.Group == rolloutGroup && r.Kind == rolloutKind && r.Namespace != "" && r.Name != "" {
 			found++
 			namespace, name = r.Namespace, r.Name
 		}
@@ -73,9 +76,10 @@ type rolloutManifest struct {
 		} `json:"strategy"`
 	} `json:"spec"`
 	Status struct {
-		Phase            string `json:"phase"`
-		Message          string `json:"message"`
-		CurrentStepIndex int    `json:"currentStepIndex"`
+		Phase   string `json:"phase"`
+		Message string `json:"message"`
+		// Nullable: absent/null must not be read as "step 0" (see RolloutState).
+		CurrentStepIndex *int   `json:"currentStepIndex"`
 		Abort            bool   `json:"abort"`
 		StableRS         string `json:"stableRS"`
 		CurrentPodHash   string `json:"currentPodHash"`
@@ -120,22 +124,35 @@ func parseRolloutState(raw []byte) (RolloutState, error) {
 		pauseReason = st.PauseConditions[0].Reason
 	}
 
-	// Indefinite canary pause = paused for the CanaryPauseStep reason AND the current
-	// step is a pause with no duration.
-	pausedIndef := pauseReason == PauseReasonCanaryStep &&
-		st.CurrentStepIndex >= 0 && st.CurrentStepIndex < len(steps) &&
-		steps[st.CurrentStepIndex].isIndefinitePause()
+	// The controller may not have reported currentStepIndex yet; an absent index must
+	// NOT be trusted as step 0 (else a CanaryPauseStep with step[0]=pause:{} would arm
+	// a gate on incomplete state).
+	stepKnown := st.CurrentStepIndex != nil
+	stepIdx := 0
+	if stepKnown {
+		stepIdx = *st.CurrentStepIndex
+	}
+
+	// Indefinite canary pause = paused for the CanaryPauseStep reason AND the (KNOWN)
+	// current step is a pause with no duration.
+	pausedIndef := pauseReason == PauseReasonCanaryStep && stepKnown &&
+		stepIdx >= 0 && stepIdx < len(steps) &&
+		steps[stepIdx].isIndefinitePause()
 
 	// Fully promoted = advanced past all steps AND the new pod hash is the stable one
-	// AND healthy. A healthy Application alone is NOT enough (no early finalize).
-	fullyPromoted := st.CurrentStepIndex >= len(steps) &&
+	// AND healthy. A healthy Application alone is NOT enough (no early finalize). With
+	// canary steps the index must be KNOWN and at/after the last step; a step-less
+	// rollout (e.g. blue-green) is promoted on healthy+stable alone.
+	advancedPastSteps := len(steps) == 0 || (stepKnown && stepIdx >= len(steps))
+	fullyPromoted := advancedPastSteps &&
 		st.CurrentPodHash != "" && st.CurrentPodHash == st.StableRS &&
 		RolloutPhase(st.Phase) == RolloutHealthy
 
 	return RolloutState{
 		Phase:              normalizeRolloutPhase(st.Phase),
 		PauseReason:        pauseReason,
-		CurrentStepIndex:   st.CurrentStepIndex,
+		CurrentStepIndex:   stepIdx,
+		CurrentStepKnown:   stepKnown,
 		StepCount:          len(steps),
 		Aborted:            st.Abort,
 		Message:            st.Message,

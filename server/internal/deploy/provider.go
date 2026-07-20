@@ -122,9 +122,15 @@ const (
 // provider reads (`.status` + `.spec.strategy.canary.steps`). All fields are
 // scalars so DeployState remains comparable.
 type RolloutState struct {
-	Phase            RolloutPhase
-	PauseReason      string // first `.status.pauseConditions[].reason`, "" if not paused
-	CurrentStepIndex int    // `.status.currentStepIndex`
+	Phase       RolloutPhase
+	PauseReason string // first `.status.pauseConditions[].reason`, "" if not paused
+	// CurrentStepIndex is `.status.currentStepIndex`; CurrentStepKnown says the
+	// controller actually reported it. An ABSENT index unmarshals to 0, which must
+	// NOT be trusted as "at step 0" — deriving PausedIndefinitely (arm a gate) from an
+	// assumed step 0 would arm on incomplete state. So the index is nullable upstream
+	// and only trusted when known.
+	CurrentStepIndex int
+	CurrentStepKnown bool
 	StepCount        int    // len(`.spec.strategy.canary.steps`)
 	Aborted          bool   // `.status.abort`
 	Message          string // `.status.message` (bounded on persist)
