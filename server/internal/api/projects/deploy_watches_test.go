@@ -98,3 +98,70 @@ func TestListDeployWatches_RoleSanitized(t *testing.T) {
 		}
 	}
 }
+
+func TestListDeployWatches_RolloutSnapshot(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	seedProjectAndCluster(t, s)
+	detail, err := s.GetProjectDetail(ctx, "demo", 1)
+	if err != nil {
+		t.Fatalf("project detail: %v", err)
+	}
+	projectID := detail.Project.ID
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("ensure env: %v", err)
+	}
+	revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, Attempt: 0, Version: "1.4.2", DeployedBy: "svc",
+	})
+	if err != nil {
+		t.Fatalf("revision: %v", err)
+	}
+	if _, err := s.CreateDeployWatch(ctx, store.DeployWatchInput{
+		DeploymentRevisionID: revID, ProjectID: projectID, SyncMode: "trigger",
+		Cluster: "prod", Application: "checkout", Namespace: "argocd",
+		ExpectedRevision: "abc", DeadlineAt: time.Now().Add(10 * time.Minute),
+		RolloutAware: true,
+	}); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	claimed, err := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v (err %v)", claimed, err)
+	}
+	claimID := claimed[0].ClaimID
+
+	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := chi.NewRouter()
+	r.Get("/api/v1/projects/{slug}/deploy-watches", h.ListDeployWatches)
+
+	// A KNOWN step (0) — must appear as rollout_current_step:0 (pointer, not omitted).
+	if _, err := s.StampRolloutObservation(ctx, revID, claimID, store.RolloutObservationInput{
+		Observed: true, Phase: "Paused", PauseReason: "CanaryPauseStep", CurrentStep: 0, StepKnown: true, StepCount: 4,
+	}); err != nil {
+		t.Fatalf("stamp known: %v", err)
+	}
+	vw := deployWatchesReq(r, store.RoleViewer)["deploy_watches"].([]any)[0].(map[string]any)
+	if vw["rollout_aware"] != true || vw["rollout_phase"] != "Paused" || vw["rollout_pause_reason"] != "CanaryPauseStep" {
+		t.Fatalf("viewer missing rollout live state: %v", vw)
+	}
+	if step, present := vw["rollout_current_step"]; !present || step.(float64) != 0 {
+		t.Errorf("known step 0 must appear as rollout_current_step:0, got present=%v val=%v", present, step)
+	}
+	if _, present := vw["cluster"]; present { // config still viewer-hidden
+		t.Errorf("viewer leaked cluster: %v", vw)
+	}
+
+	// An UNKNOWN step must be ABSENT (nil pointer omitted), not rendered as 0.
+	if _, err := s.StampRolloutObservation(ctx, revID, claimID, store.RolloutObservationInput{
+		Observed: true, Phase: "Progressing", StepCount: 4, // StepKnown false
+	}); err != nil {
+		t.Fatalf("stamp unknown: %v", err)
+	}
+	vw2 := deployWatchesReq(r, store.RoleViewer)["deploy_watches"].([]any)[0].(map[string]any)
+	if _, present := vw2["rollout_current_step"]; present {
+		t.Errorf("unknown step must be absent, got: %v", vw2["rollout_current_step"])
+	}
+}

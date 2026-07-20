@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,6 +189,28 @@ func TestWatcher_RolloutAware_StampsSnapshot(t *testing.T) {
 	if !st.lastRollout.Observed || st.lastRollout.Phase != "Paused" || !st.lastRollout.StepKnown ||
 		st.lastRollout.CurrentStep != 1 || st.lastRollout.StepCount != 4 {
 		t.Errorf("stamped input = %+v, want the observed paused snapshot", st.lastRollout)
+	}
+}
+
+// On an Application observe error, a rollout-aware watch clears its snapshot (writes
+// rollout_error) so the UI doesn't show ghost progress — with a FIXED reason, never
+// the raw error (which can carry the internal API-server URL).
+func TestWatcher_RolloutAware_ObserveError_ClearsSnapshot(t *testing.T) {
+	var log []string
+	w := mkWatch("app")
+	w.RolloutAware = true
+	st := newFakeStore(&log, w)
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {err: errors.New(`Get "https://internal-api:6443/...": timeout`)}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "rollout_stamp") {
+		t.Fatalf("expected a rollout stamp on the observe-error path: %v", log)
+	}
+	if st.lastRollout.Observed || st.lastRollout.Error == "" {
+		t.Errorf("want Observed=false + a reason, got %+v", st.lastRollout)
+	}
+	if strings.Contains(st.lastRollout.Error, "internal-api") || strings.Contains(st.lastRollout.Error, "6443") {
+		t.Errorf("stamped reason leaked the raw error: %q", st.lastRollout.Error)
 	}
 }
 

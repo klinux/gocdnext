@@ -174,6 +174,12 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		// exceeded (via the one terminal path). We do NOT feed the untrusted error
 		// state to Decide.
 		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "observe", "err", err)...)
+		// The Application read failed → the Rollout can't be observed either. Clear the
+		// stale snapshot with a FIXED sanitized reason (the raw err may carry the
+		// internal API-server URL) so the UI never shows ghost canary progress.
+		if dw.RolloutAware {
+			w.persistRollout(ctx, dw, store.RolloutObservationInput{Error: "the deploy could not be observed"})
+		}
 		if time.Now().After(dw.DeadlineAt) {
 			w.finalize(ctx, dw, store.DeployStatusFailed, deploy.ReasonDeadlineExceeded)
 		}
@@ -250,9 +256,7 @@ func (w *Watcher) finalize(ctx context.Context, dw store.DeployWatch, status, re
 	}
 }
 
-// stampRollout persists the observed Rollout snapshot for the tick (fenced; a lost
-// lease or error just logs — the UI snapshot is best-effort). Observed=false records
-// only the already-sanitized RolloutError.
+// stampRollout persists the observed Rollout snapshot for a successful Observe.
 func (w *Watcher) stampRollout(ctx context.Context, dw store.DeployWatch, state deploy.DeployState) {
 	in := store.RolloutObservationInput{Error: state.RolloutError}
 	if state.RolloutObserved {
@@ -268,6 +272,12 @@ func (w *Watcher) stampRollout(ctx context.Context, dw store.DeployWatch, state 
 			Aborted:     r.Aborted,
 		}
 	}
+	w.persistRollout(ctx, dw, in)
+}
+
+// persistRollout is the fenced, best-effort write of a rollout snapshot (a lost lease
+// or error just logs — the UI snapshot is best-effort).
+func (w *Watcher) persistRollout(ctx context.Context, dw store.DeployWatch, in store.RolloutObservationInput) {
 	if ok, err := w.store.StampRolloutObservation(ctx, dw.DeploymentRevisionID, dw.ClaimID, in); err != nil {
 		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "rollout_observe", "err", err)...)
 	} else if !ok {
