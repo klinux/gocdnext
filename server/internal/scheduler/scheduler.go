@@ -346,7 +346,16 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// than shipping a deploy at the wrong (or no) cluster.
 		clusterKubeconfig, clusterMasks, clErr := s.resolveClusterKubeconfig(ctx, run, job)
 		if clErr != nil {
-			s.failJobWithError(ctx, job, fmt.Sprintf("cluster: %v", clErr))
+			// Collapse the cluster missing-vs-unauthorized oracle in the run-facing
+			// error (a maintainer could otherwise enumerate cluster names across
+			// projects); the specific reason goes to the operator log, not the run.
+			msg, collapsed := clusterDispatchError(clErr)
+			if collapsed {
+				s.log.Warn("scheduler: cluster resolution failed (detail withheld from run)",
+					"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
+					"project_id", run.ProjectID, "err", clErr)
+			}
+			s.failJobWithError(ctx, job, msg)
 			continue
 		}
 

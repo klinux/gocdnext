@@ -162,6 +162,16 @@ func writeFault(w http.ResponseWriter, log *slog.Logger, err error) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// A fault carrying a Public message has a caller-safe string distinct from its
+	// internal Err — emit the public one and log the detail. This is how the cluster
+	// missing-vs-unauthorized oracle stays collapsed for the caller while operators
+	// still see which cluster and why in the logs.
+	if f.Public != "" {
+		log.Warn("deploy targets: register rejected (detail withheld from caller)",
+			"status", faultStatus(f.Kind), "err", f.Err)
+		http.Error(w, f.Public, faultStatus(f.Kind))
+		return
+	}
 	switch f.Kind {
 	case deploysvc.FaultInvalid:
 		http.Error(w, f.Error(), http.StatusBadRequest)
@@ -182,6 +192,24 @@ func writeFault(w http.ResponseWriter, log *slog.Logger, err error) {
 	default: // FaultInternal
 		log.Error("deploy targets: register failed", "err", f.Err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+// faultStatus maps a fault kind to its HTTP status — the single source used by the
+// Public-message path (the switch above inlines the same mapping for the
+// echo-the-error cases).
+func faultStatus(kind deploysvc.FaultKind) int {
+	switch kind {
+	case deploysvc.FaultInvalid:
+		return http.StatusBadRequest
+	case deploysvc.FaultNotFound:
+		return http.StatusNotFound
+	case deploysvc.FaultForbidden:
+		return http.StatusForbidden
+	case deploysvc.FaultUnprocessable:
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
 	}
 }
 

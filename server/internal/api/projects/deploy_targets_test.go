@@ -137,6 +137,36 @@ func TestSetDeployTarget_FaultMapping(t *testing.T) {
 			t.Fatalf("status = %d, want 404", rr.Code)
 		}
 	})
+
+	// The cluster existence/authz oracle (#155): "not authorized for this project"
+	// and "cluster missing" must both return an identical 404 + generic body, so a
+	// maintainer can't enumerate cluster names by probing 403-vs-404.
+	oracle := []struct {
+		name string
+		err  error
+	}{
+		{"cluster not authorized", fmt.Errorf(`resolve %q: %w`, "secret-prod-cluster", store.ErrClusterNotAuthorized)},
+		{"cluster not found", fmt.Errorf(`resolve %q: %w`, "secret-prod-cluster", store.ErrClusterNotFound)},
+	}
+	for _, tt := range oracle {
+		t.Run(tt.name+" -> collapsed 404, no leak", func(t *testing.T) {
+			r, s := newDeployTargetsRouter(t, tt.err, true)
+			seedProjectAndCluster(t, s)
+			rr := doReq(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets",
+				`{"environment":"production","cluster":"prod","application":"checkout","sync_mode":"trigger"}`)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (collapsed), body=%s", rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			if !strings.Contains(body, store.ClusterUnavailableMessage) {
+				t.Errorf("want the generic %q, got: %s", store.ClusterUnavailableMessage, body)
+			}
+			// Must not leak which reason (authz vs missing) nor the internal error text.
+			if strings.Contains(body, "not authorized") || strings.Contains(body, "store:") {
+				t.Errorf("response leaked the internal reason: %s", body)
+			}
+		})
+	}
 }
 
 func TestSetDeployTarget_NotConfigured_501(t *testing.T) {
