@@ -575,3 +575,51 @@ func lastRenewBefore(log []string, pos int) int {
 	}
 	return last
 }
+
+// --- Observe-error path must still run Decide (Phase-2 precedence under uncertainty) ---
+
+// A human REJECT still aborts via the pin even when the Application can't be read
+// (abort is safe under uncertainty).
+func TestWatcher_ObserveError_RejectStillAborts(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "rejected")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {err: errors.New(`Get "https://internal:6443": timeout`)}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if !contains(log, "abort:ro-pinned") || !contains(log, "mark_actioned") {
+		t.Fatalf("reject under an observe error must still abort via the pin; log=%v", log)
+	}
+}
+
+// An armed & undecided gate SUSPENDS the deadline even under an observe error — a
+// past-deadline tick must NOT finalize (it's awaiting the human).
+func TestWatcher_ObserveError_ArmedUndecided_SuspendsDeadline(t *testing.T) {
+	var log []string
+	w := armedW(gatedW(mkRolloutWatch("app"))) // armed, undecided
+	w.DeadlineAt = time.Now().Add(-time.Second)
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {err: errors.New("dial timeout")}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if len(st.finalized) != 0 {
+		t.Fatalf("armed & undecided past deadline must be suspended (no finalize); finalized=%v log=%v", st.finalized, log)
+	}
+}
+
+// APPROVE stays promote-unsafe under an observe error — no promote until observation
+// recovers (or the resumed deadline fails it).
+func TestWatcher_ObserveError_ApproveDoesNotPromote(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "approved")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {err: errors.New("dial timeout")}}, log: &log}
+	st := newFakeStore(&log, w)
+	runTick(obs, st)
+
+	if contains(log, "promote:ro-pinned") {
+		t.Fatalf("approve under an observe error must NOT promote (promote-unsafe); log=%v", log)
+	}
+	if len(st.finalized) != 0 {
+		t.Fatalf("must not finalize while awaiting recovery within the deadline; %v", st.finalized)
+	}
+}

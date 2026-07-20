@@ -177,31 +177,31 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 
 	state, err := w.obs.Observe(ctx, targetOf(dw))
 	if err != nil {
-		// An observation error alone never fails the deploy — retry next tick. But the
-		// deadline still terminates it: a target we can NEVER observe must not poll
-		// forever past its budget, so a past-deadline observe error fails as deadline
-		// exceeded (via the one terminal path). We do NOT feed the untrusted error
-		// state to Decide.
+		// An Application read error never TRUSTS the returned snapshot — but it must
+		// still run through Decide, or the Phase-2 precedence is lost when a gate is
+		// armed: a human REJECT (or cancel) must still Abort via the pin (abort-safe
+		// under uncertainty), an armed & undecided gate must still SUSPEND the deadline,
+		// and only APPROVE stays promote-unsafe. So replace the state with a SANITIZED
+		// synthetic one — no untrusted Sync/Health/rev (a stale value must not drive a
+		// success/degraded/fast-fail), only the observe-error signal — persist it for the
+		// UI, and fall through to Decide. For a non-rollout / observe-only deploy this
+		// yields exactly the old behavior: Continue, or FinalizeFailed(deadline) once the
+		// budget is spent (Decide branch 4, since awaitingHuman is false there). The
+		// reason is FIXED (the raw err may carry the internal API-server URL).
 		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "observe", "err", err)...)
-		// The Application read failed → the Rollout can't be observed either. Clear the
-		// stale snapshot with a FIXED sanitized reason (the raw err may carry the
-		// internal API-server URL) so the UI never shows ghost canary progress.
+		state = deploy.DeployState{RolloutError: "the deploy could not be observed"}
 		if dw.RolloutAware {
-			w.persistRollout(ctx, dw, store.RolloutObservationInput{Error: "the deploy could not be observed"})
+			w.persistRollout(ctx, dw, store.RolloutObservationInput{Error: state.RolloutError})
 		}
-		if time.Now().After(dw.DeadlineAt) {
-			w.finalize(ctx, dw, store.DeployStatusFailed, deploy.ReasonDeadlineExceeded)
+	} else {
+		w.log.Debug("watch_observed", append(watchAttrs(dw),
+			"sync", state.Sync, "health", state.Health, "observed_rev", state.ObservedRev, "op_phase", state.OperationPhase)...)
+		// Persist the observed Rollout snapshot each tick so the UI (which reads the DB)
+		// renders canary progress. The same live snapshot (state.Rollout) also feeds
+		// Decide below — arm/promote/abort/clear + the no-early-finalize guard.
+		if dw.RolloutAware {
+			w.stampRollout(ctx, dw, state)
 		}
-		return
-	}
-	w.log.Debug("watch_observed", append(watchAttrs(dw),
-		"sync", state.Sync, "health", state.Health, "observed_rev", state.ObservedRev, "op_phase", state.OperationPhase)...)
-
-	// Persist the observed Rollout snapshot each tick so the UI (which reads the DB)
-	// renders canary progress. The same live snapshot (state.Rollout) also feeds Decide
-	// below — arm/promote/abort/clear + the no-early-finalize guard.
-	if dw.RolloutAware {
-		w.stampRollout(ctx, dw, state)
 	}
 
 	verdict := deploy.Decide(state, anchorsOf(dw), time.Now(), w.degradedWindow)
