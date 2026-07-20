@@ -32,6 +32,23 @@ var ErrClusterInUse = errors.New("store: cluster in use")
 // allowed_projects — a typed error so callers map it to 403 without string-matching.
 var ErrClusterNotAuthorized = errors.New("store: project not authorized for cluster")
 
+// ClusterUnavailableMessage is the SINGLE caller-facing message a dispatch-time
+// cluster resolution failure collapses to. ErrClusterNotFound (the name doesn't
+// exist) and ErrClusterNotAuthorized (it exists, but this project isn't allowed
+// it) MUST look identical to the caller — distinguishing them is a cross-project
+// existence oracle (a project maintainer could enumerate cluster names by probing
+// 404-vs-403). Callers log the specific sentinel for operators but return this.
+const ClusterUnavailableMessage = "cluster not found or not accessible"
+
+// IsClusterUnavailable reports whether err is a dispatch-time cluster resolution
+// failure whose missing-vs-unauthorized distinction must be collapsed for the
+// caller (see ClusterUnavailableMessage). Both the deploy-target register path and
+// the YAML `cluster:` dispatch path classify through this one predicate so the
+// oracle-safe behaviour is defined once, not per-endpoint.
+func IsClusterUnavailable(err error) bool {
+	return errors.Is(err, ErrClusterNotFound) || errors.Is(err, ErrClusterNotAuthorized)
+}
+
 // pgForeignKeyViolation is Postgres SQLSTATE 23503.
 const pgForeignKeyViolation = "23503"
 

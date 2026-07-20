@@ -31,8 +31,10 @@ func TestClassifyValidateErr(t *testing.T) {
 		want FaultKind
 	}{
 		{"multi-source", fmt.Errorf("x: %w", deploy.ErrMultiSource), FaultUnprocessable},
-		{"unauthorized", fmt.Errorf("x: %w", store.ErrClusterNotAuthorized), FaultForbidden},
-		{"cluster not found", fmt.Errorf("x: %w", store.ErrClusterNotFound), FaultNotFound},
+		// Both cluster-resolution failures collapse to 404 (oracle-safe) — the
+		// missing-vs-unauthorized distinction is a cross-project existence oracle.
+		{"cluster not authorized -> collapsed 404", fmt.Errorf("x: %w", store.ErrClusterNotAuthorized), FaultNotFound},
+		{"cluster not found -> collapsed 404", fmt.Errorf("x: %w", store.ErrClusterNotFound), FaultNotFound},
 		{"application 404", &store.ClusterAPIStatusError{Status: http.StatusNotFound}, FaultNotFound},
 		{"application 401", &store.ClusterAPIStatusError{Status: http.StatusUnauthorized}, FaultForbidden},
 		{"application 403", &store.ClusterAPIStatusError{Status: http.StatusForbidden}, FaultForbidden},
@@ -45,6 +47,23 @@ func TestClassifyValidateErr(t *testing.T) {
 				t.Errorf("classifyValidateErr(%v).Kind = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// A collapsed cluster fault must carry the generic Public message (what the
+// handler emits) while retaining the specific error in Err (what it logs) — and
+// both sentinels must produce the SAME public message so they're indistinguishable.
+func TestClassifyValidateErr_ClusterOracleCollapsed(t *testing.T) {
+	for _, sentinel := range []error{store.ErrClusterNotFound, store.ErrClusterNotAuthorized} {
+		f := classifyValidateErr(fmt.Errorf("resolve %q: %w", "prod-hub", sentinel))
+		if f.Public != store.ClusterUnavailableMessage {
+			t.Errorf("Public = %q, want the generic %q", f.Public, store.ClusterUnavailableMessage)
+		}
+		// The internal detail (cluster name, missing-vs-unauthorized) is preserved
+		// in Err for operator logs, but must NOT be the public message.
+		if f.Public == f.Error() {
+			t.Errorf("public message leaks the internal error %q", f.Error())
+		}
 	}
 }
 
