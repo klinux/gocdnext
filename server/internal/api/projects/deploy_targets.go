@@ -77,7 +77,13 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		CreatedBy:   createdBy,
 	})
 	if err != nil {
-		writeFault(w, h.log, err)
+		// Enrich every fault log for this request with the request context so a
+		// collapsed cluster-oracle rejection (whose caller-facing body is generic)
+		// still tells an operator which cluster / project / environment was probed —
+		// structured fields, not dependent on the error text carrying the name.
+		writeFault(w, h.log.With(
+			"slug", slug, "project_id", projectID,
+			"cluster", req.Cluster, "environment", req.Environment), err)
 		return
 	}
 

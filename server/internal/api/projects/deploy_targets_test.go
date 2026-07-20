@@ -1,6 +1,7 @@
 package projects_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -166,6 +167,42 @@ func TestSetDeployTarget_FaultMapping(t *testing.T) {
 				t.Errorf("response leaked the internal reason: %s", body)
 			}
 		})
+	}
+}
+
+// The separation the fix guarantees: the CALLER gets a generic collapsed body,
+// but the operator LOG still carries the specific sentinel + cluster + project so
+// diagnosis isn't lost (#155 invariants 1 & 2, in one splice).
+func TestSetDeployTarget_ClusterOracle_LogsDetailNotCaller(t *testing.T) {
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	// The resolver's real not-authorized error carries the cluster name via %q.
+	validatorErr := fmt.Errorf(`fetch app: %w "prod"`, store.ErrClusterNotAuthorized)
+	h := projects.NewHandler(s, log).
+		WithDeployRegistrar(deploysvc.New(fakeValidator{err: validatorErr}, s))
+	r := chi.NewRouter()
+	r.Post("/api/v1/projects/{slug}/deploy-targets", h.SetDeployTarget)
+	seedProjectAndCluster(t, s)
+
+	rr := doReq(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets",
+		`{"environment":"production","cluster":"prod","application":"checkout","sync_mode":"trigger"}`)
+
+	// Caller: generic 404, no internal reason.
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "not authorized") {
+		t.Errorf("response leaked the internal reason: %s", rr.Body.String())
+	}
+	// Operator log: keeps the specific sentinel + which cluster + which project.
+	logged := logBuf.String()
+	for _, want := range []string{"not authorized", "cluster=prod", "environment=production", "project_id="} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("log missing %q for diagnosis; got: %s", want, logged)
+		}
 	}
 }
 
