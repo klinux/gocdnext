@@ -15,8 +15,9 @@ type appFetcher interface {
 }
 
 // appSyncer triggers a sync for a target (behind the same test seam as the fetcher).
+// syncOptions carries the Application's own sync options so a manual sync honors them.
 type appSyncer interface {
-	syncApplication(ctx context.Context, target DeploymentTarget, revision string) error
+	syncApplication(ctx context.Context, target DeploymentTarget, revision string, syncOptions []string) error
 }
 
 // ArgoProvider is the ArgoCD-backed provider. It observes an Application and, for
@@ -66,10 +67,39 @@ func (a *ArgoProvider) Sync(ctx context.Context, target DeploymentTarget, revisi
 	if a.sync == nil {
 		return errors.New("deploy: provider has no syncer configured")
 	}
-	if err := a.sync.syncApplication(ctx, target, revision); err != nil {
+	// Honor the Application's own sync options (CreateNamespace, ServerSideApply, …) on
+	// the manual sync — a bare `.operation.sync` does NOT inherit spec.syncPolicy, so
+	// without this an app relying on CreateNamespace fails its first deploy with
+	// "namespace not found". This mirrors `argocd app sync` / the UI. Best-effort: if
+	// the read fails we sync without them (the sync itself, or the watcher's deadline,
+	// surfaces a genuine problem) rather than blocking the deploy on the extra GET.
+	var syncOptions []string
+	if a.fetch != nil {
+		if raw, err := a.fetch.fetchApplication(ctx, target); err == nil {
+			syncOptions = parseSyncOptions(raw)
+		}
+	}
+	if err := a.sync.syncApplication(ctx, target, revision, syncOptions); err != nil {
 		return fmt.Errorf("deploy: sync application %s/%s: %w", target.Namespace, target.Application, err)
 	}
 	return nil
+}
+
+// parseSyncOptions reads `.spec.syncPolicy.syncOptions` from a raw Application CR — the
+// options a manual sync must carry to behave like the app's own (auto)sync. Nil on any
+// decode error or when none are set.
+func parseSyncOptions(raw []byte) []string {
+	var app struct {
+		Spec struct {
+			SyncPolicy struct {
+				SyncOptions []string `json:"syncOptions"`
+			} `json:"syncPolicy"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &app); err != nil {
+		return nil
+	}
+	return app.Spec.SyncPolicy.SyncOptions
 }
 
 // applicationStatus is the minimal slice of an ArgoCD Application resource this
