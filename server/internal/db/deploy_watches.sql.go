@@ -11,6 +11,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const armRolloutGate = `-- name: ArmRolloutGate :execrows
+UPDATE deploy_watches
+SET gate_id                = gen_random_uuid(),
+    gate_armed_at          = NOW(),
+    gate_paused_step       = $1,
+    gate_rollout_cluster   = $2,
+    gate_rollout_namespace = $3,
+    gate_rollout_name      = $4
+WHERE deployment_revision_id = $5
+  AND claim_id = $6
+  AND gate_id IS NULL
+`
+
+type ArmRolloutGateParams struct {
+	GatePausedStep       *int32
+	GateRolloutCluster   *string
+	GateRolloutNamespace *string
+	GateRolloutName      *string
+	DeploymentRevisionID pgtype.UUID
+	ClaimID              pgtype.UUID
+}
+
+// Arm the approval gate for the current indefinite pause. Stamps a FRESH gate_id (the
+// anti-stale token), the armed-at time, the paused step, and the RESOLVED Rollout
+// identity PINNED for this gate — Promote/Abort act on these, never a re-discovery, so
+// `.status.resources[]` drift can't redirect the effect. All three identity columns are
+// stamped together (a complete pinned tuple; the watcher only arms with all three).
+// Fenced on claim_id; `gate_id IS NULL` makes a double-tick a no-op (never re-arms a
+// fresh token under an in-flight vote).
+func (q *Queries) ArmRolloutGate(ctx context.Context, arg ArmRolloutGateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, armRolloutGate,
+		arg.GatePausedStep,
+		arg.GateRolloutCluster,
+		arg.GateRolloutNamespace,
+		arg.GateRolloutName,
+		arg.DeploymentRevisionID,
+		arg.ClaimID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimDeployWatches = `-- name: ClaimDeployWatches :many
 UPDATE deploy_watches w
 SET claim_id = gen_random_uuid(), claimed_by = $1, claimed_at = NOW()
@@ -119,6 +163,48 @@ type ClearDeployWatchDegradedParams struct {
 // Health recovered before the debounce elapsed: reset the anchor. Fenced on claim_id.
 func (q *Queries) ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployWatchDegradedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, clearDeployWatchDegraded, arg.DeploymentRevisionID, arg.ClaimID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const clearRolloutGateColumns = `-- name: ClearRolloutGateColumns :execrows
+UPDATE deploy_watches
+SET deadline_at = CASE
+        WHEN gate_armed_at IS NOT NULL AND gate_decision IS NULL
+        THEN deadline_at + (NOW() - gate_armed_at)
+        ELSE deadline_at
+    END,
+    gate_id                = NULL,
+    gate_armed_at          = NULL,
+    gate_paused_step       = NULL,
+    gate_rollout_cluster   = NULL,
+    gate_rollout_namespace = NULL,
+    gate_rollout_name      = NULL,
+    gate_decision          = NULL,
+    gate_decided_by        = NULL,
+    gate_decided_at        = NULL,
+    gate_actioned_at       = NULL
+WHERE deployment_revision_id = $1
+  AND claim_id = $2
+`
+
+type ClearRolloutGateColumnsParams struct {
+	DeploymentRevisionID pgtype.UUID
+	ClaimID              pgtype.UUID
+}
+
+// Disarm the current step's gate: null the per-arm / decision / action columns. The
+// CONFIG columns (gate_approvers/required/description) persist for the whole deploy, so
+// the next pause re-arms with the same policy. If cleared while STILL UNDECIDED (an
+// external promote before any vote), resume the deadline with the one-time shift
+// deadline_at += NOW() - gate_armed_at. The CASE reads the OLD row values (an UPDATE's
+// SET RHS all see the pre-update row), so it computes the shift before nulling. Guarded
+// so it's applied at most once — a DECIDED gate already had its deadline resumed by
+// DecideRolloutGate. Fenced on claim_id.
+func (q *Queries) ClearRolloutGateColumns(ctx context.Context, arg ClearRolloutGateColumnsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearRolloutGateColumns, arg.DeploymentRevisionID, arg.ClaimID)
 	if err != nil {
 		return 0, err
 	}
@@ -248,6 +334,22 @@ func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchPa
 		&i.RolloutAbortActionedAt,
 	)
 	return i, err
+}
+
+const deleteDeployGateVotes = `-- name: DeleteDeployGateVotes :exec
+DELETE FROM job_run_approvals
+WHERE job_run_id = (
+    SELECT job_run_id FROM deployment_revisions WHERE id = $1
+)
+`
+
+// Delete the current arm's approval votes so the next step's gate starts fresh. Votes
+// reuse job_run_approvals keyed on the deploy's job_run_id; each canary step is its own
+// round, so a step's votes must not carry into the next. The durable per-decision record
+// is the audit event emitted by DecideRolloutGate, not these transient rows.
+func (q *Queries) DeleteDeployGateVotes(ctx context.Context, deploymentRevisionID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteDeployGateVotes, deploymentRevisionID)
+	return err
 }
 
 const deleteDeployWatchClaimed = `-- name: DeleteDeployWatchClaimed :execrows
@@ -421,6 +523,30 @@ type MarkDeployWatchSyncRequestedParams struct {
 // Stamp the correlation anchor right after Sync fires. Fenced on claim_id.
 func (q *Queries) MarkDeployWatchSyncRequested(ctx context.Context, arg MarkDeployWatchSyncRequestedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markDeployWatchSyncRequested, arg.DeploymentRevisionID, arg.ClaimID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markGateActioned = `-- name: MarkGateActioned :execrows
+UPDATE deploy_watches
+SET gate_actioned_at = NOW()
+WHERE deployment_revision_id = $1
+  AND claim_id = $2
+  AND gate_actioned_at IS NULL
+`
+
+type MarkGateActionedParams struct {
+	DeploymentRevisionID pgtype.UUID
+	ClaimID              pgtype.UUID
+}
+
+// Record that the gated Promote/Abort was ISSUED for this decision (anti-retry only —
+// no deadline change; the terminal DECISION already resumed the deadline). Fenced on
+// claim_id; `gate_actioned_at IS NULL` makes a re-tick a no-op.
+func (q *Queries) MarkGateActioned(ctx context.Context, arg MarkGateActionedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markGateActioned, arg.DeploymentRevisionID, arg.ClaimID)
 	if err != nil {
 		return 0, err
 	}

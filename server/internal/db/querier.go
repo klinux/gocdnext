@@ -29,6 +29,14 @@ type Querier interface {
 	// BROADCAST to k8s-capable agents that may never have owned a
 	// job (the whole point of the broadcast model).
 	AgentOwnedJobInRun(ctx context.Context, arg AgentOwnedJobInRunParams) (bool, error)
+	// Arm the approval gate for the current indefinite pause. Stamps a FRESH gate_id (the
+	// anti-stale token), the armed-at time, the paused step, and the RESOLVED Rollout
+	// identity PINNED for this gate — Promote/Abort act on these, never a re-discovery, so
+	// `.status.resources[]` drift can't redirect the effect. All three identity columns are
+	// stamped together (a complete pinned tuple; the watcher only arms with all three).
+	// Fenced on claim_id; `gate_id IS NULL` makes a double-tick a no-op (never re-arms a
+	// fresh token under an in-flight vote).
+	ArmRolloutGate(ctx context.Context, arg ArmRolloutGateParams) (int64, error)
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
 	//
@@ -125,6 +133,15 @@ type Querier interface {
 	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error)
 	// Health recovered before the debounce elapsed: reset the anchor. Fenced on claim_id.
 	ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployWatchDegradedParams) (int64, error)
+	// Disarm the current step's gate: null the per-arm / decision / action columns. The
+	// CONFIG columns (gate_approvers/required/description) persist for the whole deploy, so
+	// the next pause re-arms with the same policy. If cleared while STILL UNDECIDED (an
+	// external promote before any vote), resume the deadline with the one-time shift
+	// deadline_at += NOW() - gate_armed_at. The CASE reads the OLD row values (an UPDATE's
+	// SET RHS all see the pre-update row), so it computes the shift before nulling. Guarded
+	// so it's applied at most once — a DECIDED gate already had its deadline resumed by
+	// DecideRolloutGate. Fenced on claim_id.
+	ClearRolloutGateColumns(ctx context.Context, arg ClearRolloutGateColumnsParams) (int64, error)
 	// Clears queue_reason. Called by the scheduler when a run transitions
 	// to running (predecessor finished, run is dispatchable). Also called
 	// by terminal-transition paths so a canceled-while-queued run doesn't
@@ -290,6 +307,11 @@ type Querier interface {
 	// lock (TryRollupLock, shared with the run rollup). since_days <= 0 = full
 	// rebuild.
 	DeleteDeployDailyWindow(ctx context.Context, sinceDays int32) error
+	// Delete the current arm's approval votes so the next step's gate starts fresh. Votes
+	// reuse job_run_approvals keyed on the deploy's job_run_id; each canary step is its own
+	// round, so a step's votes must not carry into the next. The durable per-decision record
+	// is the audit event emitted by DecideRolloutGate, not these transient rows.
+	DeleteDeployGateVotes(ctx context.Context, deploymentRevisionID pgtype.UUID) error
 	DeleteDeployTargetByEnvironment(ctx context.Context, arg DeleteDeployTargetByEnvironmentParams) (int64, error)
 	// Deletes a specific target row (used after LockDeployTargetForDelete decided the
 	// locked row is ungated). Same tx / lock as the lock-read.
@@ -1369,6 +1391,10 @@ type Querier interface {
 	MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error)
 	// Stamp the correlation anchor right after Sync fires. Fenced on claim_id.
 	MarkDeployWatchSyncRequested(ctx context.Context, arg MarkDeployWatchSyncRequestedParams) (int64, error)
+	// Record that the gated Promote/Abort was ISSUED for this decision (anti-retry only —
+	// no deadline change; the terminal DECISION already resumed the deadline). Fenced on
+	// claim_id; `gate_actioned_at IS NULL` makes a re-tick a no-op.
+	MarkGateActioned(ctx context.Context, arg MarkGateActionedParams) (int64, error)
 	// Flips the link's lifecycle flag after the check is PATCHed to a terminal
 	// state on GitHub. A later rerun reads this to decide reuse vs. recreate:
 	// GitHub won't cleanly reopen a completed check (completed_at is set-once), so
