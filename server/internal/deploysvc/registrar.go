@@ -30,6 +30,9 @@ type Provider interface {
 type Registry interface {
 	EnsureEnvironment(context.Context, uuid.UUID, string) (uuid.UUID, error)
 	UpsertDeployTarget(context.Context, store.DeployTargetInput) error
+	// AuthorizeClusterForProject validates a rollout_cluster reference (existence +
+	// allowed_projects) oracle-safely before the write.
+	AuthorizeClusterForProject(context.Context, uuid.UUID, string) error
 }
 
 // Registrar registers deploy targets.
@@ -111,6 +114,14 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	// Application; the Rollout is resolved lazily at observe time.)
 	if err := r.provider.ValidateSingleSource(ctx, target); err != nil {
 		return store.DeployTarget{}, classifyValidateErr(err)
+	}
+	// If a rollout cluster is pinned, authorize it too (oracle-safe) — the write
+	// mustn't persist a reference to a cluster the project isn't allowed. Same
+	// collapsed missing-vs-unauthorized message as the Application cluster.
+	if rolloutCluster != "" {
+		if err := r.registry.AuthorizeClusterForProject(ctx, in.ProjectID, rolloutCluster); err != nil {
+			return store.DeployTarget{}, classifyValidateErr(err)
+		}
 	}
 
 	envID, err := r.registry.EnsureEnvironment(ctx, in.ProjectID, environment)

@@ -25,7 +25,9 @@ ALTER TABLE deploy_targets
 -- (NULL <=> RolloutState.CurrentStepKnown = false).
 ALTER TABLE deploy_watches
     ADD COLUMN rollout_aware        BOOLEAN NOT NULL DEFAULT false,
-    ADD COLUMN rollout_cluster      TEXT NULL,
+    -- FK RESTRICT like `cluster`: an in-flight rollout-aware watch must block deleting
+    -- the rollout's cluster out from under it (the delete-guard gives the message).
+    ADD COLUMN rollout_cluster      TEXT NULL REFERENCES clusters(name) ON DELETE RESTRICT,
     ADD COLUMN rollout_namespace    TEXT NULL,
     ADD COLUMN rollout_name         TEXT NULL,
     ADD COLUMN rollout_phase        TEXT NULL,

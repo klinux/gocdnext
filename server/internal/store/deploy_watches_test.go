@@ -227,6 +227,33 @@ func TestStampRolloutObservation(t *testing.T) {
 	}
 }
 
+// A rollout-aware watch's rollout_cluster also blocks that cluster's delete-guard
+// (FK RESTRICT + the count), even when it differs from the Application cluster.
+func TestDeployWatch_CountActiveForRolloutCluster(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-rollout-cluster")
+	// A distinct, registered rollout cluster (FK requires it to exist).
+	if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+		Name: "rollout-hub", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert rollout cluster: %v", err)
+	}
+	in := newWatchInput(projectID, revID) // Cluster: prod-gke
+	in.RolloutAware = true
+	in.RolloutCluster = "rollout-hub"
+	if _, err := s.CreateDeployWatch(ctx, in); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	// Counted via rollout_cluster even though cluster != "rollout-hub".
+	if n, err := s.CountActiveWatchesForCluster(ctx, "rollout-hub"); err != nil || n != 1 {
+		t.Fatalf("count for rollout-hub = %d (err %v), want 1 (via rollout_cluster)", n, err)
+	}
+	// And still via the Application cluster.
+	if n, _ := s.CountActiveWatchesForCluster(ctx, "prod-gke"); n != 1 {
+		t.Fatalf("count for prod-gke = %d, want 1 (via cluster)", n)
+	}
+}
+
 // An in-flight watch counts toward the cluster delete-guard (also FK-RESTRICTed).
 func TestDeployWatch_CountActiveForCluster(t *testing.T) {
 	s, ctx := newClusterStore(t)

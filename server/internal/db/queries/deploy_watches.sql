@@ -101,9 +101,10 @@ DELETE FROM deploy_watches
 WHERE deployment_revision_id = $1 AND claim_id = $2;
 
 -- name: CountActiveWatchesForCluster :one
--- Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
--- (FK), this gives the friendly message before the DELETE fails.
-SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1;
+-- Backs the cluster delete-guard: an in-flight watch referencing the cluster (as its
+-- Application cluster OR its Rollout cluster) RESTRICTs it (both FKs); this gives the
+-- friendly message before the DELETE fails.
+SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1 OR rollout_cluster = $1;
 
 -- name: ListDeployWatchesForProject :many
 -- In-flight native deploys for a project (one row per still-in_progress revision),

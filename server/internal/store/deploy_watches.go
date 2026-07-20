@@ -71,6 +71,11 @@ type DeployWatchInput struct {
 	Namespace            string
 	ExpectedRevision     string
 	DeadlineAt           time.Time
+
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 func deployWatchFromRow(w db.DeployWatch) DeployWatch {
@@ -126,6 +131,10 @@ func (s *Store) CreateDeployWatch(ctx context.Context, in DeployWatchInput) (Dep
 		Namespace:            in.Namespace,
 		ExpectedRevision:     in.ExpectedRevision,
 		DeadlineAt:           pgTimestamptzFromPtr(&in.DeadlineAt),
+		RolloutAware:         in.RolloutAware,
+		RolloutCluster:       nullableString(in.RolloutCluster),
+		RolloutNamespace:     nullableString(in.RolloutNamespace),
+		RolloutName:          nullableString(in.RolloutName),
 	})
 	if err != nil {
 		// 0 rows (the WHERE EXISTS guard rejected a terminal revision) surfaces as

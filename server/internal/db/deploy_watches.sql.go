@@ -111,11 +111,12 @@ func (q *Queries) ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployW
 }
 
 const countActiveWatchesForCluster = `-- name: CountActiveWatchesForCluster :one
-SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1
+SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1 OR rollout_cluster = $1
 `
 
-// Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
-// (FK), this gives the friendly message before the DELETE fails.
+// Backs the cluster delete-guard: an in-flight watch referencing the cluster (as its
+// Application cluster OR its Rollout cluster) RESTRICTs it (both FKs); this gives the
+// friendly message before the DELETE fails.
 func (q *Queries) CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error) {
 	row := q.db.QueryRow(ctx, countActiveWatchesForCluster, cluster)
 	var count int64
