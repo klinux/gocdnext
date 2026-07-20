@@ -24,6 +24,25 @@ describe("deployTargetFormSchema", () => {
     expect(deployTargetFormSchema.safeParse(withoutNs).success).toBe(true);
   });
 
+  it("accepts rollout fields, all optional (routing defaults / auto-discover)", () => {
+    // rollout_aware + full routing
+    expect(
+      deployTargetFormSchema.safeParse({
+        ...valid,
+        rollout_aware: true,
+        rollout_cluster: "dest",
+        rollout_namespace: "gb",
+        rollout_name: "gb-ro",
+      }).success,
+    ).toBe(true);
+    // rollout_aware alone (auto-discover) is fine
+    expect(
+      deployTargetFormSchema.safeParse({ ...valid, rollout_aware: true }).success,
+    ).toBe(true);
+    // absent rollout fields are fine (backward compatible)
+    expect(deployTargetFormSchema.safeParse(valid).success).toBe(true);
+  });
+
   it("requires a non-empty cluster and application", () => {
     expect(
       deployTargetFormSchema.safeParse({ ...valid, cluster: "  " }).success,

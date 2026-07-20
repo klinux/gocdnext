@@ -81,8 +81,18 @@ export async function setDeployTarget(
       error: parsed.error.issues[0]?.message ?? "invalid input",
     };
   }
-  const { slug, environment, cluster, application, namespace, sync_mode } =
-    parsed.data;
+  const {
+    slug,
+    environment,
+    cluster,
+    application,
+    namespace,
+    sync_mode,
+    rollout_aware,
+    rollout_cluster,
+    rollout_namespace,
+    rollout_name,
+  } = parsed.data;
   try {
     const url =
       env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
@@ -95,13 +105,19 @@ export async function setDeployTarget(
         "Content-Type": "application/json",
         ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
       },
-      // Omit an empty namespace so the server applies its "argocd" default.
+      // Omit empties so the server applies its defaults (namespace→argocd, rollout
+      // routing→App cluster / auto-discover). Rollout routing is only sent when
+      // rollout_aware — the server also drops it otherwise, this keeps the wire clean.
       body: JSON.stringify({
         environment,
         cluster,
         application,
         sync_mode,
         ...(namespace ? { namespace } : {}),
+        rollout_aware: rollout_aware ?? false,
+        ...(rollout_aware && rollout_cluster ? { rollout_cluster } : {}),
+        ...(rollout_aware && rollout_namespace ? { rollout_namespace } : {}),
+        ...(rollout_aware && rollout_name ? { rollout_name } : {}),
       }),
     });
     if (!res.ok) {

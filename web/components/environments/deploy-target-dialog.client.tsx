@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -70,6 +71,12 @@ export function DeployTargetDialog({
   const [syncMode, setSyncMode] = useState<"trigger" | "observe">(
     initial?.sync_mode ?? "trigger",
   );
+  const [rolloutAware, setRolloutAware] = useState(initial?.rollout_aware ?? false);
+  const [rolloutCluster, setRolloutCluster] = useState(initial?.rollout_cluster ?? "");
+  const [rolloutNamespace, setRolloutNamespace] = useState(
+    initial?.rollout_namespace ?? "",
+  );
+  const [rolloutName, setRolloutName] = useState(initial?.rollout_name ?? "");
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -79,6 +86,10 @@ export function DeployTargetDialog({
     setApplication(initial?.application ?? "");
     setNamespace(initial?.namespace ?? "");
     setSyncMode(initial?.sync_mode ?? "trigger");
+    setRolloutAware(initial?.rollout_aware ?? false);
+    setRolloutCluster(initial?.rollout_cluster ?? "");
+    setRolloutNamespace(initial?.rollout_namespace ?? "");
+    setRolloutName(initial?.rollout_name ?? "");
     setConfirmingRemove(false);
   };
 
@@ -97,6 +108,12 @@ export function DeployTargetDialog({
       application: application.trim(),
       namespace: namespace.trim() || undefined,
       sync_mode: syncMode,
+      rollout_aware: rolloutAware,
+      rollout_cluster: rolloutAware ? rolloutCluster.trim() || undefined : undefined,
+      rollout_namespace: rolloutAware
+        ? rolloutNamespace.trim() || undefined
+        : undefined,
+      rollout_name: rolloutAware ? rolloutName.trim() || undefined : undefined,
     };
     const parsed = deployTargetFormSchema.safeParse(candidate);
     if (!parsed.success) {
@@ -239,6 +256,58 @@ export function DeployTargetDialog({
                 </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Rollout observation (Phase 2, read-only). When on, gocdnext reads the
+              Argo Rollouts CR the Application manages and shows canary/blue-green
+              progress. No promote/abort control from here yet. */}
+          <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="dt-rollout-aware" className="cursor-pointer">
+                Observe Argo Rollouts progress
+                <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                  Surface canary / blue-green status on this environment (read-only).
+                </span>
+              </Label>
+              <Switch
+                id="dt-rollout-aware"
+                checked={rolloutAware}
+                onCheckedChange={setRolloutAware}
+                disabled={pending}
+                aria-label="Observe Argo Rollouts progress"
+              />
+            </div>
+            {rolloutAware ? (
+              <div className="space-y-2 pt-1">
+                <Input
+                  aria-label="Rollout cluster"
+                  placeholder="Rollout cluster (blank = the Application's cluster)"
+                  value={rolloutCluster}
+                  onChange={(e) => setRolloutCluster(e.target.value)}
+                  disabled={pending}
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    aria-label="Rollout namespace"
+                    placeholder="Namespace (auto)"
+                    value={rolloutNamespace}
+                    onChange={(e) => setRolloutNamespace(e.target.value)}
+                    disabled={pending}
+                  />
+                  <Input
+                    aria-label="Rollout name"
+                    placeholder="Rollout name (auto)"
+                    value={rolloutName}
+                    onChange={(e) => setRolloutName(e.target.value)}
+                    disabled={pending}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Leave name/namespace blank to auto-discover the single Rollout the
+                  Application manages.
+                </p>
+              </div>
+            ) : null}
           </div>
         </div>
 
