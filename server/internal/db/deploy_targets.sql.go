@@ -45,40 +45,18 @@ func (q *Queries) DeleteDeployTargetByEnvironment(ctx context.Context, arg Delet
 	return result.RowsAffected(), nil
 }
 
-const deleteUngatedDeployTargetByEnvironment = `-- name: DeleteUngatedDeployTargetByEnvironment :one
-WITH tgt AS (
-    SELECT id, governing_gate FROM deploy_targets
-    WHERE environment_id = (SELECT id FROM environments WHERE project_id = $1 AND name = $2)
-),
-del AS (
-    DELETE FROM deploy_targets
-    WHERE id = (SELECT id FROM tgt WHERE governing_gate IS NULL)
-    RETURNING id
-)
-SELECT CASE
-    WHEN EXISTS (SELECT 1 FROM del) THEN 'deleted'
-    WHEN EXISTS (SELECT 1 FROM tgt WHERE governing_gate IS NOT NULL) THEN 'gated'
-    ELSE 'absent'
-END AS outcome
+const deleteDeployTargetByID = `-- name: DeleteDeployTargetByID :execrows
+DELETE FROM deploy_targets WHERE id = $1
 `
 
-type DeleteUngatedDeployTargetByEnvironmentParams struct {
-	ProjectID pgtype.UUID
-	Name      string
-}
-
-// The NON-ADMIN delete: removes the target only if it is UNGATED, and reports the
-// precise outcome in one atomic statement (one snapshot — no TOCTOU) so the handler can
-// pick the right status without a separate racy read:
-//
-//	'deleted' — was ungated, removed;
-//	'gated'   — exists but has a gate (deleting a gated target is admin-only) -> 403;
-//	'absent'  — no such target -> 404.
-func (q *Queries) DeleteUngatedDeployTargetByEnvironment(ctx context.Context, arg DeleteUngatedDeployTargetByEnvironmentParams) (string, error) {
-	row := q.db.QueryRow(ctx, deleteUngatedDeployTargetByEnvironment, arg.ProjectID, arg.Name)
-	var outcome string
-	err := row.Scan(&outcome)
-	return outcome, err
+// Deletes a specific target row (used after LockDeployTargetForDelete decided the
+// locked row is ungated). Same tx / lock as the lock-read.
+func (q *Queries) DeleteDeployTargetByID(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeployTargetByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listDeployTargetsForProject = `-- name: ListDeployTargetsForProject :many
@@ -138,6 +116,36 @@ func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgt
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockDeployTargetForDelete = `-- name: LockDeployTargetForDelete :one
+SELECT dt.id, dt.governing_gate
+FROM deploy_targets dt
+JOIN environments e ON e.id = dt.environment_id
+WHERE e.project_id = $1 AND e.name = $2
+FOR UPDATE OF dt
+`
+
+type LockDeployTargetForDeleteParams struct {
+	ProjectID pgtype.UUID
+	Name      string
+}
+
+type LockDeployTargetForDeleteRow struct {
+	ID            pgtype.UUID
+	GoverningGate []byte
+}
+
+// Locks the target row FOR UPDATE and reads its gate, so the non-admin delete's
+// ungated-check happens on the LOCKED row. A concurrent admin gate-add blocks on this
+// lock (or is seen post-commit), closing the TOCTOU: the delete decision can't observe
+// a stale ungated snapshot and then remove a row that became gated. ErrNoRows => the
+// target is absent (404). Runs in the same tx as DeleteDeployTargetByID.
+func (q *Queries) LockDeployTargetForDelete(ctx context.Context, arg LockDeployTargetForDeleteParams) (LockDeployTargetForDeleteRow, error) {
+	row := q.db.QueryRow(ctx, lockDeployTargetForDelete, arg.ProjectID, arg.Name)
+	var i LockDeployTargetForDeleteRow
+	err := row.Scan(&i.ID, &i.GoverningGate)
+	return i, err
 }
 
 const resolveDeployTarget = `-- name: ResolveDeployTarget :one

@@ -89,27 +89,22 @@ WHERE environment_id = (
     SELECT id FROM environments WHERE project_id = $1 AND name = $2
 );
 
--- name: DeleteUngatedDeployTargetByEnvironment :one
--- The NON-ADMIN delete: removes the target only if it is UNGATED, and reports the
--- precise outcome in one atomic statement (one snapshot — no TOCTOU) so the handler can
--- pick the right status without a separate racy read:
---   'deleted' — was ungated, removed;
---   'gated'   — exists but has a gate (deleting a gated target is admin-only) -> 403;
---   'absent'  — no such target -> 404.
-WITH tgt AS (
-    SELECT id, governing_gate FROM deploy_targets
-    WHERE environment_id = (SELECT id FROM environments WHERE project_id = $1 AND name = $2)
-),
-del AS (
-    DELETE FROM deploy_targets
-    WHERE id = (SELECT id FROM tgt WHERE governing_gate IS NULL)
-    RETURNING id
-)
-SELECT CASE
-    WHEN EXISTS (SELECT 1 FROM del) THEN 'deleted'
-    WHEN EXISTS (SELECT 1 FROM tgt WHERE governing_gate IS NOT NULL) THEN 'gated'
-    ELSE 'absent'
-END AS outcome;
+-- name: LockDeployTargetForDelete :one
+-- Locks the target row FOR UPDATE and reads its gate, so the non-admin delete's
+-- ungated-check happens on the LOCKED row. A concurrent admin gate-add blocks on this
+-- lock (or is seen post-commit), closing the TOCTOU: the delete decision can't observe
+-- a stale ungated snapshot and then remove a row that became gated. ErrNoRows => the
+-- target is absent (404). Runs in the same tx as DeleteDeployTargetByID.
+SELECT dt.id, dt.governing_gate
+FROM deploy_targets dt
+JOIN environments e ON e.id = dt.environment_id
+WHERE e.project_id = $1 AND e.name = $2
+FOR UPDATE OF dt;
+
+-- name: DeleteDeployTargetByID :execrows
+-- Deletes a specific target row (used after LockDeployTargetForDelete decided the
+-- locked row is ungated). Same tx / lock as the lock-read.
+DELETE FROM deploy_targets WHERE id = $1;
 
 -- name: CountDeployTargetsForCluster :one
 -- Backs the cluster delete-guard: a cluster referenced by any target (as its

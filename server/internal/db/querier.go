@@ -291,6 +291,9 @@ type Querier interface {
 	// rebuild.
 	DeleteDeployDailyWindow(ctx context.Context, sinceDays int32) error
 	DeleteDeployTargetByEnvironment(ctx context.Context, arg DeleteDeployTargetByEnvironmentParams) (int64, error)
+	// Deletes a specific target row (used after LockDeployTargetForDelete decided the
+	// locked row is ungated). Same tx / lock as the lock-read.
+	DeleteDeployTargetByID(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Fenced delete used by the atomic terminal tx: 0 rows means the lease was lost, so
 	// the caller MUST NOT terminalize the deploy (fencing guarantee).
 	DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeployWatchClaimedParams) (int64, error)
@@ -343,13 +346,6 @@ type Querier interface {
 	// this one targets the "same job_run_id, later agent attempt"
 	// case where the row survives but its results shouldn't.
 	DeleteTestResultsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error
-	// The NON-ADMIN delete: removes the target only if it is UNGATED, and reports the
-	// precise outcome in one atomic statement (one snapshot — no TOCTOU) so the handler can
-	// pick the right status without a separate racy read:
-	//   'deleted' — was ungated, removed;
-	//   'gated'   — exists but has a gate (deleting a gated target is admin-only) -> 403;
-	//   'absent'  — no such target -> 404.
-	DeleteUngatedDeployTargetByEnvironment(ctx context.Context, arg DeleteUngatedDeployTargetByEnvironmentParams) (string, error)
 	DeleteUserSession(ctx context.Context, id []byte) error
 	DeleteUserSessionsForUser(ctx context.Context, userID pgtype.UUID) error
 	DeleteVCSIntegration(ctx context.Context, id pgtype.UUID) error
@@ -1355,6 +1351,12 @@ type Querier interface {
 	// Filter by provider + status keep the page useful even under
 	// heavy traffic. Empty string = no filter on that axis.
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
+	// Locks the target row FOR UPDATE and reads its gate, so the non-admin delete's
+	// ungated-check happens on the LOCKED row. A concurrent admin gate-add blocks on this
+	// lock (or is seen post-commit), closing the TOCTOU: the delete decision can't observe
+	// a stale ungated snapshot and then remove a row that became gated. ErrNoRows => the
+	// target is absent (404). Runs in the same tx as DeleteDeployTargetByID.
+	LockDeployTargetForDelete(ctx context.Context, arg LockDeployTargetForDeleteParams) (LockDeployTargetForDeleteRow, error)
 	// Generation-aware offline mark. Only flips status when the
 	// closing handler's observed generation still matches the row.
 	// A successor Register bumps session_generation, so an old

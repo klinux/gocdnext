@@ -247,17 +247,40 @@ func (s *Store) DeleteDeployTargetByEnvironment(ctx context.Context, projectID u
 }
 
 // DeleteUngatedDeployTargetByEnvironment is the non-admin delete: it removes the target
-// only if it is UNGATED and reports the outcome atomically (deleted | gated | absent),
-// so the handler needn't do a separate racy read to distinguish 403 (gated) from 404.
+// only if it is UNGATED and reports the outcome (deleted | gated | absent), so the
+// handler needn't do a separate racy read to distinguish 403 (gated) from 404. The
+// ungated-check runs on the row LOCKED FOR UPDATE in the SAME tx as the delete, so a
+// concurrent admin gate-add can't slip in between the check and the delete (it blocks on
+// the lock, or is seen post-commit as gated) — no TOCTOU.
 func (s *Store) DeleteUngatedDeployTargetByEnvironment(ctx context.Context, projectID uuid.UUID, envName string) (DeleteTargetOutcome, error) {
-	out, err := s.q.DeleteUngatedDeployTargetByEnvironment(ctx, db.DeleteUngatedDeployTargetByEnvironmentParams{
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return "", fmt.Errorf("store: delete ungated deploy target begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	row, err := q.LockDeployTargetForDelete(ctx, db.LockDeployTargetForDeleteParams{
 		ProjectID: pgUUID(projectID),
 		Name:      envName,
 	})
-	if err != nil {
-		return "", fmt.Errorf("store: delete ungated deploy target %s/%s: %w", projectID, envName, err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeleteTargetAbsent, nil // nothing to delete (tx rolls back — no writes)
 	}
-	return DeleteTargetOutcome(out), nil
+	if err != nil {
+		return "", fmt.Errorf("store: lock deploy target %s/%s: %w", projectID, envName, err)
+	}
+	// Gate check on the LOCKED row. len(row.GoverningGate) > 0 means non-NULL jsonb.
+	if len(row.GoverningGate) > 0 {
+		return DeleteTargetGated, nil // deleting a gated target is admin-only
+	}
+	if _, err := q.DeleteDeployTargetByID(ctx, row.ID); err != nil {
+		return "", fmt.Errorf("store: delete deploy target %s/%s: %w", projectID, envName, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("store: delete ungated deploy target commit: %w", err)
+	}
+	return DeleteTargetDeleted, nil
 }
 
 // CountDeployTargetsForCluster backs the cluster delete-guard.

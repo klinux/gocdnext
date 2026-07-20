@@ -1,9 +1,11 @@
 package store_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -224,6 +226,83 @@ func TestDeployTargets_GuardedDeleteOutcomes(t *testing.T) {
 	}
 	if _, err := s.ResolveDeployTarget(ctx, projectID, "production"); !errors.Is(err, store.ErrDeployTargetNotFound) {
 		t.Errorf("target still present after delete: %v", err)
+	}
+}
+
+// The race the CTE version couldn't win: an admin adds a gate concurrently with a
+// maintainer's ungated-delete. Because the delete's gate-check runs on the row LOCKED
+// FOR UPDATE in the same tx, a gate committed before the delete acquires the lock is
+// seen — the delete returns 'gated' and never removes the now-gated target.
+//
+// Deterministic: tx1 holds an uncommitted gate-add (row lock) BEFORE the delete
+// goroutine starts, so the delete's FOR UPDATE blocks (or, if it hasn't reached the
+// lock yet, reads the gate after the commit) — either way it must observe the gate.
+func TestDeployTargets_DeleteVsConcurrentGateAdd(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+
+	cipher := newAuthCipher(t)
+	projectID := seedProject(t, s, "deploy-race")
+	if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert cluster: %v", err)
+	}
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("ensure environment: %v", err)
+	}
+	// Start ungated.
+	if err := s.UpsertDeployTarget(ctx, store.DeployTargetInput{
+		EnvironmentID: envID, Provider: "argocd", Cluster: "prod-gke", Application: "checkout",
+		Namespace: "argocd", SyncMode: "trigger",
+	}); err != nil {
+		t.Fatalf("seed ungated: %v", err)
+	}
+
+	// tx1: an admin adds a gate but does NOT commit yet — this holds the row's write
+	// lock. Acquired synchronously before the delete goroutine launches.
+	tx1, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	defer func() { _ = tx1.Rollback(ctx) }()
+	if _, err := tx1.Exec(ctx,
+		`UPDATE deploy_targets SET governing_gate = $1::jsonb WHERE environment_id = $2`,
+		`{"required":1}`, envID); err != nil {
+		t.Fatalf("tx1 gate-add: %v", err)
+	}
+
+	type res struct {
+		out store.DeleteTargetOutcome
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		out, err := s.DeleteUngatedDeployTargetByEnvironment(ctx, projectID, "production")
+		done <- res{out, err}
+	}()
+
+	// Commit the gate — releases the lock; the blocked delete unblocks and reads gated.
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit: %v", err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("concurrent delete: %v", r.err)
+	}
+	if r.out != store.DeleteTargetGated {
+		t.Fatalf("delete outcome = %q, want gated (a target gated mid-race must NOT be deleted)", r.out)
+	}
+	// And the target is still there, still gated.
+	tgt, err := s.ResolveDeployTarget(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("target was deleted despite becoming gated: %v", err)
+	}
+	if tgt.GoverningGate == nil {
+		t.Errorf("target lost its gate: %+v", tgt)
 	}
 }
 
