@@ -73,6 +73,12 @@ export default async function EnvironmentsPage({
     (auth.mode === "authenticated" &&
       (auth.user.role === "admin" || auth.user.role === "maintainer"));
 
+  // Removing an environment cascades its whole deploy history + any gated
+  // target, so it's admin-only (tighter than canManage) — matches the handler.
+  const isAdmin =
+    auth.mode === "disabled" ||
+    (auth.mode === "authenticated" && auth.user.role === "admin");
+
   // deploy_targets are 1:1 with an environment by name.
   const targetByEnv = new Map(targets.map((t) => [t.environment, t]));
 
@@ -116,6 +122,7 @@ export default async function EnvironmentsPage({
                 environment={e}
                 deployTarget={targetByEnv.get(e.name)}
                 canManage={canManage}
+                isAdmin={isAdmin}
                 apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
               />
             ))}

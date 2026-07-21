@@ -211,6 +211,49 @@ func (s *Store) EnsureEnvironment(ctx context.Context, projectID uuid.UUID, name
 	return fromPgUUID(id), nil
 }
 
+// EnvDeleteOutcome is the result of DeleteEnvironment.
+type EnvDeleteOutcome int
+
+const (
+	// EnvDeleteDeleted: the environment was idle and is gone (with its finalized
+	// history + any target, via cascade).
+	EnvDeleteDeleted EnvDeleteOutcome = iota
+	// EnvDeleteActive: an in-flight deploy (in_progress revision or a live
+	// deploy_watch) blocked the delete → 409.
+	EnvDeleteActive
+	// EnvDeleteAbsent: the environment isn't in this project → 404.
+	EnvDeleteAbsent
+)
+
+// DeleteEnvironment hard-deletes an environment scoped to its project, but ONLY
+// when it has no in-flight deploy — an in_progress deployment_revision or a live
+// deploy_watch. Deleting one out from under a running deploy would orphan the
+// job: its revision + watch cascade away while the job_run stays running with no
+// agent (the reaper would later re-see it as orphaned). Once idle, ON DELETE
+// CASCADE fans the delete out to the FINALIZED history + any registered target
+// (incl. a gated one), which is why the API gates this to admin. The idle check
+// and the delete are one atomic statement, so a deploy that starts concurrently
+// can't slip through a check→delete gap. Environments are lazy, so a later deploy
+// to the same name re-creates it empty.
+func (s *Store) DeleteEnvironment(ctx context.Context, projectID, envID uuid.UUID) (EnvDeleteOutcome, error) {
+	row, err := s.q.DeleteEnvironmentIfIdle(ctx, db.DeleteEnvironmentIfIdleParams{
+		ProjectID: pgUUID(projectID),
+		ID:        pgUUID(envID),
+	})
+	if err != nil {
+		return EnvDeleteAbsent, fmt.Errorf("store: delete environment %s: %w", envID, err)
+	}
+	switch {
+	case row.Deleted:
+		return EnvDeleteDeleted, nil
+	case !row.Existed:
+		return EnvDeleteAbsent, nil
+	default:
+		// Existed but survived the delete → an in-flight deploy held it.
+		return EnvDeleteActive, nil
+	}
+}
+
 // CreateDeploymentRevision records an in_progress deploy at dispatch.
 func (s *Store) CreateDeploymentRevision(ctx context.Context, in CreateDeploymentRevisionInput) (uuid.UUID, error) {
 	id, err := s.q.CreateDeploymentRevision(ctx, db.CreateDeploymentRevisionParams{

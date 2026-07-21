@@ -257,3 +257,51 @@ func (h *Handler) RollbackEnvironment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
+
+// DeleteEnvironment handles DELETE /api/v1/projects/{slug}/environments/{envID}.
+// Admin-only: the schema's ON DELETE CASCADE removes the environment's entire
+// deploy history AND any registered target (including a gated one), so a
+// maintainer must not be able to nuke a gated target's policy this way — it
+// mirrors the gated-target SoD in DeleteDeployTarget. Route placement gates
+// maintainer+; this handler tightens it to admin (auth-disabled => admin, like
+// the rest of the deploy surface). Environments are lazy, so a later deploy to
+// the same name re-creates it empty. 204 on delete, 404 if the env isn't in the
+// project, 403 for non-admins.
+func (h *Handler) DeleteEnvironment(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	envID, err := uuid.Parse(chi.URLParam(r, "envID"))
+	if err != nil {
+		http.Error(w, "malformed environment id", http.StatusBadRequest)
+		return
+	}
+	if u, ok := authapi.UserFromContext(r.Context()); ok {
+		if !store.RoleSatisfies(u.Role, store.RoleAdmin) {
+			http.Error(w, "removing an environment requires admin", http.StatusForbidden)
+			return
+		}
+	}
+	projectID, ok := h.resolveProjectID(w, r, slug)
+	if !ok {
+		return
+	}
+	outcome, err := h.store.DeleteEnvironment(r.Context(), projectID, envID)
+	if err != nil {
+		h.log.Error("delete environment", "slug", slug, "env_id", envID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	switch outcome {
+	case store.EnvDeleteAbsent:
+		http.Error(w, "environment not found", http.StatusNotFound)
+		return
+	case store.EnvDeleteActive:
+		// Refuse rather than cascade a running deploy's revision+watch out from
+		// under it (which would orphan the still-running job_run).
+		http.Error(w, "environment has an active deploy — wait for it to finish or cancel it first", http.StatusConflict)
+		return
+	}
+	audit.Emit(r.Context(), h.log, h.store,
+		store.AuditActionEnvironmentDelete, "environment", envID.String(),
+		map[string]any{"slug": slug})
+	w.WriteHeader(http.StatusNoContent)
+}

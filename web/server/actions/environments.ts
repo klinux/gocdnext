@@ -181,6 +181,50 @@ export async function deleteDeployTarget(
   }
 }
 
+const deleteEnvironmentSchema = z.object({
+  slug: z.string().min(1),
+  environmentId: z.string().min(1),
+});
+
+// deleteEnvironment hard-deletes an environment and everything under it — the
+// server cascades its whole deploy history + any registered target, and gates
+// this to admin. Environments are lazy, so a later deploy to the same name
+// re-creates it empty. The 403/404 bodies are surfaced verbatim so a
+// non-admin / double-delete is visible rather than silently "succeeding".
+export async function deleteEnvironment(
+  input: z.infer<typeof deleteEnvironmentSchema>,
+): Promise<ActionResult> {
+  const parsed = deleteEnvironmentSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  const { slug, environmentId } = parsed.data;
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "DELETE",
+      cache: "no-store",
+      headers: {
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const body = (await res.text()).trim();
+      return { ok: false, error: body || `server error (${res.status})` };
+    }
+    revalidatePath(`/projects/${slug}/environments`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 const rolloutGateSchema = z.object({
   slug: z.string().min(1),
   revisionId: z.string().min(1),
