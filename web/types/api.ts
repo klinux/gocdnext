@@ -969,6 +969,15 @@ export type Rollout = {
   stable_hash: string;
   pod_hash: string;
   image: string;
+  // Blue-green specifics — "" / 0 for a canary rollout (the server always sends the
+  // keys). The active/preview pod hashes reuse stable_hash / pod_hash; the preview image
+  // reuses image. scale_down_delay_seconds == 0 means unset — the controller defaults to
+  // 30s, which the UI notes rather than the API synthesising it.
+  active_service: string;
+  preview_service: string;
+  scale_down_delay_seconds: number;
+  // analysis doubles as the pre-promotion AnalysisRun summary for a blueGreen rollout
+  // (which has no canary analysis to clash with).
   analysis: RolloutAnalysis | null;
   // gate is the armed, undecided approval gate governing this Rollout. Absent/null when
   // none is armed (a decided gate is not sent).

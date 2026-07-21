@@ -30,8 +30,22 @@ type RolloutView struct {
 	PodHash      string // `.status.currentPodHash`
 	Image        string // `.spec.template.spec.containers[0].image`
 
+	// Blue-green specifics — parsed ONLY when Strategy=="blueGreen"; a canary Rollout
+	// leaves them zero/empty. The active/preview pod hashes reuse StableHash (active) and
+	// PodHash (preview); the preview image reuses Image.
+	ActiveService  string // `.spec.strategy.blueGreen.activeService`  ("" when absent)
+	PreviewService string // `.spec.strategy.blueGreen.previewService` ("" when absent)
+	// ScaleDownDelaySeconds is `.spec.strategy.blueGreen.scaleDownDelaySeconds`, surfaced
+	// as-is. 0 means the field is unset (or an explicit 0) — the controller's default is 30s
+	// when absent, which the UI notes; the API does not synthesise the 30 so the CR stays
+	// the single source of truth.
+	ScaleDownDelaySeconds int
+
 	// Analysis is the inline AnalysisRun the Rollout reports for its current step (or,
-	// failing that, the background run). nil when no analysis is active.
+	// failing that, the background run). For a blueGreen Rollout — which has no canary
+	// steps, so this is never populated by the canary branch — it doubles as the
+	// pre-promotion AnalysisRun summary (`.status.blueGreen.prePromotionAnalysisRunStatus`).
+	// nil when no analysis is active.
 	Analysis *RolloutAnalysis
 }
 
@@ -72,7 +86,14 @@ type rolloutViewDoc struct {
 			Canary *struct {
 				Steps []json.RawMessage `json:"steps"`
 			} `json:"canary"`
-			BlueGreen json.RawMessage `json:"blueGreen"`
+			// Pointer for the same PRESENCE-selects-strategy reason: `blueGreen: {}` (no
+			// fields) still selects blueGreen. The service names + scale-down delay are read
+			// straight off it when present.
+			BlueGreen *struct {
+				ActiveService         string `json:"activeService"`
+				PreviewService        string `json:"previewService"`
+				ScaleDownDelaySeconds int    `json:"scaleDownDelaySeconds"`
+			} `json:"blueGreen"`
 		} `json:"strategy"`
 		Template struct {
 			Spec struct {
@@ -100,6 +121,11 @@ type rolloutViewDoc struct {
 			CurrentStepAnalysisRunStatus       *analysisRunStatus `json:"currentStepAnalysisRunStatus"`
 			CurrentBackgroundAnalysisRunStatus *analysisRunStatus `json:"currentBackgroundAnalysisRunStatus"`
 		} `json:"canary"`
+		BlueGreen struct {
+			// The pre-promotion AnalysisRun the controller ran BEFORE swapping the active
+			// service — same inline {name,status,message} shape as the canary analysis.
+			PrePromotionAnalysisRunStatus *analysisRunStatus `json:"prePromotionAnalysisRunStatus"`
+		} `json:"blueGreen"`
 	} `json:"status"`
 }
 
@@ -160,6 +186,21 @@ func parseRolloutView(raw []byte) (RolloutView, error) {
 	} else if a := d.Status.Canary.CurrentBackgroundAnalysisRunStatus; a != nil {
 		v.Analysis = toRolloutAnalysis(a)
 	}
+	// Blue-green specifics come from the blueGreen strategy only; a canary Rollout has no
+	// blueGreen key so these stay zero/empty.
+	if bg := d.Spec.Strategy.BlueGreen; bg != nil {
+		v.ActiveService = bg.ActiveService
+		v.PreviewService = bg.PreviewService
+		v.ScaleDownDelaySeconds = bg.ScaleDownDelaySeconds
+		// A blueGreen Rollout has no canary steps, so the canary branch above never set
+		// Analysis — reuse the field for the pre-promotion AnalysisRun summary. Guard on
+		// nil anyway so a (contract-impossible) canary analysis is never clobbered.
+		if v.Analysis == nil {
+			if a := d.Status.BlueGreen.PrePromotionAnalysisRunStatus; a != nil {
+				v.Analysis = toRolloutAnalysis(a)
+			}
+		}
+	}
 	return v, nil
 }
 
@@ -177,7 +218,7 @@ func strategyOf(d rolloutViewDoc) string {
 	switch {
 	case d.Spec.Strategy.Canary != nil:
 		return "canary"
-	case present(d.Spec.Strategy.BlueGreen):
+	case d.Spec.Strategy.BlueGreen != nil:
 		return "blueGreen"
 	default:
 		return ""

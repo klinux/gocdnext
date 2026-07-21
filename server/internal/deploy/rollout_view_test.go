@@ -43,7 +43,8 @@ func TestRolloutView_Parse(t *testing.T) {
       "status":{"phase":"Progressing"}
     }`
 
-	// (c) A blue-green rollout — Strategy blueGreen, no canary steps.
+	// (c) A blue-green rollout — Strategy blueGreen, no canary steps. Carries the two
+	// services but no scaleDownDelay/pre-promotion analysis.
 	const blueGreen = `{
       "metadata":{"namespace":"prod","name":"bg-ro"},
       "spec":{
@@ -51,6 +52,24 @@ func TestRolloutView_Parse(t *testing.T) {
         "template":{"spec":{"containers":[{"image":"img:bg"}]}}
       },
       "status":{"phase":"Healthy","stableRS":"s1","currentPodHash":"s1"}
+    }`
+
+	// (d) A blue-green rollout PAUSED at pre-promotion: scaleDownDelaySeconds set + an
+	// inline prePromotionAnalysisRunStatus, which must land in the reused Analysis field.
+	const blueGreenPromoting = `{
+      "metadata":{"namespace":"prod","name":"payments"},
+      "spec":{
+        "strategy":{"blueGreen":{
+          "activeService":"payments-active","previewService":"payments-preview",
+          "scaleDownDelaySeconds":45
+        }},
+        "template":{"spec":{"containers":[{"image":"registry.example.com/payments:2.5.0"}]}}
+      },
+      "status":{
+        "phase":"Paused","message":"BlueGreenPause",
+        "stableRS":"active99","currentPodHash":"preview77",
+        "blueGreen":{"prePromotionAnalysisRunStatus":{"name":"pre-promo-1","status":"Successful","message":"8/8 checks"}}
+      }
     }`
 
 	tests := []struct {
@@ -92,12 +111,27 @@ func TestRolloutView_Parse(t *testing.T) {
 			},
 		},
 		{
-			name: "blue-green rollout has blueGreen strategy and no steps",
+			name: "blue-green rollout has blueGreen strategy, services, and no steps",
 			raw:  blueGreen,
 			want: RolloutView{
 				Namespace: "prod", Name: "bg-ro", Strategy: "blueGreen",
 				Phase:      RolloutHealthy,
 				StableHash: "s1", PodHash: "s1", Image: "img:bg",
+				ActiveService: "active", PreviewService: "preview",
+			},
+		},
+		{
+			name: "blue-green paused at pre-promotion surfaces services, scale-down delay, and pre-promotion analysis",
+			raw:  blueGreenPromoting,
+			want: RolloutView{
+				Namespace: "prod", Name: "payments", Strategy: "blueGreen",
+				Phase: RolloutPaused, Message: "BlueGreenPause",
+				StableHash: "active99", PodHash: "preview77",
+				Image:                 "registry.example.com/payments:2.5.0",
+				ActiveService:         "payments-active",
+				PreviewService:        "payments-preview",
+				ScaleDownDelaySeconds: 45,
+				Analysis:              &RolloutAnalysis{Name: "pre-promo-1", Phase: AnalysisSuccessful, Message: "8/8 checks"},
 			},
 		},
 	}

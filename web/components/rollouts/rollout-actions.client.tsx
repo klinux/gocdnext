@@ -34,8 +34,10 @@ type Props = {
 // states, server-authoritative:
 //   - an armed gate governs the rollout → Approve / Reject (the audited vote path) + quorum;
 //     a direct promote/abort is forbidden (the server 409s), so it is never offered here.
-//   - no gate, an actionable canary (Paused/Progressing), and the viewer may manage →
-//     Promote / Abort confirm dialogs.
+//     (Gates arm only on an indefinite CANARY pause, so a blue-green rollout is never
+//     gated — it always takes the direct path below.)
+//   - no gate, an actionable canary (Paused/Progressing) or blue-green (Paused at
+//     pre-promotion), and the viewer may manage → Promote / Abort|Reject confirm dialogs.
 //   - otherwise nothing.
 export function RolloutActions({ slug, cluster, canManage, rollout, onActed }: Props) {
   const gate = rollout.gate;
@@ -55,16 +57,22 @@ export function RolloutActions({ slug, cluster, canManage, rollout, onActed }: P
     );
   }
 
+  // A blue-green rollout only actuates at its pre-promotion pause; a canary also advances
+  // while Progressing. Anything else (Healthy/Degraded/aborted, or an unrecognised
+  // strategy) offers nothing — the same rev is already live.
   const actionable =
-    rollout.strategy === "canary" &&
     !rollout.aborted &&
-    (rollout.phase === "Paused" || rollout.phase === "Progressing");
+    ((rollout.strategy === "canary" &&
+      (rollout.phase === "Paused" || rollout.phase === "Progressing")) ||
+      (rollout.strategy === "blueGreen" && rollout.phase === "Paused"));
   if (!actionable || !canManage) return null;
 
+  const strategy = rollout.strategy === "blueGreen" ? "blueGreen" : "canary";
   return (
     <div className="flex items-center gap-2">
       <DirectAction
         verb="promote"
+        strategy={strategy}
         slug={slug}
         cluster={cluster}
         rollout={rollout}
@@ -72,6 +80,7 @@ export function RolloutActions({ slug, cluster, canManage, rollout, onActed }: P
       />
       <DirectAction
         verb="abort"
+        strategy={strategy}
         slug={slug}
         cluster={cluster}
         rollout={rollout}
@@ -81,14 +90,47 @@ export function RolloutActions({ slug, cluster, canManage, rollout, onActed }: P
   );
 }
 
+// actionCopy is the strategy-aware wording for the direct Promote/Abort dialogs. The
+// SERVER action is identical for both strategies (the /status patch promotes/aborts a
+// blue-green rollout too — promote swaps the active service, abort discards the preview);
+// only the operator-facing copy differs.
+function actionCopy(strategy: "canary" | "blueGreen", isPromote: boolean) {
+  if (strategy === "blueGreen") {
+    return {
+      trigger: isPromote ? "Promote" : "Reject",
+      subject: "blue-green rollout",
+      confirm: isPromote ? "Promote" : "Reject preview",
+      past: isPromote ? "Promoted" : "Rejected",
+      description: isPromote
+        ? "Promotes the preview to active — the active service switches to the new revision."
+        : "Discards the preview and keeps the current active revision. This does NOT revert Git.",
+      success: isPromote
+        ? "the preview is now active"
+        : "kept the current active revision",
+    };
+  }
+  return {
+    trigger: isPromote ? "Promote" : "Abort",
+    subject: "canary",
+    confirm: isPromote ? "Promote" : "Abort rollout",
+    past: isPromote ? "Promoted" : "Aborted",
+    description: isPromote
+      ? "Advances the paused canary one step (the controller re-pauses if the next step is another gate)."
+      : "Aborts the rollout — traffic shifts back to the stable version. This does NOT revert Git; the desired version is unchanged, so a re-sync or a corrected commit rolls forward.",
+    success: isPromote ? "" : "traffic back to stable",
+  };
+}
+
 function DirectAction({
   verb,
+  strategy,
   slug,
   cluster,
   rollout,
   onActed,
 }: {
   verb: "promote" | "abort";
+  strategy: "canary" | "blueGreen";
   slug: string;
   cluster: string;
   rollout: Rollout;
@@ -98,6 +140,7 @@ function DirectAction({
   const [pending, startTransition] = useTransition();
   const isPromote = verb === "promote";
   const Icon = isPromote ? Rocket : XOctagon;
+  const copy = actionCopy(strategy, isPromote);
 
   function onConfirm() {
     startTransition(async () => {
@@ -113,13 +156,11 @@ function DirectAction({
       if (!res.ok) {
         // A forbidden/stale/gated action (403/409) or an unreachable cluster (404) carries
         // a server message — surface it; the action never silently "succeeds".
-        toast.error(`${verb} ${rollout.name}: ${res.error}`);
+        toast.error(`${copy.trigger.toLowerCase()} ${rollout.name}: ${res.error}`);
         return;
       }
       toast.success(
-        isPromote
-          ? `Promoted ${rollout.name}`
-          : `Aborted ${rollout.name} — traffic back to stable`,
+        [`${copy.past} ${rollout.name}`, copy.success].filter(Boolean).join(" — "),
       );
       setOpen(false);
       onActed?.();
@@ -140,7 +181,7 @@ function DirectAction({
             }
           >
             <Icon className="mr-1 size-3.5" aria-hidden />
-            {isPromote ? "Promote" : "Abort"}
+            {copy.trigger}
           </Button>
         }
       />
@@ -152,14 +193,10 @@ function DirectAction({
             ) : (
               <XOctagon className="size-4 text-red-500" aria-hidden />
             )}
-            {isPromote ? "Promote" : "Abort"} the canary{" "}
+            {copy.trigger} the {copy.subject}{" "}
             <span className="font-mono">{rollout.name}</span>?
           </DialogTitle>
-          <DialogDescription>
-            {isPromote
-              ? "Advances the paused canary one step (the controller re-pauses if the next step is another gate)."
-              : "Aborts the rollout — traffic shifts back to the stable version. This does NOT revert Git; the desired version is unchanged, so a re-sync or a corrected commit rolls forward."}
-          </DialogDescription>
+          <DialogDescription>{copy.description}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <DialogClose
@@ -176,10 +213,8 @@ function DirectAction({
           >
             {pending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
-            ) : isPromote ? (
-              "Promote"
             ) : (
-              "Abort rollout"
+              copy.confirm
             )}
           </Button>
         </DialogFooter>
