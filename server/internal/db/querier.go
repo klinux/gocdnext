@@ -323,6 +323,13 @@ type Querier interface {
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
 	DeleteDeploymentRevision(ctx context.Context, id pgtype.UUID) error
+	// Hard-delete an environment scoped to its project. ON DELETE CASCADE on
+	// deploy_targets, deployment_revisions and analytics_deploy_daily fans the
+	// delete out — the environment's whole deploy history + any registered target
+	// (incl. a gated one) go with it, so the API gates this to admin. Returns rows
+	// affected (0 = absent or not in this project → 404). Environments are lazy, so
+	// a later deploy to the same name re-creates it empty.
+	DeleteEnvironment(ctx context.Context, arg DeleteEnvironmentParams) (int64, error)
 	DeleteExpiredAuthStates(ctx context.Context) error
 	DeleteExpiredUserSessions(ctx context.Context) error
 	DeleteGlobalSecretByName(ctx context.Context, name string) (int64, error)

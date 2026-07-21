@@ -211,6 +211,24 @@ func (s *Store) EnsureEnvironment(ctx context.Context, projectID uuid.UUID, name
 	return fromPgUUID(id), nil
 }
 
+// DeleteEnvironment hard-deletes an environment scoped to its project. The
+// schema's ON DELETE CASCADE fans the delete out to deploy_targets,
+// deployment_revisions and analytics_deploy_daily — the environment's whole
+// deploy history and any registered target (including a gated one) go with it,
+// which is why the API gates this to admin. Returns false (no error) when the
+// environment isn't in the project, which the caller maps to 404. Environments
+// are lazy, so a later deploy to the same name re-creates it empty.
+func (s *Store) DeleteEnvironment(ctx context.Context, projectID, envID uuid.UUID) (bool, error) {
+	n, err := s.q.DeleteEnvironment(ctx, db.DeleteEnvironmentParams{
+		ProjectID: pgUUID(projectID),
+		ID:        pgUUID(envID),
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: delete environment %s: %w", envID, err)
+	}
+	return n > 0, nil
+}
+
 // CreateDeploymentRevision records an in_progress deploy at dispatch.
 func (s *Store) CreateDeploymentRevision(ctx context.Context, in CreateDeploymentRevisionInput) (uuid.UUID, error) {
 	id, err := s.q.CreateDeploymentRevision(ctx, db.CreateDeploymentRevisionParams{

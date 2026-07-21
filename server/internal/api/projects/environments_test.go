@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -28,7 +29,22 @@ func environmentsRouter(t *testing.T) (http.Handler, *store.Store, *pgxpool.Pool
 	r.Get("/api/v1/projects/{slug}/environments", h.ListEnvironments)
 	r.Get("/api/v1/projects/{slug}/environments/{envID}/deployments", h.ListEnvironmentDeployments)
 	r.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", h.RollbackEnvironment)
+	r.Delete("/api/v1/projects/{slug}/environments/{envID}", h.DeleteEnvironment)
 	return r, s, pool
+}
+
+// deleteEnvReq issues DELETE /environments/{envID}; a nil user models auth
+// disabled (treated as admin), otherwise the user rides the request context.
+func deleteEnvReq(t *testing.T, router http.Handler, slug, envID string, user *store.User) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/projects/"+slug+"/environments/"+envID, nil)
+	if user != nil {
+		req = req.WithContext(authapi.WithUser(req.Context(), *user))
+	}
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr.Code
 }
 
 func postRollback(t *testing.T, router http.Handler, slug, envID, toRevision string) int {
@@ -63,6 +79,55 @@ func seedProjectForEnv(t *testing.T, s *store.Store, slug string) uuid.UUID {
 		t.Fatalf("project detail %s: %v", slug, err)
 	}
 	return d.Project.ID
+}
+
+func TestDeleteEnvironment_Handler(t *testing.T) {
+	router, s, _ := environmentsRouter(t)
+	ctx := t.Context()
+	projectID := seedProjectForEnv(t, s, "envdel")
+
+	// Malformed id → 400 before any authz/store work.
+	if code := deleteEnvReq(t, router, "envdel", "not-a-uuid", nil); code != http.StatusBadRequest {
+		t.Fatalf("malformed id: got %d, want 400", code)
+	}
+
+	envID, err := s.EnsureEnvironment(ctx, projectID, "prod")
+	if err != nil {
+		t.Fatalf("EnsureEnvironment: %v", err)
+	}
+
+	// A maintainer is refused (403) and the env survives — the cascade is admin-only.
+	maintainer := store.User{ID: uuid.New(), Role: store.RoleMaintainer}
+	if code := deleteEnvReq(t, router, "envdel", envID.String(), &maintainer); code != http.StatusForbidden {
+		t.Fatalf("maintainer delete: got %d, want 403", code)
+	}
+	if envs, _ := s.ListEnvironments(ctx, projectID); len(envs) != 1 {
+		t.Fatalf("403 path removed the env: %+v", envs)
+	}
+
+	admin := store.User{ID: uuid.New(), Role: store.RoleAdmin}
+
+	// An admin naming an absent env → 404.
+	if code := deleteEnvReq(t, router, "envdel", uuid.New().String(), &admin); code != http.StatusNotFound {
+		t.Fatalf("absent env: got %d, want 404", code)
+	}
+
+	// The admin deletes the real env → 204, and it's gone.
+	if code := deleteEnvReq(t, router, "envdel", envID.String(), &admin); code != http.StatusNoContent {
+		t.Fatalf("admin delete: got %d, want 204", code)
+	}
+	if envs, _ := s.ListEnvironments(ctx, projectID); len(envs) != 0 {
+		t.Fatalf("env survived admin delete: %+v", envs)
+	}
+
+	// Auth disabled (no user in context) is treated as admin.
+	envID2, err := s.EnsureEnvironment(ctx, projectID, "prod")
+	if err != nil {
+		t.Fatalf("EnsureEnvironment (re-create): %v", err)
+	}
+	if code := deleteEnvReq(t, router, "envdel", envID2.String(), nil); code != http.StatusNoContent {
+		t.Fatalf("auth-disabled delete: got %d, want 204", code)
+	}
 }
 
 func TestListEnvironments_ShapeAndCurrent(t *testing.T) {

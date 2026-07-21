@@ -775,6 +775,9 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
 		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", projectsHandler.RollbackEnvironment)
+		// Delete is admin-only (enforced in the handler): the cascade drops deploy
+		// history + any gated target, so it mustn't be maintainer-reachable.
+		p.Delete("/api/v1/projects/{slug}/environments/{envID}", projectsHandler.DeleteEnvironment)
 		// Deploy targets reveal cluster/application/namespace/sync_mode — all three
 		// verbs are maintainer-gated (read included), consistent with treating the
 		// target as maintainer-owned config.

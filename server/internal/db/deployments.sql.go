@@ -88,6 +88,29 @@ func (q *Queries) DeleteDeploymentRevision(ctx context.Context, id pgtype.UUID) 
 	return err
 }
 
+const deleteEnvironment = `-- name: DeleteEnvironment :execrows
+DELETE FROM environments WHERE project_id = $1 AND id = $2
+`
+
+type DeleteEnvironmentParams struct {
+	ProjectID pgtype.UUID
+	ID        pgtype.UUID
+}
+
+// Hard-delete an environment scoped to its project. ON DELETE CASCADE on
+// deploy_targets, deployment_revisions and analytics_deploy_daily fans the
+// delete out — the environment's whole deploy history + any registered target
+// (incl. a gated one) go with it, so the API gates this to admin. Returns rows
+// affected (0 = absent or not in this project → 404). Environments are lazy, so
+// a later deploy to the same name re-creates it empty.
+func (q *Queries) DeleteEnvironment(ctx context.Context, arg DeleteEnvironmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEnvironment, arg.ProjectID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const environmentBelongsToProject = `-- name: EnvironmentBelongsToProject :one
 SELECT EXISTS (
     SELECT 1 FROM environments WHERE id = $2 AND project_id = $1

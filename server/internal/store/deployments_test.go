@@ -55,6 +55,89 @@ func TestEnsureEnvironment_LazyCreateIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeleteEnvironment(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	// Deleting an env with deploy history cascades the revisions and reports true.
+	t.Run("cascades deployment history and reports true", func(t *testing.T) {
+		runID, _, _, jobID, _ := seedRunningJob(t, pool)
+		projectID := projectIDForRun(t, pool, runID)
+		envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+		if err != nil {
+			t.Fatalf("EnsureEnvironment: %v", err)
+		}
+		if _, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+			EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "1.0.abc",
+		}); err != nil {
+			t.Fatalf("CreateDeploymentRevision: %v", err)
+		}
+
+		deleted, err := s.DeleteEnvironment(ctx, projectID, envID)
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if !deleted {
+			t.Fatal("DeleteEnvironment reported false for an existing environment")
+		}
+		envs, err := s.ListEnvironments(ctx, projectID)
+		if err != nil {
+			t.Fatalf("ListEnvironments: %v", err)
+		}
+		if len(envs) != 0 {
+			t.Fatalf("environment survived delete: %+v", envs)
+		}
+		// ON DELETE CASCADE dropped the revision too.
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM deployment_revisions WHERE environment_id = $1`, envID,
+		).Scan(&n); err != nil {
+			t.Fatalf("count revisions: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("cascade left %d deployment_revisions", n)
+		}
+	})
+
+	// The delete is scoped to its project: naming it through another project is a no-op.
+	t.Run("foreign project cannot delete", func(t *testing.T) {
+		projectA := seedProject(t, s, "env-del-a")
+		projectB := seedProject(t, s, "env-del-b")
+		envID, err := s.EnsureEnvironment(ctx, projectA, "staging")
+		if err != nil {
+			t.Fatalf("EnsureEnvironment: %v", err)
+		}
+
+		deleted, err := s.DeleteEnvironment(ctx, projectB, envID)
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if deleted {
+			t.Fatal("deleted an environment through the wrong project")
+		}
+		envs, err := s.ListEnvironments(ctx, projectA)
+		if err != nil {
+			t.Fatalf("ListEnvironments: %v", err)
+		}
+		if len(envs) != 1 {
+			t.Fatalf("scope guard removed the env: %+v", envs)
+		}
+	})
+
+	// An absent id reports false (→ 404 at the API), not an error.
+	t.Run("absent environment reports false", func(t *testing.T) {
+		projectID := seedProject(t, s, "env-del-absent")
+		deleted, err := s.DeleteEnvironment(ctx, projectID, uuid.New())
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if deleted {
+			t.Fatal("reported true for an absent environment")
+		}
+	})
+}
+
 func TestDeploymentRevision_LifecycleInProgressToSuccess(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

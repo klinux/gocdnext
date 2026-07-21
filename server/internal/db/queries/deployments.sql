@@ -8,6 +8,15 @@ VALUES ($1, $2)
 ON CONFLICT (project_id, name) DO UPDATE SET updated_at = NOW()
 RETURNING id;
 
+-- name: DeleteEnvironment :execrows
+-- Hard-delete an environment scoped to its project. ON DELETE CASCADE on
+-- deploy_targets, deployment_revisions and analytics_deploy_daily fans the
+-- delete out — the environment's whole deploy history + any registered target
+-- (incl. a gated one) go with it, so the API gates this to admin. Returns rows
+-- affected (0 = absent or not in this project → 404). Environments are lazy, so
+-- a later deploy to the same name re-creates it empty.
+DELETE FROM environments WHERE project_id = $1 AND id = $2;
+
 -- name: CreateDeploymentRevision :one
 -- Recorded at dispatch with the resolved version, status in_progress,
 -- tagged with the dispatch attempt so retries don't collide.
