@@ -969,6 +969,14 @@ type Querier interface {
 	// Distinct environment names that have terminal deploys and belong to a project
 	// carrying the group-by key — the dashboard's "environment" filter options.
 	ListAnalyticsEnvironments(ctx context.Context, labelKey string) ([]string, error)
+	// Armed, still-UNDECIDED rollout gates for a project on one Rollout cluster, keyed to
+	// the pinned Rollout identity (namespace/name) so the rollouts dashboard can correlate
+	// a gate onto the live Rollout it governs (ADR-0001, PR-C). gate_id IS NOT NULL selects
+	// an armed step; gate_decision IS NULL excludes a decided one (its Approve/Reject window
+	// is closed). approvals_now mirrors the deploy-watches read (count of fresh approve votes
+	// on the revision's job_run). The gate_rollout_cluster filter is the pinned actuation
+	// cluster — the same identity Promote/Abort act on — never a re-discovery.
+	ListArmedRolloutGatesForCluster(ctx context.Context, arg ListArmedRolloutGatesForClusterParams) ([]ListArmedRolloutGatesForClusterRow, error)
 	// Used by server-side JobResult reconciliation to match ArtifactRef
 	// entries back to their pending rows. Also used later (E2c) to expose
 	// downloads to downstream jobs in the same run.

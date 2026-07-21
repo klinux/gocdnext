@@ -941,6 +941,18 @@ export type RolloutAnalysis = {
   message: string;
 };
 
+// Armed approval gate correlated onto the Rollout it governs (ADR-0001, PR-C). Present
+// only while a step's gate is armed AND undecided (the API sends `null` otherwise). The
+// UI echoes gate_id + revision_id on Approve/Reject and renders approvals_now/required
+// as the quorum. A gated Rollout must NOT be directly promoted/aborted — the decision
+// goes through the vote path.
+export type RolloutGate = {
+  gate_id: string;
+  revision_id: string;
+  approvals_now: number;
+  required: number;
+};
+
 export type Rollout = {
   namespace: string;
   name: string;
@@ -958,6 +970,9 @@ export type Rollout = {
   pod_hash: string;
   image: string;
   analysis: RolloutAnalysis | null;
+  // gate is the armed, undecided approval gate governing this Rollout. Absent/null when
+  // none is armed (a decided gate is not sent).
+  gate?: RolloutGate | null;
 };
 
 export type RolloutsList = { rollouts: Rollout[] };

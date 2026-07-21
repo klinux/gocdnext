@@ -1,8 +1,27 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { RolloutPanel } from "./rollout-panel";
 import type { Rollout } from "@/types/api";
+
+// The panel now renders RolloutActions (a client component pulling in the gate buttons,
+// server actions, router and toast). These tests focus on the body/header rendering, so
+// stub those boundaries; the action wiring is covered in rollout-actions.test.tsx.
+vi.mock("@/server/actions/environments", () => ({
+  promoteRollout: vi.fn(async () => ({ ok: true })),
+  abortRollout: vi.fn(async () => ({ ok: true })),
+  approveRolloutGate: vi.fn(async () => ({ ok: true })),
+  rejectRolloutGate: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
+// renderPanel supplies the control-action props (the tests here don't exercise actions).
+function renderPanel(rollout: Rollout) {
+  return render(
+    <RolloutPanel rollout={rollout} slug="acme" cluster="prod" canManage={false} />,
+  );
+}
 
 function canary(partial: Partial<Rollout> = {}): Rollout {
   return {
@@ -33,7 +52,7 @@ function canary(partial: Partial<Rollout> = {}): Rollout {
 
 describe("RolloutPanel — canary", () => {
   it("renders the strategy pill, name, meta and the canary body", () => {
-    render(<RolloutPanel rollout={canary()} />);
+    renderPanel(canary());
     // "Canary" shows twice: the strategy pill + the canary revision role.
     expect(screen.getAllByText("Canary").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("heading", { name: "checkout-api" })).toBeTruthy();
@@ -48,7 +67,7 @@ describe("RolloutPanel — canary", () => {
   });
 
   it("shows '?' in the meta step counter when the current index is unknown", () => {
-    render(<RolloutPanel rollout={canary({ current_step_known: false })} />);
+    renderPanel(canary({ current_step_known: false }));
     expect(screen.getByText("step ?/6")).toBeTruthy();
   });
 });
@@ -63,11 +82,7 @@ describe("RolloutPanel — status pill per phase", () => {
   ];
   for (const c of cases) {
     it(`renders "${c.label}" for phase=${c.phase}${c.aborted ? " aborted" : ""}`, () => {
-      render(
-        <RolloutPanel
-          rollout={canary({ phase: c.phase, aborted: c.aborted ?? false })}
-        />,
-      );
+      renderPanel(canary({ phase: c.phase, aborted: c.aborted ?? false }));
       expect(screen.getByText(c.label)).toBeTruthy();
     });
   }
@@ -75,11 +90,7 @@ describe("RolloutPanel — status pill per phase", () => {
 
 describe("RolloutPanel — blue-green", () => {
   it("renders a compact placeholder (PR-D deferred) instead of the canary body", () => {
-    render(
-      <RolloutPanel
-        rollout={canary({ strategy: "blueGreen", phase: "Healthy" })}
-      />,
-    );
+    renderPanel(canary({ strategy: "blueGreen", phase: "Healthy" }));
     expect(screen.getByText("Blue-Green")).toBeTruthy();
     expect(screen.getByText(/active \/ preview view is coming/i)).toBeTruthy();
     // No canary internals leak into the blue-green view.
@@ -90,9 +101,7 @@ describe("RolloutPanel — blue-green", () => {
 
 describe("RolloutPanel — unknown strategy", () => {
   it("renders a neutral placeholder for a strategy-less Rollout, not blue-green", () => {
-    render(
-      <RolloutPanel rollout={canary({ strategy: "", phase: "Progressing" })} />,
-    );
+    renderPanel(canary({ strategy: "", phase: "Progressing" }));
     expect(screen.getByText("Unknown")).toBeTruthy();
     expect(screen.getByText(/No recognised rollout strategy/i)).toBeTruthy();
     // A strategy-less rollout must NOT be mislabelled blue-green, and no canary
