@@ -51,6 +51,10 @@ type Handler struct {
 	// deployRegistrar registers native deploy targets (ADR-0001). nil when the
 	// server didn't wire it — the endpoints then answer 501.
 	deployRegistrar *deploysvc.Registrar
+
+	// rolloutLister lists Argo Rollouts via the cluster registry (ADR-0001). nil when
+	// the server didn't wire it — the rollouts endpoint then answers 501.
+	rolloutLister rolloutLister
 }
 
 // WithPluginCatalog plugs the catalog used to validate `with:`
