@@ -345,9 +345,13 @@ above):
   shows `Deploying` → `Syncing` (once the sync is requested) →
   `Degraded <time>` if health drops. A rollout-aware deploy shows canary
   state instead (`Rolling out step 3/5`, `Canary paused`, `Rollout
-  healthy`/`aborted`). Backed by
-  `GET /api/v1/projects/{slug}/deploy-watches` (viewer-readable, but
-  config fields are maintainer-only).
+  healthy`/`aborted`). When the canary is running a metric **AnalysisRun**,
+  an `analysis <phase>` badge rides alongside (observe-only) — red for
+  `Failed`/`Error`, amber for `Inconclusive`, green for `Successful` —
+  with the analysis message on hover, so an inconclusive pause reads as
+  *"analysis inconclusive: success-rate 0.91 < 0.95"*, not a bare
+  "Paused". Backed by `GET /api/v1/projects/{slug}/deploy-watches`
+  (viewer-readable, but config fields are maintainer-only).
 - **Approval prompt** — when a canary gate is armed, an amber *Canary
   paused · awaiting approval (N/M)* banner with **Approve** / **Reject**
   appears on the card. The server enforces the approvers allow-list and
