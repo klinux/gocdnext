@@ -834,14 +834,27 @@ export type DeployTarget = {
   application: string;
   namespace: string;
   sync_mode: "trigger" | "observe";
+  // Rollout observation (ADR-0001 Phase 2). Routing optional (defaults: App's
+  // cluster / auto-discover). Observe-only: no control from here yet.
+  rollout_aware?: boolean;
+  rollout_cluster?: string;
+  rollout_namespace?: string;
+  rollout_name?: string;
 };
 
 export type DeployTargetsList = { deploy_targets: DeployTarget[] };
 
+// Argo Rollouts aggregate phase (`.status.phase`), surfaced read-only in Phase 2.
+export type RolloutPhase = "Progressing" | "Paused" | "Degraded" | "Healthy";
+
 // One in-flight native deploy (ADR-0001), polled for live status. Live-state fields
 // are viewer-readable; the config fields (application/cluster/sync_mode) are
-// maintainer-only and omitted for viewers by the API — hence optional here.
+// maintainer-only and omitted for viewers by the API — hence optional here. The
+// rollout_* fields are the read-only canary/blue-green progress snapshot (viewer-
+// readable live state). rollout_current_step is absent when the controller hasn't
+// reported it — distinct from step 0.
 export type DeployWatch = {
+  deployment_revision_id: string;
   environment: string;
   version: string;
   expected_revision: string;
@@ -849,6 +862,15 @@ export type DeployWatch = {
   sync_requested_at?: string;
   deadline_at: string;
   degraded_since?: string;
+  rollout_aware?: boolean;
+  rollout_phase?: RolloutPhase | string;
+  rollout_message?: string;
+  rollout_pause_reason?: string;
+  rollout_current_step?: number;
+  rollout_step_count?: number;
+  rollout_aborted?: boolean;
+  rollout_error?: string;
+  rollout_observed_at?: string;
   application?: string;
   cluster?: string;
   sync_mode?: "trigger" | "observe";

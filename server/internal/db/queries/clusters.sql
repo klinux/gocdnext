@@ -25,6 +25,15 @@ FROM clusters
 WHERE name = $1
 LIMIT 1;
 
+-- name: GetClusterAuthorizationByName :one
+-- Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
+-- sealed credential — for validating a rollout_cluster reference at registration
+-- (no need to decrypt or even load credential_enc into memory).
+SELECT id, name, allowed_projects
+FROM clusters
+WHERE name = $1
+LIMIT 1;
+
 -- name: ClusterExists :one
 -- Apply-time existence check for a `cluster:` reference (cheap, no
 -- credential). Authorization (allowed_projects) is enforced later at

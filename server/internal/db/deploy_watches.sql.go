@@ -25,7 +25,7 @@ WHERE w.deployment_revision_id IN (
     FOR UPDATE OF dw SKIP LOCKED
     LIMIT $3
 )
-RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at
+RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at
 `
 
 type ClaimDeployWatchesParams struct {
@@ -67,6 +67,18 @@ func (q *Queries) ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatches
 			&i.ClaimedBy,
 			&i.ClaimedAt,
 			&i.CreatedAt,
+			&i.RolloutAware,
+			&i.RolloutCluster,
+			&i.RolloutNamespace,
+			&i.RolloutName,
+			&i.RolloutPhase,
+			&i.RolloutMessage,
+			&i.RolloutPauseReason,
+			&i.RolloutCurrentStep,
+			&i.RolloutStepCount,
+			&i.RolloutAborted,
+			&i.RolloutError,
+			&i.RolloutObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -99,11 +111,12 @@ func (q *Queries) ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployW
 }
 
 const countActiveWatchesForCluster = `-- name: CountActiveWatchesForCluster :one
-SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1
+SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1 OR rollout_cluster = $1
 `
 
-// Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
-// (FK), this gives the friendly message before the DELETE fails.
+// Backs the cluster delete-guard: an in-flight watch referencing the cluster (as its
+// Application cluster OR its Rollout cluster) RESTRICTs it (both FKs); this gives the
+// friendly message before the DELETE fails.
 func (q *Queries) CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error) {
 	row := q.db.QueryRow(ctx, countActiveWatchesForCluster, cluster)
 	var count int64
@@ -114,13 +127,14 @@ func (q *Queries) CountActiveWatchesForCluster(ctx context.Context, cluster stri
 const createDeployWatch = `-- name: CreateDeployWatch :one
 INSERT INTO deploy_watches (
     deployment_revision_id, project_id, sync_mode, cluster, application,
-    namespace, expected_revision, deadline_at
+    namespace, expected_revision, deadline_at,
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, $8
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 WHERE EXISTS (
     SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
 )
-RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at
+RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at
 `
 
 type CreateDeployWatchParams struct {
@@ -132,6 +146,10 @@ type CreateDeployWatchParams struct {
 	Namespace            string
 	ExpectedRevision     string
 	DeadlineAt           pgtype.Timestamptz
+	RolloutAware         bool
+	RolloutCluster       *string
+	RolloutNamespace     *string
+	RolloutName          *string
 }
 
 // Create the control-loop record for a freshly-created in_progress deployment
@@ -149,6 +167,10 @@ func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchPa
 		arg.Namespace,
 		arg.ExpectedRevision,
 		arg.DeadlineAt,
+		arg.RolloutAware,
+		arg.RolloutCluster,
+		arg.RolloutNamespace,
+		arg.RolloutName,
 	)
 	var i DeployWatch
 	err := row.Scan(
@@ -167,6 +189,18 @@ func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchPa
 		&i.ClaimedBy,
 		&i.ClaimedAt,
 		&i.CreatedAt,
+		&i.RolloutAware,
+		&i.RolloutCluster,
+		&i.RolloutNamespace,
+		&i.RolloutName,
+		&i.RolloutPhase,
+		&i.RolloutMessage,
+		&i.RolloutPauseReason,
+		&i.RolloutCurrentStep,
+		&i.RolloutStepCount,
+		&i.RolloutAborted,
+		&i.RolloutError,
+		&i.RolloutObservedAt,
 	)
 	return i, err
 }
@@ -192,7 +226,7 @@ func (q *Queries) DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeploy
 }
 
 const getDeployWatch = `-- name: GetDeployWatch :one
-SELECT deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at FROM deploy_watches WHERE deployment_revision_id = $1
+SELECT deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at FROM deploy_watches WHERE deployment_revision_id = $1
 `
 
 func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtype.UUID) (DeployWatch, error) {
@@ -214,14 +248,30 @@ func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtyp
 		&i.ClaimedBy,
 		&i.ClaimedAt,
 		&i.CreatedAt,
+		&i.RolloutAware,
+		&i.RolloutCluster,
+		&i.RolloutNamespace,
+		&i.RolloutName,
+		&i.RolloutPhase,
+		&i.RolloutMessage,
+		&i.RolloutPauseReason,
+		&i.RolloutCurrentStep,
+		&i.RolloutStepCount,
+		&i.RolloutAborted,
+		&i.RolloutError,
+		&i.RolloutObservedAt,
 	)
 	return i, err
 }
 
 const listDeployWatchesForProject = `-- name: ListDeployWatchesForProject :many
-SELECT e.name AS environment, dr.version, dw.expected_revision, dw.sync_mode,
+SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
+       dw.expected_revision, dw.sync_mode,
        dw.cluster, dw.application, dw.watch_started_at, dw.sync_requested_at,
-       dw.deadline_at, dw.degraded_since
+       dw.deadline_at, dw.degraded_since,
+       dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
+       dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
+       dw.rollout_error, dw.rollout_observed_at
 FROM deploy_watches dw
 JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 JOIN environments e ON e.id = dr.environment_id
@@ -230,16 +280,26 @@ ORDER BY e.name
 `
 
 type ListDeployWatchesForProjectRow struct {
-	Environment      string
-	Version          string
-	ExpectedRevision string
-	SyncMode         string
-	Cluster          string
-	Application      string
-	WatchStartedAt   pgtype.Timestamptz
-	SyncRequestedAt  pgtype.Timestamptz
-	DeadlineAt       pgtype.Timestamptz
-	DegradedSince    pgtype.Timestamptz
+	DeploymentRevisionID pgtype.UUID
+	Environment          string
+	Version              string
+	ExpectedRevision     string
+	SyncMode             string
+	Cluster              string
+	Application          string
+	WatchStartedAt       pgtype.Timestamptz
+	SyncRequestedAt      pgtype.Timestamptz
+	DeadlineAt           pgtype.Timestamptz
+	DegradedSince        pgtype.Timestamptz
+	RolloutAware         bool
+	RolloutPhase         *string
+	RolloutMessage       *string
+	RolloutPauseReason   *string
+	RolloutCurrentStep   *int32
+	RolloutStepCount     *int32
+	RolloutAborted       *bool
+	RolloutError         *string
+	RolloutObservedAt    pgtype.Timestamptz
 }
 
 // In-flight native deploys for a project (one row per still-in_progress revision),
@@ -256,6 +316,7 @@ func (q *Queries) ListDeployWatchesForProject(ctx context.Context, projectID pgt
 	for rows.Next() {
 		var i ListDeployWatchesForProjectRow
 		if err := rows.Scan(
+			&i.DeploymentRevisionID,
 			&i.Environment,
 			&i.Version,
 			&i.ExpectedRevision,
@@ -266,6 +327,15 @@ func (q *Queries) ListDeployWatchesForProject(ctx context.Context, projectID pgt
 			&i.SyncRequestedAt,
 			&i.DeadlineAt,
 			&i.DegradedSince,
+			&i.RolloutAware,
+			&i.RolloutPhase,
+			&i.RolloutMessage,
+			&i.RolloutPauseReason,
+			&i.RolloutCurrentStep,
+			&i.RolloutStepCount,
+			&i.RolloutAborted,
+			&i.RolloutError,
+			&i.RolloutObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -351,6 +421,54 @@ WHERE deployment_revision_id = $1 AND sync_requested_at IS NULL
 // the anchor. 0 rows → already stamped or gone; the caller logs and continues.
 func (q *Queries) StampDeployWatchSyncRequested(ctx context.Context, deploymentRevisionID pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, stampDeployWatchSyncRequested, deploymentRevisionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const stampRolloutObservation = `-- name: StampRolloutObservation :execrows
+UPDATE deploy_watches
+SET rollout_phase        = $1,
+    rollout_message      = $2,
+    rollout_pause_reason = $3,
+    rollout_current_step = $4,
+    rollout_step_count   = $5,
+    rollout_aborted      = $6,
+    rollout_error        = $7,
+    rollout_observed_at  = NOW()
+WHERE deployment_revision_id = $8
+  AND claim_id = $9
+`
+
+type StampRolloutObservationParams struct {
+	RolloutPhase         *string
+	RolloutMessage       *string
+	RolloutPauseReason   *string
+	RolloutCurrentStep   *int32
+	RolloutStepCount     *int32
+	RolloutAborted       *bool
+	RolloutError         *string
+	DeploymentRevisionID pgtype.UUID
+	ClaimID              pgtype.UUID
+}
+
+// Persist the observed Rollout snapshot onto the watch each tick, so the UI (which
+// reads the DB) can render canary progress. Fenced on claim_id — 0 rows means the
+// lease was lost. rollout_current_step is NULL when the controller hasn't reported it
+// (RolloutState.CurrentStepKnown=false). Clears rollout_error on a successful observe.
+func (q *Queries) StampRolloutObservation(ctx context.Context, arg StampRolloutObservationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, stampRolloutObservation,
+		arg.RolloutPhase,
+		arg.RolloutMessage,
+		arg.RolloutPauseReason,
+		arg.RolloutCurrentStep,
+		arg.RolloutStepCount,
+		arg.RolloutAborted,
+		arg.RolloutError,
+		arg.DeploymentRevisionID,
+		arg.ClaimID,
+	)
 	if err != nil {
 		return 0, err
 	}

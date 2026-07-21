@@ -32,6 +32,15 @@ export const deployTargetFormSchema = z.object({
   // Namespace holding the Application CR; server defaults empty → "argocd".
   namespace: z.string().trim().max(253).optional(),
   sync_mode: z.enum(SYNC_MODES),
+
+  // Rollout observation (Phase 2). When on, gocdnext reads the Argo Rollouts CR the
+  // Application manages and surfaces canary/blue-green progress (read-only — no
+  // promote/abort control yet). Routing optional: rollout_cluster empty → the App's
+  // cluster; namespace/name empty → auto-discover the single Rollout.
+  rollout_aware: z.boolean().optional(),
+  rollout_cluster: z.string().trim().max(64).optional(),
+  rollout_namespace: z.string().trim().max(253).optional(),
+  rollout_name: z.string().trim().max(253).optional(),
 });
 
 export type DeployTargetForm = z.infer<typeof deployTargetFormSchema>;

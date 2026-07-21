@@ -178,16 +178,20 @@ type CronState struct {
 }
 
 type DeployTarget struct {
-	ID            pgtype.UUID
-	EnvironmentID pgtype.UUID
-	Provider      string
-	Cluster       string
-	Application   string
-	Namespace     string
-	SyncMode      string
-	CreatedBy     string
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
+	ID               pgtype.UUID
+	EnvironmentID    pgtype.UUID
+	Provider         string
+	Cluster          string
+	Application      string
+	Namespace        string
+	SyncMode         string
+	CreatedBy        string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	RolloutAware     bool
+	RolloutCluster   *string
+	RolloutNamespace *string
+	RolloutName      *string
 }
 
 type DeployWatch struct {
@@ -206,6 +210,18 @@ type DeployWatch struct {
 	ClaimedBy            *string
 	ClaimedAt            pgtype.Timestamptz
 	CreatedAt            pgtype.Timestamptz
+	RolloutAware         bool
+	RolloutCluster       *string
+	RolloutNamespace     *string
+	RolloutName          *string
+	RolloutPhase         *string
+	RolloutMessage       *string
+	RolloutPauseReason   *string
+	RolloutCurrentStep   *int32
+	RolloutStepCount     *int32
+	RolloutAborted       *bool
+	RolloutError         *string
+	RolloutObservedAt    pgtype.Timestamptz
 }
 
 type DeploymentRevision struct {

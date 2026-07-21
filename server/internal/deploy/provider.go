@@ -43,6 +43,17 @@ type DeploymentTarget struct {
 	Application string    // ArgoCD Application name
 	Namespace   string    // Application namespace (typically "argocd")
 	SyncMode    SyncMode  // trigger | observe
+
+	// Rollout awareness (ADR-0001 Phase 2). When RolloutAware, Observe additionally
+	// resolves + reads the Argo Rollouts Rollout CR the Application manages and reports
+	// it in DeployState.Rollout. The Rollout lives on the WORKLOAD's destination
+	// cluster/namespace (not the argocd hub ns) — reached via RolloutCluster (a
+	// registered cluster; empty → same as Cluster). RolloutNamespace/RolloutName empty
+	// → auto-discover the single Rollout from the Application's `.status.resources[]`.
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 // DeployState is one convergence snapshot the provider reports, mirroring the
@@ -78,6 +89,66 @@ type DeployState struct {
 	// operationState only if this equals the deploy's expected revision, so a stale
 	// operation for a different revision can neither fast-fail nor false-succeed it.
 	SyncResultRevision string
+
+	// Rollout is the Argo Rollouts snapshot when the target is RolloutAware and the
+	// Rollout was resolved+read this tick; RolloutObserved says whether it's populated.
+	// A value (not a pointer) so DeployState stays comparable-by-`==`.
+	Rollout         RolloutState
+	RolloutObserved bool
+	// RolloutError is a short, sanitized reason the Rollout couldn't be resolved/read
+	// this tick (RolloutObserved=false) — surfaced to the UI and, in control mode,
+	// the fail-closed signal. Empty when observed OK or not rollout-aware.
+	RolloutError string
+}
+
+// RolloutPhase mirrors an Argo Rollouts Rollout's aggregate `.status.phase`.
+type RolloutPhase string
+
+const (
+	RolloutProgressing RolloutPhase = "Progressing"
+	RolloutPaused      RolloutPhase = "Paused"
+	RolloutDegraded    RolloutPhase = "Degraded"
+	RolloutHealthy     RolloutPhase = "Healthy"
+)
+
+// Pause reasons Argo Rollouts records in `.status.pauseConditions[].reason`.
+const (
+	PauseReasonCanaryStep   = "CanaryPauseStep"
+	PauseReasonBlueGreen    = "BlueGreenPause"
+	PauseReasonInconclusive = "AnalysisRunInconclusive"
+)
+
+// RolloutState is the comparable-by-`==` slice of an Argo Rollouts Rollout the
+// provider reads (`.status` + `.spec.strategy.canary.steps`). All fields are
+// scalars so DeployState remains comparable.
+type RolloutState struct {
+	Phase       RolloutPhase
+	PauseReason string // first `.status.pauseConditions[].reason`, "" if not paused
+	// CurrentStepIndex is `.status.currentStepIndex`; CurrentStepKnown says the
+	// controller actually reported it. An ABSENT index unmarshals to 0, which must
+	// NOT be trusted as "at step 0" — deriving PausedIndefinitely (arm a gate) from an
+	// assumed step 0 would arm on incomplete state. So the index is nullable upstream
+	// and only trusted when known.
+	CurrentStepIndex int
+	CurrentStepKnown bool
+	StepCount        int    // len(`.spec.strategy.canary.steps`)
+	Aborted          bool   // `.status.abort`
+	Message          string // `.status.message` (bounded on persist)
+	StableHash       string // `.status.stableRS`
+	PodHash          string // `.status.currentPodHash`
+
+	// PausedIndefinitely: the current pause is a canary `pause: {}` with no duration
+	// (the human-gate step) — as opposed to a timed pause / analysis / blue-green.
+	PausedIndefinitely bool
+	// FullyPromoted: the canary has advanced through all steps and the new version is
+	// the stable one — the "no early finalize" signal (a healthy App is not enough).
+	FullyPromoted bool
+
+	// Resolved identity of the Rollout Observe actually read this tick — used by the
+	// Phase-2 watcher to Abort a non-gated rollout without a fragile re-discovery.
+	ResolvedCluster   string
+	ResolvedNamespace string
+	ResolvedName      string
 }
 
 // OpPhase mirrors an ArgoCD Application's `.status.operationState.phase`. Empty

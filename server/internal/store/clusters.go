@@ -49,6 +49,30 @@ func IsClusterUnavailable(err error) bool {
 	return errors.Is(err, ErrClusterNotFound) || errors.Is(err, ErrClusterNotAuthorized)
 }
 
+// AuthorizeClusterForProject checks a cluster exists AND the project is in its
+// allowed_projects, WITHOUT resolving/decrypting the credential — for validating a
+// deploy target's rollout_cluster reference at REGISTRATION (so a maintainer can't
+// persist a reference to a cluster they aren't allowed, which would block that
+// cluster's delete + create noise). Returns the same oracle-collapsible sentinels
+// (ErrClusterNotFound / ErrClusterNotAuthorized) as the dispatch resolver, so the
+// caller presents a single caller-safe message (see IsClusterUnavailable). This does
+// NOT read the Rollout CR — that stays a lazy observe-time concern.
+func (s *Store) AuthorizeClusterForProject(ctx context.Context, projectID uuid.UUID, name string) error {
+	// Narrow query: existence + allowed_projects only — never loads credential_enc
+	// into memory on this authorization-only path.
+	r, err := s.q.GetClusterAuthorizationByName(ctx, name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrClusterNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: authorize cluster %q: %w", name, err)
+	}
+	if !projectAllowed(r.AllowedProjects, projectID) {
+		return fmt.Errorf("%w %q", ErrClusterNotAuthorized, name)
+	}
+	return nil
+}
+
 // pgForeignKeyViolation is Postgres SQLSTATE 23503.
 const pgForeignKeyViolation = "23503"
 

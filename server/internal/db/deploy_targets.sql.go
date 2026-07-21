@@ -12,11 +12,12 @@ import (
 )
 
 const countDeployTargetsForCluster = `-- name: CountDeployTargetsForCluster :one
-SELECT COUNT(*) FROM deploy_targets WHERE cluster = $1
+SELECT COUNT(*) FROM deploy_targets WHERE cluster = $1 OR rollout_cluster = $1
 `
 
-// Backs the cluster delete-guard: a cluster referenced by any target can't be
-// deleted (also enforced by the FK's ON DELETE RESTRICT, this gives the message).
+// Backs the cluster delete-guard: a cluster referenced by any target (as its
+// Application cluster OR its Rollout cluster) can't be deleted — also enforced by
+// both FKs' ON DELETE RESTRICT; this gives the friendly message.
 func (q *Queries) CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error) {
 	row := q.db.QueryRow(ctx, countDeployTargetsForCluster, cluster)
 	var count int64
@@ -46,7 +47,8 @@ func (q *Queries) DeleteDeployTargetByEnvironment(ctx context.Context, arg Delet
 
 const listDeployTargetsForProject = `-- name: ListDeployTargetsForProject :many
 SELECT dt.id, e.name AS environment, dt.provider, dt.cluster, dt.application,
-       dt.namespace, dt.sync_mode
+       dt.namespace, dt.sync_mode,
+       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
 WHERE e.project_id = $1
@@ -54,13 +56,17 @@ ORDER BY e.name
 `
 
 type ListDeployTargetsForProjectRow struct {
-	ID          pgtype.UUID
-	Environment string
-	Provider    string
-	Cluster     string
-	Application string
-	Namespace   string
-	SyncMode    string
+	ID               pgtype.UUID
+	Environment      string
+	Provider         string
+	Cluster          string
+	Application      string
+	Namespace        string
+	SyncMode         string
+	RolloutAware     bool
+	RolloutCluster   *string
+	RolloutNamespace *string
+	RolloutName      *string
 }
 
 func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployTargetsForProjectRow, error) {
@@ -80,6 +86,10 @@ func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgt
 			&i.Application,
 			&i.Namespace,
 			&i.SyncMode,
+			&i.RolloutAware,
+			&i.RolloutCluster,
+			&i.RolloutNamespace,
+			&i.RolloutName,
 		); err != nil {
 			return nil, err
 		}
@@ -93,6 +103,7 @@ func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgt
 
 const resolveDeployTarget = `-- name: ResolveDeployTarget :one
 SELECT dt.provider, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
+       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,
        e.project_id, e.id AS environment_id, e.name AS environment
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
@@ -105,14 +116,18 @@ type ResolveDeployTargetParams struct {
 }
 
 type ResolveDeployTargetRow struct {
-	Provider      string
-	Cluster       string
-	Application   string
-	Namespace     string
-	SyncMode      string
-	ProjectID     pgtype.UUID
-	EnvironmentID pgtype.UUID
-	Environment   string
+	Provider         string
+	Cluster          string
+	Application      string
+	Namespace        string
+	SyncMode         string
+	RolloutAware     bool
+	RolloutCluster   *string
+	RolloutNamespace *string
+	RolloutName      *string
+	ProjectID        pgtype.UUID
+	EnvironmentID    pgtype.UUID
+	Environment      string
 }
 
 // Resolve `deploy: { to: <env> }` for a project: join the environment to its
@@ -127,6 +142,10 @@ func (q *Queries) ResolveDeployTarget(ctx context.Context, arg ResolveDeployTarg
 		&i.Application,
 		&i.Namespace,
 		&i.SyncMode,
+		&i.RolloutAware,
+		&i.RolloutCluster,
+		&i.RolloutNamespace,
+		&i.RolloutName,
 		&i.ProjectID,
 		&i.EnvironmentID,
 		&i.Environment,
@@ -135,26 +154,37 @@ func (q *Queries) ResolveDeployTarget(ctx context.Context, arg ResolveDeployTarg
 }
 
 const upsertDeployTarget = `-- name: UpsertDeployTarget :one
-INSERT INTO deploy_targets (environment_id, provider, cluster, application, namespace, sync_mode, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO deploy_targets (
+    environment_id, provider, cluster, application, namespace, sync_mode, created_by,
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (environment_id) DO UPDATE SET
     provider = EXCLUDED.provider,
     cluster = EXCLUDED.cluster,
     application = EXCLUDED.application,
     namespace = EXCLUDED.namespace,
     sync_mode = EXCLUDED.sync_mode,
+    rollout_aware = EXCLUDED.rollout_aware,
+    rollout_cluster = EXCLUDED.rollout_cluster,
+    rollout_namespace = EXCLUDED.rollout_namespace,
+    rollout_name = EXCLUDED.rollout_name,
     updated_at = NOW()
 RETURNING id
 `
 
 type UpsertDeployTargetParams struct {
-	EnvironmentID pgtype.UUID
-	Provider      string
-	Cluster       string
-	Application   string
-	Namespace     string
-	SyncMode      string
-	CreatedBy     string
+	EnvironmentID    pgtype.UUID
+	Provider         string
+	Cluster          string
+	Application      string
+	Namespace        string
+	SyncMode         string
+	CreatedBy        string
+	RolloutAware     bool
+	RolloutCluster   *string
+	RolloutNamespace *string
+	RolloutName      *string
 }
 
 // Register/update the deploy target for an environment (1:1). The admin API
@@ -168,6 +198,10 @@ func (q *Queries) UpsertDeployTarget(ctx context.Context, arg UpsertDeployTarget
 		arg.Namespace,
 		arg.SyncMode,
 		arg.CreatedBy,
+		arg.RolloutAware,
+		arg.RolloutCluster,
+		arg.RolloutNamespace,
+		arg.RolloutName,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)

@@ -6,13 +6,31 @@
 -- duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
 INSERT INTO deploy_watches (
     deployment_revision_id, project_id, sync_mode, cluster, application,
-    namespace, expected_revision, deadline_at
+    namespace, expected_revision, deadline_at,
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, $8
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 WHERE EXISTS (
     SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
 )
 RETURNING *;
+
+-- name: StampRolloutObservation :execrows
+-- Persist the observed Rollout snapshot onto the watch each tick, so the UI (which
+-- reads the DB) can render canary progress. Fenced on claim_id — 0 rows means the
+-- lease was lost. rollout_current_step is NULL when the controller hasn't reported it
+-- (RolloutState.CurrentStepKnown=false). Clears rollout_error on a successful observe.
+UPDATE deploy_watches
+SET rollout_phase        = sqlc.narg(rollout_phase),
+    rollout_message      = sqlc.narg(rollout_message),
+    rollout_pause_reason = sqlc.narg(rollout_pause_reason),
+    rollout_current_step = sqlc.narg(rollout_current_step),
+    rollout_step_count   = sqlc.narg(rollout_step_count),
+    rollout_aborted      = sqlc.narg(rollout_aborted),
+    rollout_error        = sqlc.narg(rollout_error),
+    rollout_observed_at  = NOW()
+WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
+  AND claim_id = sqlc.arg(claim_id);
 
 -- name: GetDeployWatch :one
 SELECT * FROM deploy_watches WHERE deployment_revision_id = $1;
@@ -83,18 +101,23 @@ DELETE FROM deploy_watches
 WHERE deployment_revision_id = $1 AND claim_id = $2;
 
 -- name: CountActiveWatchesForCluster :one
--- Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
--- (FK), this gives the friendly message before the DELETE fails.
-SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1;
+-- Backs the cluster delete-guard: an in-flight watch referencing the cluster (as its
+-- Application cluster OR its Rollout cluster) RESTRICTs it (both FKs); this gives the
+-- friendly message before the DELETE fails.
+SELECT COUNT(*) FROM deploy_watches WHERE cluster = $1 OR rollout_cluster = $1;
 
 -- name: ListDeployWatchesForProject :many
 -- In-flight native deploys for a project (one row per still-in_progress revision),
 -- joined to the environment name + display version for the UI live-status endpoint.
 -- Config fields (cluster/application/sync_mode) are returned here but sanitised by
 -- role at the HTTP layer — viewers never see them.
-SELECT e.name AS environment, dr.version, dw.expected_revision, dw.sync_mode,
+SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
+       dw.expected_revision, dw.sync_mode,
        dw.cluster, dw.application, dw.watch_started_at, dw.sync_requested_at,
-       dw.deadline_at, dw.degraded_since
+       dw.deadline_at, dw.degraded_since,
+       dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
+       dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
+       dw.rollout_error, dw.rollout_observed_at
 FROM deploy_watches dw
 JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 JOIN environments e ON e.id = dr.environment_id
