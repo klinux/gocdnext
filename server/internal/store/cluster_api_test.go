@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,23 @@ func TestDoClusterAPIGet(t *testing.T) {
 		ep := kubeEndpoint{server: "http://insecure.example", bearer: "t"}
 		if _, err := doClusterAPIGet(context.Background(), ep, "/x"); err == nil {
 			t.Fatal("expected an error for a non-HTTPS api_server, got nil")
+		}
+	})
+
+	t.Run("a response over the 4 MiB cap fails loud, not silently truncated", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// One byte past the cap: the transport must reject it, not read-and-truncate
+			// (which would surface downstream as a confusing "invalid JSON").
+			_, _ = w.Write(make([]byte, maxClusterAPIResponse+1))
+		}))
+		defer srv.Close()
+		ep := kubeEndpoint{server: srv.URL, bearer: "t", caPEM: caPEMof(t, srv)}
+		_, err := doClusterAPIGet(context.Background(), ep, "/big")
+		if err == nil {
+			t.Fatal("expected an error for an over-cap response, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeded") {
+			t.Errorf("err = %v, want it to name the size cap", err)
 		}
 	})
 }

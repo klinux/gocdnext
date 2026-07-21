@@ -28,6 +28,22 @@ const clusterAPITimeout = 10 * time.Second
 // making the control plane read an unbounded stream.
 const maxClusterAPIResponse = 4 << 20 // 4 MiB
 
+// readCappedBody reads up to maxClusterAPIResponse bytes from r and fails LOUD if the
+// response would exceed it — it reads one extra byte to tell a body exactly at the cap
+// from a truncated one. Silent truncation (a bare io.LimitReader) surfaced downstream as
+// a confusing "invalid JSON" — or, worse, a plausible-but-partial object; a clear size
+// error names the real cause for every caller (GET and write).
+func readCappedBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxClusterAPIResponse+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxClusterAPIResponse {
+		return nil, fmt.Errorf("cluster API response exceeded %d MiB", maxClusterAPIResponse>>20)
+	}
+	return body, nil
+}
+
 // ClusterAPIStatusError is a non-2xx response from a cluster API GET. It carries
 // the status so callers can map it (404 -> not found, 401/403 -> forbidden) without
 // string-matching.
@@ -89,7 +105,7 @@ func doClusterAPIGet(ctx context.Context, ep kubeEndpoint, path string) ([]byte,
 	}
 	defer resp.Body.Close()
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxClusterAPIResponse))
+	body, readErr := readCappedBody(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Path: path}
 	}
@@ -147,7 +163,7 @@ func doClusterAPIWrite(ctx context.Context, ep kubeEndpoint, method, contentType
 	}
 	defer resp.Body.Close()
 
-	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxClusterAPIResponse))
+	respBody, readErr := readCappedBody(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &ClusterAPIStatusError{Status: resp.StatusCode, Path: path}
 	}
