@@ -14,6 +14,7 @@ vi.mock("@/server/actions/environments", () => ({
   rollbackEnvironment: vi.fn(),
   setDeployTarget: vi.fn(),
   deleteDeployTarget: vi.fn(),
+  deleteEnvironment: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -41,7 +42,7 @@ afterEach(() => {
 
 describe("EnvironmentCard", () => {
   it("shows the current version, deployer and a run link", () => {
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
     expect(screen.getByText("1.42.abc123")).toBeTruthy();
     expect(screen.getByText(/by alice/)).toBeTruthy();
     const runLink = screen.getByRole("link", { name: "run" });
@@ -50,7 +51,7 @@ describe("EnvironmentCard", () => {
 
   it("renders the empty state when nothing has deployed", () => {
     const empty: EnvironmentSummary = { ...withCurrent, current: null };
-    render(<EnvironmentCard slug="acme" environment={empty} apiBaseURL="" canManage={false} />);
+    render(<EnvironmentCard slug="acme" environment={empty} apiBaseURL="" canManage={false} isAdmin={false} />);
     expect(screen.getByText("no deploys yet")).toBeTruthy();
     expect(screen.getByText(/Nothing has shipped/)).toBeTruthy();
   });
@@ -60,7 +61,7 @@ describe("EnvironmentCard", () => {
       ...withCurrent,
       current: { ...withCurrent.current!, is_rollback: true },
     };
-    render(<EnvironmentCard slug="acme" environment={rolled} apiBaseURL="" canManage={false} />);
+    render(<EnvironmentCard slug="acme" environment={rolled} apiBaseURL="" canManage={false} isAdmin={false} />);
     expect(screen.getAllByText("rollback").length).toBeGreaterThan(0);
   });
 
@@ -80,6 +81,7 @@ describe("EnvironmentCard", () => {
         environment={withCurrent}
         deployTarget={target}
         canManage={false}
+        isAdmin={false}
         apiBaseURL=""
       />,
     );
@@ -91,7 +93,7 @@ describe("EnvironmentCard", () => {
   });
 
   it("omits the native row when there is no target (or the viewer can't see it)", () => {
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
     expect(screen.queryByText("Native")).toBeNull();
     expect(screen.queryByText("checkout")).toBeNull();
   });
@@ -103,6 +105,7 @@ describe("EnvironmentCard", () => {
         environment={withCurrent}
         deployTarget={target}
         canManage
+        isAdmin={false}
         apiBaseURL=""
       />,
     );
@@ -117,6 +120,7 @@ describe("EnvironmentCard", () => {
         slug="acme"
         environment={withCurrent}
         canManage
+        isAdmin={false}
         apiBaseURL=""
       />,
     );
@@ -132,11 +136,40 @@ describe("EnvironmentCard", () => {
         environment={withCurrent}
         deployTarget={target}
         canManage={false}
+        isAdmin={false}
         apiBaseURL=""
       />,
     );
     expect(screen.queryByRole("button", { name: /Edit native target/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Add native target/i })).toBeNull();
+  });
+
+  it("offers Remove only to admins, with a confirm step", () => {
+    const { rerender } = render(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        canManage
+        isAdmin={false}
+        apiBaseURL=""
+      />,
+    );
+    // A maintainer (canManage but not admin) never sees Remove.
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+
+    rerender(
+      <EnvironmentCard
+        slug="acme"
+        environment={withCurrent}
+        canManage
+        isAdmin
+        apiBaseURL=""
+      />,
+    );
+    // Admin sees Remove; it's a two-step confirm (no immediate delete).
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
 
   it("lazily fetches history on expand and lists past deploys", async () => {
@@ -170,7 +203,7 @@ describe("EnvironmentCard", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
     // History is NOT fetched until the operator expands it.
     expect(fetchMock).not.toHaveBeenCalled();
 
@@ -185,7 +218,7 @@ describe("EnvironmentCard", () => {
 
   it("surfaces a history fetch error without crashing", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
-    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} />);
+    render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
     await waitFor(() => expect(screen.getByText(/Couldn't load history/)).toBeTruthy());
   });

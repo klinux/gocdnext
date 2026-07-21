@@ -17,6 +17,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
+import { RemoveEnvironment } from "@/components/environments/remove-environment-button.client";
 import {
   Card,
   CardContent,
@@ -49,6 +50,10 @@ type Props = {
   // or admin, or auth disabled). Gates the edit/add affordances — absence of a
   // target alone is ambiguous (viewer vs maintainer-with-no-target).
   canManage: boolean;
+  // Whether the current user is an admin (or auth disabled). Gates the
+  // destructive "Remove environment" action — the server cascade drops deploy
+  // history + any gated target, so it's admin-only (tighter than canManage).
+  isAdmin: boolean;
   // Browser-facing API base; "" = same-origin. Threaded from the RSC
   // page so the lazy history fetch hits the right host.
   apiBaseURL: string;
@@ -79,6 +84,7 @@ export function EnvironmentCard({
   environment,
   deployTarget,
   canManage,
+  isAdmin,
   apiBaseURL,
 }: Props) {
   const { current } = environment;
@@ -178,20 +184,29 @@ export function EnvironmentCard({
         ) : null}
 
         <div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="-ml-2 h-7 text-xs text-muted-foreground"
-            onClick={toggleHistory}
-            aria-expanded={open}
-          >
-            {open ? (
-              <ChevronUp className="size-3.5" aria-hidden />
-            ) : (
-              <ChevronDown className="size-3.5" aria-hidden />
-            )}
-            History
-          </Button>
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-ml-2 h-7 text-xs text-muted-foreground"
+              onClick={toggleHistory}
+              aria-expanded={open}
+            >
+              {open ? (
+                <ChevronUp className="size-3.5" aria-hidden />
+              ) : (
+                <ChevronDown className="size-3.5" aria-hidden />
+              )}
+              History
+            </Button>
+            {isAdmin ? (
+              <RemoveEnvironment
+                slug={slug}
+                environmentId={environment.id}
+                environmentName={environment.name}
+              />
+            ) : null}
+          </div>
           {open ? (
             <DeployHistory
               state={history}

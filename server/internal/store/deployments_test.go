@@ -55,6 +55,115 @@ func TestEnsureEnvironment_LazyCreateIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeleteEnvironment(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	// An IDLE env (only finalized history) deletes and cascades its revisions.
+	t.Run("cascades finalized history when idle", func(t *testing.T) {
+		runID, _, _, jobID, _ := seedRunningJob(t, pool)
+		projectID := projectIDForRun(t, pool, runID)
+		envID, err := s.EnsureEnvironment(ctx, projectID, "prod-idle")
+		if err != nil {
+			t.Fatalf("EnsureEnvironment: %v", err)
+		}
+		revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+			EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "1.0.abc",
+		})
+		if err != nil {
+			t.Fatalf("CreateDeploymentRevision: %v", err)
+		}
+		// CreateDeploymentRevision records it in_progress; finalize it so the env is
+		// idle (an in-flight revision would block the delete — covered below).
+		if _, err := pool.Exec(ctx,
+			`UPDATE deployment_revisions SET status='success', finished_at=NOW() WHERE id=$1`, revID,
+		); err != nil {
+			t.Fatalf("finalize revision: %v", err)
+		}
+
+		outcome, err := s.DeleteEnvironment(ctx, projectID, envID)
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if outcome != store.EnvDeleteDeleted {
+			t.Fatalf("outcome = %v, want EnvDeleteDeleted", outcome)
+		}
+		if envs, _ := s.ListEnvironments(ctx, projectID); len(envs) != 0 {
+			t.Fatalf("environment survived delete: %+v", envs)
+		}
+		// ON DELETE CASCADE dropped the finalized revision too.
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM deployment_revisions WHERE environment_id = $1`, envID,
+		).Scan(&n); err != nil {
+			t.Fatalf("count revisions: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("cascade left %d deployment_revisions", n)
+		}
+	})
+
+	// An in-flight deploy (in_progress revision) blocks the delete — otherwise the
+	// cascade would yank the revision out from under a still-running job.
+	t.Run("refuses while a deploy is in progress", func(t *testing.T) {
+		runID, _, _, jobID, _ := seedRunningJob(t, pool)
+		projectID := projectIDForRun(t, pool, runID)
+		envID, err := s.EnsureEnvironment(ctx, projectID, "prod-active")
+		if err != nil {
+			t.Fatalf("EnsureEnvironment: %v", err)
+		}
+		if _, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+			EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: 0, Version: "2.0.def",
+		}); err != nil {
+			t.Fatalf("CreateDeploymentRevision: %v", err)
+		}
+
+		outcome, err := s.DeleteEnvironment(ctx, projectID, envID)
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if outcome != store.EnvDeleteActive {
+			t.Fatalf("outcome = %v, want EnvDeleteActive", outcome)
+		}
+		if envs, _ := s.ListEnvironments(ctx, projectID); len(envs) != 1 {
+			t.Fatalf("active-deploy env was removed: %+v", envs)
+		}
+	})
+
+	// The delete is scoped to its project: naming it through another project → absent.
+	t.Run("foreign project cannot delete", func(t *testing.T) {
+		projectA := seedProject(t, s, "env-del-a")
+		projectB := seedProject(t, s, "env-del-b")
+		envID, err := s.EnsureEnvironment(ctx, projectA, "staging")
+		if err != nil {
+			t.Fatalf("EnsureEnvironment: %v", err)
+		}
+		outcome, err := s.DeleteEnvironment(ctx, projectB, envID)
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if outcome != store.EnvDeleteAbsent {
+			t.Fatalf("outcome = %v, want EnvDeleteAbsent (wrong project)", outcome)
+		}
+		if envs, _ := s.ListEnvironments(ctx, projectA); len(envs) != 1 {
+			t.Fatalf("scope guard removed the env: %+v", envs)
+		}
+	})
+
+	// An absent id → EnvDeleteAbsent (→ 404 at the API), not an error.
+	t.Run("absent environment", func(t *testing.T) {
+		projectID := seedProject(t, s, "env-del-absent")
+		outcome, err := s.DeleteEnvironment(ctx, projectID, uuid.New())
+		if err != nil {
+			t.Fatalf("DeleteEnvironment: %v", err)
+		}
+		if outcome != store.EnvDeleteAbsent {
+			t.Fatalf("outcome = %v, want EnvDeleteAbsent", outcome)
+		}
+	})
+}
+
 func TestDeploymentRevision_LifecycleInProgressToSuccess(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

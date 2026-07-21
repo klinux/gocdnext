@@ -33,6 +33,7 @@ const (
 	AuditActionDeployRollback         = "deploy.rollback"
 	AuditActionDeployTargetSet        = "deploy_target.set"
 	AuditActionDeployTargetDelete     = "deploy_target.delete"
+	AuditActionEnvironmentDelete      = "environment.delete"
 	AuditActionJobCancel              = "job.cancel"
 	AuditActionApprovalApprove        = "approval.approve"
 	AuditActionApprovalReject         = "approval.reject"
