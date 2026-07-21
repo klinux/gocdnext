@@ -827,6 +827,15 @@ export type DeploymentsList = { deployments: DeploymentRecord[] };
 // Application on which registered cluster, and whether gocdnext triggers the sync or
 // only observes. 1:1 with an environment. The GET is MAINTAINER-gated, so this config
 // (cluster/application/sync_mode) is only fetched for maintainers; viewers never see it.
+// GoverningGate is the approval-gate config on a target (control mode). Maintainer-
+// readable so the edit form can round-trip it; changing it is admin-only (server-side).
+export type GoverningGate = {
+  approvers?: string[];
+  approver_groups?: string[];
+  required: number;
+  description?: string;
+};
+
 export type DeployTarget = {
   environment: string;
   provider: string; // "argocd"
@@ -840,6 +849,8 @@ export type DeployTarget = {
   rollout_cluster?: string;
   rollout_namespace?: string;
   rollout_name?: string;
+  // Approval gate (control mode). Present => gated.
+  governing_gate?: GoverningGate;
 };
 
 export type DeployTargetsList = { deploy_targets: DeployTarget[] };
@@ -871,6 +882,16 @@ export type DeployWatch = {
   rollout_aborted?: boolean;
   rollout_error?: string;
   rollout_observed_at?: string;
+
+  // Gate live-state (ADR-0001 Phase 2, viewer-readable). gate_id is the armed token the
+  // UI must echo on approve/reject (present only while a step's gate is armed). Together
+  // with gate_approvals_now/gate_required the UI renders "awaiting approval (1/2)".
+  gate_id?: string;
+  gate_paused_step?: number;
+  gate_required?: number;
+  gate_decision?: "" | "approved" | "rejected";
+  gate_approvals_now?: number;
+
   application?: string;
   cluster?: string;
   sync_mode?: "trigger" | "observe";

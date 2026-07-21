@@ -36,6 +36,10 @@ type StartNativeDeployInput struct {
 	RolloutCluster   string
 	RolloutNamespace string
 	RolloutName      string
+	// GoverningGate is the target's gate config denormalized onto the watch at creation
+	// — an immutable per-deploy snapshot (a mid-flight target edit must not change an
+	// in-flight deploy's gate). nil => this deploy is not gated.
+	GoverningGate *GoverningGate
 }
 
 // StartNativeDeployResult reports the takeover outcome. Started is false when the job
@@ -100,7 +104,7 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 
 	// The watch's WHERE EXISTS(in_progress revision) guard is satisfied by the row
 	// just inserted above (same tx, same snapshot).
-	if _, err := q.CreateDeployWatch(ctx, db.CreateDeployWatchParams{
+	watchParams := db.CreateDeployWatchParams{
 		DeploymentRevisionID: revID,
 		ProjectID:            pgUUID(in.ProjectID),
 		SyncMode:             in.SyncMode,
@@ -113,7 +117,18 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 		RolloutCluster:       nullableString(in.RolloutCluster),
 		RolloutNamespace:     nullableString(in.RolloutNamespace),
 		RolloutName:          nullableString(in.RolloutName),
-	}); err != nil {
+	}
+	// Denormalize the gate config (immutable per-deploy snapshot). gate_required NULL
+	// => not gated; only a rollout-aware deploy can be gated, but we persist whatever
+	// the target carries and let the watcher key on rollout_aware.
+	if g := in.GoverningGate; g != nil {
+		req := int32(g.Required)
+		watchParams.GateApprovers = g.Approvers
+		watchParams.GateApproverGroups = g.ApproverGroups
+		watchParams.GateRequired = &req
+		watchParams.GateDescription = nullableString(g.Description)
+	}
+	if _, err := q.CreateDeployWatch(ctx, watchParams); err != nil {
 		return StartNativeDeployResult{}, fmt.Errorf("store: start native deploy watch: %w", err)
 	}
 

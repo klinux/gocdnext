@@ -30,21 +30,28 @@ type appSyncer interface {
 
 // ArgoProvider is the ArgoCD-backed provider. It observes an Application and, for
 // trigger-mode targets, actuates a sync by writing its `.operation` — never
-// reconciling desired state itself (that is ArgoCD's job). It satisfies the full
-// DeploymentProvider interface (Sync + Observe).
+// reconciling desired state itself (that is ArgoCD's job). For rollout-aware targets
+// it also reads and (Phase 2) controls the Argo Rollouts canary via Promote/Abort. It
+// satisfies the full DeploymentProvider interface (Sync + Observe + Promote + Abort).
 type ArgoProvider struct {
 	fetch   appFetcher
 	rollout rolloutFetcher
 	sync    appSyncer
+	actuate rolloutActuator
 }
 
 // NewArgoProvider wires the provider over the store-backed k8s-CRD transport: the
 // server passes its cluster registry (a ClusterAPI: read for Observe, patch for
-// Sync) and gets a provider that reads/actuates Applications through the target
-// cluster's k8s API.
+// Sync + rollout promote/abort) and gets a provider that reads/actuates Applications
+// and Rollouts through the target cluster's k8s API.
 func NewArgoProvider(api ClusterAPI) *ArgoProvider {
 	f := newK8sAppFetcher(api)
-	return &ArgoProvider{fetch: f, rollout: f, sync: newK8sAppSyncer(api)}
+	return &ArgoProvider{
+		fetch:   f,
+		rollout: f,
+		sync:    newK8sAppSyncer(api),
+		actuate: newK8sRolloutActuator(api),
+	}
 }
 
 // newArgoProviderWith injects an appFetcher directly — for tests that exercise
@@ -56,6 +63,11 @@ func newArgoProviderWith(f appFetcher) *ArgoProvider {
 // newArgoProviderWithSync injects both seams for Sync tests.
 func newArgoProviderWithSync(f appFetcher, s appSyncer) *ArgoProvider {
 	return &ArgoProvider{fetch: f, sync: s}
+}
+
+// newArgoProviderWithActuator injects the rollout actuator — for Promote/Abort tests.
+func newArgoProviderWithActuator(f appFetcher, act rolloutActuator) *ArgoProvider {
+	return &ArgoProvider{fetch: f, actuate: act}
 }
 
 // Observe fetches the target's Application and returns one convergence snapshot.
@@ -150,6 +162,36 @@ func (a *ArgoProvider) Sync(ctx context.Context, target DeploymentTarget, revisi
 	}
 	if err := a.sync.syncApplication(ctx, target, revision, syncOptions); err != nil {
 		return fmt.Errorf("deploy: sync application %s/%s: %w", target.Namespace, target.Application, err)
+	}
+	return nil
+}
+
+// Promote advances a step-paused Argo Rollouts canary one step (clears its
+// pauseConditions). It acts on the target's RESOLVED/pinned Rollout identity
+// (RolloutCluster/Namespace/Name) — the watcher passes the gate-pinned identity, never
+// a re-discovery — so drift in the Application's `.status.resources[]` between observe,
+// vote, and act can't redirect the effect. Idempotent: a promote on an
+// already-advanced rollout is a harmless no-op merge-patch.
+func (a *ArgoProvider) Promote(ctx context.Context, target DeploymentTarget) error {
+	if a.actuate == nil {
+		return errors.New("deploy: provider has no rollout actuator configured")
+	}
+	if err := a.actuate.promoteRollout(ctx, target); err != nil {
+		return fmt.Errorf("deploy: promote rollout %s/%s: %w", target.RolloutNamespace, target.RolloutName, err)
+	}
+	return nil
+}
+
+// Abort reverts an Argo Rollouts canary's TRAFFIC to the stable ReplicaSet (sets
+// `.status.abort`). Like Promote it acts on the pinned identity. It does NOT revert
+// Git/desired — `.spec.template` keeps the new version, so a re-sync or a corrected
+// commit rolls forward. Idempotent.
+func (a *ArgoProvider) Abort(ctx context.Context, target DeploymentTarget) error {
+	if a.actuate == nil {
+		return errors.New("deploy: provider has no rollout actuator configured")
+	}
+	if err := a.actuate.abortRollout(ctx, target); err != nil {
+		return fmt.Errorf("deploy: abort rollout %s/%s: %w", target.RolloutNamespace, target.RolloutName, err)
 	}
 	return nil
 }

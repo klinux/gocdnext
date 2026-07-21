@@ -195,10 +195,15 @@ const (
 
 // DeploymentProvider is the seam over an external GitOps controller. ArgoCD is
 // the first implementation; the interface hedges toward argo-rollouts / git-only
-// later. Promote/Abort (rollout runtime control) arrive with the rollout slice.
+// later. Promote/Abort drive an Argo Rollouts canary (Phase 2 gate control); they act
+// on the target's RESOLVED/pinned Rollout identity, never a re-discovery.
 type DeploymentProvider interface {
 	// Sync actuates the target toward revision (no-op for observe mode).
 	Sync(ctx context.Context, target DeploymentTarget, revision string) error
 	// Observe returns one convergence snapshot.
 	Observe(ctx context.Context, target DeploymentTarget) (DeployState, error)
+	// Promote advances a step-paused canary one step (approve). Idempotent.
+	Promote(ctx context.Context, target DeploymentTarget) error
+	// Abort reverts a canary's traffic to stable (reject). Idempotent; not a Git revert.
+	Abort(ctx context.Context, target DeploymentTarget) error
 }

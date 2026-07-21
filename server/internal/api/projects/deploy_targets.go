@@ -32,6 +32,11 @@ type deployTargetDTO struct {
 	RolloutCluster   string `json:"rollout_cluster,omitempty"`
 	RolloutNamespace string `json:"rollout_namespace,omitempty"`
 	RolloutName      string `json:"rollout_name,omitempty"`
+
+	// GoverningGate is the approval-gate config (control mode). Present => gated. Shown
+	// to maintainers (route is maintainer-gated) so the UI can round-trip it on an edit;
+	// CHANGING it is admin-only, enforced server-side.
+	GoverningGate *store.GoverningGate `json:"governing_gate,omitempty"`
 }
 
 // WithDeployRegistrar wires the native deploy-target registrar (ADR-0001).
@@ -61,6 +66,9 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		RolloutCluster   string `json:"rollout_cluster"`
 		RolloutNamespace string `json:"rollout_namespace"`
 		RolloutName      string `json:"rollout_name"`
+		// GoverningGate — control mode. Setting/changing it (and rerouting a gated
+		// target) is admin-only, enforced in the registrar via CallerIsAdmin below.
+		GoverningGate *store.GoverningGate `json:"governing_gate"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDeployTargetBytes)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -72,9 +80,14 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The route is maintainer-gated; the registrar additionally enforces that
+	// gate/routing edits on a gated target are admin-only. Auth-disabled (no user) =>
+	// full access, matching the rest of the deploy surface.
 	var createdBy string
+	callerIsAdmin := true
 	if u, ok := authapi.UserFromContext(r.Context()); ok {
 		createdBy = u.ID.String()
+		callerIsAdmin = store.RoleSatisfies(u.Role, store.RoleAdmin)
 	}
 
 	tgt, err := h.deployRegistrar.Register(r.Context(), deploysvc.RegisterInput{
@@ -90,6 +103,8 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		RolloutCluster:   req.RolloutCluster,
 		RolloutNamespace: req.RolloutNamespace,
 		RolloutName:      req.RolloutName,
+		GoverningGate:    req.GoverningGate,
+		CallerIsAdmin:    callerIsAdmin,
 	})
 	if err != nil {
 		// Enrich every fault log for this request with the request context so a
@@ -112,6 +127,7 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		Application: tgt.Application, Namespace: tgt.Namespace, SyncMode: tgt.SyncMode,
 		RolloutAware: tgt.RolloutAware, RolloutCluster: tgt.RolloutCluster,
 		RolloutNamespace: tgt.RolloutNamespace, RolloutName: tgt.RolloutName,
+		GoverningGate: tgt.GoverningGate,
 	})
 }
 
@@ -134,6 +150,7 @@ func (h *Handler) ListDeployTargets(w http.ResponseWriter, r *http.Request) {
 			Application: it.Application, Namespace: it.Namespace, SyncMode: it.SyncMode,
 			RolloutAware: it.RolloutAware, RolloutCluster: it.RolloutCluster,
 			RolloutNamespace: it.RolloutNamespace, RolloutName: it.RolloutName,
+			GoverningGate: it.GoverningGate,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deploy_targets": dtos})
@@ -145,6 +162,36 @@ func (h *Handler) DeleteDeployTarget(w http.ResponseWriter, r *http.Request) {
 	env := chi.URLParam(r, "env")
 	projectID, ok := h.resolveProjectID(w, r, slug)
 	if !ok {
+		return
+	}
+	// SoD: deleting a GATED target is admin-only — otherwise a maintainer could delete
+	// it and re-create it without the gate (bypassing the admin-only gate edit). A
+	// non-gated target stays maintainer-deletable. Auth-disabled (no user) => admin.
+	callerIsAdmin := true
+	if u, ok := authapi.UserFromContext(r.Context()); ok {
+		callerIsAdmin = store.RoleSatisfies(u.Role, store.RoleAdmin)
+	}
+	if !callerIsAdmin {
+		// Atomic: delete only if still ungated, reporting the outcome in one snapshot so
+		// there's no TOCTOU window (a gate added between a read and the delete can't be
+		// bypassed — the delete itself is conditional on governing_gate IS NULL).
+		outcome, err := h.store.DeleteUngatedDeployTargetByEnvironment(r.Context(), projectID, env)
+		if err != nil {
+			h.log.Error("deploy targets: guarded delete", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		switch outcome {
+		case store.DeleteTargetGated:
+			http.Error(w, "removing a gated deploy target requires admin", http.StatusForbidden)
+			return
+		case store.DeleteTargetAbsent:
+			http.Error(w, "deploy target not found", http.StatusNotFound)
+			return
+		}
+		audit.Emit(r.Context(), h.log, h.store,
+			store.AuditActionDeployTargetDelete, "environment", env, map[string]any{"slug": slug})
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	deleted, err := h.store.DeleteDeployTargetByEnvironment(r.Context(), projectID, env)
@@ -204,6 +251,8 @@ func writeFault(w http.ResponseWriter, log *slog.Logger, err error) {
 		http.Error(w, f.Error(), http.StatusNotFound)
 	case deploysvc.FaultForbidden:
 		http.Error(w, f.Error(), http.StatusForbidden)
+	case deploysvc.FaultConflict:
+		http.Error(w, f.Error(), http.StatusConflict)
 	case deploysvc.FaultUnprocessable:
 		// A multi-source rejection is safe to echo; a transport failure may carry the
 		// cluster's internal API-server URL, so return a short public message and log
@@ -233,6 +282,8 @@ func faultStatus(kind deploysvc.FaultKind) int {
 		return http.StatusForbidden
 	case deploysvc.FaultUnprocessable:
 		return http.StatusUnprocessableEntity
+	case deploysvc.FaultConflict:
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

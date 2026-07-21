@@ -192,36 +192,52 @@ type DeployTarget struct {
 	RolloutCluster   *string
 	RolloutNamespace *string
 	RolloutName      *string
+	GoverningGate    []byte
 }
 
 type DeployWatch struct {
-	DeploymentRevisionID pgtype.UUID
-	ProjectID            pgtype.UUID
-	SyncMode             string
-	Cluster              string
-	Application          string
-	Namespace            string
-	ExpectedRevision     string
-	WatchStartedAt       pgtype.Timestamptz
-	SyncRequestedAt      pgtype.Timestamptz
-	DeadlineAt           pgtype.Timestamptz
-	DegradedSince        pgtype.Timestamptz
-	ClaimID              pgtype.UUID
-	ClaimedBy            *string
-	ClaimedAt            pgtype.Timestamptz
-	CreatedAt            pgtype.Timestamptz
-	RolloutAware         bool
-	RolloutCluster       *string
-	RolloutNamespace     *string
-	RolloutName          *string
-	RolloutPhase         *string
-	RolloutMessage       *string
-	RolloutPauseReason   *string
-	RolloutCurrentStep   *int32
-	RolloutStepCount     *int32
-	RolloutAborted       *bool
-	RolloutError         *string
-	RolloutObservedAt    pgtype.Timestamptz
+	DeploymentRevisionID   pgtype.UUID
+	ProjectID              pgtype.UUID
+	SyncMode               string
+	Cluster                string
+	Application            string
+	Namespace              string
+	ExpectedRevision       string
+	WatchStartedAt         pgtype.Timestamptz
+	SyncRequestedAt        pgtype.Timestamptz
+	DeadlineAt             pgtype.Timestamptz
+	DegradedSince          pgtype.Timestamptz
+	ClaimID                pgtype.UUID
+	ClaimedBy              *string
+	ClaimedAt              pgtype.Timestamptz
+	CreatedAt              pgtype.Timestamptz
+	RolloutAware           bool
+	RolloutCluster         *string
+	RolloutNamespace       *string
+	RolloutName            *string
+	RolloutPhase           *string
+	RolloutMessage         *string
+	RolloutPauseReason     *string
+	RolloutCurrentStep     *int32
+	RolloutStepCount       *int32
+	RolloutAborted         *bool
+	RolloutError           *string
+	RolloutObservedAt      pgtype.Timestamptz
+	GateApprovers          []string
+	GateApproverGroups     []string
+	GateRequired           *int32
+	GateDescription        *string
+	GateID                 pgtype.UUID
+	GateArmedAt            pgtype.Timestamptz
+	GatePausedStep         *int32
+	GateRolloutCluster     *string
+	GateRolloutNamespace   *string
+	GateRolloutName        *string
+	GateDecision           *string
+	GateDecidedBy          *string
+	GateDecidedAt          pgtype.Timestamptz
+	GateActionedAt         pgtype.Timestamptz
+	RolloutAbortActionedAt pgtype.Timestamptz
 }
 
 type DeploymentRevision struct {

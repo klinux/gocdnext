@@ -45,10 +45,25 @@ func (q *Queries) DeleteDeployTargetByEnvironment(ctx context.Context, arg Delet
 	return result.RowsAffected(), nil
 }
 
+const deleteDeployTargetByID = `-- name: DeleteDeployTargetByID :execrows
+DELETE FROM deploy_targets WHERE id = $1
+`
+
+// Deletes a specific target row (used after LockDeployTargetForDelete decided the
+// locked row is ungated). Same tx / lock as the lock-read.
+func (q *Queries) DeleteDeployTargetByID(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeployTargetByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listDeployTargetsForProject = `-- name: ListDeployTargetsForProject :many
 SELECT dt.id, e.name AS environment, dt.provider, dt.cluster, dt.application,
        dt.namespace, dt.sync_mode,
-       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name
+       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,
+       dt.governing_gate
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
 WHERE e.project_id = $1
@@ -67,6 +82,7 @@ type ListDeployTargetsForProjectRow struct {
 	RolloutCluster   *string
 	RolloutNamespace *string
 	RolloutName      *string
+	GoverningGate    []byte
 }
 
 func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgtype.UUID) ([]ListDeployTargetsForProjectRow, error) {
@@ -90,6 +106,7 @@ func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgt
 			&i.RolloutCluster,
 			&i.RolloutNamespace,
 			&i.RolloutName,
+			&i.GoverningGate,
 		); err != nil {
 			return nil, err
 		}
@@ -101,9 +118,40 @@ func (q *Queries) ListDeployTargetsForProject(ctx context.Context, projectID pgt
 	return items, nil
 }
 
+const lockDeployTargetForDelete = `-- name: LockDeployTargetForDelete :one
+SELECT dt.id, dt.governing_gate
+FROM deploy_targets dt
+JOIN environments e ON e.id = dt.environment_id
+WHERE e.project_id = $1 AND e.name = $2
+FOR UPDATE OF dt
+`
+
+type LockDeployTargetForDeleteParams struct {
+	ProjectID pgtype.UUID
+	Name      string
+}
+
+type LockDeployTargetForDeleteRow struct {
+	ID            pgtype.UUID
+	GoverningGate []byte
+}
+
+// Locks the target row FOR UPDATE and reads its gate, so the non-admin delete's
+// ungated-check happens on the LOCKED row. A concurrent admin gate-add blocks on this
+// lock (or is seen post-commit), closing the TOCTOU: the delete decision can't observe
+// a stale ungated snapshot and then remove a row that became gated. ErrNoRows => the
+// target is absent (404). Runs in the same tx as DeleteDeployTargetByID.
+func (q *Queries) LockDeployTargetForDelete(ctx context.Context, arg LockDeployTargetForDeleteParams) (LockDeployTargetForDeleteRow, error) {
+	row := q.db.QueryRow(ctx, lockDeployTargetForDelete, arg.ProjectID, arg.Name)
+	var i LockDeployTargetForDeleteRow
+	err := row.Scan(&i.ID, &i.GoverningGate)
+	return i, err
+}
+
 const resolveDeployTarget = `-- name: ResolveDeployTarget :one
 SELECT dt.provider, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
        dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,
+       dt.governing_gate,
        e.project_id, e.id AS environment_id, e.name AS environment
 FROM deploy_targets dt
 JOIN environments e ON e.id = dt.environment_id
@@ -125,6 +173,7 @@ type ResolveDeployTargetRow struct {
 	RolloutCluster   *string
 	RolloutNamespace *string
 	RolloutName      *string
+	GoverningGate    []byte
 	ProjectID        pgtype.UUID
 	EnvironmentID    pgtype.UUID
 	Environment      string
@@ -146,6 +195,7 @@ func (q *Queries) ResolveDeployTarget(ctx context.Context, arg ResolveDeployTarg
 		&i.RolloutCluster,
 		&i.RolloutNamespace,
 		&i.RolloutName,
+		&i.GoverningGate,
 		&i.ProjectID,
 		&i.EnvironmentID,
 		&i.Environment,
@@ -156,9 +206,9 @@ func (q *Queries) ResolveDeployTarget(ctx context.Context, arg ResolveDeployTarg
 const upsertDeployTarget = `-- name: UpsertDeployTarget :one
 INSERT INTO deploy_targets (
     environment_id, provider, cluster, application, namespace, sync_mode, created_by,
-    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name, governing_gate
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (environment_id) DO UPDATE SET
     provider = EXCLUDED.provider,
     cluster = EXCLUDED.cluster,
@@ -169,6 +219,7 @@ ON CONFLICT (environment_id) DO UPDATE SET
     rollout_cluster = EXCLUDED.rollout_cluster,
     rollout_namespace = EXCLUDED.rollout_namespace,
     rollout_name = EXCLUDED.rollout_name,
+    governing_gate = EXCLUDED.governing_gate,
     updated_at = NOW()
 RETURNING id
 `
@@ -185,10 +236,13 @@ type UpsertDeployTargetParams struct {
 	RolloutCluster   *string
 	RolloutNamespace *string
 	RolloutName      *string
+	GoverningGate    []byte
 }
 
 // Register/update the deploy target for an environment (1:1). The admin API
-// EnsureEnvironment's the environment first, then upserts here.
+// EnsureEnvironment's the environment first, then upserts here. governing_gate is
+// the JSONB gate config (NULL => no gate); the caller's separation-of-duties check
+// (admin-only to change a gate/routing on a gated target) runs BEFORE this write.
 func (q *Queries) UpsertDeployTarget(ctx context.Context, arg UpsertDeployTargetParams) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, upsertDeployTarget,
 		arg.EnvironmentID,
@@ -202,6 +256,92 @@ func (q *Queries) UpsertDeployTarget(ctx context.Context, arg UpsertDeployTarget
 		arg.RolloutCluster,
 		arg.RolloutNamespace,
 		arg.RolloutName,
+		arg.GoverningGate,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const upsertDeployTargetGuarded = `-- name: UpsertDeployTargetGuarded :one
+INSERT INTO deploy_targets (
+    environment_id, provider, cluster, application, namespace, sync_mode, created_by,
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name, governing_gate
+)
+VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11, $12
+)
+ON CONFLICT (environment_id) DO UPDATE SET
+    provider = EXCLUDED.provider,
+    cluster = EXCLUDED.cluster,
+    application = EXCLUDED.application,
+    namespace = EXCLUDED.namespace,
+    sync_mode = EXCLUDED.sync_mode,
+    rollout_aware = EXCLUDED.rollout_aware,
+    rollout_cluster = EXCLUDED.rollout_cluster,
+    rollout_namespace = EXCLUDED.rollout_namespace,
+    rollout_name = EXCLUDED.rollout_name,
+    governing_gate = EXCLUDED.governing_gate,
+    updated_at = NOW()
+WHERE deploy_targets.governing_gate IS NOT DISTINCT FROM $13::jsonb
+  AND deploy_targets.rollout_aware = $14
+  AND deploy_targets.rollout_cluster IS NOT DISTINCT FROM $15
+  AND deploy_targets.rollout_namespace IS NOT DISTINCT FROM $16
+  AND deploy_targets.rollout_name IS NOT DISTINCT FROM $17
+RETURNING id
+`
+
+type UpsertDeployTargetGuardedParams struct {
+	EnvironmentID            pgtype.UUID
+	Provider                 string
+	Cluster                  string
+	Application              string
+	Namespace                string
+	SyncMode                 string
+	CreatedBy                string
+	RolloutAware             bool
+	RolloutCluster           *string
+	RolloutNamespace         *string
+	RolloutName              *string
+	GoverningGate            []byte
+	ExpectedGate             []byte
+	ExpectedRolloutAware     bool
+	ExpectedRolloutCluster   *string
+	ExpectedRolloutNamespace *string
+	ExpectedRolloutName      *string
+}
+
+// The NON-ADMIN upsert: same as UpsertDeployTarget, but the ON CONFLICT UPDATE applies
+// ONLY if the row's gate + routing still equal what the caller's separation-of-duties
+// check authorized against (the expected_* params, captured at the SoD read). This is
+// the optimistic-concurrency backstop for the TOCTOU between that read and this write:
+// if an admin changed the gate/routing in between, the guard fails, 0 rows return, and
+// the store maps that to ErrDeployTargetConflict (409) — a stale non-admin write can
+// never clobber a concurrent admin gate change. The INSERT branch (a fresh create) is
+// unguarded (no existing gate to protect); the registrar's SoD check independently
+// rejects a non-admin CREATING a gate.
+func (q *Queries) UpsertDeployTargetGuarded(ctx context.Context, arg UpsertDeployTargetGuardedParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, upsertDeployTargetGuarded,
+		arg.EnvironmentID,
+		arg.Provider,
+		arg.Cluster,
+		arg.Application,
+		arg.Namespace,
+		arg.SyncMode,
+		arg.CreatedBy,
+		arg.RolloutAware,
+		arg.RolloutCluster,
+		arg.RolloutNamespace,
+		arg.RolloutName,
+		arg.GoverningGate,
+		arg.ExpectedGate,
+		arg.ExpectedRolloutAware,
+		arg.ExpectedRolloutCluster,
+		arg.ExpectedRolloutNamespace,
+		arg.ExpectedRolloutName,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)

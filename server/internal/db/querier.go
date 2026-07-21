@@ -29,6 +29,14 @@ type Querier interface {
 	// BROADCAST to k8s-capable agents that may never have owned a
 	// job (the whole point of the broadcast model).
 	AgentOwnedJobInRun(ctx context.Context, arg AgentOwnedJobInRunParams) (bool, error)
+	// Arm the approval gate for the current indefinite pause. Stamps a FRESH gate_id (the
+	// anti-stale token), the armed-at time, the paused step, and the RESOLVED Rollout
+	// identity PINNED for this gate — Promote/Abort act on these, never a re-discovery, so
+	// `.status.resources[]` drift can't redirect the effect. All three identity columns are
+	// stamped together (a complete pinned tuple; the watcher only arms with all three).
+	// Fenced on claim_id; `gate_id IS NULL` makes a double-tick a no-op (never re-arms a
+	// fresh token under an in-flight vote).
+	ArmRolloutGate(ctx context.Context, arg ArmRolloutGateParams) (int64, error)
 	// Moves a queued, unassigned job to running and records the agent. The status
 	// predicate prevents a race where two scheduler ticks pick the same job.
 	//
@@ -125,6 +133,15 @@ type Querier interface {
 	ClaimSupersedeEffects(ctx context.Context, arg ClaimSupersedeEffectsParams) (bool, error)
 	// Health recovered before the debounce elapsed: reset the anchor. Fenced on claim_id.
 	ClearDeployWatchDegraded(ctx context.Context, arg ClearDeployWatchDegradedParams) (int64, error)
+	// Disarm the current step's gate: null the per-arm / decision / action columns. The
+	// CONFIG columns (gate_approvers/required/description) persist for the whole deploy, so
+	// the next pause re-arms with the same policy. If cleared while STILL UNDECIDED (an
+	// external promote before any vote), resume the deadline with the one-time shift
+	// deadline_at += NOW() - gate_armed_at. The CASE reads the OLD row values (an UPDATE's
+	// SET RHS all see the pre-update row), so it computes the shift before nulling. Guarded
+	// so it's applied at most once — a DECIDED gate already had its deadline resumed by
+	// DecideRolloutGate. Fenced on claim_id.
+	ClearRolloutGateColumns(ctx context.Context, arg ClearRolloutGateColumnsParams) (int64, error)
 	// Clears queue_reason. Called by the scheduler when a run transitions
 	// to running (predecessor finished, run is dispatchable). Also called
 	// by terminal-transition paths so a canceled-while-queued run doesn't
@@ -253,6 +270,10 @@ type Querier interface {
 	// BEFORE Sync fires so a crash between create and Sync is recoverable. The
 	// WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
 	// duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
+	// The gate_* CONFIG columns are the target's governing_gate denormalized here at
+	// creation (an immutable per-deploy snapshot; a mid-flight target edit must not change
+	// an in-flight deploy's gate). gate_required NULL => this deploy is not gated. The
+	// per-arm / decision / action gate columns stay NULL until the watcher arms a step.
 	CreateDeployWatch(ctx context.Context, arg CreateDeployWatchParams) (DeployWatch, error)
 	// Recorded at dispatch with the resolved version, status in_progress,
 	// tagged with the dispatch attempt so retries don't collide.
@@ -286,7 +307,15 @@ type Querier interface {
 	// lock (TryRollupLock, shared with the run rollup). since_days <= 0 = full
 	// rebuild.
 	DeleteDeployDailyWindow(ctx context.Context, sinceDays int32) error
+	// Delete the current arm's approval votes so the next step's gate starts fresh. Votes
+	// reuse job_run_approvals keyed on the deploy's job_run_id; each canary step is its own
+	// round, so a step's votes must not carry into the next. The durable per-decision record
+	// is the audit event emitted by DecideRolloutGate, not these transient rows.
+	DeleteDeployGateVotes(ctx context.Context, deploymentRevisionID pgtype.UUID) error
 	DeleteDeployTargetByEnvironment(ctx context.Context, arg DeleteDeployTargetByEnvironmentParams) (int64, error)
+	// Deletes a specific target row (used after LockDeployTargetForDelete decided the
+	// locked row is ungated). Same tx / lock as the lock-read.
+	DeleteDeployTargetByID(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Fenced delete used by the atomic terminal tx: 0 rows means the lease was lost, so
 	// the caller MUST NOT terminalize the deploy (fencing guarantee).
 	DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeployWatchClaimedParams) (int64, error)
@@ -550,6 +579,10 @@ type Querier interface {
 	GetComplianceFramework(ctx context.Context, id pgtype.UUID) (ComplianceFramework, error)
 	GetCompliancePolicy(ctx context.Context, id pgtype.UUID) (CompliancePolicy, error)
 	GetDeployWatch(ctx context.Context, deploymentRevisionID pgtype.UUID) (DeployWatch, error)
+	// The deploy's cancel/supersede intent (job_runs.cancel_requested_at via the revision's
+	// job_run) for the watcher's cancel-abort path. NULL = not canceled. Kept as a separate
+	// read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
+	GetDeployWatchCancelRequestedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
@@ -1344,6 +1377,12 @@ type Querier interface {
 	// Filter by provider + status keep the page useful even under
 	// heavy traffic. Empty string = no filter on that axis.
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
+	// Locks the target row FOR UPDATE and reads its gate, so the non-admin delete's
+	// ungated-check happens on the LOCKED row. A concurrent admin gate-add blocks on this
+	// lock (or is seen post-commit), closing the TOCTOU: the delete decision can't observe
+	// a stale ungated snapshot and then remove a row that became gated. ErrNoRows => the
+	// target is absent (404). Runs in the same tx as DeleteDeployTargetByID.
+	LockDeployTargetForDelete(ctx context.Context, arg LockDeployTargetForDeleteParams) (LockDeployTargetForDeleteRow, error)
 	// Generation-aware offline mark. Only flips status when the
 	// closing handler's observed generation still matches the row.
 	// A successor Register bumps session_generation, so an old
@@ -1356,6 +1395,10 @@ type Querier interface {
 	MarkArtifactReady(ctx context.Context, arg MarkArtifactReadyParams) (int64, error)
 	// Stamp the correlation anchor right after Sync fires. Fenced on claim_id.
 	MarkDeployWatchSyncRequested(ctx context.Context, arg MarkDeployWatchSyncRequestedParams) (int64, error)
+	// Record that the gated Promote/Abort was ISSUED for this decision (anti-retry only —
+	// no deadline change; the terminal DECISION already resumed the deadline). Fenced on
+	// claim_id; `gate_actioned_at IS NULL` makes a re-tick a no-op.
+	MarkGateActioned(ctx context.Context, arg MarkGateActionedParams) (int64, error)
 	// Flips the link's lifecycle flag after the check is PATCHed to a terminal
 	// state on GitHub. A later rerun reads this to decide reuse vs. recreate:
 	// GitHub won't cleanly reopen a completed check (completed_at is set-once), so
@@ -1374,6 +1417,17 @@ type Querier interface {
 	// Recorded on pull_request closed with merged=true. merge_sha is the commit
 	// that landed on the base branch (correlates to a deployment in phase 2).
 	MarkPullRequestMerged(ctx context.Context, arg MarkPullRequestMergedParams) error
+	// The cancel/supersede abort actuation: stamp rollout_abort_actioned_at (the
+	// gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) and
+	// DISARM any armed gate — decided or not, since cancel outranks a reject — by nulling the
+	// per-arm / decision / action columns unconditionally. The one-time deadline resume
+	// (deadline_at += NOW() - gate_armed_at, computed from the OLD row since SET RHS sees the
+	// pre-update values) applies ONLY when the gate was still UNDECIDED: a decided gate
+	// already resumed the deadline in DecideRolloutGate, so its CASE is false (no
+	// double-shift). A non-gated cancel just stamps the guard. Fenced on claim_id;
+	// `rollout_abort_actioned_at IS NULL` makes a re-tick a no-op. The caller deletes the
+	// step's votes in the same tx.
+	MarkRolloutAbortActioned(ctx context.Context, arg MarkRolloutAbortActionedParams) (int64, error)
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after
@@ -1859,8 +1913,20 @@ type Querier interface {
 	// fire the same tick when it comes back.
 	UpsertCronFired(ctx context.Context, arg UpsertCronFiredParams) error
 	// Register/update the deploy target for an environment (1:1). The admin API
-	// EnsureEnvironment's the environment first, then upserts here.
+	// EnsureEnvironment's the environment first, then upserts here. governing_gate is
+	// the JSONB gate config (NULL => no gate); the caller's separation-of-duties check
+	// (admin-only to change a gate/routing on a gated target) runs BEFORE this write.
 	UpsertDeployTarget(ctx context.Context, arg UpsertDeployTargetParams) (pgtype.UUID, error)
+	// The NON-ADMIN upsert: same as UpsertDeployTarget, but the ON CONFLICT UPDATE applies
+	// ONLY if the row's gate + routing still equal what the caller's separation-of-duties
+	// check authorized against (the expected_* params, captured at the SoD read). This is
+	// the optimistic-concurrency backstop for the TOCTOU between that read and this write:
+	// if an admin changed the gate/routing in between, the guard fails, 0 rows return, and
+	// the store maps that to ErrDeployTargetConflict (409) — a stale non-admin write can
+	// never clobber a concurrent admin gate change. The INSERT branch (a fresh create) is
+	// unguarded (no existing gate to protect); the registrar's SoD check independently
+	// rejects a non-admin CREATING a gate.
+	UpsertDeployTargetGuarded(ctx context.Context, arg UpsertDeployTargetGuardedParams) (pgtype.UUID, error)
 	// Lazy-create: the first dispatch of a job with deploy:{environment:X}
 	// inserts the row; later dispatches just bump updated_at. Returns the
 	// id so the dispatch path can attach a revision regardless of which

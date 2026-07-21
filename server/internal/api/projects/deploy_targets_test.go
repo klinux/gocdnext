@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
+	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	"github.com/gocdnext/gocdnext/server/internal/api/projects"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/deploy"
@@ -60,6 +62,72 @@ func doReq(r http.Handler, method, path, body string) *httptest.ResponseRecorder
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	return rr
+}
+
+// doReqAs serves the request with an authenticated user of the given role, so the
+// role-gated separation-of-duties checks (gate/routing edits, gated-target delete)
+// can be exercised. Without a user (doReq), the handler treats the caller as admin.
+func doReqAs(r http.Handler, method, path, body, role string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req = req.WithContext(authapi.WithUser(req.Context(),
+		store.User{ID: uuid.New(), Email: "u@example.com", Role: role}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	return rr
+}
+
+// Separation of duties at the HTTP boundary: a governing_gate (control mode) may be
+// set/removed only by an admin, and a GATED target may be deleted only by an admin
+// (else a maintainer could delete + re-create it gate-free). A maintainer may still
+// manage ungated targets.
+func TestDeployTargets_GateSoD_API(t *testing.T) {
+	const gatedBody = `{"environment":"production","cluster":"prod","application":"checkout",` +
+		`"sync_mode":"trigger","rollout_aware":true,` +
+		`"governing_gate":{"required":2,"approvers":["alice@example.com"]}}`
+
+	t.Run("maintainer cannot set a gate", func(t *testing.T) {
+		r, s := newDeployTargetsRouter(t, nil, true)
+		seedProjectAndCluster(t, s)
+		rr := doReqAs(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets", gatedBody, store.RoleMaintainer)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("maintainer set-gate status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("admin sets a gate, maintainer can't delete it, admin can", func(t *testing.T) {
+		r, s := newDeployTargetsRouter(t, nil, true)
+		seedProjectAndCluster(t, s)
+
+		rr := doReqAs(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets", gatedBody, store.RoleAdmin)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("admin set-gate status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"governing_gate"`) || !strings.Contains(rr.Body.String(), `"required":2`) {
+			t.Errorf("response missing the gate: %s", rr.Body.String())
+		}
+
+		// Maintainer delete of the gated target → 403 (the delete-then-recreate bypass).
+		if rr := doReqAs(r, http.MethodDelete, "/api/v1/projects/demo/deploy-targets/production", "", store.RoleMaintainer); rr.Code != http.StatusForbidden {
+			t.Fatalf("maintainer delete-gated status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+		}
+		// Admin delete → 204.
+		if rr := doReqAs(r, http.MethodDelete, "/api/v1/projects/demo/deploy-targets/production", "", store.RoleAdmin); rr.Code != http.StatusNoContent {
+			t.Fatalf("admin delete-gated status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("maintainer may delete an UNGATED target", func(t *testing.T) {
+		r, s := newDeployTargetsRouter(t, nil, true)
+		seedProjectAndCluster(t, s)
+		// Admin (default, no user) registers an ungated target.
+		if rr := doReq(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets",
+			`{"environment":"production","cluster":"prod","application":"checkout","sync_mode":"trigger"}`); rr.Code != http.StatusOK {
+			t.Fatalf("register status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if rr := doReqAs(r, http.MethodDelete, "/api/v1/projects/demo/deploy-targets/production", "", store.RoleMaintainer); rr.Code != http.StatusNoContent {
+			t.Fatalf("maintainer delete-ungated status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+		}
+	})
 }
 
 func TestDeployTargets_RegisterListDelete(t *testing.T) {

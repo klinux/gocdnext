@@ -716,6 +716,10 @@ func main() {
 		// Live in-flight native deploys (ADR-0001). Viewer-readable but role-sanitised
 		// in the handler — viewers get live state, maintainers also get the config.
 		p.Get("/api/v1/projects/{slug}/deploy-watches", projectsHandler.ListDeployWatches)
+		// Rollout approval-gate decisions (ADR-0001 Phase 2). Viewer-level route; the
+		// store enforces the gate's approvers allow-list + the anti-stale gate_id token.
+		p.Post("/api/v1/projects/{slug}/deploy-watches/{revID}/approve", projectsHandler.ApproveRolloutGate)
+		p.Post("/api/v1/projects/{slug}/deploy-watches/{revID}/reject", projectsHandler.RejectRolloutGate)
 		p.Get("/api/v1/runs/{id}", runsHandler.Detail)
 		p.Get("/api/v1/runs/{id}/logs/stream", runsHandler.LogsStream)
 		p.Get("/api/v1/runs/{id}/jobs/{jobId}/log.txt", runsHandler.LogExport)

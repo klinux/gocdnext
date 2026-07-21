@@ -30,9 +30,18 @@ type Provider interface {
 type Registry interface {
 	EnsureEnvironment(context.Context, uuid.UUID, string) (uuid.UUID, error)
 	UpsertDeployTarget(context.Context, store.DeployTargetInput) error
+	// UpsertDeployTargetGuarded is the non-admin write: it applies only if the row's
+	// gate/routing still match the SoD-authorized snapshot (guard), else
+	// ErrDeployTargetConflict — the atomic backstop against a concurrent admin gate
+	// change between the SoD read and this write.
+	UpsertDeployTargetGuarded(context.Context, store.DeployTargetInput, store.DeployTargetSoDGuard) error
 	// AuthorizeClusterForProject validates a rollout_cluster reference (existence +
 	// allowed_projects) oracle-safely before the write.
 	AuthorizeClusterForProject(context.Context, uuid.UUID, string) error
+	// ResolveDeployTarget reads the current target (for the separation-of-duties check
+	// — has it a gate? is the routing changing?). Returns store.ErrDeployTargetNotFound
+	// when the environment has no target yet (a create).
+	ResolveDeployTarget(context.Context, uuid.UUID, string) (store.DeployTarget, error)
 }
 
 // Registrar registers deploy targets.
@@ -64,6 +73,14 @@ type RegisterInput struct {
 	RolloutCluster   string
 	RolloutNamespace string
 	RolloutName      string
+	// GoverningGate is the approval-gate config (nil = no gate). Setting/changing it,
+	// and changing the rollout routing on a gated target, is ADMIN-only (separation of
+	// duties — see Register). Requires RolloutAware (a gate with nothing to observe is
+	// rejected).
+	GoverningGate *store.GoverningGate
+	// CallerIsAdmin is the caller's admin status, resolved by the handler from the auth
+	// context (true when auth is disabled). Gates the separation-of-duties check.
+	CallerIsAdmin bool
 }
 
 // Register validates and persists a deploy target. Order is load-bearing: field
@@ -102,6 +119,29 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	if err := deploy.ValidateTargetFields(provider, cluster, application, syncMode); err != nil {
 		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: err}
 	}
+	// A gate with nothing to observe is meaningless: governing_gate requires
+	// rollout_aware. (Disabling rollout_aware on a gated target is itself caught by the
+	// routing SoD check below, so a maintainer can't strip the gate that way either.)
+	if in.GoverningGate != nil && !in.RolloutAware {
+		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: errors.New(
+			"deploysvc: governing_gate requires rollout_aware")}
+	}
+	if err := in.GoverningGate.Validate(); err != nil {
+		return store.DeployTarget{}, &Fault{Kind: FaultInvalid, Err: err}
+	}
+
+	// Separation of duties (admin-only edits on a gated target). A maintainer must not
+	// be able to add/remove/change a gate, nor reroute the rollout of a target that has
+	// (or would have) a gate — either would defeat the gate they can't drop directly.
+	// Non-gate, non-routing fields (application, cluster, sync_mode) stay
+	// maintainer-editable. Skipped for admins (and auth-disabled). Runs AFTER routing
+	// normalization so the comparison is against canonical values, and BEFORE any write.
+	// Returns the authorized snapshot (nil for admins/create) that the guarded upsert
+	// re-checks atomically at write time (the TOCTOU backstop).
+	expected, err := r.enforceGateSoD(ctx, in, rolloutCluster, rolloutNamespace, rolloutName)
+	if err != nil {
+		return store.DeployTarget{}, err
+	}
 
 	target := deploy.DeploymentTarget{
 		ProjectID:        in.ProjectID,
@@ -134,7 +174,7 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 	if err != nil {
 		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: ensure environment: %w", err)}
 	}
-	if err := r.registry.UpsertDeployTarget(ctx, store.DeployTargetInput{
+	upsertInput := store.DeployTargetInput{
 		EnvironmentID:    envID,
 		Provider:         provider,
 		Cluster:          cluster,
@@ -146,8 +186,23 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 		RolloutCluster:   rolloutCluster,
 		RolloutNamespace: rolloutNamespace,
 		RolloutName:      rolloutName,
-	}); err != nil {
-		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: upsert deploy target: %w", err)}
+		GoverningGate:    in.GoverningGate,
+	}
+	// Admins write unconditionally; non-admins go through the guarded upsert, which
+	// re-checks the authorized gate/routing snapshot atomically — a concurrent admin
+	// gate change since the SoD read makes the write a 409 instead of a silent clobber.
+	var upErr error
+	if in.CallerIsAdmin {
+		upErr = r.registry.UpsertDeployTarget(ctx, upsertInput)
+	} else {
+		upErr = r.registry.UpsertDeployTargetGuarded(ctx, upsertInput, guardFrom(expected))
+	}
+	if errors.Is(upErr, store.ErrDeployTargetConflict) {
+		return store.DeployTarget{}, &Fault{Kind: FaultConflict, Err: upErr,
+			Public: "the deploy target changed since you loaded it — reload and try again"}
+	}
+	if upErr != nil {
+		return store.DeployTarget{}, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: upsert deploy target: %w", upErr)}
 	}
 	// Return the canonical (normalized) target so the caller needn't re-read it.
 	return store.DeployTarget{
@@ -162,5 +217,71 @@ func (r *Registrar) Register(ctx context.Context, in RegisterInput) (store.Deplo
 		RolloutCluster:   rolloutCluster,
 		RolloutNamespace: rolloutNamespace,
 		RolloutName:      rolloutName,
+		GoverningGate:    in.GoverningGate,
 	}, nil
+}
+
+// enforceGateSoD applies the separation-of-duties rule: on a target that has (or would
+// have) a governing_gate, changing the gate OR the rollout routing is admin-only. The
+// routing args are the already-normalized values (post rollout_aware clearing). A
+// non-admin request that would change either → 403; everything else (admins,
+// auth-disabled, non-gated routing edits, non-gate field edits on a gated target) is
+// allowed. Reads the current target once (only for non-admins) and RETURNS it — the
+// authorized snapshot the guarded upsert re-checks atomically (nil for admins/create).
+func (r *Registrar) enforceGateSoD(ctx context.Context, in RegisterInput, rolloutCluster, rolloutNamespace, rolloutName string) (*store.DeployTarget, error) {
+	if in.CallerIsAdmin {
+		return nil, nil
+	}
+	existing, err := r.registry.ResolveDeployTarget(ctx, in.ProjectID, strings.TrimSpace(in.Environment))
+	haveExisting := err == nil
+	if err != nil && !errors.Is(err, store.ErrDeployTargetNotFound) {
+		return nil, &Fault{Kind: FaultInternal, Err: fmt.Errorf("deploysvc: resolve target for authz: %w", err)}
+	}
+
+	var existingGate *store.GoverningGate
+	var snapshot *store.DeployTarget
+	if haveExisting {
+		existingGate = existing.GoverningGate
+		snapshot = &existing
+	}
+	// (1) The gate itself. A change includes create (nil->set), remove (set->nil), and
+	// any field edit. Order-sensitive compare; a maintainer's UI round-trips the stored
+	// gate verbatim, so an unchanged resubmit compares equal.
+	if !store.GoverningGateEqual(existingGate, in.GoverningGate) {
+		return nil, &Fault{Kind: FaultForbidden, Err: errors.New(
+			"deploysvc: changing the approval gate requires admin")}
+	}
+	// (2) The rollout routing, but only when a gate is in play (existing or new — which,
+	// past check (1), are the same gate). An ungated target's routing stays
+	// maintainer-editable, exactly as in PR1.
+	if existingGate == nil && in.GoverningGate == nil {
+		return snapshot, nil
+	}
+	routingChanged := !haveExisting ||
+		existing.RolloutAware != in.RolloutAware ||
+		existing.RolloutCluster != rolloutCluster ||
+		existing.RolloutNamespace != rolloutNamespace ||
+		existing.RolloutName != rolloutName
+	if routingChanged {
+		return nil, &Fault{Kind: FaultForbidden, Err: errors.New(
+			"deploysvc: changing rollout routing on a gated target requires admin")}
+	}
+	return snapshot, nil
+}
+
+// guardFrom builds the optimistic-concurrency guard from the SoD-authorized snapshot.
+// A nil snapshot (a create — no existing row) yields the zero guard (gate nil, routing
+// empty): the guarded upsert's INSERT branch is unguarded, and on a concurrent-create
+// conflict the zero guard correctly rejects a row that raced in with a gate/routing.
+func guardFrom(snapshot *store.DeployTarget) store.DeployTargetSoDGuard {
+	if snapshot == nil {
+		return store.DeployTargetSoDGuard{}
+	}
+	return store.DeployTargetSoDGuard{
+		Gate:             snapshot.GoverningGate,
+		RolloutAware:     snapshot.RolloutAware,
+		RolloutCluster:   snapshot.RolloutCluster,
+		RolloutNamespace: snapshot.RolloutNamespace,
+		RolloutName:      snapshot.RolloutName,
+	}
 }

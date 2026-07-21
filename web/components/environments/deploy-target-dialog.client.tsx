@@ -114,6 +114,10 @@ export function DeployTargetDialog({
         ? rolloutNamespace.trim() || undefined
         : undefined,
       rollout_name: rolloutAware ? rolloutName.trim() || undefined : undefined,
+      // Round-trip the gate unchanged (the dialog doesn't edit it yet). The server
+      // reads an absent gate as "remove it" (admin-only), so a maintainer editing a
+      // non-gate field on a gated target must send it back verbatim to avoid a 403.
+      governing_gate: initial?.governing_gate,
     };
     const parsed = deployTargetFormSchema.safeParse(candidate);
     if (!parsed.success) {
