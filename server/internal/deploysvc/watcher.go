@@ -37,6 +37,10 @@ type WatchStore interface {
 	ArmRolloutGate(ctx context.Context, revID, claimID uuid.UUID, in store.ArmRolloutGateInput) (bool, error)
 	MarkGateActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
 	ClearRolloutGate(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	// MarkRolloutAbortActioned is the cancel/supersede abort (stamp + disarm + delete
+	// votes). DeployWatchCancelRequestedAt reads the deploy's cancel intent each tick.
+	MarkRolloutAbortActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	DeployWatchCancelRequestedAt(ctx context.Context, revID uuid.UUID) (*time.Time, error)
 }
 
 // Watcher cadence/lease defaults. The lease TTL must comfortably exceed one watch's
@@ -175,6 +179,16 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		return
 	}
 
+	// Read the deploy's cancel/supersede intent this tick. Best-effort: on a read error we
+	// treat it as not-canceled (logged) — a genuine cancel is re-read next tick, and never
+	// aborting a still-good deploy is the safe failure.
+	cancelRequested := false
+	if at, err := w.store.DeployWatchCancelRequestedAt(ctx, dw.DeploymentRevisionID); err != nil {
+		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "cancel_read", "err", err)...)
+	} else {
+		cancelRequested = at != nil
+	}
+
 	state, err := w.obs.Observe(ctx, targetOf(dw))
 	if err != nil {
 		// An Application read error never TRUSTS the returned snapshot — but it must
@@ -204,7 +218,7 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		}
 	}
 
-	verdict := deploy.Decide(state, anchorsOf(dw), time.Now(), w.degradedWindow)
+	verdict := deploy.Decide(state, anchorsOf(dw, cancelRequested), time.Now(), w.degradedWindow)
 	w.log.Info("watch_decision", append(watchAttrs(dw), "effect", verdict.Effect, "reason", verdict.Reason)...)
 
 	switch verdict.Effect {
@@ -219,7 +233,14 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 	case deploy.Promote:
 		w.actuateGate(ctx, dw, deploy.Promote)
 	case deploy.Abort:
-		w.actuateGate(ctx, dw, deploy.Abort)
+		// Route on the DB-derived cancel intent, NOT the verdict reason: a cancel/supersede
+		// abort disarms the gate + marks the gate-independent guard; a reject abort marks
+		// the gated action. (Decide's cancel branch outranks reject, so these agree.)
+		if cancelRequested {
+			w.abortForCancel(ctx, dw, state)
+		} else {
+			w.actuateGate(ctx, dw, deploy.Abort)
+		}
 	case deploy.ClearGate:
 		w.clearGate(ctx, dw)
 	case deploy.FinalizeSuccess:
@@ -318,7 +339,7 @@ func targetOf(dw store.DeployWatch) deploy.DeploymentTarget {
 	}
 }
 
-func anchorsOf(dw store.DeployWatch) deploy.WatchAnchors {
+func anchorsOf(dw store.DeployWatch, cancelRequested bool) deploy.WatchAnchors {
 	return deploy.WatchAnchors{
 		SyncMode:         deploy.SyncMode(dw.SyncMode),
 		ExpectedRevision: dw.ExpectedRevision,
@@ -326,13 +347,14 @@ func anchorsOf(dw store.DeployWatch) deploy.WatchAnchors {
 		DeadlineAt:       dw.DeadlineAt,
 		DegradedSince:    dw.DegradedSince,
 
-		// Gate control (Phase 2). CancelRequested is wired in the cancel/supersede chunk.
-		RolloutAware:   dw.RolloutAware,
-		Gated:          dw.Gated,
-		GateArmedAt:    dw.GateArmedAt,
-		GateDecision:   deploy.GateDecision(dw.GateDecision),
-		GateActionedAt: dw.GateActionedAt,
-		GatePausedStep: gatePausedStepPtr(dw),
+		// Gate control (Phase 2).
+		RolloutAware:    dw.RolloutAware,
+		Gated:           dw.Gated,
+		CancelRequested: cancelRequested,
+		GateArmedAt:     dw.GateArmedAt,
+		GateDecision:    deploy.GateDecision(dw.GateDecision),
+		GateActionedAt:  dw.GateActionedAt,
+		GatePausedStep:  gatePausedStepPtr(dw),
 		// A COMPLETE pinned tuple — a partial pin is not actionable (the store rejects
 		// arming with one), so it must not read as "pinned".
 		HasPinnedRolloutTarget: dw.GateRolloutCluster != "" && dw.GateRolloutNamespace != "" && dw.GateRolloutName != "",

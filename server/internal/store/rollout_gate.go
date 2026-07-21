@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -71,6 +72,53 @@ func (s *Store) MarkGateActioned(ctx context.Context, revID, claimID uuid.UUID) 
 		return false, fmt.Errorf("store: mark gate actioned: %w", err)
 	}
 	return n > 0, nil
+}
+
+// MarkRolloutAbortActioned records the cancel/supersede abort in one tx: stamp
+// rollout_abort_actioned_at (the gate-independent anti-re-abort guard), disarm any armed
+// gate (nulling the per-arm columns + resuming the deadline once if it was still
+// undecided) AND delete the step's votes. Fenced on claim_id; the guard makes a re-tick a
+// no-op. Returns whether it stamped (false = lease lost or already actioned).
+func (s *Store) MarkRolloutAbortActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, fmt.Errorf("store: mark rollout abort begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	n, err := q.MarkRolloutAbortActioned(ctx, db.MarkRolloutAbortActionedParams{
+		DeploymentRevisionID: pgUUID(revID),
+		ClaimID:              pgUUID(claimID),
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: mark rollout abort actioned: %w", err)
+	}
+	if n == 0 {
+		return false, nil // lease lost or already actioned — leave votes alone
+	}
+	if err := q.DeleteDeployGateVotes(ctx, pgUUID(revID)); err != nil {
+		return false, fmt.Errorf("store: mark rollout abort votes: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: mark rollout abort commit: %w", err)
+	}
+	return true, nil
+}
+
+// DeployWatchCancelRequestedAt reports the deploy's cancel/supersede intent
+// (job_runs.cancel_requested_at) for the watcher's cancel-abort path. Nil = not canceled
+// (or no owning job / unknown revision — treated as not canceled, fail-safe: a genuine
+// cancel is re-read next tick).
+func (s *Store) DeployWatchCancelRequestedAt(ctx context.Context, revID uuid.UUID) (*time.Time, error) {
+	ts, err := s.q.GetDeployWatchCancelRequestedAt(ctx, pgUUID(revID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: deploy watch cancel-requested: %w", err)
+	}
+	return pgTimePtr(ts), nil
 }
 
 // ClearRolloutGate disarms the current step's gate in one tx: null the per-arm/decision/

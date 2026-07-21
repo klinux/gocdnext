@@ -432,6 +432,23 @@ func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtyp
 	return i, err
 }
 
+const getDeployWatchCancelRequestedAt = `-- name: GetDeployWatchCancelRequestedAt :one
+SELECT jr.cancel_requested_at
+FROM deployment_revisions dr
+LEFT JOIN job_runs jr ON jr.id = dr.job_run_id
+WHERE dr.id = $1
+`
+
+// The deploy's cancel/supersede intent (job_runs.cancel_requested_at via the revision's
+// job_run) for the watcher's cancel-abort path. NULL = not canceled. Kept as a separate
+// read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
+func (q *Queries) GetDeployWatchCancelRequestedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getDeployWatchCancelRequestedAt, id)
+	var cancel_requested_at pgtype.Timestamptz
+	err := row.Scan(&cancel_requested_at)
+	return cancel_requested_at, err
+}
+
 const listDeployWatchesForProject = `-- name: ListDeployWatchesForProject :many
 SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        dw.expected_revision, dw.sync_mode,
@@ -568,6 +585,49 @@ type MarkGateActionedParams struct {
 // claim_id; `gate_actioned_at IS NULL` makes a re-tick a no-op.
 func (q *Queries) MarkGateActioned(ctx context.Context, arg MarkGateActionedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markGateActioned, arg.DeploymentRevisionID, arg.ClaimID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markRolloutAbortActioned = `-- name: MarkRolloutAbortActioned :execrows
+UPDATE deploy_watches
+SET rollout_abort_actioned_at = NOW(),
+    deadline_at = CASE
+        WHEN gate_armed_at IS NOT NULL AND gate_decision IS NULL
+        THEN deadline_at + (NOW() - gate_armed_at)
+        ELSE deadline_at
+    END,
+    gate_id                = NULL,
+    gate_armed_at          = NULL,
+    gate_paused_step       = NULL,
+    gate_rollout_cluster   = NULL,
+    gate_rollout_namespace = NULL,
+    gate_rollout_name      = NULL,
+    gate_decision          = NULL,
+    gate_decided_by        = NULL,
+    gate_decided_at        = NULL,
+    gate_actioned_at       = NULL
+WHERE deployment_revision_id = $1
+  AND claim_id = $2
+  AND rollout_abort_actioned_at IS NULL
+`
+
+type MarkRolloutAbortActionedParams struct {
+	DeploymentRevisionID pgtype.UUID
+	ClaimID              pgtype.UUID
+}
+
+// The cancel/supersede abort actuation: stamp rollout_abort_actioned_at (the
+// gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) AND,
+// when a gate was armed & still UNDECIDED, disarm it (null the per-arm columns) + resume
+// the deadline once (computed from the OLD row; SET RHS sees the pre-update values). A
+// DECIDED gate already resumed the deadline (never double-shift); a non-gated cancel just
+// stamps the guard. Fenced on claim_id; `rollout_abort_actioned_at IS NULL` makes a
+// re-tick a no-op. The caller deletes the step's votes in the same tx.
+func (q *Queries) MarkRolloutAbortActioned(ctx context.Context, arg MarkRolloutAbortActionedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRolloutAbortActioned, arg.DeploymentRevisionID, arg.ClaimID)
 	if err != nil {
 		return 0, err
 	}

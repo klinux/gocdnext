@@ -579,6 +579,10 @@ type Querier interface {
 	GetComplianceFramework(ctx context.Context, id pgtype.UUID) (ComplianceFramework, error)
 	GetCompliancePolicy(ctx context.Context, id pgtype.UUID) (CompliancePolicy, error)
 	GetDeployWatch(ctx context.Context, deploymentRevisionID pgtype.UUID) (DeployWatch, error)
+	// The deploy's cancel/supersede intent (job_runs.cancel_requested_at via the revision's
+	// job_run) for the watcher's cancel-abort path. NULL = not canceled. Kept as a separate
+	// read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
+	GetDeployWatchCancelRequestedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
@@ -1413,6 +1417,14 @@ type Querier interface {
 	// Recorded on pull_request closed with merged=true. merge_sha is the commit
 	// that landed on the base branch (correlates to a deployment in phase 2).
 	MarkPullRequestMerged(ctx context.Context, arg MarkPullRequestMergedParams) error
+	// The cancel/supersede abort actuation: stamp rollout_abort_actioned_at (the
+	// gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) AND,
+	// when a gate was armed & still UNDECIDED, disarm it (null the per-arm columns) + resume
+	// the deadline once (computed from the OLD row; SET RHS sees the pre-update values). A
+	// DECIDED gate already resumed the deadline (never double-shift); a non-gated cancel just
+	// stamps the guard. Fenced on claim_id; `rollout_abort_actioned_at IS NULL` makes a
+	// re-tick a no-op. The caller deletes the step's votes in the same tx.
+	MarkRolloutAbortActioned(ctx context.Context, arg MarkRolloutAbortActionedParams) (int64, error)
 	MarkRunRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	MarkStageRunningIfQueued(ctx context.Context, id pgtype.UUID) error
 	// Mark a superseded run's DURABLE effects COMPLETE (cleanup + audit resolved), after

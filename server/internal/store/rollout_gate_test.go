@@ -125,6 +125,48 @@ func TestArmRolloutGate_RejectsIncompletePin(t *testing.T) {
 
 // ClearRolloutGate on a watch with NO armed gate is a no-op (false) — it must not
 // "succeed" (which, in the full flow, would then delete this deploy's votes).
+// MarkRolloutAbortActioned stamps the guard, disarms an armed+undecided gate (resuming
+// the deadline once), and is idempotent + fenced.
+func TestMarkRolloutAbortActioned(t *testing.T) {
+	s, pool, ctx, revID, claimID := armedGateStore(t)
+	if _, err := s.ArmRolloutGate(ctx, revID, claimID, armInput()); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE deploy_watches SET gate_armed_at = NOW() - interval '5 minutes' WHERE deployment_revision_id = $1`, revID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	before := readGate(t, ctx, pool, revID).deadlineAt
+
+	ok, err := s.MarkRolloutAbortActioned(ctx, revID, claimID)
+	if err != nil || !ok {
+		t.Fatalf("mark abort = ok:%v err:%v", ok, err)
+	}
+	g := readGate(t, ctx, pool, revID)
+	if g.gateID != nil || g.armedAt != nil {
+		t.Errorf("gate not disarmed: %+v", g)
+	}
+	var abortAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT rollout_abort_actioned_at FROM deploy_watches WHERE deployment_revision_id = $1`, revID).Scan(&abortAt); err != nil {
+		t.Fatalf("read abort_actioned: %v", err)
+	}
+	if abortAt == nil {
+		t.Errorf("rollout_abort_actioned_at not stamped")
+	}
+	if shift := g.deadlineAt.Sub(before); shift < 4*time.Minute+50*time.Second || shift > 5*time.Minute+10*time.Second {
+		t.Errorf("deadline resume shift = %s, want ~5m (undecided cancel)", shift)
+	}
+	// Idempotent (anti-re-abort).
+	if ok, _ := s.MarkRolloutAbortActioned(ctx, revID, claimID); ok {
+		t.Errorf("re-abort was not a no-op")
+	}
+	// Fenced.
+	s2, _, ctx2, revID2, claimID2 := armedGateStore(t)
+	_, _ = s2.ArmRolloutGate(ctx2, revID2, claimID2, armInput())
+	if ok, _ := s2.MarkRolloutAbortActioned(ctx2, revID2, uuid.New()); ok {
+		t.Errorf("abort with a wrong claim succeeded")
+	}
+}
+
 func TestClearRolloutGate_UnarmedIsNoOp(t *testing.T) {
 	s, pool, ctx, revID, claimID := armedGateStore(t) // claimed but never armed
 	if ok, err := s.ClearRolloutGate(ctx, revID, claimID); err != nil || ok {

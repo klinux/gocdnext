@@ -102,6 +102,44 @@ WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
   -- ArmRolloutGate and nulled here, so it marks exactly an armed round.
   AND gate_id IS NOT NULL;
 
+-- name: MarkRolloutAbortActioned :execrows
+-- The cancel/supersede abort actuation: stamp rollout_abort_actioned_at (the
+-- gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) AND,
+-- when a gate was armed & still UNDECIDED, disarm it (null the per-arm columns) + resume
+-- the deadline once (computed from the OLD row; SET RHS sees the pre-update values). A
+-- DECIDED gate already resumed the deadline (never double-shift); a non-gated cancel just
+-- stamps the guard. Fenced on claim_id; `rollout_abort_actioned_at IS NULL` makes a
+-- re-tick a no-op. The caller deletes the step's votes in the same tx.
+UPDATE deploy_watches
+SET rollout_abort_actioned_at = NOW(),
+    deadline_at = CASE
+        WHEN gate_armed_at IS NOT NULL AND gate_decision IS NULL
+        THEN deadline_at + (NOW() - gate_armed_at)
+        ELSE deadline_at
+    END,
+    gate_id                = NULL,
+    gate_armed_at          = NULL,
+    gate_paused_step       = NULL,
+    gate_rollout_cluster   = NULL,
+    gate_rollout_namespace = NULL,
+    gate_rollout_name      = NULL,
+    gate_decision          = NULL,
+    gate_decided_by        = NULL,
+    gate_decided_at        = NULL,
+    gate_actioned_at       = NULL
+WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
+  AND claim_id = sqlc.arg(claim_id)
+  AND rollout_abort_actioned_at IS NULL;
+
+-- name: GetDeployWatchCancelRequestedAt :one
+-- The deploy's cancel/supersede intent (job_runs.cancel_requested_at via the revision's
+-- job_run) for the watcher's cancel-abort path. NULL = not canceled. Kept as a separate
+-- read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
+SELECT jr.cancel_requested_at
+FROM deployment_revisions dr
+LEFT JOIN job_runs jr ON jr.id = dr.job_run_id
+WHERE dr.id = $1;
+
 -- name: DeleteDeployGateVotes :exec
 -- Delete the current arm's approval votes so the next step's gate starts fresh. Votes
 -- reuse job_run_approvals keyed on the deploy's job_run_id; each canary step is its own

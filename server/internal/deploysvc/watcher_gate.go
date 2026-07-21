@@ -77,6 +77,47 @@ func (w *Watcher) actuateGate(ctx context.Context, dw store.DeployWatch, effect 
 	}
 }
 
+// abortForCancel actuates the cancel/supersede abort — the deploy's run was superseded or
+// manually canceled. It renews before the effect (single-actuator), aborts the rollout on
+// the gate-pinned identity if a gate was armed, else the identity Observe just resolved,
+// then MarkRolloutAbortActioned (stamp the gate-independent guard + disarm any gate +
+// delete votes). A failed actuation leaves the guard unstamped → next tick retries.
+func (w *Watcher) abortForCancel(ctx context.Context, dw store.DeployWatch, state deploy.DeployState) {
+	if ok, err := w.store.RenewDeployWatch(ctx, dw.DeploymentRevisionID, dw.ClaimID); err != nil {
+		w.log.Error("watch_error", append(watchAttrs(dw), "phase", "renew_cancel_abort", "err", err)...)
+		return
+	} else if !ok {
+		w.log.Info("watch_lease_lost", append(watchAttrs(dw), "phase", "renew_cancel_abort")...)
+		return
+	}
+	target := cancelAbortTarget(dw, state)
+	if err := w.obs.Abort(ctx, target); err != nil {
+		w.log.Error("watch_error", append(watchAttrs(dw), "phase", "cancel_abort", "err", err)...)
+		return
+	}
+	w.log.Info("watch_gate_actuated", append(watchAttrs(dw), "effect", "cancel_abort",
+		"rollout_name", target.RolloutName)...)
+	if ok, err := w.store.MarkRolloutAbortActioned(ctx, dw.DeploymentRevisionID, dw.ClaimID); err != nil {
+		w.log.Error("watch_error", append(watchAttrs(dw), "phase", "mark_abort_actioned", "err", err)...)
+	} else if !ok {
+		w.log.Info("watch_lease_lost", append(watchAttrs(dw), "phase", "mark_abort_actioned")...)
+	}
+}
+
+// cancelAbortTarget resolves the Rollout the cancel-abort acts on: the gate PIN when a
+// gate was armed (a gated cancel), else the identity Observe resolved this tick (a
+// non-gated rollout deploy canceled mid-progress). Decide only emits the cancel Abort
+// when one of these is a complete, actionable target.
+func cancelAbortTarget(dw store.DeployWatch, state deploy.DeployState) deploy.DeploymentTarget {
+	if dw.GateRolloutName != "" && dw.GateRolloutCluster != "" && dw.GateRolloutNamespace != "" {
+		return pinnedTargetOf(dw)
+	}
+	t := targetOf(dw)
+	r := state.Rollout
+	t.RolloutCluster, t.RolloutNamespace, t.RolloutName = r.ResolvedCluster, r.ResolvedNamespace, r.ResolvedName
+	return t
+}
+
 // clearGate disarms the current step's gate (the rollout left the armed step, ours or
 // external). Fenced + best-effort.
 func (w *Watcher) clearGate(ctx context.Context, dw store.DeployWatch) {

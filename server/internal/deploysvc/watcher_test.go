@@ -82,19 +82,21 @@ func (f *fakeObserver) Abort(_ context.Context, t deploy.DeploymentTarget) error
 // renewSeq drives successive Renew returns per revision (default true); setOK/finalOK
 // default true.
 type fakeWatchStore struct {
-	toClaim       []store.DeployWatch
-	renewSeq      map[uuid.UUID][]bool
-	renewIdx      map[uuid.UUID]int
-	setOK         map[uuid.UUID]bool
-	finalOK       map[uuid.UUID]bool
-	finalized     map[uuid.UUID]string
-	finalizeRunID uuid.UUID // returned as DeployWatchFinalizeResult.RunID
-	lastRollout   store.RolloutObservationInput
-	armOK         map[uuid.UUID]bool
-	actionedOK    map[uuid.UUID]bool
-	clearOK       map[uuid.UUID]bool
-	lastArm       store.ArmRolloutGateInput
-	log           *[]string
+	toClaim         []store.DeployWatch
+	renewSeq        map[uuid.UUID][]bool
+	renewIdx        map[uuid.UUID]int
+	setOK           map[uuid.UUID]bool
+	finalOK         map[uuid.UUID]bool
+	finalized       map[uuid.UUID]string
+	finalizeRunID   uuid.UUID // returned as DeployWatchFinalizeResult.RunID
+	lastRollout     store.RolloutObservationInput
+	armOK           map[uuid.UUID]bool
+	actionedOK      map[uuid.UUID]bool
+	clearOK         map[uuid.UUID]bool
+	abortActionedOK map[uuid.UUID]bool
+	cancelReq       *time.Time // returned by DeployWatchCancelRequestedAt (nil = not canceled)
+	lastArm         store.ArmRolloutGateInput
+	log             *[]string
 }
 
 func newFakeStore(log *[]string, watches ...store.DeployWatch) *fakeWatchStore {
@@ -164,6 +166,15 @@ func (f *fakeWatchStore) MarkGateActioned(_ context.Context, revID, _ uuid.UUID)
 func (f *fakeWatchStore) ClearRolloutGate(_ context.Context, revID, _ uuid.UUID) (bool, error) {
 	*f.log = append(*f.log, "clear_gate")
 	return okDefaultTrue(f.clearOK, revID), nil
+}
+
+func (f *fakeWatchStore) MarkRolloutAbortActioned(_ context.Context, revID, _ uuid.UUID) (bool, error) {
+	*f.log = append(*f.log, "mark_abort_actioned")
+	return okDefaultTrue(f.abortActionedOK, revID), nil
+}
+
+func (f *fakeWatchStore) DeployWatchCancelRequestedAt(_ context.Context, _ uuid.UUID) (*time.Time, error) {
+	return f.cancelReq, nil
 }
 
 func okDefaultTrue(m map[uuid.UUID]bool, id uuid.UUID) bool {
@@ -621,5 +632,81 @@ func TestWatcher_ObserveError_ApproveDoesNotPromote(t *testing.T) {
 	}
 	if len(st.finalized) != 0 {
 		t.Fatalf("must not finalize while awaiting recovery within the deadline; %v", st.finalized)
+	}
+}
+
+// --- Phase 2 cancel/supersede abort ---
+
+// A non-gated rollout deploy that's cancel-requested aborts via the OBSERVED identity and
+// marks the gate-INDEPENDENT guard (mark_abort_actioned), never the gated mark_actioned.
+func TestWatcher_CancelAbort_NonGated_UsesObservedIdentity(t *testing.T) {
+	var log []string
+	w := mkRolloutWatch("app") // rollout-aware, NOT gated, no pin
+	st := newFakeStore(&log, w)
+	now := time.Now()
+	st.cancelReq = &now
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsProgressing)}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "abort:ro") || !contains(log, "mark_abort_actioned") {
+		t.Fatalf("cancel-abort should abort(observed ro) + mark_abort_actioned; log=%v", log)
+	}
+	if contains(log, "mark_actioned") {
+		t.Fatalf("cancel-abort must NOT use the gated mark_actioned; log=%v", log)
+	}
+	if obs.gotAbort == nil || obs.gotAbort.RolloutName != "ro" {
+		t.Errorf("abort target = %+v, want the observed identity ro", obs.gotAbort)
+	}
+	// Renew precedes the abort (single-actuator contract).
+	if a := indexOf(log, "abort:ro"); a < 0 || lastRenewBefore(log, a) != a-1 {
+		t.Errorf("no renew immediately before the cancel-abort; log=%v", log)
+	}
+}
+
+// A gated cancel aborts via the PIN (gate_rollout_*), not the observed identity.
+func TestWatcher_CancelAbort_Gated_UsesPin(t *testing.T) {
+	var log []string
+	w := armedW(gatedW(mkRolloutWatch("app"))) // gated + armed → pin "ro-pinned"
+	st := newFakeStore(&log, w)
+	now := time.Now()
+	st.cancelReq = &now
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "abort:ro-pinned") || !contains(log, "mark_abort_actioned") {
+		t.Fatalf("gated cancel-abort should use the pin + mark_abort_actioned; log=%v", log)
+	}
+}
+
+// Cancel outranks a gate reject: even with a recorded reject, a cancel routes to the
+// gate-independent abort path (disarm + mark_abort_actioned), not the gated mark_actioned.
+func TestWatcher_CancelBeatsReject(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "rejected")
+	st := newFakeStore(&log, w)
+	now := time.Now()
+	st.cancelReq = &now
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "mark_abort_actioned") || contains(log, "mark_actioned") {
+		t.Fatalf("cancel must outrank reject (mark_abort_actioned, not mark_actioned); log=%v", log)
+	}
+}
+
+// The reject path (no cancel) stays on the gated mark_actioned — the negative of the
+// cancel routing above.
+func TestWatcher_Reject_UsesGatedMark(t *testing.T) {
+	var log []string
+	w := decidedW(armedW(gatedW(mkRolloutWatch("app"))), "rejected")
+	st := newFakeStore(&log, w) // cancelReq nil
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPausedIndef)}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "abort:ro-pinned") || !contains(log, "mark_actioned") {
+		t.Fatalf("reject-abort should use the pin + mark_actioned; log=%v", log)
+	}
+	if contains(log, "mark_abort_actioned") {
+		t.Fatalf("reject-abort must NOT use the cancel-path mark_abort_actioned; log=%v", log)
 	}
 }

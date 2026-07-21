@@ -341,6 +341,28 @@ func TestDecideRolloutGate_AuditMetadata(t *testing.T) {
 	}
 }
 
+// DeployWatchCancelRequestedAt reads the deploy's cancel intent (job_runs.cancel_requested_at).
+func TestDeployWatchCancelRequestedAt(t *testing.T) {
+	gr := seedGatedRollout(t, "rg-cancelread", 1, []string{"alice@corp.com"})
+
+	if at, err := gr.s.DeployWatchCancelRequestedAt(gr.ctx, gr.revID); err != nil || at != nil {
+		t.Fatalf("pre-cancel = %v (err %v), want nil", at, err)
+	}
+	if _, err := gr.pool.Exec(gr.ctx,
+		`UPDATE job_runs SET cancel_requested_at = NOW()
+		 WHERE id = (SELECT job_run_id FROM deployment_revisions WHERE id = $1)`, gr.revID); err != nil {
+		t.Fatalf("stamp cancel: %v", err)
+	}
+	at, err := gr.s.DeployWatchCancelRequestedAt(gr.ctx, gr.revID)
+	if err != nil || at == nil {
+		t.Fatalf("post-cancel = %v (err %v), want non-nil", at, err)
+	}
+	// Unknown revision → nil (fail-safe), not an error.
+	if at, err := gr.s.DeployWatchCancelRequestedAt(gr.ctx, uuid.New()); err != nil || at != nil {
+		t.Fatalf("unknown rev = %v (err %v), want nil/nil", at, err)
+	}
+}
+
 func TestDecideRolloutGate_AuditOnTerminal(t *testing.T) {
 	gr := seedGatedRollout(t, "rg-audit", 1, []string{"alice@corp.com"})
 	alice := gr.user(t, "alice@corp.com", "Alice")
