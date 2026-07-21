@@ -163,7 +163,7 @@ export function DeployTargetDialog({
       }}
     >
       <DialogTrigger render={trigger as React.ReactElement} />
-      <DialogContent>
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Rocket className="size-4" />
@@ -177,7 +177,7 @@ export function DeployTargetDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
+        <div className="space-y-4 py-1">
           <div className="space-y-1.5">
             <Label htmlFor="dt-environment">Environment</Label>
             <Input
