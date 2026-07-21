@@ -86,7 +86,23 @@ type rolloutManifest struct {
 		PauseConditions  []struct {
 			Reason string `json:"reason"`
 		} `json:"pauseConditions"`
+		// The current AnalysisRun the canary is running (metric analysis). The step
+		// variant gates a specific `analysis` step; the background variant runs across the
+		// rollout. Observe-only in v1 — surfaced so an operator sees WHY a canary paused
+		// (an inconclusive/failed analysis), not a bare "Paused".
+		Canary struct {
+			CurrentStepAnalysisRunStatus       *analysisRunStatus `json:"currentStepAnalysisRunStatus"`
+			CurrentBackgroundAnalysisRunStatus *analysisRunStatus `json:"currentBackgroundAnalysisRunStatus"`
+		} `json:"canary"`
 	} `json:"status"`
+}
+
+// analysisRunStatus is the inline {name, status, message} the Rollout `.status` reports
+// for its current AnalysisRun — enough to surface without fetching the AnalysisRun CR.
+type analysisRunStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 // rolloutStep is one canary step. Only `pause` matters here: a nil Pause means the
@@ -98,6 +114,17 @@ type rolloutStep struct {
 	Pause *struct {
 		Duration json.RawMessage `json:"duration"`
 	} `json:"pause"`
+}
+
+// setAnalysis populates the observed AnalysisRun fields from the Rollout status' inline
+// {name, status, message}. A phase the CRD reports but we don't have a constant for is
+// kept verbatim (forward-compatible with argo-rollouts drift).
+func (rs *RolloutState) setAnalysis(kind string, a *analysisRunStatus) {
+	rs.AnalysisActive = true
+	rs.AnalysisKind = kind
+	rs.AnalysisName = a.Name
+	rs.AnalysisPhase = AnalysisPhase(a.Status)
+	rs.AnalysisMessage = a.Message
 }
 
 func (s rolloutStep) isIndefinitePause() bool {
@@ -148,7 +175,10 @@ func parseRolloutState(raw []byte) (RolloutState, error) {
 		st.CurrentPodHash != "" && st.CurrentPodHash == st.StableRS &&
 		RolloutPhase(st.Phase) == RolloutHealthy
 
-	return RolloutState{
+	// Surface the active AnalysisRun, preferring the STEP analysis (which directly gates
+	// the current step) over a BACKGROUND one. Observe-only — nothing in the gate machine
+	// keys on this.
+	rs := RolloutState{
 		Phase:              normalizeRolloutPhase(st.Phase),
 		PauseReason:        pauseReason,
 		CurrentStepIndex:   stepIdx,
@@ -160,7 +190,13 @@ func parseRolloutState(raw []byte) (RolloutState, error) {
 		PodHash:            st.CurrentPodHash,
 		PausedIndefinitely: pausedIndef,
 		FullyPromoted:      fullyPromoted,
-	}, nil
+	}
+	if a := st.Canary.CurrentStepAnalysisRunStatus; a != nil {
+		rs.setAnalysis("step", a)
+	} else if a := st.Canary.CurrentBackgroundAnalysisRunStatus; a != nil {
+		rs.setAnalysis("background", a)
+	}
+	return rs, nil
 }
 
 // normalizeRolloutPhase maps `.status.phase` to a known RolloutPhase, tolerating

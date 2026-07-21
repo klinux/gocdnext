@@ -65,6 +65,36 @@ func deployWatchesReq(r http.Handler, role string) map[string]any {
 	return body
 }
 
+// The observed AnalysisRun (PR3) is surfaced viewer-readable in the DTO JSON.
+func TestListDeployWatches_AnalysisSurfaced(t *testing.T) {
+	s := seedInflightWatch(t)
+	ctx := context.Background()
+	claimed, err := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v (n=%d)", err, len(claimed))
+	}
+	if _, err := s.StampRolloutObservation(ctx, claimed[0].DeploymentRevisionID, claimed[0].ClaimID,
+		store.RolloutObservationInput{
+			Observed: true, Phase: "Paused", PauseReason: "AnalysisRunInconclusive",
+			AnalysisKind: "step", AnalysisName: "demo-2", AnalysisPhase: "Inconclusive",
+			AnalysisMessage: "success-rate 0.91 < 0.95",
+		}); err != nil {
+		t.Fatalf("stamp analysis: %v", err)
+	}
+
+	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := chi.NewRouter()
+	r.Get("/api/v1/projects/{slug}/deploy-watches", h.ListDeployWatches)
+
+	v := deployWatchesReq(r, store.RoleViewer)
+	vw, _ := v["deploy_watches"].([]any)
+	w0, _ := vw[0].(map[string]any)
+	if w0["rollout_analysis_kind"] != "step" || w0["rollout_analysis_phase"] != "Inconclusive" ||
+		w0["rollout_analysis_name"] != "demo-2" || w0["rollout_analysis_message"] != "success-rate 0.91 < 0.95" {
+		t.Fatalf("viewer DTO missing/incorrect analysis fields: %v", w0)
+	}
+}
+
 func TestListDeployWatches_RoleSanitized(t *testing.T) {
 	s := seedInflightWatch(t)
 	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil)))

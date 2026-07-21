@@ -238,6 +238,10 @@ type DeployWatch struct {
 	GateDecidedAt          pgtype.Timestamptz
 	GateActionedAt         pgtype.Timestamptz
 	RolloutAbortActionedAt pgtype.Timestamptz
+	RolloutAnalysisKind    *string
+	RolloutAnalysisName    *string
+	RolloutAnalysisPhase   *string
+	RolloutAnalysisMessage *string
 }
 
 type DeploymentRevision struct {

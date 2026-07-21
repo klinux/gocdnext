@@ -41,6 +41,12 @@ type DeployWatchView struct {
 	RolloutError       string
 	RolloutObservedAt  *time.Time
 
+	// Active AnalysisRun (observe-only, PR3). AnalysisPhase empty = no active analysis.
+	RolloutAnalysisKind    string
+	RolloutAnalysisName    string
+	RolloutAnalysisPhase   string
+	RolloutAnalysisMessage string
+
 	// Gate live-state (viewer-readable). GateID is Nil when no step is armed — the UI
 	// echoes it on approve/reject (the anti-stale token). GatePausedStepKnown/GateRequired
 	// nil = absent. GateApprovalsNow is how many approvals are in for the current round.
@@ -62,34 +68,38 @@ func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.
 	out := make([]DeployWatchView, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, DeployWatchView{
-			DeploymentRevisionID: fromPgUUID(r.DeploymentRevisionID),
-			Environment:          r.Environment,
-			Version:              r.Version,
-			ExpectedRevision:     r.ExpectedRevision,
-			SyncMode:             r.SyncMode,
-			Cluster:              r.Cluster,
-			Application:          r.Application,
-			WatchStartedAt:       r.WatchStartedAt.Time,
-			SyncRequestedAt:      pgTimePtr(r.SyncRequestedAt),
-			DeadlineAt:           r.DeadlineAt.Time,
-			DegradedSince:        pgTimePtr(r.DegradedSince),
-			RolloutAware:         r.RolloutAware,
-			RolloutPhase:         stringValue(r.RolloutPhase),
-			RolloutMessage:       stringValue(r.RolloutMessage),
-			RolloutPauseReason:   stringValue(r.RolloutPauseReason),
-			RolloutCurrentStep:   int32Value(r.RolloutCurrentStep),
-			RolloutStepKnown:     r.RolloutCurrentStep != nil,
-			RolloutStepCount:     int32Value(r.RolloutStepCount),
-			RolloutAborted:       r.RolloutAborted != nil && *r.RolloutAborted,
-			RolloutError:         stringValue(r.RolloutError),
-			RolloutObservedAt:    pgTimePtr(r.RolloutObservedAt),
-			GateID:               fromPgUUID(r.GateID),
-			GatePausedStep:       int32Value(r.GatePausedStep),
-			GatePausedStepKnown:  r.GatePausedStep != nil,
-			GateRequired:         int32Value(r.GateRequired),
-			GateRequiredKnown:    r.GateRequired != nil,
-			GateDecision:         stringValue(r.GateDecision),
-			GateApprovalsNow:     int(r.GateApprovalsNow),
+			DeploymentRevisionID:   fromPgUUID(r.DeploymentRevisionID),
+			Environment:            r.Environment,
+			Version:                r.Version,
+			ExpectedRevision:       r.ExpectedRevision,
+			SyncMode:               r.SyncMode,
+			Cluster:                r.Cluster,
+			Application:            r.Application,
+			WatchStartedAt:         r.WatchStartedAt.Time,
+			SyncRequestedAt:        pgTimePtr(r.SyncRequestedAt),
+			DeadlineAt:             r.DeadlineAt.Time,
+			DegradedSince:          pgTimePtr(r.DegradedSince),
+			RolloutAware:           r.RolloutAware,
+			RolloutPhase:           stringValue(r.RolloutPhase),
+			RolloutMessage:         stringValue(r.RolloutMessage),
+			RolloutPauseReason:     stringValue(r.RolloutPauseReason),
+			RolloutCurrentStep:     int32Value(r.RolloutCurrentStep),
+			RolloutStepKnown:       r.RolloutCurrentStep != nil,
+			RolloutStepCount:       int32Value(r.RolloutStepCount),
+			RolloutAborted:         r.RolloutAborted != nil && *r.RolloutAborted,
+			RolloutError:           stringValue(r.RolloutError),
+			RolloutObservedAt:      pgTimePtr(r.RolloutObservedAt),
+			RolloutAnalysisKind:    stringValue(r.RolloutAnalysisKind),
+			RolloutAnalysisName:    stringValue(r.RolloutAnalysisName),
+			RolloutAnalysisPhase:   stringValue(r.RolloutAnalysisPhase),
+			RolloutAnalysisMessage: stringValue(r.RolloutAnalysisMessage),
+			GateID:                 fromPgUUID(r.GateID),
+			GatePausedStep:         int32Value(r.GatePausedStep),
+			GatePausedStepKnown:    r.GatePausedStep != nil,
+			GateRequired:           int32Value(r.GateRequired),
+			GateRequiredKnown:      r.GateRequired != nil,
+			GateDecision:           stringValue(r.GateDecision),
+			GateApprovalsNow:       int(r.GateApprovalsNow),
 		})
 	}
 	return out, nil

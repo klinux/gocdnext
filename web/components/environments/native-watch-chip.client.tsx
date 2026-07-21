@@ -85,6 +85,37 @@ function RolloutChip({ watch }: { watch: DeployWatch }) {
   }
 }
 
+// analysisTone maps an AnalysisRun phase to a status tone (failed/error=red,
+// inconclusive=amber, successful=green, running/pending/unknown=teal).
+function analysisTone(phase: string): keyof typeof TONE {
+  switch (phase) {
+    case "Failed":
+    case "Error":
+      return "red";
+    case "Inconclusive":
+      return "amber";
+    case "Successful":
+      return "green";
+    default:
+      return "teal";
+  }
+}
+
+// AnalysisBadge surfaces the active metric-analysis run (observe-only, Phase 2c) — WHY a
+// canary paused/degraded. The (bounded) cluster message is a hover title.
+function AnalysisBadge({ watch }: { watch: DeployWatch }) {
+  const phase = watch.rollout_analysis_phase;
+  if (!phase) return null;
+  return (
+    <span
+      className={`${CHIP} ${TONE[analysisTone(phase)]}`}
+      title={watch.rollout_analysis_message || undefined}
+    >
+      analysis {phase.toLowerCase()}
+    </span>
+  );
+}
+
 // NativeWatchChip renders the live state of an in-flight native deploy. A rollout-aware
 // deploy that has been observed shows its canary/blue-green progress; otherwise the
 // Application-level state (Degraded wins over Syncing; pre-sync reads "Deploying").
@@ -98,9 +129,15 @@ export function NativeWatchChip({ watch }: { watch: DeployWatch }) {
     );
   }
   // Rollout progress once observed (a phase or a read error). Before the first
-  // observation it falls through to the generic Application chip below.
+  // observation it falls through to the generic Application chip below. A running
+  // AnalysisRun rides alongside as a second badge.
   if (watch.rollout_aware && (watch.rollout_phase || watch.rollout_error)) {
-    return <RolloutChip watch={watch} />;
+    return (
+      <>
+        <RolloutChip watch={watch} />
+        <AnalysisBadge watch={watch} />
+      </>
+    );
   }
   const rev = shortRev(watch.expected_revision);
   return (

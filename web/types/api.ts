@@ -883,6 +883,14 @@ export type DeployWatch = {
   rollout_error?: string;
   rollout_observed_at?: string;
 
+  // Active AnalysisRun (ADR-0001 Phase 2c, observe-only). Absent when no metric analysis
+  // is running. rollout_analysis_phase is the AnalysisRun phase (Running / Inconclusive /
+  // Failed / …); rollout_analysis_message is the (bounded) cluster detail.
+  rollout_analysis_kind?: "step" | "background" | string;
+  rollout_analysis_name?: string;
+  rollout_analysis_phase?: string;
+  rollout_analysis_message?: string;
+
   // Gate live-state (ADR-0001 Phase 2, viewer-readable). gate_id is the armed token the
   // UI must echo on approve/reject (present only while a step's gate is armed). Together
   // with gate_approvals_now/gate_required the UI renders "awaiting approval (1/2)".

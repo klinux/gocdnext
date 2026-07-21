@@ -87,4 +87,31 @@ describe("NativeWatchChip", () => {
     render(<NativeWatchChip watch={{ ...base, rollout_aware: true }} />);
     expect(screen.getByText("Deploying")).toBeTruthy();
   });
+
+  it("surfaces an active AnalysisRun alongside the canary chip", () => {
+    render(
+      <NativeWatchChip
+        watch={{
+          ...base,
+          rollout_aware: true,
+          rollout_phase: "Paused",
+          rollout_pause_reason: "AnalysisRunInconclusive",
+          rollout_analysis_phase: "Inconclusive",
+          rollout_analysis_message: "success-rate 0.91 < 0.95",
+        }}
+      />,
+    );
+    expect(screen.getByText(/Canary paused/)).toBeTruthy();
+    const badge = screen.getByText(/analysis inconclusive/);
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute("title")).toContain("success-rate 0.91");
+  });
+
+  it("shows no analysis badge when none is running", () => {
+    render(
+      <NativeWatchChip
+        watch={{ ...base, rollout_aware: true, rollout_phase: "Progressing" }} />,
+    );
+    expect(screen.queryByText(/^analysis /)).toBeNull();
+  });
 });

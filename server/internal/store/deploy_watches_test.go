@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,6 +225,47 @@ func TestStampRolloutObservation(t *testing.T) {
 	// Fenced: a stale token can't stamp.
 	if ok, _ := s.StampRolloutObservation(ctx, revID, uuid.New(), store.RolloutObservationInput{Observed: true, Phase: "Healthy"}); ok {
 		t.Fatal("stale token stamped, want fenced out")
+	}
+}
+
+// The active AnalysisRun is persisted + surfaced on the /deploy-watches view, and its
+// cluster-supplied message is bounded (like rollout_message).
+func TestStampRolloutObservation_analysis(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-analysis")
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	claimed, _ := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	c := claimed[0].ClaimID
+
+	longMsg := strings.Repeat("x", 700) // > the 500-rune bound
+	if ok, err := s.StampRolloutObservation(ctx, revID, c, store.RolloutObservationInput{
+		Observed: true, Phase: "Paused", PauseReason: "AnalysisRunInconclusive",
+		AnalysisKind: "step", AnalysisName: "demo-abc-2", AnalysisPhase: "Inconclusive", AnalysisMessage: longMsg,
+	}); err != nil || !ok {
+		t.Fatalf("stamp analysis: ok=%v err=%v", ok, err)
+	}
+
+	views, err := s.ListDeployWatchesForProject(ctx, projectID)
+	if err != nil || len(views) != 1 {
+		t.Fatalf("list views: %v (n=%d)", err, len(views))
+	}
+	v := views[0]
+	if v.RolloutAnalysisKind != "step" || v.RolloutAnalysisName != "demo-abc-2" || v.RolloutAnalysisPhase != "Inconclusive" {
+		t.Errorf("analysis view = %+v, want step/demo-abc-2/Inconclusive", v)
+	}
+	if len([]rune(v.RolloutAnalysisMessage)) != 500 {
+		t.Errorf("analysis message len = %d runes, want bounded to 500", len([]rune(v.RolloutAnalysisMessage)))
+	}
+
+	// A subsequent no-analysis observe clears it.
+	if _, err := s.StampRolloutObservation(ctx, revID, c, store.RolloutObservationInput{Observed: true, Phase: "Healthy"}); err != nil {
+		t.Fatalf("stamp clear: %v", err)
+	}
+	views, _ = s.ListDeployWatchesForProject(ctx, projectID)
+	if views[0].RolloutAnalysisPhase != "" {
+		t.Errorf("analysis not cleared: %q", views[0].RolloutAnalysisPhase)
 	}
 }
 
