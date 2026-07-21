@@ -128,6 +128,24 @@ func TestDeleteEnvironment_Handler(t *testing.T) {
 	if code := deleteEnvReq(t, router, "envdel", envID2.String(), nil); code != http.StatusNoContent {
 		t.Fatalf("auth-disabled delete: got %d, want 204", code)
 	}
+
+	// An env with an in-flight deploy (an in_progress revision) → 409 even for an
+	// admin: deleting it would cascade the revision out from under the running job.
+	active, err := s.EnsureEnvironment(ctx, projectID, "prod-active")
+	if err != nil {
+		t.Fatalf("EnsureEnvironment (active): %v", err)
+	}
+	if _, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: active, Attempt: 0, Version: "9.9.inflight",
+	}); err != nil {
+		t.Fatalf("CreateDeploymentRevision: %v", err)
+	}
+	if code := deleteEnvReq(t, router, "envdel", active.String(), &admin); code != http.StatusConflict {
+		t.Fatalf("active-deploy delete: got %d, want 409", code)
+	}
+	if envs, _ := s.ListEnvironments(ctx, projectID); len(envs) != 1 {
+		t.Fatalf("409 path removed the active env: %+v", envs)
+	}
 }
 
 func TestListEnvironments_ShapeAndCurrent(t *testing.T) {

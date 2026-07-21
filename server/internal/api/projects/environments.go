@@ -284,14 +284,20 @@ func (h *Handler) DeleteEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	deleted, err := h.store.DeleteEnvironment(r.Context(), projectID, envID)
+	outcome, err := h.store.DeleteEnvironment(r.Context(), projectID, envID)
 	if err != nil {
 		h.log.Error("delete environment", "slug", slug, "env_id", envID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if !deleted {
+	switch outcome {
+	case store.EnvDeleteAbsent:
 		http.Error(w, "environment not found", http.StatusNotFound)
+		return
+	case store.EnvDeleteActive:
+		// Refuse rather than cascade a running deploy's revision+watch out from
+		// under it (which would orphan the still-running job_run).
+		http.Error(w, "environment has an active deploy — wait for it to finish or cancel it first", http.StatusConflict)
 		return
 	}
 	audit.Emit(r.Context(), h.log, h.store,

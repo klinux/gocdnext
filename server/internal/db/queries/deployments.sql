@@ -8,14 +8,37 @@ VALUES ($1, $2)
 ON CONFLICT (project_id, name) DO UPDATE SET updated_at = NOW()
 RETURNING id;
 
--- name: DeleteEnvironment :execrows
--- Hard-delete an environment scoped to its project. ON DELETE CASCADE on
--- deploy_targets, deployment_revisions and analytics_deploy_daily fans the
--- delete out — the environment's whole deploy history + any registered target
--- (incl. a gated one) go with it, so the API gates this to admin. Returns rows
--- affected (0 = absent or not in this project → 404). Environments are lazy, so
--- a later deploy to the same name re-creates it empty.
-DELETE FROM environments WHERE project_id = $1 AND id = $2;
+-- name: DeleteEnvironmentIfIdle :one
+-- Hard-delete an environment scoped to its project, but ONLY when it has no
+-- in-flight deploy — an in_progress deployment_revision or a live deploy_watch.
+-- Blocking here (rather than cascading) stops the delete from orphaning a
+-- running deploy whose revision + watch would vanish under it: the job_run would
+-- stay running with no agent and the reaper would later re-see it as orphaned.
+-- Once the env is confirmed idle, ON DELETE CASCADE still fans the delete out to
+-- the FINALIZED history + any registered target (incl. a gated one), which is why
+-- the API gates this to admin. Atomic: the idle check and the delete are one
+-- statement, so a deploy that starts concurrently can't slip through a
+-- check→delete gap. Returns three flags the caller maps to 204 / 409 / 404.
+-- Environments are lazy, so a later deploy to the same name re-creates it empty.
+WITH tgt AS (
+    SELECT e.id FROM environments e WHERE e.project_id = $1 AND e.id = $2
+), active AS (
+    SELECT 1
+    FROM deployment_revisions dr
+    WHERE dr.environment_id = $2
+      AND (dr.status = 'in_progress'
+           OR EXISTS (SELECT 1 FROM deploy_watches dw
+                      WHERE dw.deployment_revision_id = dr.id))
+    LIMIT 1
+), del AS (
+    DELETE FROM environments e
+    WHERE e.id IN (SELECT tgt.id FROM tgt) AND NOT EXISTS (SELECT 1 FROM active)
+    RETURNING e.id
+)
+SELECT
+    EXISTS (SELECT 1 FROM tgt)    AS existed,
+    EXISTS (SELECT 1 FROM active) AS active,
+    EXISTS (SELECT 1 FROM del)    AS deleted;
 
 -- name: CreateDeploymentRevision :one
 -- Recorded at dispatch with the resolved version, status in_progress,

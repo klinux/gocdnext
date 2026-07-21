@@ -323,13 +323,18 @@ type Querier interface {
 	// to reach an agent (the frame never went out, so no deploy happened).
 	// Scoped to in_progress so it can never erase a finalized audit row.
 	DeleteDeploymentRevision(ctx context.Context, id pgtype.UUID) error
-	// Hard-delete an environment scoped to its project. ON DELETE CASCADE on
-	// deploy_targets, deployment_revisions and analytics_deploy_daily fans the
-	// delete out — the environment's whole deploy history + any registered target
-	// (incl. a gated one) go with it, so the API gates this to admin. Returns rows
-	// affected (0 = absent or not in this project → 404). Environments are lazy, so
-	// a later deploy to the same name re-creates it empty.
-	DeleteEnvironment(ctx context.Context, arg DeleteEnvironmentParams) (int64, error)
+	// Hard-delete an environment scoped to its project, but ONLY when it has no
+	// in-flight deploy — an in_progress deployment_revision or a live deploy_watch.
+	// Blocking here (rather than cascading) stops the delete from orphaning a
+	// running deploy whose revision + watch would vanish under it: the job_run would
+	// stay running with no agent and the reaper would later re-see it as orphaned.
+	// Once the env is confirmed idle, ON DELETE CASCADE still fans the delete out to
+	// the FINALIZED history + any registered target (incl. a gated one), which is why
+	// the API gates this to admin. Atomic: the idle check and the delete are one
+	// statement, so a deploy that starts concurrently can't slip through a
+	// check→delete gap. Returns three flags the caller maps to 204 / 409 / 404.
+	// Environments are lazy, so a later deploy to the same name re-creates it empty.
+	DeleteEnvironmentIfIdle(ctx context.Context, arg DeleteEnvironmentIfIdleParams) (DeleteEnvironmentIfIdleRow, error)
 	DeleteExpiredAuthStates(ctx context.Context) error
 	DeleteExpiredUserSessions(ctx context.Context) error
 	DeleteGlobalSecretByName(ctx context.Context, name string) (int64, error)
