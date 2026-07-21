@@ -7,6 +7,7 @@ import type { Rollout } from "@/types/api";
 
 import { AnalysisPanel } from "./analysis-panel";
 import { RevisionStrip } from "./revision-strip";
+import { RolloutActions } from "./rollout-actions.client";
 import { StatusPill } from "./status-pill";
 import { StepsTimeline } from "./steps-timeline";
 import { TrafficBar } from "./traffic-bar";
@@ -147,13 +148,27 @@ function UnknownStrategyBody({ rollout }: { rollout: Rollout }) {
   );
 }
 
-type Props = { rollout: Rollout };
+type Props = {
+  rollout: Rollout;
+  slug: string;
+  cluster: string;
+  canManage: boolean;
+  onActed?: () => void;
+};
 
-// RolloutPanel is one rollout: header (strategy pill, name + meta, status pill)
-// over a strategy-specific body. Canary renders the full read-only view; blue-
-// green renders a compact placeholder (PR-D). A paused canary gets a teal accent
-// bar (it is the one awaiting an operator decision).
-export function RolloutPanel({ rollout }: Props) {
+// RolloutPanel is one rollout: header (strategy pill, name + meta, status pill,
+// control actions) over a strategy-specific body. Canary renders the full read-only
+// view; blue-green renders a compact placeholder (PR-D). A paused canary gets a teal
+// accent bar (it is the one awaiting an operator decision). Control actions
+// (Approve/Reject for a gated rollout, Promote/Abort for a non-gated one) hang to the
+// right of the status pill; the server enforces every action.
+export function RolloutPanel({
+  rollout,
+  slug,
+  cluster,
+  canManage,
+  onActed,
+}: Props) {
   const canary = rollout.strategy === "canary";
   const attn = canary && rollout.phase === "Paused" && !rollout.aborted;
   return (
@@ -171,8 +186,15 @@ export function RolloutPanel({ rollout }: Props) {
           </h3>
           <Meta rollout={rollout} />
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
           <StatusPill phase={rollout.phase} aborted={rollout.aborted} />
+          <RolloutActions
+            slug={slug}
+            cluster={cluster}
+            canManage={canManage}
+            rollout={rollout}
+            onActed={onActed}
+          />
         </div>
       </header>
       <div className="p-5">

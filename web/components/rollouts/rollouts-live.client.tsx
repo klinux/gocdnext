@@ -38,6 +38,10 @@ type Props = {
   namespace: string;
   apiBaseURL: string;
   initialData: RolloutsList;
+  // canManage gates the direct Promote/Abort + gate Approve/Reject actions. The read
+  // route is maintainer-gated, so a viewer never reaches this page; the flag is defence
+  // in depth (and the server re-enforces every action).
+  canManage: boolean;
 };
 
 // RolloutsLive wraps the server-fetched snapshot and re-polls it every ~5s
@@ -50,6 +54,7 @@ export function RolloutsLive({
   namespace,
   apiBaseURL,
   initialData,
+  canManage,
 }: Props) {
   const { data, isFetching, isError, refetch } = useQuery({
     queryKey: ["rollouts", slug, cluster, namespace],
@@ -103,7 +108,14 @@ export function RolloutsLive({
       ) : (
         <div className="space-y-6">
           {rollouts.map((r) => (
-            <RolloutPanel key={`${r.namespace}/${r.name}`} rollout={r} />
+            <RolloutPanel
+              key={`${r.namespace}/${r.name}`}
+              rollout={r}
+              slug={slug}
+              cluster={cluster}
+              canManage={canManage}
+              onActed={() => refetch()}
+            />
           ))}
         </div>
       )}

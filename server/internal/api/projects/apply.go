@@ -55,6 +55,15 @@ type Handler struct {
 	// rolloutLister lists Argo Rollouts via the cluster registry (ADR-0001). nil when
 	// the server didn't wire it — the rollouts endpoint then answers 501.
 	rolloutLister rolloutLister
+
+	// rolloutActuator drives a direct Promote/Abort on a non-gated Rollout (ADR-0001,
+	// PR-C). nil when the server didn't wire it — the promote/abort endpoints answer 501.
+	rolloutActuator rolloutActuator
+
+	// gateLookup correlates armed rollout gates onto the list + guards direct actuation.
+	// nil => use the store directly (see armedGates); a test seam injects a fake so the
+	// promote/abort guard can be exercised without seeding a full gated-deploy lifecycle.
+	gateLookup rolloutGateLookup
 }
 
 // WithPluginCatalog plugs the catalog used to validate `with:`
