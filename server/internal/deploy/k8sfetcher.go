@@ -62,6 +62,13 @@ func rolloutCRDPath(namespace, name string) string {
 	)
 }
 
+// rolloutStatusPath is the Rollout's `/status` subresource — the merge-patch target
+// for promote (clear pauseConditions) and abort (set abort). Promote/abort MUST hit
+// the subresource, not the main resource: the controller reconciles `.status` there.
+func rolloutStatusPath(namespace, name string) string {
+	return rolloutCRDPath(namespace, name) + "/status"
+}
+
 // applicationCRDPath is the k8s API path of the target's ArgoCD Application CR,
 // shared by the read (fetch) and write (sync) paths. PathEscape the segments
 // defensively: names come from the platform-registered target (validated at

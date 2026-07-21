@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/api/authapi"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -36,6 +37,15 @@ type deployWatchDTO struct {
 	RolloutAborted     bool       `json:"rollout_aborted,omitempty"`
 	RolloutError       string     `json:"rollout_error,omitempty"`
 	RolloutObservedAt  *time.Time `json:"rollout_observed_at,omitempty"`
+
+	// Gate live-state (viewer-readable). GateID is the armed token the UI echoes back on
+	// approve/reject (empty when no step is armed). GatePausedStep is a pointer (absent
+	// vs step 0). GateApprovalsNow / GateRequired render "awaiting approval (1/2)".
+	GateID           string `json:"gate_id,omitempty"`
+	GatePausedStep   *int   `json:"gate_paused_step,omitempty"`
+	GateRequired     int    `json:"gate_required,omitempty"`
+	GateDecision     string `json:"gate_decision,omitempty"`
+	GateApprovalsNow int    `json:"gate_approvals_now,omitempty"`
 
 	// Maintainer-only config.
 	Application string `json:"application,omitempty"`
@@ -88,6 +98,19 @@ func (h *Handler) ListDeployWatches(w http.ResponseWriter, r *http.Request) {
 		if wch.RolloutStepKnown {
 			step := wch.RolloutCurrentStep
 			d.RolloutCurrentStep = &step
+		}
+		// Gate live-state (viewer-readable). Only a currently-armed gate exposes a token.
+		if wch.GateID != uuid.Nil {
+			d.GateID = wch.GateID.String()
+			d.GateApprovalsNow = wch.GateApprovalsNow
+			if wch.GatePausedStepKnown {
+				step := wch.GatePausedStep
+				d.GatePausedStep = &step
+			}
+			if wch.GateRequiredKnown {
+				d.GateRequired = wch.GateRequired
+			}
+			d.GateDecision = wch.GateDecision
 		}
 		if showConfig {
 			d.Application = wch.Application

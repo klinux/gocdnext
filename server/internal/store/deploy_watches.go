@@ -57,6 +57,20 @@ type DeployWatch struct {
 	RolloutAborted     bool
 	RolloutError       string
 	RolloutObservedAt  *time.Time
+
+	// Gate control state (Phase 2). Gated = the config was denormalized at creation
+	// (gate_required set); the per-arm columns are set while a step's gate is armed.
+	Gated                  bool
+	GateID                 uuid.UUID // Nil when unarmed
+	GateArmedAt            *time.Time
+	GatePausedStep         int
+	GatePausedStepKnown    bool
+	GateRolloutCluster     string
+	GateRolloutNamespace   string
+	GateRolloutName        string
+	GateDecision           string // "", approved, rejected
+	GateActionedAt         *time.Time
+	RolloutAbortActionedAt *time.Time
 }
 
 // DeployWatchInput is the create-time payload. The watch is created unclaimed and
@@ -108,6 +122,18 @@ func deployWatchFromRow(w db.DeployWatch) DeployWatch {
 		RolloutAborted:       w.RolloutAborted != nil && *w.RolloutAborted,
 		RolloutError:         stringValue(w.RolloutError),
 		RolloutObservedAt:    pgTimePtr(w.RolloutObservedAt),
+
+		Gated:                  w.GateRequired != nil,
+		GateID:                 fromPgUUID(w.GateID),
+		GateArmedAt:            pgTimePtr(w.GateArmedAt),
+		GatePausedStep:         int32Value(w.GatePausedStep),
+		GatePausedStepKnown:    w.GatePausedStep != nil,
+		GateRolloutCluster:     stringValue(w.GateRolloutCluster),
+		GateRolloutNamespace:   stringValue(w.GateRolloutNamespace),
+		GateRolloutName:        stringValue(w.GateRolloutName),
+		GateDecision:           stringValue(w.GateDecision),
+		GateActionedAt:         pgTimePtr(w.GateActionedAt),
+		RolloutAbortActionedAt: pgTimePtr(w.RolloutAbortActionedAt),
 	}
 }
 
@@ -157,64 +183,6 @@ func (s *Store) GetDeployWatch(ctx context.Context, revID uuid.UUID) (DeployWatc
 		return DeployWatch{}, fmt.Errorf("store: get deploy watch: %w", err)
 	}
 	return deployWatchFromRow(w), nil
-}
-
-// rolloutTextMax bounds cluster-supplied message/error so a giant status can't bloat
-// the DB/UI (runes, so truncation never splits a UTF-8 sequence).
-const rolloutTextMax = 500
-
-// RolloutObservationInput is the observed Rollout snapshot the watcher persists each
-// tick. Observed=false means the Rollout couldn't be read/resolved this tick — only
-// Error is meaningful then. StepKnown=false NULLs rollout_current_step (an absent
-// controller index must not read as step 0).
-type RolloutObservationInput struct {
-	Observed    bool
-	Phase       string
-	Message     string
-	PauseReason string
-	CurrentStep int
-	StepKnown   bool
-	StepCount   int
-	Aborted     bool
-	Error       string
-}
-
-// StampRolloutObservation persists the snapshot onto the watch, fenced on claimID
-// (false → lease lost). A good observe clears rollout_error; a failed one records the
-// (already sanitized) Error and NULLs the rest.
-func (s *Store) StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in RolloutObservationInput) (bool, error) {
-	p := db.StampRolloutObservationParams{
-		DeploymentRevisionID: pgUUID(revID),
-		ClaimID:              pgUUID(claimID),
-	}
-	if in.Observed {
-		p.RolloutPhase = nullableString(in.Phase)
-		p.RolloutMessage = nullableString(truncateRunes(in.Message, rolloutTextMax))
-		p.RolloutPauseReason = nullableString(in.PauseReason)
-		if in.StepKnown {
-			v := int32(in.CurrentStep)
-			p.RolloutCurrentStep = &v
-		}
-		sc := int32(in.StepCount)
-		p.RolloutStepCount = &sc
-		ab := in.Aborted
-		p.RolloutAborted = &ab
-	} else {
-		p.RolloutError = nullableString(truncateRunes(in.Error, rolloutTextMax))
-	}
-	n, err := s.q.StampRolloutObservation(ctx, p)
-	if err != nil {
-		return false, fmt.Errorf("store: stamp rollout observation: %w", err)
-	}
-	return n > 0, nil
-}
-
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
 }
 
 // ClaimDeployWatches claims up to max never-claimed-or-lease-expired watches for
@@ -401,79 +369,4 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
 	}
 	return res, nil
-}
-
-// DeployWatchView is one in-flight native deploy, joined to its environment + display
-// version, for the read-only live-status endpoint. Cluster/Application/SyncMode are
-// config (sanitised by role at the HTTP layer); the rest is live state.
-type DeployWatchView struct {
-	DeploymentRevisionID uuid.UUID // the endpoint's per-deploy key (Phase 2 approve/reject)
-	Environment          string
-	Version              string
-	ExpectedRevision     string
-	SyncMode             string
-	Cluster              string
-	Application          string
-	WatchStartedAt       time.Time
-	SyncRequestedAt      *time.Time
-	DeadlineAt           time.Time
-	DegradedSince        *time.Time
-
-	// Observed rollout snapshot (Phase 2). RolloutObservedAt nil = not yet observed;
-	// RolloutStepKnown=false = the controller step index was absent.
-	RolloutAware       bool
-	RolloutPhase       string
-	RolloutMessage     string
-	RolloutPauseReason string
-	RolloutCurrentStep int
-	RolloutStepKnown   bool
-	RolloutStepCount   int
-	RolloutAborted     bool
-	RolloutError       string
-	RolloutObservedAt  *time.Time
-}
-
-// ListDeployWatchesForProject returns the project's in-flight native deploys.
-func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.UUID) ([]DeployWatchView, error) {
-	rows, err := s.q.ListDeployWatchesForProject(ctx, pgUUID(projectID))
-	if err != nil {
-		return nil, fmt.Errorf("store: list deploy watches for project %s: %w", projectID, err)
-	}
-	out := make([]DeployWatchView, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, DeployWatchView{
-			DeploymentRevisionID: fromPgUUID(r.DeploymentRevisionID),
-			Environment:          r.Environment,
-			Version:              r.Version,
-			ExpectedRevision:     r.ExpectedRevision,
-			SyncMode:             r.SyncMode,
-			Cluster:              r.Cluster,
-			Application:          r.Application,
-			WatchStartedAt:       r.WatchStartedAt.Time,
-			SyncRequestedAt:      pgTimePtr(r.SyncRequestedAt),
-			DeadlineAt:           r.DeadlineAt.Time,
-			DegradedSince:        pgTimePtr(r.DegradedSince),
-			RolloutAware:         r.RolloutAware,
-			RolloutPhase:         stringValue(r.RolloutPhase),
-			RolloutMessage:       stringValue(r.RolloutMessage),
-			RolloutPauseReason:   stringValue(r.RolloutPauseReason),
-			RolloutCurrentStep:   int32Value(r.RolloutCurrentStep),
-			RolloutStepKnown:     r.RolloutCurrentStep != nil,
-			RolloutStepCount:     int32Value(r.RolloutStepCount),
-			RolloutAborted:       r.RolloutAborted != nil && *r.RolloutAborted,
-			RolloutError:         stringValue(r.RolloutError),
-			RolloutObservedAt:    pgTimePtr(r.RolloutObservedAt),
-		})
-	}
-	return out, nil
-}
-
-// CountActiveWatchesForCluster backs the cluster delete-guard (an in-flight watch
-// also RESTRICTs the cluster FK).
-func (s *Store) CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error) {
-	n, err := s.q.CountActiveWatchesForCluster(ctx, cluster)
-	if err != nil {
-		return 0, fmt.Errorf("store: count active watches for cluster %q: %w", cluster, err)
-	}
-	return n, nil
 }

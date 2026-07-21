@@ -4,12 +4,19 @@
 -- BEFORE Sync fires so a crash between create and Sync is recoverable. The
 -- WHERE EXISTS guard refuses to watch an already-terminal revision (a late or
 -- duplicate create) — 0 rows → the store maps it to ErrRevisionNotInProgress.
+-- The gate_* CONFIG columns are the target's governing_gate denormalized here at
+-- creation (an immutable per-deploy snapshot; a mid-flight target edit must not change
+-- an in-flight deploy's gate). gate_required NULL => this deploy is not gated. The
+-- per-arm / decision / action gate columns stay NULL until the watcher arms a step.
 INSERT INTO deploy_watches (
     deployment_revision_id, project_id, sync_mode, cluster, application,
     namespace, expected_revision, deadline_at,
-    rollout_aware, rollout_cluster, rollout_namespace, rollout_name
+    rollout_aware, rollout_cluster, rollout_namespace, rollout_name,
+    gate_approvers, gate_approver_groups, gate_required, gate_description
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+       sqlc.narg(gate_approvers), sqlc.narg(gate_approver_groups),
+       sqlc.narg(gate_required), sqlc.narg(gate_description)
 WHERE EXISTS (
     SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
 )
@@ -31,6 +38,120 @@ SET rollout_phase        = sqlc.narg(rollout_phase),
     rollout_observed_at  = NOW()
 WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
   AND claim_id = sqlc.arg(claim_id);
+
+-- name: ArmRolloutGate :execrows
+-- Arm the approval gate for the current indefinite pause. Stamps a FRESH gate_id (the
+-- anti-stale token), the armed-at time, the paused step, and the RESOLVED Rollout
+-- identity PINNED for this gate — Promote/Abort act on these, never a re-discovery, so
+-- `.status.resources[]` drift can't redirect the effect. All three identity columns are
+-- stamped together (a complete pinned tuple; the watcher only arms with all three).
+-- Fenced on claim_id; `gate_id IS NULL` makes a double-tick a no-op (never re-arms a
+-- fresh token under an in-flight vote).
+UPDATE deploy_watches
+SET gate_id                = gen_random_uuid(),
+    gate_armed_at          = NOW(),
+    gate_paused_step       = sqlc.arg(gate_paused_step),
+    gate_rollout_cluster   = sqlc.arg(gate_rollout_cluster),
+    gate_rollout_namespace = sqlc.arg(gate_rollout_namespace),
+    gate_rollout_name      = sqlc.arg(gate_rollout_name)
+WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
+  AND claim_id = sqlc.arg(claim_id)
+  -- Idempotent re-arm guard. The COMPLETE-pin invariant is enforced at the store edge
+  -- (ArmRolloutGate rejects an empty cluster/namespace/name before this runs).
+  AND gate_id IS NULL;
+
+-- name: MarkGateActioned :execrows
+-- Record that the gated Promote/Abort was ISSUED for this decision (anti-retry only —
+-- no deadline change; the terminal DECISION already resumed the deadline). Fenced on
+-- claim_id; `gate_actioned_at IS NULL` makes a re-tick a no-op.
+UPDATE deploy_watches
+SET gate_actioned_at = NOW()
+WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
+  AND claim_id = sqlc.arg(claim_id)
+  AND gate_actioned_at IS NULL;
+
+-- name: ClearRolloutGateColumns :execrows
+-- Disarm the current step's gate: null the per-arm / decision / action columns. The
+-- CONFIG columns (gate_approvers/required/description) persist for the whole deploy, so
+-- the next pause re-arms with the same policy. If cleared while STILL UNDECIDED (an
+-- external promote before any vote), resume the deadline with the one-time shift
+-- deadline_at += NOW() - gate_armed_at. The CASE reads the OLD row values (an UPDATE's
+-- SET RHS all see the pre-update row), so it computes the shift before nulling. Guarded
+-- so it's applied at most once — a DECIDED gate already had its deadline resumed by
+-- DecideRolloutGate. Fenced on claim_id.
+UPDATE deploy_watches
+SET deadline_at = CASE
+        WHEN gate_armed_at IS NOT NULL AND gate_decision IS NULL
+        THEN deadline_at + (NOW() - gate_armed_at)
+        ELSE deadline_at
+    END,
+    gate_id                = NULL,
+    gate_armed_at          = NULL,
+    gate_paused_step       = NULL,
+    gate_rollout_cluster   = NULL,
+    gate_rollout_namespace = NULL,
+    gate_rollout_name      = NULL,
+    gate_decision          = NULL,
+    gate_decided_by        = NULL,
+    gate_decided_at        = NULL,
+    gate_actioned_at       = NULL
+WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
+  AND claim_id = sqlc.arg(claim_id)
+  -- Only a REAL armed round is clearable — a spurious ClearGate on an unarmed watch
+  -- must not "succeed" (and then delete this deploy's votes). gate_id is stamped by
+  -- ArmRolloutGate and nulled here, so it marks exactly an armed round.
+  AND gate_id IS NOT NULL;
+
+-- name: MarkRolloutAbortActioned :execrows
+-- The cancel/supersede abort actuation: stamp rollout_abort_actioned_at (the
+-- gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) and
+-- DISARM any armed gate — decided or not, since cancel outranks a reject — by nulling the
+-- per-arm / decision / action columns unconditionally. The one-time deadline resume
+-- (deadline_at += NOW() - gate_armed_at, computed from the OLD row since SET RHS sees the
+-- pre-update values) applies ONLY when the gate was still UNDECIDED: a decided gate
+-- already resumed the deadline in DecideRolloutGate, so its CASE is false (no
+-- double-shift). A non-gated cancel just stamps the guard. Fenced on claim_id;
+-- `rollout_abort_actioned_at IS NULL` makes a re-tick a no-op. The caller deletes the
+-- step's votes in the same tx.
+UPDATE deploy_watches
+SET rollout_abort_actioned_at = NOW(),
+    deadline_at = CASE
+        WHEN gate_armed_at IS NOT NULL AND gate_decision IS NULL
+        THEN deadline_at + (NOW() - gate_armed_at)
+        ELSE deadline_at
+    END,
+    gate_id                = NULL,
+    gate_armed_at          = NULL,
+    gate_paused_step       = NULL,
+    gate_rollout_cluster   = NULL,
+    gate_rollout_namespace = NULL,
+    gate_rollout_name      = NULL,
+    gate_decision          = NULL,
+    gate_decided_by        = NULL,
+    gate_decided_at        = NULL,
+    gate_actioned_at       = NULL
+WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
+  AND claim_id = sqlc.arg(claim_id)
+  AND rollout_abort_actioned_at IS NULL;
+
+-- name: GetDeployWatchCancelRequestedAt :one
+-- The deploy's cancel/supersede intent (job_runs.cancel_requested_at via the revision's
+-- job_run) for the watcher's cancel-abort path. NULL = not canceled. Kept as a separate
+-- read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
+SELECT jr.cancel_requested_at
+FROM deployment_revisions dr
+LEFT JOIN job_runs jr ON jr.id = dr.job_run_id
+WHERE dr.id = $1;
+
+-- name: DeleteDeployGateVotes :exec
+-- Delete the current arm's approval votes so the next step's gate starts fresh. Votes
+-- reuse job_run_approvals keyed on the deploy's job_run_id; each canary step is its own
+-- round, so a step's votes must not carry into the next. The durable per-decision record
+-- is the audit event emitted by DecideRolloutGate, not these transient rows.
+DELETE FROM job_run_approvals
+WHERE job_run_id = (
+    SELECT job_run_id FROM deployment_revisions WHERE id = sqlc.arg(deployment_revision_id)
+);
 
 -- name: GetDeployWatch :one
 SELECT * FROM deploy_watches WHERE deployment_revision_id = $1;
@@ -117,7 +238,12 @@ SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        dw.deadline_at, dw.degraded_since,
        dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
        dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
-       dw.rollout_error, dw.rollout_observed_at
+       dw.rollout_error, dw.rollout_observed_at,
+       -- Gate live-state (viewer-readable): the armed token to echo on approve/reject,
+       -- the step, quorum, decision, and how many approvals are in so far.
+       dw.gate_id, dw.gate_paused_step, dw.gate_required, dw.gate_decision,
+       (SELECT COUNT(*) FROM job_run_approvals a
+        WHERE a.job_run_id = dr.job_run_id AND a.decision = 'approved')::int AS gate_approvals_now
 FROM deploy_watches dw
 JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 JOIN environments e ON e.id = dr.environment_id

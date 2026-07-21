@@ -15,6 +15,18 @@ export const ENVIRONMENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export const SYNC_MODES = ["trigger", "observe"] as const;
 
+// The approval-gate config (control mode). The dialog does not yet let a user EDIT it
+// (that lands with the approve/reject UI); this schema exists so the edit form can
+// ROUND-TRIP the stored gate verbatim on submit — the server's separation-of-duties
+// check treats an absent gate as "remove it" (admin-only), so a maintainer editing a
+// non-gate field on a gated target must send the gate back unchanged.
+export const governingGateSchema = z.object({
+  approvers: z.array(z.string()).optional(),
+  approver_groups: z.array(z.string()).optional(),
+  required: z.number().int().min(1),
+  description: z.string().optional(),
+});
+
 export const deployTargetFormSchema = z.object({
   environment: z
     .string()
@@ -41,6 +53,9 @@ export const deployTargetFormSchema = z.object({
   rollout_cluster: z.string().trim().max(64).optional(),
   rollout_namespace: z.string().trim().max(253).optional(),
   rollout_name: z.string().trim().max(253).optional(),
+
+  // Carried through unchanged on an edit (see governingGateSchema). Absent = no gate.
+  governing_gate: governingGateSchema.optional(),
 });
 
 export type DeployTargetForm = z.infer<typeof deployTargetFormSchema>;

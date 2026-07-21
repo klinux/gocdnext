@@ -11,10 +11,14 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// Observer is the provider capability the watcher needs: one convergence snapshot
-// for a target. *deploy.ArgoProvider satisfies it.
-type Observer interface {
+// DeployProvider is the provider capability the watcher drives: one convergence
+// snapshot for a target, plus (Phase 2 gate control) Promote/Abort of the canary.
+// Promote/Abort act on the target's PINNED Rollout identity; both are idempotent.
+// *deploy.ArgoProvider satisfies it.
+type DeployProvider interface {
 	Observe(ctx context.Context, target deploy.DeploymentTarget) (deploy.DeployState, error)
+	Promote(ctx context.Context, target deploy.DeploymentTarget) error
+	Abort(ctx context.Context, target deploy.DeploymentTarget) error
 }
 
 // WatchStore is the persistence the watcher drives. *store.Store satisfies it. Every
@@ -28,6 +32,15 @@ type WatchStore interface {
 	StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in store.RolloutObservationInput) (bool, error)
 	FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (store.DeployWatchFinalizeResult, error)
 	NotifyRunQueued(ctx context.Context, runID uuid.UUID) error
+
+	// Gate control (Phase 2), all fenced on the claim token.
+	ArmRolloutGate(ctx context.Context, revID, claimID uuid.UUID, in store.ArmRolloutGateInput) (bool, error)
+	MarkGateActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	ClearRolloutGate(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	// MarkRolloutAbortActioned is the cancel/supersede abort (stamp + disarm + delete
+	// votes). DeployWatchCancelRequestedAt reads the deploy's cancel intent each tick.
+	MarkRolloutAbortActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	DeployWatchCancelRequestedAt(ctx context.Context, revID uuid.UUID) (*time.Time, error)
 }
 
 // Watcher cadence/lease defaults. The lease TTL must comfortably exceed one watch's
@@ -55,7 +68,7 @@ const (
 //
 // Prometheus is deferred; the structured watch_* log events are the stable surface.
 type Watcher struct {
-	obs   Observer
+	obs   DeployProvider
 	store WatchStore
 	log   *slog.Logger
 
@@ -68,7 +81,7 @@ type Watcher struct {
 
 // NewWatcher builds a watcher for workerID (the lease holder identity — use a stable
 // per-replica id so a restart reclaims its own leases cleanly).
-func NewWatcher(obs Observer, s WatchStore, workerID string, log *slog.Logger) *Watcher {
+func NewWatcher(obs DeployProvider, s WatchStore, workerID string, log *slog.Logger) *Watcher {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -166,35 +179,49 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		return
 	}
 
+	// Read the deploy's cancel/supersede intent this tick. STICKY: once a cancel-abort was
+	// issued (rollout_abort_actioned_at stamped — which only happens after an observed
+	// cancel), the deploy is being canceled, so keep it in Decide's cancel branch even if
+	// this tick's cancel read transiently fails. Otherwise a read error would drop
+	// CancelRequested to false and a Synced+Healthy+FullyPromoted snapshot could
+	// FinalizeSuccess a canceled deploy. A fresh read only ADDS the intent.
+	cancelRequested := dw.RolloutAbortActionedAt != nil
+	if at, err := w.store.DeployWatchCancelRequestedAt(ctx, dw.DeploymentRevisionID); err != nil {
+		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "cancel_read", "err", err)...)
+	} else if at != nil {
+		cancelRequested = true
+	}
+
 	state, err := w.obs.Observe(ctx, targetOf(dw))
 	if err != nil {
-		// An observation error alone never fails the deploy — retry next tick. But the
-		// deadline still terminates it: a target we can NEVER observe must not poll
-		// forever past its budget, so a past-deadline observe error fails as deadline
-		// exceeded (via the one terminal path). We do NOT feed the untrusted error
-		// state to Decide.
+		// An Application read error never TRUSTS the returned snapshot — but it must
+		// still run through Decide, or the Phase-2 precedence is lost when a gate is
+		// armed: a human REJECT (or cancel) must still Abort via the pin (abort-safe
+		// under uncertainty), an armed & undecided gate must still SUSPEND the deadline,
+		// and only APPROVE stays promote-unsafe. So replace the state with a SANITIZED
+		// synthetic one — no untrusted Sync/Health/rev (a stale value must not drive a
+		// success/degraded/fast-fail), only the observe-error signal — persist it for the
+		// UI, and fall through to Decide. For a non-rollout / observe-only deploy this
+		// yields exactly the old behavior: Continue, or FinalizeFailed(deadline) once the
+		// budget is spent (Decide branch 4, since awaitingHuman is false there). The
+		// reason is FIXED (the raw err may carry the internal API-server URL).
 		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "observe", "err", err)...)
-		// The Application read failed → the Rollout can't be observed either. Clear the
-		// stale snapshot with a FIXED sanitized reason (the raw err may carry the
-		// internal API-server URL) so the UI never shows ghost canary progress.
+		state = deploy.DeployState{RolloutError: "the deploy could not be observed"}
 		if dw.RolloutAware {
-			w.persistRollout(ctx, dw, store.RolloutObservationInput{Error: "the deploy could not be observed"})
+			w.persistRollout(ctx, dw, store.RolloutObservationInput{Error: state.RolloutError})
 		}
-		if time.Now().After(dw.DeadlineAt) {
-			w.finalize(ctx, dw, store.DeployStatusFailed, deploy.ReasonDeadlineExceeded)
+	} else {
+		w.log.Debug("watch_observed", append(watchAttrs(dw),
+			"sync", state.Sync, "health", state.Health, "observed_rev", state.ObservedRev, "op_phase", state.OperationPhase)...)
+		// Persist the observed Rollout snapshot each tick so the UI (which reads the DB)
+		// renders canary progress. The same live snapshot (state.Rollout) also feeds
+		// Decide below — arm/promote/abort/clear + the no-early-finalize guard.
+		if dw.RolloutAware {
+			w.stampRollout(ctx, dw, state)
 		}
-		return
-	}
-	w.log.Debug("watch_observed", append(watchAttrs(dw),
-		"sync", state.Sync, "health", state.Health, "observed_rev", state.ObservedRev, "op_phase", state.OperationPhase)...)
-
-	// Persist the observed Rollout snapshot each tick so the UI (which reads the DB)
-	// renders canary progress. Observe-only in PR1 — it does NOT feed Decide yet.
-	if dw.RolloutAware {
-		w.stampRollout(ctx, dw, state)
 	}
 
-	verdict := deploy.Decide(state, anchorsOf(dw), time.Now(), w.degradedWindow)
+	verdict := deploy.Decide(state, anchorsOf(dw, cancelRequested), time.Now(), w.degradedWindow)
 	w.log.Info("watch_decision", append(watchAttrs(dw), "effect", verdict.Effect, "reason", verdict.Reason)...)
 
 	switch verdict.Effect {
@@ -204,6 +231,21 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		w.applyDegraded(ctx, dw, "set", w.store.SetDeployWatchDegradedSince)
 	case deploy.ClearDegraded:
 		w.applyDegraded(ctx, dw, "clear", w.store.ClearDeployWatchDegraded)
+	case deploy.ArmGate:
+		w.armGate(ctx, dw, state)
+	case deploy.Promote:
+		w.actuateGate(ctx, dw, deploy.Promote)
+	case deploy.Abort:
+		// Route on the DB-derived cancel intent, NOT the verdict reason: a cancel/supersede
+		// abort disarms the gate + marks the gate-independent guard; a reject abort marks
+		// the gated action. (Decide's cancel branch outranks reject, so these agree.)
+		if cancelRequested {
+			w.abortForCancel(ctx, dw, state)
+		} else {
+			w.actuateGate(ctx, dw, deploy.Abort)
+		}
+	case deploy.ClearGate:
+		w.clearGate(ctx, dw)
 	case deploy.FinalizeSuccess:
 		w.finalize(ctx, dw, store.DeployStatusSuccess, "")
 	case deploy.FinalizeFailed:
@@ -300,13 +342,26 @@ func targetOf(dw store.DeployWatch) deploy.DeploymentTarget {
 	}
 }
 
-func anchorsOf(dw store.DeployWatch) deploy.WatchAnchors {
+func anchorsOf(dw store.DeployWatch, cancelRequested bool) deploy.WatchAnchors {
 	return deploy.WatchAnchors{
 		SyncMode:         deploy.SyncMode(dw.SyncMode),
 		ExpectedRevision: dw.ExpectedRevision,
 		SyncRequestedAt:  dw.SyncRequestedAt,
 		DeadlineAt:       dw.DeadlineAt,
 		DegradedSince:    dw.DegradedSince,
+
+		// Gate control (Phase 2).
+		RolloutAware:    dw.RolloutAware,
+		Gated:           dw.Gated,
+		CancelRequested: cancelRequested,
+		GateArmedAt:     dw.GateArmedAt,
+		GateDecision:    deploy.GateDecision(dw.GateDecision),
+		GateActionedAt:  dw.GateActionedAt,
+		GatePausedStep:  gatePausedStepPtr(dw),
+		// A COMPLETE pinned tuple — a partial pin is not actionable (the store rejects
+		// arming with one), so it must not read as "pinned".
+		HasPinnedRolloutTarget: dw.GateRolloutCluster != "" && dw.GateRolloutNamespace != "" && dw.GateRolloutName != "",
+		RolloutAbortActionedAt: dw.RolloutAbortActionedAt,
 	}
 }
 
