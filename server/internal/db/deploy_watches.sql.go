@@ -71,7 +71,7 @@ WHERE w.deployment_revision_id IN (
     FOR UPDATE OF dw SKIP LOCKED
     LIMIT $3
 )
-RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at
+RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at, rollout_analysis_kind, rollout_analysis_name, rollout_analysis_phase, rollout_analysis_message
 `
 
 type ClaimDeployWatchesParams struct {
@@ -140,6 +140,10 @@ func (q *Queries) ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatches
 			&i.GateDecidedAt,
 			&i.GateActionedAt,
 			&i.RolloutAbortActionedAt,
+			&i.RolloutAnalysisKind,
+			&i.RolloutAnalysisName,
+			&i.RolloutAnalysisPhase,
+			&i.RolloutAnalysisMessage,
 		); err != nil {
 			return nil, err
 		}
@@ -244,7 +248,7 @@ SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
 WHERE EXISTS (
     SELECT 1 FROM deployment_revisions WHERE id = $1 AND status = 'in_progress'
 )
-RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at
+RETURNING deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at, rollout_analysis_kind, rollout_analysis_name, rollout_analysis_phase, rollout_analysis_message
 `
 
 type CreateDeployWatchParams struct {
@@ -338,6 +342,10 @@ func (q *Queries) CreateDeployWatch(ctx context.Context, arg CreateDeployWatchPa
 		&i.GateDecidedAt,
 		&i.GateActionedAt,
 		&i.RolloutAbortActionedAt,
+		&i.RolloutAnalysisKind,
+		&i.RolloutAnalysisName,
+		&i.RolloutAnalysisPhase,
+		&i.RolloutAnalysisMessage,
 	)
 	return i, err
 }
@@ -379,7 +387,7 @@ func (q *Queries) DeleteDeployWatchClaimed(ctx context.Context, arg DeleteDeploy
 }
 
 const getDeployWatch = `-- name: GetDeployWatch :one
-SELECT deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at FROM deploy_watches WHERE deployment_revision_id = $1
+SELECT deployment_revision_id, project_id, sync_mode, cluster, application, namespace, expected_revision, watch_started_at, sync_requested_at, deadline_at, degraded_since, claim_id, claimed_by, claimed_at, created_at, rollout_aware, rollout_cluster, rollout_namespace, rollout_name, rollout_phase, rollout_message, rollout_pause_reason, rollout_current_step, rollout_step_count, rollout_aborted, rollout_error, rollout_observed_at, gate_approvers, gate_approver_groups, gate_required, gate_description, gate_id, gate_armed_at, gate_paused_step, gate_rollout_cluster, gate_rollout_namespace, gate_rollout_name, gate_decision, gate_decided_by, gate_decided_at, gate_actioned_at, rollout_abort_actioned_at, rollout_analysis_kind, rollout_analysis_name, rollout_analysis_phase, rollout_analysis_message FROM deploy_watches WHERE deployment_revision_id = $1
 `
 
 func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtype.UUID) (DeployWatch, error) {
@@ -428,6 +436,10 @@ func (q *Queries) GetDeployWatch(ctx context.Context, deploymentRevisionID pgtyp
 		&i.GateDecidedAt,
 		&i.GateActionedAt,
 		&i.RolloutAbortActionedAt,
+		&i.RolloutAnalysisKind,
+		&i.RolloutAnalysisName,
+		&i.RolloutAnalysisPhase,
+		&i.RolloutAnalysisMessage,
 	)
 	return i, err
 }
@@ -457,6 +469,8 @@ SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
        dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
        dw.rollout_error, dw.rollout_observed_at,
+       dw.rollout_analysis_kind, dw.rollout_analysis_name,
+       dw.rollout_analysis_phase, dw.rollout_analysis_message,
        -- Gate live-state (viewer-readable): the armed token to echo on approve/reject,
        -- the step, quorum, decision, and how many approvals are in so far.
        dw.gate_id, dw.gate_paused_step, dw.gate_required, dw.gate_decision,
@@ -470,31 +484,35 @@ ORDER BY e.name
 `
 
 type ListDeployWatchesForProjectRow struct {
-	DeploymentRevisionID pgtype.UUID
-	Environment          string
-	Version              string
-	ExpectedRevision     string
-	SyncMode             string
-	Cluster              string
-	Application          string
-	WatchStartedAt       pgtype.Timestamptz
-	SyncRequestedAt      pgtype.Timestamptz
-	DeadlineAt           pgtype.Timestamptz
-	DegradedSince        pgtype.Timestamptz
-	RolloutAware         bool
-	RolloutPhase         *string
-	RolloutMessage       *string
-	RolloutPauseReason   *string
-	RolloutCurrentStep   *int32
-	RolloutStepCount     *int32
-	RolloutAborted       *bool
-	RolloutError         *string
-	RolloutObservedAt    pgtype.Timestamptz
-	GateID               pgtype.UUID
-	GatePausedStep       *int32
-	GateRequired         *int32
-	GateDecision         *string
-	GateApprovalsNow     int32
+	DeploymentRevisionID   pgtype.UUID
+	Environment            string
+	Version                string
+	ExpectedRevision       string
+	SyncMode               string
+	Cluster                string
+	Application            string
+	WatchStartedAt         pgtype.Timestamptz
+	SyncRequestedAt        pgtype.Timestamptz
+	DeadlineAt             pgtype.Timestamptz
+	DegradedSince          pgtype.Timestamptz
+	RolloutAware           bool
+	RolloutPhase           *string
+	RolloutMessage         *string
+	RolloutPauseReason     *string
+	RolloutCurrentStep     *int32
+	RolloutStepCount       *int32
+	RolloutAborted         *bool
+	RolloutError           *string
+	RolloutObservedAt      pgtype.Timestamptz
+	RolloutAnalysisKind    *string
+	RolloutAnalysisName    *string
+	RolloutAnalysisPhase   *string
+	RolloutAnalysisMessage *string
+	GateID                 pgtype.UUID
+	GatePausedStep         *int32
+	GateRequired           *int32
+	GateDecision           *string
+	GateApprovalsNow       int32
 }
 
 // In-flight native deploys for a project (one row per still-in_progress revision),
@@ -531,6 +549,10 @@ func (q *Queries) ListDeployWatchesForProject(ctx context.Context, projectID pgt
 			&i.RolloutAborted,
 			&i.RolloutError,
 			&i.RolloutObservedAt,
+			&i.RolloutAnalysisKind,
+			&i.RolloutAnalysisName,
+			&i.RolloutAnalysisPhase,
+			&i.RolloutAnalysisMessage,
 			&i.GateID,
 			&i.GatePausedStep,
 			&i.GateRequired,
@@ -699,28 +721,36 @@ func (q *Queries) StampDeployWatchSyncRequested(ctx context.Context, deploymentR
 
 const stampRolloutObservation = `-- name: StampRolloutObservation :execrows
 UPDATE deploy_watches
-SET rollout_phase        = $1,
-    rollout_message      = $2,
-    rollout_pause_reason = $3,
-    rollout_current_step = $4,
-    rollout_step_count   = $5,
-    rollout_aborted      = $6,
-    rollout_error        = $7,
-    rollout_observed_at  = NOW()
-WHERE deployment_revision_id = $8
-  AND claim_id = $9
+SET rollout_phase            = $1,
+    rollout_message          = $2,
+    rollout_pause_reason     = $3,
+    rollout_current_step     = $4,
+    rollout_step_count       = $5,
+    rollout_aborted          = $6,
+    rollout_error            = $7,
+    rollout_analysis_kind    = $8,
+    rollout_analysis_name    = $9,
+    rollout_analysis_phase   = $10,
+    rollout_analysis_message = $11,
+    rollout_observed_at      = NOW()
+WHERE deployment_revision_id = $12
+  AND claim_id = $13
 `
 
 type StampRolloutObservationParams struct {
-	RolloutPhase         *string
-	RolloutMessage       *string
-	RolloutPauseReason   *string
-	RolloutCurrentStep   *int32
-	RolloutStepCount     *int32
-	RolloutAborted       *bool
-	RolloutError         *string
-	DeploymentRevisionID pgtype.UUID
-	ClaimID              pgtype.UUID
+	RolloutPhase           *string
+	RolloutMessage         *string
+	RolloutPauseReason     *string
+	RolloutCurrentStep     *int32
+	RolloutStepCount       *int32
+	RolloutAborted         *bool
+	RolloutError           *string
+	RolloutAnalysisKind    *string
+	RolloutAnalysisName    *string
+	RolloutAnalysisPhase   *string
+	RolloutAnalysisMessage *string
+	DeploymentRevisionID   pgtype.UUID
+	ClaimID                pgtype.UUID
 }
 
 // Persist the observed Rollout snapshot onto the watch each tick, so the UI (which
@@ -736,6 +766,10 @@ func (q *Queries) StampRolloutObservation(ctx context.Context, arg StampRolloutO
 		arg.RolloutStepCount,
 		arg.RolloutAborted,
 		arg.RolloutError,
+		arg.RolloutAnalysisKind,
+		arg.RolloutAnalysisName,
+		arg.RolloutAnalysisPhase,
+		arg.RolloutAnalysisMessage,
 		arg.DeploymentRevisionID,
 		arg.ClaimID,
 	)

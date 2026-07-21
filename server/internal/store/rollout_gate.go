@@ -174,6 +174,13 @@ type RolloutObservationInput struct {
 	StepCount   int
 	Aborted     bool
 	Error       string
+
+	// Active AnalysisRun (observe-only, PR3). AnalysisPhase empty = no active analysis.
+	// AnalysisMessage is cluster-supplied — bounded like Message on write.
+	AnalysisKind    string
+	AnalysisName    string
+	AnalysisPhase   string
+	AnalysisMessage string
 }
 
 // StampRolloutObservation persists the snapshot onto the watch, fenced on claimID
@@ -196,6 +203,12 @@ func (s *Store) StampRolloutObservation(ctx context.Context, revID, claimID uuid
 		p.RolloutStepCount = &sc
 		ab := in.Aborted
 		p.RolloutAborted = &ab
+		// Analysis (observe-only). Message bounded like rollout_message — cluster text
+		// must not become a giant DB/UI payload.
+		p.RolloutAnalysisKind = nullableString(in.AnalysisKind)
+		p.RolloutAnalysisName = nullableString(in.AnalysisName)
+		p.RolloutAnalysisPhase = nullableString(in.AnalysisPhase)
+		p.RolloutAnalysisMessage = nullableString(truncateRunes(in.AnalysisMessage, rolloutTextMax))
 	} else {
 		p.RolloutError = nullableString(truncateRunes(in.Error, rolloutTextMax))
 	}
