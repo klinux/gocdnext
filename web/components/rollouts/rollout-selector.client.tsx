@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import type { Route } from "next";
 import { Rocket } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -36,7 +37,7 @@ export function RolloutSelector({
       cluster: cluster.trim(),
       namespace: namespace.trim(),
     });
-    router.push(`${basePath}?${qs.toString()}`);
+    router.push(`${basePath}?${qs.toString()}` as Route);
   }
 
   return (
