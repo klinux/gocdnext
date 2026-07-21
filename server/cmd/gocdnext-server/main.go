@@ -380,6 +380,9 @@ func main() {
 	argoProvider := deploy.NewArgoProvider(st)
 	projectsHandler = projectsHandler.WithDeployRegistrar(
 		deploysvc.New(argoProvider, st))
+	// Rollouts read API (ADR-0001): the same store-backed ClusterGetter lists Argo
+	// Rollouts in a namespace for the rollouts dashboard.
+	projectsHandler = projectsHandler.WithRolloutLister(deploy.NewRolloutLister(st))
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it
@@ -784,6 +787,9 @@ func main() {
 		p.Get("/api/v1/projects/{slug}/deploy-targets", projectsHandler.ListDeployTargets)
 		p.Post("/api/v1/projects/{slug}/deploy-targets", projectsHandler.SetDeployTarget)
 		p.Delete("/api/v1/projects/{slug}/deploy-targets/{env}", projectsHandler.DeleteDeployTarget)
+		// Rollouts read API (ADR-0001): lists Argo Rollouts in a namespace via the
+		// cluster registry — maintainer-gated like deploy targets (reveals cluster/ns).
+		p.Get("/api/v1/projects/{slug}/rollouts", projectsHandler.ListRollouts)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)
