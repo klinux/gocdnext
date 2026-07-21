@@ -338,9 +338,13 @@ detail is maintainer-only.</li>
 <li><strong>Live watch chip</strong> — while a native deploy is in flight, a chip
 shows <code dir="auto">Deploying</code> → <code dir="auto">Syncing</code> (once the sync is requested) →
 <code dir="auto">Degraded &#x3C;time></code> if health drops. A rollout-aware deploy shows canary
-state instead (<code dir="auto">Rolling out step 3/5</code>, <code dir="auto">Canary paused</code>, <code dir="auto">Rollout healthy</code>/<code dir="auto">aborted</code>). Backed by
-<code dir="auto">GET /api/v1/projects/{slug}/deploy-watches</code> (viewer-readable, but
-config fields are maintainer-only).</li>
+state instead (<code dir="auto">Rolling out step 3/5</code>, <code dir="auto">Canary paused</code>, <code dir="auto">Rollout healthy</code>/<code dir="auto">aborted</code>). When the canary is running a metric <strong>AnalysisRun</strong>,
+an <code dir="auto">analysis &#x3C;phase></code> badge rides alongside (observe-only) — red for
+<code dir="auto">Failed</code>/<code dir="auto">Error</code>, amber for <code dir="auto">Inconclusive</code>, green for <code dir="auto">Successful</code> —
+with the analysis message on hover, so an inconclusive pause reads as
+<em>“analysis inconclusive: success-rate 0.91 &#x3C; 0.95”</em>, not a bare
+“Paused”. Backed by <code dir="auto">GET /api/v1/projects/{slug}/deploy-watches</code>
+(viewer-readable, but config fields are maintainer-only).</li>
 <li><strong>Approval prompt</strong> — when a canary gate is armed, an amber <em>Canary
 paused · awaiting approval (N/M)</em> banner with <strong>Approve</strong> / <strong>Reject</strong>
 appears on the card. The server enforces the approvers allow-list and
