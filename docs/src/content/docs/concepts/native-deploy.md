@@ -36,11 +36,12 @@ controller — it asks ArgoCD to sync, then watches the Application's
 `.status` to a verdict.
 
 > **Scope today:** the provider implements **sync + watch** (observe an
-> Application to `Synced + Healthy`, or trigger the sync first). Argo
-> Rollouts control (`Promote`/`Abort`, gate-driven canary) and a
-> `git-only` write mode are described in
-> [ADR-0001](https://github.com/klinux/gocdnext/blob/main/adr/0001-native-argocd-rollouts-deployment-provider.md)
-> as future phases and are **not available yet** — don't rely on them.
+> Application to `Synced + Healthy`, or trigger the sync first) **and
+> gate-driven Argo Rollouts control** — a canary that pauses at an
+> indefinite `pause: {}` step arms a gocdnext approval gate (approve →
+> promote a step, reject → abort). A `git-only` write mode remains a
+> future phase in
+> [ADR-0001](https://github.com/klinux/gocdnext/blob/main/adr/0001-native-argocd-rollouts-deployment-provider.md).
 
 ## Registering a target
 
@@ -254,6 +255,83 @@ rules:
     verbs: ["get", "list", "watch", "patch", "update"]
 ```
 
+**For gate-driven rollout control** (below), the token that reaches the
+**Rollout's cluster** (the workload's destination — the same registered
+cluster as the Application in a co-located hub, or a separate
+`rollout_cluster`) additionally needs `rollouts` **and** the
+`rollouts/status` subresource, in the workload namespace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: shop      # the Rollout's namespace, not argocd
+  name: gocdnext-rollout-controller
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Promote (clear pauseConditions) and Abort (set abort) are merge-patches
+  # to the /status subresource — a distinct RBAC resource.
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts/status"]
+    verbs: ["get", "patch", "update"]
+```
+
+## Gate-driven canary rollouts
+
+When the Application manages an [Argo
+Rollouts](https://argo-rollouts.readthedocs.io/) `Rollout`, a native
+target can **observe and control** the canary. Turn on `rollout_aware`
+(gocdnext reads the Rollout the Application manages — auto-discovered
+from `.status.resources[]`, or pin `rollout_cluster`/`rollout_namespace`/
+`rollout_name`), and add a `governing_gate` to make it **gated**:
+
+```json
+{
+  "environment": "production",
+  "cluster": "argocd-hub",
+  "application": "shop-prod",
+  "rollout_aware": true,
+  "governing_gate": { "approvers": ["sre@acme"], "required": 2, "description": "prod canary" }
+}
+```
+
+A `governing_gate` is **admin-only** to set or change, and — once a
+target is gated — so is the rollout routing (a maintainer must not be
+able to reroute around a gate they can't drop). `rollout_aware` alone,
+with no gate, is **observe-only**: gocdnext surfaces canary progress but
+never promotes or aborts.
+
+The loop, once the deploy is in flight:
+
+1. The canary advances until it reaches an **indefinite `pause: {}`**
+   step (no `duration` — the human-gate step). Timed pauses, analysis
+   pauses, and blue-green pauses do **not** arm a gate.
+2. gocdnext **arms** a gate on the in-flight deploy, pinning the
+   Rollout's identity and minting a fresh `gate_id`. The deploy job
+   stays `running`; its **progress deadline is suspended** while the
+   gate awaits a human.
+3. The Environments card shows *Canary paused · step 3/5 · awaiting
+   approval (1/2)* with **Approve** / **Reject**. Votes reuse the same
+   quorum / groups / allow-list engine as pipeline
+   [approval gates](/gocdnext/docs/concepts/approvals/).
+4. **Approve** (once quorum is met) → gocdnext **promotes** one step
+   (clears `pauseConditions`); the controller advances and re-pauses at
+   the next `pause: {}`, re-arming a fresh gate. **Reject** → gocdnext
+   **aborts** (sets `.status.abort`) — traffic returns to stable. Once
+   the decision lands the deadline **resumes**, so a stuck controller
+   still fails on the budget rather than hanging.
+5. A `Synced + Healthy` Application does **not** finalize success while
+   the canary is mid-rollout — only when it is **fully promoted**
+   (past all steps, new version stable). Superseding or canceling the
+   run **aborts** the rollout too.
+
+Under a control-mode read error (the Rollout can't be observed), gocdnext
+**fails closed**: it never promotes on uncertainty and never finalizes on
+Application health alone — but a **reject still aborts** (abort is safe;
+promote is not).
+
 ## What the operator sees
 
 The web UI is **read-only** for native targets (registration is the API
@@ -265,9 +343,16 @@ above):
   detail is maintainer-only.
 - **Live watch chip** — while a native deploy is in flight, a chip
   shows `Deploying` → `Syncing` (once the sync is requested) →
-  `Degraded <time>` if health drops. Backed by
+  `Degraded <time>` if health drops. A rollout-aware deploy shows canary
+  state instead (`Rolling out step 3/5`, `Canary paused`, `Rollout
+  healthy`/`aborted`). Backed by
   `GET /api/v1/projects/{slug}/deploy-watches` (viewer-readable, but
   config fields are maintainer-only).
+- **Approval prompt** — when a canary gate is armed, an amber *Canary
+  paused · awaiting approval (N/M)* banner with **Approve** / **Reject**
+  appears on the card. The server enforces the approvers allow-list and
+  the `gate_id` token, so a stale tab voting on a superseded step gets a
+  clear 409.
 - **Server logs** — the watch loop emits `watch_claimed`,
   `watch_observed`, `watch_decision`, and `watch_finalize`; the
   scheduler logs `deploy_native_selected` / `native deploy dispatched`
@@ -286,8 +371,10 @@ an agent run.
 
 - **Not a reconciler.** gocdnext asks ArgoCD to sync and watches the
   result; ArgoCD owns desired state and rendering.
-- **Not rollout control yet.** Argo Rollouts promote/abort and
-  gate-driven canary are a future phase (ADR-0001), not shipped.
+- **Reject is not a Git revert.** Rejecting a gate **aborts** the
+  Rollout — traffic shifts back to the stable ReplicaSet — but
+  `.spec.template` (the desired version) is unchanged, so a re-sync or a
+  corrected commit rolls forward. gocdnext never rewrites Git.
 - **Not a replacement for the [`argocd` plugin](/gocdnext/docs/reference/plugins/#argocd).**
   The fire-and-forget plugin remains for bespoke setups; a pipeline
   opts into native `deploy:` when it wants convergence + gate coupling.
