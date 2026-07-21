@@ -148,3 +148,54 @@ func TestDiscoverRollout(t *testing.T) {
 		t.Errorf("incomplete entry → %v, want ErrRolloutNotFound", err)
 	}
 }
+
+// The active AnalysisRun is surfaced from the Rollout status' inline {name, status,
+// message}, preferring the STEP analysis over BACKGROUND. Observe-only — nothing derives
+// gate behavior from it.
+func TestParseRolloutState_analysis(t *testing.T) {
+	step := `"currentStepAnalysisRunStatus":{"name":"demo-abc-2","status":"Inconclusive","message":"success-rate below threshold"}`
+	bg := `"currentBackgroundAnalysisRunStatus":{"name":"demo-bg-1","status":"Running","message":""}`
+
+	tests := []struct {
+		name       string
+		canary     string
+		wantActive bool
+		wantKind   string
+		wantName   string
+		wantPhase  AnalysisPhase
+	}{
+		{"step analysis", `"canary":{` + step + `}`, true, "step", "demo-abc-2", AnalysisInconclusive},
+		{"background analysis", `"canary":{` + bg + `}`, true, "background", "demo-bg-1", AnalysisRunning},
+		{"step preferred over background", `"canary":{` + step + `,` + bg + `}`, true, "step", "demo-abc-2", AnalysisInconclusive},
+		{"no analysis", `"canary":{}`, false, "", "", ""},
+		{"absent canary", ``, false, "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := `"phase":"Progressing","currentStepIndex":1`
+			if tt.canary != "" {
+				status += "," + tt.canary
+			}
+			raw := `{"spec":{"strategy":{"canary":{"steps":[{"setWeight":50},{"analysis":{}}]}}},"status":{` + status + `}}`
+			got, err := parseRolloutState([]byte(raw))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got.AnalysisActive != tt.wantActive || got.AnalysisKind != tt.wantKind ||
+				got.AnalysisName != tt.wantName || got.AnalysisPhase != tt.wantPhase {
+				t.Errorf("analysis = {active:%v kind:%q name:%q phase:%q}, want {%v %q %q %q}",
+					got.AnalysisActive, got.AnalysisKind, got.AnalysisName, got.AnalysisPhase,
+					tt.wantActive, tt.wantKind, tt.wantName, tt.wantPhase)
+			}
+		})
+	}
+}
+
+// An analysis phase the CRD reports but we lack a constant for is kept verbatim.
+func TestParseRolloutState_unknownAnalysisPhase(t *testing.T) {
+	raw := `{"status":{"phase":"Progressing","canary":{"currentStepAnalysisRunStatus":{"name":"x","status":"SomethingNew","message":""}}}}`
+	got, _ := parseRolloutState([]byte(raw))
+	if got.AnalysisPhase != AnalysisPhase("SomethingNew") {
+		t.Errorf("unknown phase = %q, want it kept verbatim", got.AnalysisPhase)
+	}
+}

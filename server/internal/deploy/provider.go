@@ -149,7 +149,30 @@ type RolloutState struct {
 	ResolvedCluster   string
 	ResolvedNamespace string
 	ResolvedName      string
+
+	// Active metric-analysis run (Argo Rollouts AnalysisRun), when the canary is running
+	// one — observe-only (nothing in the gate machine keys on it), surfaced so an operator
+	// sees WHY a canary is paused/degraded. AnalysisActive says whether it's populated;
+	// AnalysisKind is "step" (gates the current step) or "background" (runs across the
+	// rollout).
+	AnalysisActive  bool
+	AnalysisKind    string
+	AnalysisName    string
+	AnalysisPhase   AnalysisPhase
+	AnalysisMessage string
 }
+
+// AnalysisPhase mirrors an Argo Rollouts AnalysisRun's `.status.phase`.
+type AnalysisPhase string
+
+const (
+	AnalysisPending      AnalysisPhase = "Pending"
+	AnalysisRunning      AnalysisPhase = "Running"
+	AnalysisSuccessful   AnalysisPhase = "Successful"
+	AnalysisFailed       AnalysisPhase = "Failed"
+	AnalysisError        AnalysisPhase = "Error"
+	AnalysisInconclusive AnalysisPhase = "Inconclusive"
+)
 
 // OpPhase mirrors an ArgoCD Application's `.status.operationState.phase`. Empty
 // means no operation has been recorded.
