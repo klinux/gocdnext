@@ -87,3 +87,17 @@ describe("RolloutPanel — blue-green", () => {
     expect(screen.queryByText(/Revisions/)).toBeNull();
   });
 });
+
+describe("RolloutPanel — unknown strategy", () => {
+  it("renders a neutral placeholder for a strategy-less Rollout, not blue-green", () => {
+    render(
+      <RolloutPanel rollout={canary({ strategy: "", phase: "Progressing" })} />,
+    );
+    expect(screen.getByText("Unknown")).toBeTruthy();
+    expect(screen.getByText(/No recognised rollout strategy/i)).toBeTruthy();
+    // A strategy-less rollout must NOT be mislabelled blue-green, and no canary
+    // internals leak.
+    expect(screen.queryByText("Blue-Green")).toBeNull();
+    expect(screen.queryByText("you are here")).toBeNull();
+  });
+});

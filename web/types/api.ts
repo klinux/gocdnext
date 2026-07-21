@@ -910,7 +910,9 @@ export type DeployWatchesList = { deploy_watches: DeployWatch[] };
 // Rollouts dashboard (ADR-0001, PR-B). Read model from
 // GET /api/v1/projects/{slug}/rollouts?cluster=&namespace= (maintainer-gated).
 // Both `rollouts` and each rollout's `steps` are ALWAYS arrays (never null).
-export type RolloutStrategy = "canary" | "blueGreen";
+// The controller reports "canary" or "blueGreen"; the API surfaces "" verbatim
+// when the Rollout CR declares neither, rather than guessing a strategy.
+export type RolloutStrategy = "canary" | "blueGreen" | "";
 
 // One argo-rollouts canary step. The server normalises every strategy step to
 // this flat shape. `weight` is null unless the step carries one (setWeight /

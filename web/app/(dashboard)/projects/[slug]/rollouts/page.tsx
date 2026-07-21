@@ -1,4 +1,3 @@
-import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
 import { RolloutSelector } from "@/components/rollouts/rollout-selector.client";
@@ -61,13 +60,17 @@ export default async function RolloutsPage({
   try {
     initialData = await listRollouts(slug, cluster, namespace);
   } catch (err) {
-    if (err instanceof GocdnextAPIError && err.status === 404) notFound();
-    // Maintainer-gated (403), anonymous (401), or provider-not-wired (501):
-    // surface a note and keep the selector so the operator can retry another
-    // cluster/namespace. Anything else is a real fault — propagate it.
+    // The layout already resolved the project, so a 404 here is the rollouts
+    // endpoint's collapsed "cluster not found or not accessible" (it shares the
+    // 404 status with a missing project) — recoverable, so keep the selector
+    // instead of a dead-end notFound(). 401/403 = access, 501 = provider not
+    // wired. Anything else is a real fault — propagate it.
     if (
       err instanceof GocdnextAPIError &&
-      (err.status === 401 || err.status === 403 || err.status === 501)
+      (err.status === 401 ||
+        err.status === 403 ||
+        err.status === 404 ||
+        err.status === 501)
     ) {
       return (
         <section className="space-y-6">
@@ -99,7 +102,9 @@ function AccessNote({ status }: { status: number }) {
   const msg =
     status === 501
       ? "No native rollout provider is wired on this server yet."
-      : "You need maintainer access to view rollouts for this project.";
+      : status === 404
+        ? "Cluster not found or not accessible — check the cluster name and namespace."
+        : "You need maintainer access to view rollouts for this project.";
   return (
     <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
       {msg}

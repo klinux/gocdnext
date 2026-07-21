@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { GitCompareArrows, Info, Layers, Rocket } from "lucide-react";
+import { GitCompareArrows, HelpCircle, Info, Layers, Rocket } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { shortHash, statusFor } from "@/lib/rollouts";
+import { shortHash, statusFor, TONE } from "@/lib/rollouts";
 import type { Rollout } from "@/types/api";
 
 import { AnalysisPanel } from "./analysis-panel";
@@ -12,22 +12,28 @@ import { StepsTimeline } from "./steps-timeline";
 import { TrafficBar } from "./traffic-bar";
 
 function StrategyPill({ strategy }: { strategy: string }) {
-  const canary = strategy === "canary";
+  // Three distinct cases — an unrecognised/absent strategy ("") must NOT be
+  // mislabelled as blue-green.
+  const kind =
+    strategy === "canary"
+      ? "canary"
+      : strategy === "blueGreen"
+        ? "blueGreen"
+        : "unknown";
+  const meta = {
+    canary: { label: "Canary", Icon: Rocket, tone: TONE.teal },
+    blueGreen: { label: "Blue-Green", Icon: Layers, tone: TONE.sky },
+    unknown: { label: "Unknown", Icon: HelpCircle, tone: TONE.neutral },
+  }[kind];
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10.5px] font-bold uppercase tracking-wider",
-        canary
-          ? "border-teal-500/40 bg-teal-500/10 text-teal-600 dark:text-teal-400"
-          : "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+        meta.tone,
       )}
     >
-      {canary ? (
-        <Rocket className="size-3.5" aria-hidden />
-      ) : (
-        <Layers className="size-3.5" aria-hidden />
-      )}
-      {canary ? "Canary" : "Blue-Green"}
+      <meta.Icon className="size-3.5" aria-hidden />
+      {meta.label}
     </span>
   );
 }
@@ -120,6 +126,27 @@ function BlueGreenPlaceholder({ rollout }: { rollout: Rollout }) {
   );
 }
 
+// UnknownStrategyBody covers a Rollout the API reported with neither a canary nor a
+// blueGreen strategy (strategy=="") — render its status neutrally rather than
+// mislabelling it as blue-green.
+function UnknownStrategyBody({ rollout }: { rollout: Rollout }) {
+  const { label } = statusFor(rollout.phase, rollout.aborted);
+  return (
+    <div className="flex flex-col items-start gap-3 rounded-xl border border-dashed border-border bg-muted/20 p-5">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <HelpCircle className="size-4 text-muted-foreground" aria-hidden />
+        No recognised rollout strategy
+      </div>
+      <p className="text-sm text-muted-foreground">
+        This Rollout reports neither a canary nor a blue-green strategy. It is
+        currently{" "}
+        <span className="font-medium text-foreground">{label}</span>
+        {rollout.message ? ` — ${rollout.message}` : ""}.
+      </p>
+    </div>
+  );
+}
+
 type Props = { rollout: Rollout };
 
 // RolloutPanel is one rollout: header (strategy pill, name + meta, status pill)
@@ -149,10 +176,12 @@ export function RolloutPanel({ rollout }: Props) {
         </div>
       </header>
       <div className="p-5">
-        {canary ? (
+        {rollout.strategy === "canary" ? (
           <CanaryBody rollout={rollout} />
-        ) : (
+        ) : rollout.strategy === "blueGreen" ? (
           <BlueGreenPlaceholder rollout={rollout} />
+        ) : (
+          <UnknownStrategyBody rollout={rollout} />
         )}
       </div>
     </article>
