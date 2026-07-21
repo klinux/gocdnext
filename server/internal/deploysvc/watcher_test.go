@@ -95,6 +95,7 @@ type fakeWatchStore struct {
 	clearOK         map[uuid.UUID]bool
 	abortActionedOK map[uuid.UUID]bool
 	cancelReq       *time.Time // returned by DeployWatchCancelRequestedAt (nil = not canceled)
+	cancelReadErr   error      // when set, DeployWatchCancelRequestedAt fails (transient blip)
 	lastArm         store.ArmRolloutGateInput
 	log             *[]string
 }
@@ -174,6 +175,9 @@ func (f *fakeWatchStore) MarkRolloutAbortActioned(_ context.Context, revID, _ uu
 }
 
 func (f *fakeWatchStore) DeployWatchCancelRequestedAt(_ context.Context, _ uuid.UUID) (*time.Time, error) {
+	if f.cancelReadErr != nil {
+		return nil, f.cancelReadErr
+	}
 	return f.cancelReq, nil
 }
 
@@ -691,6 +695,43 @@ func TestWatcher_CancelBeatsReject(t *testing.T) {
 
 	if !contains(log, "mark_abort_actioned") || contains(log, "mark_actioned") {
 		t.Fatalf("cancel must outrank reject (mark_abort_actioned, not mark_actioned); log=%v", log)
+	}
+}
+
+var obsAborted = obsIdentity(deploy.RolloutState{Phase: deploy.RolloutDegraded, Aborted: true})
+
+// STICKY cancel: once rollout_abort_actioned_at is stamped, a transient cancel-read error
+// must NOT drop out of the cancel branch — a FullyPromoted snapshot must not finalize
+// success on an already-canceled deploy.
+func TestWatcher_CancelActioned_ReadError_DoesNotFinalizeSuccess(t *testing.T) {
+	var log []string
+	w := mkRolloutWatch("app")
+	ts := time.Now().Add(-time.Minute)
+	w.RolloutAbortActionedAt = &ts // cancel-abort already issued
+	st := newFakeStore(&log, w)
+	st.cancelReadErr = errors.New("db blip")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsPromoted)}}, log: &log}
+	runTick(obs, st)
+
+	if len(st.finalized) != 0 {
+		t.Fatalf("finalized a canceled deploy despite the cancel-read error: %v", st.finalized)
+	}
+}
+
+// STICKY cancel + the rollout observed aborted → FinalizeFailed(canceled), even with the
+// cancel read failing.
+func TestWatcher_CancelActioned_AbortedObserved_FinalizesCanceled(t *testing.T) {
+	var log []string
+	w := mkRolloutWatch("app")
+	ts := time.Now().Add(-time.Minute)
+	w.RolloutAbortActionedAt = &ts
+	st := newFakeStore(&log, w)
+	st.cancelReadErr = errors.New("db blip")
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: rolloutObs(obsAborted)}}, log: &log}
+	runTick(obs, st)
+
+	if st.finalized[w.DeploymentRevisionID] != store.DeployStatusFailed {
+		t.Fatalf("aborted+canceled should FinalizeFailed; finalized=%v log=%v", st.finalized, log)
 	}
 }
 

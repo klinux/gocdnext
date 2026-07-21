@@ -167,6 +167,34 @@ func TestMarkRolloutAbortActioned(t *testing.T) {
 	}
 }
 
+// Cancel outranks a reject: a cancel on a DECIDED gate still disarms it (nulling
+// gate_decision), but does NOT resume the deadline again (the decision already did).
+func TestMarkRolloutAbortActioned_DecidedGateNoDoubleShift(t *testing.T) {
+	s, pool, ctx, revID, claimID := armedGateStore(t)
+	if _, err := s.ArmRolloutGate(ctx, revID, claimID, armInput()); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	// A decided (rejected) gate, armed 5m ago. DecideRolloutGate would have resumed the
+	// deadline already, so this UPDATE mimics the post-decision state.
+	if _, err := pool.Exec(ctx, `UPDATE deploy_watches
+		SET gate_armed_at = NOW() - interval '5 minutes', gate_decision = 'rejected'
+		WHERE deployment_revision_id = $1`, revID); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	before := readGate(t, ctx, pool, revID).deadlineAt
+
+	if ok, err := s.MarkRolloutAbortActioned(ctx, revID, claimID); err != nil || !ok {
+		t.Fatalf("mark abort: ok=%v err=%v", ok, err)
+	}
+	g := readGate(t, ctx, pool, revID)
+	if g.gateID != nil || g.decision != nil {
+		t.Errorf("decided gate not disarmed by cancel: %+v", g)
+	}
+	if shift := g.deadlineAt.Sub(before); shift > time.Second {
+		t.Errorf("deadline shifted %s on a DECIDED cancel, want ~0 (no double-resume)", shift)
+	}
+}
+
 func TestClearRolloutGate_UnarmedIsNoOp(t *testing.T) {
 	s, pool, ctx, revID, claimID := armedGateStore(t) // claimed but never armed
 	if ok, err := s.ClearRolloutGate(ctx, revID, claimID); err != nil || ok {

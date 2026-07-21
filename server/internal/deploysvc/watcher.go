@@ -179,14 +179,17 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		return
 	}
 
-	// Read the deploy's cancel/supersede intent this tick. Best-effort: on a read error we
-	// treat it as not-canceled (logged) — a genuine cancel is re-read next tick, and never
-	// aborting a still-good deploy is the safe failure.
-	cancelRequested := false
+	// Read the deploy's cancel/supersede intent this tick. STICKY: once a cancel-abort was
+	// issued (rollout_abort_actioned_at stamped — which only happens after an observed
+	// cancel), the deploy is being canceled, so keep it in Decide's cancel branch even if
+	// this tick's cancel read transiently fails. Otherwise a read error would drop
+	// CancelRequested to false and a Synced+Healthy+FullyPromoted snapshot could
+	// FinalizeSuccess a canceled deploy. A fresh read only ADDS the intent.
+	cancelRequested := dw.RolloutAbortActionedAt != nil
 	if at, err := w.store.DeployWatchCancelRequestedAt(ctx, dw.DeploymentRevisionID); err != nil {
 		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "cancel_read", "err", err)...)
-	} else {
-		cancelRequested = at != nil
+	} else if at != nil {
+		cancelRequested = true
 	}
 
 	state, err := w.obs.Observe(ctx, targetOf(dw))

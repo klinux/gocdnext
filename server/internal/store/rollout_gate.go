@@ -75,10 +75,12 @@ func (s *Store) MarkGateActioned(ctx context.Context, revID, claimID uuid.UUID) 
 }
 
 // MarkRolloutAbortActioned records the cancel/supersede abort in one tx: stamp
-// rollout_abort_actioned_at (the gate-independent anti-re-abort guard), disarm any armed
-// gate (nulling the per-arm columns + resuming the deadline once if it was still
-// undecided) AND delete the step's votes. Fenced on claim_id; the guard makes a re-tick a
-// no-op. Returns whether it stamped (false = lease lost or already actioned).
+// rollout_abort_actioned_at (the gate-independent anti-re-abort guard), DISARM any armed
+// gate — decided or not, since a cancel outranks a reject — AND delete the step's votes.
+// The deadline is resumed once only if the gate was still UNDECIDED (a decided gate
+// already resumed it in DecideRolloutGate — no double-shift). Fenced on claim_id; the
+// guard makes a re-tick a no-op. Returns whether it stamped (false = lease lost or already
+// actioned).
 func (s *Store) MarkRolloutAbortActioned(ctx context.Context, revID, claimID uuid.UUID) (bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

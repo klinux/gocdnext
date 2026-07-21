@@ -104,12 +104,15 @@ WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
 
 -- name: MarkRolloutAbortActioned :execrows
 -- The cancel/supersede abort actuation: stamp rollout_abort_actioned_at (the
--- gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) AND,
--- when a gate was armed & still UNDECIDED, disarm it (null the per-arm columns) + resume
--- the deadline once (computed from the OLD row; SET RHS sees the pre-update values). A
--- DECIDED gate already resumed the deadline (never double-shift); a non-gated cancel just
--- stamps the guard. Fenced on claim_id; `rollout_abort_actioned_at IS NULL` makes a
--- re-tick a no-op. The caller deletes the step's votes in the same tx.
+-- gate-INDEPENDENT anti-re-abort guard — a non-gated rollout can be canceled too) and
+-- DISARM any armed gate — decided or not, since cancel outranks a reject — by nulling the
+-- per-arm / decision / action columns unconditionally. The one-time deadline resume
+-- (deadline_at += NOW() - gate_armed_at, computed from the OLD row since SET RHS sees the
+-- pre-update values) applies ONLY when the gate was still UNDECIDED: a decided gate
+-- already resumed the deadline in DecideRolloutGate, so its CASE is false (no
+-- double-shift). A non-gated cancel just stamps the guard. Fenced on claim_id;
+-- `rollout_abort_actioned_at IS NULL` makes a re-tick a no-op. The caller deletes the
+-- step's votes in the same tx.
 UPDATE deploy_watches
 SET rollout_abort_actioned_at = NOW(),
     deadline_at = CASE
