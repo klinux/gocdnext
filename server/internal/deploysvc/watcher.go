@@ -304,14 +304,18 @@ func (w *Watcher) stampRollout(ctx context.Context, dw store.DeployWatch, state 
 	if state.RolloutObserved {
 		r := state.Rollout
 		in = store.RolloutObservationInput{
-			Observed:    true,
-			Phase:       string(r.Phase),
-			Message:     r.Message,
-			PauseReason: r.PauseReason,
-			CurrentStep: r.CurrentStepIndex,
-			StepKnown:   r.CurrentStepKnown,
-			StepCount:   r.StepCount,
-			Aborted:     r.Aborted,
+			Observed:        true,
+			Phase:           string(r.Phase),
+			Message:         r.Message,
+			PauseReason:     r.PauseReason,
+			CurrentStep:     r.CurrentStepIndex,
+			StepKnown:       r.CurrentStepKnown,
+			StepCount:       r.StepCount,
+			Aborted:         r.Aborted,
+			AnalysisKind:    r.AnalysisKind,
+			AnalysisName:    r.AnalysisName,
+			AnalysisPhase:   string(r.AnalysisPhase),
+			AnalysisMessage: r.AnalysisMessage,
 		}
 	}
 	w.persistRollout(ctx, dw, in)

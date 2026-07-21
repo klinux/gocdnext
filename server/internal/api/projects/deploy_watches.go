@@ -38,6 +38,13 @@ type deployWatchDTO struct {
 	RolloutError       string     `json:"rollout_error,omitempty"`
 	RolloutObservedAt  *time.Time `json:"rollout_observed_at,omitempty"`
 
+	// Active AnalysisRun (observe-only, viewer-readable). Absent when no analysis is
+	// running this tick.
+	RolloutAnalysisKind    string `json:"rollout_analysis_kind,omitempty"`
+	RolloutAnalysisName    string `json:"rollout_analysis_name,omitempty"`
+	RolloutAnalysisPhase   string `json:"rollout_analysis_phase,omitempty"`
+	RolloutAnalysisMessage string `json:"rollout_analysis_message,omitempty"`
+
 	// Gate live-state (viewer-readable). GateID is the armed token the UI echoes back on
 	// approve/reject (empty when no step is armed). GatePausedStep is a pointer (absent
 	// vs step 0). GateApprovalsNow / GateRequired render "awaiting approval (1/2)".
@@ -78,22 +85,26 @@ func (h *Handler) ListDeployWatches(w http.ResponseWriter, r *http.Request) {
 	dtos := make([]deployWatchDTO, 0, len(watches))
 	for _, wch := range watches {
 		d := deployWatchDTO{
-			DeploymentRevisionID: wch.DeploymentRevisionID.String(),
-			Environment:          wch.Environment,
-			Version:              wch.Version,
-			ExpectedRevision:     wch.ExpectedRevision,
-			WatchStartedAt:       wch.WatchStartedAt,
-			SyncRequestedAt:      wch.SyncRequestedAt,
-			DeadlineAt:           wch.DeadlineAt,
-			DegradedSince:        wch.DegradedSince,
-			RolloutAware:         wch.RolloutAware,
-			RolloutPhase:         wch.RolloutPhase,
-			RolloutMessage:       wch.RolloutMessage,
-			RolloutPauseReason:   wch.RolloutPauseReason,
-			RolloutStepCount:     wch.RolloutStepCount,
-			RolloutAborted:       wch.RolloutAborted,
-			RolloutError:         wch.RolloutError,
-			RolloutObservedAt:    wch.RolloutObservedAt,
+			DeploymentRevisionID:   wch.DeploymentRevisionID.String(),
+			Environment:            wch.Environment,
+			Version:                wch.Version,
+			ExpectedRevision:       wch.ExpectedRevision,
+			WatchStartedAt:         wch.WatchStartedAt,
+			SyncRequestedAt:        wch.SyncRequestedAt,
+			DeadlineAt:             wch.DeadlineAt,
+			DegradedSince:          wch.DegradedSince,
+			RolloutAware:           wch.RolloutAware,
+			RolloutPhase:           wch.RolloutPhase,
+			RolloutMessage:         wch.RolloutMessage,
+			RolloutPauseReason:     wch.RolloutPauseReason,
+			RolloutStepCount:       wch.RolloutStepCount,
+			RolloutAborted:         wch.RolloutAborted,
+			RolloutError:           wch.RolloutError,
+			RolloutObservedAt:      wch.RolloutObservedAt,
+			RolloutAnalysisKind:    wch.RolloutAnalysisKind,
+			RolloutAnalysisName:    wch.RolloutAnalysisName,
+			RolloutAnalysisPhase:   wch.RolloutAnalysisPhase,
+			RolloutAnalysisMessage: wch.RolloutAnalysisMessage,
 		}
 		if wch.RolloutStepKnown {
 			step := wch.RolloutCurrentStep

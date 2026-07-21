@@ -28,14 +28,18 @@ RETURNING *;
 -- lease was lost. rollout_current_step is NULL when the controller hasn't reported it
 -- (RolloutState.CurrentStepKnown=false). Clears rollout_error on a successful observe.
 UPDATE deploy_watches
-SET rollout_phase        = sqlc.narg(rollout_phase),
-    rollout_message      = sqlc.narg(rollout_message),
-    rollout_pause_reason = sqlc.narg(rollout_pause_reason),
-    rollout_current_step = sqlc.narg(rollout_current_step),
-    rollout_step_count   = sqlc.narg(rollout_step_count),
-    rollout_aborted      = sqlc.narg(rollout_aborted),
-    rollout_error        = sqlc.narg(rollout_error),
-    rollout_observed_at  = NOW()
+SET rollout_phase            = sqlc.narg(rollout_phase),
+    rollout_message          = sqlc.narg(rollout_message),
+    rollout_pause_reason     = sqlc.narg(rollout_pause_reason),
+    rollout_current_step     = sqlc.narg(rollout_current_step),
+    rollout_step_count       = sqlc.narg(rollout_step_count),
+    rollout_aborted          = sqlc.narg(rollout_aborted),
+    rollout_error            = sqlc.narg(rollout_error),
+    rollout_analysis_kind    = sqlc.narg(rollout_analysis_kind),
+    rollout_analysis_name    = sqlc.narg(rollout_analysis_name),
+    rollout_analysis_phase   = sqlc.narg(rollout_analysis_phase),
+    rollout_analysis_message = sqlc.narg(rollout_analysis_message),
+    rollout_observed_at      = NOW()
 WHERE deployment_revision_id = sqlc.arg(deployment_revision_id)
   AND claim_id = sqlc.arg(claim_id);
 
@@ -239,6 +243,8 @@ SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
        dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
        dw.rollout_error, dw.rollout_observed_at,
+       dw.rollout_analysis_kind, dw.rollout_analysis_name,
+       dw.rollout_analysis_phase, dw.rollout_analysis_message,
        -- Gate live-state (viewer-readable): the armed token to echo on approve/reject,
        -- the step, quorum, decision, and how many approvals are in so far.
        dw.gate_id, dw.gate_paused_step, dw.gate_required, dw.gate_decision,

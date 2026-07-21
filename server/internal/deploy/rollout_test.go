@@ -157,18 +157,19 @@ func TestParseRolloutState_analysis(t *testing.T) {
 	bg := `"currentBackgroundAnalysisRunStatus":{"name":"demo-bg-1","status":"Running","message":""}`
 
 	tests := []struct {
-		name       string
-		canary     string
-		wantActive bool
-		wantKind   string
-		wantName   string
-		wantPhase  AnalysisPhase
+		name        string
+		canary      string
+		wantActive  bool
+		wantKind    string
+		wantName    string
+		wantPhase   AnalysisPhase
+		wantMessage string
 	}{
-		{"step analysis", `"canary":{` + step + `}`, true, "step", "demo-abc-2", AnalysisInconclusive},
-		{"background analysis", `"canary":{` + bg + `}`, true, "background", "demo-bg-1", AnalysisRunning},
-		{"step preferred over background", `"canary":{` + step + `,` + bg + `}`, true, "step", "demo-abc-2", AnalysisInconclusive},
-		{"no analysis", `"canary":{}`, false, "", "", ""},
-		{"absent canary", ``, false, "", "", ""},
+		{"step analysis", `"canary":{` + step + `}`, true, "step", "demo-abc-2", AnalysisInconclusive, "success-rate below threshold"},
+		{"background analysis", `"canary":{` + bg + `}`, true, "background", "demo-bg-1", AnalysisRunning, ""},
+		{"step preferred over background", `"canary":{` + step + `,` + bg + `}`, true, "step", "demo-abc-2", AnalysisInconclusive, "success-rate below threshold"},
+		{"no analysis", `"canary":{}`, false, "", "", "", ""},
+		{"absent canary", ``, false, "", "", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,10 +183,11 @@ func TestParseRolloutState_analysis(t *testing.T) {
 				t.Fatalf("parse: %v", err)
 			}
 			if got.AnalysisActive != tt.wantActive || got.AnalysisKind != tt.wantKind ||
-				got.AnalysisName != tt.wantName || got.AnalysisPhase != tt.wantPhase {
-				t.Errorf("analysis = {active:%v kind:%q name:%q phase:%q}, want {%v %q %q %q}",
-					got.AnalysisActive, got.AnalysisKind, got.AnalysisName, got.AnalysisPhase,
-					tt.wantActive, tt.wantKind, tt.wantName, tt.wantPhase)
+				got.AnalysisName != tt.wantName || got.AnalysisPhase != tt.wantPhase ||
+				got.AnalysisMessage != tt.wantMessage {
+				t.Errorf("analysis = {active:%v kind:%q name:%q phase:%q msg:%q}, want {%v %q %q %q %q}",
+					got.AnalysisActive, got.AnalysisKind, got.AnalysisName, got.AnalysisPhase, got.AnalysisMessage,
+					tt.wantActive, tt.wantKind, tt.wantName, tt.wantPhase, tt.wantMessage)
 			}
 		})
 	}
