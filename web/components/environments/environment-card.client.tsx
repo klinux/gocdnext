@@ -28,6 +28,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { RollbackButton } from "@/components/environments/rollback-button.client";
 import { useDeployWatch } from "@/components/environments/deploy-watches-provider.client";
 import { NativeWatchChip } from "@/components/environments/native-watch-chip.client";
+import { RolloutGatePrompt } from "@/components/environments/rollout-gate-buttons.client";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type {
@@ -147,6 +148,12 @@ export function EnvironmentCard({
             Nothing has shipped to this environment yet.
           </p>
         )}
+
+        {/* Armed canary gate (ADR-0001 Phase 2): the approval prompt + Approve/Reject.
+            The server enforces the approvers allow-list + the gate_id token. */}
+        {watch?.gate_id && !watch.gate_decision ? (
+          <RolloutGatePrompt slug={slug} watch={watch} environment={environment.name} />
+        ) : null}
 
         {deployTarget ? (
           <NativeTargetRow

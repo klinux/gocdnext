@@ -882,6 +882,16 @@ export type DeployWatch = {
   rollout_aborted?: boolean;
   rollout_error?: string;
   rollout_observed_at?: string;
+
+  // Gate live-state (ADR-0001 Phase 2, viewer-readable). gate_id is the armed token the
+  // UI must echo on approve/reject (present only while a step's gate is armed). Together
+  // with gate_approvals_now/gate_required the UI renders "awaiting approval (1/2)".
+  gate_id?: string;
+  gate_paused_step?: number;
+  gate_required?: number;
+  gate_decision?: "" | "approved" | "rejected";
+  gate_approvals_now?: number;
+
   application?: string;
   cluster?: string;
   sync_mode?: "trigger" | "observe";

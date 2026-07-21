@@ -180,3 +180,60 @@ export async function deleteDeployTarget(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+const rolloutGateSchema = z.object({
+  slug: z.string().min(1),
+  revisionId: z.string().min(1),
+  // The armed gate token, echoed so a stale tab voting on a superseded step gets a 409.
+  gateId: z.string().min(1),
+});
+
+// approveRolloutGate / rejectRolloutGate vote on an armed canary gate (ADR-0001 Phase 2).
+// Approve promotes the paused canary one step once quorum is met; reject ABORTS the
+// rollout (traffic → stable — not a Git revert). The server enforces the approvers
+// allow-list + the gate_id token; a 4xx body is a user-ready message we surface verbatim.
+export async function approveRolloutGate(
+  input: z.infer<typeof rolloutGateSchema>,
+): Promise<ActionResult> {
+  return decideRolloutGate(input, "approve");
+}
+
+export async function rejectRolloutGate(
+  input: z.infer<typeof rolloutGateSchema>,
+): Promise<ActionResult> {
+  return decideRolloutGate(input, "reject");
+}
+
+async function decideRolloutGate(
+  input: z.infer<typeof rolloutGateSchema>,
+  verb: "approve" | "reject",
+): Promise<ActionResult> {
+  const parsed = rolloutGateSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  const { slug, revisionId, gateId } = parsed.data;
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(slug)}/deploy-watches/${encodeURIComponent(revisionId)}/${verb}`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      body: JSON.stringify({ gate_id: gateId }),
+    });
+    if (!res.ok) {
+      const body = (await res.text()).trim();
+      return { ok: false, error: body || `server error (${res.status})` };
+    }
+    revalidatePath(`/projects/${slug}/environments`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
