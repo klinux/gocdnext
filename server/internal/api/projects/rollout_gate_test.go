@@ -70,4 +70,17 @@ func TestRolloutGate_HTTPGuards(t *testing.T) {
 			t.Fatalf("status = %d, want 409 (stale); body=%s", rr.Code, rr.Body.String())
 		}
 	})
+	// A service account authenticates but its ID isn't a users(id) — reject BEFORE any
+	// insert (else an empty allow-list would FK-fail as a 500).
+	t.Run("service account -> 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/demo/deploy-watches/"+rev+"/approve", strings.NewReader(gate))
+		req = req.WithContext(authapi.WithUser(req.Context(), store.User{
+			ID: uuid.New(), Name: "ci-bot", Provider: "service_account", Role: store.RoleMaintainer,
+		}))
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+		}
+	})
 }

@@ -162,21 +162,22 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 		return RolloutGateResult{}, ErrAlreadyVoted
 	}
 
+	// Count the approvals in so far — for BOTH decisions, so the response's ApprovalsNow
+	// is accurate even on a reject after partial approvals (the DTO re-fetch is correct
+	// via its subquery, but the immediate POST reply should match).
+	var approvedNow int32
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM job_run_approvals WHERE job_run_id = $1 AND decision = 'approved'`,
+		jobRunID).Scan(&approvedNow); err != nil {
+		return RolloutGateResult{}, fmt.Errorf("store: count rollout approvals: %w", err)
+	}
 	// Approve accumulates toward quorum; a partial approve is NOT terminal (commit the
 	// vote, keep the window open). A fresh reject is immediately terminal.
-	approvedNow := int32(0)
-	if in.Decision == "approved" {
-		if err := tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM job_run_approvals WHERE job_run_id = $1 AND decision = 'approved'`,
-			jobRunID).Scan(&approvedNow); err != nil {
-			return RolloutGateResult{}, fmt.Errorf("store: count rollout approvals: %w", err)
+	if in.Decision == "approved" && approvedNow < req {
+		if err := tx.Commit(ctx); err != nil {
+			return RolloutGateResult{}, fmt.Errorf("store: rollout gate commit: %w", err)
 		}
-		if approvedNow < req {
-			if err := tx.Commit(ctx); err != nil {
-				return RolloutGateResult{}, fmt.Errorf("store: rollout gate commit: %w", err)
-			}
-			return RolloutGateResult{PendingQuorum: true, ApprovalsNow: int(approvedNow), ApprovalsRequired: int(req)}, nil
-		}
+		return RolloutGateResult{PendingQuorum: true, ApprovalsNow: int(approvedNow), ApprovalsRequired: int(req)}, nil
 	}
 
 	// Terminal: stamp the decision AND resume the deadline once (deadline_at += now() -

@@ -142,6 +142,24 @@ func TestDecideRolloutGate_FreshRejectIsTerminal(t *testing.T) {
 	}
 }
 
+// A reject after partial approvals reports the accurate approvals-so-far count (not 0).
+func TestDecideRolloutGate_RejectReportsApprovals(t *testing.T) {
+	gr := seedGatedRollout(t, "rg-rejcount", 2, []string{"alice@corp.com", "bob@corp.com"})
+	alice := gr.user(t, "alice@corp.com", "Alice")
+	bob := gr.user(t, "bob@corp.com", "Bob")
+
+	if res, err := gr.decide(alice, "alice@corp.com", "Alice", "approved"); err != nil || !res.PendingQuorum {
+		t.Fatalf("alice approve = %+v err=%v, want pending", res, err)
+	}
+	res, err := gr.decide(bob, "bob@corp.com", "Bob", "rejected")
+	if err != nil || !res.Decided || res.Decision != "rejected" {
+		t.Fatalf("bob reject = %+v err=%v, want Decided rejected", res, err)
+	}
+	if res.ApprovalsNow != 1 || res.ApprovalsRequired != 2 {
+		t.Errorf("reject counts = %d/%d, want 1/2 (approvals so far)", res.ApprovalsNow, res.ApprovalsRequired)
+	}
+}
+
 func TestDecideRolloutGate_VoteSemantics(t *testing.T) {
 	gr := seedGatedRollout(t, "rg-votes", 2, []string{"alice@corp.com"})
 	alice := gr.user(t, "alice@corp.com", "Alice")

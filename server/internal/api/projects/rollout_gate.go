@@ -40,11 +40,19 @@ func (h *Handler) decideRolloutGate(w http.ResponseWriter, r *http.Request, deci
 	if !ok {
 		return
 	}
-	// A rollout gate vote must come from an authenticated approver (votes key on a real
-	// user; the allow-list is enforced by the store). Auth-disabled dev mode can't decide.
+	// A rollout gate vote must come from an authenticated HUMAN approver (votes key on a
+	// real users(id); the allow-list is enforced by the store). Auth-disabled dev mode
+	// can't decide.
 	u, ok := authapi.UserFromContext(r.Context())
 	if !ok {
 		http.Error(w, "authentication required to decide a rollout gate", http.StatusUnauthorized)
+		return
+	}
+	// A service-account token authenticates, but its synthesized ID is a service_accounts
+	// row, not a users row — recording it as a vote would FK-fail. An approval is a human
+	// sign-off, so reject SAs up front (a permissive empty allow-list must not let one in).
+	if u.Provider == "service_account" {
+		http.Error(w, "a service account cannot cast an approval vote", http.StatusForbidden)
 		return
 	}
 
