@@ -18,6 +18,7 @@ import type {
   ProjectDetail,
   ProjectSummary,
   ProjectVSM,
+  RolloutsList,
   RunDetail,
   RunsListResponse,
   SecretsList,
@@ -223,6 +224,21 @@ export async function listDeployTargets(
     }
     throw err;
   }
+}
+
+// listRollouts reads the in-flight argo-rollouts for a project scoped to a
+// cluster + namespace (ADR-0001, PR-B). Maintainer-gated on the server — a
+// viewer's RSC fetch 403s, which the page surfaces as an access note rather
+// than crashing. `rollouts` is always an array on the wire.
+export async function listRollouts(
+  slug: string,
+  cluster: string,
+  namespace: string,
+): Promise<RolloutsList> {
+  const qs = new URLSearchParams({ cluster, namespace });
+  return readJSON<RolloutsList>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/rollouts?${qs.toString()}`,
+  );
 }
 
 // listFindings reads the project's security findings (latest run per pipeline),
