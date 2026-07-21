@@ -7,6 +7,7 @@ import {
   Bell,
   Clock,
   GitBranch,
+  GitCompareArrows,
   HardDrive,
   History,
   KeyRound,
@@ -86,6 +87,12 @@ const tabs: Tab[] = [
     href: (slug) => `/projects/${slug}/environments` as Route,
     match: (path, slug) => path.startsWith(`/projects/${slug}/environments`),
     icon: Rocket,
+  },
+  {
+    label: "Rollouts",
+    href: (slug) => `/projects/${slug}/rollouts` as Route,
+    match: (path, slug) => path.startsWith(`/projects/${slug}/rollouts`),
+    icon: GitCompareArrows,
   },
   {
     label: "Settings",
