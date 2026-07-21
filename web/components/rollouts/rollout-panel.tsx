@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
-import { GitCompareArrows, HelpCircle, Info, Layers, Rocket } from "lucide-react";
+import { HelpCircle, Info, Layers, Rocket } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { shortHash, statusFor, TONE } from "@/lib/rollouts";
 import type { Rollout } from "@/types/api";
 
 import { AnalysisPanel } from "./analysis-panel";
+import { BlueGreenBlocks } from "./blue-green-blocks";
 import { RevisionStrip } from "./revision-strip";
 import { RolloutActions } from "./rollout-actions.client";
 import { StatusPill } from "./status-pill";
@@ -107,26 +108,6 @@ function CanaryBody({ rollout }: { rollout: Rollout }) {
   );
 }
 
-// BlueGreenPlaceholder is intentionally compact: the active/preview blocks and
-// traffic-swap detail land in PR-D. Read-only status only here.
-function BlueGreenPlaceholder({ rollout }: { rollout: Rollout }) {
-  const { label } = statusFor(rollout.phase, rollout.aborted);
-  return (
-    <div className="flex flex-col items-start gap-3 rounded-xl border border-dashed border-border bg-muted/20 p-5">
-      <div className="flex items-center gap-2 text-sm font-medium">
-        <GitCompareArrows className="size-4 text-sky-500" aria-hidden />
-        Blue-green active / preview view is coming
-      </div>
-      <p className="text-sm text-muted-foreground">
-        The active vs preview blocks and the traffic swap land in a later slice.
-        For now this rollout is{" "}
-        <span className="font-medium text-foreground">{label}</span>
-        {rollout.message ? ` — ${rollout.message}` : ""}.
-      </p>
-    </div>
-  );
-}
-
 // UnknownStrategyBody covers a Rollout the API reported with neither a canary nor a
 // blueGreen strategy (strategy=="") — render its status neutrally rather than
 // mislabelling it as blue-green.
@@ -158,10 +139,10 @@ type Props = {
 
 // RolloutPanel is one rollout: header (strategy pill, name + meta, status pill,
 // control actions) over a strategy-specific body. Canary renders the full read-only
-// view; blue-green renders a compact placeholder (PR-D). A paused canary gets a teal
-// accent bar (it is the one awaiting an operator decision). Control actions
-// (Approve/Reject for a gated rollout, Promote/Abort for a non-gated one) hang to the
-// right of the status pill; the server enforces every action.
+// view; blue-green renders the active/preview blocks. A paused canary OR a paused
+// blue-green (pre-promotion) gets a teal accent bar — it is the one awaiting an operator
+// decision. Control actions (Approve/Reject for a gated rollout, Promote/Abort|Reject for
+// a non-gated one) hang to the right of the status pill; the server enforces every action.
 export function RolloutPanel({
   rollout,
   slug,
@@ -169,8 +150,9 @@ export function RolloutPanel({
   canManage,
   onActed,
 }: Props) {
-  const canary = rollout.strategy === "canary";
-  const attn = canary && rollout.phase === "Paused" && !rollout.aborted;
+  const known =
+    rollout.strategy === "canary" || rollout.strategy === "blueGreen";
+  const attn = known && rollout.phase === "Paused" && !rollout.aborted;
   return (
     <article
       className={cn(
@@ -201,7 +183,7 @@ export function RolloutPanel({
         {rollout.strategy === "canary" ? (
           <CanaryBody rollout={rollout} />
         ) : rollout.strategy === "blueGreen" ? (
-          <BlueGreenPlaceholder rollout={rollout} />
+          <BlueGreenBlocks rollout={rollout} />
         ) : (
           <UnknownStrategyBody rollout={rollout} />
         )}

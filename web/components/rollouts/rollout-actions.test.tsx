@@ -33,9 +33,23 @@ function canary(partial: Partial<Rollout> = {}): Rollout {
     stable_hash: "stable1",
     pod_hash: "canary1",
     image: "reg/checkout:1.9.0",
+    active_service: "",
+    preview_service: "",
+    scale_down_delay_seconds: 0,
     analysis: null,
     ...partial,
   };
+}
+
+function blueGreen(partial: Partial<Rollout> = {}): Rollout {
+  return canary({
+    strategy: "blueGreen",
+    phase: "Paused",
+    active_service: "payments-active",
+    preview_service: "payments-preview",
+    scale_down_delay_seconds: 30,
+    ...partial,
+  });
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -147,6 +161,89 @@ describe("RolloutActions — non-gated actionable canary", () => {
       namespace: "production",
       name: "checkout-api",
     });
+  });
+});
+
+describe("RolloutActions — blue-green (pre-promotion)", () => {
+  it("offers Promote/Reject (not Abort, not Approve/Reject) for a paused blue-green rollout", () => {
+    render(
+      <RolloutActions slug="acme" cluster="prod" canManage rollout={blueGreen()} />,
+    );
+    expect(screen.getByRole("button", { name: /Promote/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Reject$/ })).toBeTruthy();
+    // Blue-green never says "Abort", and it is never gated (no Approve).
+    expect(screen.queryByRole("button", { name: /^Abort$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
+  });
+
+  it("Promote confirm switches the active service via promoteRollout (same PR-C endpoint)", async () => {
+    const onActed = vi.fn();
+    render(
+      <RolloutActions
+        slug="acme"
+        cluster="prod"
+        canManage
+        rollout={blueGreen()}
+        onActed={onActed}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Promote/ }));
+    expect(
+      await screen.findByText(/the active service switches to the new revision/i),
+    ).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /^Promote$/ }));
+    await flush();
+    expect(promoteRollout).toHaveBeenCalledWith({
+      slug: "acme",
+      cluster: "prod",
+      namespace: "production",
+      name: "checkout-api",
+    });
+    expect(onActed).toHaveBeenCalled();
+  });
+
+  it("the Reject dialog keeps the current active and states it does NOT revert Git", async () => {
+    render(
+      <RolloutActions slug="acme" cluster="prod" canManage rollout={blueGreen()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Reject$/ }));
+    expect(
+      await screen.findByText(/keeps the current active revision/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/does NOT revert Git/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Reject preview/ }));
+    await flush();
+    expect(abortRollout).toHaveBeenCalledWith({
+      slug: "acme",
+      cluster: "prod",
+      namespace: "production",
+      name: "checkout-api",
+    });
+    expect(promoteRollout).not.toHaveBeenCalled();
+  });
+
+  it("offers nothing for a promoted (Healthy) blue-green rollout", () => {
+    const { container } = render(
+      <RolloutActions
+        slug="acme"
+        cluster="prod"
+        canManage
+        rollout={blueGreen({ phase: "Healthy" })}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("offers nothing while a blue-green rollout is still Progressing (not yet at the pause)", () => {
+    const { container } = render(
+      <RolloutActions
+        slug="acme"
+        cluster="prod"
+        canManage
+        rollout={blueGreen({ phase: "Progressing" })}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
   });
 });
 

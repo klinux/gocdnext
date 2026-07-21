@@ -45,6 +45,9 @@ function canary(partial: Partial<Rollout> = {}): Rollout {
     stable_hash: "stable1111a",
     pod_hash: "canary2222b",
     image: "registry/checkout-api:1.9.0",
+    active_service: "",
+    preview_service: "",
+    scale_down_delay_seconds: 0,
     analysis: { name: "success-rate", phase: "Running", message: "5/8 measurements" },
     ...partial,
   };
@@ -88,14 +91,72 @@ describe("RolloutPanel — status pill per phase", () => {
   }
 });
 
+// blueGreen is the canary fixture re-shaped into a blue-green rollout paused at
+// pre-promotion, with both services, a scale-down delay and a pre-promotion analysis.
+function blueGreen(partial: Partial<Rollout> = {}): Rollout {
+  return canary({
+    strategy: "blueGreen",
+    phase: "Paused",
+    message: "BlueGreenPause",
+    active_service: "payments-active",
+    preview_service: "payments-preview",
+    scale_down_delay_seconds: 45,
+    analysis: { name: "pre-promo", phase: "Successful", message: "8/8 checks" },
+    ...partial,
+  });
+}
+
 describe("RolloutPanel — blue-green", () => {
-  it("renders a compact placeholder (PR-D deferred) instead of the canary body", () => {
-    renderPanel(canary({ strategy: "blueGreen", phase: "Healthy" }));
+  it("renders the active/preview blocks with hashes, services and serving shares", () => {
+    renderPanel(blueGreen());
     expect(screen.getByText("Blue-Green")).toBeTruthy();
-    expect(screen.getByText(/active \/ preview view is coming/i)).toBeTruthy();
+    // Active block: hash tag + service + 100% production (NO active image — not exposed).
+    expect(screen.getByText(/Active — stable1111/)).toBeTruthy();
+    expect(screen.getByText("payments-active")).toBeTruthy();
+    expect(screen.getByText("100% production")).toBeTruthy();
+    // Preview block: hash tag + preview image + service + 0% preview only.
+    expect(screen.getByText(/Preview — canary2222/)).toBeTruthy();
+    expect(screen.getByText("registry/checkout-api")).toBeTruthy();
+    expect(screen.getByText("payments-preview")).toBeTruthy();
+    expect(screen.getByText(/0% · preview only/)).toBeTruthy();
     // No canary internals leak into the blue-green view.
     expect(screen.queryByText("you are here")).toBeNull();
     expect(screen.queryByText(/Revisions/)).toBeNull();
+  });
+
+  it("shows the pre-promotion analysis health line when present", () => {
+    renderPanel(blueGreen());
+    expect(screen.getByText(/pre-promo: Successful/)).toBeTruthy();
+    expect(screen.getByText("8/8 checks")).toBeTruthy();
+  });
+
+  it("notes the scaleDownDelay and that Reject does not revert Git", () => {
+    renderPanel(blueGreen());
+    expect(screen.getByText("45s")).toBeTruthy();
+    expect(screen.getByText(/does NOT revert Git/i)).toBeTruthy();
+  });
+
+  it("notes the controller default when scaleDownDelay is unset", () => {
+    renderPanel(blueGreen({ scale_down_delay_seconds: 0 }));
+    expect(screen.getByText(/30s \(the controller default\)/)).toBeTruthy();
+  });
+
+  it("renders gracefully with no services and no analysis", () => {
+    renderPanel(
+      blueGreen({ active_service: "", preview_service: "", analysis: null }),
+    );
+    // Missing services collapse to an em-dash placeholder, nothing crashes.
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("100% production")).toBeTruthy();
+    expect(screen.queryByText(/pre-promo/)).toBeNull();
+  });
+
+  it("renders a promoted (Healthy) blue-green rollout without decision affordances", () => {
+    // canManage=false here anyway, but a Healthy rollout is never actionable.
+    renderPanel(blueGreen({ phase: "Healthy", analysis: null }));
+    expect(screen.getByText("Healthy")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Promote/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Reject/ })).toBeNull();
   });
 });
 

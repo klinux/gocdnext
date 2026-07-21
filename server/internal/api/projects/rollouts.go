@@ -53,20 +53,27 @@ type rolloutGateDTO struct {
 
 // rolloutDTO is the snake_case JSON view of one Rollout (mirrors deploy.RolloutView).
 type rolloutDTO struct {
-	Namespace        string              `json:"namespace"`
-	Name             string              `json:"name"`
-	Strategy         string              `json:"strategy"`
-	Phase            string              `json:"phase"`
-	Message          string              `json:"message"`
-	Aborted          bool                `json:"aborted"`
-	CurrentStepIndex int                 `json:"current_step_index"`
-	CurrentStepKnown bool                `json:"current_step_known"`
-	Steps            []rolloutStepDTO    `json:"steps"`
-	CanaryWeight     int                 `json:"canary_weight"`
-	StableHash       string              `json:"stable_hash"`
-	PodHash          string              `json:"pod_hash"`
-	Image            string              `json:"image"`
-	Analysis         *rolloutAnalysisDTO `json:"analysis"`
+	Namespace        string           `json:"namespace"`
+	Name             string           `json:"name"`
+	Strategy         string           `json:"strategy"`
+	Phase            string           `json:"phase"`
+	Message          string           `json:"message"`
+	Aborted          bool             `json:"aborted"`
+	CurrentStepIndex int              `json:"current_step_index"`
+	CurrentStepKnown bool             `json:"current_step_known"`
+	Steps            []rolloutStepDTO `json:"steps"`
+	CanaryWeight     int              `json:"canary_weight"`
+	StableHash       string           `json:"stable_hash"`
+	PodHash          string           `json:"pod_hash"`
+	Image            string           `json:"image"`
+	// Blue-green specifics — empty/zero for a canary Rollout. active/preview pod hashes
+	// reuse stable_hash / pod_hash; the preview image reuses image.
+	ActiveService         string `json:"active_service"`
+	PreviewService        string `json:"preview_service"`
+	ScaleDownDelaySeconds int    `json:"scale_down_delay_seconds"`
+	// Analysis doubles as the pre-promotion AnalysisRun for a blueGreen Rollout (it has no
+	// canary analysis to clash with).
+	Analysis *rolloutAnalysisDTO `json:"analysis"`
 	// Gate is the armed, undecided approval gate governing this Rollout, correlated by
 	// pinned (namespace, name). nil (JSON null) when none is armed.
 	Gate *rolloutGateDTO `json:"gate"`
@@ -84,19 +91,22 @@ func toRolloutDTO(v deploy.RolloutView) rolloutDTO {
 		steps = append(steps, rolloutStepDTO{Kind: s.Kind, Weight: s.Weight, PauseDuration: s.PauseDuration})
 	}
 	dto := rolloutDTO{
-		Namespace:        v.Namespace,
-		Name:             v.Name,
-		Strategy:         v.Strategy,
-		Phase:            string(v.Phase),
-		Message:          v.Message,
-		Aborted:          v.Aborted,
-		CurrentStepIndex: v.CurrentStepIndex,
-		CurrentStepKnown: v.CurrentStepKnown,
-		Steps:            steps,
-		CanaryWeight:     v.CanaryWeight,
-		StableHash:       v.StableHash,
-		PodHash:          v.PodHash,
-		Image:            v.Image,
+		Namespace:             v.Namespace,
+		Name:                  v.Name,
+		Strategy:              v.Strategy,
+		Phase:                 string(v.Phase),
+		Message:               v.Message,
+		Aborted:               v.Aborted,
+		CurrentStepIndex:      v.CurrentStepIndex,
+		CurrentStepKnown:      v.CurrentStepKnown,
+		Steps:                 steps,
+		CanaryWeight:          v.CanaryWeight,
+		StableHash:            v.StableHash,
+		PodHash:               v.PodHash,
+		Image:                 v.Image,
+		ActiveService:         v.ActiveService,
+		PreviewService:        v.PreviewService,
+		ScaleDownDelaySeconds: v.ScaleDownDelaySeconds,
 	}
 	if v.Analysis != nil {
 		dto.Analysis = &rolloutAnalysisDTO{

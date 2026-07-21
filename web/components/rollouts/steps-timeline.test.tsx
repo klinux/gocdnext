@@ -36,6 +36,9 @@ function makeRollout(partial: Partial<Rollout> = {}): Rollout {
     stable_hash: "aaaa111111",
     pod_hash: "bbbb222222",
     image: "checkout-api:1.9.0",
+    active_service: "",
+    preview_service: "",
+    scale_down_delay_seconds: 0,
     analysis: null,
     ...partial,
   };
