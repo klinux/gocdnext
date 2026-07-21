@@ -17,12 +17,13 @@ import (
 // deploy_watch with a denormalized gate config, and an armed gate (backdated 5m so the
 // deadline resume is observable). Returns everything a decision test needs.
 type gatedRollout struct {
-	s        *store.Store
-	pool     *pgxpool.Pool
-	ctx      context.Context
-	revID    uuid.UUID
-	gateID   uuid.UUID
-	deadline time.Time // pre-decision deadline (to assert the resume shift)
+	s         *store.Store
+	pool      *pgxpool.Pool
+	ctx       context.Context
+	revID     uuid.UUID
+	projectID uuid.UUID
+	gateID    uuid.UUID
+	deadline  time.Time // pre-decision deadline (to assert the resume shift)
 }
 
 func seedGatedRollout(t *testing.T, slug string, required int32, approvers []string) gatedRollout {
@@ -78,7 +79,7 @@ func seedGatedRollout(t *testing.T, slug string, required int32, approvers []str
 		`UPDATE deploy_watches SET gate_armed_at = NOW() - interval '5 minutes' WHERE deployment_revision_id = $1`, revID); err != nil {
 		t.Fatalf("backdate arm: %v", err)
 	}
-	gr := gatedRollout{s: s, pool: pool, ctx: ctx, revID: revID}
+	gr := gatedRollout{s: s, pool: pool, ctx: ctx, revID: revID, projectID: projectID}
 	g := readGate(t, ctx, pool, revID)
 	gr.gateID, gr.deadline = *g.gateID, g.deadlineAt
 	return gr
@@ -95,7 +96,7 @@ func (gr gatedRollout) user(t *testing.T, email, name string) uuid.UUID {
 
 func (gr gatedRollout) decide(uid uuid.UUID, email, name, decision string) (store.RolloutGateResult, error) {
 	return gr.s.DecideRolloutGate(gr.ctx, store.RolloutGateDecisionInput{
-		RevisionID: gr.revID, GateID: gr.gateID, Decision: decision,
+		RevisionID: gr.revID, ProjectID: gr.projectID, GateID: gr.gateID, Decision: decision,
 		UserID: uid, User: name, UserEmail: email,
 	})
 }
@@ -158,6 +159,20 @@ func TestDecideRolloutGate_VoteSemantics(t *testing.T) {
 	}
 	if g := readGate(t, gr.ctx, gr.pool, gr.revID); g.decision != nil {
 		t.Errorf("a changed vote terminalized the gate: %+v", g)
+	}
+}
+
+// A revision from a DIFFERENT project (a crafted cross-project revID on the URL) doesn't
+// resolve under the project-scoped lock → stale, never decidable.
+func TestDecideRolloutGate_WrongProjectIsStale(t *testing.T) {
+	gr := seedGatedRollout(t, "rg-xproj", 1, []string{"alice@corp.com"})
+	alice := gr.user(t, "alice@corp.com", "Alice")
+	_, err := gr.s.DecideRolloutGate(gr.ctx, store.RolloutGateDecisionInput{
+		RevisionID: gr.revID, ProjectID: uuid.New(), GateID: gr.gateID, Decision: "approved",
+		UserID: alice, User: "Alice", UserEmail: "alice@corp.com",
+	})
+	if err != store.ErrGateStale {
+		t.Fatalf("wrong project = %v, want ErrGateStale", err)
 	}
 }
 

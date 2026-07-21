@@ -34,6 +34,7 @@ var (
 // RolloutGateDecisionInput is one approve/reject on a deploy's armed step.
 type RolloutGateDecisionInput struct {
 	RevisionID uuid.UUID // the deploy_watch key (the /deploy-watches/{revID} route)
+	ProjectID  uuid.UUID // scopes the watch to the URL's project (defence in depth)
 	GateID     uuid.UUID // the token the UI holds; must match the armed gate
 	Decision   string    // "approved" | "rejected"
 	UserID     uuid.UUID // the authenticated decider (required)
@@ -94,9 +95,9 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 		       dw.gate_approvers, dw.gate_approver_groups, dr.job_run_id
 		FROM deploy_watches dw
 		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
-		WHERE dw.deployment_revision_id = $1
+		WHERE dw.deployment_revision_id = $1 AND dw.project_id = $2
 		FOR UPDATE OF dw
-	`, in.RevisionID).Scan(&gateID, &armedAt, &decision, &required, &approvers, &groups, &jobRunID)
+	`, in.RevisionID, in.ProjectID).Scan(&gateID, &armedAt, &decision, &required, &approvers, &groups, &jobRunID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RolloutGateResult{}, ErrGateStale // watch gone (finalized) or unknown revision
 	}

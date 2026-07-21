@@ -40,6 +40,17 @@ type DeployWatchView struct {
 	RolloutAborted     bool
 	RolloutError       string
 	RolloutObservedAt  *time.Time
+
+	// Gate live-state (viewer-readable). GateID is Nil when no step is armed — the UI
+	// echoes it on approve/reject (the anti-stale token). GatePausedStepKnown/GateRequired
+	// nil = absent. GateApprovalsNow is how many approvals are in for the current round.
+	GateID              uuid.UUID
+	GatePausedStep      int
+	GatePausedStepKnown bool
+	GateRequired        int
+	GateRequiredKnown   bool
+	GateDecision        string
+	GateApprovalsNow    int
 }
 
 // ListDeployWatchesForProject returns the project's in-flight native deploys.
@@ -72,6 +83,13 @@ func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.
 			RolloutAborted:       r.RolloutAborted != nil && *r.RolloutAborted,
 			RolloutError:         stringValue(r.RolloutError),
 			RolloutObservedAt:    pgTimePtr(r.RolloutObservedAt),
+			GateID:               fromPgUUID(r.GateID),
+			GatePausedStep:       int32Value(r.GatePausedStep),
+			GatePausedStepKnown:  r.GatePausedStep != nil,
+			GateRequired:         int32Value(r.GateRequired),
+			GateRequiredKnown:    r.GateRequired != nil,
+			GateDecision:         stringValue(r.GateDecision),
+			GateApprovalsNow:     int(r.GateApprovalsNow),
 		})
 	}
 	return out, nil

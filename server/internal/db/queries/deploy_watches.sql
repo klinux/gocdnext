@@ -197,7 +197,12 @@ SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        dw.deadline_at, dw.degraded_since,
        dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
        dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
-       dw.rollout_error, dw.rollout_observed_at
+       dw.rollout_error, dw.rollout_observed_at,
+       -- Gate live-state (viewer-readable): the armed token to echo on approve/reject,
+       -- the step, quorum, decision, and how many approvals are in so far.
+       dw.gate_id, dw.gate_paused_step, dw.gate_required, dw.gate_decision,
+       (SELECT COUNT(*) FROM job_run_approvals a
+        WHERE a.job_run_id = dr.job_run_id AND a.decision = 'approved')::int AS gate_approvals_now
 FROM deploy_watches dw
 JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 JOIN environments e ON e.id = dr.environment_id

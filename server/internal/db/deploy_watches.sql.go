@@ -439,7 +439,12 @@ SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        dw.deadline_at, dw.degraded_since,
        dw.rollout_aware, dw.rollout_phase, dw.rollout_message, dw.rollout_pause_reason,
        dw.rollout_current_step, dw.rollout_step_count, dw.rollout_aborted,
-       dw.rollout_error, dw.rollout_observed_at
+       dw.rollout_error, dw.rollout_observed_at,
+       -- Gate live-state (viewer-readable): the armed token to echo on approve/reject,
+       -- the step, quorum, decision, and how many approvals are in so far.
+       dw.gate_id, dw.gate_paused_step, dw.gate_required, dw.gate_decision,
+       (SELECT COUNT(*) FROM job_run_approvals a
+        WHERE a.job_run_id = dr.job_run_id AND a.decision = 'approved')::int AS gate_approvals_now
 FROM deploy_watches dw
 JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 JOIN environments e ON e.id = dr.environment_id
@@ -468,6 +473,11 @@ type ListDeployWatchesForProjectRow struct {
 	RolloutAborted       *bool
 	RolloutError         *string
 	RolloutObservedAt    pgtype.Timestamptz
+	GateID               pgtype.UUID
+	GatePausedStep       *int32
+	GateRequired         *int32
+	GateDecision         *string
+	GateApprovalsNow     int32
 }
 
 // In-flight native deploys for a project (one row per still-in_progress revision),
@@ -504,6 +514,11 @@ func (q *Queries) ListDeployWatchesForProject(ctx context.Context, projectID pgt
 			&i.RolloutAborted,
 			&i.RolloutError,
 			&i.RolloutObservedAt,
+			&i.GateID,
+			&i.GatePausedStep,
+			&i.GateRequired,
+			&i.GateDecision,
+			&i.GateApprovalsNow,
 		); err != nil {
 			return nil, err
 		}
