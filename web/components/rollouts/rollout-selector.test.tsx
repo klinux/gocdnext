@@ -42,4 +42,43 @@ describe("RolloutSelector (needs-params state)", () => {
       "/projects/acme/rollouts?cluster=prod-hub&namespace=production",
     );
   });
+
+  it("renders configured targets as one-click picks and navigates on click", () => {
+    render(
+      <RolloutSelector
+        basePath="/projects/acme/rollouts"
+        picks={[
+          {
+            environment: "prod",
+            rolloutName: "smoke-canary",
+            cluster: "lab-inc",
+            namespace: "smoke-rollout",
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
+    expect(push).toHaveBeenCalledWith(
+      "/projects/acme/rollouts?cluster=lab-inc&namespace=smoke-rollout",
+    );
+  });
+
+  it("collapses manual entry when picks exist and reveals it on toggle", () => {
+    render(
+      <RolloutSelector
+        basePath="/projects/acme/rollouts"
+        picks={[
+          { environment: "prod", cluster: "lab-inc", namespace: "smoke-rollout" },
+        ]}
+      />,
+    );
+    expect(screen.queryByLabelText("Cluster")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /enter a cluster and namespace manually/i,
+      }),
+    );
+    expect(screen.getByLabelText("Cluster")).toBeTruthy();
+    expect(screen.getByLabelText("Namespace")).toBeTruthy();
+  });
 });

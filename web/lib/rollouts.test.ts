@@ -4,13 +4,14 @@ import {
   analysisTone,
   imageParts,
   isManualGate,
+  rolloutPicksFromTargets,
   shortHash,
   statusFor,
   stepLabel,
   stepState,
   trafficSplit,
 } from "./rollouts";
-import type { RolloutStep } from "@/types/api";
+import type { DeployTarget, RolloutStep } from "@/types/api";
 
 function step(partial: Partial<RolloutStep>): RolloutStep {
   return { kind: "setWeight", weight: null, pause_duration: "", ...partial };
@@ -127,6 +128,86 @@ describe("shortHash", () => {
   it("trims a long hash and leaves a short one untouched", () => {
     expect(shortHash("6b5f7c9d8e2a1b")).toBe("6b5f7c9d8e");
     expect(shortHash("abc")).toBe("abc");
+  });
+});
+
+function target(partial: Partial<DeployTarget>): DeployTarget {
+  return {
+    environment: "prod",
+    provider: "argocd",
+    cluster: "app-cluster",
+    application: "app",
+    namespace: "argocd",
+    sync_mode: "trigger",
+    ...partial,
+  };
+}
+
+describe("rolloutPicksFromTargets", () => {
+  it("keeps only rollout-aware targets with a resolvable namespace", () => {
+    const picks = rolloutPicksFromTargets([
+      target({ environment: "a" }), // not rollout-aware
+      target({
+        environment: "b",
+        rollout_aware: true,
+        rollout_cluster: "lab-inc",
+        rollout_namespace: "smoke-rollout",
+        rollout_name: "smoke-canary",
+      }),
+      target({
+        environment: "c",
+        rollout_aware: true,
+        rollout_cluster: "lab-inc",
+        // no rollout_namespace => auto-discovered at runtime => not pre-fillable
+      }),
+    ]);
+    expect(picks).toEqual([
+      {
+        environment: "b",
+        rolloutName: "smoke-canary",
+        cluster: "lab-inc",
+        namespace: "smoke-rollout",
+      },
+    ]);
+  });
+
+  it("falls back to the App's cluster when rollout_cluster is unset", () => {
+    const [pick] = rolloutPicksFromTargets([
+      target({
+        environment: "b",
+        cluster: "hub",
+        rollout_aware: true,
+        rollout_namespace: "prod",
+      }),
+    ]);
+    expect(pick?.cluster).toBe("hub");
+    expect(pick?.namespace).toBe("prod");
+    expect(pick?.rolloutName).toBeUndefined();
+  });
+
+  it("de-duplicates by (cluster, namespace) preserving first seen", () => {
+    const picks = rolloutPicksFromTargets([
+      target({
+        environment: "first",
+        rollout_aware: true,
+        rollout_cluster: "c1",
+        rollout_namespace: "ns1",
+      }),
+      target({
+        environment: "dup",
+        rollout_aware: true,
+        rollout_cluster: "c1",
+        rollout_namespace: "ns1",
+      }),
+    ]);
+    expect(picks.map((p) => p.environment)).toEqual(["first"]);
+  });
+
+  it("returns an empty list when nothing qualifies", () => {
+    expect(rolloutPicksFromTargets([])).toEqual([]);
+    expect(rolloutPicksFromTargets([target({ rollout_aware: false })])).toEqual(
+      [],
+    );
   });
 });
 

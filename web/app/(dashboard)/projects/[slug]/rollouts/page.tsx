@@ -4,8 +4,13 @@ import { RolloutSelector } from "@/components/rollouts/rollout-selector.client";
 import { RolloutsHeader } from "@/components/rollouts/rollouts-header";
 import { RolloutsLive } from "@/components/rollouts/rollouts-live.client";
 import { env } from "@/lib/env";
+import { type RolloutPick, rolloutPicksFromTargets } from "@/lib/rollouts";
 import { type AuthState, resolveAuthState } from "@/server/queries/auth";
-import { GocdnextAPIError, listRollouts } from "@/server/queries/projects";
+import {
+  GocdnextAPIError,
+  listDeployTargets,
+  listRollouts,
+} from "@/server/queries/projects";
 import type { RolloutsList } from "@/types/api";
 
 type Params = { slug: string };
@@ -45,11 +50,13 @@ export default async function RolloutsPage({
 
   // Needs-params state: ask for cluster + namespace instead of hard-failing.
   if (!cluster || !namespace) {
+    const picks = await loadPicks(slug);
     return (
       <section className="space-y-6">
         <RolloutsHeader />
         <RolloutSelector
           basePath={basePath}
+          picks={picks}
           defaultCluster={cluster}
           defaultNamespace={namespace}
         />
@@ -83,6 +90,7 @@ export default async function RolloutsPage({
           <AccessNote status={err.status} />
           <RolloutSelector
             basePath={basePath}
+            picks={await loadPicks(slug)}
             defaultCluster={cluster}
             defaultNamespace={namespace}
           />
@@ -110,6 +118,19 @@ export default async function RolloutsPage({
       canManage={canManage}
     />
   );
+}
+
+// loadPicks derives the selector's one-click rollout targets from the project's
+// deploy targets. Best-effort: any failure (a viewer 403, a flaky call) yields
+// no picks, and the selector falls back to manual entry — the picks are a
+// convenience, never a gate on reaching the page.
+async function loadPicks(slug: string): Promise<RolloutPick[]> {
+  try {
+    const { deploy_targets } = await listDeployTargets(slug);
+    return rolloutPicksFromTargets(deploy_targets);
+  } catch {
+    return [];
+  }
 }
 
 function AccessNote({ status }: { status: number }) {
