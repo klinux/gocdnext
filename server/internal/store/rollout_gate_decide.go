@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -81,6 +82,7 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 	// step serialize, closing the double-decide / orphan-vote window.
 	var (
 		gateID    pgtype.UUID
+		armedAt   pgtype.Timestamptz
 		decision  *string
 		required  *int32
 		approvers []string
@@ -88,13 +90,13 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 		jobRunID  pgtype.UUID
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT dw.gate_id, dw.gate_decision, dw.gate_required,
+		SELECT dw.gate_id, dw.gate_armed_at, dw.gate_decision, dw.gate_required,
 		       dw.gate_approvers, dw.gate_approver_groups, dr.job_run_id
 		FROM deploy_watches dw
 		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 		WHERE dw.deployment_revision_id = $1
 		FOR UPDATE OF dw
-	`, in.RevisionID).Scan(&gateID, &decision, &required, &approvers, &groups, &jobRunID)
+	`, in.RevisionID).Scan(&gateID, &armedAt, &decision, &required, &approvers, &groups, &jobRunID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RolloutGateResult{}, ErrGateStale // watch gone (finalized) or unknown revision
 	}
@@ -108,12 +110,18 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 	if fromPgUUID(gateID) != in.GateID || decision != nil {
 		return RolloutGateResult{}, ErrGateStale
 	}
+	// Fail-closed on a mis-shaped row: a real armed, GATED round has both gate_armed_at
+	// (the deadline-resume anchor) and gate_required (the "gated" marker + quorum). Their
+	// absence is a non-gated / corrupt state — never fall back to a quorum of 1.
+	if !armedAt.Valid || required == nil {
+		return RolloutGateResult{}, ErrGateStale
+	}
 	if !jobRunID.Valid {
 		return RolloutGateResult{}, fmt.Errorf("store: rollout gate has no job run to record votes against")
 	}
-	req := int32(1)
-	if required != nil && *required > 1 {
-		req = *required
+	req := *required
+	if req < 1 {
+		req = 1
 	}
 
 	// Allow-list (same semantics as the job gate): user in `approvers` by name OR email,
@@ -188,7 +196,7 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 		return RolloutGateResult{}, ErrGateStale // a concurrent decider won the flip
 	}
 
-	if err := s.emitRolloutGateAudit(ctx, tx, in, jobRunID); err != nil {
+	if err := s.emitRolloutGateAudit(ctx, tx, in, jobRunID, req); err != nil {
 		return RolloutGateResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -197,23 +205,29 @@ func (s *Store) DecideRolloutGate(ctx context.Context, in RolloutGateDecisionInp
 	return RolloutGateResult{Decided: true, Decision: in.Decision, ApprovalsNow: int(approvedNow), ApprovalsRequired: int(req)}, nil
 }
 
-// emitRolloutGateAudit writes the durable per-step record IN THE SAME TX — it captures
-// the gate_id, decision + decider, and every vote, because ClearRolloutGate later deletes
-// the transient job_run_approvals rows.
-func (s *Store) emitRolloutGateAudit(ctx context.Context, tx pgx.Tx, in RolloutGateDecisionInput, jobRunID pgtype.UUID) error {
+// emitRolloutGateAudit writes the durable per-step record IN THE SAME TX. Because
+// ClearRolloutGate later deletes the transient job_run_approvals rows, this is the ONLY
+// lasting trail, so it captures each vote FULLY — user_id (two deciders can share a
+// display label), label, decision, comment, decided_at — plus the gate_id, decision, and
+// the required quorum.
+func (s *Store) emitRolloutGateAudit(ctx context.Context, tx pgx.Tx, in RolloutGateDecisionInput, jobRunID pgtype.UUID, required int32) error {
 	rows, err := tx.Query(ctx,
-		`SELECT user_label, decision FROM job_run_approvals WHERE job_run_id = $1 ORDER BY decided_at`, jobRunID)
+		`SELECT user_id::text, user_label, decision, comment, decided_at
+		 FROM job_run_approvals WHERE job_run_id = $1 ORDER BY decided_at`, jobRunID)
 	if err != nil {
 		return fmt.Errorf("store: gather rollout votes for audit: %w", err)
 	}
 	type vote struct {
-		User     string `json:"user"`
-		Decision string `json:"decision"`
+		UserID    string    `json:"user_id"`
+		User      string    `json:"user_label"`
+		Decision  string    `json:"decision"`
+		Comment   string    `json:"comment,omitempty"`
+		DecidedAt time.Time `json:"decided_at"`
 	}
 	var votes []vote
 	for rows.Next() {
 		var v vote
-		if err := rows.Scan(&v.User, &v.Decision); err != nil {
+		if err := rows.Scan(&v.UserID, &v.User, &v.Decision, &v.Comment, &v.DecidedAt); err != nil {
 			rows.Close()
 			return fmt.Errorf("store: scan rollout vote: %w", err)
 		}
@@ -227,6 +241,7 @@ func (s *Store) emitRolloutGateAudit(ctx context.Context, tx pgx.Tx, in RolloutG
 	meta, err := json.Marshal(map[string]any{
 		"gate_id":  in.GateID.String(),
 		"decision": in.Decision,
+		"required": required,
 		"votes":    votes,
 	})
 	if err != nil {

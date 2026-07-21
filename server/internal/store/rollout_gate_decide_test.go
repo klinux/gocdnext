@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -211,6 +212,99 @@ func TestDecideRolloutGate_ClearDeletesVotes(t *testing.T) {
 	}
 	if countVotes() != 0 {
 		t.Errorf("votes not deleted on clear: %d remain", votes)
+	}
+}
+
+// A user allowed via approver_groups (not the direct list) can decide; a non-member
+// can't — proving the ListUserGroupNames reuse.
+func TestDecideRolloutGate_ApproverGroups(t *testing.T) {
+	gr := seedGatedRollout(t, "rg-groups", 1, nil) // no direct approvers
+	alice := gr.user(t, "alice@corp.com", "Alice")
+	dave := gr.user(t, "dave@corp.com", "Dave") // not in the group
+
+	grp, err := gr.s.InsertGroup(gr.ctx, store.GroupInput{Name: "sre"})
+	if err != nil {
+		t.Fatalf("insert group: %v", err)
+	}
+	if err := gr.s.AddGroupMember(gr.ctx, grp.ID, alice, nil); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	// Gate lists the GROUP, not any user directly.
+	if _, err := gr.pool.Exec(gr.ctx,
+		`UPDATE deploy_watches SET gate_approvers = '{}', gate_approver_groups = $2 WHERE deployment_revision_id = $1`,
+		gr.revID, []string{"sre"}); err != nil {
+		t.Fatalf("set groups: %v", err)
+	}
+
+	if _, err := gr.decide(dave, "dave@corp.com", "Dave", "approved"); err != store.ErrApproverNotAllowed {
+		t.Fatalf("non-member = %v, want ErrApproverNotAllowed", err)
+	}
+	res, err := gr.decide(alice, "alice@corp.com", "Alice", "approved")
+	if err != nil || !res.Decided {
+		t.Fatalf("group member approve = %+v err=%v, want Decided", res, err)
+	}
+}
+
+// Fail-closed: a mis-shaped row (gate_required NULL = "not gated", or gate_armed_at NULL)
+// is never decidable — it must be ErrGateStale, never a silent quorum-of-1.
+func TestDecideRolloutGate_FailClosedOnMisshapedRow(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mut  string
+	}{
+		{"gate_required NULL", `UPDATE deploy_watches SET gate_required = NULL WHERE deployment_revision_id = $1`},
+		{"gate_armed_at NULL", `UPDATE deploy_watches SET gate_armed_at = NULL WHERE deployment_revision_id = $1`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			gr := seedGatedRollout(t, "rg-fc-"+uuid.NewString()[:6], 1, []string{"alice@corp.com"})
+			alice := gr.user(t, "alice@corp.com", "Alice")
+			if _, err := gr.pool.Exec(gr.ctx, tt.mut, gr.revID); err != nil {
+				t.Fatalf("mut: %v", err)
+			}
+			if _, err := gr.decide(alice, "alice@corp.com", "Alice", "approved"); err != store.ErrGateStale {
+				t.Fatalf("%s = %v, want ErrGateStale (no quorum-1 fallback)", tt.name, err)
+			}
+		})
+	}
+}
+
+// The durable audit record carries each vote in full (user_id distinguishes same-label
+// deciders) plus the required quorum — not just label+decision.
+func TestDecideRolloutGate_AuditMetadata(t *testing.T) {
+	gr := seedGatedRollout(t, "rg-auditmeta", 1, []string{"alice@corp.com"})
+	alice := gr.user(t, "alice@corp.com", "Alice")
+	if _, err := gr.decide(alice, "alice@corp.com", "Alice", "approved"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	var raw []byte
+	if err := gr.pool.QueryRow(gr.ctx,
+		`SELECT metadata FROM audit_events WHERE action = 'rollout_gate.approve' AND target_id = $1`,
+		gr.revID.String()).Scan(&raw); err != nil {
+		t.Fatalf("load audit: %v", err)
+	}
+	var m struct {
+		GateID   string `json:"gate_id"`
+		Decision string `json:"decision"`
+		Required int    `json:"required"`
+		Votes    []struct {
+			UserID    string    `json:"user_id"`
+			User      string    `json:"user_label"`
+			Decision  string    `json:"decision"`
+			DecidedAt time.Time `json:"decided_at"`
+		} `json:"votes"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("metadata not JSON: %v (%s)", err, raw)
+	}
+	if m.GateID != gr.gateID.String() || m.Decision != "approved" || m.Required != 1 {
+		t.Errorf("meta head = %+v, want gate_id/approved/required=1", m)
+	}
+	if len(m.Votes) != 1 {
+		t.Fatalf("votes = %d, want 1", len(m.Votes))
+	}
+	v := m.Votes[0]
+	if v.UserID != alice.String() || v.User != "Alice" || v.Decision != "approved" || v.DecidedAt.IsZero() {
+		t.Errorf("vote = %+v, want full detail (user_id/label/decision/decided_at)", v)
 	}
 }
 
