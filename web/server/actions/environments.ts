@@ -281,3 +281,64 @@ async function decideRolloutGate(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+const rolloutActionSchema = z.object({
+  slug: z.string().min(1),
+  cluster: z.string().min(1),
+  namespace: z.string().min(1),
+  name: z.string().min(1),
+});
+
+export type RolloutActionInput = z.infer<typeof rolloutActionSchema>;
+
+// promoteRollout / abortRollout directly actuate a NON-gated Argo Rollouts canary from the
+// rollouts dashboard (ADR-0001, PR-C). Promote advances the paused canary one step; abort
+// shifts traffic back to the stable version (NOT a Git revert). The server is the
+// authority: a GATED rollout is refused with 409 (its decision must go through the
+// Approve/Reject vote path) and an unreachable cluster / missing Rollout is a 404 — both
+// carry a user-ready body we surface verbatim.
+export async function promoteRollout(
+  input: RolloutActionInput,
+): Promise<ActionResult> {
+  return actuateRollout(input, "promote");
+}
+
+export async function abortRollout(
+  input: RolloutActionInput,
+): Promise<ActionResult> {
+  return actuateRollout(input, "abort");
+}
+
+async function actuateRollout(
+  input: RolloutActionInput,
+  verb: "promote" | "abort",
+): Promise<ActionResult> {
+  const parsed = rolloutActionSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  const { slug, cluster, namespace, name } = parsed.data;
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(slug)}/rollouts/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${verb}`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+    });
+    if (!res.ok) {
+      const body = (await res.text()).trim();
+      return { ok: false, error: body || `server error (${res.status})` };
+    }
+    // The rollouts page is client-polled (react-query); the client invalidates its query
+    // for an immediate refresh. Revalidate the RSC shell too so a full navigation is fresh.
+    revalidatePath(`/projects/${slug}/rollouts`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

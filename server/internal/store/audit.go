@@ -40,8 +40,13 @@ const (
 	AuditActionApprovalQuorumOverride = "approval.quorum_overridden"
 	// Rollout gate decisions (ADR-0001 Phase 2). The durable per-step record — the
 	// transient job_run_approvals votes are deleted when the step's gate clears.
-	AuditActionRolloutGateApprove   = "rollout_gate.approve"
-	AuditActionRolloutGateReject    = "rollout_gate.reject"
+	AuditActionRolloutGateApprove = "rollout_gate.approve"
+	AuditActionRolloutGateReject  = "rollout_gate.reject"
+	// Direct rollout actuation (ADR-0001, PR-C): a maintainer Promote/Abort on a
+	// NON-gated Rollout from the rollouts dashboard. A gated Rollout's decision always
+	// goes through the vote path above, never these.
+	AuditActionRolloutPromote       = "rollout.promote"
+	AuditActionRolloutAbort         = "rollout.abort"
 	AuditActionUserRoleChange       = "user.role_change"
 	AuditActionUserCreate           = "user.create"
 	AuditActionWebhookSecretRotate  = "webhook_secret.rotate"

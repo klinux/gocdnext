@@ -383,6 +383,9 @@ func main() {
 	// Rollouts read API (ADR-0001): the same store-backed ClusterGetter lists Argo
 	// Rollouts in a namespace for the rollouts dashboard.
 	projectsHandler = projectsHandler.WithRolloutLister(deploy.NewRolloutLister(st))
+	// Direct Promote/Abort on a non-gated Rollout (ADR-0001, PR-C): the same provider
+	// that backs the deploy watcher's gated actuation patches the Rollout /status.
+	projectsHandler = projectsHandler.WithRolloutActuator(argoProvider)
 	// Auto-register installs a repo webhook at apply time when
 	// the project binds an scm_source. Requires PublicBase so
 	// the hook URL GitHub pings back is reachable — without it
@@ -790,6 +793,10 @@ func main() {
 		// Rollouts read API (ADR-0001): lists Argo Rollouts in a namespace via the
 		// cluster registry — maintainer-gated like deploy targets (reveals cluster/ns).
 		p.Get("/api/v1/projects/{slug}/rollouts", projectsHandler.ListRollouts)
+		// Direct Promote/Abort on a NON-gated Rollout (ADR-0001, PR-C) — maintainer-gated;
+		// a gated Rollout is refused (409) and must go through the deploy-watch vote path.
+		p.Post("/api/v1/projects/{slug}/rollouts/{cluster}/{namespace}/{name}/promote", projectsHandler.PromoteRollout)
+		p.Post("/api/v1/projects/{slug}/rollouts/{cluster}/{namespace}/{name}/abort", projectsHandler.AbortRollout)
 		p.Delete("/api/v1/projects/{slug}/caches/{id}", projectsHandler.PurgeCache)
 		p.Post("/api/v1/runs/{id}/cancel", runsHandler.Cancel)
 		p.Post("/api/v1/runs/{id}/rerun", runsHandler.Rerun)

@@ -40,6 +40,17 @@ type rolloutAnalysisDTO struct {
 	Message string `json:"message"`
 }
 
+// rolloutGateDTO is the armed-gate correlation attached to the Rollout it governs
+// (ADR-0001, PR-C). Present only while a step's gate is armed AND undecided; the UI
+// echoes gate_id + revision_id on Approve/Reject and renders approvals_now/required as
+// the quorum. `null` on the Rollout when no gate is armed.
+type rolloutGateDTO struct {
+	GateID       string `json:"gate_id"`
+	RevisionID   string `json:"revision_id"`
+	ApprovalsNow int    `json:"approvals_now"`
+	Required     int    `json:"required"`
+}
+
 // rolloutDTO is the snake_case JSON view of one Rollout (mirrors deploy.RolloutView).
 type rolloutDTO struct {
 	Namespace        string              `json:"namespace"`
@@ -56,6 +67,9 @@ type rolloutDTO struct {
 	PodHash          string              `json:"pod_hash"`
 	Image            string              `json:"image"`
 	Analysis         *rolloutAnalysisDTO `json:"analysis"`
+	// Gate is the armed, undecided approval gate governing this Rollout, correlated by
+	// pinned (namespace, name). nil (JSON null) when none is armed.
+	Gate *rolloutGateDTO `json:"gate"`
 }
 
 type rolloutsListResponse struct {
@@ -136,5 +150,42 @@ func (h *Handler) ListRollouts(w http.ResponseWriter, r *http.Request) {
 	for _, v := range views {
 		out = append(out, toRolloutDTO(v))
 	}
+	// Correlate armed gates onto the matching Rollouts by pinned (namespace, name). This
+	// enrichment is best-effort: the direct Promote/Abort endpoint does its OWN armed-gate
+	// lookup and fails closed (409) on a gated Rollout, so a transient correlation error
+	// must not blank the whole dashboard — log it and serve the Rollouts without gates.
+	if gates, gerr := h.armedGates(r.Context(), projectID, cluster); gerr != nil {
+		h.log.Error("rollouts: correlate armed gates", "slug", slug, "cluster", cluster, "err", gerr)
+	} else {
+		attachArmedGates(out, gates)
+	}
 	writeJSON(w, http.StatusOK, rolloutsListResponse{Rollouts: out})
+}
+
+// gateKey identifies a Rollout by its pinned namespace/name. The NUL separator can't
+// appear in a k8s name/namespace, so distinct pairs never collide on the joined key.
+func gateKey(namespace, name string) string { return namespace + "\x00" + name }
+
+// attachArmedGates hangs each armed gate on the Rollout DTO it governs, matched by
+// (namespace, name). A gate with no matching Rollout in the list is dropped (the Rollout
+// may have finished the step between the gate read and the list read) — the write
+// endpoint re-checks, so nothing is actionable off a stale correlation.
+func attachArmedGates(out []rolloutDTO, gates []store.ArmedRolloutGate) {
+	if len(gates) == 0 {
+		return
+	}
+	byKey := make(map[string]store.ArmedRolloutGate, len(gates))
+	for _, g := range gates {
+		byKey[gateKey(g.Namespace, g.Name)] = g
+	}
+	for i := range out {
+		if g, ok := byKey[gateKey(out[i].Namespace, out[i].Name)]; ok {
+			out[i].Gate = &rolloutGateDTO{
+				GateID:       g.GateID.String(),
+				RevisionID:   g.RevisionID.String(),
+				ApprovalsNow: g.ApprovalsNow,
+				Required:     g.Required,
+			}
+		}
+	}
 }

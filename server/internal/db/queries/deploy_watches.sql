@@ -255,3 +255,22 @@ JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
 JOIN environments e ON e.id = dr.environment_id
 WHERE dw.project_id = $1
 ORDER BY e.name;
+
+-- name: ListArmedRolloutGatesForCluster :many
+-- Armed, still-UNDECIDED rollout gates for a project on one Rollout cluster, keyed to
+-- the pinned Rollout identity (namespace/name) so the rollouts dashboard can correlate
+-- a gate onto the live Rollout it governs (ADR-0001, PR-C). gate_id IS NOT NULL selects
+-- an armed step; gate_decision IS NULL excludes a decided one (its Approve/Reject window
+-- is closed). approvals_now mirrors the deploy-watches read (count of fresh approve votes
+-- on the revision's job_run). The gate_rollout_cluster filter is the pinned actuation
+-- cluster — the same identity Promote/Abort act on — never a re-discovery.
+SELECT dw.gate_id, dw.deployment_revision_id, dw.gate_required,
+       dw.gate_rollout_namespace, dw.gate_rollout_name,
+       (SELECT COUNT(*) FROM job_run_approvals a
+        WHERE a.job_run_id = dr.job_run_id AND a.decision = 'approved')::int AS approvals_now
+FROM deploy_watches dw
+JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+WHERE dw.project_id = $1
+  AND dw.gate_id IS NOT NULL
+  AND dw.gate_decision IS NULL
+  AND dw.gate_rollout_cluster = $2;

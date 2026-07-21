@@ -4,6 +4,7 @@ import { RolloutSelector } from "@/components/rollouts/rollout-selector.client";
 import { RolloutsHeader } from "@/components/rollouts/rollouts-header";
 import { RolloutsLive } from "@/components/rollouts/rollouts-live.client";
 import { env } from "@/lib/env";
+import { type AuthState, resolveAuthState } from "@/server/queries/auth";
 import { GocdnextAPIError, listRollouts } from "@/server/queries/projects";
 import type { RolloutsList } from "@/types/api";
 
@@ -57,8 +58,12 @@ export default async function RolloutsPage({
   }
 
   let initialData: RolloutsList;
+  let auth: AuthState;
   try {
-    initialData = await listRollouts(slug, cluster, namespace);
+    [initialData, auth] = await Promise.all([
+      listRollouts(slug, cluster, namespace),
+      resolveAuthState().catch((): AuthState => ({ mode: "unknown" })),
+    ]);
   } catch (err) {
     // The layout already resolved the project, so a 404 here is the rollouts
     // endpoint's collapsed "cluster not found or not accessible" (it shares the
@@ -87,6 +92,14 @@ export default async function RolloutsPage({
     throw err;
   }
 
+  // Managing rollouts (Promote/Abort, gate Approve/Reject) is maintainer+ (or auth
+  // genuinely disabled) — the same gate the write endpoints enforce. Fails closed:
+  // "unknown"/"anonymous" grant nothing, so a flaky auth probe can't surface actions.
+  const canManage =
+    auth.mode === "disabled" ||
+    (auth.mode === "authenticated" &&
+      (auth.user.role === "admin" || auth.user.role === "maintainer"));
+
   return (
     <RolloutsLive
       slug={slug}
@@ -94,6 +107,7 @@ export default async function RolloutsPage({
       namespace={namespace}
       apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
       initialData={initialData}
+      canManage={canManage}
     />
   );
 }

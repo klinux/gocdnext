@@ -37,6 +37,8 @@ export function RolloutSelector({
       cluster: cluster.trim(),
       namespace: namespace.trim(),
     });
+    // typedRoutes can't prove a runtime-built query string is a known route — cast, the
+    // same pattern every other dynamic router.push in the app uses.
     router.push(`${basePath}?${qs.toString()}` as Route);
   }
 
