@@ -52,6 +52,37 @@ func (f *k8sAppFetcher) fetchRollout(ctx context.Context, projectID uuid.UUID, c
 	return f.get.ClusterAPIGet(ctx, cluster, projectID, rolloutCRDPath(namespace, name))
 }
 
+// listRollouts GETs the RolloutList in namespace on cluster and decodes it into rich
+// RolloutViews (the read side behind the rollouts dashboard). namespace is REQUIRED —
+// a cluster-wide list is a deliberate follow-up; an incomplete target fails closed
+// here rather than hitting the collection endpoint with a blank namespace segment.
+//
+// Size: ClusterAPIGet caps the response at maxClusterAPIResponse (4 MiB) and truncates
+// silently, so a namespace whose Rollout list exceeds it decodes as invalid JSON →
+// parseRolloutList errors (a clear failure, not a silent partial list). Per-item free
+// text is bounded to rolloutViewTextMax at parse time, which keeps the common case well
+// under the cap; a server-side limit/continue paginating a huge namespace is the
+// follow-up when a real deployment needs it.
+func (f *k8sAppFetcher) listRollouts(ctx context.Context, cluster string, projectID uuid.UUID, namespace string) ([]RolloutView, error) {
+	if cluster == "" || namespace == "" || projectID == uuid.Nil {
+		return nil, errors.New("deploy: incomplete rollout list target")
+	}
+	raw, err := f.get.ClusterAPIGet(ctx, cluster, projectID, rolloutsListPath(namespace))
+	if err != nil {
+		return nil, err
+	}
+	return parseRolloutList(raw)
+}
+
+// rolloutsListPath is the k8s API path of the Rollout collection in namespace (a GET
+// returns a RolloutList). PathEscape the namespace defensively, matching rolloutCRDPath.
+func rolloutsListPath(namespace string) string {
+	return fmt.Sprintf(
+		"/apis/argoproj.io/v1alpha1/namespaces/%s/rollouts",
+		url.PathEscape(namespace),
+	)
+}
+
 // rolloutCRDPath is the k8s API path of a Rollout CR (same group/version as the
 // Application, kind rollouts). Segments PathEscaped defensively. The `/status`
 // subresource (promote/abort, Phase 2 control) appends "/status" to this.
