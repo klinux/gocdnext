@@ -3,8 +3,11 @@ package deploy
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func mustTime(t *testing.T, s string) time.Time {
@@ -128,14 +131,91 @@ func TestParseApplicationStatus_Malformed(t *testing.T) {
 }
 
 // fakeFetcher stands in for the (later) k8s-CRD / ArgoCD-API transport so Observe
-// is exercised without a real cluster.
+// is exercised without a real cluster. It doubles as the rollout fetcher.
 type fakeFetcher struct {
-	raw []byte
-	err error
+	raw        []byte
+	err        error
+	rolloutRaw []byte
+	rolloutErr error
 }
 
 func (f fakeFetcher) fetchApplication(context.Context, DeploymentTarget) ([]byte, error) {
 	return f.raw, f.err
+}
+
+func (f fakeFetcher) fetchRollout(context.Context, uuid.UUID, string, string, string) ([]byte, error) {
+	return f.rolloutRaw, f.rolloutErr
+}
+
+// healthyApp is an Application status with one managed Rollout in ns/name for
+// auto-discovery.
+const healthyAppWithRollout = `{"status":{"sync":{"status":"Synced","revision":"r1"},"health":{"status":"Healthy"},` +
+	`"resources":[{"group":"argoproj.io","kind":"Rollout","namespace":"gb","name":"gb-rollout"}]}}`
+
+func TestObserveRolloutAware(t *testing.T) {
+	target := DeploymentTarget{
+		Provider: "argocd", Cluster: "hub", Application: "shop", Namespace: "argocd",
+		RolloutAware: true,
+	}
+
+	t.Run("resolves + reads the Rollout via auto-discovery", func(t *testing.T) {
+		ff := fakeFetcher{
+			raw:        []byte(healthyAppWithRollout),
+			rolloutRaw: []byte(`{"spec":{"strategy":{"canary":{"steps":[{"setWeight":20},{"pause":{}}]}}},"status":{"phase":"Paused","currentStepIndex":1,"pauseConditions":[{"reason":"CanaryPauseStep"}]}}`),
+		}
+		p := &ArgoProvider{fetch: ff, rollout: ff}
+		got, err := p.Observe(context.Background(), target)
+		if err != nil {
+			t.Fatalf("Observe: %v", err)
+		}
+		if !got.RolloutObserved || got.RolloutError != "" {
+			t.Fatalf("RolloutObserved=%v err=%q, want observed", got.RolloutObserved, got.RolloutError)
+		}
+		r := got.Rollout
+		if r.Phase != RolloutPaused || !r.PausedIndefinitely {
+			t.Errorf("rollout phase=%v indef=%v, want Paused/true", r.Phase, r.PausedIndefinitely)
+		}
+		if r.ResolvedCluster != "hub" || r.ResolvedNamespace != "gb" || r.ResolvedName != "gb-rollout" {
+			t.Errorf("resolved identity = %s/%s/%s, want hub/gb/gb-rollout", r.ResolvedCluster, r.ResolvedNamespace, r.ResolvedName)
+		}
+		// The Application status is still parsed alongside.
+		if got.Sync != SyncSynced || got.Health != HealthHealthy {
+			t.Errorf("app state = %v/%v, want Synced/Healthy", got.Sync, got.Health)
+		}
+	})
+
+	t.Run("no Rollout in the app → observe degrades (no error), RolloutError set", func(t *testing.T) {
+		ff := fakeFetcher{raw: []byte(`{"status":{"sync":{"status":"Synced","revision":"r1"},"health":{"status":"Healthy"},"resources":[{"group":"","kind":"Service","name":"svc"}]}}`)}
+		p := &ArgoProvider{fetch: ff, rollout: ff}
+		got, err := p.Observe(context.Background(), target)
+		if err != nil {
+			t.Fatalf("Observe must not error on a missing rollout (observe-only): %v", err)
+		}
+		if got.RolloutObserved || got.RolloutError == "" {
+			t.Errorf("want RolloutObserved=false + a reason, got observed=%v err=%q", got.RolloutObserved, got.RolloutError)
+		}
+		if got.Sync != SyncSynced { // app state still surfaced
+			t.Errorf("app state lost: %v", got.Sync)
+		}
+	})
+
+	t.Run("rollout fetch error is sanitized (no leak)", func(t *testing.T) {
+		ff := fakeFetcher{
+			raw:        []byte(healthyAppWithRollout),
+			rolloutErr: errors.New(`Get "https://internal-api.svc:6443/apis/...": dial tcp 10.0.0.5: timeout`),
+		}
+		p := &ArgoProvider{fetch: ff, rollout: ff}
+		got, err := p.Observe(context.Background(), target)
+		if err != nil {
+			t.Fatalf("Observe: %v", err)
+		}
+		if got.RolloutObserved {
+			t.Error("want RolloutObserved=false on a fetch error")
+		}
+		if strings.Contains(got.RolloutError, "internal-api") || strings.Contains(got.RolloutError, "10.0.0.5") {
+			t.Errorf("RolloutError leaked the internal URL: %q", got.RolloutError)
+		}
+	})
 }
 
 func TestObserve(t *testing.T) {

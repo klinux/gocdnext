@@ -39,6 +39,24 @@ type DeployWatch struct {
 	ClaimedBy            string
 	ClaimedAt            *time.Time
 	CreatedAt            time.Time
+
+	// Rollout routing (denormalized) so the watcher rebuilds a complete target.
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
+
+	// Observed rollout snapshot (restamped each tick; RolloutObservedAt nil = never
+	// observed). RolloutStepKnown=false means the controller step index was absent.
+	RolloutPhase       string
+	RolloutMessage     string
+	RolloutPauseReason string
+	RolloutCurrentStep int
+	RolloutStepKnown   bool
+	RolloutStepCount   int
+	RolloutAborted     bool
+	RolloutError       string
+	RolloutObservedAt  *time.Time
 }
 
 // DeployWatchInput is the create-time payload. The watch is created unclaimed and
@@ -53,6 +71,11 @@ type DeployWatchInput struct {
 	Namespace            string
 	ExpectedRevision     string
 	DeadlineAt           time.Time
+
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 func deployWatchFromRow(w db.DeployWatch) DeployWatch {
@@ -72,7 +95,28 @@ func deployWatchFromRow(w db.DeployWatch) DeployWatch {
 		ClaimedBy:            stringValue(w.ClaimedBy),
 		ClaimedAt:            pgTimePtr(w.ClaimedAt),
 		CreatedAt:            w.CreatedAt.Time,
+		RolloutAware:         w.RolloutAware,
+		RolloutCluster:       stringValue(w.RolloutCluster),
+		RolloutNamespace:     stringValue(w.RolloutNamespace),
+		RolloutName:          stringValue(w.RolloutName),
+		RolloutPhase:         stringValue(w.RolloutPhase),
+		RolloutMessage:       stringValue(w.RolloutMessage),
+		RolloutPauseReason:   stringValue(w.RolloutPauseReason),
+		RolloutCurrentStep:   int32Value(w.RolloutCurrentStep),
+		RolloutStepKnown:     w.RolloutCurrentStep != nil,
+		RolloutStepCount:     int32Value(w.RolloutStepCount),
+		RolloutAborted:       w.RolloutAborted != nil && *w.RolloutAborted,
+		RolloutError:         stringValue(w.RolloutError),
+		RolloutObservedAt:    pgTimePtr(w.RolloutObservedAt),
 	}
+}
+
+// int32Value dereferences a nullable int32 to int (0 when NULL).
+func int32Value(p *int32) int {
+	if p == nil {
+		return 0
+	}
+	return int(*p)
 }
 
 // CreateDeployWatch inserts the control-loop record for a fresh in_progress
@@ -87,6 +131,10 @@ func (s *Store) CreateDeployWatch(ctx context.Context, in DeployWatchInput) (Dep
 		Namespace:            in.Namespace,
 		ExpectedRevision:     in.ExpectedRevision,
 		DeadlineAt:           pgTimestamptzFromPtr(&in.DeadlineAt),
+		RolloutAware:         in.RolloutAware,
+		RolloutCluster:       nullableString(in.RolloutCluster),
+		RolloutNamespace:     nullableString(in.RolloutNamespace),
+		RolloutName:          nullableString(in.RolloutName),
 	})
 	if err != nil {
 		// 0 rows (the WHERE EXISTS guard rejected a terminal revision) surfaces as
@@ -109,6 +157,64 @@ func (s *Store) GetDeployWatch(ctx context.Context, revID uuid.UUID) (DeployWatc
 		return DeployWatch{}, fmt.Errorf("store: get deploy watch: %w", err)
 	}
 	return deployWatchFromRow(w), nil
+}
+
+// rolloutTextMax bounds cluster-supplied message/error so a giant status can't bloat
+// the DB/UI (runes, so truncation never splits a UTF-8 sequence).
+const rolloutTextMax = 500
+
+// RolloutObservationInput is the observed Rollout snapshot the watcher persists each
+// tick. Observed=false means the Rollout couldn't be read/resolved this tick — only
+// Error is meaningful then. StepKnown=false NULLs rollout_current_step (an absent
+// controller index must not read as step 0).
+type RolloutObservationInput struct {
+	Observed    bool
+	Phase       string
+	Message     string
+	PauseReason string
+	CurrentStep int
+	StepKnown   bool
+	StepCount   int
+	Aborted     bool
+	Error       string
+}
+
+// StampRolloutObservation persists the snapshot onto the watch, fenced on claimID
+// (false → lease lost). A good observe clears rollout_error; a failed one records the
+// (already sanitized) Error and NULLs the rest.
+func (s *Store) StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in RolloutObservationInput) (bool, error) {
+	p := db.StampRolloutObservationParams{
+		DeploymentRevisionID: pgUUID(revID),
+		ClaimID:              pgUUID(claimID),
+	}
+	if in.Observed {
+		p.RolloutPhase = nullableString(in.Phase)
+		p.RolloutMessage = nullableString(truncateRunes(in.Message, rolloutTextMax))
+		p.RolloutPauseReason = nullableString(in.PauseReason)
+		if in.StepKnown {
+			v := int32(in.CurrentStep)
+			p.RolloutCurrentStep = &v
+		}
+		sc := int32(in.StepCount)
+		p.RolloutStepCount = &sc
+		ab := in.Aborted
+		p.RolloutAborted = &ab
+	} else {
+		p.RolloutError = nullableString(truncateRunes(in.Error, rolloutTextMax))
+	}
+	n, err := s.q.StampRolloutObservation(ctx, p)
+	if err != nil {
+		return false, fmt.Errorf("store: stamp rollout observation: %w", err)
+	}
+	return n > 0, nil
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }
 
 // ClaimDeployWatches claims up to max never-claimed-or-lease-expired watches for
@@ -301,16 +407,30 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 // version, for the read-only live-status endpoint. Cluster/Application/SyncMode are
 // config (sanitised by role at the HTTP layer); the rest is live state.
 type DeployWatchView struct {
-	Environment      string
-	Version          string
-	ExpectedRevision string
-	SyncMode         string
-	Cluster          string
-	Application      string
-	WatchStartedAt   time.Time
-	SyncRequestedAt  *time.Time
-	DeadlineAt       time.Time
-	DegradedSince    *time.Time
+	DeploymentRevisionID uuid.UUID // the endpoint's per-deploy key (Phase 2 approve/reject)
+	Environment          string
+	Version              string
+	ExpectedRevision     string
+	SyncMode             string
+	Cluster              string
+	Application          string
+	WatchStartedAt       time.Time
+	SyncRequestedAt      *time.Time
+	DeadlineAt           time.Time
+	DegradedSince        *time.Time
+
+	// Observed rollout snapshot (Phase 2). RolloutObservedAt nil = not yet observed;
+	// RolloutStepKnown=false = the controller step index was absent.
+	RolloutAware       bool
+	RolloutPhase       string
+	RolloutMessage     string
+	RolloutPauseReason string
+	RolloutCurrentStep int
+	RolloutStepKnown   bool
+	RolloutStepCount   int
+	RolloutAborted     bool
+	RolloutError       string
+	RolloutObservedAt  *time.Time
 }
 
 // ListDeployWatchesForProject returns the project's in-flight native deploys.
@@ -322,16 +442,27 @@ func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.
 	out := make([]DeployWatchView, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, DeployWatchView{
-			Environment:      r.Environment,
-			Version:          r.Version,
-			ExpectedRevision: r.ExpectedRevision,
-			SyncMode:         r.SyncMode,
-			Cluster:          r.Cluster,
-			Application:      r.Application,
-			WatchStartedAt:   r.WatchStartedAt.Time,
-			SyncRequestedAt:  pgTimePtr(r.SyncRequestedAt),
-			DeadlineAt:       r.DeadlineAt.Time,
-			DegradedSince:    pgTimePtr(r.DegradedSince),
+			DeploymentRevisionID: fromPgUUID(r.DeploymentRevisionID),
+			Environment:          r.Environment,
+			Version:              r.Version,
+			ExpectedRevision:     r.ExpectedRevision,
+			SyncMode:             r.SyncMode,
+			Cluster:              r.Cluster,
+			Application:          r.Application,
+			WatchStartedAt:       r.WatchStartedAt.Time,
+			SyncRequestedAt:      pgTimePtr(r.SyncRequestedAt),
+			DeadlineAt:           r.DeadlineAt.Time,
+			DegradedSince:        pgTimePtr(r.DegradedSince),
+			RolloutAware:         r.RolloutAware,
+			RolloutPhase:         stringValue(r.RolloutPhase),
+			RolloutMessage:       stringValue(r.RolloutMessage),
+			RolloutPauseReason:   stringValue(r.RolloutPauseReason),
+			RolloutCurrentStep:   int32Value(r.RolloutCurrentStep),
+			RolloutStepKnown:     r.RolloutCurrentStep != nil,
+			RolloutStepCount:     int32Value(r.RolloutStepCount),
+			RolloutAborted:       r.RolloutAborted != nil && *r.RolloutAborted,
+			RolloutError:         stringValue(r.RolloutError),
+			RolloutObservedAt:    pgTimePtr(r.RolloutObservedAt),
 		})
 	}
 	return out, nil

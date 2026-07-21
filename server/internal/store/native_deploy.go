@@ -29,6 +29,13 @@ type StartNativeDeployInput struct {
 	Namespace        string
 	ExpectedRevision string
 	DeadlineAt       time.Time
+
+	// Rollout routing denormalized onto the watch so the watcher's targetOf rebuilds
+	// a complete DeploymentTarget without re-reading the deploy_target.
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 // StartNativeDeployResult reports the takeover outcome. Started is false when the job
@@ -102,6 +109,10 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 		Namespace:            in.Namespace,
 		ExpectedRevision:     in.ExpectedRevision,
 		DeadlineAt:           pgTimestamptzFromPtr(&in.DeadlineAt),
+		RolloutAware:         in.RolloutAware,
+		RolloutCluster:       nullableString(in.RolloutCluster),
+		RolloutNamespace:     nullableString(in.RolloutNamespace),
+		RolloutName:          nullableString(in.RolloutName),
 	}); err != nil {
 		return StartNativeDeployResult{}, fmt.Errorf("store: start native deploy watch: %w", err)
 	}

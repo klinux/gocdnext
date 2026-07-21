@@ -25,6 +25,7 @@ type WatchStore interface {
 	RenewDeployWatch(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
 	SetDeployWatchDegradedSince(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
 	ClearDeployWatchDegraded(ctx context.Context, revID, claimID uuid.UUID) (bool, error)
+	StampRolloutObservation(ctx context.Context, revID, claimID uuid.UUID, in store.RolloutObservationInput) (bool, error)
 	FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (store.DeployWatchFinalizeResult, error)
 	NotifyRunQueued(ctx context.Context, runID uuid.UUID) error
 }
@@ -173,6 +174,12 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 		// exceeded (via the one terminal path). We do NOT feed the untrusted error
 		// state to Decide.
 		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "observe", "err", err)...)
+		// The Application read failed → the Rollout can't be observed either. Clear the
+		// stale snapshot with a FIXED sanitized reason (the raw err may carry the
+		// internal API-server URL) so the UI never shows ghost canary progress.
+		if dw.RolloutAware {
+			w.persistRollout(ctx, dw, store.RolloutObservationInput{Error: "the deploy could not be observed"})
+		}
 		if time.Now().After(dw.DeadlineAt) {
 			w.finalize(ctx, dw, store.DeployStatusFailed, deploy.ReasonDeadlineExceeded)
 		}
@@ -180,6 +187,12 @@ func (w *Watcher) processWatch(ctx context.Context, dw store.DeployWatch) {
 	}
 	w.log.Debug("watch_observed", append(watchAttrs(dw),
 		"sync", state.Sync, "health", state.Health, "observed_rev", state.ObservedRev, "op_phase", state.OperationPhase)...)
+
+	// Persist the observed Rollout snapshot each tick so the UI (which reads the DB)
+	// renders canary progress. Observe-only in PR1 — it does NOT feed Decide yet.
+	if dw.RolloutAware {
+		w.stampRollout(ctx, dw, state)
+	}
 
 	verdict := deploy.Decide(state, anchorsOf(dw), time.Now(), w.degradedWindow)
 	w.log.Info("watch_decision", append(watchAttrs(dw), "effect", verdict.Effect, "reason", verdict.Reason)...)
@@ -243,14 +256,47 @@ func (w *Watcher) finalize(ctx context.Context, dw store.DeployWatch, status, re
 	}
 }
 
+// stampRollout persists the observed Rollout snapshot for a successful Observe.
+func (w *Watcher) stampRollout(ctx context.Context, dw store.DeployWatch, state deploy.DeployState) {
+	in := store.RolloutObservationInput{Error: state.RolloutError}
+	if state.RolloutObserved {
+		r := state.Rollout
+		in = store.RolloutObservationInput{
+			Observed:    true,
+			Phase:       string(r.Phase),
+			Message:     r.Message,
+			PauseReason: r.PauseReason,
+			CurrentStep: r.CurrentStepIndex,
+			StepKnown:   r.CurrentStepKnown,
+			StepCount:   r.StepCount,
+			Aborted:     r.Aborted,
+		}
+	}
+	w.persistRollout(ctx, dw, in)
+}
+
+// persistRollout is the fenced, best-effort write of a rollout snapshot (a lost lease
+// or error just logs — the UI snapshot is best-effort).
+func (w *Watcher) persistRollout(ctx context.Context, dw store.DeployWatch, in store.RolloutObservationInput) {
+	if ok, err := w.store.StampRolloutObservation(ctx, dw.DeploymentRevisionID, dw.ClaimID, in); err != nil {
+		w.log.Warn("watch_error", append(watchAttrs(dw), "phase", "rollout_observe", "err", err)...)
+	} else if !ok {
+		w.log.Info("watch_lease_lost", append(watchAttrs(dw), "phase", "rollout_observe")...)
+	}
+}
+
 func targetOf(dw store.DeployWatch) deploy.DeploymentTarget {
 	return deploy.DeploymentTarget{
-		ProjectID:   dw.ProjectID,
-		Provider:    "argocd",
-		Cluster:     dw.Cluster,
-		Application: dw.Application,
-		Namespace:   dw.Namespace,
-		SyncMode:    deploy.SyncMode(dw.SyncMode),
+		ProjectID:        dw.ProjectID,
+		Provider:         "argocd",
+		Cluster:          dw.Cluster,
+		Application:      dw.Application,
+		Namespace:        dw.Namespace,
+		SyncMode:         deploy.SyncMode(dw.SyncMode),
+		RolloutAware:     dw.RolloutAware,
+		RolloutCluster:   dw.RolloutCluster,
+		RolloutNamespace: dw.RolloutNamespace,
+		RolloutName:      dw.RolloutName,
 	}
 }
 

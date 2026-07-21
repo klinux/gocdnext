@@ -74,6 +74,38 @@ describe("DeployTargetDialog", () => {
       application: "shop-staging",
       sync_mode: "trigger",
     });
+    // Rollout observation off by default.
+    expect(setDeployTarget.mock.calls[0]?.[0]).toMatchObject({ rollout_aware: false });
+  });
+
+  it("sends rollout_aware + routing when the rollout toggle is on", async () => {
+    render(
+      <DeployTargetDialog
+        slug="acme"
+        trigger={<button type="button">Register native target</button>}
+      />,
+    );
+    open(/register native target/i);
+    fireEvent.change(await screen.findByLabelText("Environment"), {
+      target: { value: "prod" },
+    });
+    fireEvent.change(screen.getByLabelText(/Cluster/), { target: { value: "hub" } });
+    fireEvent.change(screen.getByLabelText(/ArgoCD Application/), {
+      target: { value: "shop" },
+    });
+    // Toggle rollout observation on → the routing inputs appear.
+    fireEvent.click(screen.getByLabelText("Observe Argo Rollouts progress"));
+    fireEvent.change(await screen.findByLabelText("Rollout name"), {
+      target: { value: "shop-ro" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Register$/ }));
+    await flush();
+
+    expect(setDeployTarget.mock.calls[0]?.[0]).toMatchObject({
+      rollout_aware: true,
+      rollout_name: "shop-ro",
+    });
   });
 
   it("clears the fields after a successful register (no stale values on reopen)", async () => {

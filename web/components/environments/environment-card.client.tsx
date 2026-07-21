@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   Eye,
+  GitBranch,
   Pencil,
   Plus,
   RefreshCw,
@@ -233,6 +234,15 @@ function NativeTargetRow({
         <SyncIcon className="size-3" aria-hidden />
         {target.sync_mode}
       </span>
+      {target.rollout_aware ? (
+        <>
+          <Dot />
+          <span className="inline-flex items-center gap-1 text-teal-600 dark:text-teal-400">
+            <GitBranch className="size-3" aria-hidden />
+            rollouts
+          </span>
+        </>
+      ) : null}
       {canManage ? (
         <DeployTargetDialog
           slug={slug}

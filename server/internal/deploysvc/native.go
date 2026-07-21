@@ -126,6 +126,10 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 		Namespace:        tgt.Namespace,
 		ExpectedRevision: in.Revision, // full SHA for correlation, NOT the display Version
 		DeadlineAt:       in.Now.Add(d.deadline),
+		RolloutAware:     tgt.RolloutAware,
+		RolloutCluster:   tgt.RolloutCluster,
+		RolloutNamespace: tgt.RolloutNamespace,
+		RolloutName:      tgt.RolloutName,
 	})
 	if err != nil {
 		return NativeDeployResult{}, fmt.Errorf("deploysvc: start native deploy: %w", err) // fail-closed

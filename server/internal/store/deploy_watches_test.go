@@ -172,6 +172,88 @@ func TestDeployWatch_DegradedDebounceToggle(t *testing.T) {
 	}
 }
 
+func TestStampRolloutObservation(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-rollout")
+	if _, err := s.CreateDeployWatch(ctx, newWatchInput(projectID, revID)); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	claimed, err := s.ClaimDeployWatches(ctx, "w", 3600, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %v (err %v)", claimed, err)
+	}
+	c := claimed[0].ClaimID
+
+	// A good observe with a KNOWN step persists the snapshot and leaves error empty.
+	if ok, err := s.StampRolloutObservation(ctx, revID, c, store.RolloutObservationInput{
+		Observed: true, Phase: "Paused", PauseReason: "CanaryPauseStep",
+		CurrentStep: 1, StepKnown: true, StepCount: 4, Message: "paused",
+	}); err != nil || !ok {
+		t.Fatalf("stamp observed: ok=%v err=%v", ok, err)
+	}
+	w, _ := s.GetDeployWatch(ctx, revID)
+	if w.RolloutPhase != "Paused" || !w.RolloutStepKnown || w.RolloutCurrentStep != 1 || w.RolloutStepCount != 4 {
+		t.Errorf("snapshot = phase %q step %d/%d known %v", w.RolloutPhase, w.RolloutCurrentStep, w.RolloutStepCount, w.RolloutStepKnown)
+	}
+	if w.RolloutObservedAt == nil || w.RolloutError != "" {
+		t.Errorf("observedAt=%v error=%q, want stamped + no error", w.RolloutObservedAt, w.RolloutError)
+	}
+
+	// An observe error records the reason and clears the snapshot.
+	if ok, err := s.StampRolloutObservation(ctx, revID, c, store.RolloutObservationInput{
+		Observed: false, Error: "the rollout could not be read from the cluster",
+	}); err != nil || !ok {
+		t.Fatalf("stamp error: ok=%v err=%v", ok, err)
+	}
+	w, _ = s.GetDeployWatch(ctx, revID)
+	if w.RolloutError == "" || w.RolloutPhase != "" || w.RolloutStepKnown {
+		t.Errorf("on error want error set + snapshot cleared, got phase=%q err=%q known=%v", w.RolloutPhase, w.RolloutError, w.RolloutStepKnown)
+	}
+
+	// An unknown step index is stored as NULL (not 0).
+	if _, err := s.StampRolloutObservation(ctx, revID, c, store.RolloutObservationInput{
+		Observed: true, Phase: "Progressing", StepCount: 4, // StepKnown false
+	}); err != nil {
+		t.Fatalf("stamp unknown-step: %v", err)
+	}
+	w, _ = s.GetDeployWatch(ctx, revID)
+	if w.RolloutStepKnown {
+		t.Error("unknown step index must persist as NULL (CurrentStepKnown=false)")
+	}
+
+	// Fenced: a stale token can't stamp.
+	if ok, _ := s.StampRolloutObservation(ctx, revID, uuid.New(), store.RolloutObservationInput{Observed: true, Phase: "Healthy"}); ok {
+		t.Fatal("stale token stamped, want fenced out")
+	}
+}
+
+// A rollout-aware watch's rollout_cluster also blocks that cluster's delete-guard
+// (FK RESTRICT + the count), even when it differs from the Application cluster.
+func TestDeployWatch_CountActiveForRolloutCluster(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	projectID, revID := seedWatchable(t, s, ctx, "watch-rollout-cluster")
+	// A distinct, registered rollout cluster (FK requires it to exist).
+	if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+		Name: "rollout-hub", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert rollout cluster: %v", err)
+	}
+	in := newWatchInput(projectID, revID) // Cluster: prod-gke
+	in.RolloutAware = true
+	in.RolloutCluster = "rollout-hub"
+	if _, err := s.CreateDeployWatch(ctx, in); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	// Counted via rollout_cluster even though cluster != "rollout-hub".
+	if n, err := s.CountActiveWatchesForCluster(ctx, "rollout-hub"); err != nil || n != 1 {
+		t.Fatalf("count for rollout-hub = %d (err %v), want 1 (via rollout_cluster)", n, err)
+	}
+	// And still via the Application cluster.
+	if n, _ := s.CountActiveWatchesForCluster(ctx, "prod-gke"); n != 1 {
+		t.Fatalf("count for prod-gke = %d, want 1 (via cluster)", n)
+	}
+}
+
 // An in-flight watch counts toward the cluster delete-guard (also FK-RESTRICTed).
 func TestDeployWatch_CountActiveForCluster(t *testing.T) {
 	s, ctx := newClusterStore(t)

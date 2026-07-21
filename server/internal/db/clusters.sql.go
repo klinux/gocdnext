@@ -76,6 +76,29 @@ func (q *Queries) GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow
 	return i, err
 }
 
+const getClusterAuthorizationByName = `-- name: GetClusterAuthorizationByName :one
+SELECT id, name, allowed_projects
+FROM clusters
+WHERE name = $1
+LIMIT 1
+`
+
+type GetClusterAuthorizationByNameRow struct {
+	ID              pgtype.UUID
+	Name            string
+	AllowedProjects []string
+}
+
+// Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
+// sealed credential — for validating a rollout_cluster reference at registration
+// (no need to decrypt or even load credential_enc into memory).
+func (q *Queries) GetClusterAuthorizationByName(ctx context.Context, name string) (GetClusterAuthorizationByNameRow, error) {
+	row := q.db.QueryRow(ctx, getClusterAuthorizationByName, name)
+	var i GetClusterAuthorizationByNameRow
+	err := row.Scan(&i.ID, &i.Name, &i.AllowedProjects)
+	return i, err
+}
+
 const getClusterCredentialEnc = `-- name: GetClusterCredentialEnc :one
 SELECT credential_enc FROM clusters WHERE id = $1 LIMIT 1
 `

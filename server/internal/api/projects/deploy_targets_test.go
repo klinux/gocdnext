@@ -91,6 +91,26 @@ func TestDeployTargets_RegisterListDelete(t *testing.T) {
 	}
 }
 
+func TestSetDeployTarget_RolloutFields(t *testing.T) {
+	r, s := newDeployTargetsRouter(t, nil, true)
+	seedProjectAndCluster(t, s)
+	// rollout_aware with an explicit namespace/name; no rollout_cluster → uses the
+	// Application's cluster (no extra FK/authz to satisfy here).
+	rr := doReq(r, http.MethodPost, "/api/v1/projects/demo/deploy-targets",
+		`{"environment":"production","cluster":"prod","application":"checkout","sync_mode":"observe","rollout_aware":true,"rollout_namespace":"gb","rollout_name":"gb-ro"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("register status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if b := rr.Body.String(); !strings.Contains(b, `"rollout_aware":true`) ||
+		!strings.Contains(b, `"rollout_namespace":"gb"`) || !strings.Contains(b, `"rollout_name":"gb-ro"`) {
+		t.Errorf("response missing rollout fields: %s", b)
+	}
+	rr = doReq(r, http.MethodGet, "/api/v1/projects/demo/deploy-targets", "")
+	if !strings.Contains(rr.Body.String(), `"rollout_aware":true`) {
+		t.Errorf("list missing rollout_aware: %s", rr.Body.String())
+	}
+}
+
 func TestSetDeployTarget_FaultMapping(t *testing.T) {
 	t.Run("multi-source -> 422", func(t *testing.T) {
 		r, s := newDeployTargetsRouter(t, fmt.Errorf("app: %w", deploy.ErrMultiSource), true)

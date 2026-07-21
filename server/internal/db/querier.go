@@ -177,16 +177,18 @@ type Querier interface {
 	// Single-use: delete as we read. Returning nothing = no such state
 	// (or it expired and the sweeper got to it first).
 	ConsumeAuthState(ctx context.Context, stateHash []byte) (ConsumeAuthStateRow, error)
-	// Backs the cluster delete-guard: an in-flight watch also RESTRICTs the cluster
-	// (FK), this gives the friendly message before the DELETE fails.
+	// Backs the cluster delete-guard: an in-flight watch referencing the cluster (as its
+	// Application cluster OR its Rollout cluster) RESTRICTs it (both FKs); this gives the
+	// friendly message before the DELETE fails.
 	CountActiveWatchesForCluster(ctx context.Context, cluster string) (int64, error)
 	// Matching total for the same filter set ListAuditEvents reads.
 	// Surfaces the absolute count so the UI can render a
 	// "showing X–Y of Z" header + Prev/Next bounds without a second
 	// guess-and-check fetch.
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
-	// Backs the cluster delete-guard: a cluster referenced by any target can't be
-	// deleted (also enforced by the FK's ON DELETE RESTRICT, this gives the message).
+	// Backs the cluster delete-guard: a cluster referenced by any target (as its
+	// Application cluster OR its Rollout cluster) can't be deleted — also enforced by
+	// both FKs' ON DELETE RESTRICT; this gives the friendly message.
 	CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error)
 	CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error)
 	// Real total of fixed identities (the list above is capped); the header count
@@ -533,6 +535,10 @@ type Querier interface {
 	GetArtifactByStorageKey(ctx context.Context, storageKey string) (GetArtifactByStorageKeyRow, error)
 	GetAuthProviderByID(ctx context.Context, id pgtype.UUID) (AuthProvider, error)
 	GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow, error)
+	// Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
+	// sealed credential — for validating a rollout_cluster reference at registration
+	// (no need to decrypt or even load credential_enc into memory).
+	GetClusterAuthorizationByName(ctx context.Context, name string) (GetClusterAuthorizationByNameRow, error)
 	// Used by Update's preserve-sentinel path to re-seal the existing
 	// credential when the operator edits a cluster without re-entering it.
 	GetClusterCredentialEnc(ctx context.Context, id pgtype.UUID) ([]byte, error)
@@ -1681,6 +1687,11 @@ type Querier interface {
 	// Monotonic: `WHERE sync_requested_at IS NULL` — a later dispatch/retry never reopens
 	// the anchor. 0 rows → already stamped or gone; the caller logs and continues.
 	StampDeployWatchSyncRequested(ctx context.Context, deploymentRevisionID pgtype.UUID) (int64, error)
+	// Persist the observed Rollout snapshot onto the watch each tick, so the UI (which
+	// reads the DB) can render canary progress. Fenced on claim_id — 0 rows means the
+	// lease was lost. rollout_current_step is NULL when the controller hasn't reported it
+	// (RolloutState.CurrentStepKnown=false). Clears rollout_error on a successful observe.
+	StampRolloutObservation(ctx context.Context, arg StampRolloutObservationParams) (int64, error)
 	// Moves a queued job to running with NO agent — the native deploy takeover
 	// (ADR-0001, Model A): the server drives the sync + watch instead of an agent.
 	// Same queued+unassigned predicate as AssignJob (races between ticks resolve to one

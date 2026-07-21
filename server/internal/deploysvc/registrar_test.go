@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -80,16 +81,22 @@ func (f *fakeProvider) ValidateSingleSource(_ context.Context, t deploy.Deployme
 }
 
 type fakeRegistry struct {
-	envID     uuid.UUID
-	ensureErr error
-	upsertErr error
-	gotUpsert store.DeployTargetInput
-	log       *[]string
+	envID        uuid.UUID
+	ensureErr    error
+	upsertErr    error
+	authorizeErr error // returned by AuthorizeClusterForProject (rollout_cluster check)
+	gotUpsert    store.DeployTargetInput
+	log          *[]string
 }
 
 func (f *fakeRegistry) EnsureEnvironment(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
 	*f.log = append(*f.log, "ensure-env")
 	return f.envID, f.ensureErr
+}
+
+func (f *fakeRegistry) AuthorizeClusterForProject(_ context.Context, _ uuid.UUID, cluster string) error {
+	*f.log = append(*f.log, "authorize-cluster:"+cluster)
+	return f.authorizeErr
 }
 
 func (f *fakeRegistry) UpsertDeployTarget(_ context.Context, in store.DeployTargetInput) error {
@@ -133,6 +140,76 @@ func TestRegister_HappyPath_OrderAndFields(t *testing.T) {
 	if tgt.Environment != "production" || tgt.Namespace != "argocd" || tgt.Cluster != "prod-gke" || tgt.SyncMode != "trigger" {
 		t.Errorf("Register returned = %+v, want the canonical target", tgt)
 	}
+}
+
+func TestRegister_RolloutClusterAuthorization(t *testing.T) {
+	t.Run("pinned rollout_cluster authorized after the app validate, before the write", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.RolloutAware = true
+		in.RolloutCluster = "rollout-hub"
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if want := []string{"validate-source", "authorize-cluster:rollout-hub", "ensure-env", "upsert"}; !equal(*log, want) {
+			t.Fatalf("call order = %v, want %v", *log, want)
+		}
+		if reg.gotUpsert.RolloutCluster != "rollout-hub" || !reg.gotUpsert.RolloutAware {
+			t.Errorf("rollout fields not upserted: %+v", reg.gotUpsert)
+		}
+	})
+
+	t.Run("unpinned rollout_cluster is NOT authorized (uses the app's cluster)", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.RolloutAware = true // no RolloutCluster
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		for _, c := range *log {
+			if strings.HasPrefix(c, "authorize-cluster") {
+				t.Fatalf("authorized a cluster with no rollout_cluster pinned: %v", *log)
+			}
+		}
+	})
+
+	t.Run("rollout_aware=false drops rollout routing (no authz, no FK reference)", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New()}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.RolloutAware = false
+		in.RolloutCluster, in.RolloutNamespace, in.RolloutName = "some-cluster", "ns", "r"
+		if _, err := r.Register(context.Background(), in); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		for _, c := range *log {
+			if strings.HasPrefix(c, "authorize-cluster") {
+				t.Fatalf("authorized a cluster with rollout_aware=false: %v", *log)
+			}
+		}
+		if reg.gotUpsert.RolloutCluster != "" || reg.gotUpsert.RolloutNamespace != "" || reg.gotUpsert.RolloutName != "" {
+			t.Errorf("rollout routing persisted with rollout_aware=false: %+v", reg.gotUpsert)
+		}
+	})
+
+	t.Run("unauthorized rollout_cluster fails closed (collapsed) before any write", func(t *testing.T) {
+		reg := &fakeRegistry{envID: uuid.New(), authorizeErr: fmt.Errorf("x: %w", store.ErrClusterNotAuthorized)}
+		r, log := newRegistrar(&fakeProvider{}, reg)
+		in := validInput()
+		in.RolloutAware = true
+		in.RolloutCluster = "secret-cluster"
+		_, err := r.Register(context.Background(), in)
+		if kindOf(t, err) != FaultNotFound { // collapsed, oracle-safe (#155)
+			t.Fatalf("fault kind = %v, want FaultNotFound (collapsed)", kindOf(t, err))
+		}
+		for _, c := range *log {
+			if c == "ensure-env" || c == "upsert" {
+				t.Fatalf("write happened despite an unauthorized rollout cluster: %v", *log)
+			}
+		}
+	})
 }
 
 func TestRegister_DefaultsAndTrims(t *testing.T) {

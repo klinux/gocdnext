@@ -27,6 +27,11 @@ type deployTargetDTO struct {
 	Application string `json:"application"`
 	Namespace   string `json:"namespace"`
 	SyncMode    string `json:"sync_mode"`
+
+	RolloutAware     bool   `json:"rollout_aware"`
+	RolloutCluster   string `json:"rollout_cluster,omitempty"`
+	RolloutNamespace string `json:"rollout_namespace,omitempty"`
+	RolloutName      string `json:"rollout_name,omitempty"`
 }
 
 // WithDeployRegistrar wires the native deploy-target registrar (ADR-0001).
@@ -50,6 +55,12 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 		Application string `json:"application"`
 		Namespace   string `json:"namespace"`
 		SyncMode    string `json:"sync_mode"`
+		// Rollout observation (Phase 2). rollout_cluster/namespace/name optional
+		// (defaults: App's cluster / auto-discover). Ignored when rollout_aware=false.
+		RolloutAware     bool   `json:"rollout_aware"`
+		RolloutCluster   string `json:"rollout_cluster"`
+		RolloutNamespace string `json:"rollout_namespace"`
+		RolloutName      string `json:"rollout_name"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDeployTargetBytes)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -67,14 +78,18 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tgt, err := h.deployRegistrar.Register(r.Context(), deploysvc.RegisterInput{
-		ProjectID:   projectID,
-		Environment: req.Environment,
-		Provider:    "argocd",
-		Cluster:     req.Cluster,
-		Application: req.Application,
-		Namespace:   req.Namespace,
-		SyncMode:    req.SyncMode,
-		CreatedBy:   createdBy,
+		ProjectID:        projectID,
+		Environment:      req.Environment,
+		Provider:         "argocd",
+		Cluster:          req.Cluster,
+		Application:      req.Application,
+		Namespace:        req.Namespace,
+		SyncMode:         req.SyncMode,
+		CreatedBy:        createdBy,
+		RolloutAware:     req.RolloutAware,
+		RolloutCluster:   req.RolloutCluster,
+		RolloutNamespace: req.RolloutNamespace,
+		RolloutName:      req.RolloutName,
 	})
 	if err != nil {
 		// Enrich every fault log for this request with the request context so a
@@ -95,6 +110,8 @@ func (h *Handler) SetDeployTarget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, deployTargetDTO{
 		Environment: tgt.Environment, Provider: tgt.Provider, Cluster: tgt.Cluster,
 		Application: tgt.Application, Namespace: tgt.Namespace, SyncMode: tgt.SyncMode,
+		RolloutAware: tgt.RolloutAware, RolloutCluster: tgt.RolloutCluster,
+		RolloutNamespace: tgt.RolloutNamespace, RolloutName: tgt.RolloutName,
 	})
 }
 
@@ -115,6 +132,8 @@ func (h *Handler) ListDeployTargets(w http.ResponseWriter, r *http.Request) {
 		dtos = append(dtos, deployTargetDTO{
 			Environment: it.Environment, Provider: it.Provider, Cluster: it.Cluster,
 			Application: it.Application, Namespace: it.Namespace, SyncMode: it.SyncMode,
+			RolloutAware: it.RolloutAware, RolloutCluster: it.RolloutCluster,
+			RolloutNamespace: it.RolloutNamespace, RolloutName: it.RolloutName,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deploy_targets": dtos})

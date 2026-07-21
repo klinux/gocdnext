@@ -5,6 +5,7 @@ import { NativeWatchChip } from "./native-watch-chip.client";
 import type { DeployWatch } from "@/types/api";
 
 const base: DeployWatch = {
+  deployment_revision_id: "rev-1",
   environment: "production",
   version: "1.4.2",
   expected_revision: "abc0123456789def",
@@ -38,5 +39,52 @@ describe("NativeWatchChip", () => {
     );
     expect(screen.getByText("Degraded")).toBeTruthy();
     expect(screen.queryByText("Syncing")).toBeNull();
+  });
+
+  it("shows canary progress with a KNOWN step (step 0 renders as a definite step, not ?)", () => {
+    render(
+      <NativeWatchChip
+        watch={{
+          ...base,
+          sync_requested_at: "2026-07-12T10:00:05Z",
+          rollout_aware: true,
+          rollout_phase: "Paused",
+          rollout_current_step: 0, // known → definite
+          rollout_step_count: 8,
+        }}
+      />,
+    );
+    expect(screen.getByText(/Canary paused/)).toBeTruthy();
+    expect(screen.getByText("step 1/8")).toBeTruthy(); // 0-based index 0 → 1-based "1", not "?"
+    expect(screen.queryByText("Syncing")).toBeNull();
+  });
+
+  it("renders an UNKNOWN step as ? (controller hasn't reported the index)", () => {
+    render(
+      <NativeWatchChip
+        watch={{
+          ...base,
+          rollout_aware: true,
+          rollout_phase: "Progressing",
+          rollout_step_count: 8, // no rollout_current_step
+        }}
+      />,
+    );
+    expect(screen.getByText(/Rolling out/)).toBeTruthy();
+    expect(screen.getByText("step ?/8")).toBeTruthy();
+  });
+
+  it("surfaces a rollout read error without leaking internals", () => {
+    render(
+      <NativeWatchChip
+        watch={{ ...base, rollout_aware: true, rollout_error: "the deploy could not be observed" }}
+      />,
+    );
+    expect(screen.getByText(/Rollout status unavailable/)).toBeTruthy();
+  });
+
+  it("falls through to Deploying when rollout-aware but not yet observed", () => {
+    render(<NativeWatchChip watch={{ ...base, rollout_aware: true }} />);
+    expect(screen.getByText("Deploying")).toBeTruthy();
   });
 });

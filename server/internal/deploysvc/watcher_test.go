@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,7 @@ type fakeWatchStore struct {
 	finalOK       map[uuid.UUID]bool
 	finalized     map[uuid.UUID]string
 	finalizeRunID uuid.UUID // returned as DeployWatchFinalizeResult.RunID
+	lastRollout   store.RolloutObservationInput
 	log           *[]string
 }
 
@@ -103,6 +105,12 @@ func (f *fakeWatchStore) SetDeployWatchDegradedSince(_ context.Context, revID, _
 
 func (f *fakeWatchStore) ClearDeployWatchDegraded(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	*f.log = append(*f.log, "cleardeg")
+	return true, nil
+}
+
+func (f *fakeWatchStore) StampRolloutObservation(_ context.Context, _, _ uuid.UUID, in store.RolloutObservationInput) (bool, error) {
+	*f.log = append(*f.log, "rollout_stamp")
+	f.lastRollout = in
 	return true, nil
 }
 
@@ -154,6 +162,67 @@ func TestWatcher_Success_OrderAndFinalize(t *testing.T) {
 	}
 	if st.finalized[w.DeploymentRevisionID] != store.DeployStatusSuccess {
 		t.Fatalf("finalized = %q, want success", st.finalized[w.DeploymentRevisionID])
+	}
+}
+
+// A rollout-aware watch persists the observed snapshot each tick (before Decide,
+// which is unchanged in observe-only PR1). A non-converged app just Continues.
+func TestWatcher_RolloutAware_StampsSnapshot(t *testing.T) {
+	var log []string
+	w := mkWatch("app")
+	w.RolloutAware = true
+	st := newFakeStore(&log, w)
+	state := deploy.DeployState{
+		Sync: deploy.SyncSynced, Health: deploy.HealthProgressing,
+		ObservedRev: "rev1", RolloutObserved: true,
+		Rollout: deploy.RolloutState{
+			Phase: deploy.RolloutPaused, PauseReason: "CanaryPauseStep",
+			CurrentStepIndex: 1, CurrentStepKnown: true, StepCount: 4, PausedIndefinitely: true,
+		},
+	}
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: state}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "rollout_stamp") {
+		t.Fatalf("rollout snapshot not stamped: %v", log)
+	}
+	if !st.lastRollout.Observed || st.lastRollout.Phase != "Paused" || !st.lastRollout.StepKnown ||
+		st.lastRollout.CurrentStep != 1 || st.lastRollout.StepCount != 4 {
+		t.Errorf("stamped input = %+v, want the observed paused snapshot", st.lastRollout)
+	}
+}
+
+// On an Application observe error, a rollout-aware watch clears its snapshot (writes
+// rollout_error) so the UI doesn't show ghost progress — with a FIXED reason, never
+// the raw error (which can carry the internal API-server URL).
+func TestWatcher_RolloutAware_ObserveError_ClearsSnapshot(t *testing.T) {
+	var log []string
+	w := mkWatch("app")
+	w.RolloutAware = true
+	st := newFakeStore(&log, w)
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {err: errors.New(`Get "https://internal-api:6443/...": timeout`)}}, log: &log}
+	runTick(obs, st)
+
+	if !contains(log, "rollout_stamp") {
+		t.Fatalf("expected a rollout stamp on the observe-error path: %v", log)
+	}
+	if st.lastRollout.Observed || st.lastRollout.Error == "" {
+		t.Errorf("want Observed=false + a reason, got %+v", st.lastRollout)
+	}
+	if strings.Contains(st.lastRollout.Error, "internal-api") || strings.Contains(st.lastRollout.Error, "6443") {
+		t.Errorf("stamped reason leaked the raw error: %q", st.lastRollout.Error)
+	}
+}
+
+// A non-rollout-aware watch never stamps — no wasted write.
+func TestWatcher_NotRolloutAware_NoStamp(t *testing.T) {
+	var log []string
+	w := mkWatch("app") // RolloutAware false
+	st := newFakeStore(&log, w)
+	obs := &fakeObserver{byApp: map[string]obsResult{"app": {state: convergedState}}, log: &log}
+	runTick(obs, st)
+	if contains(log, "rollout_stamp") {
+		t.Fatalf("stamped for a non-rollout-aware watch: %v", log)
 	}
 }
 

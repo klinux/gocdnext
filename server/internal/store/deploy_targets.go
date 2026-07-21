@@ -30,6 +30,12 @@ type DeployTarget struct {
 	Application   string
 	Namespace     string
 	SyncMode      string
+	// Rollout awareness (Phase 2). RolloutCluster/Namespace/Name empty = defaults
+	// (App's cluster / auto-discover).
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 // DeployTargetInput is the write shape for registering/updating a target. The
@@ -42,6 +48,11 @@ type DeployTargetInput struct {
 	Namespace     string
 	SyncMode      string
 	CreatedBy     string
+
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 // ResolveDeployTarget looks up the target for a project's environment by name.
@@ -57,27 +68,35 @@ func (s *Store) ResolveDeployTarget(ctx context.Context, projectID uuid.UUID, en
 		return DeployTarget{}, fmt.Errorf("store: resolve deploy target %s/%s: %w", projectID, envName, err)
 	}
 	return DeployTarget{
-		ProjectID:     fromPgUUID(row.ProjectID),
-		EnvironmentID: fromPgUUID(row.EnvironmentID),
-		Environment:   row.Environment,
-		Provider:      row.Provider,
-		Cluster:       row.Cluster,
-		Application:   row.Application,
-		Namespace:     row.Namespace,
-		SyncMode:      row.SyncMode,
+		ProjectID:        fromPgUUID(row.ProjectID),
+		EnvironmentID:    fromPgUUID(row.EnvironmentID),
+		Environment:      row.Environment,
+		Provider:         row.Provider,
+		Cluster:          row.Cluster,
+		Application:      row.Application,
+		Namespace:        row.Namespace,
+		SyncMode:         row.SyncMode,
+		RolloutAware:     row.RolloutAware,
+		RolloutCluster:   stringValue(row.RolloutCluster),
+		RolloutNamespace: stringValue(row.RolloutNamespace),
+		RolloutName:      stringValue(row.RolloutName),
 	}, nil
 }
 
 // UpsertDeployTarget registers or updates the target for an environment (1:1).
 func (s *Store) UpsertDeployTarget(ctx context.Context, in DeployTargetInput) error {
 	if _, err := s.q.UpsertDeployTarget(ctx, db.UpsertDeployTargetParams{
-		EnvironmentID: pgUUID(in.EnvironmentID),
-		Provider:      in.Provider,
-		Cluster:       in.Cluster,
-		Application:   in.Application,
-		Namespace:     in.Namespace,
-		SyncMode:      in.SyncMode,
-		CreatedBy:     in.CreatedBy,
+		EnvironmentID:    pgUUID(in.EnvironmentID),
+		Provider:         in.Provider,
+		Cluster:          in.Cluster,
+		Application:      in.Application,
+		Namespace:        in.Namespace,
+		SyncMode:         in.SyncMode,
+		CreatedBy:        in.CreatedBy,
+		RolloutAware:     in.RolloutAware,
+		RolloutCluster:   nullableString(in.RolloutCluster),
+		RolloutNamespace: nullableString(in.RolloutNamespace),
+		RolloutName:      nullableString(in.RolloutName),
 	}); err != nil {
 		return fmt.Errorf("store: upsert deploy target: %w", err)
 	}
@@ -93,6 +112,11 @@ type DeployTargetListItem struct {
 	Application string
 	Namespace   string
 	SyncMode    string
+
+	RolloutAware     bool
+	RolloutCluster   string
+	RolloutNamespace string
+	RolloutName      string
 }
 
 // ListDeployTargets returns a project's registered targets, ordered by environment.
@@ -104,13 +128,17 @@ func (s *Store) ListDeployTargets(ctx context.Context, projectID uuid.UUID) ([]D
 	out := make([]DeployTargetListItem, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, DeployTargetListItem{
-			ID:          fromPgUUID(r.ID),
-			Environment: r.Environment,
-			Provider:    r.Provider,
-			Cluster:     r.Cluster,
-			Application: r.Application,
-			Namespace:   r.Namespace,
-			SyncMode:    r.SyncMode,
+			ID:               fromPgUUID(r.ID),
+			Environment:      r.Environment,
+			Provider:         r.Provider,
+			Cluster:          r.Cluster,
+			Application:      r.Application,
+			Namespace:        r.Namespace,
+			SyncMode:         r.SyncMode,
+			RolloutAware:     r.RolloutAware,
+			RolloutCluster:   stringValue(r.RolloutCluster),
+			RolloutNamespace: stringValue(r.RolloutNamespace),
+			RolloutName:      stringValue(r.RolloutName),
 		})
 	}
 	return out, nil
