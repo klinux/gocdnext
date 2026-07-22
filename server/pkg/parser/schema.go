@@ -272,6 +272,16 @@ type DeployDef struct {
 	// the deployed version. Empty defaults to the commit short sha at
 	// dispatch.
 	Version string `yaml:"version,omitempty"`
+	// Revision is optional and pins the git commit a NATIVE deploy
+	// correlates against — the SHA ArgoCD reports as synced. Refs
+	// allowed (same non-secret allow-list as version). Empty derives
+	// the anchor: a SHA-shaped version is used as-is, otherwise the
+	// run's own commit. Set it when the Application's source is not
+	// this run's commit (a separate GitOps repo, a chart, a monorepo
+	// path). It never replaces version, which stays the display label,
+	// and it is ignored by a tracking-layer deploy (nothing to
+	// correlate).
+	Revision string `yaml:"revision,omitempty"`
 }
 
 // UnmarshalYAML enforces the object form and walks the mapping
@@ -300,9 +310,14 @@ func (d *DeployDef) UnmarshalYAML(node *yaml.Node) error {
 				return fmt.Errorf("deploy: `version` at line %d must be a scalar", val.Line)
 			}
 			d.Version = val.Value
+		case "revision":
+			if val.Kind != yaml.ScalarNode {
+				return fmt.Errorf("deploy: `revision` at line %d must be a scalar", val.Line)
+			}
+			d.Revision = val.Value
 		default:
 			return fmt.Errorf(
-				"deploy: unknown key %q at line %d — accepted keys are `environment` (required) and `version` (optional). "+
+				"deploy: unknown key %q at line %d — accepted keys are `environment` (required), `version` and `revision` (optional). "+
 					"Common typo: `env` (use `environment`)",
 				key.Value, key.Line)
 		}

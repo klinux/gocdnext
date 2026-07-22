@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  GitCommitHorizontal,
   PauseCircle,
   RefreshCw,
 } from "lucide-react";
@@ -35,7 +36,28 @@ const TONE = {
   green:
     "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   sky: "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+  neutral: "border-border bg-muted text-muted-foreground",
 } as const;
+
+// AnchorBadge shows the correlation revision — the commit ArgoCD must report before
+// this deploy can succeed. It rides alongside the state chip (like AnalysisBadge)
+// instead of living inside it, because the rollout and gate states replace the generic
+// chip's text and would otherwise hide the anchor exactly when it matters: a deploy
+// that stalls to its deadline is nearly always waiting on a revision that never
+// arrives, and the version LABEL alone no longer reveals which commit that is.
+function AnchorBadge({ watch }: { watch: DeployWatch }) {
+  const rev = shortRev(watch.expected_revision);
+  if (!rev) return null;
+  return (
+    <span
+      className={`${CHIP} ${TONE.neutral}`}
+      title={`Waiting for ArgoCD to report revision ${watch.expected_revision}`}
+    >
+      <GitCommitHorizontal className="size-3" aria-hidden />
+      <span className="font-mono font-normal">{rev}</span>
+    </span>
+  );
+}
 
 // RolloutChip is the read-only canary/blue-green progress (Phase 2). No control here.
 function RolloutChip({ watch }: { watch: DeployWatch }) {
@@ -122,10 +144,13 @@ function AnalysisBadge({ watch }: { watch: DeployWatch }) {
 export function NativeWatchChip({ watch }: { watch: DeployWatch }) {
   if (watch.degraded_since) {
     return (
-      <span className={`${CHIP} ${TONE.amber}`}>
-        <AlertTriangle className="size-3" aria-hidden />
-        Degraded <RelativeTime at={watch.degraded_since} />
-      </span>
+      <>
+        <span className={`${CHIP} ${TONE.amber}`}>
+          <AlertTriangle className="size-3" aria-hidden />
+          Degraded <RelativeTime at={watch.degraded_since} />
+        </span>
+        <AnchorBadge watch={watch} />
+      </>
     );
   }
   // Rollout progress once observed (a phase or a read error). Before the first
@@ -136,12 +161,13 @@ export function NativeWatchChip({ watch }: { watch: DeployWatch }) {
       <>
         <RolloutChip watch={watch} />
         <AnalysisBadge watch={watch} />
+        <AnchorBadge watch={watch} />
       </>
     );
   }
   const rev = shortRev(watch.expected_revision);
   return (
-    <span className={`${CHIP} ${TONE.sky}`}>
+    <span className={`${CHIP} ${TONE.sky}`} title={rev ? `Waiting for ArgoCD to report revision ${watch.expected_revision}` : undefined}>
       <RefreshCw className="size-3 animate-spin" aria-hidden />
       {watch.sync_requested_at ? "Syncing" : "Deploying"}
       {rev ? <span className="font-mono font-normal">{rev}</span> : null}

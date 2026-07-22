@@ -10,13 +10,19 @@ import (
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
-// ErrDeployVersionNotCorrelatable is a terminal config error for a NATIVE deploy: the
-// user registered an ArgoCD target and set deploy.version to something that isn't a
-// git commit SHA (a semver/tag/branch, or a short hex we can't expand without git
-// access). Native needs the FULL SHA ArgoCD reports to confirm the RIGHT commit
-// deployed; an unpinned watch could accept stale Synced+Healthy state. A retry would
-// fail identically, so the dispatcher terminalises the job loud (#39-style).
-var ErrDeployVersionNotCorrelatable = errors.New("deploy.version is not a correlatable git commit SHA for a native deploy; use the full/short commit SHA, or leave version empty to use the run's commit")
+// ErrDeployRevisionNotCorrelatable is a terminal config error for a NATIVE deploy: the
+// correlation anchor could not be resolved to a full git SHA. Native needs the FULL SHA
+// ArgoCD reports to confirm the RIGHT commit deployed — an EMPTY anchor disables the
+// revision check entirely (Evaluate accepts any Synced+Healthy state), and a non-SHA
+// anchor pins the watch to something ArgoCD can never report, which stalls until the
+// deadline instead of failing clearly. A retry fails identically, so the dispatcher
+// terminalises the job loud (#39-style).
+//
+// Deliberately anchor-centric, not "deploy.version"-centric: the anchor may come from
+// deploy.revision, from a SHA-shaped deploy.version, or from the run's own commit, and
+// telling a user to "leave version empty" is actively wrong when they already did and
+// the run simply has no usable commit.
+var ErrDeployRevisionNotCorrelatable = errors.New("native deploy correlation revision must resolve to a full git SHA; set deploy.revision explicitly when the run commit is unavailable or is not the Application's source revision")
 
 var (
 	fullSHARE = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
@@ -24,29 +30,59 @@ var (
 )
 
 // correlationRevision resolves the FULL git SHA the native watch correlates against
-// (ArgoCD reports the full SHA in .status.sync.revision / syncResult.revision), given
-// the resolved display version. `explicit` is whether the user set deploy.version;
-// fullSHA is the run's own commit (CI_COMMIT_SHA). Rules (reviewer-pinned):
-//   - default (not explicit)      → the run's commit (fullSHA)
-//   - explicit full 40-hex SHA    → that SHA, lowercased (a deliberately pinned commit)
-//   - explicit short hex that prefixes the run's commit → expand to fullSHA
-//   - anything else               → ErrDeployVersionNotCorrelatable (terminal)
+// (ArgoCD reports the full SHA in .status.sync.revision / syncResult.revision), from the
+// resolved display version, the resolved deploy.revision, and the run's own commit
+// (CI_COMMIT_SHA). Ladder, first match wins:
+//
+//  1. deploy.revision set                 → that SHA (the explicit anchor)
+//  2. else, SHA-shaped deploy.version     → that SHA (a deliberate commit pin)
+//  3. else (non-SHA or defaulted version) → the run's commit
+//
+// POST-CONDITION on every branch: the result is a full 40-hex SHA or a terminal error.
+// It is stated as a property of the OUTPUT rather than a check per branch so a future
+// path cannot quietly skip it — which is exactly how the old `explicit` short-circuit
+// returned the run commit unvalidated. There is deliberately no such bypass now: an
+// omitted version simply resolves to the short sha, which rule 2 or 3 then validates
+// like any other.
 //
 // Version stays the display/ledger string untouched; only the correlation anchor is
-// resolved here.
-func correlationRevision(jobName, display string, explicit bool, fullSHA string) (string, error) {
-	if !explicit {
-		return fullSHA, nil
+// resolved here, and deploy.revision never substitutes for it.
+func correlationRevision(jobName, version, revision, runCommit string) (string, error) {
+	// The run's commit is usable as an anchor — and as the expansion base for a short
+	// hex — ONLY if it is itself a full SHA. buildCIVars takes it from primaryRevision
+	// without validating the shape, so a non-git material (or an upstream-only run) can
+	// put a tag or a UUID here; anchoring on that would stall until the deadline.
+	run := strings.ToLower(strings.TrimSpace(runCommit))
+	if !fullSHARE.MatchString(run) {
+		run = ""
 	}
-	v := strings.ToLower(strings.TrimSpace(display))
-	full := strings.ToLower(strings.TrimSpace(fullSHA))
+
+	if rev := strings.ToLower(strings.TrimSpace(revision)); rev != "" {
+		return resolveAnchor(jobName, "deploy.revision", rev, run)
+	}
+	if v := strings.ToLower(strings.TrimSpace(version)); hexShaRE.MatchString(v) {
+		return resolveAnchor(jobName, "deploy.version", v, run)
+	}
+	if run == "" {
+		return "", fmt.Errorf(
+			"%w: job %s has no usable run commit to correlate against (deploy.version is not a SHA)",
+			ErrDeployRevisionNotCorrelatable, jobName)
+	}
+	return run, nil
+}
+
+// resolveAnchor expands a hex candidate to the full SHA the watch can match: a full
+// 40-hex is taken as-is (a pin, valid even when the run has no commit), a short hex only
+// when it prefixes the run's commit — we cannot expand a foreign short SHA without git
+// access, and guessing would be worse than failing.
+func resolveAnchor(jobName, field, candidate, run string) (string, error) {
 	switch {
-	case fullSHARE.MatchString(v):
-		return v, nil
-	case hexShaRE.MatchString(v) && full != "" && strings.HasPrefix(full, v):
-		return full, nil
+	case fullSHARE.MatchString(candidate):
+		return candidate, nil
+	case hexShaRE.MatchString(candidate) && run != "" && strings.HasPrefix(run, candidate):
+		return run, nil
 	default:
-		return "", fmt.Errorf("%w: job %s deploy.version %q", ErrDeployVersionNotCorrelatable, jobName, display)
+		return "", fmt.Errorf("%w: job %s %s %q", ErrDeployRevisionNotCorrelatable, jobName, field, candidate)
 	}
 }
 
