@@ -8,6 +8,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.72.1 — 2026-07-22
+
+### Fixed
+
+- **The Rollouts tab no longer shows on a project that has no rollout.** A service
+  that ships a plain `Deployment` has no Argo `Rollout`, so the tab only ever led to
+  a cluster/namespace form that could never return anything — it read as *"fill this
+  in"* when the real answer was *"there is nothing here"*. The tab is now derived
+  from the project's **rollout-aware deploy targets** (the same source the selector's
+  quick-pick uses), fetched in parallel with the detail the layout already loads, so
+  it costs no extra wall-clock. The deploy-targets read is maintainer-gated, so a
+  viewer's `403` collapses to "no tab" — which matches the rollouts read being
+  maintainer-gated too. The route stays reachable by URL, and for anyone who lands
+  there the empty state now **explains itself** (why there is nothing, and where to
+  register a rollout-aware target) instead of showing bare inputs.
+
 ## v0.72.0 — 2026-07-21
 
 The **native ArgoCD deployment provider and gate-driven Argo Rollouts control**
