@@ -90,6 +90,10 @@ type checksReporter interface {
 // satisfies it. nil = feature off (every deploy uses the plugin path). Local interface
 // so tests can fake the decision without a live provider.
 type nativeDeployer interface {
+	// HasTarget answers "would this be a native deploy?" — asked before any
+	// native-only validation so a tracking-layer deploy is never judged by
+	// native rules (see tryNativeDeploy).
+	HasTarget(ctx context.Context, projectID uuid.UUID, environment string) (bool, error)
 	TakeOver(ctx context.Context, in deploysvc.NativeDeployInput) (deploysvc.NativeDeployResult, error)
 }
 
