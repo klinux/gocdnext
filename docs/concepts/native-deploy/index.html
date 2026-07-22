@@ -401,9 +401,15 @@ with the analysis message on hover, so an inconclusive pause reads as
 <em>“analysis inconclusive: success-rate 0.91 &#x3C; 0.95”</em>, not a bare
 “Paused”. Backed by <code dir="auto">GET /api/v1/projects/{slug}/deploy-watches</code>
 (viewer-readable, but config fields are maintainer-only).</li>
-<li><strong>Approval prompt</strong> — when a canary gate is armed, an amber <em>Canary
-paused · awaiting approval (N/M)</em> banner with <strong>Approve</strong> / <strong>Reject</strong>
-appears on the card. The server enforces the approvers allow-list and
+<li><strong>Approval notice</strong> — when a canary gate is armed, an amber <em>Canary
+paused · awaiting approval (N/M)</em> banner appears on the card with a
+<strong>Review and decide</strong> link. The decision itself is made on the
+Rollouts tab (below), where the steps, traffic split
+and analysis that should justify it are visible; the card reports, it
+does not act. The link carries the Rollout identity <strong>pinned when the
+gate armed</strong>, so it lands on the exact rollout even when the namespace
+holds several. A viewer sees the notice but no link — the rollouts read
+is maintainer-gated. The server enforces the approvers allow-list and
 the <code dir="auto">gate_id</code> token, so a stale tab voting on a superseded step gets a
 clear 409.</li>
 <li><strong>Server logs</strong> — the watch loop emits <code dir="auto">watch_claimed</code>,
