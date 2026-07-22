@@ -8,6 +8,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.72.2 — 2026-07-22
+
+### Fixed
+
+- **A tracking-layer deploy is no longer judged by the native git-SHA rule.** The
+  native takeover resolved the deploy marker — which enforces the native-only git-SHA
+  correlation requirement — *before* settling whether the environment has a registered
+  deploy target (it is `TakeOver` that reports "no target"). So a plain tracking-layer
+  deploy whose `deploy.version` was not a commit SHA failed **terminally** at dispatch
+  instead of falling through to the plugin/agent path — even with no target registered
+  and no ArgoCD Application anywhere. That contradicted the documented default: an
+  image tag or a semver is explicitly valid for a tracking-layer deploy, so a pipeline
+  shipping a GoCD-style `1.<counter>.<short-sha>` tag broke on upgrade to v0.72.0. The
+  scheduler now asks whether a target exists first; a registry/DB error still fails
+  closed, so a native deploy is never silently downgraded to the plugin path.
+
 ## v0.72.1 — 2026-07-22
 
 ### Fixed
