@@ -99,6 +99,22 @@ func (d *NativeDeployer) WithDeadline(dur time.Duration) *NativeDeployer {
 	return d
 }
 
+// HasTarget reports whether the environment has a registered deploy target — i.e.
+// whether TakeOver would take the native path. The scheduler asks this BEFORE applying
+// any native-only validation (notably the git-SHA correlation requirement), because a
+// tracking-layer deploy legitimately carries any version string (an image tag, a
+// semver) and must never be failed by a rule that doesn't apply to it. A real
+// registry/DB failure is returned as an error so the caller fails closed.
+func (d *NativeDeployer) HasTarget(ctx context.Context, projectID uuid.UUID, environment string) (bool, error) {
+	if _, err := d.store.ResolveDeployTarget(ctx, projectID, environment); err != nil {
+		if errors.Is(err, store.ErrDeployTargetNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deploysvc: resolve deploy target: %w", err)
+	}
+	return true, nil
+}
+
 // TakeOver decides and (on the native path) performs the takeover. It returns an
 // error ONLY on a fail-closed condition (a real registry/DB failure) — the scheduler
 // must then NOT dispatch and retry later. A missing target is not an error
