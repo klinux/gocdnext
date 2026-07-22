@@ -172,15 +172,47 @@ the pipeline**. A natural body is the [`argocd` plugin](/gocdnext/docs/reference
 (as above) or your existing `kubectl`/`helm` step.
 :::
 
-:::caution[`version:` must be a git SHA for native deploys]
+:::note[`version:` is a label; `revision:` is the anchor]
 A native deploy correlates success against the **full git commit SHA
-ArgoCD reports** as synced. So `version:` must be a commit SHA — or
-omitted, which uses the run's own commit (`CI_COMMIT_SHA`), the common
-case. An **image tag or semver** (e.g. `${{ needs.build.outputs.image-tag }}`,
-fine for a [tracking-layer deploy](/gocdnext/docs/concepts/deployments/))
-**fails a native deploy terminally** — it can't be tied to a commit. If
-your manifests live in a separate GitOps repo at a different SHA, pin
-`version:` to that commit's full/short SHA.
+ArgoCD reports** as synced. That anchor is resolved separately from
+`version:`, so a release label like `1.27.abc1234` is perfectly fine —
+it stays the ledger string shown on the Environments card and never
+decides whether the deploy can run.
+
+The anchor is resolved in order:
+
+| | condition | anchor |
+|---|---|---|
+| 1 | `revision:` set | that commit |
+| 2 | else, `version:` **is itself a SHA** | that commit (a deliberate pin) |
+| 3 | else | the run's own commit (`CI_COMMIT_SHA`) |
+
+Two consequences worth knowing:
+
+- A **purely hex** `version:` (4–40 hex chars) is read as a commit pin,
+  not a label — that is rule 2. A short hex only resolves if it prefixes
+  the run's commit; otherwise the deploy fails, rather than guessing.
+- Rule 3 assumes **the run's commit is the Application's source
+  revision**. That holds when the pipeline's repo is what ArgoCD tracks.
+  If your manifests live elsewhere — a separate GitOps repo, a chart
+  repo, a monorepo path with its own revision — pin `revision:` to the
+  commit ArgoCD will report. Otherwise the watch waits for a revision
+  that never arrives and fails on the deadline. **That is the first
+  thing to check when a native deploy sits pending.**
+
+```yaml
+deploy:
+  environment: production
+  version: 1.${{ CI_UPSTREAM_RUN_COUNTER }}.${{ CI_COMMIT_SHORT_SHA }}  # label
+  revision: ${{ CI_COMMIT_SHA }}                                        # anchor (optional)
+```
+
+`revision:` takes the same non-secret refs as `version:`
+(`${{ needs.*.outputs.* }}` and `${{ CI_* }}`), because it is persisted
+and shown in the UI. It never replaces `version:`: a run that cannot
+produce a version still fails, even with the anchor pinned. A
+[tracking-layer deploy](/gocdnext/docs/concepts/deployments/) ignores
+`revision:` entirely — there is nothing to correlate.
 :::
 
 ### Watch-only in `observe` mode (auto-sync app)

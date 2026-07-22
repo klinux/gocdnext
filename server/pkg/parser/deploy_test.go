@@ -77,6 +77,55 @@ jobs:
 	}
 }
 
+// revision is the correlation anchor and is INDEPENDENT of the display version — the
+// parser keeps both verbatim and never derives one from the other.
+func TestParse_Deploy_AcceptsRevision(t *testing.T) {
+	y := `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["kubectl apply -f ."]
+    deploy:
+      environment: production
+      version: 1.27.abc1234
+      revision: ${{ CI_COMMIT_SHA }}
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	job := findJobByName(t, p, "ship")
+	if job.Deploy == nil {
+		t.Fatal("deploy spec missing")
+	}
+	if job.Deploy.Version != "1.27.abc1234" {
+		t.Errorf("version = %q, want the label untouched", job.Deploy.Version)
+	}
+	if job.Deploy.Revision != "${{ CI_COMMIT_SHA }}" {
+		t.Errorf("revision = %q, want the raw ref preserved for dispatch-time resolution", job.Deploy.Revision)
+	}
+}
+
+func TestParse_Deploy_RevisionOptional(t *testing.T) {
+	y := `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: staging
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if job := findJobByName(t, p, "ship"); job.Deploy.Revision != "" {
+		t.Errorf("revision should stay empty when omitted, got %q", job.Deploy.Revision)
+	}
+}
+
 func TestParse_Deploy_AcceptsNeedsAndCIRefsInVersion(t *testing.T) {
 	// needs.outputs and CI_* refs are the allowed version namespaces;
 	// a mix with literals + shell-style ${CI_*} must parse clean.
@@ -199,6 +248,52 @@ jobs:
       version: "${{ SECRET_TOKEN }}"
 `,
 			wantErr: "not allowed",
+		},
+		{
+			// revision is persisted as expected_revision and shown in the UI, so it
+			// inherits the SAME non-secret allow-list as version.
+			name: "revision with disallowed secret ref",
+			yaml: `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      revision: "${{ SECRET_TOKEN }}"
+`,
+			wantErr: "not allowed",
+		},
+		{
+			name: "revision with disallowed variable ref",
+			yaml: `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      revision: "${{ MY_VAR }}"
+`,
+			wantErr: "not allowed",
+		},
+		{
+			// The hand-written UnmarshalYAML must keep rejecting unknown keys now that
+			// it has a third accepted one — a typo must not be silently dropped.
+			name: "unknown key next to revision",
+			yaml: `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      revison: abc
+`,
+			wantErr: "unknown key",
 		},
 	}
 	for _, tt := range tests {

@@ -114,4 +114,32 @@ describe("NativeWatchChip", () => {
     );
     expect(screen.queryByText(/^analysis /)).toBeNull();
   });
+
+  // The correlation anchor must survive the states that REPLACE the generic chip
+  // text — those are exactly when a stalled deploy needs debugging, and the version
+  // label alone no longer reveals which commit the watch is waiting on.
+  it("keeps the correlation revision visible in the rollout state", () => {
+    render(
+      <NativeWatchChip
+        watch={{ ...base, rollout_aware: true, rollout_phase: "Paused", rollout_step_count: 5, rollout_current_step: 2 }}
+      />,
+    );
+    expect(screen.getByText("Canary paused")).toBeTruthy();
+    expect(screen.getByText("abc0123")).toBeTruthy();
+  });
+
+  it("keeps the correlation revision visible in the degraded state", () => {
+    render(<NativeWatchChip watch={{ ...base, degraded_since: "2026-07-12T10:05:00Z" }} />);
+    expect(screen.getByText("Degraded")).toBeTruthy();
+    expect(screen.getByText("abc0123")).toBeTruthy();
+  });
+
+  it("omits the anchor badge when there is no expected revision", () => {
+    render(
+      <NativeWatchChip
+        watch={{ ...base, expected_revision: "", rollout_aware: true, rollout_phase: "Paused" }}
+      />,
+    );
+    expect(screen.queryByText("abc0123")).toBeNull();
+  });
 });

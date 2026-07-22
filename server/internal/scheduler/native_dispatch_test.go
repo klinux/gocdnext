@@ -106,6 +106,17 @@ func TestDispatchRun_NativeTakeover(t *testing.T) {
 // deploy.version and creates a single run on commit aaa…a.
 func seedDeployRunVersioned(t *testing.T, pool *pgxpool.Pool, slug, version string) (runID, jobID uuid.UUID) {
 	t.Helper()
+	return seedDeployRunMarker(t, pool, slug, version, "")
+}
+
+// seededRunCommit is the commit every seeded run is created at, so a test can assert
+// "the anchor is the RUN's commit" without re-deriving it from the revisions JSONB.
+const seededRunCommit = "aaa0123456789aaa0123456789aaa0123456789a"
+
+// seedDeployRunMarker is seedDeployRunVersioned plus an explicit deploy.revision — the
+// correlation anchor, which is independent of the display version.
+func seedDeployRunMarker(t *testing.T, pool *pgxpool.Pool, slug, version, revision string) (runID, jobID uuid.UUID) {
+	t.Helper()
 	s := store.New(pool)
 	ctx := context.Background()
 	fp := domain.GitFingerprint("https://github.com/org/"+slug, "main")
@@ -120,7 +131,7 @@ func seedDeployRunVersioned(t *testing.T, pool *pgxpool.Pool, slug, version stri
 			Jobs: []domain.Job{{
 				Name: "ship", Stage: "deploy", Image: "alpine:3.19",
 				Tasks:  []domain.Task{{Script: "echo deploy"}},
-				Deploy: &domain.DeploySpec{Environment: "prod", Version: version},
+				Deploy: &domain.DeploySpec{Environment: "prod", Version: version, Revision: revision},
 			}},
 		}},
 	})
@@ -134,7 +145,7 @@ func seedDeployRunVersioned(t *testing.T, pool *pgxpool.Pool, slug, version stri
 	}
 	run, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
 		PipelineID: pipelineID, MaterialID: materialID,
-		Revision: "aaa0123456789aaa0123456789aaa0123456789a", Branch: "main",
+		Revision: seededRunCommit, Branch: "main",
 		Provider: "github", Delivery: slug, TriggeredBy: "system:webhook",
 	})
 	if err != nil {
@@ -170,9 +181,11 @@ func TestDispatchRun_NativeExplicitFullSHA(t *testing.T) {
 	}
 }
 
-// An explicit non-correlatable version (semver) fails the native deploy TERMINALLY —
-// no watch, no sync, no unpinned false-success.
-func TestDispatchRun_NativeNonCorrelatableVersionFails(t *testing.T) {
+// THE headline case for #169: a release label that is not a SHA no longer blocks a
+// native deploy. The label stays the ledger version; the watch correlates against the
+// run's own commit. Before the ladder this failed terminally, which is what forced a
+// pipeline to give up its GoCD-style version to adopt native deploys.
+func TestDispatchRun_NativeNonSHAVersionCorrelatesToRunCommit(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
 	sync := &fakeSyncer{}
@@ -180,8 +193,50 @@ func TestDispatchRun_NativeNonCorrelatableVersionFails(t *testing.T) {
 		WithNativeDeployer(deploysvc.NewNativeDeployer(sync, s, quietLogger()))
 	ctx := context.Background()
 
-	runID, jobID := seedDeployRunVersioned(t, pool, "native-semver", "1.2.3")
-	registerDeployTarget(t, s, projectIDForSlug(t, pool, "native-semver"), "prod", "trigger")
+	runID, jobID := seedDeployRunVersioned(t, pool, "native-label", "1.27.deadbee")
+	registerDeployTarget(t, s, projectIDForSlug(t, pool, "native-label"), "prod", "trigger")
+
+	sched.DispatchRun(ctx, runID)
+
+	var status string
+	var errMsg *string
+	if err := pool.QueryRow(ctx, `SELECT status, error FROM job_runs WHERE id=$1`, jobID).Scan(&status, &errMsg); err != nil {
+		t.Fatalf("job row: %v", err)
+	}
+	if status == "failed" {
+		t.Fatalf("job failed (%v) — a non-SHA version must not block a native deploy", errMsg)
+	}
+
+	// The ledger keeps the label; the watch anchors on the run's FULL commit
+	// (seedDeployRunMarker creates the run at seededRunCommit).
+	var version, expectedRev string
+	if err := pool.QueryRow(ctx, `SELECT dr.version, dw.expected_revision
+		FROM deploy_watches dw
+		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+		WHERE dr.job_run_id=$1`, jobID).Scan(&version, &expectedRev); err != nil {
+		t.Fatalf("watch row: %v", err)
+	}
+	if version != "1.27.deadbee" {
+		t.Errorf("ledger version = %q, want the label untouched", version)
+	}
+	if expectedRev != seededRunCommit {
+		t.Errorf("expected_revision = %q, want the run's full commit %q", expectedRev, seededRunCommit)
+	}
+}
+
+// An explicit deploy.revision that cannot resolve to a full SHA is still TERMINAL —
+// no watch, no sync, no unpinned false-success. This is the escape hatch's fail-closed
+// half: opting into an explicit anchor means it has to be a real one.
+func TestDispatchRun_NativeNonCorrelatableRevisionFails(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sync := &fakeSyncer{}
+	sched := scheduler.New(s, grpcsrv.NewSessionStore(), quietLogger(), testDSN).
+		WithNativeDeployer(deploysvc.NewNativeDeployer(sync, s, quietLogger()))
+	ctx := context.Background()
+
+	runID, jobID := seedDeployRunMarker(t, pool, "native-badrev", "1.2.3", "v1.0.0")
+	registerDeployTarget(t, s, projectIDForSlug(t, pool, "native-badrev"), "prod", "trigger")
 
 	sched.DispatchRun(ctx, runID)
 
@@ -191,19 +246,53 @@ func TestDispatchRun_NativeNonCorrelatableVersionFails(t *testing.T) {
 		t.Fatalf("job row: %v", err)
 	}
 	if status != "failed" {
-		t.Fatalf("job status = %q, want failed (non-correlatable version)", status)
+		t.Fatalf("job status = %q, want failed (non-correlatable revision)", status)
 	}
-	if errMsg == nil || !strings.Contains(*errMsg, "correlatable") {
-		t.Fatalf("job error = %v, want the not-correlatable message", errMsg)
+	if errMsg == nil || !strings.Contains(*errMsg, "full git SHA") {
+		t.Fatalf("job error = %v, want the anchor-centric message", errMsg)
 	}
 	if sync.calls != 0 {
-		t.Fatal("a non-correlatable version must not sync")
+		t.Fatal("a non-correlatable revision must not sync")
 	}
 	var watches int
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM deploy_watches dw
 		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id WHERE dr.job_run_id=$1`, jobID).Scan(&watches)
 	if watches != 0 {
 		t.Fatalf("deploy_watches = %d, want 0 (no watch on a failed native deploy)", watches)
+	}
+}
+
+// deploy.revision overrides the anchor without touching the ledger label — the two
+// concepts are independent, which is the whole point of the new field.
+func TestDispatchRun_NativeExplicitRevisionPinsAnchor(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sync := &fakeSyncer{}
+	sched := scheduler.New(s, grpcsrv.NewSessionStore(), quietLogger(), testDSN).
+		WithNativeDeployer(deploysvc.NewNativeDeployer(sync, s, quietLogger()))
+	ctx := context.Background()
+
+	const pinned = "bbb0123456789bbb0123456789bbb0123456789b"
+	runID, jobID := seedDeployRunMarker(t, pool, "native-pinrev", "1.28.abc1234", pinned)
+	registerDeployTarget(t, s, projectIDForSlug(t, pool, "native-pinrev"), "prod", "trigger")
+
+	sched.DispatchRun(ctx, runID)
+
+	var version, expectedRev string
+	if err := pool.QueryRow(ctx, `SELECT dr.version, dw.expected_revision
+		FROM deploy_watches dw
+		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+		WHERE dr.job_run_id=$1`, jobID).Scan(&version, &expectedRev); err != nil {
+		t.Fatalf("watch row: %v", err)
+	}
+	if version != "1.28.abc1234" {
+		t.Errorf("ledger version = %q, want the label untouched by revision", version)
+	}
+	if expectedRev != pinned {
+		t.Errorf("expected_revision = %q, want the pinned %q", expectedRev, pinned)
+	}
+	if expectedRev == seededRunCommit {
+		t.Error("expected_revision equals the run commit — the explicit pin was ignored")
 	}
 }
 

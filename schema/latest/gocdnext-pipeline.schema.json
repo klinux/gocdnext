@@ -143,6 +143,10 @@
         "version": {
           "type": "string",
           "description": "Version is optional; the raw string (refs allowed) recorded as\nthe deployed version. Empty defaults to the commit short sha at\ndispatch."
+        },
+        "revision": {
+          "type": "string",
+          "description": "Revision is optional and pins the git commit a NATIVE deploy\ncorrelates against — the SHA ArgoCD reports as synced. Refs\nallowed (same non-secret allow-list as version). Empty derives\nthe anchor: a SHA-shaped version is used as-is, otherwise the\nrun's own commit. Set it when the Application's source is not\nthis run's commit (a separate GitOps repo, a chart, a monorepo\npath). It never replaces version, which stays the display label,\nand it is ignored by a tracking-layer deploy (nothing to\ncorrelate)."
         }
       },
       "additionalProperties": false,

@@ -407,9 +407,22 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 					name, m[1])
 			}
 		}
+		// revision takes the SAME non-secret allow-list: it is persisted as the
+		// watch's expected_revision and surfaces in the UI and in error messages,
+		// so a secret must never be able to reach it.
+		revision := strings.TrimSpace(jd.Deploy.Revision)
+		for _, m := range deployVersionRefRE.FindAllStringSubmatch(revision, -1) {
+			if !deployVersionRefOK.MatchString(m[1]) {
+				return domain.Job{}, fmt.Errorf(
+					"job %q: deploy.revision reference ${{ %s }} is not allowed — revision accepts only ${{ needs.<job>.outputs.<alias> }} and ${{ CI_* }} "+
+						"(variables/secrets are rejected: the revision is recorded and shown in the UI)",
+					name, m[1])
+			}
+		}
 		j.Deploy = &domain.DeploySpec{
 			Environment: env,
 			Version:     version,
+			Revision:    revision,
 		}
 	}
 

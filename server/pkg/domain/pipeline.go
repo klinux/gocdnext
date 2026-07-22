@@ -567,6 +567,15 @@ type DeploySpec struct {
 	// the deployed version. Empty = default to commit short sha at
 	// dispatch.
 	Version string `json:",omitempty"`
+	// Revision is the raw (possibly ref-bearing) git commit a NATIVE
+	// deploy correlates against — the SHA ArgoCD reports as synced.
+	// Empty derives the anchor (SHA-shaped Version, else the run's
+	// commit). It never substitutes for Version, which stays the
+	// display label, and the tracking-layer path ignores it entirely.
+	//
+	// omitempty for the same reason as the parent: keep the JSONB
+	// definition clean, since almost no deploy sets it.
+	Revision string `json:",omitempty"`
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`

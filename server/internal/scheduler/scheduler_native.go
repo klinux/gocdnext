@@ -121,10 +121,10 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 	if err != nil {
 		release()
 		// Terminal version errors match the plugin path's contract (#39) — fail the
-		// job loud rather than retrying an unresolvable config forever. A
-		// non-correlatable explicit version (native-only) is terminal too.
+		// job loud rather than retrying an unresolvable config forever. An anchor that
+		// can't resolve to a full SHA (native-only) is terminal too.
 		if errors.Is(err, ErrDeployVersionEmpty) || errors.Is(err, ErrDeployVersionUnresolved) ||
-			errors.Is(err, ErrDeployVersionNotCorrelatable) {
+			errors.Is(err, ErrDeployRevisionNotCorrelatable) {
 			s.failJobWithError(ctx, job, err.Error())
 		} else {
 			s.log.Warn("scheduler: native deploy marker",
@@ -167,10 +167,10 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 // agent-finding). version mirrors the plugin path exactly (shared resolver); revision
 // is the FULL commit SHA ArgoCD reports — the watch correlates + wins success on it,
 // so it must be the full SHA, not the short-sha display version (see
-// correlationRevision for the full/short/expand rules). A native deploy that can't be
-// tied to a git SHA fails terminally: an empty default version →
-// ErrDeployVersionEmpty, a non-correlatable explicit version →
-// ErrDeployVersionNotCorrelatable. So this never returns an unpinned ("") revision for
+// correlationRevision for the ladder and its full-SHA post-condition). A native deploy
+// that can't be tied to a git SHA fails terminally: a version that resolves to empty →
+// ErrDeployVersionEmpty, an anchor that can't resolve to a full SHA →
+// ErrDeployRevisionNotCorrelatable. So this never returns an unpinned ("") revision for
 // a run that reaches dispatch.
 func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, jobDef domain.Job) (version, revision string, err error) {
 	needsOutputs, matrixNeedsOutputs, nErr := s.buildNeedsOutputs(ctx, run.ID, job)
@@ -188,12 +188,25 @@ func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.Run
 		return "", "", err
 	}
 	// Version is the display/ledger string as-is. Revision is the FULL SHA ArgoCD
-	// reports — resolved from the explicit deploy.version when it's a git SHA, else the
-	// run's commit; a non-correlatable explicit version fails the deploy (terminal).
-	explicit := strings.TrimSpace(jobDef.Deploy.Version) != ""
-	revision, cerr := correlationRevision(job.Name, version, explicit, ciVars["CI_COMMIT_SHA"])
+	// reports. deploy.revision takes the same ref substitution as version (same
+	// non-secret allow-list), then the ladder resolves the anchor.
+	declared := strings.TrimSpace(jobDef.Deploy.Revision)
+	if declared != "" {
+		declared, err = resolveDeployVersion(declared, needsOutputs, matrixNeedsOutputs, dims, ciVars)
+		if err != nil {
+			return "", "", fmt.Errorf("scheduler: job %s deploy.revision: %w", job.Name, err)
+		}
+	}
+	revision, cerr := correlationRevision(job.Name, version, declared, ciVars["CI_COMMIT_SHA"])
 	if cerr != nil {
 		return "", "", cerr
+	}
+	// The anchor is what a stalled deploy is waiting on, so make it greppable when it
+	// was DERIVED rather than declared — the version alone doesn't reveal it.
+	if declared == "" && !strings.EqualFold(strings.TrimSpace(version), revision) {
+		s.log.Info("scheduler: native deploy correlation anchor derived",
+			"run_id", run.ID, "job_id", job.ID, "job", job.Name,
+			"version", version, "revision", revision)
 	}
 	return version, revision, nil
 }
