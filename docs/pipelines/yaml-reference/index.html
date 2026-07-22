@@ -844,7 +844,12 @@ rollback).</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">environment</code></td><td>string (required)</td><td>Target environment. Lazy-created on first deploy — no pre-registration.</td></tr><tr><td><code dir="auto">version</code></td><td>string (optional)</td><td>Version recorded as deployed. Refs allowed (<code dir="auto">${{ needs.X.outputs.Y }}</code>, <code dir="auto">${{ CI_* }}</code>, <code dir="auto">${CI_*}</code>), resolved against CI vars <strong>only, never secrets</strong>. Omitted → defaults to <code dir="auto">CI_COMMIT_SHORT_SHA</code>. A reference that can’t resolve fails the job terminally at dispatch.</td></tr></tbody></table>
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">environment</code></td><td>string (required)</td><td>Target environment. Lazy-created on first deploy — no pre-registration.</td></tr><tr><td><code dir="auto">version</code></td><td>string (optional)</td><td>Version recorded as deployed. Refs allowed (<code dir="auto">${{ needs.X.outputs.Y }}</code>, <code dir="auto">${{ CI_* }}</code>, <code dir="auto">${CI_*}</code>), resolved against CI vars <strong>only, never secrets</strong>. Omitted → defaults to <code dir="auto">CI_COMMIT_SHORT_SHA</code>. A reference that can’t resolve fails the job terminally at dispatch.</td></tr><tr><td><code dir="auto">revision</code></td><td>string (optional)</td><td>Git commit a <strong>native deploy</strong> correlates against — the SHA ArgoCD reports as synced. Same refs and same non-secret rule as <code dir="auto">version</code>. Omitted → derived (a SHA-shaped <code dir="auto">version</code>, else the run’s commit). Set it when the Application’s source is not this run’s commit. Ignored by a tracking-layer deploy. See <a href="/gocdnext/docs/concepts/native-deploy/">native deploys</a>.</td></tr></tbody></table>
 <p><code dir="auto">deploy:</code> is rejected on an <code dir="auto">approval:</code> job — a gate doesn’t deploy.
 Gate a deploy with an approval on a <em>separate</em> upstream job. A deploy
 job’s success IS the deployment’s success.</p>
