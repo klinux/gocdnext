@@ -167,10 +167,10 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 // agent-finding). version mirrors the plugin path exactly (shared resolver); revision
 // is the FULL commit SHA ArgoCD reports — the watch correlates + wins success on it,
 // so it must be the full SHA, not the short-sha display version (see
-// correlationRevision for the full/short/expand rules). A native deploy that can't be
-// tied to a git SHA fails terminally: an empty default version →
-// ErrDeployVersionEmpty, a non-correlatable explicit version →
-// ErrDeployVersionNotCorrelatable. So this never returns an unpinned ("") revision for
+// correlationRevision for the ladder and its full-SHA post-condition). A native deploy
+// that can't be tied to a git SHA fails terminally: a version that resolves to empty →
+// ErrDeployVersionEmpty, an anchor that can't resolve to a full SHA →
+// ErrDeployRevisionNotCorrelatable. So this never returns an unpinned ("") revision for
 // a run that reaches dispatch.
 func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, jobDef domain.Job) (version, revision string, err error) {
 	needsOutputs, matrixNeedsOutputs, nErr := s.buildNeedsOutputs(ctx, run.ID, job)
