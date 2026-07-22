@@ -52,13 +52,13 @@ export function RolloutSelector({
     <div className="rounded-xl border border-dashed border-border bg-card p-6">
       <div className="flex items-center gap-2 text-sm font-medium">
         <Rocket className="size-4 text-teal-500" aria-hidden />
-        {picks.length > 0 ? "Pick a rollout" : "Pick a cluster and namespace"}
+        {picks.length > 0 ? "Pick a rollout" : "No rollout targets configured"}
       </div>
       <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
         Rollouts are read per Kubernetes cluster and namespace.{" "}
         {picks.length > 0
           ? "Choose one of this project's configured rollout targets, or enter a cluster and namespace manually."
-          : "Enter the ArgoCD-registered cluster and the namespace of the application to load its in-flight canary and blue-green rollouts."}
+          : "This project has no deploy target with Argo Rollouts routing, so there is nothing to list — a service that ships a plain Deployment has no Rollout to show here. Register a rollout-aware target on the Environments tab, or enter a cluster and namespace manually below."}
       </p>
 
       {picks.length > 0 ? (

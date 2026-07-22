@@ -21,6 +21,19 @@ describe("RolloutSelector (needs-params state)", () => {
     ).toBeTruthy();
   });
 
+  // With nothing to pick the panel must SAY so — bare inputs read as "fill this
+  // in", when the real answer is usually "this project has no Rollout at all".
+  it("explains the empty state instead of showing bare inputs", () => {
+    render(<RolloutSelector basePath="/projects/acme/rollouts" />);
+    expect(screen.getByText("No rollout targets configured")).toBeTruthy();
+    expect(
+      screen.getByText(/no deploy target with Argo Rollouts routing/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Register a rollout-aware target on the Environments tab/),
+    ).toBeTruthy();
+  });
+
   it("disables Load until both a cluster and a namespace are provided", () => {
     render(<RolloutSelector basePath="/projects/acme/rollouts" />);
     const load = screen.getByRole("button", { name: "Load" }) as HTMLButtonElement;
