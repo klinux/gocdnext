@@ -171,3 +171,31 @@ describe("RolloutPanel — unknown strategy", () => {
     expect(screen.queryByText("you are here")).toBeNull();
   });
 });
+
+// The deep link from the Environments card names ONE rollout. It must be findable and
+// visually distinct without the list being filtered — sibling rollouts stay on screen
+// because an operator may want them before approving, and this page carries actions.
+describe("RolloutPanel — deep-link focus", () => {
+  const c = canary();
+
+  it("exposes a stable anchor id so the client can scroll to it", () => {
+    const { container } = render(
+      <RolloutPanel rollout={c} slug="acme" cluster="prod" canManage={false} />,
+    );
+    expect(container.querySelector(`#rollout-${c.name}`)).toBeTruthy();
+  });
+
+  it("marks only the focused rollout", () => {
+    const plain = render(
+      <RolloutPanel rollout={c} slug="acme" cluster="prod" canManage={false} />,
+    );
+    const focused = render(
+      <RolloutPanel rollout={c} slug="acme" cluster="prod" canManage={false} focused />,
+    );
+    const cls = (r: ReturnType<typeof render>) =>
+      r.container.querySelector("article")?.className ?? "";
+    expect(cls(plain)).not.toContain("ring-2");
+    expect(cls(focused)).toContain("ring-2");
+  });
+});
+

@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, X } from "lucide-react";
+import { ArrowRight, Check, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -32,11 +34,14 @@ type Props = {
 export function RolloutGatePrompt({
   slug,
   watch,
-  environment,
+  canManage = false,
 }: {
   slug: string;
   watch: DeployWatch;
-  environment: string;
+  // canManage gates the LINK, not the notice: the rollouts read is maintainer-gated and
+  // the tab is hidden for viewers, so linking them there would be a dead end. They still
+  // see that a decision is pending.
+  canManage?: boolean;
 }) {
   if (!watch.gate_id || watch.gate_decision) return null;
   const count = watch.rollout_step_count ?? 0;
@@ -45,6 +50,20 @@ export function RolloutGatePrompt({
       ? `step ${Math.min(watch.gate_paused_step + 1, count)}/${count}`
       : null;
   const quorum = `${watch.gate_approvals_now ?? 0}/${watch.gate_required ?? 1}`;
+
+  // The link must land on the EXACT Rollout the gate governs — a namespace can hold
+  // several, and the destination carries control actions, so being one panel off is not
+  // cosmetic. Built from the identity pinned when the gate armed.
+  const cluster = watch.gate_rollout_cluster ?? "";
+  const namespace = watch.gate_rollout_namespace ?? "";
+  const name = watch.gate_rollout_name ?? "";
+  let href: Route | null = null;
+  if (canManage && cluster && namespace) {
+    const qs = new URLSearchParams({ cluster, namespace });
+    if (name) qs.set("name", name);
+    href = `/projects/${slug}/rollouts?${qs.toString()}` as Route;
+  }
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
       <p className="text-sm">
@@ -52,12 +71,14 @@ export function RolloutGatePrompt({
         {step ? <span className="text-muted-foreground"> · {step}</span> : null}
         <span className="text-muted-foreground"> · awaiting approval ({quorum})</span>
       </p>
-      <RolloutGateButtons
-        slug={slug}
-        revisionId={watch.deployment_revision_id}
-        gateId={watch.gate_id}
-        environment={environment}
-      />
+      {href ? (
+        <Link
+          href={href}
+          className="inline-flex items-center gap-1 text-sm font-medium text-amber-700 underline-offset-4 hover:underline dark:text-amber-400"
+        >
+          Review and decide <ArrowRight className="size-3.5" aria-hidden />
+        </Link>
+      ) : null}
     </div>
   );
 }

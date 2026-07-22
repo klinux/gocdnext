@@ -58,6 +58,13 @@ type deployWatchDTO struct {
 	Application string `json:"application,omitempty"`
 	Cluster     string `json:"cluster,omitempty"`
 	SyncMode    string `json:"sync_mode,omitempty"`
+	// The Rollout identity pinned at arm time. Config-class (it names a cluster and a
+	// namespace), so it rides with the maintainer-only fields — which also matches who
+	// can act on it: the rollouts read is maintainer-gated, so a viewer could not open
+	// the page this identity links to.
+	GateRolloutCluster   string `json:"gate_rollout_cluster,omitempty"`
+	GateRolloutNamespace string `json:"gate_rollout_namespace,omitempty"`
+	GateRolloutName      string `json:"gate_rollout_name,omitempty"`
 }
 
 // ListDeployWatches returns the project's in-flight native deploys for the UI to poll.
@@ -127,6 +134,9 @@ func (h *Handler) ListDeployWatches(w http.ResponseWriter, r *http.Request) {
 			d.Application = wch.Application
 			d.Cluster = wch.Cluster
 			d.SyncMode = wch.SyncMode
+			d.GateRolloutCluster = wch.GateRolloutCluster
+			d.GateRolloutNamespace = wch.GateRolloutNamespace
+			d.GateRolloutName = wch.GateRolloutName
 		}
 		dtos = append(dtos, d)
 	}
