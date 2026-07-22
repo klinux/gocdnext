@@ -35,9 +35,13 @@ type clusterDTO struct {
 	HasCA           bool     `json:"has_ca"`
 	CACert          string   `json:"ca_cert"`
 	AllowedProjects []string `json:"allowed_projects"`
-	CreatedBy       string   `json:"created_by"`
-	CreatedAt       string   `json:"created_at"`
-	UpdatedAt       string   `json:"updated_at"`
+	// Always emitted (not omitempty): the admin form round-trips this on a full PUT,
+	// and an omitted false would be indistinguishable from "field absent" — which is
+	// exactly the ambiguity the *bool on the request side exists to avoid.
+	AllowDeclarativeTargets bool   `json:"allow_declarative_targets"`
+	CreatedBy               string `json:"created_by"`
+	CreatedAt               string `json:"created_at"`
+	UpdatedAt               string `json:"updated_at"`
 }
 
 // clusterWriteRequest is the create/update payload.
@@ -56,6 +60,10 @@ type clusterWriteRequest struct {
 	CACert          string   `json:"ca_cert"`
 	Credential      string   `json:"credential"`
 	AllowedProjects []string `json:"allowed_projects"`
+	// AllowDeclarativeTargets is a POINTER because this is a full-PUT payload: a plain
+	// bool would let a client that predates the field send an implicit false and
+	// silently revoke the opt-in on every unrelated edit. Absent => preserve.
+	AllowDeclarativeTargets *bool `json:"allow_declarative_targets,omitempty"`
 }
 
 // maxClusterBytes bounds the create/update body. A kubeconfig with an
@@ -133,9 +141,10 @@ func (h *Handler) CreateCluster(w http.ResponseWriter, r *http.Request) {
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionClusterCreate, "cluster", c.ID.String(),
 		map[string]any{
-			"name":             c.Name,
-			"auth_type":        c.AuthType,
-			"allowed_projects": sortedStrings(c.AllowedProjects),
+			"name":                      c.Name,
+			"auth_type":                 c.AuthType,
+			"allowed_projects":          sortedStrings(c.AllowedProjects),
+			"allow_declarative_targets": c.AllowDeclarativeTargets,
 		})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -183,7 +192,13 @@ func (h *Handler) UpdateCluster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cluster name is immutable — delete and recreate to rename (the delete-guard will surface any live dependents)", http.StatusUnprocessableEntity)
 		return
 	}
-	if err := h.store.UpdateCluster(r.Context(), h.cipher, id, clusterInputFromReq(req)); err != nil {
+	in := clusterInputFromReq(req)
+	// Preserve-when-absent: this is a full-PUT payload, so a client that predates the
+	// field omits it — which must not silently revoke the opt-in on an unrelated edit.
+	if req.AllowDeclarativeTargets == nil {
+		in.AllowDeclarativeTargets = existing.AllowDeclarativeTargets
+	}
+	if err := h.store.UpdateCluster(r.Context(), h.cipher, id, in); err != nil {
 		if errors.Is(err, store.ErrClusterNotFound) {
 			http.Error(w, "cluster not found", http.StatusNotFound)
 			return
@@ -199,9 +214,10 @@ func (h *Handler) UpdateCluster(w http.ResponseWriter, r *http.Request) {
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionClusterUpdate, "cluster", id.String(),
 		map[string]any{
-			"name":             req.Name,
-			"auth_type":        req.AuthType,
-			"allowed_projects": sortedStrings(req.AllowedProjects),
+			"name":                      req.Name,
+			"auth_type":                 req.AuthType,
+			"allowed_projects":          sortedStrings(req.AllowedProjects),
+			"allow_declarative_targets": in.AllowDeclarativeTargets,
 		})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -404,6 +420,9 @@ func clusterInputFromReq(req clusterWriteRequest) store.ClusterInput {
 		CACert:          ca,
 		Credential:      req.Credential,
 		AllowedProjects: req.AllowedProjects,
+		// Caller resolves the preserve-when-absent semantics (it needs the existing
+		// row); this helper only carries what the request stated.
+		AllowDeclarativeTargets: req.AllowDeclarativeTargets != nil && *req.AllowDeclarativeTargets,
 	}
 }
 
@@ -414,17 +433,18 @@ func toClusterDTO(c store.Cluster) clusterDTO {
 		allowed = []string{}
 	}
 	return clusterDTO{
-		ID:              c.ID.String(),
-		Name:            c.Name,
-		Description:     c.Description,
-		AuthType:        c.AuthType,
-		APIServer:       c.APIServer,
-		HasCA:           len(c.CACert) > 0,
-		CACert:          string(c.CACert),
-		AllowedProjects: allowed,
-		CreatedBy:       c.CreatedBy,
-		CreatedAt:       formatClusterTime(c.CreatedAt),
-		UpdatedAt:       formatClusterTime(c.UpdatedAt),
+		ID:                      c.ID.String(),
+		Name:                    c.Name,
+		Description:             c.Description,
+		AuthType:                c.AuthType,
+		APIServer:               c.APIServer,
+		HasCA:                   len(c.CACert) > 0,
+		CACert:                  string(c.CACert),
+		AllowedProjects:         allowed,
+		AllowDeclarativeTargets: c.AllowDeclarativeTargets,
+		CreatedBy:               c.CreatedBy,
+		CreatedAt:               formatClusterTime(c.CreatedAt),
+		UpdatedAt:               formatClusterTime(c.UpdatedAt),
 	}
 }
 

@@ -118,17 +118,18 @@ type Cach struct {
 }
 
 type Cluster struct {
-	ID              pgtype.UUID
-	Name            string
-	Description     string
-	AuthType        string
-	ApiServer       string
-	CaCert          []byte
-	CredentialEnc   []byte
-	AllowedProjects []string
-	CreatedBy       string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
+	ID                      pgtype.UUID
+	Name                    string
+	Description             string
+	AuthType                string
+	ApiServer               string
+	CaCert                  []byte
+	CredentialEnc           []byte
+	AllowedProjects         []string
+	CreatedBy               string
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
+	AllowDeclarativeTargets bool
 }
 
 type ComplianceFramework struct {

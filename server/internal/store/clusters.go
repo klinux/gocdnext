@@ -45,8 +45,12 @@ const ClusterUnavailableMessage = "cluster not found or not accessible"
 // caller (see ClusterUnavailableMessage). Both the deploy-target register path and
 // the YAML `cluster:` dispatch path classify through this one predicate so the
 // oracle-safe behaviour is defined once, not per-endpoint.
+// ErrClusterDeclarativeTargetsDisabled joins the pair for the same reason: a caller who
+// could tell "not opted in" from "no such cluster" learns that the cluster exists.
 func IsClusterUnavailable(err error) bool {
-	return errors.Is(err, ErrClusterNotFound) || errors.Is(err, ErrClusterNotAuthorized)
+	return errors.Is(err, ErrClusterNotFound) ||
+		errors.Is(err, ErrClusterNotAuthorized) ||
+		errors.Is(err, ErrClusterDeclarativeTargetsDisabled)
 }
 
 // AuthorizeClusterForProject checks a cluster exists AND the project is in its
@@ -69,6 +73,44 @@ func (s *Store) AuthorizeClusterForProject(ctx context.Context, projectID uuid.U
 	}
 	if !projectAllowed(r.AllowedProjects, projectID) {
 		return fmt.Errorf("%w %q", ErrClusterNotAuthorized, name)
+	}
+	return nil
+}
+
+// ErrClusterDeclarativeTargetsDisabled means the cluster exists and the project may use
+// it, but an admin has NOT opted it into pipeline-declared deploy targets. Kept distinct
+// from the not-found/not-authorized pair so operators get the real reason in logs; the
+// caller still collapses all three to ClusterUnavailableMessage for the requester, since
+// distinguishing them would leak whether a cluster exists.
+var ErrClusterDeclarativeTargetsDisabled = errors.New("cluster does not allow pipeline-declared deploy targets")
+
+// AuthorizeDeclarativeTargetClusterForProject is AuthorizeClusterForProject PLUS the
+// self-service opt-in rule. It is deliberately a SEPARATE function rather than a flag on
+// the existing one: that one is already used by the imperative registration path for a
+// pinned rollout_cluster, and folding this rule into it would start refusing legitimate
+// UI/API edits on a governed cluster the project is properly authorized for.
+//
+// The rule, by cluster state:
+//
+//	allowed_projects EMPTY           -> allowed. No governance was expressed, and any
+//	                                    project could already target the cluster, so
+//	                                    declaring the target in YAML grants nothing new.
+//	allowed_projects SET             -> DENIED by default. An admin curated who may use
+//	                                    this cluster; curating the target stays with them.
+//	allowed_projects SET + opt-in    -> allowed, still restricted to the listed projects.
+func (s *Store) AuthorizeDeclarativeTargetClusterForProject(ctx context.Context, projectID uuid.UUID, name string) error {
+	r, err := s.q.GetClusterAuthorizationByName(ctx, name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrClusterNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: authorize declarative cluster %q: %w", name, err)
+	}
+	if !projectAllowed(r.AllowedProjects, projectID) {
+		return fmt.Errorf("%w %q", ErrClusterNotAuthorized, name)
+	}
+	if len(r.AllowedProjects) > 0 && !r.AllowDeclarativeTargets {
+		return fmt.Errorf("%w %q", ErrClusterDeclarativeTargetsDisabled, name)
 	}
 	return nil
 }
@@ -100,9 +142,12 @@ type Cluster struct {
 	APIServer       string
 	CACert          []byte
 	AllowedProjects []string // project ids as text; empty = any project
-	CreatedBy       string
-	CreatedAt       *time.Time
-	UpdatedAt       *time.Time
+	// AllowDeclarativeTargets: see ClusterInput. Only meaningful with a non-empty
+	// AllowedProjects — an open cluster allows declarative targets regardless.
+	AllowDeclarativeTargets bool
+	CreatedBy               string
+	CreatedAt               *time.Time
+	UpdatedAt               *time.Time
 }
 
 // ClusterInput is the create/update payload.
@@ -118,7 +163,11 @@ type ClusterInput struct {
 	// edit that touches only metadata doesn't force a re-entry.
 	Credential      string
 	AllowedProjects []string
-	CreatedBy       string
+	// AllowDeclarativeTargets opts a GOVERNED cluster (one with a non-empty
+	// AllowedProjects) into pipeline-declared deploy targets. Irrelevant on an open
+	// cluster, which already allows them.
+	AllowDeclarativeTargets bool
+	CreatedBy               string
 }
 
 // ClusterUsage counts the live dependents a delete-guard cares about:
@@ -198,7 +247,7 @@ func (s *Store) ListClusters(ctx context.Context) ([]Cluster, error) {
 	out := make([]Cluster, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, clusterFromRow(r.ID, r.Name, r.Description, r.AuthType,
-			r.ApiServer, r.CaCert, r.AllowedProjects, r.CreatedBy, r.CreatedAt, r.UpdatedAt))
+			r.ApiServer, r.CaCert, r.AllowedProjects, r.AllowDeclarativeTargets, r.CreatedBy, r.CreatedAt, r.UpdatedAt))
 	}
 	return out, nil
 }
@@ -213,7 +262,7 @@ func (s *Store) GetCluster(ctx context.Context, id uuid.UUID) (Cluster, error) {
 		return Cluster{}, fmt.Errorf("store: get cluster %s: %w", id, err)
 	}
 	return clusterFromRow(r.ID, r.Name, r.Description, r.AuthType, r.ApiServer,
-		r.CaCert, r.AllowedProjects, r.CreatedBy, r.CreatedAt, r.UpdatedAt), nil
+		r.CaCert, r.AllowedProjects, r.AllowDeclarativeTargets, r.CreatedBy, r.CreatedAt, r.UpdatedAt), nil
 }
 
 // InsertCluster seals the credential (kubeconfig/token) with the cipher
@@ -228,20 +277,21 @@ func (s *Store) InsertCluster(ctx context.Context, cipher *crypto.Cipher, in Clu
 		return Cluster{}, err
 	}
 	r, err := s.q.InsertCluster(ctx, db.InsertClusterParams{
-		Name:            in.Name,
-		Description:     in.Description,
-		AuthType:        in.AuthType,
-		ApiServer:       in.APIServer,
-		CaCert:          in.CACert,
-		CredentialEnc:   credEnc,
-		AllowedProjects: normalizeProjectIDs(in.AllowedProjects),
-		CreatedBy:       in.CreatedBy,
+		Name:                    in.Name,
+		Description:             in.Description,
+		AuthType:                in.AuthType,
+		ApiServer:               in.APIServer,
+		CaCert:                  in.CACert,
+		CredentialEnc:           credEnc,
+		AllowedProjects:         normalizeProjectIDs(in.AllowedProjects),
+		AllowDeclarativeTargets: in.AllowDeclarativeTargets,
+		CreatedBy:               in.CreatedBy,
 	})
 	if err != nil {
 		return Cluster{}, fmt.Errorf("store: insert cluster %q: %w", in.Name, err)
 	}
 	return clusterFromRow(r.ID, r.Name, r.Description, r.AuthType, r.ApiServer,
-		r.CaCert, r.AllowedProjects, r.CreatedBy, r.CreatedAt, r.UpdatedAt), nil
+		r.CaCert, r.AllowedProjects, r.AllowDeclarativeTargets, r.CreatedBy, r.CreatedAt, r.UpdatedAt), nil
 }
 
 // UpdateCluster rewrites a row in place. A Credential of
@@ -270,13 +320,14 @@ func (s *Store) UpdateCluster(ctx context.Context, cipher *crypto.Cipher, id uui
 		}
 	}
 	rows, err := s.q.UpdateCluster(ctx, db.UpdateClusterParams{
-		ID:              pgUUID(id),
-		Description:     in.Description,
-		AuthType:        in.AuthType,
-		ApiServer:       in.APIServer,
-		CaCert:          in.CACert,
-		CredentialEnc:   credEnc,
-		AllowedProjects: normalizeProjectIDs(in.AllowedProjects),
+		ID:                      pgUUID(id),
+		Description:             in.Description,
+		AuthType:                in.AuthType,
+		ApiServer:               in.APIServer,
+		CaCert:                  in.CACert,
+		CredentialEnc:           credEnc,
+		AllowedProjects:         normalizeProjectIDs(in.AllowedProjects),
+		AllowDeclarativeTargets: in.AllowDeclarativeTargets,
 	})
 	if err != nil {
 		return fmt.Errorf("store: update cluster %s: %w", id, err)
@@ -635,17 +686,18 @@ func normalizeProjectIDs(ids []string) []string {
 	return ids
 }
 
-func clusterFromRow(id pgtype.UUID, name, desc, authType, apiServer string, ca []byte, allowed []string, createdBy string, created, updated pgtype.Timestamptz) Cluster {
+func clusterFromRow(id pgtype.UUID, name, desc, authType, apiServer string, ca []byte, allowed []string, allowDeclarative bool, createdBy string, created, updated pgtype.Timestamptz) Cluster {
 	return Cluster{
-		ID:              fromPgUUID(id),
-		Name:            name,
-		Description:     desc,
-		AuthType:        authType,
-		APIServer:       apiServer,
-		CACert:          ca,
-		AllowedProjects: append([]string(nil), allowed...),
-		CreatedBy:       createdBy,
-		CreatedAt:       pgTimePtr(created),
-		UpdatedAt:       pgTimePtr(updated),
+		ID:                      fromPgUUID(id),
+		Name:                    name,
+		Description:             desc,
+		AuthType:                authType,
+		APIServer:               apiServer,
+		CACert:                  ca,
+		AllowedProjects:         append([]string(nil), allowed...),
+		AllowDeclarativeTargets: allowDeclarative,
+		CreatedBy:               createdBy,
+		CreatedAt:               pgTimePtr(created),
+		UpdatedAt:               pgTimePtr(updated),
 	}
 }

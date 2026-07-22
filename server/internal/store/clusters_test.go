@@ -427,3 +427,79 @@ func TestClusters_DeleteGuard_Usage(t *testing.T) {
 		t.Fatalf("unreferenced usage.Pipelines = %d, want 0", other.Pipelines)
 	}
 }
+
+// The declarative opt-in is a GOVERNANCE rule, not an authorization one: it decides
+// whether a pipeline may register its own deploy target on a cluster. It must stay
+// separate from AuthorizeClusterForProject, which the imperative UI/API path uses —
+// folding it in there would start refusing legitimate admin edits.
+func TestClusters_DeclarativeTargetAuthorization(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	cipher := newAuthCipher(t)
+	project := uuid.New()
+	other := uuid.New()
+
+	mk := func(name string, allowed []string, declarative bool) {
+		t.Helper()
+		if _, err := s.InsertCluster(ctx, cipher, store.ClusterInput{
+			Name: name, AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+			AllowedProjects: allowed, AllowDeclarativeTargets: declarative,
+			CreatedBy: "admin@example.com",
+		}); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+	}
+	mk("open", nil, false)                                 // no governance expressed
+	mk("governed", []string{project.String()}, false)      // curated, not opted in
+	mk("governed-optin", []string{project.String()}, true) // curated AND opted in
+
+	tests := []struct {
+		name        string
+		cluster     string
+		as          uuid.UUID
+		wantErr     error
+		declarative bool // which helper to exercise
+	}{
+		// An open cluster grants nothing new: any project could already target it.
+		{name: "open cluster allows declarative", cluster: "open", as: project, declarative: true},
+		// Curated access means an admin decided who may use it — so an admin also
+		// decides the target, unless they opt in explicitly.
+		{name: "governed cluster denies declarative by default", cluster: "governed", as: project,
+			declarative: true, wantErr: store.ErrClusterDeclarativeTargetsDisabled},
+		{name: "governed + opt-in allows declarative", cluster: "governed-optin", as: project, declarative: true},
+		// The opt-in never widens WHO: a project outside the allow-list is still out.
+		{name: "opt-in does not bypass the allow-list", cluster: "governed-optin", as: other,
+			declarative: true, wantErr: store.ErrClusterNotAuthorized},
+		{name: "unknown cluster", cluster: "nope", as: project,
+			declarative: true, wantErr: store.ErrClusterNotFound},
+
+		// The REGRESSION the split exists to prevent: the imperative path must keep
+		// working on a governed cluster that has NOT opted into declarative targets.
+		{name: "imperative path unaffected by the flag", cluster: "governed", as: project},
+		{name: "imperative path still enforces the allow-list", cluster: "governed", as: other,
+			wantErr: store.ErrClusterNotAuthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var err error
+			if tt.declarative {
+				err = s.AuthorizeDeclarativeTargetClusterForProject(ctx, tt.as, tt.cluster)
+			} else {
+				err = s.AuthorizeClusterForProject(ctx, tt.as, tt.cluster)
+			}
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			// Every denial must be indistinguishable to the requester — telling
+			// "not opted in" from "no such cluster" leaks that the cluster exists.
+			if !store.IsClusterUnavailable(err) {
+				t.Errorf("%v is not collapsed by IsClusterUnavailable — it would leak existence", err)
+			}
+		})
+	}
+}

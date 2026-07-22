@@ -422,3 +422,23 @@ hands to kubectl/helm/kustomize.
 - [Kubernetes runtime](/gocdnext/docs/concepts/kubernetes-runtime/) — the isolated pod model `in_cluster` rides on, and the agent SA's runtime RBAC
 - [Secrets](/gocdnext/docs/concepts/secrets/) — the masking discipline `cluster:` mirrors
 - [kubectl / kustomize / helm plugins](/gocdnext/docs/reference/plugins/#kubectl) — what consumes `PLUGIN_KUBECONFIG`
+
+## Pipeline-declared deploy targets
+
+A [native deploy target](/gocdnext/docs/concepts/native-deploy/) decides **where a
+deploy lands**, so letting a pipeline's YAML register one is a privilege question, not a
+convenience. Whether a cluster permits it is a property of the **cluster**:
+
+| Cluster | Pipeline may declare its own target |
+|---|---|
+| `allowed_projects` **empty** | **Yes.** No governance was expressed, and any project could already target it — declaring it in YAML grants nothing new. |
+| `allowed_projects` **set** | **No, by default.** An admin curated who may use this cluster; curating the target stays with the admin. |
+| `allowed_projects` set **+ Allow pipeline-declared deploy targets** | **Yes**, still restricted to the listed projects. |
+
+The opt-in never widens *who* may use the cluster — a project outside
+`allowed_projects` is refused either way. It only decides whether an already-authorised
+project may describe its target in the repo instead of the UI.
+
+A refusal is reported with the same message as a missing or unauthorised cluster
+(`cluster not found or not accessible`): distinguishing them would tell a caller that a
+cluster exists.

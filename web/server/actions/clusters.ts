@@ -39,6 +39,11 @@ const writeSchema = z.object({
   // Project IDs allowed to target this cluster. Empty = no allow-list
   // entries (the server decides whether that means "all" or "none").
   allowed_projects: z.array(z.string().min(1)).optional().default([]),
+  // Opt a GOVERNED cluster into pipeline-declared deploy targets. It must be listed
+  // here or Zod strips it before the fetch — the form would appear to save a toggle
+  // the API never receives. The form always sends it; the server's
+  // preserve-when-absent path exists for older clients.
+  allow_declarative_targets: z.boolean().optional().default(false),
 });
 
 const updateSchema = writeSchema.extend({ id: z.string().min(1) });

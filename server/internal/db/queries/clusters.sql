@@ -3,13 +3,13 @@
 -- credential_enc is intentionally NOT selected — the list/detail
 -- surface is write-only, the credential never leaves the server.
 SELECT id, name, description, auth_type, api_server, ca_cert,
-       allowed_projects, created_by, created_at, updated_at
+       allowed_projects, allow_declarative_targets, created_by, created_at, updated_at
 FROM clusters
 ORDER BY name;
 
 -- name: GetCluster :one
 SELECT id, name, description, auth_type, api_server, ca_cert,
-       allowed_projects, created_by, created_at, updated_at
+       allowed_projects, allow_declarative_targets, created_by, created_at, updated_at
 FROM clusters
 WHERE id = $1
 LIMIT 1;
@@ -29,7 +29,7 @@ LIMIT 1;
 -- Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
 -- sealed credential — for validating a rollout_cluster reference at registration
 -- (no need to decrypt or even load credential_enc into memory).
-SELECT id, name, allowed_projects
+SELECT id, name, allowed_projects, allow_declarative_targets
 FROM clusters
 WHERE name = $1
 LIMIT 1;
@@ -48,12 +48,12 @@ SELECT credential_enc FROM clusters WHERE id = $1 LIMIT 1;
 -- name: InsertCluster :one
 INSERT INTO clusters (
     name, description, auth_type, api_server, ca_cert,
-    credential_enc, allowed_projects, created_by
+    credential_enc, allowed_projects, allow_declarative_targets, created_by
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 RETURNING id, name, description, auth_type, api_server, ca_cert,
-          allowed_projects, created_by, created_at, updated_at;
+          allowed_projects, allow_declarative_targets, created_by, created_at, updated_at;
 
 -- name: UpdateCluster :execrows
 -- name is intentionally NOT updatable: a `cluster:` reference in a
@@ -67,6 +67,7 @@ SET description = $2,
     ca_cert = $5,
     credential_enc = $6,
     allowed_projects = $7,
+    allow_declarative_targets = $8,
     updated_at = NOW()
 WHERE id = $1;
 
