@@ -21,23 +21,37 @@ import (
 // Cached per apply: one existence probe per distinct cluster name.
 func (s *Store) ResolveClusters(ctx context.Context, pipelines []*domain.Pipeline) error {
 	checked := map[string]struct{}{}
+	probe := func(pipeline, job, field, name string) error {
+		if name == "" {
+			return nil
+		}
+		if _, ok := checked[name]; ok {
+			return nil
+		}
+		exists, err := s.q.ClusterExists(ctx, name)
+		if err != nil {
+			return fmt.Errorf("pipeline %q: job %q: check cluster %q: %w", pipeline, job, name, err)
+		}
+		if !exists {
+			return fmt.Errorf("pipeline %q: job %q: %s %q is not registered", pipeline, job, field, name)
+		}
+		checked[name] = struct{}{}
+		return nil
+	}
 	for _, p := range pipelines {
 		for i := range p.Jobs {
-			name := p.Jobs[i].Cluster
-			if name == "" {
-				continue
+			if err := probe(p.Name, p.Jobs[i].Name, "cluster", p.Jobs[i].Cluster); err != nil {
+				return err
 			}
-			if _, ok := checked[name]; ok {
-				continue
+			// A DECLARED deploy target names a cluster too. Without this a typo would
+			// sail through apply and only surface at dispatch as the deliberately
+			// collapsed "not found or not accessible" — losing the early, specific
+			// feedback that is the whole point of an apply-time existence gate.
+			if d := p.Jobs[i].Deploy; d != nil && d.Target != nil {
+				if err := probe(p.Name, p.Jobs[i].Name, "deploy.target.cluster", d.Target.Cluster); err != nil {
+					return err
+				}
 			}
-			exists, err := s.q.ClusterExists(ctx, name)
-			if err != nil {
-				return fmt.Errorf("pipeline %q: job %q: check cluster %q: %w", p.Name, p.Jobs[i].Name, name, err)
-			}
-			if !exists {
-				return fmt.Errorf("pipeline %q: job %q: cluster %q is not registered", p.Name, p.Jobs[i].Name, name)
-			}
-			checked[name] = struct{}{}
 		}
 	}
 	return nil

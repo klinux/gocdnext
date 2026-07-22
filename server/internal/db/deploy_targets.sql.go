@@ -148,6 +148,66 @@ func (q *Queries) LockDeployTargetForDelete(ctx context.Context, arg LockDeployT
 	return i, err
 }
 
+const lockDeployTargetForDeploy = `-- name: LockDeployTargetForDeploy :one
+SELECT dt.id, dt.environment_id, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
+       dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,
+       dt.governing_gate
+FROM deploy_targets dt
+JOIN environments e ON e.id = dt.environment_id
+WHERE e.project_id = $1 AND e.name = $2
+FOR UPDATE OF dt
+`
+
+type LockDeployTargetForDeployParams struct {
+	ProjectID pgtype.UUID
+	Name      string
+}
+
+type LockDeployTargetForDeployRow struct {
+	ID               pgtype.UUID
+	EnvironmentID    pgtype.UUID
+	Cluster          string
+	Application      string
+	Namespace        string
+	SyncMode         string
+	RolloutAware     bool
+	RolloutCluster   *string
+	RolloutNamespace *string
+	RolloutName      *string
+	GoverningGate    []byte
+}
+
+// Locks the target row FOR UPDATE and reads EVERYTHING the takeover needs, so a
+// DECLARED deploy decides and writes against one consistent snapshot. Mirrors
+// LockDeployTargetForDelete's pattern, and exists for the same reason: comparing the
+// declared base fields BEFORE this tx would be check-then-act across a transaction
+// boundary — a governing_gate added in that gap would still yield an UNGATED deploy,
+// because StartNativeDeploy never re-reads deploy_targets.
+//
+// The caller classifies in Go (gate present => terminal, base mismatch/absent => retry);
+// a single conditional WHERE returning "0 rows" could not tell those apart, and the two
+// have opposite outcomes. It also builds the revision/watch from THESE values — an
+// environment deleted-and-recreated, or rollout routing changed since the reconcile,
+// must not be written from a pre-lock snapshot.
+func (q *Queries) LockDeployTargetForDeploy(ctx context.Context, arg LockDeployTargetForDeployParams) (LockDeployTargetForDeployRow, error) {
+	row := q.db.QueryRow(ctx, lockDeployTargetForDeploy, arg.ProjectID, arg.Name)
+	var i LockDeployTargetForDeployRow
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.Cluster,
+		&i.Application,
+		&i.Namespace,
+		&i.SyncMode,
+		&i.RolloutAware,
+		&i.RolloutCluster,
+		&i.RolloutNamespace,
+		&i.RolloutName,
+		&i.GoverningGate,
+	)
+	return i, err
+}
+
 const resolveDeployTarget = `-- name: ResolveDeployTarget :one
 SELECT dt.provider, dt.cluster, dt.application, dt.namespace, dt.sync_mode,
        dt.rollout_aware, dt.rollout_cluster, dt.rollout_namespace, dt.rollout_name,

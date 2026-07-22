@@ -308,3 +308,152 @@ jobs:
 		})
 	}
 }
+
+func TestParse_DeployTarget_Accepted(t *testing.T) {
+	y := `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      target:
+        cluster: prod-hub
+        application: shop-prod
+        namespace: argocd
+        sync_mode: trigger
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tgt := findJobByName(t, p, "ship").Deploy.Target
+	if tgt == nil {
+		t.Fatal("target missing")
+	}
+	if tgt.Cluster != "prod-hub" || tgt.Application != "shop-prod" ||
+		tgt.Namespace != "argocd" || tgt.SyncMode != "trigger" {
+		t.Fatalf("target = %+v", tgt)
+	}
+}
+
+// namespace is intentionally NOT defaulted at parse: the write boundary owns that
+// default, so duplicating it here would give the value two owners that can drift.
+func TestParse_DeployTarget_NamespaceLeftToTheWriteBoundary(t *testing.T) {
+	y := `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      target:
+        cluster: prod-hub
+        application: shop-prod
+        sync_mode: observe
+`
+	p, err := ParseNamed(strings.NewReader(y), "p", "release")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if ns := findJobByName(t, p, "ship").Deploy.Target.Namespace; ns != "" {
+		t.Errorf("namespace = %q, want empty (defaulted downstream)", ns)
+	}
+}
+
+func TestParse_DeployTarget_Rejections(t *testing.T) {
+	tests := []struct{ name, yaml, wantErr string }{
+		{
+			name: "missing cluster",
+			yaml: targetYAML(`application: shop
+        sync_mode: trigger`),
+			wantErr: "cluster is required",
+		},
+		{
+			name: "missing application",
+			yaml: targetYAML(`cluster: prod-hub
+        sync_mode: trigger`),
+			wantErr: "application is required",
+		},
+		{
+			// Required, never defaulted: an omission must not silently make gocdnext
+			// start syncing an Application meant to be observed.
+			name: "missing sync_mode",
+			yaml: targetYAML(`cluster: prod-hub
+        application: shop`),
+			wantErr: "sync_mode is required",
+		},
+		{
+			name: "bad sync_mode",
+			yaml: targetYAML(`cluster: prod-hub
+        application: shop
+        sync_mode: push`),
+			wantErr: "must be `trigger` or `observe`",
+		},
+		{
+			name: "invalid cluster name",
+			yaml: targetYAML(`cluster: Prod_Hub!
+        application: shop
+        sync_mode: trigger`),
+			wantErr: "not a valid cluster name",
+		},
+		{
+			// The gate is the separation-of-duties line — it must never be settable
+			// from a file, so the key is not merely ignored, it is rejected.
+			name: "governing_gate is not settable from YAML",
+			yaml: targetYAML(`cluster: prod-hub
+        application: shop
+        sync_mode: trigger
+        governing_gate: {required: 1}`),
+			wantErr: "unknown key",
+		},
+		{
+			name: "unknown key inside target",
+			yaml: targetYAML(`cluster: prod-hub
+        application: shop
+        sync_mode: trigger
+        aplication: typo`),
+			wantErr: "unknown key",
+		},
+		{
+			name: "target must be an object",
+			yaml: `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      target: prod-hub
+`,
+			wantErr: "must be an object",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseNamed(strings.NewReader(tt.yaml), "p", "release")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func targetYAML(body string) string {
+	return `
+stages: [deploy]
+jobs:
+  ship:
+    stage: deploy
+    script: ["true"]
+    deploy:
+      environment: production
+      target:
+        ` + body + "\n"
+}

@@ -27,6 +27,10 @@ type Syncer interface {
 type NativeStore interface {
 	ResolveDeployTarget(ctx context.Context, projectID uuid.UUID, env string) (store.DeployTarget, error)
 	StartNativeDeploy(ctx context.Context, in store.StartNativeDeployInput) (store.StartNativeDeployResult, error)
+	// StartNativeDeployDeclared is the same takeover, but it locks the target row and
+	// asserts the pipeline's declaration still holds INSIDE the tx — a gate added in
+	// the window must not yield an ungated deploy.
+	StartNativeDeployDeclared(ctx context.Context, in store.StartNativeDeployInput, want store.DeclaredTargetExpectation) (store.StartNativeDeployResult, store.DeclaredTakeoverOutcome, error)
 	StampDeployWatchSyncRequested(ctx context.Context, revID uuid.UUID) (bool, error)
 }
 
@@ -39,13 +43,23 @@ const (
 	DecisionNative NativeDecision = "native"
 	// DecisionFallback: no deploy_target registered for the env — use the plugin path.
 	DecisionFallback NativeDecision = "fallback"
+	// DecisionGated: a DECLARED takeover found the target gated under the lock. Terminal
+	// — the pipeline must drop `deploy.target`, or an admin must ungate it.
+	DecisionGated NativeDecision = "gated"
 	// DecisionSkip: the dispatch CAS was lost (another tick/replica won). Do nothing;
 	// the job is no longer this tick's to act on.
 	DecisionSkip NativeDecision = "skip"
 )
 
 // NativeDeployInput is the scheduler's dispatch-time request.
+// DeclaredExpectation mirrors the pipeline's `deploy.target` for the guarded takeover.
+// nil => the target is whatever was registered out-of-band (the pre-existing path).
+type DeclaredExpectation = store.DeclaredTargetExpectation
+
 type NativeDeployInput struct {
+	// Declared, when set, makes the takeover assert the declaration on a LOCKED target
+	// row before creating the revision/watch.
+	Declared    *DeclaredExpectation
 	ProjectID   uuid.UUID
 	RunID       uuid.UUID
 	JobRunID    uuid.UUID
@@ -78,10 +92,13 @@ type NativeDeployResult struct {
 // job), then trigger the sync and stamp the correlation anchor. Orchestration lives
 // here, not in the scheduler.
 type NativeDeployer struct {
-	sync     Syncer
-	store    NativeStore
-	log      *slog.Logger
-	deadline time.Duration
+	sync  Syncer
+	store NativeStore
+	log   *slog.Logger
+	// registrar backs ReconcileDeclarativeTarget. Optional: nil disables
+	// pipeline-declared targets loudly (see WithRegistrar).
+	registrar *Registrar
+	deadline  time.Duration
 }
 
 func NewNativeDeployer(sync Syncer, s NativeStore, log *slog.Logger) *NativeDeployer {
@@ -89,6 +106,25 @@ func NewNativeDeployer(sync Syncer, s NativeStore, log *slog.Logger) *NativeDepl
 		log = slog.Default()
 	}
 	return &NativeDeployer{sync: sync, store: s, log: log, deadline: DefaultDeployDeadline}
+}
+
+// WithRegistrar wires the declarative-target reconcile. Kept explicit rather than
+// derived from the store so the dependency is visible at the call site; nil means a
+// pipeline that declares `deploy.target` fails loud instead of silently ignoring the
+// declaration and deploying against whatever happens to be registered.
+func (d *NativeDeployer) WithRegistrar(r *Registrar) *NativeDeployer {
+	d.registrar = r
+	return d
+}
+
+// ReconcileDeclarativeTarget delegates to the Registrar, which owns the single-snapshot
+// read/decide/write. NativeDeployer implements it so the scheduler keeps ONE seam for
+// "everything native", instead of learning about two collaborators.
+func (d *NativeDeployer) ReconcileDeclarativeTarget(ctx context.Context, in DeclarativeReconcileInput) (DeclarativeResult, error) {
+	if d.registrar == nil {
+		return DeclarativeResult{}, errors.New("deploysvc: declarative deploy targets are not configured on this server")
+	}
+	return d.registrar.ReconcileDeclarativeTarget(ctx, in)
 }
 
 // WithDeadline overrides the convergence budget (tests compress it).
@@ -129,7 +165,7 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 		return NativeDeployResult{}, fmt.Errorf("deploysvc: resolve deploy target: %w", err)
 	}
 
-	res, err := d.store.StartNativeDeploy(ctx, store.StartNativeDeployInput{
+	startIn := store.StartNativeDeployInput{
 		JobRunID:         in.JobRunID,
 		EnvironmentID:    tgt.EnvironmentID,
 		RunID:            in.RunID,
@@ -147,9 +183,33 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 		RolloutNamespace: tgt.RolloutNamespace,
 		RolloutName:      tgt.RolloutName,
 		GoverningGate:    tgt.GoverningGate,
-	})
-	if err != nil {
-		return NativeDeployResult{}, fmt.Errorf("deploysvc: start native deploy: %w", err) // fail-closed
+	}
+
+	var res store.StartNativeDeployResult
+	if in.Declared != nil {
+		// Guarded takeover: the declaration is asserted on a LOCKED target row inside
+		// the same tx that creates the revision + watch. Checking it out here would be
+		// check-then-act across a transaction boundary — a gate inserted in the gap
+		// would still produce an UNGATED deploy, since StartNativeDeploy never re-reads
+		// deploy_targets.
+		var outcome store.DeclaredTakeoverOutcome
+		res, outcome, err = d.store.StartNativeDeployDeclared(ctx, startIn, *in.Declared)
+		if err != nil {
+			return NativeDeployResult{}, fmt.Errorf("deploysvc: start declared native deploy: %w", err)
+		}
+		switch outcome {
+		case store.DeclaredTakeoverGated:
+			// Terminal: never start an ungated deploy of a target an admin just gated.
+			return NativeDeployResult{Decision: DecisionGated}, nil
+		case store.DeclaredTakeoverDrifted:
+			// Benign race with a concurrent edit — the next tick's reconcile settles it.
+			return NativeDeployResult{Decision: DecisionSkip}, nil
+		}
+	} else {
+		res, err = d.store.StartNativeDeploy(ctx, startIn)
+		if err != nil {
+			return NativeDeployResult{}, fmt.Errorf("deploysvc: start native deploy: %w", err) // fail-closed
+		}
 	}
 	if !res.Started {
 		return NativeDeployResult{Decision: DecisionSkip}, nil // lost the CAS

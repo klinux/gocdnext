@@ -311,6 +311,13 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	// Conflicting deploy.target declarations are a CONFIG error, so they belong here
+	// beside the cluster existence gate — inside ApplyProject they would surface as a
+	// 500 through the generic store-error path.
+	if err := configsync.ValidateDeclarativeTargets(pipelines); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        req.Slug,

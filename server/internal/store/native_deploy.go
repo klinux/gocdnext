@@ -66,6 +66,23 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
 
+	res, err := startNativeDeployTx(ctx, q, in)
+	if err != nil {
+		return StartNativeDeployResult{}, err
+	}
+	if !res.Started {
+		return res, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return StartNativeDeployResult{}, fmt.Errorf("store: start native deploy commit: %w", err)
+	}
+	return res, nil
+}
+
+// startNativeDeployTx is the shared body of the takeover, run inside a caller-owned tx
+// so the declared variant can assert its expectation on a LOCKED target row first. It
+// never commits — the caller owns the transaction boundary.
+func startNativeDeployTx(ctx context.Context, q *db.Queries, in StartNativeDeployInput) (StartNativeDeployResult, error) {
 	// Flip the job to server-managed running. Same queued+unassigned CAS as AssignJob;
 	// a lost race (ErrNoRows) → Started=false, no error.
 	job, err := q.StartServerManagedJob(ctx, pgUUID(in.JobRunID))
@@ -131,9 +148,97 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 	if _, err := q.CreateDeployWatch(ctx, watchParams); err != nil {
 		return StartNativeDeployResult{}, fmt.Errorf("store: start native deploy watch: %w", err)
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return StartNativeDeployResult{}, fmt.Errorf("store: start native deploy commit: %w", err)
-	}
 	return StartNativeDeployResult{Started: true, RevisionID: fromPgUUID(revID), Attempt: job.Attempt}, nil
+}
+
+// DeclaredTargetExpectation is the base target a pipeline declared, carried into the
+// takeover so the tx can assert the row still matches before creating anything. Only the
+// fields YAML owns — the rollout routing and the gate are ADOPTED from the locked row,
+// because the file does not express them.
+type DeclaredTargetExpectation struct {
+	Environment string
+	Cluster     string
+	Application string
+	Namespace   string
+	SyncMode    string
+}
+
+// DeclaredTakeoverOutcome distinguishes the two ways a declared takeover can be refused.
+// They must not collapse: a gate is a terminal config fault (fail the job loud), while a
+// base mismatch or a vanished row is a benign race with a concurrent edit (retry, and
+// let the next tick's reconcile decide who wins).
+type DeclaredTakeoverOutcome string
+
+const (
+	DeclaredTakeoverStarted  DeclaredTakeoverOutcome = "started"
+	DeclaredTakeoverLostRace DeclaredTakeoverOutcome = "lost_race" // job no longer dispatchable
+	DeclaredTakeoverGated    DeclaredTakeoverOutcome = "gated"     // terminal
+	DeclaredTakeoverDrifted  DeclaredTakeoverOutcome = "drifted"   // retry
+)
+
+// StartNativeDeployDeclared is StartNativeDeploy for a pipeline-DECLARED target: it
+// locks the target row and asserts the declaration still holds INSIDE the takeover tx.
+//
+// Checking just before StartNativeDeploy would not be enough — that function never re-reads
+// deploy_targets, so a governing_gate inserted between the check and the insert would
+// still produce an ungated deploy. The window is small; it is also exactly the one an
+// admin hits when gating a target that is mid-deploy.
+//
+// The target row is locked BEFORE the job flip so this tx does not hold job/stage/run
+// locks while waiting on it.
+func (s *Store) StartNativeDeployDeclared(ctx context.Context, in StartNativeDeployInput, want DeclaredTargetExpectation) (StartNativeDeployResult, DeclaredTakeoverOutcome, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return StartNativeDeployResult{}, "", fmt.Errorf("store: start declared native deploy begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	tgt, err := q.LockDeployTargetForDeploy(ctx, db.LockDeployTargetForDeployParams{
+		ProjectID: pgUUID(in.ProjectID),
+		Name:      want.Environment,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Deleted between the reconcile and here — retry; the next tick re-creates it.
+			return StartNativeDeployResult{}, DeclaredTakeoverDrifted, nil
+		}
+		return StartNativeDeployResult{}, "", fmt.Errorf("store: lock deploy target: %w", err)
+	}
+	// A gate appeared: never start an UNGATED deploy of a target an admin just gated.
+	if len(tgt.GoverningGate) > 0 {
+		return StartNativeDeployResult{}, DeclaredTakeoverGated, nil
+	}
+	// Compare only what the file owns.
+	if tgt.Cluster != want.Cluster || tgt.Application != want.Application ||
+		tgt.Namespace != want.Namespace || tgt.SyncMode != want.SyncMode {
+		return StartNativeDeployResult{}, DeclaredTakeoverDrifted, nil
+	}
+
+	// Everything below is built from the LOCKED row, not the caller's pre-lock snapshot:
+	// an environment deleted-and-recreated would otherwise write a stale environment_id
+	// (or trip the FK), and rollout routing changed since the reconcile must be adopted,
+	// not overwritten with what we read earlier.
+	in.EnvironmentID = fromPgUUID(tgt.EnvironmentID)
+	in.SyncMode = tgt.SyncMode
+	in.Cluster = tgt.Cluster
+	in.Application = tgt.Application
+	in.Namespace = tgt.Namespace
+	in.RolloutAware = tgt.RolloutAware
+	in.RolloutCluster = stringValue(tgt.RolloutCluster)
+	in.RolloutNamespace = stringValue(tgt.RolloutNamespace)
+	in.RolloutName = stringValue(tgt.RolloutName)
+	in.GoverningGate = nil // asserted absent under the lock
+
+	res, err := startNativeDeployTx(ctx, q, in)
+	if err != nil {
+		return StartNativeDeployResult{}, "", err
+	}
+	if !res.Started {
+		return res, DeclaredTakeoverLostRace, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return StartNativeDeployResult{}, "", fmt.Errorf("store: start declared native deploy commit: %w", err)
+	}
+	return res, DeclaredTakeoverStarted, nil
 }

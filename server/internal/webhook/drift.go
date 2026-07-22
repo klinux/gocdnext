@@ -127,6 +127,13 @@ func (h *Handler) applyDrift(ctx context.Context, scm store.SCMSource, branch, r
 		out.Error = fmt.Sprintf("resolve clusters: %v", err)
 		return out
 	}
+	// The drift path has no HTTP response; the message rides in out.Error. It runs the
+	// SAME validations because it is the one ingress that applies automatically and
+	// unauthenticated — the last place that should skip a config check.
+	if err := configsync.ValidateDeclarativeTargets(pipelines); err != nil {
+		out.Error = err.Error()
+		return out
+	}
 
 	if _, err := h.store.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug:        project.Slug,
