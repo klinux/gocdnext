@@ -763,6 +763,7 @@ jobs:
 |---|---|---|
 | `environment` | string (required) | Target environment. Lazy-created on first deploy — no pre-registration. |
 | `version` | string (optional) | Version recorded as deployed. Refs allowed (`${{ needs.X.outputs.Y }}`, `${{ CI_* }}`, `${CI_*}`), resolved against CI vars **only, never secrets**. Omitted → defaults to `CI_COMMIT_SHORT_SHA`. A reference that can't resolve fails the job terminally at dispatch. |
+| `target` | object (optional) | Declares the **native deploy target** for this environment instead of registering it out-of-band: `cluster`, `application`, `sync_mode` (required) and `namespace` (default `argocd`). Applied at dispatch, only where the cluster permits self-service. The approval gate is never settable here. See [native deploys](/gocdnext/docs/concepts/native-deploy/). |
 | `revision` | string (optional) | Git commit a **native deploy** correlates against — the SHA ArgoCD reports as synced. Same refs and same non-secret rule as `version`. Omitted → derived (a SHA-shaped `version`, else the run's commit). Set it when the Application's source is not this run's commit. Ignored by a tracking-layer deploy. See [native deploys](/gocdnext/docs/concepts/native-deploy/). |
 
 `deploy:` is rejected on an `approval:` job — a gate doesn't deploy.

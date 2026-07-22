@@ -1403,6 +1403,19 @@ type Querier interface {
 	// a stale ungated snapshot and then remove a row that became gated. ErrNoRows => the
 	// target is absent (404). Runs in the same tx as DeleteDeployTargetByID.
 	LockDeployTargetForDelete(ctx context.Context, arg LockDeployTargetForDeleteParams) (LockDeployTargetForDeleteRow, error)
+	// Locks the target row FOR UPDATE and reads EVERYTHING the takeover needs, so a
+	// DECLARED deploy decides and writes against one consistent snapshot. Mirrors
+	// LockDeployTargetForDelete's pattern, and exists for the same reason: comparing the
+	// declared base fields BEFORE this tx would be check-then-act across a transaction
+	// boundary — a governing_gate added in that gap would still yield an UNGATED deploy,
+	// because StartNativeDeploy never re-reads deploy_targets.
+	//
+	// The caller classifies in Go (gate present => terminal, base mismatch/absent => retry);
+	// a single conditional WHERE returning "0 rows" could not tell those apart, and the two
+	// have opposite outcomes. It also builds the revision/watch from THESE values — an
+	// environment deleted-and-recreated, or rollout routing changed since the reconcile,
+	// must not be written from a pre-lock snapshot.
+	LockDeployTargetForDeploy(ctx context.Context, arg LockDeployTargetForDeployParams) (LockDeployTargetForDeployRow, error)
 	// Generation-aware offline mark. Only flips status when the
 	// closing handler's observed generation still matches the row.
 	// A successor Register bumps session_generation, so an old

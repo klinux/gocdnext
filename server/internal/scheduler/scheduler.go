@@ -95,6 +95,12 @@ type nativeDeployer interface {
 	// native rules (see tryNativeDeploy).
 	HasTarget(ctx context.Context, projectID uuid.UUID, environment string) (bool, error)
 	TakeOver(ctx context.Context, in deploysvc.NativeDeployInput) (deploysvc.NativeDeployResult, error)
+	// ReconcileDeclarativeTarget makes the registered target match a pipeline's
+	// `deploy.target`. Returns a DECISION rather than a bare error because the
+	// scheduler must tell a benign CAS race (retry, stay queued) from a config fault
+	// (fail the job loud) — collapsing them produces either a wrongly-failed job or an
+	// infinite retry.
+	ReconcileDeclarativeTarget(ctx context.Context, in deploysvc.DeclarativeReconcileInput) (deploysvc.DeclarativeResult, error)
 }
 
 func (s *Scheduler) DispatchRun(ctx context.Context, runID uuid.UUID) {

@@ -122,6 +122,10 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "resolve clusters: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	if err := configsync.ValidateDeclarativeTargets(parsed); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 
 	result, err := h.store.ApplyProject(r.Context(), store.ApplyProjectInput{
 		Slug:        slug,

@@ -98,6 +98,56 @@ curl -sS -X DELETE -H "Authorization: Bearer $GOCDNEXT_TOKEN" \
 Every upsert/delete is audited (`deploy_target.set` /
 `deploy_target.delete`).
 
+## Declaring the target in the pipeline
+
+Instead of registering out-of-band, a pipeline can declare its own target:
+
+```yaml
+deploy:
+  environment: production
+  version: 1.${{ CI_UPSTREAM_RUN_COUNTER }}.${{ CI_COMMIT_SHORT_SHA }}
+  target:
+    cluster: prod-hub        # a registered cluster (the ArgoCD hub)
+    application: shop-prod
+    namespace: argocd        # optional, defaults to argocd
+    sync_mode: trigger       # REQUIRED: trigger | observe
+```
+
+It is applied at **dispatch**, not at apply: registration needs a live Application
+fetch, and the automatic (webhook-driven) apply path has no authenticated user to
+attribute a privileged write to. Apply time still checks the **shape** and that the
+cluster **exists**, so a typo fails fast with a specific message.
+
+`sync_mode` is required on purpose — defaulting it would let an omission turn gocdnext
+into the thing that *syncs* an Application you meant to only observe.
+
+### What the pipeline may and may not own
+
+| | |
+|---|---|
+| `cluster`, `application`, `namespace`, `sync_mode` | **owned by the pipeline** |
+| the approval gate | **never** settable from YAML — it must stay impossible to drop your own gate by editing a file |
+| rollout routing (`rollout_aware`, `rollout_*`) | **preserved**, not expressible: a value the file cannot describe is never cleared by it |
+
+Consequences worth knowing:
+
+- A target that carries a **governing gate** refuses the declaration outright, even
+  when the fields match. Remove `deploy.target` (the registered target governs) or ask
+  an admin to ungate it.
+- A target with **pinned** rollout routing refuses a change to the Application's
+  identity (`cluster`, `namespace` or `application`) — otherwise the deploy would sync
+  one Application while promoting another's Rollout. Change it via the UI/API.
+  Switching `sync_mode` is fine: it changes who issues the sync, not which object is
+  deployed, so the pin stays valid.
+- Only **one** job may declare a target for a given environment, and two declarations
+  must be identical: the target is 1:1 with the environment, so conflicting ones would
+  flip it between runs. The apply fails naming both jobs.
+- Whether self-service is permitted at all is a property of the cluster — see
+  [Pipeline-declared deploy targets](/gocdnext/docs/concepts/clusters/#pipeline-declared-deploy-targets).
+
+Every write is audited with a `pipeline:<id>` actor, so "who changed this target?" stays
+answerable even though no human is in the loop.
+
 ## `trigger` vs `observe`
 
 | Mode | For | What gocdnext does |

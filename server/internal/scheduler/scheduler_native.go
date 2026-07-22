@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gocdnext/gocdnext/server/internal/audit"
 	"github.com/gocdnext/gocdnext/server/internal/deploysvc"
 	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -97,24 +98,37 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 		}
 	}
 
-	// Settle native-vs-tracking BEFORE resolving the marker. resolveNativeDeployMarker
-	// enforces the git-SHA correlation rule, which is native-ONLY: a tracking-layer
-	// deploy legitimately ships an image tag or semver as deploy.version, and failing
-	// it here would kill a job that should simply fall through to the plugin path.
-	// (TakeOver re-resolves the target under the guard — this read only decides which
-	// rules apply, so a target created in between is a benign race, same as before.)
-	isNative, terr := s.native.HasTarget(ctx, run.ProjectID, env)
-	if terr != nil {
-		release()
-		// Fail closed: a real registry/DB failure must not silently downgrade a native
-		// deploy to the plugin path.
-		s.log.Warn("scheduler: native deploy target lookup",
-			"run_id", run.ID, "job_id", job.ID, "environment", env, "err", terr)
-		return true
-	}
-	if !isNative {
-		release()
-		return false // tracking layer — plugin/agent path, any version string is valid
+	declared := jobDef.Deploy.Target
+
+	if declared != nil {
+		// A DECLARED target makes this job native by construction, so HasTarget's
+		// question ("is this native?") is already answered — asking anyway would add a
+		// third read and widen the very window the DecisionFallback rule below has to
+		// compensate for.
+		if !s.reconcileDeclaredTarget(ctx, run, job, env, declared) {
+			release()
+			return true // faulted or needs a retry — nothing dispatched this tick
+		}
+	} else {
+		// Settle native-vs-tracking BEFORE resolving the marker. resolveNativeDeployMarker
+		// enforces the git-SHA correlation rule, which is native-ONLY: a tracking-layer
+		// deploy legitimately ships an image tag or semver as deploy.version, and failing
+		// it here would kill a job that should simply fall through to the plugin path.
+		// (TakeOver re-resolves the target under the guard — this read only decides which
+		// rules apply, so a target created in between is a benign race, same as before.)
+		isNative, terr := s.native.HasTarget(ctx, run.ProjectID, env)
+		if terr != nil {
+			release()
+			// Fail closed: a real registry/DB failure must not silently downgrade a native
+			// deploy to the plugin path.
+			s.log.Warn("scheduler: native deploy target lookup",
+				"run_id", run.ID, "job_id", job.ID, "environment", env, "err", terr)
+			return true
+		}
+		if !isNative {
+			release()
+			return false // tracking layer — plugin/agent path, any version string is valid
+		}
 	}
 
 	version, revision, err := s.resolveNativeDeployMarker(ctx, run, job, jobDef)
@@ -133,7 +147,7 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 		return true
 	}
 
-	res, err := s.native.TakeOver(ctx, deploysvc.NativeDeployInput{
+	takeover := deploysvc.NativeDeployInput{
 		ProjectID:   run.ProjectID,
 		RunID:       run.ID,
 		JobRunID:    job.ID,
@@ -141,7 +155,20 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 		Version:     version,
 		Revision:    revision,
 		Now:         time.Now(),
-	})
+	}
+	if declared != nil {
+		// Carry the declaration into the takeover so it is re-asserted under the target
+		// row lock — the window between the reconcile and here is exactly when an admin
+		// gating a mid-deploy target would otherwise slip through.
+		takeover.Declared = &deploysvc.DeclaredExpectation{
+			Environment: env,
+			Cluster:     declared.Cluster,
+			Application: declared.Application,
+			Namespace:   declaredNamespace(declared.Namespace),
+			SyncMode:    declared.SyncMode,
+		}
+	}
+	res, err := s.native.TakeOver(ctx, takeover)
 	release() // guard held across TakeOver's tx + Sync; release now
 	if err != nil {
 		// Fail-closed: a real registry/DB failure — dispatch nothing, retry next tick.
@@ -157,7 +184,24 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 		return true
 	case deploysvc.DecisionSkip:
 		return true // lost the dispatch CAS to another tick/replica
+	case deploysvc.DecisionGated:
+		// The target was gated between the reconcile and the takeover. Terminal, and
+		// loud: silently running the plugin path would deploy by a mechanism the file
+		// does not describe, and silently retrying would hide an admin's decision.
+		s.failJobWithError(ctx, job,
+			"deploy.target: environment "+env+" was gated while this deploy was starting — "+
+				"remove `deploy.target` from the pipeline (the registered target governs), or ask an admin to ungate it")
+		return true
 	default: // DecisionFallback — no registered target
+		if declared != nil {
+			// We JUST reconciled a declared target, so "no target" here means it was
+			// deleted in the window between the reconcile and the takeover. Falling
+			// through would run the plugin path — deploying by a mechanism the file
+			// does not describe. Retry instead; the next tick re-creates it.
+			s.log.Info("scheduler: declared deploy target vanished before takeover — retrying",
+				"run_id", run.ID, "job_id", job.ID, "environment", env)
+			return true
+		}
 		return false
 	}
 }
@@ -209,4 +253,74 @@ func (s *Scheduler) resolveNativeDeployMarker(ctx context.Context, run store.Run
 			"version", version, "revision", revision)
 	}
 	return version, revision, nil
+}
+
+// reconcileDeclaredTarget applies a pipeline's `deploy.target` before the takeover.
+// Returns true to proceed with the native dispatch; false means nothing should be
+// dispatched this tick (the job was either failed loud or is waiting for a retry).
+//
+// The mapping is the contract: a lost CAS keeps the job queued, a config fault fails it.
+func (s *Scheduler) reconcileDeclaredTarget(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, env string, declared *domain.DeployTargetSpec) bool {
+	actor := "pipeline:" + run.PipelineID.String()
+	res, err := s.native.ReconcileDeclarativeTarget(ctx, deploysvc.DeclarativeReconcileInput{
+		ProjectID:   run.ProjectID,
+		Environment: env,
+		Cluster:     declared.Cluster,
+		Application: declared.Application,
+		Namespace:   declared.Namespace,
+		SyncMode:    declared.SyncMode,
+		// Also stamped on deploy_targets.created_by; the audit row below carries the
+		// same label so the two agree.
+		Actor: actor,
+	})
+	if err != nil {
+		// Infrastructure (DB/transport): retry without dispatching, matching the
+		// fail-closed posture everywhere else on this path.
+		s.log.Warn("scheduler: reconcile declared deploy target",
+			"run_id", run.ID, "job_id", job.ID, "environment", env, "err", err)
+		return false
+	}
+	switch res.Decision {
+	case deploysvc.ReconcileTerminalFault:
+		// The declaration cannot be applied and a retry fails identically. Fail loud
+		// rather than falling through to the plugin path — that would deploy by a
+		// different mechanism than the file describes.
+		s.failJobWithError(ctx, job, "deploy.target: "+res.Public)
+		return false
+	case deploysvc.ReconcileConflictRetry:
+		s.log.Info("scheduler: declared deploy target changed under us — retrying",
+			"run_id", run.ID, "job_id", job.ID, "environment", env)
+		return false
+	case deploysvc.ReconcileChanged:
+		s.log.Info("scheduler: declared deploy target applied",
+			"run_id", run.ID, "job_id", job.ID, "environment", env,
+			"cluster", declared.Cluster, "application", declared.Application)
+		// Audited with a SYNTHETIC actor: a dispatch has no user, so audit.Emit would
+		// record a nil actor and leave "who changed this deploy target?" unanswerable
+		// for the one path that changes it without a human in the loop. Emitted here
+		// rather than in the use case because this layer holds the concrete store.
+		audit.EmitAs(ctx, s.log, s.store, actor,
+			store.AuditActionDeployTargetSet, "environment", env,
+			map[string]any{
+				"source":      "pipeline",
+				"project_id":  run.ProjectID.String(),
+				"pipeline_id": run.PipelineID.String(),
+				"run_id":      run.ID.String(),
+				"job":         job.Name,
+				"cluster":     declared.Cluster,
+				"application": declared.Application,
+				"sync_mode":   declared.SyncMode,
+			})
+	}
+	return true
+}
+
+// declaredNamespace mirrors the write boundary's default so the takeover compares the
+// same value the reconcile stored. The parser deliberately leaves it empty (pkg/parser
+// does not import internal/), so the default is applied here and in deploy.NormalizeNamespace.
+func declaredNamespace(ns string) string {
+	if s := strings.TrimSpace(ns); s != "" {
+		return s
+	}
+	return "argocd"
 }

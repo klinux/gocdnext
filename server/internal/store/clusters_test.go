@@ -503,3 +503,44 @@ func TestClusters_DeclarativeTargetAuthorization(t *testing.T) {
 		})
 	}
 }
+
+// A cluster can be named TWO ways, and the FK only covers one of them: it protects a
+// REGISTERED deploy target, while a declared-but-not-yet-reconciled one has no row at
+// all. Without the jsonpath covering Deploy.Target.Cluster, an admin could delete a
+// cluster out from under the pipeline that names it.
+func TestClusters_DeleteGuardCountsDeclarativeReferences(t *testing.T) {
+	s, ctx := newClusterStore(t)
+	if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+		Name: "prod-hub", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("insert cluster: %v", err)
+	}
+	// The pipeline's ONLY mention of the cluster is the declared target — no `cluster:`
+	// on any job, and no deploy_targets row yet.
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "shop", Name: "shop",
+		Pipelines: []*domain.Pipeline{{
+			Name: "release", Stages: []string{"deploy"},
+			Jobs: []domain.Job{{
+				Name: "ship", Stage: "deploy", Image: "alpine:3.19",
+				Tasks: []domain.Task{{Script: "true"}},
+				Deploy: &domain.DeploySpec{
+					Environment: "production",
+					Target: &domain.DeployTargetSpec{
+						Cluster: "prod-hub", Application: "shop", Namespace: "argocd", SyncMode: "trigger",
+					},
+				},
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	usage, err := s.CountClusterUsage(ctx, "prod-hub")
+	if err != nil {
+		t.Fatalf("count usage: %v", err)
+	}
+	if usage.Pipelines == 0 {
+		t.Fatal("a declarative-only reference is invisible to the delete-guard — the cluster could be deleted out from under the pipeline")
+	}
+}
