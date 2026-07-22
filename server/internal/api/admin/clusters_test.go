@@ -510,6 +510,31 @@ func TestClusters_LegacyPutPreservesDeclarativeFlag(t *testing.T) {
 	if !got.AllowDeclarativeTargets {
 		t.Fatal("a legacy PUT revoked allow_declarative_targets by omission")
 	}
+
+	// The audit row is what answers "who allowed self-service on this cluster?", so the
+	// flag has to be IN the metadata — an update that only logs name/auth_type would
+	// leave that question unanswerable.
+	page, err := s.ListAuditEvents(ctx, store.ListAuditEventsFilter{
+		Action: store.AuditActionClusterUpdate,
+	})
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	// Decode rather than substring-match: the marshalled JSON carries a space after the
+	// colon, so a literal check passes or fails on formatting instead of on content.
+	var sawFlag bool
+	for _, e := range page.Events {
+		var meta map[string]any
+		if err := json.Unmarshal(e.Metadata, &meta); err != nil {
+			t.Fatalf("decode audit metadata: %v", err)
+		}
+		if v, ok := meta["allow_declarative_targets"].(bool); ok && v {
+			sawFlag = true
+		}
+	}
+	if !sawFlag {
+		t.Fatalf("update audit metadata does not record allow_declarative_targets; got %+v", page.Events)
+	}
 	if got.Description != "edited by an old client" {
 		t.Fatalf("the rest of the edit did not apply: %+v", got)
 	}
