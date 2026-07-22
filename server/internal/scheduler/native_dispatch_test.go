@@ -256,6 +256,49 @@ func TestDispatchRun_NativeTakeover_NoIdleAgent(t *testing.T) {
 	}
 }
 
+// REGRESSION (v0.72.0): the native-only git-SHA rule must never judge a TRACKING-LAYER
+// deploy. The takeover used to resolve the marker — which enforces correlatability —
+// BEFORE settling whether a target exists, so a legacy "1.<counter>.<short-sha>" image
+// tag (explicitly valid for the tracking layer) failed the job terminally instead of
+// falling through to the plugin path. Same shape as
+// TestDispatchRun_NativeNonCorrelatableVersionFails, minus the registered target: the
+// version is identical, only the target's absence decides.
+func TestDispatchRun_TrackingLayerAcceptsNonSHAVersion(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	sessions := grpcsrv.NewSessionStore()
+	sync := &fakeSyncer{}
+	sched := scheduler.New(s, sessions, quietLogger(), testDSN).
+		WithNativeDeployer(deploysvc.NewNativeDeployer(sync, s, quietLogger()))
+	ctx := context.Background()
+
+	// A GoCD-style image tag as deploy.version, and deliberately NO registerDeployTarget.
+	runID, jobID := seedDeployRunVersioned(t, pool, "tracking-legacy", "1.27.1f2403ea")
+
+	agentID := seedAgentRow(t, pool, "tracking-legacy-agent")
+	_ = sessions.CreateSession(agentID, nil, 1, 0)
+
+	sched.DispatchRun(ctx, runID)
+
+	var status string
+	var errMsg *string
+	var agent *uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT status, error, agent_id FROM job_runs WHERE id=$1`, jobID).
+		Scan(&status, &errMsg, &agent); err != nil {
+		t.Fatalf("job row: %v", err)
+	}
+	if status == "failed" {
+		t.Fatalf("job failed (%v) — a tracking-layer deploy must not be judged by the native git-SHA rule", errMsg)
+	}
+	if status != "running" || agent == nil || *agent != agentID {
+		t.Fatalf("job = %q agent=%v, want running on the agent (plugin path)", status, agent)
+	}
+	if sync.calls != 0 {
+		t.Fatalf("sync called %d times, want 0 (tracking layer must not sync)", sync.calls)
+	}
+}
+
 // With the native deployer wired but NO target registered, the deploy job falls back
 // to the plugin path — a normal agent dispatch.
 func TestDispatchRun_NativeFallbackWhenNoTarget(t *testing.T) {

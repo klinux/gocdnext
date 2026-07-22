@@ -97,6 +97,26 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 		}
 	}
 
+	// Settle native-vs-tracking BEFORE resolving the marker. resolveNativeDeployMarker
+	// enforces the git-SHA correlation rule, which is native-ONLY: a tracking-layer
+	// deploy legitimately ships an image tag or semver as deploy.version, and failing
+	// it here would kill a job that should simply fall through to the plugin path.
+	// (TakeOver re-resolves the target under the guard — this read only decides which
+	// rules apply, so a target created in between is a benign race, same as before.)
+	isNative, terr := s.native.HasTarget(ctx, run.ProjectID, env)
+	if terr != nil {
+		release()
+		// Fail closed: a real registry/DB failure must not silently downgrade a native
+		// deploy to the plugin path.
+		s.log.Warn("scheduler: native deploy target lookup",
+			"run_id", run.ID, "job_id", job.ID, "environment", env, "err", terr)
+		return true
+	}
+	if !isNative {
+		release()
+		return false // tracking layer — plugin/agent path, any version string is valid
+	}
+
 	version, revision, err := s.resolveNativeDeployMarker(ctx, run, job, jobDef)
 	if err != nil {
 		release()
