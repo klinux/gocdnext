@@ -57,12 +57,19 @@ export function RolloutGatePrompt({
   const cluster = watch.gate_rollout_cluster ?? "";
   const namespace = watch.gate_rollout_namespace ?? "";
   const name = watch.gate_rollout_name ?? "";
-  let href: Route | null = null;
-  if (canManage && cluster && namespace) {
-    const qs = new URLSearchParams({ cluster, namespace });
-    if (name) qs.set("name", name);
-    href = `/projects/${slug}/rollouts?${qs.toString()}` as Route;
-  }
+  // All THREE are required, not just cluster+namespace: without the name the link
+  // degrades to "some rollout in this namespace", which is the non-exact behaviour this
+  // link exists to avoid — on a page that carries control actions. Legacy rows, a
+  // partially sanitised response or a future regression can each leave the name empty,
+  // so no link is better than an imprecise one (the notice still shows).
+  const linkable = canManage && !!cluster && !!namespace && !!name;
+  const href: Route | null = linkable
+    ? (`/projects/${slug}/rollouts?${new URLSearchParams({
+        cluster,
+        namespace,
+        name,
+      }).toString()}` as Route)
+    : null;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">

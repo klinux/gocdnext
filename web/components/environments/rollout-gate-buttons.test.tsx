@@ -83,6 +83,16 @@ describe("RolloutGatePrompt (Environments card — reports, does not act)", () =
     expect(screen.queryByRole("link")).toBeNull();
   });
 
+  // Dropping ONLY the name would still produce a syntactically fine URL — and that is
+  // the trap: it silently becomes "some rollout in this namespace" on a page that can
+  // promote and abort. No link beats an imprecise one.
+  it("omits the link when only the pinned name is missing", () => {
+    const { gate_rollout_name: _n, ...noName } = armed;
+    render(<RolloutGatePrompt slug="acme" watch={noName} canManage />);
+    expect(screen.getByText("Canary paused")).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
   it("renders nothing once the gate is decided", () => {
     const { container } = render(
       <RolloutGatePrompt slug="acme" watch={{ ...armed, gate_decision: "approved" }} canManage />,
