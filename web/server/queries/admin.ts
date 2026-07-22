@@ -253,6 +253,9 @@ export type AdminCluster = {
   // array by the server (never null) so the editor iterates without a
   // nil-check.
   allowed_projects: string[];
+  // Opt-in for pipeline-declared deploy targets, meaningful only on a GOVERNED cluster
+  // (non-empty allowed_projects) — an open one allows them regardless. Always emitted.
+  allow_declarative_targets: boolean;
   created_by?: string;
   created_at: string;
   updated_at: string;

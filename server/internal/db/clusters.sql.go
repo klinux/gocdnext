@@ -39,23 +39,24 @@ func (q *Queries) DeleteCluster(ctx context.Context, id pgtype.UUID) error {
 
 const getCluster = `-- name: GetCluster :one
 SELECT id, name, description, auth_type, api_server, ca_cert,
-       allowed_projects, created_by, created_at, updated_at
+       allowed_projects, allow_declarative_targets, created_by, created_at, updated_at
 FROM clusters
 WHERE id = $1
 LIMIT 1
 `
 
 type GetClusterRow struct {
-	ID              pgtype.UUID
-	Name            string
-	Description     string
-	AuthType        string
-	ApiServer       string
-	CaCert          []byte
-	AllowedProjects []string
-	CreatedBy       string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
+	ID                      pgtype.UUID
+	Name                    string
+	Description             string
+	AuthType                string
+	ApiServer               string
+	CaCert                  []byte
+	AllowedProjects         []string
+	AllowDeclarativeTargets bool
+	CreatedBy               string
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
 }
 
 func (q *Queries) GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow, error) {
@@ -69,6 +70,7 @@ func (q *Queries) GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow
 		&i.ApiServer,
 		&i.CaCert,
 		&i.AllowedProjects,
+		&i.AllowDeclarativeTargets,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -77,16 +79,17 @@ func (q *Queries) GetCluster(ctx context.Context, id pgtype.UUID) (GetClusterRow
 }
 
 const getClusterAuthorizationByName = `-- name: GetClusterAuthorizationByName :one
-SELECT id, name, allowed_projects
+SELECT id, name, allowed_projects, allow_declarative_targets
 FROM clusters
 WHERE name = $1
 LIMIT 1
 `
 
 type GetClusterAuthorizationByNameRow struct {
-	ID              pgtype.UUID
-	Name            string
-	AllowedProjects []string
+	ID                      pgtype.UUID
+	Name                    string
+	AllowedProjects         []string
+	AllowDeclarativeTargets bool
 }
 
 // Authorization-only lookup: existence + allowed_projects, WITHOUT touching the
@@ -95,7 +98,12 @@ type GetClusterAuthorizationByNameRow struct {
 func (q *Queries) GetClusterAuthorizationByName(ctx context.Context, name string) (GetClusterAuthorizationByNameRow, error) {
 	row := q.db.QueryRow(ctx, getClusterAuthorizationByName, name)
 	var i GetClusterAuthorizationByNameRow
-	err := row.Scan(&i.ID, &i.Name, &i.AllowedProjects)
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.AllowedProjects,
+		&i.AllowDeclarativeTargets,
+	)
 	return i, err
 }
 
@@ -152,36 +160,38 @@ func (q *Queries) GetClusterForDispatch(ctx context.Context, name string) (GetCl
 const insertCluster = `-- name: InsertCluster :one
 INSERT INTO clusters (
     name, description, auth_type, api_server, ca_cert,
-    credential_enc, allowed_projects, created_by
+    credential_enc, allowed_projects, allow_declarative_targets, created_by
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 RETURNING id, name, description, auth_type, api_server, ca_cert,
-          allowed_projects, created_by, created_at, updated_at
+          allowed_projects, allow_declarative_targets, created_by, created_at, updated_at
 `
 
 type InsertClusterParams struct {
-	Name            string
-	Description     string
-	AuthType        string
-	ApiServer       string
-	CaCert          []byte
-	CredentialEnc   []byte
-	AllowedProjects []string
-	CreatedBy       string
+	Name                    string
+	Description             string
+	AuthType                string
+	ApiServer               string
+	CaCert                  []byte
+	CredentialEnc           []byte
+	AllowedProjects         []string
+	AllowDeclarativeTargets bool
+	CreatedBy               string
 }
 
 type InsertClusterRow struct {
-	ID              pgtype.UUID
-	Name            string
-	Description     string
-	AuthType        string
-	ApiServer       string
-	CaCert          []byte
-	AllowedProjects []string
-	CreatedBy       string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
+	ID                      pgtype.UUID
+	Name                    string
+	Description             string
+	AuthType                string
+	ApiServer               string
+	CaCert                  []byte
+	AllowedProjects         []string
+	AllowDeclarativeTargets bool
+	CreatedBy               string
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
 }
 
 func (q *Queries) InsertCluster(ctx context.Context, arg InsertClusterParams) (InsertClusterRow, error) {
@@ -193,6 +203,7 @@ func (q *Queries) InsertCluster(ctx context.Context, arg InsertClusterParams) (I
 		arg.CaCert,
 		arg.CredentialEnc,
 		arg.AllowedProjects,
+		arg.AllowDeclarativeTargets,
 		arg.CreatedBy,
 	)
 	var i InsertClusterRow
@@ -204,6 +215,7 @@ func (q *Queries) InsertCluster(ctx context.Context, arg InsertClusterParams) (I
 		&i.ApiServer,
 		&i.CaCert,
 		&i.AllowedProjects,
+		&i.AllowDeclarativeTargets,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -213,22 +225,23 @@ func (q *Queries) InsertCluster(ctx context.Context, arg InsertClusterParams) (I
 
 const listClusters = `-- name: ListClusters :many
 SELECT id, name, description, auth_type, api_server, ca_cert,
-       allowed_projects, created_by, created_at, updated_at
+       allowed_projects, allow_declarative_targets, created_by, created_at, updated_at
 FROM clusters
 ORDER BY name
 `
 
 type ListClustersRow struct {
-	ID              pgtype.UUID
-	Name            string
-	Description     string
-	AuthType        string
-	ApiServer       string
-	CaCert          []byte
-	AllowedProjects []string
-	CreatedBy       string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
+	ID                      pgtype.UUID
+	Name                    string
+	Description             string
+	AuthType                string
+	ApiServer               string
+	CaCert                  []byte
+	AllowedProjects         []string
+	AllowDeclarativeTargets bool
+	CreatedBy               string
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
 }
 
 // Admin UI hot path. Sorted by name so the table reads alphabetical.
@@ -251,6 +264,7 @@ func (q *Queries) ListClusters(ctx context.Context) ([]ListClustersRow, error) {
 			&i.ApiServer,
 			&i.CaCert,
 			&i.AllowedProjects,
+			&i.AllowDeclarativeTargets,
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -273,18 +287,20 @@ SET description = $2,
     ca_cert = $5,
     credential_enc = $6,
     allowed_projects = $7,
+    allow_declarative_targets = $8,
     updated_at = NOW()
 WHERE id = $1
 `
 
 type UpdateClusterParams struct {
-	ID              pgtype.UUID
-	Description     string
-	AuthType        string
-	ApiServer       string
-	CaCert          []byte
-	CredentialEnc   []byte
-	AllowedProjects []string
+	ID                      pgtype.UUID
+	Description             string
+	AuthType                string
+	ApiServer               string
+	CaCert                  []byte
+	CredentialEnc           []byte
+	AllowedProjects         []string
+	AllowDeclarativeTargets bool
 }
 
 // name is intentionally NOT updatable: a `cluster:` reference in a
@@ -300,6 +316,7 @@ func (q *Queries) UpdateCluster(ctx context.Context, arg UpdateClusterParams) (i
 		arg.CaCert,
 		arg.CredentialEnc,
 		arg.AllowedProjects,
+		arg.AllowDeclarativeTargets,
 	)
 	if err != nil {
 		return 0, err

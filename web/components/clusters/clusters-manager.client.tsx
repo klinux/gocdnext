@@ -101,6 +101,7 @@ export function ClustersManager({ initial, projects }: Props) {
         ca_cert: form.auth_type === "token" ? form.ca_cert : "",
         credential: form.auth_type === "in_cluster" ? "" : credential,
         allowed_projects: form.allowedProjects,
+        allow_declarative_targets: form.allowDeclarativeTargets,
       };
       const res = form.id
         ? await updateCluster({ ...body, id: form.id })
@@ -123,6 +124,7 @@ export function ClustersManager({ initial, projects }: Props) {
         has_ca: body.ca_cert.trim().length > 0,
         ca_cert: body.ca_cert,
         allowed_projects: form.allowedProjects,
+        allow_declarative_targets: form.allowDeclarativeTargets,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };

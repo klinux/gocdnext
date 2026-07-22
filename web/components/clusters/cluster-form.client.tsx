@@ -34,6 +34,7 @@ export type FormDraft = {
   ca_cert: string;
   credential: string;
   allowedProjects: string[];
+  allowDeclarativeTargets: boolean;
 };
 
 export const AUTH_LABELS: Record<ClusterAuthType, string> = {
@@ -52,6 +53,7 @@ export function blankForm(): FormDraft {
     ca_cert: "",
     credential: "",
     allowedProjects: [],
+    allowDeclarativeTargets: false,
   };
 }
 
@@ -67,6 +69,7 @@ export function clusterToDraft(c: AdminCluster): FormDraft {
     ca_cert: c.ca_cert ?? "",
     credential: "",
     allowedProjects: [...(c.allowed_projects ?? [])],
+    allowDeclarativeTargets: c.allow_declarative_targets ?? false,
   };
 }
 
@@ -298,6 +301,28 @@ export function ClusterForm({
           )}
         </div>
       </Field>
+
+      {/* Only meaningful once an allow-list exists: an OPEN cluster already permits
+          pipeline-declared targets, so a toggle there would imply the opposite. */}
+      {form.allowedProjects.length > 0 ? (
+        <Field
+          label="Pipeline-declared deploy targets"
+          hint="This cluster restricts which projects may use it, so declaring a deploy target in a pipeline's YAML is denied by default. Allow it to let the listed projects self-serve — still limited to those projects."
+        >
+          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent">
+            <input
+              type="checkbox"
+              checked={form.allowDeclarativeTargets}
+              onChange={(e) =>
+                setForm({ ...form, allowDeclarativeTargets: e.target.checked })
+              }
+              className="size-4 rounded border-input"
+              aria-label="Allow pipeline-declared deploy targets"
+            />
+            <span>Allow pipelines to declare their own deploy target</span>
+          </label>
+        </Field>
+      ) : null}
 
       <div className="mt-2 flex items-center justify-end gap-2">
         <Button variant="ghost" onClick={onCancel} disabled={pending}>
