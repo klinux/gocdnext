@@ -424,6 +424,18 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 			Version:     version,
 			Revision:    revision,
 		}
+		// A declared target: SHAPE only here. Authorization (is this project allowed
+		// on that cluster, and does the cluster permit self-service?) is deliberately
+		// deferred to dispatch, for the same reason `cluster:` defers it — on a
+		// project's first apply the project row may not exist yet, and the run's
+		// project is the authoritative subject anyway.
+		if td := jd.Deploy.Target; td != nil {
+			spec, terr := parseDeployTarget(name, td)
+			if terr != nil {
+				return domain.Job{}, terr
+			}
+			j.Deploy.Target = spec
+		}
 	}
 
 	if jd.Parallel != nil && len(jd.Parallel.Matrix) > 0 {
@@ -479,4 +491,47 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 	}
 
 	return j, nil
+}
+
+// deployTargetSyncModes mirrors the store's CHECK constraint. Kept here so a typo is a
+// readable parse error instead of a 422 after the round-trip; the store revalidates.
+var deployTargetSyncModes = map[string]struct{}{"trigger": {}, "observe": {}}
+
+// parseDeployTarget validates the SHAPE of a declared deploy target and converts it to
+// the domain spec. Authorization stays at dispatch (see the call site).
+//
+// namespace is deliberately NOT defaulted here: pkg/parser does not import internal/,
+// and the write boundary (deploy.NormalizeNamespace, used by the registrar) already
+// owns that default — duplicating it would give the value two owners that can drift.
+func parseDeployTarget(job string, td *TargetDef) (*domain.DeployTargetSpec, error) {
+	cluster := strings.TrimSpace(td.Cluster)
+	if cluster == "" {
+		return nil, fmt.Errorf("job %q: deploy.target.cluster is required", job)
+	}
+	// Same bound as `cluster:` so a name that parses also resolves at dispatch.
+	if !jobClusterRE.MatchString(cluster) {
+		return nil, fmt.Errorf(
+			"job %q: deploy.target.cluster %q is not a valid cluster name — lowercase alphanumeric, then alphanumeric/_/- (max 63)",
+			job, td.Cluster)
+	}
+	application := strings.TrimSpace(td.Application)
+	if application == "" {
+		return nil, fmt.Errorf("job %q: deploy.target.application is required", job)
+	}
+	syncMode := strings.TrimSpace(td.SyncMode)
+	if syncMode == "" {
+		// Required, not defaulted: falling back to `trigger` would make an omission
+		// turn gocdnext into the thing that SYNCS an Application the author may have
+		// meant to only observe.
+		return nil, fmt.Errorf("job %q: deploy.target.sync_mode is required (trigger or observe)", job)
+	}
+	if _, ok := deployTargetSyncModes[syncMode]; !ok {
+		return nil, fmt.Errorf("job %q: deploy.target.sync_mode %q must be `trigger` or `observe`", job, td.SyncMode)
+	}
+	return &domain.DeployTargetSpec{
+		Cluster:     cluster,
+		Application: application,
+		Namespace:   strings.TrimSpace(td.Namespace),
+		SyncMode:    syncMode,
+	}, nil
 }

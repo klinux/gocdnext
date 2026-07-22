@@ -421,8 +421,9 @@ type Job struct {
 	// Cluster names a clusters-registry row (k8s deploy target).
 	// Resolved + authorized at apply; its kubeconfig is injected as
 	// PLUGIN_KUBECONFIG at dispatch. Empty = no managed cluster.
-	// JSON field name "Cluster" is the jsonpath the delete-guard +
-	// usage queries match (CountClusterUsage).
+	// JSON field name "Cluster" is one of the jsonpaths the delete-guard +
+	// usage queries match (CountClusterUsage); the other is
+	// Deploy.Target.Cluster, so a rename here must update BOTH.
 	Cluster string `json:",omitempty"`
 	// Resources is the user-declared compute envelope. Profile
 	// defaults fill the empty fields; profile.max caps non-empty
@@ -576,6 +577,24 @@ type DeploySpec struct {
 	// omitempty for the same reason as the parent: keep the JSONB
 	// definition clean, since almost no deploy sets it.
 	Revision string `json:",omitempty"`
+	// Target is the pipeline-DECLARED native deploy target, reconciled at
+	// dispatch where the cluster permits self-service. nil = the target is
+	// whatever was registered out-of-band (the pre-existing behaviour).
+	Target *DeployTargetSpec `json:",omitempty"`
+}
+
+// DeployTargetSpec is the ArgoCD base target a pipeline declares for its
+// environment. It deliberately CANNOT express the approval gate: that is the
+// separation-of-duties line — it must stay impossible to drop your own gate by
+// editing a file. The rollout routing is likewise absent and is preserved from
+// whatever is registered.
+type DeployTargetSpec struct {
+	Cluster     string
+	Application string
+	// Namespace holds the Application CR; defaulted to argocd at parse.
+	Namespace string
+	// SyncMode is trigger|observe. Required — see TargetDef.
+	SyncMode string
 }
 
 // ApprovalSpec is the shape of a manual-gate job. `Approvers`

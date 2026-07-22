@@ -81,16 +81,17 @@ func (f *fakeProvider) ValidateSingleSource(_ context.Context, t deploy.Deployme
 }
 
 type fakeRegistry struct {
-	envID         uuid.UUID
-	ensureErr     error
-	upsertErr     error
-	authorizeErr  error               // returned by AuthorizeClusterForProject (rollout_cluster check)
-	existing      *store.DeployTarget // ResolveDeployTarget result; nil => ErrDeployTargetNotFound (a create)
-	resolveErr    error               // overrides existing: ResolveDeployTarget returns this
-	guardConflict bool                // when true, UpsertDeployTargetGuarded returns ErrDeployTargetConflict
-	gotUpsert     store.DeployTargetInput
-	gotGuard      store.DeployTargetSoDGuard
-	log           *[]string
+	envID              uuid.UUID
+	ensureErr          error
+	upsertErr          error
+	authorizeErr       error               // returned by AuthorizeClusterForProject (rollout_cluster check)
+	declarativeAuthErr error               // returned by AuthorizeDeclarativeTargetClusterForProject
+	existing           *store.DeployTarget // ResolveDeployTarget result; nil => ErrDeployTargetNotFound (a create)
+	resolveErr         error               // overrides existing: ResolveDeployTarget returns this
+	guardConflict      bool                // when true, UpsertDeployTargetGuarded returns ErrDeployTargetConflict
+	gotUpsert          store.DeployTargetInput
+	gotGuard           store.DeployTargetSoDGuard
+	log                *[]string
 }
 
 func (f *fakeRegistry) EnsureEnvironment(_ context.Context, _ uuid.UUID, _ string) (uuid.UUID, error) {
@@ -112,6 +113,14 @@ func (f *fakeRegistry) ResolveDeployTarget(_ context.Context, _ uuid.UUID, _ str
 func (f *fakeRegistry) AuthorizeClusterForProject(_ context.Context, _ uuid.UUID, cluster string) error {
 	*f.log = append(*f.log, "authorize-cluster:"+cluster)
 	return f.authorizeErr
+}
+
+// declarativeAuthErr is returned by AuthorizeDeclarativeTargetClusterForProject — the
+// SEPARATE helper, so a test can prove the declarative rule never leaks into the
+// imperative path (and vice versa).
+func (f *fakeRegistry) AuthorizeDeclarativeTargetClusterForProject(_ context.Context, _ uuid.UUID, cluster string) error {
+	*f.log = append(*f.log, "authorize-declarative:"+cluster)
+	return f.declarativeAuthErr
 }
 
 func (f *fakeRegistry) UpsertDeployTarget(_ context.Context, in store.DeployTargetInput) error {

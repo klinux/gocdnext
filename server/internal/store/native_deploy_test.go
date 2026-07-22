@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
@@ -137,5 +138,201 @@ func TestStampDeployWatchSyncRequested_Monotonic(t *testing.T) {
 	w, _ = s.GetDeployWatch(ctx, revID)
 	if !w.SyncRequestedAt.Equal(first) {
 		t.Fatalf("anchor moved: %v -> %v (want stable)", first, *w.SyncRequestedAt)
+	}
+}
+
+// seedDeclaredTakeover builds a run + cluster + registered target so a DECLARED takeover
+// has something to lock. Returns the ids the assertions need.
+func seedDeclaredTakeover(t *testing.T, pool *pgxpool.Pool, s *store.Store) (runID, jobUnitID, projectID, envID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	runID, _, _, _, jobUnitID = seedRunningJob(t, pool)
+	projectID = projectIDForRun(t, pool, runID)
+	if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+		Name: "prod-gke", AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+	}); err != nil {
+		t.Fatalf("cluster: %v", err)
+	}
+	var err error
+	if envID, err = s.EnsureEnvironment(ctx, projectID, "production"); err != nil {
+		t.Fatalf("env: %v", err)
+	}
+	if err := s.UpsertDeployTarget(ctx, store.DeployTargetInput{
+		EnvironmentID: envID, Provider: "argocd", Cluster: "prod-gke",
+		Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
+	}); err != nil {
+		t.Fatalf("target: %v", err)
+	}
+	return runID, jobUnitID, projectID, envID
+}
+
+func declaredInput(runID, jobUnitID, projectID, envID uuid.UUID) store.StartNativeDeployInput {
+	return store.StartNativeDeployInput{
+		JobRunID: jobUnitID, EnvironmentID: envID, RunID: runID, Version: "v1", DeployedBy: "svc",
+		ProjectID: projectID, SyncMode: "trigger", Cluster: "prod-gke", Application: "checkout",
+		Namespace: "argocd", ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
+	}
+}
+
+func wantExpectation() store.DeclaredTargetExpectation {
+	return store.DeclaredTargetExpectation{
+		Environment: "production", Cluster: "prod-gke",
+		Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
+	}
+}
+
+// assertNoTakeoverEffects is the assertion that matters: a refused declared takeover must
+// leave NOTHING behind. A partial effect (job flipped but no watch, or a revision with no
+// watch) is the failure mode the transaction exists to prevent.
+func assertNoTakeoverEffects(t *testing.T, pool *pgxpool.Pool, jobUnitID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobUnitID).Scan(&status); err != nil {
+		t.Fatalf("job row: %v", err)
+	}
+	if status == "running" {
+		t.Error("job was flipped to running despite a refused takeover")
+	}
+	var revisions, watches int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM deployment_revisions WHERE job_run_id=$1`, jobUnitID).Scan(&revisions)
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM deploy_watches dw
+		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+		WHERE dr.job_run_id=$1`, jobUnitID).Scan(&watches)
+	if revisions != 0 || watches != 0 {
+		t.Errorf("revisions=%d watches=%d, want 0/0 — a refused takeover left state behind", revisions, watches)
+	}
+}
+
+func TestStartNativeDeployDeclared_HappyPath(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	runID, jobUnitID, projectID, envID := seedDeclaredTakeover(t, pool, s)
+
+	res, outcome, err := s.StartNativeDeployDeclared(context.Background(),
+		declaredInput(runID, jobUnitID, projectID, envID), wantExpectation())
+	if err != nil {
+		t.Fatalf("declared takeover: %v", err)
+	}
+	if outcome != store.DeclaredTakeoverStarted || !res.Started {
+		t.Fatalf("outcome = %v res = %+v, want started", outcome, res)
+	}
+}
+
+// THE race the row lock exists for: a gate added between the reconcile and the takeover
+// must not produce an UNGATED deploy. StartNativeDeploy never re-reads deploy_targets,
+// so checking "just before" would not catch this.
+func TestStartNativeDeployDeclared_GateInWindowBlocksEverything(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	runID, jobUnitID, projectID, envID := seedDeclaredTakeover(t, pool, s)
+
+	// An admin gates the target after the reconcile decided it was ungated.
+	if _, err := pool.Exec(ctx,
+		`UPDATE deploy_targets SET governing_gate = '{"required":1}'::jsonb WHERE environment_id=$1`,
+		envID); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+
+	_, outcome, err := s.StartNativeDeployDeclared(ctx,
+		declaredInput(runID, jobUnitID, projectID, envID), wantExpectation())
+	if err != nil {
+		t.Fatalf("declared takeover: %v", err)
+	}
+	if outcome != store.DeclaredTakeoverGated {
+		t.Fatalf("outcome = %v, want Gated (terminal)", outcome)
+	}
+	assertNoTakeoverEffects(t, pool, jobUnitID)
+}
+
+// A base edit in the same window is a benign race with a concurrent change — retry, do
+// not fail. Table-driven over EVERY guarded field: a guard like this ends up "almost
+// right" when only the obvious one is exercised.
+func TestStartNativeDeployDeclared_BaseDriftInWindowRetries(t *testing.T) {
+	for _, tc := range []struct {
+		name, sql string
+		// extraCluster is inserted first when the mutation repoints the FK.
+		extraCluster string
+	}{
+		{name: "application", sql: `UPDATE deploy_targets SET application='other' WHERE environment_id=$1`},
+		{name: "namespace", sql: `UPDATE deploy_targets SET namespace='argocd-2' WHERE environment_id=$1`},
+		{name: "sync_mode", sql: `UPDATE deploy_targets SET sync_mode='observe' WHERE environment_id=$1`},
+		{
+			// The highest blast radius of the four: an undetected cluster change would
+			// send the deploy to a DIFFERENT cluster's Application in the gap between
+			// the reconcile and the takeover.
+			name:         "cluster",
+			sql:          `UPDATE deploy_targets SET cluster='other-hub' WHERE environment_id=$1`,
+			extraCluster: "other-hub",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := dbtest.SetupPool(t)
+			s := store.New(pool)
+			s.SetAuthCipher(newAuthCipher(t))
+			ctx := context.Background()
+			runID, jobUnitID, projectID, envID := seedDeclaredTakeover(t, pool, s)
+
+			if tc.extraCluster != "" {
+				if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+					Name: tc.extraCluster, AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+				}); err != nil {
+					t.Fatalf("extra cluster: %v", err)
+				}
+			}
+			if _, err := pool.Exec(ctx, tc.sql, envID); err != nil {
+				t.Fatalf("mutate: %v", err)
+			}
+			_, outcome, err := s.StartNativeDeployDeclared(ctx,
+				declaredInput(runID, jobUnitID, projectID, envID), wantExpectation())
+			if err != nil {
+				t.Fatalf("declared takeover: %v", err)
+			}
+			if outcome != store.DeclaredTakeoverDrifted {
+				t.Fatalf("outcome = %v, want Drifted (retry)", outcome)
+			}
+			assertNoTakeoverEffects(t, pool, jobUnitID)
+		})
+	}
+}
+
+// The watch is built from the LOCKED row, not the caller's pre-lock snapshot: rollout
+// routing changed since the reconcile must be ADOPTED (YAML does not own it), never
+// written back from a stale read.
+func TestStartNativeDeployDeclared_AdoptsRolloutRoutingFromTheLockedRow(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	runID, jobUnitID, projectID, envID := seedDeclaredTakeover(t, pool, s)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE deploy_targets SET rollout_aware=true, rollout_name='shop-canary' WHERE environment_id=$1`,
+		envID); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	// The caller's input still carries the PRE-pin values (rollout_aware=false).
+	_, outcome, err := s.StartNativeDeployDeclared(ctx,
+		declaredInput(runID, jobUnitID, projectID, envID), wantExpectation())
+	if err != nil {
+		t.Fatalf("declared takeover: %v", err)
+	}
+	if outcome != store.DeclaredTakeoverStarted {
+		t.Fatalf("outcome = %v, want Started (rollout routing is not compared)", outcome)
+	}
+	var aware bool
+	var name *string
+	if err := pool.QueryRow(ctx, `SELECT dw.rollout_aware, dw.rollout_name
+		FROM deploy_watches dw
+		JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+		WHERE dr.job_run_id=$1`, jobUnitID).Scan(&aware, &name); err != nil {
+		t.Fatalf("watch row: %v", err)
+	}
+	if !aware || name == nil || *name != "shop-canary" {
+		t.Fatalf("watch rollout_aware=%v name=%v, want the LOCKED row's values", aware, name)
 	}
 }

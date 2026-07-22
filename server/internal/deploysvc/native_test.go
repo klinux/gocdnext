@@ -32,9 +32,11 @@ type fakeNativeStore struct {
 	stampOK    bool
 	stampErr   error
 
-	startCalled bool
-	stampCalled bool
-	gotStartIn  store.StartNativeDeployInput
+	startCalled     bool
+	gotDeclared     *store.DeclaredTargetExpectation
+	declaredOutcome store.DeclaredTakeoverOutcome
+	stampCalled     bool
+	gotStartIn      store.StartNativeDeployInput
 }
 
 func (f *fakeNativeStore) ResolveDeployTarget(_ context.Context, _ uuid.UUID, _ string) (store.DeployTarget, error) {
@@ -45,6 +47,17 @@ func (f *fakeNativeStore) StartNativeDeploy(_ context.Context, in store.StartNat
 	f.startCalled = true
 	f.gotStartIn = in
 	return f.startRes, f.startErr
+}
+
+// declaredOutcome lets a test drive the guarded takeover's three refusals without a DB.
+func (f *fakeNativeStore) StartNativeDeployDeclared(_ context.Context, in store.StartNativeDeployInput, want store.DeclaredTargetExpectation) (store.StartNativeDeployResult, store.DeclaredTakeoverOutcome, error) {
+	f.startCalled = true
+	f.gotStartIn = in
+	f.gotDeclared = &want
+	if f.declaredOutcome != "" {
+		return store.StartNativeDeployResult{}, f.declaredOutcome, nil
+	}
+	return f.startRes, store.DeclaredTakeoverStarted, f.startErr
 }
 
 func (f *fakeNativeStore) StampDeployWatchSyncRequested(_ context.Context, _ uuid.UUID) (bool, error) {

@@ -282,6 +282,82 @@ type DeployDef struct {
 	// and it is ignored by a tracking-layer deploy (nothing to
 	// correlate).
 	Revision string `yaml:"revision,omitempty"`
+	// Target optionally DECLARES the native deploy target for this
+	// environment, so a team can describe its deploy in the repo instead
+	// of registering it out-of-band. Applied at dispatch, and only where
+	// the cluster permits self-service (see the cluster registry's
+	// allow_declarative_targets). It owns the ArgoCD base target ONLY —
+	// the approval gate is never expressible here, and the rollout
+	// routing is left to whatever is registered.
+	Target *TargetDef `yaml:"target,omitempty"`
+}
+
+// TargetDef is the YAML shape of `deploy.target` — the ArgoCD Application this
+// environment deploys, declared in the pipeline.
+//
+//	deploy:
+//	  environment: production
+//	  target:
+//	    cluster: prod-hub
+//	    application: shop-prod
+//	    namespace: argocd      # optional, defaults to argocd
+//	    sync_mode: trigger
+type TargetDef struct {
+	// Cluster is a registered cluster name — the cluster whose API hosts the
+	// ArgoCD Application CR (the hub), not the workload's destination.
+	Cluster string `yaml:"cluster"`
+	// Application is the ArgoCD Application name.
+	Application string `yaml:"application"`
+	// Namespace holds the Application CR. Defaults to argocd.
+	Namespace string `yaml:"namespace,omitempty"`
+	// SyncMode is `trigger` (gocdnext issues the sync) or `observe` (it only
+	// watches). REQUIRED — defaulting it would let an omission silently turn
+	// gocdnext into the thing that syncs an Application someone meant to only
+	// observe.
+	SyncMode string `yaml:"sync_mode"`
+}
+
+// UnmarshalYAML walks the mapping manually so unknown keys fail loud, matching
+// DeployDef's own strictness.
+func (t *TargetDef) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("deploy.target: must be an object (line %d) — e.g. `target: {cluster: prod-hub, application: shop, sync_mode: trigger}`", node.Line)
+	}
+	if len(node.Content)%2 != 0 {
+		return fmt.Errorf("deploy.target: mapping has odd number of nodes (malformed YAML)")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, val := node.Content[i], node.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			return fmt.Errorf("deploy.target: key at line %d is not a scalar", key.Line)
+		}
+		// Switch on the KEY before checking the value's shape: an unknown key deserves
+		// the unknown-key message whatever its value looks like. `governing_gate:
+		// {required: 1}` reporting "must be a scalar" would describe the wrong problem —
+		// the gate is not a badly-typed field, it is deliberately not settable here.
+		known := key.Value == "cluster" || key.Value == "application" ||
+			key.Value == "namespace" || key.Value == "sync_mode"
+		if !known {
+			return fmt.Errorf(
+				"deploy.target: unknown key %q at line %d — accepted keys are `cluster`, `application`, `sync_mode` (required) and `namespace` (optional). "+
+					"The approval gate is deliberately NOT settable from a pipeline",
+				key.Value, key.Line)
+		}
+		if val.Kind != yaml.ScalarNode {
+			return fmt.Errorf("deploy.target: `%s` at line %d must be a scalar", key.Value, val.Line)
+		}
+		switch key.Value {
+		case "cluster":
+			t.Cluster = val.Value
+		case "application":
+			t.Application = val.Value
+		case "namespace":
+			t.Namespace = val.Value
+		case "sync_mode":
+			t.SyncMode = val.Value
+		}
+	}
+	return nil
 }
 
 // UnmarshalYAML enforces the object form and walks the mapping
@@ -315,9 +391,17 @@ func (d *DeployDef) UnmarshalYAML(node *yaml.Node) error {
 				return fmt.Errorf("deploy: `revision` at line %d must be a scalar", val.Line)
 			}
 			d.Revision = val.Value
+		case "target":
+			// The one NON-scalar key: decode into TargetDef, whose own
+			// UnmarshalYAML keeps the same unknown-key strictness.
+			var t TargetDef
+			if err := val.Decode(&t); err != nil {
+				return err
+			}
+			d.Target = &t
 		default:
 			return fmt.Errorf(
-				"deploy: unknown key %q at line %d — accepted keys are `environment` (required), `version` and `revision` (optional). "+
+				"deploy: unknown key %q at line %d — accepted keys are `environment` (required), `version`, `revision` and `target` (optional). "+
 					"Common typo: `env` (use `environment`)",
 				key.Value, key.Line)
 		}

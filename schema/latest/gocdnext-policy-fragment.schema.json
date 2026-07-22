@@ -135,6 +135,10 @@
         "revision": {
           "type": "string",
           "description": "Revision is optional and pins the git commit a NATIVE deploy\ncorrelates against — the SHA ArgoCD reports as synced. Refs\nallowed (same non-secret allow-list as version). Empty derives\nthe anchor: a SHA-shaped version is used as-is, otherwise the\nrun's own commit. Set it when the Application's source is not\nthis run's commit (a separate GitOps repo, a chart, a monorepo\npath). It never replaces version, which stays the display label,\nand it is ignored by a tracking-layer deploy (nothing to\ncorrelate)."
+        },
+        "target": {
+          "$ref": "#/$defs/TargetDef",
+          "description": "Target optionally DECLARES the native deploy target for this\nenvironment, so a team can describe its deploy in the repo instead\nof registering it out-of-band. Applied at dispatch, and only where\nthe cluster permits self-service (see the cluster registry's\nallow_declarative_targets). It owns the ArgoCD base target ONLY —\nthe approval gate is never expressible here, and the rollout\nrouting is left to whatever is registered."
         }
       },
       "additionalProperties": false,
@@ -469,6 +473,34 @@
       },
       "additionalProperties": false,
       "type": "object"
+    },
+    "TargetDef": {
+      "properties": {
+        "cluster": {
+          "type": "string",
+          "description": "Cluster is a registered cluster name — the cluster whose API hosts the\nArgoCD Application CR (the hub), not the workload's destination."
+        },
+        "application": {
+          "type": "string",
+          "description": "Application is the ArgoCD Application name."
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Namespace holds the Application CR. Defaults to argocd."
+        },
+        "sync_mode": {
+          "type": "string",
+          "description": "SyncMode is `trigger` (gocdnext issues the sync) or `observe` (it only\nwatches). REQUIRED — defaulting it would let an omission silently turn\ngocdnext into the thing that syncs an Application someone meant to only\nobserve."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "cluster",
+        "application",
+        "sync_mode"
+      ],
+      "description": "TargetDef is the YAML shape of `deploy.target` — the ArgoCD Application this environment deploys, declared in the pipeline."
     },
     "WhenDef": {
       "properties": {

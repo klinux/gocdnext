@@ -55,3 +55,40 @@ func Emit(
 		}
 	}
 }
+
+// EmitAs records an event for a NON-HUMAN actor — today, a pipeline reconciling the
+// deploy target it declares in its own repo. Emit pulls the actor from the request
+// context, but a dispatch-time reconcile has no request and no user, so the row would
+// otherwise land with a nil actor and an empty email: indistinguishable from every other
+// system event, right where "who changed this deploy target?" has to be answerable.
+//
+// actorLabel is a RESERVED, non-email string (e.g. "pipeline:shop/release") stored in
+// actor_email. No schema change is needed: actor_email is TEXT NOT NULL DEFAULT ” with
+// no CHECK, actor_id is nullable, and uuid.Nil already lands as SQL NULL through
+// nullableUUID — the column's own migration comment anticipates a "system" sentinel.
+func EmitAs(
+	ctx context.Context,
+	log *slog.Logger,
+	s *store.Store,
+	actorLabel string,
+	action, targetType, targetID string,
+	metadata map[string]any,
+) {
+	if _, err := s.EmitAuditEvent(ctx, store.AuditEmit{
+		ActorID:    uuid.Nil,
+		ActorEmail: actorLabel,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		Metadata:   metadata,
+	}); err != nil {
+		if log != nil {
+			log.Warn("audit emit failed",
+				"action", action,
+				"target_type", targetType,
+				"target_id", targetID,
+				"actor", actorLabel,
+				"err", err)
+		}
+	}
+}

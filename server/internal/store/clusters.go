@@ -363,6 +363,12 @@ func (s *Store) DeleteCluster(ctx context.Context, id uuid.UUID) error {
 // CountClusterUsage returns the live dependents of a cluster name in
 // one round-trip — pipelines whose definition names it (jsonpath over
 // Jobs) and queued/running runs against those pipelines.
+//
+// A pipeline can name a cluster TWO ways: `cluster:` on the job, and a declared
+// `deploy.target.cluster`. Both count. The FK on deploy_targets.cluster does not cover
+// the second: it protects a REGISTERED target, while a declared-but-not-yet-reconciled
+// one has no row at all — so a cluster referenced only in YAML would otherwise be
+// deletable out from under the pipeline that names it.
 func (s *Store) CountClusterUsage(ctx context.Context, name string) (ClusterUsage, error) {
 	var u ClusterUsage
 	err := s.pool.QueryRow(ctx, `
@@ -370,7 +376,7 @@ func (s *Store) CountClusterUsage(ctx context.Context, name string) (ClusterUsag
             SELECT id FROM pipelines
             WHERE jsonb_path_exists(
                 definition,
-                '$.Jobs[*] ? (@.Cluster == $name)',
+                '$.Jobs[*] ? (@.Cluster == $name || @.Deploy.Target.Cluster == $name)',
                 jsonb_build_object('name', $1::text)
             )
         )
