@@ -252,10 +252,22 @@ func TestStartNativeDeployDeclared_GateInWindowBlocksEverything(t *testing.T) {
 // not fail. Table-driven over EVERY guarded field: a guard like this ends up "almost
 // right" when only the obvious one is exercised.
 func TestStartNativeDeployDeclared_BaseDriftInWindowRetries(t *testing.T) {
-	for _, tc := range []struct{ name, sql string }{
-		{"application", `UPDATE deploy_targets SET application='other' WHERE environment_id=$1`},
-		{"namespace", `UPDATE deploy_targets SET namespace='argocd-2' WHERE environment_id=$1`},
-		{"sync_mode", `UPDATE deploy_targets SET sync_mode='observe' WHERE environment_id=$1`},
+	for _, tc := range []struct {
+		name, sql string
+		// extraCluster is inserted first when the mutation repoints the FK.
+		extraCluster string
+	}{
+		{name: "application", sql: `UPDATE deploy_targets SET application='other' WHERE environment_id=$1`},
+		{name: "namespace", sql: `UPDATE deploy_targets SET namespace='argocd-2' WHERE environment_id=$1`},
+		{name: "sync_mode", sql: `UPDATE deploy_targets SET sync_mode='observe' WHERE environment_id=$1`},
+		{
+			// The highest blast radius of the four: an undetected cluster change would
+			// send the deploy to a DIFFERENT cluster's Application in the gap between
+			// the reconcile and the takeover.
+			name:         "cluster",
+			sql:          `UPDATE deploy_targets SET cluster='other-hub' WHERE environment_id=$1`,
+			extraCluster: "other-hub",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := dbtest.SetupPool(t)
@@ -264,6 +276,13 @@ func TestStartNativeDeployDeclared_BaseDriftInWindowRetries(t *testing.T) {
 			ctx := context.Background()
 			runID, jobUnitID, projectID, envID := seedDeclaredTakeover(t, pool, s)
 
+			if tc.extraCluster != "" {
+				if _, err := s.InsertCluster(ctx, newAuthCipher(t), store.ClusterInput{
+					Name: tc.extraCluster, AuthType: store.ClusterAuthKubeconfig, Credential: sampleKubeconfig,
+				}); err != nil {
+					t.Fatalf("extra cluster: %v", err)
+				}
+			}
 			if _, err := pool.Exec(ctx, tc.sql, envID); err != nil {
 				t.Fatalf("mutate: %v", err)
 			}

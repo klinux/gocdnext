@@ -125,12 +125,20 @@ func (r *Registrar) ReconcileDeclarativeTarget(ctx context.Context, in Declarati
 		return DeclarativeResult{Decision: ReconcileNoChange}, nil
 	}
 
-	// 5. On drift only: a preserved PIN can go stale. An Application's identity is
-	// cluster+namespace+application, so drift in ANY of them points at a different
-	// Application — and the watcher would sync the NEW one while still observing and
-	// promoting/aborting the OLD Rollout. Auto-discovered routing (all three empty) is
-	// safe: discovery re-resolves against the new Application.
-	if snapshot != nil && snapshot.RolloutAware &&
+	// 5. A preserved PIN can go stale — but only when the Application CHANGES.
+	//
+	// An Application's identity is cluster+namespace+application. Drift in any of those
+	// points at a different Application, and the watcher would sync the NEW one while
+	// still observing and promoting/aborting the OLD Rollout. Drift in `sync_mode`
+	// alone does NOT: it changes who issues the sync, not which object is deployed, so
+	// the pin stays valid and refusing it would be a false positive. Auto-discovered
+	// routing (all three empty) is exempt either way — discovery re-resolves against
+	// whatever Application the target now names.
+	identityChanged := snapshot != nil &&
+		(snapshot.Cluster != in.Cluster ||
+			snapshot.Application != in.Application ||
+			snapshot.Namespace != namespace)
+	if identityChanged && snapshot.RolloutAware &&
 		(snapshot.RolloutCluster != "" || snapshot.RolloutNamespace != "" || snapshot.RolloutName != "") {
 		return DeclarativeResult{
 			Decision: ReconcileTerminalFault,

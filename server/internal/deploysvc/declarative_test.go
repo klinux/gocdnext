@@ -160,6 +160,31 @@ func TestReconcileDeclarativeTarget_RefusesDriftAgainstPinnedRollout(t *testing.
 	}
 }
 
+// The pin guards the APPLICATION's identity, not the target wholesale. Switching
+// trigger<->observe changes who issues the sync, not which object is deployed — the pin
+// stays valid, so refusing it would be a false positive that blocks a legitimate edit.
+func TestReconcileDeclarativeTarget_PinnedRolloutAllowsSyncModeOnlyDrift(t *testing.T) {
+	tgt := registered()
+	tgt.RolloutAware = true
+	tgt.RolloutName = "shop-canary" // PINNED
+	reg := &fakeRegistry{existing: tgt, envID: uuid.New()}
+	r, _ := newRegistrar(&fakeProvider{}, reg)
+
+	in := declInput()
+	in.SyncMode = "observe" // identity untouched
+
+	res, err := r.ReconcileDeclarativeTarget(context.Background(), in)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if res.Decision != ReconcileChanged {
+		t.Fatalf("decision = %v (%s), want Changed — the pin still points at the same Application", res.Decision, res.Public)
+	}
+	if reg.gotUpsert.RolloutName != "shop-canary" {
+		t.Errorf("rollout_name = %q, want the pin preserved", reg.gotUpsert.RolloutName)
+	}
+}
+
 // A lost CAS is a benign race with a concurrent edit — the job stays queued and the next
 // tick decides. It must NOT be reported as a config fault.
 func TestReconcileDeclarativeTarget_LostCASIsRetryNotFault(t *testing.T) {

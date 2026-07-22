@@ -134,9 +134,11 @@ Consequences worth knowing:
 - A target that carries a **governing gate** refuses the declaration outright, even
   when the fields match. Remove `deploy.target` (the registered target governs) or ask
   an admin to ungate it.
-- A target with **pinned** rollout routing refuses a change to the Application
-  (`cluster`/`namespace`/`application`) — otherwise the deploy would sync one
-  Application while promoting another's Rollout. Change it via the UI/API.
+- A target with **pinned** rollout routing refuses a change to the Application's
+  identity (`cluster`, `namespace` or `application`) — otherwise the deploy would sync
+  one Application while promoting another's Rollout. Change it via the UI/API.
+  Switching `sync_mode` is fine: it changes who issues the sync, not which object is
+  deployed, so the pin stays valid.
 - Only **one** job may declare a target for a given environment, and two declarations
   must be identical: the target is 1:1 with the environment, so conflicting ones would
   flip it between runs. The apply fails naming both jobs.
