@@ -535,6 +535,10 @@ SELECT dw.deployment_revision_id, e.name AS environment, dr.version,
        -- Gate live-state (viewer-readable): the armed token to echo on approve/reject,
        -- the step, quorum, decision, and how many approvals are in so far.
        dw.gate_id, dw.gate_paused_step, dw.gate_required, dw.gate_decision,
+       -- The Rollout identity PINNED when the gate armed. It is what makes the
+       -- Environments card able to deep-link to the exact Rollout the gate governs
+       -- (a namespace can hold several). Config-class, so role-sanitised above.
+       dw.gate_rollout_cluster, dw.gate_rollout_namespace, dw.gate_rollout_name,
        (SELECT COUNT(*) FROM job_run_approvals a
         WHERE a.job_run_id = dr.job_run_id AND a.decision = 'approved')::int AS gate_approvals_now
 FROM deploy_watches dw
@@ -573,6 +577,9 @@ type ListDeployWatchesForProjectRow struct {
 	GatePausedStep         *int32
 	GateRequired           *int32
 	GateDecision           *string
+	GateRolloutCluster     *string
+	GateRolloutNamespace   *string
+	GateRolloutName        *string
 	GateApprovalsNow       int32
 }
 
@@ -618,6 +625,9 @@ func (q *Queries) ListDeployWatchesForProject(ctx context.Context, projectID pgt
 			&i.GatePausedStep,
 			&i.GateRequired,
 			&i.GateDecision,
+			&i.GateRolloutCluster,
+			&i.GateRolloutNamespace,
+			&i.GateRolloutName,
 			&i.GateApprovalsNow,
 		); err != nil {
 			return nil, err

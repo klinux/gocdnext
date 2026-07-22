@@ -134,6 +134,10 @@ type Props = {
   slug: string;
   cluster: string;
   canManage: boolean;
+  // focused marks the rollout a deep link named (the Environments card links to the one
+  // a gate pinned). Purely an accent + a scroll anchor — the list is never filtered, so
+  // the siblings an operator may want to weigh stay on screen.
+  focused?: boolean;
   onActed?: () => void;
 };
 
@@ -148,6 +152,7 @@ export function RolloutPanel({
   slug,
   cluster,
   canManage,
+  focused = false,
   onActed,
 }: Props) {
   const known =
@@ -155,9 +160,12 @@ export function RolloutPanel({
   const attn = known && rollout.phase === "Paused" && !rollout.aborted;
   return (
     <article
+      id={`rollout-${rollout.name}`}
+      // scroll-mt keeps the panel clear of the sticky chrome when scrolled into view.
       className={cn(
-        "overflow-hidden rounded-2xl border border-border bg-card",
+        "overflow-hidden rounded-2xl border border-border bg-card scroll-mt-24",
         attn ? "border-l-2 border-l-teal-500" : "",
+        focused ? "ring-2 ring-teal-500/60" : "",
       )}
     >
       <header className="flex flex-wrap items-center gap-3.5 border-b border-border/70 px-5 py-4">

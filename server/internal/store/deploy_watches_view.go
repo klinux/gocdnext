@@ -57,6 +57,14 @@ type DeployWatchView struct {
 	GateRequiredKnown   bool
 	GateDecision        string
 	GateApprovalsNow    int
+
+	// The Rollout identity PINNED when the gate armed — what Promote/Abort act on, and
+	// what lets the UI deep-link to the exact Rollout a gate governs (a namespace can
+	// hold several). Empty when no gate is armed. Config-class: it names a cluster and
+	// namespace, so the HTTP layer sanitises it by role like Cluster/Application.
+	GateRolloutCluster   string
+	GateRolloutNamespace string
+	GateRolloutName      string
 }
 
 // ListDeployWatchesForProject returns the project's in-flight native deploys.
@@ -100,6 +108,9 @@ func (s *Store) ListDeployWatchesForProject(ctx context.Context, projectID uuid.
 			GateRequiredKnown:      r.GateRequired != nil,
 			GateDecision:           stringValue(r.GateDecision),
 			GateApprovalsNow:       int(r.GateApprovalsNow),
+			GateRolloutCluster:     stringValue(r.GateRolloutCluster),
+			GateRolloutNamespace:   stringValue(r.GateRolloutNamespace),
+			GateRolloutName:        stringValue(r.GateRolloutName),
 		})
 	}
 	return out, nil

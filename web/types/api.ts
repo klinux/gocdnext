@@ -899,6 +899,12 @@ export type DeployWatch = {
   gate_required?: number;
   gate_decision?: "" | "approved" | "rejected";
   gate_approvals_now?: number;
+  // The Rollout identity pinned when the gate armed — what the Environments card uses
+  // to deep-link to the exact Rollout a gate governs. Maintainer-only (config-class),
+  // so undefined for a viewer.
+  gate_rollout_cluster?: string;
+  gate_rollout_namespace?: string;
+  gate_rollout_name?: string;
 
   application?: string;
   cluster?: string;

@@ -402,9 +402,15 @@ maintainer+/admin-gated (below):
   *"analysis inconclusive: success-rate 0.91 < 0.95"*, not a bare
   "Paused". Backed by `GET /api/v1/projects/{slug}/deploy-watches`
   (viewer-readable, but config fields are maintainer-only).
-- **Approval prompt** — when a canary gate is armed, an amber *Canary
-  paused · awaiting approval (N/M)* banner with **Approve** / **Reject**
-  appears on the card. The server enforces the approvers allow-list and
+- **Approval notice** — when a canary gate is armed, an amber *Canary
+  paused · awaiting approval (N/M)* banner appears on the card with a
+  **Review and decide** link. The decision itself is made on the
+  Rollouts tab (below), where the steps, traffic split
+  and analysis that should justify it are visible; the card reports, it
+  does not act. The link carries the Rollout identity **pinned when the
+  gate armed**, so it lands on the exact rollout even when the namespace
+  holds several. A viewer sees the notice but no link — the rollouts read
+  is maintainer-gated. The server enforces the approvers allow-list and
   the `gate_id` token, so a stale tab voting on a superseded step gets a
   clear 409.
 - **Server logs** — the watch loop emits `watch_claimed`,

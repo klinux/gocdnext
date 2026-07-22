@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw, Rocket } from "lucide-react";
 
@@ -42,6 +43,11 @@ type Props = {
   // route is maintainer-gated, so a viewer never reaches this page; the flag is defence
   // in depth (and the server re-enforces every action).
   canManage: boolean;
+  // focusName anchors the view on ONE rollout — the deep link from the Environments
+  // card names the rollout a gate pinned. It highlights and scrolls to it but does NOT
+  // filter: sibling rollouts in the namespace are context an operator may want before
+  // approving, and this page carries control actions.
+  focusName?: string;
 };
 
 // RolloutsLive wraps the server-fetched snapshot and re-polls it every ~5s
@@ -55,7 +61,20 @@ export function RolloutsLive({
   apiBaseURL,
   initialData,
   canManage,
+  focusName,
 }: Props) {
+  // Scroll the deep-linked rollout into view ONCE. Guarded by a ref so the 5s poll
+  // (which re-renders on every tick) can't yank the page back under the operator while
+  // they are reading a sibling panel.
+  const scrolled = useRef(false);
+  useEffect(() => {
+    if (!focusName || scrolled.current) return;
+    const el = document.getElementById(`rollout-${focusName}`);
+    if (!el) return; // not in this namespace (or not loaded yet) — leave the view alone
+    scrolled.current = true;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [focusName]);
+
   const { data, isFetching, isError, refetch } = useQuery({
     queryKey: ["rollouts", slug, cluster, namespace],
     queryFn: () => fetchRollouts(apiBaseURL, slug, cluster, namespace),
@@ -114,6 +133,7 @@ export function RolloutsLive({
               slug={slug}
               cluster={cluster}
               canManage={canManage}
+              focused={!!focusName && r.name === focusName}
               onActed={() => refetch()}
             />
           ))}
