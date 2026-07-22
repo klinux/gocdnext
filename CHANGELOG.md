@@ -8,6 +8,65 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.72.0 — 2026-07-21
+
+The **native ArgoCD deployment provider and gate-driven Argo Rollouts control**
+(ADR-0001) — gocdnext observes and controls a delivery, ArgoCD stays the
+reconciler. Server-managed (no agent), reached through the registered-cluster
+transport.
+
+### Added
+
+- **Native ArgoCD deploy provider (Phase 1).** Register a deploy target per
+  environment (`provider: argocd`, cluster/application/namespace, `sync_mode:
+  trigger | observe`); the server observes the Application's sync/health, drives
+  a manual sync in `trigger` mode, and tracks convergence through a **resumable,
+  claim/lease-fenced watch loop** — a server restart mid-deploy reclaims the
+  watch and continues. Maintainer-managed targets with a dialog; the Environments
+  card surfaces the target and a **live in-flight deploy chip**; a role-sanitised
+  `/deploy-watches` read backs it (#154, UI-1/2/3, #157).
+- **Gate-driven Argo Rollouts control (Phase 2).** A canary paused at an
+  indefinite `pause: {}` step maps to a gocdnext **approval gate** — approve →
+  `Promote`, reject → `Abort` (**reverts traffic to the stable ReplicaSet, not a
+  Git revert**). Reuses the hardened voting/quorum/groups engine. Each pause step
+  arms a **fresh gate token** (a stale tab voting on a superseded step → 409); the
+  deploy **never finalizes success while the Rollout is still progressing**
+  (no-early-finalize); the deadline is suspended only while awaiting the human;
+  control mode **fails closed** on an observe error (never App-health finalize);
+  `governing_gate` and the rollout routing are **admin-only** to edit on a gated
+  target (separation of duties). Promote/Abort act on the **pinned** Rollout
+  identity resolved at arm time, never a re-discovery (#158).
+- **Rollouts dashboard** (`/projects/{slug}/rollouts`). Live canary and
+  blue-green panels — steps timeline, traffic split, revision strip, AnalysisRun
+  panel, and blue-green active/preview blocks. Gate correlation surfaces
+  **Approve/Reject** on the exact Rollout a gate governs; **direct Promote/Abort**
+  for non-gated rollouts (fail-closed with a 409 when a gate is armed — a gated
+  decision must flow through the audited vote path). A **quick-pick** of the
+  project's configured rollout targets removes the guess-the-namespace trap (the
+  Rollout CR lives in the workload namespace, not the `argo-rollouts` controller
+  ns) (#162, #163, #164, #165, #166).
+- **Rollouts read API** — list + rich observe (steps, current step, phase/message,
+  stable/pod hashes, image, analysis), role-sanitised (#162).
+- **AnalysisRun state** surfaced read-only on observed rollouts (Phase 2c, #159).
+- **Admin-only environment hard-delete.** Removes the environment and its deploy
+  history; refuses with **409** while a deploy is active. Environments are lazy,
+  so a later deploy to the same name re-creates it empty (#161).
+
+### Fixed
+
+- **Fail loud when a cluster API response exceeds 4 MiB** instead of silently
+  truncating the read (#160).
+- **Manual ArgoCD sync inherits the Application's `syncOptions`** — a triggered
+  sync no longer drops options the App declares (#152).
+- **Collapse the cluster existence/authorization oracle** across resolution
+  flows so a caller can't distinguish "no such cluster" from "not authorized"
+  (#155, #156).
+
+### Docs
+
+- Document the native ArgoCD deploy provider and the gate-driven rollout model,
+  including **Reject = abort (traffic → stable), not a Git revert** (#153).
+
 ## v0.71.1 — 2026-07-04
 
 ### Fixed
