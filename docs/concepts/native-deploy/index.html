@@ -126,10 +126,13 @@ future phase in
 <a href="https://github.com/klinux/gocdnext/blob/main/adr/0001-native-argocd-rollouts-deployment-provider.md">ADR-0001</a>.</p>
 </blockquote>
 <h2 id="registering-a-target">Registering a target</h2>
-<p>Registration is <strong>API-only today</strong> (a maintainer UI dialog is not yet
-shipped) and <strong>maintainer-gated</strong> — list, upsert, and delete all
-require the <code dir="auto">maintainer</code> role, because the target reveals which
-cluster / Application / namespace an environment deploys to.</p>
+<p>Register a target from the <strong>maintainer dialog</strong> on the
+<a href="#what-the-operator-sees">Environments card</a>, or via the API below. Both
+paths are <strong>maintainer-gated</strong> — list, upsert, and delete all require the
+<code dir="auto">maintainer</code> role, because the target reveals which cluster / Application
+/ namespace an environment deploys to. (A target that carries a
+<code dir="auto">governing_gate</code> tightens the gate <strong>and</strong> its rollout routing to
+<strong>admin</strong> — see <a href="#gate-driven-canary-rollouts">gate-driven rollouts</a>.)</p>
 <div class="expressive-code"><link rel="stylesheet" href="/gocdnext/docs/_astro/ec.j8ofn.css"><script type="module" src="/gocdnext/docs/_astro/ec.8zarh.js"></script><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#809191;--1:#616671"># Upsert the target for one environment (1:1, keyed on environment).</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3C63B3">curl</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3C63B3">-sS</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3C63B3">-X</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3C63B3">POST</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3C63B3">-H</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#9B504E">Authorization: Bearer </span><span style="--0:#C5E478;--1:#3C63B3">$GOCDNEXT_TOKEN</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3C63B3">-H</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#9B504E">Content-Type: application/json</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#ECC48D;--1:#3C63B3">https://gocdnext.example.com/api/v1/projects/shop/deploy-targets</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3C63B3">-d</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#9B504E">{</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#9B504E">    </span></span><span style="--0:#ECC48D;--1:#9B504E">"environment": "production",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#9B504E">    </span></span><span style="--0:#ECC48D;--1:#9B504E">"cluster":     "argocd-hub",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#9B504E">    </span></span><span style="--0:#ECC48D;--1:#9B504E">"application": "shop-prod",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#9B504E">    </span></span><span style="--0:#ECC48D;--1:#9B504E">"namespace":   "argocd",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#9B504E">    </span></span><span style="--0:#ECC48D;--1:#9B504E">"sync_mode":   "trigger"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#9B504E">  </span></span><span style="--0:#ECC48D;--1:#9B504E">}</span><span style="--0:#D9F5DD;--1:#111111">'</span></div></div></code></pre><div class="copy"><button title="Copy to clipboard" data-copied="Copied!" data-code="curl -sS -X POST \  -H &#x22;Authorization: Bearer $GOCDNEXT_TOKEN&#x22; \  -H &#x22;Content-Type: application/json&#x22; \  https://gocdnext.example.com/api/v1/projects/shop/deploy-targets \  -d &#x27;{    &#x22;environment&#x22;: &#x22;production&#x22;,    &#x22;cluster&#x22;:     &#x22;argocd-hub&#x22;,    &#x22;application&#x22;: &#x22;shop-prod&#x22;,    &#x22;namespace&#x22;:   &#x22;argocd&#x22;,    &#x22;sync_mode&#x22;:   &#x22;trigger&#x22;  }&#x27;"><div></div></button></div></figure></div>
 
 
@@ -328,13 +331,28 @@ run <strong>aborts</strong> the rollout too.</li>
 Application health alone — but a <strong>reject still aborts</strong> (abort is safe;
 promote is not).</p>
 <h2 id="what-the-operator-sees">What the operator sees</h2>
-<p>The web UI is <strong>read-only</strong> for native targets (registration is the API
-above):</p>
+<p>Targets are registered from the <strong>maintainer dialog</strong> on the Environments
+card; observation is visible to viewers, and the rollout controls are
+maintainer+/admin-gated (below):</p>
 <ul>
 <li><strong>Environments card</strong> — a native row per environment: <em>Native ·
 ArgoCD · app <code dir="auto">&#x3C;application></code> · cluster <code dir="auto">&#x3C;cluster></code> · <code dir="auto">&#x3C;sync_mode></code></em>
-(an eye icon for <code dir="auto">observe</code>, a refresh icon for <code dir="auto">trigger</code>). The config
+(an eye icon for <code dir="auto">observe</code>, a refresh icon for <code dir="auto">trigger</code>). A maintainer
+gets an <strong>Add / edit target</strong> dialog here (and, for an admin,
+<strong>Remove</strong> — a hard-delete that also drops the environment’s deploy
+history, refused with a <strong>409</strong> while a deploy is in flight). The config
 detail is maintainer-only.</li>
+<li><strong>Rollouts dashboard</strong> (<code dir="auto">/projects/{slug}/rollouts</code>) — a live view, per
+cluster + namespace, of every canary and blue-green <code dir="auto">Rollout</code>: steps
+timeline, traffic split, revision strip, and AnalysisRun. When a gate
+governs a Rollout it surfaces <strong>Approve / Reject</strong> on that exact
+Rollout; for a <strong>non-gated</strong> rollout a maintainer gets <strong>direct Promote
+/ Abort</strong> (a gated rollout refuses direct control with a <strong>409</strong> — the
+decision must flow through the audited vote path, never a bypass). A
+<strong>quick-pick</strong> lists the project’s configured rollout targets so you
+never have to guess the pair — remember the <code dir="auto">Rollout</code> CR lives in the
+<strong>workload</strong> namespace, <em>not</em> the <code dir="auto">argo-rollouts</code> <strong>controller</strong>
+namespace (which holds zero Rollouts).</li>
 <li><strong>Live watch chip</strong> — while a native deploy is in flight, a chip
 shows <code dir="auto">Deploying</code> → <code dir="auto">Syncing</code> (once the sync is requested) →
 <code dir="auto">Degraded &#x3C;time></code> if health drops. A rollout-aware deploy shows canary
