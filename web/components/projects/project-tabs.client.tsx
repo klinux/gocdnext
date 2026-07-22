@@ -102,19 +102,28 @@ const tabs: Tab[] = [
   },
 ];
 
-type Props = { slug: string };
+type Props = {
+  slug: string;
+  // showRollouts hides the Rollouts tab for a project that has no
+  // rollout-aware deploy target — a service shipping a plain Deployment has
+  // no Rollout to show, so the tab would only ever lead to a dead form. Also
+  // false for a viewer (the rollouts read is maintainer-gated, so they could
+  // not load it anyway). The route stays reachable by URL.
+  showRollouts?: boolean;
+};
 
 // ProjectTabs is the top-level nav inside a project — a row of Next
 // Links (real navigation, so `nav` + aria-current, not a tablist). The
 // active section is decided by pathname matching. Styled as a segmented
 // row: transparent track, the active tab takes the brand teal tint —
 // the shared pill language (see lib/tab-pill for the shadcn Tabs variants).
-export function ProjectTabs({ slug }: Props) {
+export function ProjectTabs({ slug, showRollouts = false }: Props) {
   const pathname = usePathname();
+  const visible = tabs.filter((t) => t.label !== "Rollouts" || showRollouts);
 
   return (
     <nav aria-label="Project sections" className="flex flex-wrap gap-1">
-      {tabs.map((tab) => {
+      {visible.map((tab) => {
         const Icon = tab.icon;
         const isActive = tab.match(pathname, slug);
         return (
