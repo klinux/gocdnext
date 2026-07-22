@@ -8,6 +8,62 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.73.0 — 2026-07-22
+
+Adopting native ArgoCD deploys no longer costs you your release label, and a team
+can describe its own deploy target in the repo.
+
+### Added
+
+- **`deploy.revision` — the correlation anchor, separated from the ledger label
+  (#169).** `deploy.version` carried two jobs: the version shown on the Environments
+  card, and the anchor the native watch matches against the SHA ArgoCD reports. Native
+  therefore demanded the string *be* a SHA, so a release label like
+  `1.${{ CI_UPSTREAM_RUN_COUNTER }}.${{ CI_COMMIT_SHORT_SHA }}` — explicitly valid for a
+  tracking-layer deploy — failed terminally.
+
+  The anchor is now resolved as a ladder: an explicit `revision:` wins, else a
+  SHA-shaped `version` stays a deliberate pin (unchanged), else the run's own commit. A
+  non-SHA `version` no longer fails. The ladder carries a post-condition on its
+  **output** — the anchor is a full 40-hex SHA or a terminal error — which also closes a
+  latent hole: the previous code returned the run's commit *unvalidated*, so a non-git
+  material could pin the watch to a tag or a UUID and stall until the deadline.
+
+  Note the fallback assumes the run's commit is the Application's **source** revision.
+  If your manifests live elsewhere (a separate GitOps repo, a chart, a monorepo path),
+  pin `revision:` — otherwise the watch waits for a revision that never arrives.
+
+- **`deploy.target` — declare the native deploy target in the pipeline.** The pipeline
+  owns the ArgoCD base target (`cluster`, `application`, `namespace`, `sync_mode`) and
+  nothing else: the approval gate is never expressible from YAML, and rollout routing is
+  preserved rather than cleared by a value the file cannot describe. Applied at
+  **dispatch** (the automatic apply path has no authenticated user), while apply still
+  gates shape and cluster existence so a typo fails fast.
+
+  Refused when it would be unsafe: a **gated** target (remove `deploy.target` or ask an
+  admin to ungate), a change to the Application's identity on a target with **pinned**
+  rollout routing (it would sync one Application while promoting another's Rollout), and
+  **conflicting** declarations for one environment (the target is 1:1 with it, so two
+  would flip it between runs — the apply fails naming both jobs).
+
+- **`allow_declarative_targets` on a cluster (#174).** Self-service is a property of the
+  cluster: an **open** cluster (empty `allowed_projects`) permits it, since any project
+  could already target it; a **governed** one denies it by default, because an admin
+  curated who may use it; the new flag opts a governed cluster in, still limited to the
+  listed projects.
+
+### Changed
+
+- **Rollout control lives in one place — the Rollouts tab.** Gate Approve/Reject existed
+  both there and on the Environments card, while direct Promote/Abort was tab-only. The
+  card now reports and links to the exact rollout a gate pinned (cluster + namespace +
+  name); the tab acts. **Approving therefore requires maintainer access** — the
+  approve/reject API route stays viewer-level by design, so a viewer named as an
+  approver can still vote via the API.
+- The correlation revision is surfaced next to the version in the rollout, gate and
+  degraded states, which previously replaced the chip text and hid it exactly when a
+  stalled deploy needed debugging.
+
 ## v0.72.2 — 2026-07-22
 
 ### Fixed
