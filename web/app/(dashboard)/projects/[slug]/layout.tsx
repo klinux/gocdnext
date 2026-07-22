@@ -3,9 +3,11 @@ import type { ReactNode } from "react";
 
 import { ProjectActionsMenu } from "@/components/projects/project-actions-menu.client";
 import { ProjectTabs } from "@/components/projects/project-tabs.client";
+import { rolloutPicksFromTargets } from "@/lib/rollouts";
 import {
   GocdnextAPIError,
   getProjectDetail,
+  listDeployTargets,
 } from "@/server/queries/projects";
 
 type Params = { slug: string };
@@ -26,12 +28,25 @@ export default async function ProjectLayout({
   const { slug } = await params;
 
   let detail;
+  // The Rollouts tab only earns its place when this project actually has a
+  // rollout-aware deploy target. Fetched in parallel with the detail so it
+  // costs no extra wall-clock, and best-effort: the deploy-targets read is
+  // maintainer-gated, so a viewer's 403 collapses to "no tab" — which is
+  // right, since the rollouts read is maintainer-gated too.
+  let showRollouts = false;
   try {
     // runs=1 keeps the layout's fetch lean — it only needs
     // project metadata + scm_source + counts for the actions
     // menu. Sub-pages that need the richer runs/pipelines data
     // re-fetch at their own depth.
-    detail = await getProjectDetail(slug, 1);
+    const [d, targets] = await Promise.all([
+      getProjectDetail(slug, 1),
+      listDeployTargets(slug)
+        .then((r) => r.deploy_targets)
+        .catch(() => []),
+    ]);
+    detail = d;
+    showRollouts = rolloutPicksFromTargets(targets).length > 0;
   } catch (err) {
     if (err instanceof GocdnextAPIError && err.status === 404) notFound();
     throw err;
@@ -60,7 +75,7 @@ export default async function ProjectLayout({
         </div>
       </header>
 
-      <ProjectTabs slug={slug} />
+      <ProjectTabs slug={slug} showRollouts={showRollouts} />
 
       <div>{children}</div>
     </section>
