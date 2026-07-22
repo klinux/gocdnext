@@ -158,7 +158,7 @@ export function EnvironmentCard({
         {/* Armed canary gate (ADR-0001 Phase 2): the approval prompt + Approve/Reject.
             The server enforces the approvers allow-list + the gate_id token. */}
         {watch?.gate_id && !watch.gate_decision ? (
-          <RolloutGatePrompt slug={slug} watch={watch} environment={environment.name} />
+          <RolloutGatePrompt slug={slug} watch={watch} canManage={canManage} />
         ) : null}
 
         {deployTarget ? (

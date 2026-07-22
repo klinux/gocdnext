@@ -129,6 +129,87 @@ func TestListDeployWatches_RoleSanitized(t *testing.T) {
 	}
 }
 
+// The Rollout identity pinned at arm time is what the Environments card deep-links
+// with, and it names a cluster + namespace — config-class. It must follow the same
+// role rule as application/cluster/sync_mode, which the sanitisation test above does
+// not reach because an unarmed watch leaves those columns NULL.
+func TestListDeployWatches_PinnedRolloutIdentityIsMaintainerOnly(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	seedProjectAndCluster(t, s)
+	detail, err := s.GetProjectDetail(ctx, "demo", 1)
+	if err != nil {
+		t.Fatalf("project detail: %v", err)
+	}
+	projectID := detail.Project.ID
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("ensure env: %v", err)
+	}
+	revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, Attempt: 0, Version: "1.4.2", DeployedBy: "svc",
+	})
+	if err != nil {
+		t.Fatalf("revision: %v", err)
+	}
+	if _, err := s.CreateDeployWatch(ctx, store.DeployWatchInput{
+		DeploymentRevisionID: revID, ProjectID: projectID, SyncMode: "trigger",
+		Cluster: "prod", Application: "checkout", Namespace: "argocd",
+		ExpectedRevision: "abc0123456789", DeadlineAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	// Pin the identity directly: the arming mechanics are fenced on a claim and covered
+	// elsewhere; what is under test here is the HTTP layer's role sanitisation.
+	if _, err := pool.Exec(ctx, `UPDATE deploy_watches
+		SET gate_id = gen_random_uuid(), gate_required = 1, gate_paused_step = 2,
+		    gate_rollout_cluster = 'prod-hub', gate_rollout_namespace = 'shop',
+		    gate_rollout_name = 'shop-canary'
+		WHERE deployment_revision_id = $1`, revID); err != nil {
+		t.Fatalf("pin gate identity: %v", err)
+	}
+
+	h := projects.NewHandler(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := chi.NewRouter()
+	r.Get("/api/v1/projects/{slug}/deploy-watches", h.ListDeployWatches)
+
+	pinned := []string{"gate_rollout_cluster", "gate_rollout_namespace", "gate_rollout_name"}
+	want := map[string]string{
+		"gate_rollout_cluster":   "prod-hub",
+		"gate_rollout_namespace": "shop",
+		"gate_rollout_name":      "shop-canary",
+	}
+
+	m := deployWatchesReq(r, store.RoleMaintainer)
+	mws, _ := m["deploy_watches"].([]any)
+	if len(mws) != 1 {
+		t.Fatalf("maintainer watches = %v, want 1", mws)
+	}
+	mw, _ := mws[0].(map[string]any)
+	for _, k := range pinned {
+		if mw[k] != want[k] {
+			t.Errorf("maintainer %s = %v, want %q — the card cannot build an exact link without it", k, mw[k], want[k])
+		}
+	}
+	// The gate live-state itself stays viewer-readable; only the identity is gated.
+	if mw["gate_id"] == nil {
+		t.Error("maintainer must still see gate_id")
+	}
+
+	v := deployWatchesReq(r, store.RoleViewer)
+	vws, _ := v["deploy_watches"].([]any)
+	vw, _ := vws[0].(map[string]any)
+	for _, k := range pinned {
+		if _, present := vw[k]; present {
+			t.Errorf("viewer leaked pinned rollout identity %q: %v", k, vw)
+		}
+	}
+	if vw["gate_id"] == nil {
+		t.Error("viewer must still see gate_id (the gate live-state is viewer-readable)")
+	}
+}
+
 func TestListDeployWatches_RolloutSnapshot(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)

@@ -46,6 +46,10 @@ export default async function RolloutsPage({
   const sp = await searchParams;
   const cluster = firstParam(sp.cluster);
   const namespace = firstParam(sp.namespace);
+  // Optional: the deep link from the Environments card names the rollout a gate pinned,
+  // so the operator lands on the right panel in a namespace that holds several. Absent
+  // behaves exactly as before.
+  const focusName = firstParam(sp.name);
   const basePath = `/projects/${slug}/rollouts`;
 
   // Needs-params state: ask for cluster + namespace instead of hard-failing.
@@ -116,6 +120,7 @@ export default async function RolloutsPage({
       apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
       initialData={initialData}
       canManage={canManage}
+      focusName={focusName}
     />
   );
 }
