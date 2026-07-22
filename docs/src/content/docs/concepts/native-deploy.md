@@ -45,10 +45,13 @@ controller — it asks ArgoCD to sync, then watches the Application's
 
 ## Registering a target
 
-Registration is **API-only today** (a maintainer UI dialog is not yet
-shipped) and **maintainer-gated** — list, upsert, and delete all
-require the `maintainer` role, because the target reveals which
-cluster / Application / namespace an environment deploys to.
+Register a target from the **maintainer dialog** on the
+[Environments card](#what-the-operator-sees), or via the API below. Both
+paths are **maintainer-gated** — list, upsert, and delete all require the
+`maintainer` role, because the target reveals which cluster / Application
+/ namespace an environment deploys to. (A target that carries a
+`governing_gate` tightens the gate **and** its rollout routing to
+**admin** — see [gate-driven rollouts](#gate-driven-canary-rollouts).)
 
 ```bash
 # Upsert the target for one environment (1:1, keyed on environment).
@@ -334,13 +337,28 @@ promote is not).
 
 ## What the operator sees
 
-The web UI is **read-only** for native targets (registration is the API
-above):
+Targets are registered from the **maintainer dialog** on the Environments
+card; observation is visible to viewers, and the rollout controls are
+maintainer+/admin-gated (below):
 
 - **Environments card** — a native row per environment: *Native ·
   ArgoCD · app `<application>` · cluster `<cluster>` · `<sync_mode>`*
-  (an eye icon for `observe`, a refresh icon for `trigger`). The config
+  (an eye icon for `observe`, a refresh icon for `trigger`). A maintainer
+  gets an **Add / edit target** dialog here (and, for an admin,
+  **Remove** — a hard-delete that also drops the environment's deploy
+  history, refused with a **409** while a deploy is in flight). The config
   detail is maintainer-only.
+- **Rollouts dashboard** (`/projects/{slug}/rollouts`) — a live view, per
+  cluster + namespace, of every canary and blue-green `Rollout`: steps
+  timeline, traffic split, revision strip, and AnalysisRun. When a gate
+  governs a Rollout it surfaces **Approve / Reject** on that exact
+  Rollout; for a **non-gated** rollout a maintainer gets **direct Promote
+  / Abort** (a gated rollout refuses direct control with a **409** — the
+  decision must flow through the audited vote path, never a bypass). A
+  **quick-pick** lists the project's configured rollout targets so you
+  never have to guess the pair — remember the `Rollout` CR lives in the
+  **workload** namespace, *not* the `argo-rollouts` **controller**
+  namespace (which holds zero Rollouts).
 - **Live watch chip** — while a native deploy is in flight, a chip
   shows `Deploying` → `Syncing` (once the sync is requested) →
   `Degraded <time>` if health drops. A rollout-aware deploy shows canary
