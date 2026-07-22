@@ -16,6 +16,8 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/crypto"
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/retention"
+	"github.com/google/uuid"
+
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -457,4 +459,77 @@ func auditHasTarget(events []store.AuditEvent, targetID string) bool {
 		}
 	}
 	return false
+}
+
+// allow_declarative_targets is a full-PUT field, so a client that predates it omits the
+// key entirely. A plain bool would decode that as false and silently revoke a
+// self-service opt-in on any unrelated edit — hence the *bool + preserve-when-absent.
+func TestClusters_LegacyPutPreservesDeclarativeFlag(t *testing.T) {
+	s, _, srv := newClusterHandler(t)
+	ctx := context.Background()
+
+	create := bytes.NewBufferString(`{
+        "name": "prod-gke",
+        "auth_type": "kubeconfig",
+        "credential": "apiVersion: v1\nkind: Config\nclusters: []\n",
+        "allowed_projects": ["proj-a"],
+        "allow_declarative_targets": true
+    }`)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/clusters", create)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		ID                      string `json:"id"`
+		AllowDeclarativeTargets bool   `json:"allow_declarative_targets"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !created.AllowDeclarativeTargets {
+		t.Fatal("create did not persist allow_declarative_targets")
+	}
+
+	// A legacy PUT: every field the old client knew about, and NOT the new one.
+	legacy := bytes.NewBufferString(`{
+        "name": "prod-gke",
+        "description": "edited by an old client",
+        "auth_type": "kubeconfig",
+        "credential": "` + store.SecretPreserveSentinel + `",
+        "allowed_projects": ["proj-a"]
+    }`)
+	rr = request(srv, http.MethodPut, "/api/v1/admin/clusters/"+created.ID, legacy)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("update status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	got, err := s.GetCluster(ctx, uuid.MustParse(created.ID))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.AllowDeclarativeTargets {
+		t.Fatal("a legacy PUT revoked allow_declarative_targets by omission")
+	}
+	if got.Description != "edited by an old client" {
+		t.Fatalf("the rest of the edit did not apply: %+v", got)
+	}
+
+	// And an EXPLICIT false still turns it off — preserve-when-absent must not become
+	// "can never be disabled".
+	off := bytes.NewBufferString(`{
+        "name": "prod-gke",
+        "auth_type": "kubeconfig",
+        "credential": "` + store.SecretPreserveSentinel + `",
+        "allowed_projects": ["proj-a"],
+        "allow_declarative_targets": false
+    }`)
+	if rr = request(srv, http.MethodPut, "/api/v1/admin/clusters/"+created.ID, off); rr.Code != http.StatusNoContent {
+		t.Fatalf("disable status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if got, err = s.GetCluster(ctx, uuid.MustParse(created.ID)); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AllowDeclarativeTargets {
+		t.Fatal("an explicit false did not disable the opt-in")
+	}
 }
