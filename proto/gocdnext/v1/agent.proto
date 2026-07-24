@@ -72,8 +72,16 @@ message AgentMessage {
     CleanupRunServicesResult  cleanup_run_services_result  = 6;
     ServiceLifecycle          service_lifecycle            = 7;
     CoverageSummary           coverage                     = 8;
+    Draining                  draining                     = 9;
   }
 }
+
+// Draining tells the server the agent is shutting down gracefully and must not
+// be sent NEW job assignments — its in-flight jobs keep running until they
+// finish or the agent's drain budget expires. Self-scoped: the server learns the
+// session from the stream, so an agent can only drain its own session. Carries
+// no data.
+message Draining {}
 
 // ServiceLifecycle reports the agent-observable state transitions
 // of a pipeline-level service Pod: starting (Pod create issued),
