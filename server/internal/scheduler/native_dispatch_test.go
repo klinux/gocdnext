@@ -71,6 +71,7 @@ func TestDispatchRun_NativeTakeover(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "native-take-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, run.RunID)
 
@@ -365,7 +366,8 @@ func TestDispatchRun_TrackingLayerAcceptsNonSHAVersion(t *testing.T) {
 	runID, jobID := seedDeployRunVersioned(t, pool, "tracking-legacy", "1.27.1f2403ea")
 
 	agentID := seedAgentRow(t, pool, "tracking-legacy-agent")
-	_ = sessions.CreateSession(agentID, nil, 1, 0)
+	nsess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, nsess.ID)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -404,7 +406,8 @@ func TestDispatchRun_NativeFallbackWhenNoTarget(t *testing.T) {
 	// No registerDeployTarget → ErrDeployTargetNotFound → plugin fallback.
 
 	agentID := seedAgentRow(t, pool, "native-fallback-agent")
-	_ = sessions.CreateSession(agentID, nil, 1, 0)
+	nsess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, nsess.ID)
 
 	sched.DispatchRun(ctx, run.RunID)
 
