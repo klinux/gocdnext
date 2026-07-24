@@ -260,6 +260,7 @@ func TestSession_DecRunningTargetsSpecificSession(t *testing.T) {
 	store := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
 	sess := store.CreateSession(agentID, nil, 1, 0)
+	store.MarkReadyForTest(sess.ID)
 
 	jobID := uuid.New()
 	msg := &gocdnextv1.ServerMessage{
@@ -274,7 +275,8 @@ func TestSession_DecRunningTargetsSpecificSession(t *testing.T) {
 
 	// Sanity: sess.running is now 1 (the assign bumped it). A
 	// successor register swaps the SessionStore session out.
-	_ = store.CreateSession(agentID, nil, 1, 0)
+	successor := store.CreateSession(agentID, nil, 1, 0)
+	store.MarkReadyForTest(successor.ID)
 
 	// Result handler decrements DIRECTLY on the original sess.
 	// If we'd instead gone via SessionStore.Release(agentID), the
@@ -306,6 +308,7 @@ func TestSessionStore_DispatchAssignment_IsAtomic(t *testing.T) {
 	store := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
 	sess := store.CreateSession(agentID, nil, 1, 0)
+	store.MarkReadyForTest(sess.ID)
 
 	jobID := uuid.New()
 	msg := &gocdnextv1.ServerMessage{
@@ -397,6 +400,7 @@ func TestSessionStore_DispatchAssignment_RejectsAttemptOverwrite(t *testing.T) {
 	store := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
 	sess := store.CreateSession(agentID, nil, 2, 0)
+	store.MarkReadyForTest(sess.ID)
 
 	jobID := uuid.New()
 	msg := func(attempt int32) *gocdnextv1.ServerMessage {
@@ -450,6 +454,7 @@ func TestSessionStore_DispatchAssignment_IdempotentSameAttempt(t *testing.T) {
 	store := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
 	sess := store.CreateSession(agentID, nil, 2, 0)
+	store.MarkReadyForTest(sess.ID)
 
 	jobID := uuid.New()
 	msg := &gocdnextv1.ServerMessage{

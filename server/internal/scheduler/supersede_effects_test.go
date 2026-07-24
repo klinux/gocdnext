@@ -68,6 +68,7 @@ func TestFireSupersedeEffects_PushesCancelToRunningJob(t *testing.T) {
 	markSuperseded(t, pool, runID)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	// Reproduce the post-supersede DB state: the run's compile job is running on
 	// the agent with a stamped cancel intent.
@@ -242,6 +243,7 @@ func TestFireSupersedeEffects_NoRunningJobsNoFrames(t *testing.T) {
 	markSuperseded(t, pool, runID)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.FireSupersedeEffects(ctx, runID) // compile is still 'queued', no cancel intent
 

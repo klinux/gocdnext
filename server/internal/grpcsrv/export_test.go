@@ -19,3 +19,31 @@ func (s *Session) SupersededByRegisterForTest() bool {
 func (s *Session) RevokedForTest() bool {
 	return s.revoked.Load()
 }
+
+// ReadyForTest reports whether the session reached the `ready` state
+// (Connect claimed it and started its pump).
+func (s *Session) ReadyForTest() bool {
+	return s.ready()
+}
+
+// ReadyCountForTest is the per-store count of ready-and-not-revoked sessions —
+// exactly what the AgentsOnline gauge is Set to. Tests assert this instead of the
+// process-global gauge, which parallel tests would race on.
+func (s *SessionStore) ReadyCountForTest() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readyCountLocked()
+}
+
+// MarkReadyForTest drives a freshly-created session through the Connect
+// lifecycle (ClaimConnect → MarkReady) so scheduling tests can select it
+// without standing up a real Connect stream. Panics if the session isn't
+// claimable/markable (a test bug).
+func (s *SessionStore) MarkReadyForTest(sessionID string) {
+	if _, err := s.ClaimConnect(sessionID); err != nil {
+		panic("MarkReadyForTest: ClaimConnect: " + err.Error())
+	}
+	if err := s.MarkReady(sessionID); err != nil {
+		panic("MarkReadyForTest: MarkReady: " + err.Error())
+	}
+}
