@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync/atomic"
 	"time"
 
@@ -146,8 +148,16 @@ func (c *Client) flushClean(streamCtx context.Context, outbound chan<- outboundI
 	}
 	close(b.release) // sendLoop CloseSends after this barrier
 	select {
-	case <-recvErrCh:
-		return DrainOutcome{Clean: true}
+	case err := <-recvErrCh:
+		// ONLY io.EOF proves the server processed every buffered JobResult
+		// (CompleteJob) before closing. Any other recv end (Unavailable, Internal,
+		// transport loss) means the flush was NOT confirmed — do not claim clean;
+		// the still-running server-side rows are requeued by the reaper.
+		if errors.Is(err, io.EOF) {
+			return DrainOutcome{Clean: true}
+		}
+		c.log.Warn("drain: clean flush ended without a clean EOF; abandoning to the reaper", "err", err)
+		return DrainOutcome{FlushTimedOut: true}
 	case <-flushCtx.Done():
 		return DrainOutcome{FlushTimedOut: true}
 	}
@@ -171,7 +181,7 @@ func (c *Client) drainTimeout(streamCtx context.Context, outbound chan<- outboun
 
 	cutoff := &barrierState{reached: make(chan struct{}), release: make(chan struct{})}
 	if !c.enqueueBarrier(streamCtx, outbound, cutoff, flushCtx) {
-		return c.drainFailSafe(candidates)
+		return c.abandonAll(candidates, "flush deadline hit before cutoff")
 	}
 
 	// suppressed = candidates whose JobResult did NOT cross before the cutoff.
@@ -199,23 +209,33 @@ func (c *Client) drainTimeout(streamCtx context.Context, outbound chan<- outboun
 
 	final := &barrierState{reached: make(chan struct{}), release: make(chan struct{}), closeSend: true}
 	if !c.enqueueBarrier(streamCtx, outbound, final, flushCtx) {
-		return DrainOutcome{Running: running, FlushTimedOut: true}
+		// The final flush never got out — the survivors' results (terminalSent)
+		// were NOT confirmed processed either, so every candidate is uncertain.
+		return c.abandonAll(candidates, "final flush barrier not reached")
 	}
 	close(final.release)
 	select {
-	case <-recvErrCh:
-		return DrainOutcome{Running: running}
+	case err := <-recvErrCh:
+		// Same EOF-is-the-only-confirmation rule as flushClean: a clean EOF proves
+		// the survivors' results were processed → only the suppressed jobs are
+		// abandoned. Any other end leaves the survivors unconfirmed too → abandon all.
+		if errors.Is(err, io.EOF) {
+			return DrainOutcome{Running: running}
+		}
+		return c.abandonAll(candidates, "final flush ended without clean EOF")
 	case <-flushCtx.Done():
-		return DrainOutcome{Running: running, FlushTimedOut: true}
+		return c.abandonAll(candidates, "final flush EOF wait timed out")
 	}
 }
 
-// drainFailSafe handles a cutoff barrier that was never reached (a wedged
-// sendLoop): it does NOT guess survivors — it publishes suppress-all
-// (candidates ∪ current running) BEFORE cancelling, so a post-cutoff result can
-// never escape even if the sendLoop drains it on the way out. The caller cancels
-// the stream next.
-func (c *Client) drainFailSafe(candidates map[string]*jobState) DrainOutcome {
+// abandonAll is the shared fail-safe for any flush step that could not be
+// confirmed (cutoff never reached, final barrier never reached, or the final EOF
+// never/incorrectly arrived). It does NOT guess survivors — it publishes
+// suppress-all (candidates ∪ current running) BEFORE cancelling, so a post-cutoff
+// result can never escape even if the sendLoop drains it on the way out, cancels
+// every job (idempotent), and reports EVERY uncertain job as abandoned. The
+// caller cancels the stream next. `reason` names the step that failed for the log.
+func (c *Client) abandonAll(candidates map[string]*jobState, reason string) DrainOutcome {
 	c.jobsMu.Lock()
 	all := make(map[string]*jobState, len(candidates)+len(c.running))
 	for id, st := range candidates {
@@ -234,7 +254,7 @@ func (c *Client) drainFailSafe(candidates map[string]*jobState) DrainOutcome {
 	for _, st := range all {
 		st.cancel()
 	}
-	c.log.Warn("drain: flush deadline hit before cutoff; abandoning all in-flight jobs", "jobs", len(all))
+	c.log.Warn("drain: "+reason+"; abandoning all in-flight jobs to the reaper", "jobs", len(all))
 	return DrainOutcome{Running: len(all), FlushTimedOut: true}
 }
 

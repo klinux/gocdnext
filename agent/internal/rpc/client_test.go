@@ -264,13 +264,16 @@ func TestClient_CleanDrainNoJobsOverStream(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- client.Run(context.Background(), drainTrigger) }()
 
-	// Wait until the stream is up (register recorded) before triggering drain.
+	// Wait until the stream is ESTABLISHED (a heartbeat crossed) before triggering
+	// drain — otherwise the trigger races establishment and the atomic handoff may
+	// (correctly) exit clean without a stream to drain. A received heartbeat proves
+	// Connect returned and the sendLoop is pumping.
 	deadline := time.Now().Add(2 * time.Second)
-	for fake.registerCount() == 0 && time.Now().Before(deadline) {
+	for fake.heartbeatCount() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if fake.registerCount() == 0 {
-		t.Fatal("agent never registered")
+	if fake.heartbeatCount() == 0 {
+		t.Fatal("stream never established (no heartbeat received)")
 	}
 	close(drainTrigger)
 
@@ -284,6 +287,60 @@ func TestClient_CleanDrainNoJobsOverStream(t *testing.T) {
 	}
 	if !fake.sawDraining.Load() {
 		t.Fatal("server never received a Draining frame")
+	}
+}
+
+// TestClient_DrainDuringBlockedConnect proves SIGTERM aborts a BLOCKED Connect
+// (finding 3): a stream interceptor stalls Connect (the only streaming RPC after
+// the unary Register) until its ctx is cancelled. Closing drainTrigger must make
+// the atomic handoff cancel estCtx → Connect errors → Run exits clean, without a
+// second signal and without hanging.
+func TestClient_DrainDuringBlockedConnect(t *testing.T) {
+	fake := newFakeServer(t, map[string]string{"agent-1": "tok"})
+
+	blockConnect := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		<-ctx.Done() // stall until the drain cancels the connect ctx
+		return nil, ctx.Err()
+	}
+
+	client := rpc.New(rpc.Config{
+		ServerAddr:   "passthrough:///bufnet",
+		AgentID:      "agent-1",
+		Token:        "tok",
+		Version:      "test-0.0.1",
+		Capacity:     1,
+		Heartbeat:    20 * time.Millisecond,
+		DrainBudget:  time.Minute,
+		FlushTimeout: time.Second,
+		DialOpts: []grpc.DialOption{
+			grpc.WithContextDialer(fake.dialer()),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithChainStreamInterceptor(blockConnect),
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	drainTrigger := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- client.Run(context.Background(), drainTrigger) }()
+
+	// Register is unary (not intercepted) → its arrival means Connect is now blocked.
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.registerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fake.registerCount() == 0 {
+		t.Fatal("agent never registered")
+	}
+
+	close(drainTrigger) // must abort the blocked Connect
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("blocked-connect drain Run err = %v, want nil (clean exit)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run hung on a blocked Connect after the drain trigger (finding 3)")
 	}
 }
 

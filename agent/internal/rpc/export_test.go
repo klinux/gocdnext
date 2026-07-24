@@ -129,9 +129,9 @@ func (c *Client) SetCleanupAckSendForTest(send func(*gocdnextv1.AgentMessage)) {
 // channel so tests exercise the non-blocking + drop-on-full semantics without
 // naming the unexported envelope type.
 type CleanupAckRig struct {
-	Send    func(*gocdnextv1.AgentMessage) // the production ack sender
-	Dropped *atomic.Int64                  // same counter logDroppedCleanupAcks reports
-	Len     func() int                     // buffered length of the internal channel
+	Send    func(*gocdnextv1.AgentMessage)  // the production ack sender
+	Dropped *atomic.Int64                   // same counter logDroppedCleanupAcks reports
+	Len     func() int                      // buffered length of the internal channel
 	Recv    func() *gocdnextv1.AgentMessage // non-blocking receive of the next delivered msg (nil if empty)
 }
 

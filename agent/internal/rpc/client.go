@@ -311,18 +311,33 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 
 	cli := gocdnextv1.NewAgentServiceClient(conn)
 
-	// Pre-stream, the drain trigger has nothing to drain — it must abort a
-	// BLOCKED Register and exit clean. dialCtx scopes ONLY Register (NOT the
-	// stream, which roots at ctx so it survives the trigger). Canceling dialCtx
-	// after Register returned is a harmless cancel of an unused ctx — no atomic
-	// handoff needed.
-	dialCtx, cancelDial := context.WithCancel(ctx)
-	defer cancelDial()
+	// SIGTERM before the stream is established has nothing to drain — it must abort
+	// a BLOCKED Register *or* Connect and exit clean. A single cancelable estCtx
+	// covers BOTH dial steps; a watcher cancels it ONLY while the stream is not yet
+	// established. Once Connect returns, an atomic handoff (estMu + an estCtx.Err()
+	// check) disarms the watcher so the established stream — rooted at estCtx, a
+	// child of ctx (process lifetime) — survives the trigger for the drain to
+	// manage. If the trigger and a successful Connect race, the mutex picks a
+	// deterministic winner: established-first ⇒ the watcher does NOT cancel and the
+	// drain proceeds; trigger-first ⇒ estCtx is cancelled, Connect is treated as
+	// failed, and Run exits clean.
+	estCtx, cancelEst := context.WithCancel(ctx)
+	defer cancelEst()
+	var (
+		estMu       sync.Mutex
+		established bool
+	)
+	connectDone := make(chan struct{})
+	defer close(connectDone)
 	go func() {
 		select {
 		case <-drainTrigger:
-			cancelDial()
-		case <-ctx.Done():
+			estMu.Lock()
+			if !established {
+				cancelEst() // abort a blocked/racing Register or Connect
+			}
+			estMu.Unlock()
+		case <-connectDone:
 		}
 	}()
 
@@ -331,7 +346,7 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 	// agents only. Empty string when Engine is nil (boot path
 	// without an engine wired); server treats unknown as
 	// "broadcast-anyway" defensively.
-	reg, err := cli.Register(dialCtx, &gocdnextv1.RegisterRequest{
+	reg, err := cli.Register(estCtx, &gocdnextv1.RegisterRequest{
 		AgentId:  c.cfg.AgentID,
 		Token:    c.cfg.Token,
 		Version:  c.cfg.Version,
@@ -342,7 +357,7 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 		Engine:   c.engineName(),
 	})
 	if err != nil {
-		// A trigger during a blocked Register cancels dialCtx → clean exit.
+		// A trigger during a blocked Register cancels estCtx → clean exit.
 		select {
 		case <-drainTrigger:
 			c.log.Info("drain trigger during register; exiting cleanly")
@@ -354,13 +369,30 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 	c.log.Info("registered", "session", reg.SessionId, "heartbeat_seconds", reg.HeartbeatSeconds)
 
 	hb := c.heartbeatInterval(reg.HeartbeatSeconds)
-	// The stream roots at ctx (process lifetime), NOT dialCtx — SIGTERM must not
-	// tear it down; the drain closes it via CloseSend after its budget.
-	streamCtx := metadata.AppendToOutgoingContext(ctx, grpcconsts.SessionHeader, reg.SessionId)
+	// The established stream roots at estCtx (a child of ctx = process lifetime),
+	// NOT the drain trigger — SIGTERM must not tear it down; the drain closes it
+	// via CloseSend after its budget.
+	streamCtx := metadata.AppendToOutgoingContext(estCtx, grpcconsts.SessionHeader, reg.SessionId)
 
 	stream, err := cli.Connect(streamCtx)
+	// Atomic handoff: record establishment under estMu, and if the watcher already
+	// cancelled estCtx in a race with a successful Connect, treat it as
+	// trigger-first (the stream, if any, is bound to a now-cancelled ctx).
+	estMu.Lock()
+	if err == nil && estCtx.Err() != nil {
+		err = estCtx.Err()
+	}
+	established = err == nil
+	estMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		// A trigger during a blocked Connect cancels estCtx → clean exit.
+		select {
+		case <-drainTrigger:
+			c.log.Info("drain trigger during connect; exiting cleanly")
+			return nil
+		default:
+			return fmt.Errorf("connect: %w", err)
+		}
 	}
 
 	uploader := NewArtifactUploader(cli, reg.SessionId, nil)

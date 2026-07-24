@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -221,6 +222,67 @@ func TestDrain_FailSafeSuppressesAllWhenCutoffUnreached(t *testing.T) {
 	s := c.suppressed.Load()
 	if s == nil || len((*s)) != 2 {
 		t.Fatalf("suppress-all set = %v, want {B1,B2}", s)
+	}
+}
+
+// TestDrain_CleanFlushNonEOFIsNotClean: a NON-EOF recv end (transport loss) must
+// NOT be reported as a clean drain — EOF is the only proof the server processed
+// every JobResult. (Regression for review finding 1.)
+func TestDrain_CleanFlushNonEOFIsNotClean(t *testing.T) {
+	c := New(Config{FlushTimeout: 500 * time.Millisecond}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbound := make(chan outboundItem, 16)
+	// The drain reads this channel; the fake stream's own recvErrCh is left nil so
+	// CloseSend pushes nothing — the recv end here is the transport error we inject.
+	recvErrCh := make(chan error, 1)
+	recvErrCh <- errors.New("transport closed mid-flush")
+	fs := &fakeClientStream{ctx: ctx}
+	go func() { _ = c.sendLoop(ctx, fs, time.Hour, outbound) }()
+
+	outcome := c.flushClean(ctx, outbound, recvErrCh)
+	if outcome.Clean {
+		t.Fatalf("outcome.Clean = true on a non-EOF recv error; want not clean: %+v", outcome)
+	}
+	if !outcome.FlushTimedOut {
+		t.Fatalf("outcome = %+v, want FlushTimedOut=true (abandon to reaper)", outcome)
+	}
+}
+
+// TestDrain_TimeoutFinalUnconfirmedAbandonsAll: after a normal cutoff+suppression,
+// if the final flush is never confirmed (no server EOF), the PRESERVED survivor
+// (terminalSent) is also unconfirmed and must be abandoned — Running counts every
+// uncertain candidate, not just the suppressed set. (Regression for finding 2.)
+func TestDrain_TimeoutFinalUnconfirmedAbandonsAll(t *testing.T) {
+	c := New(Config{FlushTimeout: 200 * time.Millisecond}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbound := make(chan outboundItem, 16)
+	recvErrCh := make(chan error, 1)  // never receives → the final EOF wait times out
+	fs := &fakeClientStream{ctx: ctx} // recvErrCh nil → CloseSend pushes no EOF
+	go func() { _ = c.sendLoop(ctx, fs, time.Hour, outbound) }()
+
+	// A: result already crossed (terminalSent), Execute finished.
+	aDone := make(chan struct{})
+	close(aDone)
+	stA := &jobState{cancel: func() {}, done: aDone}
+	// B: still running, no terminalSent → suppressed at the cutoff. Its cancel is
+	// idempotent (sync.Once), mirroring a real context.CancelFunc — abandonAll
+	// re-cancels every job on the fail-safe path.
+	bDone := make(chan struct{})
+	var bOnce sync.Once
+	stB := &jobState{cancel: func() { bOnce.Do(func() { close(bDone) }) }, done: bDone}
+	c.jobsMu.Lock()
+	c.running["A"] = stA
+	c.running["B"] = stB
+	c.jobsMu.Unlock()
+
+	outbound <- outboundItem{msg: jobResultMsg("A"), job: stA}
+	waitFor(t, func() bool { return stA.terminalSent.Load() }, "A terminalSent")
+
+	outcome := c.drainTimeout(ctx, outbound, recvErrCh)
+	if !outcome.FlushTimedOut || outcome.Running != 2 {
+		t.Fatalf("outcome = %+v, want {Running:2, FlushTimedOut:true} (survivor A unconfirmed → abandon all)", outcome)
 	}
 }
 
