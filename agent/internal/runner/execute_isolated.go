@@ -71,6 +71,13 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 
 	var seq atomic.Int64
 
+	// Phase timing for gocdnext_agent_job_duration_seconds. Pod build + init +
+	// prep all count as "prep"; the deferred finish observes the in-flight phase
+	// on any early return so failures/cancels are not excluded.
+	var pt phaseTimer
+	defer pt.finish()
+	pt.enter("prep")
+
 	// v0.5.0 limitation: multi-task jobs not supported. Failing
 	// early surfaces the misconfiguration before any pod work.
 	if got := len(a.GetTasks()); got != 1 {
@@ -390,6 +397,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		return
 	}
 
+	pt.enter("task")
 	taskStart := time.Now()
 
 	// Stream task logs.
@@ -502,6 +510,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	// (runner.go::uploadArtifacts passes scriptWorkDir). Using the
 	// mount root drops the target_dir prefix and breaks tar in
 	// the housekeeper.
+	pt.enter("post_job")
 	var refs []*gocdnextv1.ArtifactRef
 	var postErr error
 	r.timedPhase(a, &seq, "post-job (artifacts + caches)", func() {
