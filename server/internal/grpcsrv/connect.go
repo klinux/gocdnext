@@ -176,6 +176,16 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 				continue
 			}
 			a.handleLogLine(stream.Context(), log, sess, batcher, kind.Log)
+		case *gocdnextv1.AgentMessage_Draining:
+			// The agent is shutting down gracefully: stop selecting/dispatching
+			// NEW assignments to this session. It stays LIVE — its in-flight jobs
+			// keep delivering results (DecRunning) until they finish or the agent
+			// disconnects, at which point the existing reaper reclaims survivors.
+			// Read/write the flag on THIS sess pointer (like revoked) so a
+			// re-registered successor is unaffected.
+			if !sess.draining.Swap(true) {
+				log.Info("agent draining — no new assignments to this session")
+			}
 		case *gocdnextv1.AgentMessage_Progress:
 			log.Debug("agent progress", "kind", kindName(msg))
 		case *gocdnextv1.AgentMessage_Result:

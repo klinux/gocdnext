@@ -288,6 +288,13 @@ func (s *Store) requeueStaleJob(
 	if err := q.RetireArtifactsByJobRun(ctx, row.ID); err != nil {
 		return fmt.Errorf("retire artifacts: %w", err)
 	}
+	// Coverage, same as logs/tests/artifacts above: a prior attempt's report is
+	// keyed by job_run_id (UNIQUE), so without this the retry inherits stale
+	// coverage until it emits its own — and a job that stops emitting coverage
+	// keeps the old number forever.
+	if err := q.DeleteCoverageReportsByJobRun(ctx, row.ID); err != nil {
+		return fmt.Errorf("delete coverage: %w", err)
+	}
 	if notify {
 		if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", RunQueuedChannel, fromPgUUID(row.RunID).String()); err != nil {
 			return fmt.Errorf("notify: %w", err)

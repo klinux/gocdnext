@@ -301,6 +301,10 @@ type Querier interface {
 	DeleteCluster(ctx context.Context, id pgtype.UUID) error
 	DeleteComplianceFramework(ctx context.Context, id pgtype.UUID) error
 	DeleteCompliancePolicy(ctx context.Context, id pgtype.UUID) error
+	// Clears a job_run's coverage on requeue/rerun so a new attempt never inherits
+	// the previous attempt's report. Mirrors the log/test/artifact cleanup those
+	// paths already do; coverage was the one job-scoped table they missed.
+	DeleteCoverageReportsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error
 	// Maintenance of the analytics_deploy_daily rollup (#128 phase 1b) — the
 	// deploy/DORA mirror of analytics_run_rollup. Same DELETE-window + reinsert
 	// contract (deploys are mutable via rollback/redeploy), same leader advisory
