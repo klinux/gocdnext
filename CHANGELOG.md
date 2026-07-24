@@ -8,6 +8,56 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.74.0 — 2026-07-24
+
+Agent performance for production: the job clone is bounded, and the agent now
+exports metrics — including the phase timing that measures the clone win.
+
+### Added
+
+- **Agent Prometheus `/metrics` endpoint (#176).** The agent exported nothing;
+  log-line loss under backpressure was a WARN every 30s and fleet saturation was
+  only visible indirectly. New series:
+  - `gocdnext_agent_log_lines_dropped_total` — log lines the agent dropped
+    because the outbound buffer was full (dropping is deliberate; blocking would
+    deadlock the job). The only signal that a truncated build log is loss, not
+    silence.
+  - `gocdnext_agent_job_duration_seconds{phase}` — wall-clock per phase
+    (`prep`, `task`, `post_job`), observed even on failure/cancel so the
+    histogram is not biased to successful runs. **`{phase="prep"}` is how you
+    measure the #177 clone win** — compare it before and after adopting the
+    bounded clone.
+  - `gocdnext_agent_jobs_running{agent}` / `gocdnext_agent_capacity{agent}` —
+    per-agent running vs configured capacity, collected server-side from the live
+    session registry (no agent scrape needed). The fleet-saturation signal;
+    alert on the ratio.
+
+  The endpoint is off by default and gated by `GOCDNEXT_METRICS_ADDR` (unset →
+  loopback, empty → disabled, value → that address). It is unauthenticated, like
+  the server's `/metrics`; restrict it with a NetworkPolicy before enabling on a
+  shared cluster (the chart ships one).
+
+### Changed
+
+- **The per-job git clone is bounded with `--filter=blob:none` (#177).** In
+  isolated mode jobs do not share a workspace, so the clone is paid once per job,
+  not per run — a fan-out of N jobs on one commit was N concurrent full clones of
+  the same repo, and on a mature repo the clone dominates startup. The partial
+  clone stops transferring whole-repo blob history (blobs fetch lazily at
+  checkout) while keeping every ref, so an off-branch revision still resolves
+  exactly as before. `--no-checkout` avoids hydrating the default branch's tip
+  when a revision is pinned. On a remote without partial-clone support it falls
+  back once to a full clone, and a credential embedded in a material URL is now
+  scrubbed from the clone's logs, streamed git output and errors.
+
+### Security
+
+- A credentialed material URL (an injected bearer) no longer reaches the prep
+  init-container log, the streamed git output, the returned error or
+  `JobResult.Error` — a pre-existing leak, closed while unifying the clone path
+  (#177). `--` precedes the clone positionals so a hostile URL like
+  `--upload-pack=…` is treated as a path, never a git option.
+
 ## v0.73.0 — 2026-07-22
 
 Adopting native ArgoCD deploys no longer costs you your release label, and a team
