@@ -647,3 +647,37 @@ func hasAllTags(have, required []string) bool {
 // the result handler (C5) will decrement on final JobResult.
 func (s *Session) IncRunning() { s.running.Add(1) }
 func (s *Session) DecRunning() { s.running.Add(-1) }
+
+// Running exposes the live in-flight count for the metrics collector. Read-only
+// snapshot of the atomic; callers must not assume it is stable across calls.
+func (s *Session) Running() int32 { return s.running.Load() }
+
+// AgentCapacitySample is one live agent session's running/capacity pair.
+type AgentCapacitySample struct {
+	AgentID  uuid.UUID
+	Running  int32
+	Capacity int32
+}
+
+// CapacitySnapshot returns running/capacity for every LIVE (non-revoked)
+// session, taken under the lock and returned by value — so the metrics
+// collector can emit to its channel WITHOUT holding s.mu (which dispatch and
+// the idle scan also take). A revoked/dead session is skipped, so its series
+// disappears on the next scrape rather than lingering as phantom capacity.
+func (s *SessionStore) CapacitySnapshot() []AgentCapacitySample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]AgentCapacitySample, 0, len(s.latestByAg))
+	for _, id := range s.latestByAg {
+		sess, ok := s.byID[id]
+		if !ok || sess.revoked.Load() {
+			continue
+		}
+		out = append(out, AgentCapacitySample{
+			AgentID:  sess.AgentID,
+			Running:  sess.running.Load(),
+			Capacity: sess.Capacity,
+		})
+	}
+	return out
+}

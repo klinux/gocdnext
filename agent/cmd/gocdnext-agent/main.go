@@ -5,18 +5,22 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	"github.com/gocdnext/gocdnext/agent/internal/metrics"
 	"github.com/gocdnext/gocdnext/agent/internal/rpc"
 	"github.com/gocdnext/gocdnext/agent/internal/runner"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
@@ -74,6 +78,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.MetricsAddr != "" {
+		serveMetrics(ctx, cfg.MetricsAddr, logger)
+	}
+
 	logger.Info("agent starting", "server", cfg.ServerAddr, "agent_id", cfg.AgentID)
 
 	client := rpc.New(cfg, logger)
@@ -82,6 +90,29 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("agent stopped")
+}
+
+// serveMetrics starts the Prometheus /metrics listener in a goroutine and shuts
+// it down when ctx is canceled. A bind failure is logged and swallowed — a
+// metrics-port clash must never take down a worker, and the agent stays useful
+// without the endpoint.
+func serveMetrics(ctx context.Context, addr string, logger *slog.Logger) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 15 * time.Second}
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+	go func() {
+		logger.Info("agent metrics listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Warn("agent metrics listener stopped", "err", err)
+		}
+	}()
 }
 
 func loadConfig() (rpc.Config, error) {
@@ -124,7 +155,21 @@ func loadConfig() (rpc.Config, error) {
 		Tags:          tags,
 		Capacity:      capacity,
 		WorkspaceRoot: workspaceRoot,
+		MetricsAddr:   metricsAddr(),
 	}, nil
+}
+
+// metricsAddr resolves the /metrics listen address with three distinct states,
+// which is why it uses LookupEnv (not Getenv): env UNSET → a loopback default
+// (a bare-metal/VM agent can curl it, never the network); env set to EMPTY →
+// disabled (the chart sets this explicitly when metrics.enabled=false, so the
+// default cannot silently leave a listener running in a pod); env set to a
+// VALUE → that address.
+func metricsAddr() string {
+	if v, ok := os.LookupEnv("GOCDNEXT_METRICS_ADDR"); ok {
+		return v
+	}
+	return "127.0.0.1:9464"
 }
 
 // resolveWorkspaceRoot derives the path the runner clones into so

@@ -26,6 +26,7 @@ import (
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
 
 	"github.com/gocdnext/gocdnext/agent/internal/engine"
+	"github.com/gocdnext/gocdnext/agent/internal/metrics"
 	"github.com/gocdnext/gocdnext/agent/internal/runner"
 )
 
@@ -57,6 +58,12 @@ type Config struct {
 	// When nil, the client uses insecure.NewCredentials — the MVP assumes a
 	// private network; TLS comes later.
 	DialOpts []grpc.DialOption
+
+	// MetricsAddr is the listen address for the Prometheus /metrics endpoint.
+	// Empty disables the listener. main() owns the HTTP server (client.Run does
+	// not read this); it rides on Config so loadConfig stays the one config
+	// entry point.
+	MetricsAddr string
 }
 
 // Client owns the long-running connection. Not safe for concurrent Run calls.
@@ -90,7 +97,7 @@ type Client struct {
 	// Guarded by cleanupMu with cleanupPending.
 	cleanupMaxGen map[string]int64
 	cleanupMu     sync.Mutex
-	cleanupWG      sync.WaitGroup
+	cleanupWG     sync.WaitGroup
 	// drainBudget is a Background-rooted ctx with
 	// cleanupShutdownDrainBudget as its deadline, installed by
 	// Run()'s shutdown defer BEFORE cancelWorkers() fires. Workers
@@ -353,6 +360,10 @@ func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_C
 			case outbound <- msg:
 			default:
 				droppedLogs.Add(1)
+				// Process-global counter for /metrics — the local droppedLogs is
+				// per-stream (resets on reconnect) and unreachable from a package;
+				// this co-increment exposes the same event as a monotonic series.
+				metrics.LogLinesDropped.Inc()
 			}
 			return
 		}

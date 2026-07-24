@@ -49,6 +49,13 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 
 	var seq atomic.Int64
 
+	// Phase timing for gocdnext_agent_job_duration_seconds. The deferred finish
+	// observes whatever phase is in flight on any early return (checkout fail,
+	// task fail, cancel), so failures are not excluded from the histogram.
+	var pt phaseTimer
+	defer pt.finish()
+	pt.enter("prep")
+
 	// scriptWorkDir is where user scripts run. Defaults to workspace
 	// root when there are no checkouts (plugin-only jobs), otherwise
 	// follows the first checkout into its target dir so relative
@@ -165,6 +172,7 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 		outputs.rel = filepath.Join(outputsRelDir, shortJobID(a.GetJobId())+".env")
 	}
 
+	pt.enter("task")
 	tasksStart := time.Now()
 	for i, task := range a.GetTasks() {
 		var (
@@ -224,6 +232,10 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	// boundary now prints, and the UI's per-line elapsed does the
 	// attribution.
 	r.emitPhase(a, &seq, fmt.Sprintf("tasks completed in %s", phaseDur(tasksStart)))
+
+	// post_job = test-report scan + coverage + cache store + artifact upload.
+	// One aggregate span (matching isolated mode, which cannot separate them).
+	pt.enter("post_job")
 
 	// Successful task loop — scan any declared test_reports and
 	// ship them before the artifact upload so the server has the
