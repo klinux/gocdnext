@@ -200,4 +200,3 @@ func assignmentTolerations(a *gocdnextv1.JobAssignment) []corev1.Toleration {
 	}
 	return out
 }
-

@@ -39,6 +39,25 @@ case "$GIT_FAKE_MODE" in
       mkdir -p "$last"; exit 0
     fi
     exit 0 ;;
+  checkout_promisor_then_ok)
+    # Both clones (filtered and fallback) succeed; the FILTERED checkout fails
+    # with a promisor error, the fallback checkout passes.
+    if [ "$sub" = "clone" ]; then mkdir -p "$last"; exit 0; fi
+    if [ "$sub" = "-C" ] && [ "$has_filter" = "0" ]; then   # checkout has no --filter
+      if [ ! -f "$GIT_FAKE_STATE" ]; then
+        : > "$GIT_FAKE_STATE"
+        echo "error: missing object required for partial clone (promisor)" >&2
+        exit 128
+      fi
+      exit 0
+    fi
+    exit 0 ;;
+  missing_revision)
+    # Clone succeeds, checkout fails as a NORMAL absent revision (no promisor /
+    # filter context) — must NOT trigger a fallback.
+    if [ "$sub" = "clone" ]; then mkdir -p "$last"; exit 0; fi
+    echo "error: pathspec 'deadbeef' did not match any file(s) known to git" >&2
+    exit 1 ;;
   auth_fail)
     if [ "$sub" = "clone" ]; then
       echo "fatal: unable to access, args were: $*" >&2
@@ -57,6 +76,9 @@ exit 0
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GIT_FAKE_MODE", mode)
+	// A per-invocation marker file so a mode can tell the first checkout (which
+	// fails) from the fallback checkout (which passes). Fresh temp dir ⇒ absent.
+	t.Setenv("GIT_FAKE_STATE", filepath.Join(dir, "state"))
 	return logPath
 }
 
@@ -101,6 +123,43 @@ func TestCheckout_FallsBackWhenFilterUnsupported(t *testing.T) {
 		if !strings.Contains(c, " -- ") {
 			t.Fatalf("attempt %d missing `--` separator: %q", i, c)
 		}
+	}
+}
+
+func TestCheckout_FallsBackWhenCheckoutHitsPromisor(t *testing.T) {
+	// The fallback trigger can surface at the CHECKOUT, not only the clone:
+	// under blob:none the revision's blobs are fetched at checkout time, so a
+	// promisor-less remote fails there after a clean clone.
+	log := fakeGit(t, "checkout_promisor_then_ok")
+	base := t.TempDir()
+	var buf bytes.Buffer
+
+	err := runner.Checkout(context.Background(), base, &gocdnextv1.MaterialCheckout{
+		Url: "https://host.example/r.git", Branch: "main", Revision: "cafe1234", TargetDir: "fixture",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("Checkout returned error: %v\nlog:\n%s", err, buf.String())
+	}
+	if clones := cloneLines(t, log); len(clones) != 2 {
+		t.Fatalf("want 2 clone attempts (fallback after checkout promisor), got %d:\n%v", len(clones), clones)
+	}
+}
+
+func TestCheckout_NormalMissingRevisionDoesNotFallBack(t *testing.T) {
+	// A plain absent revision (no promisor/filter context) must fail once, not
+	// pay a doomed second clone.
+	log := fakeGit(t, "missing_revision")
+	base := t.TempDir()
+	var buf bytes.Buffer
+
+	err := runner.Checkout(context.Background(), base, &gocdnextv1.MaterialCheckout{
+		Url: "https://host.example/r.git", Branch: "main", Revision: "deadbeef", TargetDir: "fixture",
+	}, &buf)
+	if err == nil {
+		t.Fatal("expected an error for a missing revision")
+	}
+	if clones := cloneLines(t, log); len(clones) != 1 {
+		t.Fatalf("want exactly 1 clone attempt (no fallback on normal missing rev), got %d:\n%v", len(clones), clones)
 	}
 }
 
