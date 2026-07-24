@@ -572,15 +572,11 @@ func TestCleanupWorker_SendsAckAfterEngineCall(t *testing.T) {
 // asserts it returns within a tight deadline AND the dropped
 // counter incremented (proves the drop path ran).
 func TestCleanupAck_NonBlockingWhenOutboundFull(t *testing.T) {
-	outbound := make(chan *gocdnextv1.AgentMessage, 1)
-	outbound <- &gocdnextv1.AgentMessage{} // fill to cap
-
-	var dropped atomic.Int64
-	sender := rpc.NewCleanupAckSenderForTest(outbound, &dropped)
+	rig := rpc.NewCleanupAckSenderForTest(true) // outbound pre-filled to cap
 
 	done := make(chan struct{})
 	go func() {
-		sender(&gocdnextv1.AgentMessage{
+		rig.Send(&gocdnextv1.AgentMessage{
 			Kind: &gocdnextv1.AgentMessage_CleanupRunServicesResult{
 				CleanupRunServicesResult: &gocdnextv1.CleanupRunServicesResult{
 					RunId: "test-run", Deleted: 1, Engine: "kubernetes",
@@ -597,13 +593,13 @@ func TestCleanupAck_NonBlockingWhenOutboundFull(t *testing.T) {
 		t.Fatal("ack sender blocked on full outbound — cleanup worker would freeze in production")
 	}
 
-	if got := dropped.Load(); got != 1 {
+	if got := rig.Dropped.Load(); got != 1 {
 		t.Errorf("dropped counter = %d, want 1 (drop-on-full path didn't run)", got)
 	}
 
 	// Sanity: the original pre-fill is still there (the sender's
 	// attempt was rejected, not enqueued ahead of it).
-	if got := len(outbound); got != 1 {
+	if got := rig.Len(); got != 1 {
 		t.Errorf("outbound len = %d, want 1 (sender shouldn't have displaced anything)", got)
 	}
 }
@@ -612,9 +608,7 @@ func TestCleanupAck_NonBlockingWhenOutboundFull(t *testing.T) {
 // happy path: when outbound has capacity, the ack lands in the
 // channel and the dropped counter stays at zero.
 func TestCleanupAck_DeliversWhenOutboundHasRoom(t *testing.T) {
-	outbound := make(chan *gocdnextv1.AgentMessage, 4)
-	var dropped atomic.Int64
-	sender := rpc.NewCleanupAckSenderForTest(outbound, &dropped)
+	rig := rpc.NewCleanupAckSenderForTest(false) // outbound has room
 
 	msg := &gocdnextv1.AgentMessage{
 		Kind: &gocdnextv1.AgentMessage_CleanupRunServicesResult{
@@ -623,18 +617,13 @@ func TestCleanupAck_DeliversWhenOutboundHasRoom(t *testing.T) {
 			},
 		},
 	}
-	sender(msg)
+	rig.Send(msg)
 
-	if got := dropped.Load(); got != 0 {
+	if got := rig.Dropped.Load(); got != 0 {
 		t.Errorf("dropped counter = %d, want 0 (channel had room)", got)
 	}
-	select {
-	case got := <-outbound:
-		if got != msg {
-			t.Errorf("received different message than was sent")
-		}
-	default:
-		t.Fatal("outbound has no message; sender silently dropped despite available capacity")
+	if got := rig.Recv(); got != msg {
+		t.Fatal("outbound has no message (or a different one); sender silently dropped despite available capacity")
 	}
 }
 
