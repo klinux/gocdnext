@@ -127,6 +127,14 @@ func TestReclaimStaleJobs_RequeuesWhenAgentOffline(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed log: %v", err)
 	}
+	// Seed a coverage report so we can assert it too is cleared on reclaim
+	// (previously the one job-scoped table the requeue missed).
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO coverage_reports (job_run_id, run_id, pipeline_id, job_name, matrix_key, format, lines_covered, lines_total, packages)
+		 SELECT j.id, j.run_id, r.pipeline_id, j.name, '', 'gocover', 40, 100, '[]'::jsonb
+		 FROM job_runs j JOIN runs r ON r.id = j.run_id WHERE j.id=$1`, jobID); err != nil {
+		t.Fatalf("seed coverage: %v", err)
+	}
 
 	got, err := s.ReclaimStaleJobs(ctx, 3, 30*time.Second)
 	if err != nil {
@@ -152,6 +160,12 @@ func TestReclaimStaleJobs_RequeuesWhenAgentOffline(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM log_lines WHERE job_run_id=$1`, jobID).Scan(&logCount)
 	if logCount != 0 {
 		t.Fatalf("log lines = %d, want 0 (cleared on reclaim)", logCount)
+	}
+
+	var covCount int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM coverage_reports WHERE job_run_id=$1`, jobID).Scan(&covCount)
+	if covCount != 0 {
+		t.Fatalf("coverage reports = %d, want 0 (cleared on reclaim)", covCount)
 	}
 }
 
@@ -1408,6 +1422,34 @@ func TestRerunJob_ClearsLogArchivePointers(t *testing.T) {
 	}
 	if archivedAtAfter != nil {
 		t.Errorf("logs_archived_at = %v, want NULL", archivedAtAfter)
+	}
+}
+
+func TestRerunJob_ClearsCoverage(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	jobID, _, _ := seedRunningAgentJob(t, pool)
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET status='success', finished_at=NOW() WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("seed terminal row: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO coverage_reports (job_run_id, run_id, pipeline_id, job_name, matrix_key, format, lines_covered, lines_total, packages)
+		 SELECT j.id, j.run_id, r.pipeline_id, j.name, '', 'gocover', 40, 100, '[]'::jsonb
+		 FROM job_runs j JOIN runs r ON r.id = j.run_id WHERE j.id=$1`, jobID); err != nil {
+		t.Fatalf("seed coverage: %v", err)
+	}
+
+	if _, err := s.RerunJob(ctx, store.RerunJobInput{JobRunID: jobID, TriggeredBy: "user:test"}); err != nil {
+		t.Fatalf("RerunJob: %v", err)
+	}
+
+	var covCount int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM coverage_reports WHERE job_run_id=$1`, jobID).Scan(&covCount)
+	if covCount != 0 {
+		t.Fatalf("coverage reports = %d after rerun, want 0 (new attempt must not inherit)", covCount)
 	}
 }
 

@@ -304,6 +304,73 @@ func TestSessionStore_OnlineCountWalksLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionStore_DrainingSkipsSelectionButStaysLive(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	agentID := uuid.New()
+	sess := s.CreateSession(agentID, nil, 1, 0)
+	s.MarkReadyForTest(sess.ID)
+
+	// Selectable while live.
+	if _, ok := s.FindIdleWithTags(nil); !ok {
+		t.Fatal("ready session should be selectable")
+	}
+
+	sess.SetDrainingForTest()
+
+	// Not selected, and dispatch is refused with ErrSessionDraining.
+	if _, ok := s.FindIdleWithTags(nil); ok {
+		t.Fatal("draining session must not be selected")
+	}
+	jobID := uuid.New()
+	assign := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{
+		Assign: &gocdnextv1.JobAssignment{JobId: jobID.String()},
+	}}
+	if err := s.DispatchAssignment(agentID, assign, jobID, 0); !errors.Is(err, grpcsrv.ErrSessionDraining) {
+		t.Fatalf("DispatchAssignment on draining = %v, want ErrSessionDraining", err)
+	}
+	// But it stays LIVE: Dispatch (Pong/Cancel/Cleanup) still succeeds.
+	if err := s.Dispatch(agentID, noopMsg()); err != nil {
+		t.Fatalf("Dispatch (pong) to draining session failed: %v", err)
+	}
+}
+
+func TestSessionStore_DuplicateDispatchDoesNotDoubleCount(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	agentID := uuid.New()
+	sess := s.CreateSession(agentID, nil, 2, 0)
+	s.MarkReadyForTest(sess.ID)
+
+	jobID := uuid.New()
+	assign := &gocdnextv1.ServerMessage{Kind: &gocdnextv1.ServerMessage_Assign{
+		Assign: &gocdnextv1.JobAssignment{JobId: jobID.String()},
+	}}
+	// First dispatch: running=1.
+	if err := s.DispatchAssignment(agentID, assign, jobID, 0); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	<-sess.Out()
+	if got := sess.Running(); got != 1 {
+		t.Fatalf("after first dispatch running=%d, want 1", got)
+	}
+	// Duplicate dispatch of the SAME (job, attempt): idempotent no-op — running
+	// must stay 1, and no second frame is enqueued.
+	if err := s.DispatchAssignment(agentID, assign, jobID, 0); err != nil {
+		t.Fatalf("duplicate dispatch returned error: %v", err)
+	}
+	if got := sess.Running(); got != 1 {
+		t.Fatalf("after duplicate dispatch running=%d, want 1 (counter leaked)", got)
+	}
+	select {
+	case m := <-sess.Out():
+		t.Fatalf("duplicate dispatch enqueued a second frame: %v", m)
+	default:
+	}
+}
+
 func TestSessionStore_SecondConnectRejected(t *testing.T) {
 	t.Parallel()
 

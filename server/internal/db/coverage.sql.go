@@ -185,6 +185,18 @@ func (q *Queries) CoverageTrendByPipeline(ctx context.Context, arg CoverageTrend
 	return items, nil
 }
 
+const deleteCoverageReportsByJobRun = `-- name: DeleteCoverageReportsByJobRun :exec
+DELETE FROM coverage_reports WHERE job_run_id = $1
+`
+
+// Clears a job_run's coverage on requeue/rerun so a new attempt never inherits
+// the previous attempt's report. Mirrors the log/test/artifact cleanup those
+// paths already do; coverage was the one job-scoped table they missed.
+func (q *Queries) DeleteCoverageReportsByJobRun(ctx context.Context, jobRunID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCoverageReportsByJobRun, jobRunID)
+	return err
+}
+
 const upsertCoverageReport = `-- name: UpsertCoverageReport :exec
 INSERT INTO coverage_reports
     (job_run_id, run_id, pipeline_id, job_name, matrix_key, format, lines_covered, lines_total, packages)

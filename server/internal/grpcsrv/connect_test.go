@@ -98,6 +98,47 @@ func TestConnect_HeartbeatGetsPong(t *testing.T) {
 	}
 }
 
+func TestConnect_DrainingKeepsStreamLive(t *testing.T) {
+	pool, client := bootServer(t)
+	seedAgentViaSQL(t, pool, "runner-drain", store.HashToken("tok"))
+
+	reg, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "runner-drain", Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, grpcconsts.SessionHeader, reg.SessionId)
+
+	stream, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	// A Draining frame is accepted (recv loop handles the new kind) and the
+	// session stays LIVE — a subsequent heartbeat still gets a Pong.
+	if err := stream.Send(&gocdnextv1.AgentMessage{
+		Kind: &gocdnextv1.AgentMessage_Draining{Draining: &gocdnextv1.Draining{}},
+	}); err != nil {
+		t.Fatalf("Send draining: %v", err)
+	}
+	if err := stream.Send(&gocdnextv1.AgentMessage{
+		Kind: &gocdnextv1.AgentMessage_Heartbeat{Heartbeat: &gocdnextv1.Heartbeat{At: timestamppb.Now()}},
+	}); err != nil {
+		t.Fatalf("Send heartbeat after draining: %v", err)
+	}
+	msg, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv after draining: %v", err)
+	}
+	if _, ok := msg.Kind.(*gocdnextv1.ServerMessage_Pong); !ok {
+		t.Fatalf("expected Pong after draining (session still live), got %T", msg.Kind)
+	}
+	_ = stream.CloseSend()
+}
+
 func TestConnect_SessionRevokedOnStreamClose(t *testing.T) {
 	pool, client := bootServer(t)
 	seedAgentViaSQL(t, pool, "runner-revoke", store.HashToken("tok"))

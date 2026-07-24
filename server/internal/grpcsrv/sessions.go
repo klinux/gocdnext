@@ -22,6 +22,9 @@ var (
 	// no longer `registered` — a second concurrent Connect on the same session.
 	// The second stream must NOT start a send pump (it would split sess.out).
 	ErrConnectClaimed = errors.New("grpcsrv: session already claimed by a connect stream")
+	// ErrSessionDraining means the session's agent signalled Draining — it accepts
+	// no new assignments. The scheduler rolls the dispatch back and re-selects.
+	ErrSessionDraining = errors.New("grpcsrv: session is draining")
 )
 
 // connState is the session connect lifecycle.
@@ -69,6 +72,12 @@ type Session struct {
 	out     chan *gocdnextv1.ServerMessage
 	running atomic.Int32
 	revoked atomic.Bool
+	// draining is set (once, via the Draining wire signal) when the agent is
+	// shutting down gracefully. It is SESSION-scoped (never persisted to the
+	// agents row) so a same-name replacement is never born draining. The session
+	// stays LIVE while draining — it keeps delivering JobResults (DecRunning) and
+	// receiving Pong/Cancel; only NEW-assignment selection/dispatch is refused.
+	draining atomic.Bool
 	// state is the connect lifecycle: registered → connecting → ready.
 	// A session is PUBLISHED (in byID/latestByAg) at Register/CreateSession
 	// but stays `registered` — NOT schedulable — until Connect claims it and
@@ -141,6 +150,32 @@ func (s *Session) RecordAssignmentCAS(jobID uuid.UUID, attempt int32) bool {
 		return true
 	}
 	return existing.(int32) == attempt
+}
+
+// recordResult is the tri-state outcome DispatchAssignment needs to avoid
+// double-counting a duplicate dispatch of the same (job, attempt).
+type recordResult int
+
+const (
+	recordFresh     recordResult = iota // newly stored — enqueue + IncRunning
+	recordDuplicate                     // same (job, attempt) already present — idempotent, do NOT re-enqueue/IncRunning
+	recordConflict                      // a DIFFERENT attempt is present — busy
+)
+
+// recordAssignmentResult is RecordAssignmentCAS with the extra bit
+// DispatchAssignment needs: whether the CAS actually STORED (fresh) or found an
+// identical entry already there (duplicate). A duplicate must not enqueue a
+// second Assign nor IncRunning again — that would leak session capacity with no
+// matching JobResult to decrement it.
+func (s *Session) recordAssignmentResult(jobID uuid.UUID, attempt int32) recordResult {
+	existing, loaded := s.assignedJobs.LoadOrStore(jobID, attempt)
+	if !loaded {
+		return recordFresh
+	}
+	if existing.(int32) == attempt {
+		return recordDuplicate
+	}
+	return recordConflict
 }
 
 // LookupAssignment returns the recorded attempt for a job if this
@@ -592,6 +627,12 @@ func (s *SessionStore) DispatchAssignment(
 	if !sess.ready() {
 		return ErrNoSession
 	}
+	// Draining: same select→dispatch race — the agent flipped draining between
+	// FindIdleWithTags and here. Refuse (before RecordAssignmentCAS, so no phantom
+	// assignedJobs entry); the scheduler rolls back and re-selects.
+	if sess.draining.Load() {
+		return ErrSessionDraining
+	}
 	// Record BEFORE the channel write so the recv side cannot
 	// observe an Assign without the matching assignment entry
 	// (the goroutine reading sess.out can't proceed until we
@@ -607,8 +648,14 @@ func (s *SessionStore) DispatchAssignment(
 	// attempt while still holding the old one. The fence ordering
 	// in Reaper.Sweep is the primary defense; this is the safety
 	// net for misconfigured / test paths / future regressions.
-	if !sess.RecordAssignmentCAS(jobID, attempt) {
+	switch sess.recordAssignmentResult(jobID, attempt) {
+	case recordConflict:
 		return ErrSessionBusy
+	case recordDuplicate:
+		// The same (job, attempt) was already dispatched to THIS session. Do not
+		// enqueue a second Assign or IncRunning again — the counter would leak
+		// (no second JobResult decrements it). Idempotent no-op.
+		return nil
 	}
 	select {
 	case sess.out <- msg:
@@ -710,6 +757,9 @@ func (s *SessionStore) FindIdleWithTags(required []string) (uuid.UUID, bool) {
 		}
 		if !sess.ready() {
 			continue // published at Register but no live Connect stream yet
+		}
+		if sess.draining.Load() {
+			continue // agent shutting down — takes no new assignments
 		}
 		if sess.running.Load() >= sess.Capacity {
 			continue

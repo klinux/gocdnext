@@ -26,6 +26,18 @@ func (s *Session) ReadyForTest() bool {
 	return s.ready()
 }
 
+// DrainingForTest reads the draining flag so tests can assert the Draining wire
+// signal flipped it.
+func (s *Session) DrainingForTest() bool {
+	return s.draining.Load()
+}
+
+// SetDrainingForTest sets the draining flag directly (bypassing the wire signal)
+// so scheduler/session tests can exercise the drain gates.
+func (s *Session) SetDrainingForTest() {
+	s.draining.Store(true)
+}
+
 // ReadyCountForTest is the per-store count of ready-and-not-revoked sessions —
 // exactly what the AgentsOnline gauge is Set to. Tests assert this instead of the
 // process-global gauge, which parallel tests would race on.

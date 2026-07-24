@@ -796,6 +796,12 @@ func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult,
 		in.JobRunID); err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: retire artifacts: %w", err)
 	}
+	// Same for coverage (job_run_id UNIQUE): without clearing, the new attempt
+	// inherits the previous attempt's report if it stops emitting one. Mirrors
+	// DeleteCoverageReportsByJobRun in sweeper.requeueStaleJob.
+	if _, err := tx.Exec(ctx, `DELETE FROM coverage_reports WHERE job_run_id = $1`, in.JobRunID); err != nil {
+		return RerunJobResult{}, fmt.Errorf("store: rerun job: clear coverage: %w", err)
+	}
 
 	// Un-finish the parent stage + run so dispatch + UI stop
 	// treating them as done. Leaves sibling jobs / stages alone —

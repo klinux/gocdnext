@@ -447,9 +447,11 @@ func TestSessionStore_DispatchAssignment_RejectsAttemptOverwrite(t *testing.T) {
 }
 
 // TestSessionStore_DispatchAssignment_IdempotentSameAttempt is the
-// companion: the CAS must accept a re-dispatch of the SAME
-// (jobID, attempt) so a scheduler retry that re-arrives at the
-// same plan after a transient failure isn't blocked spuriously.
+// companion: a re-dispatch of the SAME (jobID, attempt) must NOT be
+// blocked (no error) — a scheduler retry that re-arrives at the same
+// plan should be tolerated — but it is now an idempotent NO-OP: it does
+// NOT enqueue a second Assign frame and does NOT IncRunning again (which
+// would leak session capacity with no matching JobResult to decrement).
 func TestSessionStore_DispatchAssignment_IdempotentSameAttempt(t *testing.T) {
 	store := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
@@ -466,10 +468,22 @@ func TestSessionStore_DispatchAssignment_IdempotentSameAttempt(t *testing.T) {
 		t.Fatalf("first DispatchAssignment: %v", err)
 	}
 	<-sess.Out()
+	if got := sess.Running(); got != 1 {
+		t.Fatalf("after first dispatch running=%d, want 1", got)
+	}
+
+	// Re-dispatch the same (job, attempt): succeeds, no-op.
 	if err := store.DispatchAssignment(agentID, msg, jobID, 7); err != nil {
 		t.Fatalf("idempotent re-dispatch should succeed, got: %v", err)
 	}
-	<-sess.Out()
+	if got := sess.Running(); got != 1 {
+		t.Fatalf("after idempotent re-dispatch running=%d, want 1 (no double count)", got)
+	}
+	select {
+	case m := <-sess.Out():
+		t.Fatalf("idempotent re-dispatch enqueued a second frame: %v", m)
+	default:
+	}
 	got, ok := sess.LookupAssignment(jobID)
 	if !ok || got != 7 {
 		t.Fatalf("LookupAssignment got (%d, %v), want (7, true)", got, ok)

@@ -15,6 +15,12 @@ ON CONFLICT (job_run_id) DO UPDATE SET
     packages      = EXCLUDED.packages,
     created_at    = NOW();
 
+-- name: DeleteCoverageReportsByJobRun :exec
+-- Clears a job_run's coverage on requeue/rerun so a new attempt never inherits
+-- the previous attempt's report. Mirrors the log/test/artifact cleanup those
+-- paths already do; coverage was the one job-scoped table they missed.
+DELETE FROM coverage_reports WHERE job_run_id = $1;
+
 -- name: CoverageByRun :many
 SELECT job_run_id, job_name, matrix_key, format, lines_covered, lines_total, packages, created_at
 FROM coverage_reports
