@@ -58,9 +58,14 @@ func (r *Runner) Execute(ctx context.Context, a *gocdnextv1.JobAssignment) {
 	scriptWorkDir := workDir
 	for i, co := range a.GetCheckouts() {
 		if err := r.checkout(ctx, workDir, co, a, &seq); err != nil {
-			log.Warn("runner: checkout failed", "err", err, "url", co.GetUrl())
+			// The URL can carry an injected bearer; redact it before it lands in
+			// the log field and, especially, in JobResult.Error (which is sent
+			// verbatim, never through the log mask). applyMasks is the backstop
+			// for any other job secret that reached the error.
+			safeURL := redactURLCredential(co.GetUrl())
+			log.Warn("runner: checkout failed", "err", err, "url", safeURL)
 			r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1,
-				fmt.Sprintf("checkout %s: %v", co.GetUrl(), err))
+				applyMasks(fmt.Sprintf("checkout %s: %v", safeURL, err), a.GetLogMasks()))
 			return
 		}
 		if i == 0 && co.GetTargetDir() != "" {

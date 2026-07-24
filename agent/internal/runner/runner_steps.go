@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -100,32 +97,12 @@ func (r *Runner) uploadArtifacts(ctx context.Context, workDir string, a *gocdnex
 }
 
 func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.MaterialCheckout, a *gocdnextv1.JobAssignment, seq *atomic.Int64) error {
-	target := filepath.Join(workDir, co.GetTargetDir())
-	args := []string{"clone", "--quiet"}
-	if co.GetBranch() != "" {
-		args = append(args, "--branch", co.GetBranch())
-	}
-	args = append(args, co.GetUrl(), target)
-
-	r.emitLog(a, seq, "stdout", fmt.Sprintf("$ git %v", args))
-	code, err := r.runCommand(ctx, "", "git", args, nil, a, seq)
-	if err != nil {
-		return err
-	}
-	if code != 0 {
-		return fmt.Errorf("git clone exited %d", code)
-	}
-	if rev := co.GetRevision(); rev != "" {
-		r.emitLog(a, seq, "stdout", "$ git -C "+target+" checkout "+rev)
-		code, err := r.runCommand(ctx, "", "git", []string{"-C", target, "checkout", "--quiet", rev}, nil, a, seq)
-		if err != nil {
-			return err
-		}
-		if code != 0 {
-			return fmt.Errorf("git checkout %s exited %d", rev, code)
-		}
-	}
-	return nil
+	// Shares the one bounded clone+checkout helper with isolated-mode Prep.
+	// emitLog already masks known secrets; the helper additionally strips URL
+	// credentials from git's own streamed output.
+	echo := func(line string) { r.emitLog(a, seq, "stdout", line) }
+	emit := func(stream, line string) { r.emitLog(a, seq, stream, line) }
+	return cloneCheckout(ctx, workDir, co, echo, emit)
 }
 
 // runScript delegates the actual execution to the configured engine
@@ -222,43 +199,4 @@ func assignmentTolerations(a *gocdnextv1.JobAssignment) []corev1.Toleration {
 		}
 	}
 	return out
-}
-
-// runCommand executes a command and streams stdout/stderr as LogLines. Returns
-// the exit code (0 on success) and an error ONLY for lifecycle problems (fork
-// failed, unexpected wait error). A non-zero exit code is NOT an error.
-func (r *Runner) runCommand(ctx context.Context, dir, name string, args []string, env map[string]string, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), envSlice(env)...)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return -1, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return -1, err
-	}
-	if err := cmd.Start(); err != nil {
-		return -1, err
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go r.streamLines(stdout, "stdout", a, seq, &wg)
-	go r.streamLines(stderr, "stderr", a, seq, &wg)
-	wg.Wait()
-
-	if err := cmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), nil
-		}
-		return -1, err
-	}
-	return 0, nil
 }

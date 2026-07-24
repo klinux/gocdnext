@@ -13,16 +13,13 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
@@ -75,7 +72,10 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 
 	for i, co := range a.GetCheckouts() {
 		if err := Checkout(ctx, workspaceDir, co, logWriter); err != nil {
-			return fmt.Errorf("checkout %s: %w", co.GetUrl(), err)
+			// Redact the URL: this error is printed to the init container's
+			// stderr (kubectl logs -c prep) and, upstream, surfaces in the
+			// JobResult — a credentialed material URL must not ride along.
+			return fmt.Errorf("checkout %s: %w", redactURLCredential(co.GetUrl()), err)
 		}
 		if i == 0 && co.GetTargetDir() != "" {
 			scriptWorkDir = filepath.Join(workspaceDir, co.GetTargetDir())
@@ -190,37 +190,9 @@ func Prep(ctx context.Context, a *gocdnextv1.JobAssignment, workspaceDir string,
 // directly. The shared-mode runner also delegates to this from its
 // own checkout() wrapper for parity.
 func Checkout(ctx context.Context, baseDir string, mc *gocdnextv1.MaterialCheckout, logWriter io.Writer) error {
-	if mc == nil {
-		return fmt.Errorf("nil checkout")
-	}
-	if mc.GetUrl() == "" {
-		return fmt.Errorf("checkout missing url")
-	}
-	target := filepath.Join(baseDir, mc.GetTargetDir())
-
-	args := []string{"clone", "--quiet"}
-	if mc.GetBranch() != "" {
-		args = append(args, "--branch", mc.GetBranch())
-	}
-	args = append(args, mc.GetUrl(), target)
-
-	prepLog(logWriter, "$ git %v", redactCloneArgs(args, mc.GetUrl()))
-	if code, err := runCommandTo(ctx, "", "git", args, nil, logWriter); err != nil {
-		return err
-	} else if code != 0 {
-		return fmt.Errorf("git clone exited %d", code)
-	}
-
-	if rev := mc.GetRevision(); rev != "" {
-		revArgs := []string{"-C", target, "checkout", "--quiet", rev}
-		prepLog(logWriter, "$ git %v", revArgs)
-		if code, err := runCommandTo(ctx, "", "git", revArgs, nil, logWriter); err != nil {
-			return err
-		} else if code != 0 {
-			return fmt.Errorf("git checkout %s exited %d", rev, code)
-		}
-	}
-	return nil
+	echo := func(line string) { prepLog(logWriter, "%s", line) }
+	emit := func(_, line string) { prepLog(logWriter, "%s", line) }
+	return cloneCheckout(ctx, baseDir, mc, echo, emit)
 }
 
 // DownloadArtifact fetches a single upstream artefact via its
@@ -269,62 +241,6 @@ func prepLog(w io.Writer, format string, args ...interface{}) {
 		return
 	}
 	_, _ = fmt.Fprintf(w, format+"\n", args...)
-}
-
-// runCommandTo execs `name args...` and streams stdout/stderr to
-// logWriter as lines. Returns exit code (0 on success) and an
-// error ONLY for lifecycle problems (fork failed, unexpected wait
-// error). A non-zero exit is NOT an error.
-//
-// Equivalent to Runner.runCommand but writes lines to an io.Writer
-// instead of emitting LogLine protos.
-func runCommandTo(ctx context.Context, dir, name string, args []string, env []string, logWriter io.Writer) (int, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	if len(env) > 0 {
-		cmd.Env = env
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return -1, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return -1, err
-	}
-	if err := cmd.Start(); err != nil {
-		return -1, err
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go streamLinesTo(stdout, logWriter, &wg)
-	go streamLinesTo(stderr, logWriter, &wg)
-	wg.Wait()
-
-	if err := cmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), nil
-		}
-		return -1, err
-	}
-	return 0, nil
-}
-
-func streamLinesTo(rd io.Reader, w io.Writer, wg *sync.WaitGroup) {
-	defer wg.Done()
-	if w == nil {
-		_, _ = io.Copy(io.Discard, rd)
-		return
-	}
-	scanner := bufio.NewScanner(rd)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		_, _ = fmt.Fprintln(w, scanner.Text())
-	}
 }
 
 // redactCloneArgs returns a copy of `args` with the `url` value
