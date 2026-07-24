@@ -1,10 +1,7 @@
 package runner
 
 import (
-	"bufio"
-	"io"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -12,19 +9,6 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
-
-func (r *Runner) streamLines(rd io.Reader, stream string, a *gocdnextv1.JobAssignment, seq *atomic.Int64, wg *sync.WaitGroup) {
-	defer wg.Done()
-	scanner := bufio.NewScanner(rd)
-	// Raise buffer size: long `go test -v` lines or minified JS can blow past
-	// the default 64 KiB.
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		r.emitLog(a, seq, stream, scanner.Text())
-	}
-	// Scanner errors (e.g., pipe close) are ignored: the Wait() below sees the
-	// real process exit which is the authoritative outcome.
-}
 
 func (r *Runner) emitLog(a *gocdnextv1.JobAssignment, seq *atomic.Int64, stream, text string) {
 	n := seq.Add(1)
@@ -84,14 +68,6 @@ func (r *Runner) sendResultWithArtifactsAndOutputs(a *gocdnextv1.JobAssignment, 
 			},
 		},
 	})
-}
-
-func envSlice(env map[string]string) []string {
-	out := make([]string, 0, len(env))
-	for k, v := range env {
-		out = append(out, k+"="+v)
-	}
-	return out
 }
 
 // sanitize strips path separators so a hostile run_id/job_id can't escape
