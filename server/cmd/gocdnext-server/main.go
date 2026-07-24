@@ -424,6 +424,10 @@ func main() {
 	pluginsHandler := pluginsapi.NewHandler(logger, pluginCatalog)
 
 	sessions := grpcsrv.NewSessionStore()
+	// Per-agent running/capacity gauges, collected at scrape time from this
+	// live session registry. Registered once here (not in NewAgentService) so a
+	// second SessionStore in tests can't hit a duplicate-registration panic.
+	metrics.Registry.MustRegister(grpcsrv.NewAgentSessionCollector(sessions))
 	// Wire the session registry into the Cancel endpoint so
 	// canceling a run actually pushes CancelJob frames to the
 	// agents running jobs — otherwise cancel is DB-only and the

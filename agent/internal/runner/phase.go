@@ -5,8 +5,34 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gocdnext/gocdnext/agent/internal/metrics"
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 )
+
+// phaseTimer records how long a job spends in each coarse phase for the
+// gocdnext_agent_job_duration_seconds histogram. enter() closes the previous
+// phase and opens the next; a deferred finish() closes whatever phase was in
+// flight when Execute returns — so a failed clone, a red task or a canceled ctx
+// is still observed, never biasing the histogram toward successful runs. Each
+// phase is observed exactly once (enter closes the prior; finish is idempotent).
+type phaseTimer struct {
+	phase string
+	start time.Time
+}
+
+func (p *phaseTimer) enter(phase string) {
+	p.finish()
+	p.phase = phase
+	p.start = time.Now()
+}
+
+func (p *phaseTimer) finish() {
+	if p.phase == "" {
+		return
+	}
+	metrics.ObserveJobPhase(p.phase, time.Since(p.start))
+	p.phase = ""
+}
 
 // emitPhase writes a phase-boundary marker into the job log. The
 // "──" prefix makes boundaries scannable in a wall of build output,
