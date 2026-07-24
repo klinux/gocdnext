@@ -33,8 +33,15 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	if !ok {
 		return status.Error(codes.Unauthenticated, "missing session header")
 	}
-	sess, ok := a.sessions.Lookup(sessionID)
-	if !ok {
+	// Claim the session exclusively for THIS stream: transitions it
+	// registered→connecting and rejects a second concurrent Connect on the same
+	// session (which would start a second pump and split sess.out). The session
+	// stays NOT-schedulable until MarkReady below, after the pump is live.
+	sess, err := a.sessions.ClaimConnect(sessionID)
+	if err != nil {
+		if errors.Is(err, ErrConnectClaimed) {
+			return status.Error(codes.AlreadyExists, "session already has a connect stream")
+		}
 		return status.Error(codes.Unauthenticated, "invalid or expired session")
 	}
 	agentID := sess.AgentID
@@ -70,6 +77,17 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 			}
 		}
 	}()
+
+	// Pump is live → the session is now schedulable. MarkReady transitions
+	// connecting→ready, fires onReady (scheduler drains its queued backlog), and
+	// counts the agent online. A revoke/supersede between claim and here fails
+	// the CAS; the deferred Revoke below still runs.
+	if err := a.sessions.MarkReady(sessionID); err != nil {
+		log.Info("agent stream: session no longer current at ready", "err", err)
+		a.sessions.Revoke(sessionID)
+		<-pumpDone
+		return status.Error(codes.Aborted, "session superseded")
+	}
 
 	defer func() {
 		a.sessions.Revoke(sessionID)

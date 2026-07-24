@@ -18,6 +18,19 @@ var (
 	ErrNoSession      = errors.New("grpcsrv: no active session for agent")
 	ErrSessionBusy    = errors.New("grpcsrv: session send queue full")
 	ErrSessionRevoked = errors.New("grpcsrv: session revoked")
+	// ErrConnectClaimed means a Connect stream tried to claim a session that is
+	// no longer `registered` — a second concurrent Connect on the same session.
+	// The second stream must NOT start a send pump (it would split sess.out).
+	ErrConnectClaimed = errors.New("grpcsrv: session already claimed by a connect stream")
+)
+
+// connState is the session connect lifecycle.
+type connState int32
+
+const (
+	stateRegistered connState = iota // published at Register; not yet schedulable
+	stateConnecting                  // a Connect stream claimed it; pump starting
+	stateReady                       // pump live; schedulable
 )
 
 const defaultSendBuffer = 16
@@ -56,6 +69,14 @@ type Session struct {
 	out     chan *gocdnextv1.ServerMessage
 	running atomic.Int32
 	revoked atomic.Bool
+	// state is the connect lifecycle: registered → connecting → ready.
+	// A session is PUBLISHED (in byID/latestByAg) at Register/CreateSession
+	// but stays `registered` — NOT schedulable — until Connect claims it and
+	// starts its send pump. Scheduling (FindIdleWithTags, DispatchAssignment)
+	// requires `ready`, so a session with no consumer can never receive a job
+	// that would sit `running` until the reaper. All transitions are CAS'd
+	// under s.mu (ClaimConnect, MarkReady); reads are under s.mu too.
+	state atomic.Int32
 	// supersededByRegister is the signal a Connect-handler defer
 	// uses to decide whether to MarkAgentOffline. When the
 	// successor agent's Register flow revoked us (RevokeForAgent
@@ -236,18 +257,34 @@ func (s *SessionStore) CreateSession(agentID uuid.UUID, tags []string, capacity 
 	}
 	s.byID[sess.ID] = sess
 	s.latestByAg[agentID] = sess.ID
-	onReady := s.onReady
-	gauge := float64(len(s.latestByAg))
+	// The new session is born `registered` (not ready), so it does NOT count as
+	// online and is NOT schedulable yet — Connect's MarkReady does both. A prev
+	// session revoked just above may have been ready, so recompute the gauge.
+	gauge := float64(s.readyCountLocked())
 	s.mu.Unlock()
 	metrics.AgentsOnline.Set(gauge)
 
-	// Fire the ready hook outside the lock so a slow subscriber
-	// (scheduler draining the DB) can't stall agent registration.
-	if onReady != nil {
-		go onReady()
-	}
+	// onReady is deliberately NOT fired here — it fires from MarkReady, when the
+	// agent actually has a live consumer for sess.out. Firing it at Register let
+	// the scheduler dispatch into a session with no reader (jobs stuck running).
 	return sess
 }
+
+// readyCountLocked counts live (current, not-revoked) sessions in the `ready`
+// state — the true "online" figure. Caller holds s.mu.
+func (s *SessionStore) readyCountLocked() int {
+	n := 0
+	for _, id := range s.latestByAg {
+		if sess := s.byID[id]; sess != nil && !sess.revoked.Load() && sess.ready() {
+			n++
+		}
+	}
+	return n
+}
+
+// ready reports whether the session's Connect stream is live and it may be
+// scheduled. Reads the CAS'd state.
+func (s *Session) ready() bool { return connState(s.state.Load()) == stateReady }
 
 // SetOnSessionReady registers a callback invoked after every
 // CreateSession. The scheduler uses it to drain the queued-run
@@ -423,9 +460,59 @@ func (s *SessionStore) Revoke(sessionID string) {
 	if s.latestByAg[sess.AgentID] == sessionID {
 		delete(s.latestByAg, sess.AgentID)
 	}
-	gauge := float64(len(s.latestByAg))
+	gauge := float64(s.readyCountLocked())
 	s.mu.Unlock()
 	metrics.AgentsOnline.Set(gauge)
+}
+
+// ClaimConnect transitions a published session from `registered` to
+// `connecting`, exclusively — the FIRST Connect stream for a session wins and
+// starts the send pump; a SECOND concurrent Connect gets ErrConnectClaimed and
+// must not pump (two pumps would split sess.out). It also validates the session
+// is still the agent's current one and not revoked.
+func (s *SessionStore) ClaimConnect(sessionID string) (*Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.byID[sessionID]
+	if !ok || sess.revoked.Load() {
+		return nil, ErrNoSession
+	}
+	if cur, ok := s.latestByAg[sess.AgentID]; !ok || cur != sessionID {
+		return nil, ErrNoSession // superseded by a newer Register
+	}
+	if !sess.state.CompareAndSwap(int32(stateRegistered), int32(stateConnecting)) {
+		return nil, ErrConnectClaimed
+	}
+	return sess, nil
+}
+
+// MarkReady transitions a claimed session from `connecting` to `ready` — call it
+// AFTER the send pump has started, so a scheduled dispatch always finds a live
+// consumer. It fires onReady once (the scheduler drains its queued-run backlog)
+// and refreshes the online gauge. A session that was revoked/superseded between
+// ClaimConnect and here fails the CAS and returns ErrNoSession.
+func (s *SessionStore) MarkReady(sessionID string) error {
+	s.mu.Lock()
+	sess, ok := s.byID[sessionID]
+	if !ok || sess.revoked.Load() {
+		s.mu.Unlock()
+		return ErrNoSession
+	}
+	if !sess.state.CompareAndSwap(int32(stateConnecting), int32(stateReady)) {
+		s.mu.Unlock()
+		return ErrNoSession
+	}
+	onReady := s.onReady
+	gauge := float64(s.readyCountLocked())
+	s.mu.Unlock()
+
+	metrics.AgentsOnline.Set(gauge)
+	// Outside the lock so a slow subscriber (scheduler draining the DB) can't
+	// stall the Connect handler.
+	if onReady != nil {
+		go onReady()
+	}
+	return nil
 }
 
 // Dispatch enqueues msg onto the agent's current session. Returns
@@ -497,6 +584,12 @@ func (s *SessionStore) DispatchAssignment(
 	}
 	sess := s.byID[id]
 	if sess == nil || sess.revoked.Load() {
+		return ErrNoSession
+	}
+	// A published-but-not-yet-`ready` session has no consumer for sess.out; a
+	// dispatch here would sit `running` until the reaper. Selection also skips
+	// it (FindIdleWithTags), but this closes the select→dispatch window.
+	if !sess.ready() {
 		return ErrNoSession
 	}
 	// Record BEFORE the channel write so the recv side cannot
@@ -615,6 +708,9 @@ func (s *SessionStore) FindIdleWithTags(required []string) (uuid.UUID, bool) {
 		if !ok || sess.revoked.Load() {
 			continue
 		}
+		if !sess.ready() {
+			continue // published at Register but no live Connect stream yet
+		}
 		if sess.running.Load() >= sess.Capacity {
 			continue
 		}
@@ -659,18 +755,19 @@ type AgentCapacitySample struct {
 	Capacity int32
 }
 
-// CapacitySnapshot returns running/capacity for every LIVE (non-revoked)
+// CapacitySnapshot returns running/capacity for every LIVE (non-revoked, ready)
 // session, taken under the lock and returned by value — so the metrics
 // collector can emit to its channel WITHOUT holding s.mu (which dispatch and
-// the idle scan also take). A revoked/dead session is skipped, so its series
-// disappears on the next scrape rather than lingering as phantom capacity.
+// the idle scan also take). A revoked/dead OR not-yet-`ready` session is skipped
+// (the latter is not live capacity), so its series disappears/never appears
+// rather than lingering as phantom capacity.
 func (s *SessionStore) CapacitySnapshot() []AgentCapacitySample {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]AgentCapacitySample, 0, len(s.latestByAg))
 	for _, id := range s.latestByAg {
 		sess, ok := s.byID[id]
-		if !ok || sess.revoked.Load() {
+		if !ok || sess.revoked.Load() || !sess.ready() {
 			continue
 		}
 		out = append(out, AgentCapacitySample{

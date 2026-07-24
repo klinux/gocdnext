@@ -26,6 +26,20 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// markReady drives a session through the real Connect lifecycle (ClaimConnect +
+// MarkReady) so a scheduler test that creates a session directly (bypassing the
+// Connect RPC) still has a *schedulable* agent — a published-but-unready session
+// is deliberately not selected (#178 ready gate).
+func markReady(t *testing.T, sessions *grpcsrv.SessionStore, sessionID string) {
+	t.Helper()
+	if _, err := sessions.ClaimConnect(sessionID); err != nil {
+		t.Fatalf("markReady: ClaimConnect: %v", err)
+	}
+	if err := sessions.MarkReady(sessionID); err != nil {
+		t.Fatalf("markReady: MarkReady: %v", err)
+	}
+}
+
 // seed creates a project + 1 pipeline (stages build/test, jobs compile/unit)
 // and queues one run against it. Returns the run id + the material id the
 // revisions snapshot refers to (for JobAssignment assertions).
@@ -207,6 +221,7 @@ func TestDispatchRun_JobWithoutProfileInheritsDefaultScheduling(t *testing.T) {
 	runID, _ := seed(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-default-inherit")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -245,6 +260,7 @@ func TestDispatchRun_JobWithoutProfileNoDefaultIsNoop(t *testing.T) {
 	runID, _ := seed(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-no-default")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -275,6 +291,7 @@ func TestDispatchRun_PushesAssignmentToIdleAgent(t *testing.T) {
 	runID, materialID := seed(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -344,6 +361,7 @@ func TestDispatchRun_DeployGuardBlocksNewerGatePass(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "guard-marker-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, older.RunID)
 	assertNoAssignment(t, sess)
@@ -388,6 +406,7 @@ func TestDispatchRun_DeployGuardBlocksNewerSuccessfulGatePass(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "guard-success-marker-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, older.RunID)
 	assertNoAssignment(t, sess)
@@ -426,6 +445,7 @@ func TestDispatchRun_DeployGuardLockContentionDoesNotAssign(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "guard-lock-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, older.RunID)
 	assertNoAssignment(t, sess)
@@ -463,6 +483,7 @@ func TestDispatchRun_DeployGuardAllowsRollback(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "guard-rollback-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, older.RunID)
 	select {
@@ -517,6 +538,7 @@ func TestDispatchRun_DeployRevisionCreateErrorRollsBackAssign(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "guard-revision-error-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, older.RunID)
 	assertNoAssignment(t, sess)
@@ -541,6 +563,7 @@ func TestDispatchRun_SkipsSecondStageJobs(t *testing.T) {
 	runID, _ := seed(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 4, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -609,7 +632,9 @@ func TestDispatchRun_RoutesToAgentMatchingTags(t *testing.T) {
 	plainID := seedAgentRow(t, pool, "plain")
 	dockerID := seedAgentRow(t, pool, "dockerized")
 	plainSess := sessions.CreateSession(plainID, []string{"linux"}, 1, 0)
+	markReady(t, sessions, plainSess.ID)
 	dockerSess := sessions.CreateSession(dockerID, []string{"linux", "docker"}, 1, 0)
+	markReady(t, sessions, dockerSess.ID)
 
 	sched.DispatchRun(ctx, run.RunID)
 
@@ -1328,6 +1353,7 @@ func TestE2E_OutputsRoundTripFromBumpToPublish(t *testing.T) {
 	// $GOCDNEXT_OUTPUT_FILE against `next` → `NEXT`.
 	agentID := seedAgentRow(t, pool, "e2e-agent")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 	sched.DispatchRun(ctx, runID)
 
 	var bumpAssign struct {
@@ -1466,6 +1492,7 @@ func TestE2E_MatrixSelectorResolvesPerRow(t *testing.T) {
 	// Capacity 2 so both ride on the same agent.
 	agentID := seedAgentRow(t, pool, "e2e-agent-matrix-sel")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 	sched.DispatchRun(ctx, runID)
 
 	type bumpRow struct {
@@ -2116,6 +2143,7 @@ func TestRun_DispatchesOnAgentRegister(t *testing.T) {
 	// scheduler into an immediate drainQueued.
 	agentID := seedAgentRow(t, pool, "late-agent")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	select {
 	case msg := <-sess.Out():
@@ -2152,6 +2180,7 @@ func TestRun_ReactsToNotify(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 1, 0)
+	markReady(t, sessions, sess.ID)
 
 	done := make(chan error, 1)
 	go func() { done <- sched.Run(ctx) }()
@@ -2256,6 +2285,7 @@ func TestDispatchRun_SerialPipelineWaitsForBusyRun(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "serial-agent")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, second.RunID)
 
@@ -2396,6 +2426,7 @@ func TestDispatchRun_NeedsGate_WaitsForSameStageUpstream(t *testing.T) {
 	// dependent, not the agent gate.
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 
 	sched.DispatchRun(ctx, runID)
 
@@ -2461,6 +2492,7 @@ func TestDispatchRun_NeedsGate_DispatchesAfterUpstreamSucceeds(t *testing.T) {
 	runID, prepJobID, dependentJobID := seedSameStageNeeds(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 
 	// Tick 1: prep dispatches, dependent stays queued.
 	sched.DispatchRun(ctx, runID)
@@ -2526,6 +2558,7 @@ func TestDispatchRun_NeedsGate_FailsWhenUpstreamFailed(t *testing.T) {
 	runID, prepJobID, dependentJobID := seedSameStageNeeds(t, pool)
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 
 	// Tick 1: prep dispatches.
 	sched.DispatchRun(ctx, runID)
@@ -2627,6 +2660,7 @@ func TestDispatchRun_NeedsGate_FailsRunOnGhostUpstream(t *testing.T) {
 
 	agentID := seedAgentRow(t, pool, "agent-1")
 	sess := sessions.CreateSession(agentID, nil, 2, 0)
+	markReady(t, sessions, sess.ID)
 
 	// First tick: prep dispatches (its needs are still empty).
 	// dependent's needs={ghost-job} → terminal-not-in-run →

@@ -33,12 +33,22 @@ func TestAgentSessionCollector(t *testing.T) {
 	store := NewSessionStore()
 	a1, a2 := uuid.New(), uuid.New()
 	s1 := store.CreateSession(a1, nil, 6, 0)
+	store.MarkReadyForTest(s1.ID)
 	s1.IncRunning()
 	s1.IncRunning()                          // running=2, capacity=6
 	s2 := store.CreateSession(a2, nil, 4, 0) // running=0, capacity=4
+	store.MarkReadyForTest(s2.ID)
+
+	// A not-yet-ready session must be excluded from the snapshot entirely.
+	aUnready := uuid.New()
+	store.CreateSession(aUnready, nil, 8, 0) // no MarkReady
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(NewAgentSessionCollector(store))
+
+	if _, ok := gaugeFor(t, reg, "gocdnext_agent_capacity", aUnready.String()); ok {
+		t.Fatal("a not-ready session leaked into CapacitySnapshot")
+	}
 
 	if v, ok := gaugeFor(t, reg, "gocdnext_agent_jobs_running", a1.String()); !ok || v != 2 {
 		t.Fatalf("a1 running = %v (ok=%v), want 2", v, ok)

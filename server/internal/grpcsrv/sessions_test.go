@@ -141,11 +141,28 @@ func TestSessionStore_FindIdlePicksConnectedAgent(t *testing.T) {
 
 	s := grpcsrv.NewSessionStore()
 	want := uuid.New()
-	_ = s.CreateSession(want, nil, 1, 0)
+	sess := s.CreateSession(want, nil, 1, 0)
+	s.MarkReadyForTest(sess.ID)
 
 	got, ok := s.FindIdle()
 	if !ok || got != want {
 		t.Fatalf("FindIdle got (%s, %v), want (%s, true)", got, ok, want)
+	}
+}
+
+func TestSessionStore_FindIdleSkipsUnreadySession(t *testing.T) {
+	t.Parallel()
+
+	// A session published at Register but not yet Connect-ready is NOT
+	// schedulable — the pre-existing latent-bug fix (#178).
+	s := grpcsrv.NewSessionStore()
+	sess := s.CreateSession(uuid.New(), nil, 1, 0)
+	if _, ok := s.FindIdle(); ok {
+		t.Fatal("FindIdle selected a not-yet-ready session")
+	}
+	s.MarkReadyForTest(sess.ID)
+	if _, ok := s.FindIdle(); !ok {
+		t.Fatal("FindIdle did not select a ready session")
 	}
 }
 
@@ -155,6 +172,7 @@ func TestSessionStore_FindIdleRespectsCapacity(t *testing.T) {
 	s := grpcsrv.NewSessionStore()
 	agentID := uuid.New()
 	sess := s.CreateSession(agentID, nil, 1, 0)
+	s.MarkReadyForTest(sess.ID)
 	sess.IncRunning()
 
 	if _, ok := s.FindIdle(); ok {
@@ -172,8 +190,10 @@ func TestSessionStore_FindIdleWithTags_MatchesSupersets(t *testing.T) {
 	s := grpcsrv.NewSessionStore()
 	linuxAgent := uuid.New()
 	dockerAgent := uuid.New()
-	s.CreateSession(linuxAgent, []string{"linux"}, 1, 0)
-	s.CreateSession(dockerAgent, []string{"linux", "docker"}, 1, 0)
+	ls := s.CreateSession(linuxAgent, []string{"linux"}, 1, 0)
+	ds := s.CreateSession(dockerAgent, []string{"linux", "docker"}, 1, 0)
+	s.MarkReadyForTest(ls.ID)
+	s.MarkReadyForTest(ds.ID)
 
 	// Requiring just "linux" can hit either agent.
 	if _, ok := s.FindIdleWithTags([]string{"linux"}); !ok {
@@ -203,6 +223,7 @@ func TestSessionStore_FindIdleWithTags_RespectsCapacityAndRevoked(t *testing.T) 
 	s := grpcsrv.NewSessionStore()
 	agent := uuid.New()
 	sess := s.CreateSession(agent, []string{"linux", "docker"}, 1, 0)
+	s.MarkReadyForTest(sess.ID)
 	sess.IncRunning()
 	if _, ok := s.FindIdleWithTags([]string{"docker"}); ok {
 		t.Fatalf("should not match when capacity exhausted")
@@ -230,19 +251,69 @@ func TestSessionStore_RevokeClosesChannel(t *testing.T) {
 	}
 }
 
-func TestSessionStore_OnSessionReadyFiresAfterCreate(t *testing.T) {
+func TestSessionStore_OnSessionReadyFiresAfterMarkReady(t *testing.T) {
 	t.Parallel()
 
 	s := grpcsrv.NewSessionStore()
 	fired := make(chan struct{}, 1)
 	s.SetOnSessionReady(func() { fired <- struct{}{} })
 
-	s.CreateSession(uuid.New(), []string{"linux"}, 2, 0)
+	// onReady must NOT fire at CreateSession (no consumer yet) — only once the
+	// Connect stream is ready.
+	sess := s.CreateSession(uuid.New(), []string{"linux"}, 2, 0)
+	select {
+	case <-fired:
+		t.Fatal("OnSessionReady fired at CreateSession, before Connect")
+	case <-time.After(50 * time.Millisecond):
+	}
 
+	s.MarkReadyForTest(sess.ID)
 	select {
 	case <-fired:
 	case <-time.After(time.Second):
-		t.Fatal("OnSessionReady didn't fire within 1s")
+		t.Fatal("OnSessionReady didn't fire within 1s of MarkReady")
+	}
+}
+
+func TestSessionStore_OnlineCountWalksLifecycle(t *testing.T) {
+	t.Parallel()
+
+	// AgentsOnline reflects READY sessions, not published ones: it stays 0
+	// through CreateSession and ClaimConnect, becomes 1 at MarkReady, and drops
+	// back to 0 on Revoke.
+	s := grpcsrv.NewSessionStore()
+	sess := s.CreateSession(uuid.New(), nil, 1, 0)
+	if got := s.ReadyCountForTest(); got != 0 {
+		t.Fatalf("after CreateSession: online=%d, want 0", got)
+	}
+	if _, err := s.ClaimConnect(sess.ID); err != nil {
+		t.Fatalf("ClaimConnect: %v", err)
+	}
+	if got := s.ReadyCountForTest(); got != 0 {
+		t.Fatalf("after ClaimConnect: online=%d, want 0", got)
+	}
+	if err := s.MarkReady(sess.ID); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if got := s.ReadyCountForTest(); got != 1 {
+		t.Fatalf("after MarkReady: online=%d, want 1", got)
+	}
+	s.Revoke(sess.ID)
+	if got := s.ReadyCountForTest(); got != 0 {
+		t.Fatalf("after Revoke: online=%d, want 0", got)
+	}
+}
+
+func TestSessionStore_SecondConnectRejected(t *testing.T) {
+	t.Parallel()
+
+	s := grpcsrv.NewSessionStore()
+	sess := s.CreateSession(uuid.New(), nil, 1, 0)
+	if _, err := s.ClaimConnect(sess.ID); err != nil {
+		t.Fatalf("first ClaimConnect: %v", err)
+	}
+	if _, err := s.ClaimConnect(sess.ID); err == nil {
+		t.Fatal("second ClaimConnect on the same session should be rejected")
 	}
 }
 
