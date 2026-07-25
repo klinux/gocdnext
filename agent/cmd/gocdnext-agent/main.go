@@ -75,17 +75,36 @@ func main() {
 	}
 	cfg.Engine = eng
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// ONE signal subscriber, buffered >=2 so a fast second signal is never lost;
+	// it distinguishes the first (begin drain) from the second (hard exit) with
+	// no registration window between two subscribers. The first SIGTERM closes
+	// drainTrigger → the agent drains gracefully; a second forces immediate exit.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	drainTrigger := make(chan struct{})
+	go func() {
+		<-sigCh
+		logger.Info("shutdown signal received; draining", "budget", cfg.DrainBudget)
+		close(drainTrigger)
+		<-sigCh
+		logger.Warn("second signal: forcing exit")
+		os.Exit(130)
+	}()
 
+	// The metrics endpoint is tied to the RUN lifetime, not the signal — it must
+	// keep serving through the drain so the drain's own duration/outcome stays
+	// observable. Canceled only after Run returns.
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
 	if cfg.MetricsAddr != "" {
-		serveMetrics(ctx, cfg.MetricsAddr, logger)
+		serveMetrics(runCtx, cfg.MetricsAddr, logger)
 	}
 
 	logger.Info("agent starting", "server", cfg.ServerAddr, "agent_id", cfg.AgentID)
 
 	client := rpc.New(cfg, logger)
-	if err := client.Run(ctx); err != nil {
+	if err := client.Run(context.Background(), drainTrigger); err != nil {
 		logger.Error("agent run", "err", err)
 		os.Exit(1)
 	}
@@ -147,6 +166,23 @@ func loadConfig() (rpc.Config, error) {
 		return rpc.Config{}, err
 	}
 
+	drainBudget := 5 * time.Minute
+	if raw := os.Getenv("GOCDNEXT_DRAIN_BUDGET"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return rpc.Config{}, fmt.Errorf("GOCDNEXT_DRAIN_BUDGET must be a Go duration (e.g. 5m, 300s), got %q", raw)
+		}
+		drainBudget = d // <=0 is a valid opt-out (no wait for jobs)
+	}
+	flushTimeout := 45 * time.Second
+	if raw := os.Getenv("GOCDNEXT_DRAIN_FLUSH_TIMEOUT"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return rpc.Config{}, fmt.Errorf("GOCDNEXT_DRAIN_FLUSH_TIMEOUT must be a positive Go duration, got %q", raw)
+		}
+		flushTimeout = d
+	}
+
 	return rpc.Config{
 		ServerAddr:    addr,
 		AgentID:       name,
@@ -156,6 +192,8 @@ func loadConfig() (rpc.Config, error) {
 		Capacity:      capacity,
 		WorkspaceRoot: workspaceRoot,
 		MetricsAddr:   metricsAddr(),
+		DrainBudget:   drainBudget,
+		FlushTimeout:  flushTimeout,
 	}, nil
 }
 

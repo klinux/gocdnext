@@ -125,12 +125,37 @@ func (c *Client) SetCleanupAckSendForTest(send func(*gocdnextv1.AgentMessage)) {
 	c.cleanupAckSend.Store(&f)
 }
 
-// NewCleanupAckSenderForTest exposes the production bridge builder
-// so tests can drive the non-blocking + drop-on-full semantics
-// without standing up a runStream. The dropped counter is the
-// same atomic that logDroppedCleanupAcks reports in production.
-func NewCleanupAckSenderForTest(outbound chan<- *gocdnextv1.AgentMessage, dropped *atomic.Int64) func(*gocdnextv1.AgentMessage) {
-	return newCleanupAckSender(outbound, dropped)
+// CleanupAckRig drives the production ack bridge over an INTERNAL outbound
+// channel so tests exercise the non-blocking + drop-on-full semantics without
+// naming the unexported envelope type.
+type CleanupAckRig struct {
+	Send    func(*gocdnextv1.AgentMessage)  // the production ack sender
+	Dropped *atomic.Int64                   // same counter logDroppedCleanupAcks reports
+	Len     func() int                      // buffered length of the internal channel
+	Recv    func() *gocdnextv1.AgentMessage // non-blocking receive of the next delivered msg (nil if empty)
+}
+
+// NewCleanupAckSenderForTest builds the rig over a cap-1 internal channel,
+// optionally pre-filled to capacity to drive the drop-on-full path.
+func NewCleanupAckSenderForTest(full bool) CleanupAckRig {
+	outbound := make(chan outboundItem, 1)
+	if full {
+		outbound <- outboundItem{}
+	}
+	dropped := &atomic.Int64{}
+	return CleanupAckRig{
+		Send:    newCleanupAckSender(outbound, dropped),
+		Dropped: dropped,
+		Len:     func() int { return len(outbound) },
+		Recv: func() *gocdnextv1.AgentMessage {
+			select {
+			case it := <-outbound:
+				return it.msg
+			default:
+				return nil
+			}
+		},
+	}
 }
 
 // CacheProbeScriptForTest exposes the shell script the cache STORE
