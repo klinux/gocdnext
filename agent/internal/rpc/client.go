@@ -64,7 +64,23 @@ type Config struct {
 	// not read this); it rides on Config so loadConfig stays the one config
 	// entry point.
 	MetricsAddr string
+
+	// DrainBudget is how long a graceful shutdown (SIGTERM) waits for in-flight
+	// jobs to finish before abandoning them to the reaper. <=0 means "no wait"
+	// (abort running jobs immediately, like the pre-#178 behavior). The stream
+	// and heartbeats stay alive for the whole wait.
+	DrainBudget time.Duration
+
+	// FlushTimeout is the single deadline for the whole post-budget flush
+	// protocol (cutoff barrier → abort → cleanup wait → final barrier →
+	// CloseSend → server EOF). Zero falls back to defaultFlushTimeout.
+	FlushTimeout time.Duration
 }
+
+// defaultFlushTimeout bounds the entire flush protocol: it must cover a pod
+// DELETE (~10s) plus the server processing every buffered JobResult
+// (handleJobResult is serial with sequential artifact HEADs).
+const defaultFlushTimeout = 45 * time.Second
 
 // Client owns the long-running connection. Not safe for concurrent Run calls.
 type Client struct {
@@ -118,6 +134,29 @@ type Client struct {
 	// dispatch and ack) the ack is silently dropped — the agent's
 	// local "cleanup run services" log is the fallback record.
 	cleanupAckSend atomic.Pointer[cleanupAckFunc]
+
+	// --- graceful drain (#178) ---
+	// jobsMu guards draining + running. The mutex makes "set draining" and
+	// "check-draining + Add" mutually exclusive, so no jobsWG.Add ever races
+	// jobsWG.Wait().
+	jobsMu   sync.Mutex
+	draining bool
+	running  map[string]*jobState // job_id → state, for the drain to abort/track
+	jobsWG   sync.WaitGroup
+	// suppressed is the published set of job IDs whose OUTPUT messages the sendLoop
+	// must drop (the aborted jobs at drain timeout). An atomic.Pointer to an
+	// immutable map is the race-free hand-off between runStream (writer) and the
+	// sendLoop (reader). Nil until published.
+	suppressed atomic.Pointer[map[string]struct{}]
+}
+
+// outboundItem is one FIFO entry: a normal message (barrier nil) or a barrier
+// marker (msg nil). `job` is set on a JobResult item so the sendLoop can flip
+// terminalSent after a successful Send.
+type outboundItem struct {
+	msg     *gocdnextv1.AgentMessage
+	job     *jobState
+	barrier *barrierState
 }
 
 // cleanupAckFunc is the named function type stored in
@@ -141,10 +180,10 @@ type cleanupAckFunc func(*gocdnextv1.AgentMessage)
 // unit-testable without standing up a real stream. The dropped
 // counter is incremented atomically when outbound rejects the
 // send; logDroppedCleanupAcks reports the running total.
-func newCleanupAckSender(outbound chan<- *gocdnextv1.AgentMessage, dropped *atomic.Int64) cleanupAckFunc {
+func newCleanupAckSender(outbound chan<- outboundItem, dropped *atomic.Int64) cleanupAckFunc {
 	return func(msg *gocdnextv1.AgentMessage) {
 		select {
-		case outbound <- msg:
+		case outbound <- outboundItem{msg: msg}:
 		default:
 			dropped.Add(1)
 		}
@@ -177,13 +216,19 @@ func New(cfg Config, log *slog.Logger) *Client {
 		cleanupQueue:   make(chan string, cleanupQueueCap),
 		cleanupPending: make(map[string]struct{}),
 		cleanupMaxGen:  make(map[string]int64),
+		running:        make(map[string]*jobState),
 	}
 }
 
-// Run dials, Registers, then blocks running the heartbeat/receive loop until
-// ctx is canceled or an unrecoverable error is returned. It does not retry
-// on its own — the process supervisor (systemd / k8s) should restart us.
-func (c *Client) Run(ctx context.Context) error {
+// Run dials, Registers, then blocks running the heartbeat/receive loop until an
+// unrecoverable error, or until `drainTrigger` fires (SIGTERM) and the graceful
+// drain completes. It does not retry — the supervisor restarts the process.
+//
+// `ctx` is the PROCESS lifetime (Background from main): the gRPC stream and the
+// jobs root here so SIGTERM does NOT tear them down — the drain does, after its
+// budget. `drainTrigger` (closed on the first SIGTERM) is the drain signal; a
+// second SIGTERM is main's hard-exit escape hatch.
+func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 	if err := c.cfg.validate(); err != nil {
 		return err
 	}
@@ -266,12 +311,42 @@ func (c *Client) Run(ctx context.Context) error {
 
 	cli := gocdnextv1.NewAgentServiceClient(conn)
 
+	// SIGTERM before the stream is established has nothing to drain — it must abort
+	// a BLOCKED Register *or* Connect and exit clean. A single cancelable estCtx
+	// covers BOTH dial steps; a watcher cancels it ONLY while the stream is not yet
+	// established. Once Connect returns, an atomic handoff (estMu + an estCtx.Err()
+	// check) disarms the watcher so the established stream — rooted at estCtx, a
+	// child of ctx (process lifetime) — survives the trigger for the drain to
+	// manage. If the trigger and a successful Connect race, the mutex picks a
+	// deterministic winner: established-first ⇒ the watcher does NOT cancel and the
+	// drain proceeds; trigger-first ⇒ estCtx is cancelled, Connect is treated as
+	// failed, and Run exits clean.
+	estCtx, cancelEst := context.WithCancel(ctx)
+	defer cancelEst()
+	var (
+		estMu       sync.Mutex
+		established bool
+	)
+	connectDone := make(chan struct{})
+	defer close(connectDone)
+	go func() {
+		select {
+		case <-drainTrigger:
+			estMu.Lock()
+			if !established {
+				cancelEst() // abort a blocked/racing Register or Connect
+			}
+			estMu.Unlock()
+		case <-connectDone:
+		}
+	}()
+
 	// Engine name announced on Register so the server can filter
 	// run-terminal CleanupRunServices broadcasts to k8s-capable
 	// agents only. Empty string when Engine is nil (boot path
 	// without an engine wired); server treats unknown as
 	// "broadcast-anyway" defensively.
-	reg, err := cli.Register(ctx, &gocdnextv1.RegisterRequest{
+	reg, err := cli.Register(estCtx, &gocdnextv1.RegisterRequest{
 		AgentId:  c.cfg.AgentID,
 		Token:    c.cfg.Token,
 		Version:  c.cfg.Version,
@@ -282,21 +357,54 @@ func (c *Client) Run(ctx context.Context) error {
 		Engine:   c.engineName(),
 	})
 	if err != nil {
-		return err
+		// A trigger during a blocked Register cancels estCtx → clean exit.
+		select {
+		case <-drainTrigger:
+			c.log.Info("drain trigger during register; exiting cleanly")
+			return nil
+		default:
+			return err
+		}
 	}
 	c.log.Info("registered", "session", reg.SessionId, "heartbeat_seconds", reg.HeartbeatSeconds)
 
 	hb := c.heartbeatInterval(reg.HeartbeatSeconds)
-	streamCtx := metadata.AppendToOutgoingContext(ctx, grpcconsts.SessionHeader, reg.SessionId)
+	// The established stream roots at estCtx (a child of ctx = process lifetime),
+	// NOT the drain trigger — SIGTERM must not tear it down; the drain closes it
+	// via CloseSend after its budget.
+	streamCtx := metadata.AppendToOutgoingContext(estCtx, grpcconsts.SessionHeader, reg.SessionId)
 
 	stream, err := cli.Connect(streamCtx)
+	// Atomic handoff: record establishment under estMu, and if the watcher already
+	// cancelled estCtx in a race with a successful Connect, treat it as
+	// trigger-first (the stream, if any, is bound to a now-cancelled ctx).
+	estMu.Lock()
+	if err == nil && estCtx.Err() != nil {
+		err = estCtx.Err()
+	}
+	established = err == nil
+	estMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		// A trigger during a blocked Connect cancels estCtx → clean exit.
+		select {
+		case <-drainTrigger:
+			c.log.Info("drain trigger during connect; exiting cleanly")
+			return nil
+		default:
+			return fmt.Errorf("connect: %w", err)
+		}
 	}
 
 	uploader := NewArtifactUploader(cli, reg.SessionId, nil)
 	cache := NewCacheClient(cli, reg.SessionId, nil)
-	return c.runStream(ctx, stream, hb, uploader, cache)
+	outcome, err := c.runStream(streamCtx, cancelEst, drainTrigger, stream, hb, uploader, cache)
+	select {
+	case <-drainTrigger:
+		c.log.Info("drain complete",
+			"clean", outcome.Clean, "abandoned", outcome.Running, "flush_timed_out", outcome.FlushTimedOut)
+	default:
+	}
+	return err
 }
 
 // buildRunner constructs the per-session runner. Its Send callback is wired
@@ -321,54 +429,60 @@ func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader *Arti
 	})
 }
 
-func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader *ArtifactUploader, cache *CacheClient) error {
+func (c *Client) runStream(streamCtx context.Context, cancelStream context.CancelFunc, drainTrigger <-chan struct{}, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader *ArtifactUploader, cache *CacheClient) (DrainOutcome, error) {
+	// streamCtx is the gRPC stream's OWN context (estCtx from Run). cancelStream
+	// cancels it — and cancelling it is the ONLY thing that unblocks a wedged
+	// stream.Send/Recv (the transport is bound to this ctx, not to some sibling).
+	// The loops and jobs select on it too, so a single cancelStream() tears the
+	// whole stream down. Without this, a stuck Send would outlive the flush
+	// deadline and Kubernetes would SIGKILL the process mid-drain.
+	//
 	// Single-writer invariant for gRPC ClientStream: sendLoop is the only
 	// goroutine that calls stream.Send / CloseSend. Heartbeats (ticker) and
 	// runner-produced messages (logs, results) both flow through `outbound`
 	// so the runner can safely fan in from its own goroutine.
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	defer cancelStream()
 
-	// outbound feeds every non-heartbeat message (logs, results,
-	// progress, artefact claims) into the single-writer sendLoop.
-	// Buffer is generously sized so a burst of log lines from a
-	// concurrent fleet of jobs doesn't immediately stall the
-	// producer.
-	outbound := make(chan *gocdnextv1.AgentMessage, 4096)
+	// outbound feeds every non-heartbeat message (logs, results, progress,
+	// artefact claims) into the single-writer sendLoop, now as an envelope so a
+	// graceful drain can ride BARRIER markers on the same FIFO. Buffer is
+	// generously sized so a burst of log lines doesn't stall the producer.
+	outbound := make(chan outboundItem, 4096)
 	var droppedLogs atomic.Int64
 	sendOutbound := func(msg *gocdnextv1.AgentMessage) {
+		// Drain suppression (enqueue side): drop an aborted job's OUTPUT so it
+		// never reaches the server (the row stays running → reaper requeues).
+		if id, isOut := jobOutputID(msg); isOut && c.isSuppressed(id) {
+			return
+		}
+		item := outboundItem{msg: msg}
+		// Carry the jobState for a JobResult so the sendLoop can flip
+		// terminalSent after a successful Send. Looked up at ENQUEUE time (the
+		// producer's Execute goroutine is still in c.running), so the pointer
+		// stays valid even after the job is later removed from the map.
+		if isJobResult(msg) {
+			c.jobsMu.Lock()
+			item.job = c.running[msg.GetResult().GetJobId()]
+			c.jobsMu.Unlock()
+		}
 		// Two-tier policy by message kind:
-		//   - LogLine: non-blocking send. If outbound is full
-		//     (server slow / network congested / many concurrent
-		//     jobs spamming logs), DROP the line and increment a
-		//     counter. Dropping a log line is bad for the operator
-		//     UX; blocking the producer is catastrophic — the
-		//     blocked engine goroutine never returns, so the
-		//     JobResult never gets sent, the server never marks
-		//     the job terminal, and `cancel` can't unstick the UI
-		//     (the engine.streamLogs goroutine is waiting on the
-		//     full channel, so even after the job's ctx is canceled
-		//     the K8s engine's RunScript can't observe streamDone).
-		//     The classic deadlock surfaced as: many parallel jobs,
-		//     stuck "running" in the UI even after cancel.
-		//   - Anything else (JobResult, ArtifactClaim, Progress,
-		//     Pong, TestResults): block until delivered OR the
-		//     stream is shutting down. These are low-volume and
-		//     critical for correctness.
+		//   - LogLine: non-blocking send. If outbound is full, DROP the line and
+		//     count it. Dropping a log line is bad UX; blocking the producer is
+		//     catastrophic — the blocked engine goroutine never returns, the
+		//     JobResult never gets sent, and cancel can't unstick the UI.
+		//   - Anything else (JobResult, Coverage, TestResults, Progress, Pong):
+		//     block until delivered OR the stream is shutting down.
 		if _, isLog := msg.Kind.(*gocdnextv1.AgentMessage_Log); isLog {
 			select {
-			case outbound <- msg:
+			case outbound <- item:
 			default:
 				droppedLogs.Add(1)
-				// Process-global counter for /metrics — the local droppedLogs is
-				// per-stream (resets on reconnect) and unreachable from a package;
-				// this co-increment exposes the same event as a monotonic series.
 				metrics.LogLinesDropped.Inc()
 			}
 			return
 		}
 		select {
-		case outbound <- msg:
+		case outbound <- item:
 		case <-streamCtx.Done():
 		}
 	}
@@ -407,19 +521,43 @@ func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_C
 	defer c.cleanupAckSend.Store(nil)
 	go c.logDroppedCleanupAcks(streamCtx, &droppedCleanupAcks)
 
+	// recvLoop and sendLoop both run as goroutines so the main goroutine can
+	// arbitrate between an unexpected stream error and a SIGTERM drain trigger.
+	// recvErrCh doubles as the drain's server-EOF signal: after a clean CloseSend
+	// the server's recv returns EOF and recvLoop returns, which is our proof the
+	// server processed every JobResult we flushed.
 	recvErrCh := make(chan error, 1)
 	go func() {
 		recvErrCh <- c.recvLoop(streamCtx, stream, sendOutbound, rn)
-		cancel()
+		cancelStream() // an unexpected recv end tears the stream (and jobs) down
 	}()
+	sendErrCh := make(chan error, 1)
+	go func() { sendErrCh <- c.sendLoop(streamCtx, stream, hb, outbound) }()
 
-	sendErr := c.sendLoop(streamCtx, stream, hb, outbound)
-	recvErr := <-recvErrCh
+	var (
+		outcome DrainOutcome
+		sendErr error
+		recvErr error
+	)
+	select {
+	case <-drainTrigger:
+		// Graceful shutdown: run the drain protocol against the LIVE stream, then
+		// tear down. The drain consumes recvErrCh (waits for the server EOF).
+		outcome = c.drain(streamCtx, outbound, recvErrCh)
+		cancelStream() // cancel estCtx → unblock a wedged Send/Recv before waiting
+		sendErr = <-sendErrCh
+	case recvErr = <-recvErrCh:
+		cancelStream()
+		sendErr = <-sendErrCh
+	case sendErr = <-sendErrCh:
+		cancelStream()
+		recvErr = <-recvErrCh
+	}
 
 	if sendErr != nil &&
 		!errors.Is(sendErr, context.Canceled) &&
 		!errors.Is(sendErr, context.DeadlineExceeded) {
-		return sendErr
+		return outcome, sendErr
 	}
 	switch {
 	case recvErr == nil,
@@ -428,13 +566,13 @@ func (c *Client) runStream(ctx context.Context, stream gocdnextv1.AgentService_C
 		errors.Is(recvErr, context.DeadlineExceeded),
 		status.Code(recvErr) == codes.Canceled,
 		status.Code(recvErr) == codes.DeadlineExceeded:
-		return nil
+		return outcome, nil
 	default:
-		return recvErr
+		return outcome, recvErr
 	}
 }
 
-func (c *Client) sendLoop(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, outbound <-chan *gocdnextv1.AgentMessage) error {
+func (c *Client) sendLoop(ctx context.Context, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, outbound <-chan outboundItem) error {
 	if err := c.sendHeartbeat(stream); err != nil {
 		return err
 	}
@@ -449,9 +587,35 @@ func (c *Client) sendLoop(ctx context.Context, stream gocdnextv1.AgentService_Co
 			if err := c.sendHeartbeat(stream); err != nil {
 				return err
 			}
-		case msg := <-outbound:
-			if err := stream.Send(msg); err != nil {
+		case item := <-outbound:
+			// Barrier marker: everything ahead of it in the FIFO has been sent.
+			// Signal `reached`, then wait to be released (the drain publishes its
+			// suppression set first) OR for the stream to tear down. A FINAL
+			// barrier closes the send side afterwards.
+			if item.barrier != nil {
+				close(item.barrier.reached)
+				select {
+				case <-item.barrier.release:
+				case <-ctx.Done():
+					return stream.CloseSend()
+				}
+				if item.barrier.closeSend {
+					return stream.CloseSend()
+				}
+				continue
+			}
+			// Dequeue-side suppression: an aborted job's output that was already
+			// buffered when the suppression set was published.
+			if id, isOut := jobOutputID(item.msg); isOut && c.isSuppressed(id) {
+				continue
+			}
+			if err := stream.Send(item.msg); err != nil {
 				return err
+			}
+			// Record that this job's result crossed the wire — the FIFO fact the
+			// drain cutoff reads to preserve a completed job.
+			if item.job != nil {
+				item.job.terminalSent.Store(true)
 			}
 		}
 	}
@@ -541,6 +705,49 @@ func (c *Client) sendHeartbeat(stream gocdnextv1.AgentService_ConnectClient) err
 	})
 }
 
+// dispatchJob gates a new assignment on the drain state and tracks it for
+// graceful shutdown. The per-job cancel is created HERE (before the goroutine)
+// and stored, so the drain can reliably abort a job even before the runner
+// registered its own canceller inside Execute — a window rn.Cancel would miss.
+func (c *Client) dispatchJob(ctx context.Context, a *gocdnextv1.JobAssignment, rn *runner.Runner) {
+	id := a.GetJobId()
+
+	c.jobsMu.Lock()
+	if c.draining {
+		c.jobsMu.Unlock()
+		c.log.Warn("draining: dropping assignment (server rejects new dispatch; requeue on disconnect)",
+			"run_id", a.GetRunId(), "job_id", id)
+		return
+	}
+	if _, dup := c.running[id]; dup {
+		// Agent-side belt: running the same job_id twice collides on the
+		// workspace + cancel registry. The server-side dup guard is the real fix.
+		c.jobsMu.Unlock()
+		c.log.Warn("duplicate assignment; ignoring", "job_id", id)
+		return
+	}
+	jobCtx, cancel := context.WithCancel(ctx)
+	st := &jobState{cancel: cancel, done: make(chan struct{})}
+	c.jobsWG.Add(1)
+	c.running[id] = st
+	c.jobsMu.Unlock()
+
+	// Execute in its own goroutine so Recv stays responsive (cancel events,
+	// next assignment). The runner publishes LogLine/JobResult through the same
+	// outbound channel as heartbeats — single-writer on stream.Send.
+	go func() {
+		defer func() {
+			cancel() // release the child ctx (else it stays a live child of runCtx)
+			close(st.done)
+			c.jobsMu.Lock()
+			delete(c.running, id)
+			c.jobsMu.Unlock()
+			c.jobsWG.Done()
+		}()
+		rn.Execute(jobCtx, a)
+	}()
+}
+
 func (c *Client) handleServerMessage(ctx context.Context, msg *gocdnextv1.ServerMessage, _ func(*gocdnextv1.AgentMessage), rn *runner.Runner) {
 	switch k := msg.GetKind().(type) {
 	case *gocdnextv1.ServerMessage_Pong:
@@ -554,10 +761,7 @@ func (c *Client) handleServerMessage(ctx context.Context, msg *gocdnextv1.Server
 			"image", a.GetImage(),
 			"tasks", len(a.GetTasks()),
 			"checkouts", len(a.GetCheckouts()))
-		// Execute in its own goroutine so Recv stays responsive (cancel events,
-		// next assignment). The runner publishes LogLine/JobResult through the
-		// same outbound channel as heartbeats — single-writer on stream.Send.
-		go rn.Execute(ctx, a)
+		c.dispatchJob(ctx, a, rn)
 	case *gocdnextv1.ServerMessage_Cancel:
 		req := k.Cancel
 		ok := rn.Cancel(req.GetJobId())

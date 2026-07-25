@@ -47,7 +47,7 @@ func TestClient_RegisterAndHeartbeat(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	err := client.Run(ctx)
+	err := client.Run(ctx, make(chan struct{}))
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run err = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestClient_RegisterAnnouncesEngine(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_ = client.Run(ctx)
+	_ = client.Run(ctx, make(chan struct{}))
 
 	req := fake.lastRegister()
 	if req == nil {
@@ -121,7 +121,7 @@ func TestClient_UnknownAgentReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	err := client.Run(ctx)
+	err := client.Run(ctx, make(chan struct{}))
 	if err == nil {
 		t.Fatalf("expected error on unknown agent, got nil")
 	}
@@ -139,10 +139,11 @@ type fakeServer struct {
 	lis          *bufconn.Listener
 	grpcSrv      *grpc.Server
 
-	mu        sync.Mutex
-	sessions  map[string]string // sess -> agentID
-	regReqs   []*gocdnextv1.RegisterRequest
-	heartbeat atomic.Int64
+	mu          sync.Mutex
+	sessions    map[string]string // sess -> agentID
+	regReqs     []*gocdnextv1.RegisterRequest
+	heartbeat   atomic.Int64
+	sawDraining atomic.Bool
 }
 
 func newFakeServer(t *testing.T, tokens map[string]string) *fakeServer {
@@ -221,14 +222,125 @@ func (f *fakeServer) Connect(stream gocdnextv1.AgentService_ConnectServer) error
 			}
 			return err
 		}
-		if _, ok := msg.Kind.(*gocdnextv1.AgentMessage_Heartbeat); ok {
+		switch msg.Kind.(type) {
+		case *gocdnextv1.AgentMessage_Heartbeat:
 			f.heartbeat.Add(1)
 			if err := stream.Send(&gocdnextv1.ServerMessage{
 				Kind: &gocdnextv1.ServerMessage_Pong{Pong: &gocdnextv1.Pong{At: timestamppb.Now()}},
 			}); err != nil {
 				return err
 			}
+		case *gocdnextv1.AgentMessage_Draining:
+			f.sawDraining.Store(true)
 		}
+	}
+}
+
+// TestClient_CleanDrainNoJobsOverStream drives the drain end-to-end over a real
+// bufconn stream with zero in-flight jobs: the trigger fires, the agent emits a
+// Draining frame, then CloseSend, the fake server's Recv returns io.EOF and its
+// Connect handler returns — the client confirms that EOF and Run returns nil
+// (clean). This exercises the wire path (Draining frame + CloseSend + server-EOF
+// confirmation) that the deterministic protocol tests stub out.
+func TestClient_CleanDrainNoJobsOverStream(t *testing.T) {
+	fake := newFakeServer(t, map[string]string{"agent-1": "tok"})
+
+	client := rpc.New(rpc.Config{
+		ServerAddr:   "passthrough:///bufnet",
+		AgentID:      "agent-1",
+		Token:        "tok",
+		Version:      "test-0.0.1",
+		Capacity:     2,
+		Heartbeat:    20 * time.Millisecond,
+		DrainBudget:  time.Minute,
+		FlushTimeout: 2 * time.Second,
+		DialOpts: []grpc.DialOption{
+			grpc.WithContextDialer(fake.dialer()),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	drainTrigger := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- client.Run(context.Background(), drainTrigger) }()
+
+	// Wait until the stream is ESTABLISHED (a heartbeat crossed) before triggering
+	// drain — otherwise the trigger races establishment and the atomic handoff may
+	// (correctly) exit clean without a stream to drain. A received heartbeat proves
+	// Connect returned and the sendLoop is pumping.
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.heartbeatCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fake.heartbeatCount() == 0 {
+		t.Fatal("stream never established (no heartbeat received)")
+	}
+	close(drainTrigger)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clean drain Run err = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return within the drain budget")
+	}
+	if !fake.sawDraining.Load() {
+		t.Fatal("server never received a Draining frame")
+	}
+}
+
+// TestClient_DrainDuringBlockedConnect proves SIGTERM aborts a BLOCKED Connect
+// (finding 3): a stream interceptor stalls Connect (the only streaming RPC after
+// the unary Register) until its ctx is cancelled. Closing drainTrigger must make
+// the atomic handoff cancel estCtx → Connect errors → Run exits clean, without a
+// second signal and without hanging.
+func TestClient_DrainDuringBlockedConnect(t *testing.T) {
+	fake := newFakeServer(t, map[string]string{"agent-1": "tok"})
+
+	blockConnect := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		<-ctx.Done() // stall until the drain cancels the connect ctx
+		return nil, ctx.Err()
+	}
+
+	client := rpc.New(rpc.Config{
+		ServerAddr:   "passthrough:///bufnet",
+		AgentID:      "agent-1",
+		Token:        "tok",
+		Version:      "test-0.0.1",
+		Capacity:     1,
+		Heartbeat:    20 * time.Millisecond,
+		DrainBudget:  time.Minute,
+		FlushTimeout: time.Second,
+		DialOpts: []grpc.DialOption{
+			grpc.WithContextDialer(fake.dialer()),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithChainStreamInterceptor(blockConnect),
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	drainTrigger := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- client.Run(context.Background(), drainTrigger) }()
+
+	// Register is unary (not intercepted) → its arrival means Connect is now blocked.
+	deadline := time.Now().Add(2 * time.Second)
+	for fake.registerCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fake.registerCount() == 0 {
+		t.Fatal("agent never registered")
+	}
+
+	close(drainTrigger) // must abort the blocked Connect
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("blocked-connect drain Run err = %v, want nil (clean exit)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run hung on a blocked Connect after the drain trigger (finding 3)")
 	}
 }
 
