@@ -139,6 +139,50 @@ func TestDetail_ReturnsStagesJobsAndLogs(t *testing.T) {
 	}
 }
 
+// TestDetail_ExposesJobAttemptOnWire asserts the requeue generation reaches the
+// HTTP client, and that a fresh job's attempt (0) is PRESENT on the wire — the
+// drain e2e depends on reading it. Decoding jobs as raw maps (not the struct)
+// is deliberate: a struct decode would zero-fill a missing key and hide the
+// no-omitempty contract.
+func TestDetail_ExposesJobAttemptOnWire(t *testing.T) {
+	h, pool := handler(t)
+	runID := seedRun(t, pool)
+
+	r := chi.NewRouter()
+	r.Get("/api/v1/runs/{id}", h.Detail)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+runID.String()+"?logs=0", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Stages []struct {
+			Jobs []map[string]any `json:"jobs"`
+		} `json:"stages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var checked bool
+	for _, st := range body.Stages {
+		for _, j := range st.Jobs {
+			v, ok := j["attempt"]
+			if !ok {
+				t.Fatalf("job JSON missing 'attempt' key: %v", j)
+			}
+			if f, _ := v.(float64); f != 0 {
+				t.Fatalf("fresh job attempt = %v on the wire, want 0", v)
+			}
+			checked = true
+		}
+	}
+	if !checked {
+		t.Fatalf("no jobs to check in the run detail")
+	}
+}
+
 func TestDetail_LogsDisabledWhenZero(t *testing.T) {
 	h, pool := handler(t)
 	runID := seedRun(t, pool)

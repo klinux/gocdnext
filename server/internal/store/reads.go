@@ -296,6 +296,14 @@ type JobDetail struct {
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	AgentID    *uuid.UUID `json:"agent_id,omitempty"`
 
+	// Attempt is the requeue generation: 0 on first dispatch, bumped
+	// each time the reaper re-queues the job (e.g. an agent that
+	// disconnected mid-job, including a graceful-drain timeout, #178).
+	// Exposed so operators — and the drain e2e — can see a job was
+	// retried, and how many times. No omitempty: attempt 0 is a real,
+	// meaningful value (the first run) and must not vanish from JSON.
+	Attempt int32 `json:"attempt"`
+
 	// CancelRequestedAt is non-nil when the operator hit Cancel
 	// but the agent hasn't acknowledged yet (deferred cancel
 	// path — v0.15.1). Combined with Status="running" it tells
@@ -1006,6 +1014,7 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			StartedAt:           pgTimePtr(j.StartedAt),
 			FinishedAt:          pgTimePtr(j.FinishedAt),
 			CancelRequestedAt:   pgTimePtr(j.CancelRequestedAt),
+			Attempt:             j.Attempt,
 			ApprovalGate:        j.ApprovalGate,
 			Approvers:           j.Approvers,
 			ApprovalRequired:    int(j.ApprovalRequired),

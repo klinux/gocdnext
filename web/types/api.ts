@@ -223,6 +223,11 @@ export type JobDetail = {
   started_at?: string;
   finished_at?: string;
   agent_id?: string;
+  // attempt is the requeue generation: 0 on first dispatch, +1 each
+  // time the reaper re-queues the job (e.g. an agent that drained past
+  // budget / disconnected mid-job, #178). Always present (0 is a real
+  // value), so it's non-optional.
+  attempt: number;
   // cancel_requested_at is non-null when the operator hit Cancel
   // but the agent hasn't acknowledged yet (deferred cancel — the
   // server stamps it in the same tx as the SELECT FOR UPDATE so
