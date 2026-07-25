@@ -8,6 +8,49 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.75.0 — 2026-07-25
+
+Graceful agent drain: a `helm upgrade`, scale-down, or pod delete no longer
+SIGKILLs in-flight jobs. On `SIGTERM` the agent stops taking new work, keeps its
+running jobs and stream alive until they finish or a bounded budget expires,
+flushes their results, then exits. Jobs that outlive the budget are requeued by
+the existing reaper exactly once. This is also the prerequisite that makes
+HPA/KEDA scale-down safe.
+
+### Added
+
+- **Graceful agent drain on SIGTERM (#178).** SIGTERM is now a drain *trigger*,
+  not a hard cancel. The agent:
+  - stops accepting new dispatch and tells the server (a new `Draining` wire
+    signal) so it stops routing work to a departing agent;
+  - keeps the gRPC stream + heartbeats alive and waits for in-flight jobs up to
+    `GOCDNEXT_DRAIN_BUDGET` (default `5m`; `<=0` opts out of the wait);
+  - on a clean finish, flushes buffered results and waits for the server EOF —
+    proof every `JobResult` was processed (`CompleteJob`) — before teardown;
+  - on budget expiry, aborts the still-running jobs (preserving any whose result
+    already crossed the wire), suppresses their late output, and leaves them to
+    the reaper. `GOCDNEXT_DRAIN_FLUSH_TIMEOUT` (default `45s`) bounds the whole
+    flush.
+  A second SIGTERM force-exits. The Helm chart adds `terminationGracePeriodSeconds`
+  and a render-time guard so k8s can't SIGKILL mid-drain.
+- **Server `ready` gate for agent sessions (#178).** A just-registered session is
+  no longer schedulable until its `Connect` stream is live (a two-phase
+  `ClaimConnect`→`MarkReady` CAS), closing a latent window where a job could be
+  dispatched to a session with no consumer. A second `Connect` on the same
+  session is rejected; `AgentsOnline` counts only ready, non-revoked sessions.
+- **`attempt` (requeue generation) in the run-detail API (#178).** Each job now
+  reports `attempt` (0 on first dispatch, +1 per reaper requeue) via
+  `GET /api/v1/runs/{id}`, so a retried job — including one requeued by a drain
+  timeout — is visible to clients. Required field; `0` is emitted on the wire.
+
+### Fixed
+
+- **Coverage rows are cleared on requeue and manual rerun (#178).** A requeued or
+  re-run job no longer inherits stale `coverage_reports` (logs, test results and
+  artifacts were already cleared; coverage was the gap).
+- **Server-side duplicate-dispatch guard (#178).** Re-recording the same
+  `(job, attempt)` is a no-op — no second frame, no double capacity decrement.
+
 ## v0.74.0 — 2026-07-24
 
 Agent performance for production: the job clone is bounded, and the agent now
