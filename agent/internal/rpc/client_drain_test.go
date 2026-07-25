@@ -286,6 +286,63 @@ func TestDrain_TimeoutFinalUnconfirmedAbandonsAll(t *testing.T) {
 	}
 }
 
+// wedgedStream is a stream whose Send/CloseSend/Recv block until the stream's OWN
+// context is cancelled — the transport-stuck case. Only cancelling that exact ctx
+// (not a sibling) can unblock them.
+type wedgedStream struct {
+	gocdnextv1.AgentService_ConnectClient
+	ctx context.Context
+}
+
+func (s *wedgedStream) Context() context.Context { return s.ctx }
+func (s *wedgedStream) Send(*gocdnextv1.AgentMessage) error {
+	<-s.ctx.Done()
+	return s.ctx.Err()
+}
+func (s *wedgedStream) CloseSend() error {
+	<-s.ctx.Done()
+	return s.ctx.Err()
+}
+func (s *wedgedStream) Recv() (*gocdnextv1.ServerMessage, error) {
+	<-s.ctx.Done()
+	return nil, s.ctx.Err()
+}
+
+// TestRunStream_WedgedSendUnblockedByFlushDeadline: when the transport is stuck
+// (Send never completes), the flush deadline must still bound the drain — after
+// it expires, runStream cancels the STREAM's ctx (estCtx) to unblock the wedged
+// sendLoop and returns. Without that (cancelling a sibling ctx), runStream hangs
+// past the deadline and k8s SIGKILLs the process. (Regression for the HIGH.)
+func TestRunStream_WedgedSendUnblockedByFlushDeadline(t *testing.T) {
+	c := New(Config{DrainBudget: 10 * time.Millisecond, FlushTimeout: 200 * time.Millisecond},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// estCtx models Run's stream ctx; cancelEst is the ONLY thing bound to the
+	// wedged stream — runStream must call it, not a sibling cancel.
+	estCtx, cancelEst := context.WithCancel(context.Background())
+	defer cancelEst()
+	stream := &wedgedStream{ctx: estCtx}
+
+	drainTrigger := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		// hb=time.Hour so the ticker never fires; the FIRST heartbeat Send wedges
+		// the sendLoop immediately. nil uploader/cache are never used (no job runs).
+		_, _ = c.runStream(estCtx, cancelEst, drainTrigger, stream, time.Hour, nil, nil)
+		close(done)
+	}()
+
+	time.Sleep(30 * time.Millisecond) // let the sendLoop wedge on the first Send
+	close(drainTrigger)
+
+	select {
+	case <-done:
+		// returned within the flush deadline + margin — the fix works.
+	case <-time.After(2 * time.Second):
+		t.Fatal("runStream hung past the flush deadline on a wedged Send (cancel didn't reach the stream ctx)")
+	}
+}
+
 // waitFor polls cond up to 2s.
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()

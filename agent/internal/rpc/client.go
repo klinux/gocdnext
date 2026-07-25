@@ -397,7 +397,7 @@ func (c *Client) Run(ctx context.Context, drainTrigger <-chan struct{}) error {
 
 	uploader := NewArtifactUploader(cli, reg.SessionId, nil)
 	cache := NewCacheClient(cli, reg.SessionId, nil)
-	outcome, err := c.runStream(ctx, drainTrigger, stream, hb, uploader, cache)
+	outcome, err := c.runStream(streamCtx, cancelEst, drainTrigger, stream, hb, uploader, cache)
 	select {
 	case <-drainTrigger:
 		c.log.Info("drain complete",
@@ -429,13 +429,19 @@ func (c *Client) buildRunner(send func(*gocdnextv1.AgentMessage), uploader *Arti
 	})
 }
 
-func (c *Client) runStream(ctx context.Context, drainTrigger <-chan struct{}, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader *ArtifactUploader, cache *CacheClient) (DrainOutcome, error) {
+func (c *Client) runStream(streamCtx context.Context, cancelStream context.CancelFunc, drainTrigger <-chan struct{}, stream gocdnextv1.AgentService_ConnectClient, hb time.Duration, uploader *ArtifactUploader, cache *CacheClient) (DrainOutcome, error) {
+	// streamCtx is the gRPC stream's OWN context (estCtx from Run). cancelStream
+	// cancels it — and cancelling it is the ONLY thing that unblocks a wedged
+	// stream.Send/Recv (the transport is bound to this ctx, not to some sibling).
+	// The loops and jobs select on it too, so a single cancelStream() tears the
+	// whole stream down. Without this, a stuck Send would outlive the flush
+	// deadline and Kubernetes would SIGKILL the process mid-drain.
+	//
 	// Single-writer invariant for gRPC ClientStream: sendLoop is the only
 	// goroutine that calls stream.Send / CloseSend. Heartbeats (ticker) and
 	// runner-produced messages (logs, results) both flow through `outbound`
 	// so the runner can safely fan in from its own goroutine.
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	defer cancelStream()
 
 	// outbound feeds every non-heartbeat message (logs, results, progress,
 	// artefact claims) into the single-writer sendLoop, now as an envelope so a
@@ -523,7 +529,7 @@ func (c *Client) runStream(ctx context.Context, drainTrigger <-chan struct{}, st
 	recvErrCh := make(chan error, 1)
 	go func() {
 		recvErrCh <- c.recvLoop(streamCtx, stream, sendOutbound, rn)
-		cancel() // an unexpected recv end tears the stream (and jobs) down
+		cancelStream() // an unexpected recv end tears the stream (and jobs) down
 	}()
 	sendErrCh := make(chan error, 1)
 	go func() { sendErrCh <- c.sendLoop(streamCtx, stream, hb, outbound) }()
@@ -538,13 +544,13 @@ func (c *Client) runStream(ctx context.Context, drainTrigger <-chan struct{}, st
 		// Graceful shutdown: run the drain protocol against the LIVE stream, then
 		// tear down. The drain consumes recvErrCh (waits for the server EOF).
 		outcome = c.drain(streamCtx, outbound, recvErrCh)
-		cancel()
+		cancelStream() // cancel estCtx → unblock a wedged Send/Recv before waiting
 		sendErr = <-sendErrCh
 	case recvErr = <-recvErrCh:
-		cancel()
+		cancelStream()
 		sendErr = <-sendErrCh
 	case sendErr = <-sendErrCh:
-		cancel()
+		cancelStream()
 		recvErr = <-recvErrCh
 	}
 
