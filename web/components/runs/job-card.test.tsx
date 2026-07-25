@@ -11,6 +11,7 @@ function makeJob(overrides: Partial<JobDetail>): JobDetail {
     stage_run_id: "00000000-0000-0000-0000-0000000000aa",
     name: "lint",
     status: "running",
+    attempt: 0,
     started_at: "2026-06-10T12:00:00Z",
     ...overrides,
   };

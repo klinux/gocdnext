@@ -441,6 +441,78 @@ func TestGetRunDetail_StagesJobsAndOptionalLogs(t *testing.T) {
 	}
 }
 
+// TestGetRunDetail_ExposesJobAttempt proves the requeue generation is readable
+// via the run-detail API: 0 on a fresh job, and the bumped value after a requeue
+// (the signal the drain e2e uses to assert "requeued exactly once", #178).
+func TestGetRunDetail_ExposesJobAttempt(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID, _ := seedPipeline(t, pool, false)
+	run, err := s.CreateRunFromModification(ctx, baseTriggerInput(pipelineID, materialID, 1))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	compileID := run.JobRuns[0].ID
+
+	// Fresh job: attempt defaults to 0 and must be present.
+	got, err := s.GetRunDetail(ctx, run.RunID, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail: %v", err)
+	}
+	if a := jobAttempt(t, got, compileID); a != 0 {
+		t.Fatalf("fresh job attempt = %d, want 0", a)
+	}
+
+	// Simulate the reaper bumping attempt on a requeue (what the drain-timeout
+	// path triggers when an agent disconnects mid-job).
+	if _, err := pool.Exec(ctx, `UPDATE job_runs SET attempt = 2 WHERE id = $1`, compileID); err != nil {
+		t.Fatalf("bump attempt: %v", err)
+	}
+	got, err = s.GetRunDetail(ctx, run.RunID, 0, nil)
+	if err != nil {
+		t.Fatalf("GetRunDetail after bump: %v", err)
+	}
+	if a := jobAttempt(t, got, compileID); a != 2 {
+		t.Fatalf("requeued job attempt = %d, want 2", a)
+	}
+}
+
+// TestJobDetail_AttemptSerializedWhenZero guards the no-omitempty decision: a
+// first-run job (attempt 0) must still carry the field on the wire, or a client
+// can't tell "first run" from "field missing".
+func TestJobDetail_AttemptSerializedWhenZero(t *testing.T) {
+	b, err := json.Marshal(store.JobDetail{Attempt: 0})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, ok := m["attempt"]
+	if !ok {
+		t.Fatalf("attempt 0 dropped from JSON: %s", b)
+	}
+	if got, _ := v.(float64); got != 0 {
+		t.Fatalf("attempt serialized as %v, want 0", v)
+	}
+}
+
+func jobAttempt(t *testing.T, rd store.RunDetail, jobID uuid.UUID) int32 {
+	t.Helper()
+	for _, st := range rd.Stages {
+		for _, j := range st.Jobs {
+			if j.ID == jobID {
+				return j.Attempt
+			}
+		}
+	}
+	t.Fatalf("job %s not found in run detail", jobID)
+	return 0
+}
+
 func TestGetRunDetail_LogCursorReturnsOnlyDelta(t *testing.T) {
 	// When the caller passes a per-job cursor, the store returns
 	// only lines with seq > cursor — the polling client's delta
