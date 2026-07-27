@@ -2178,7 +2178,7 @@ components:
 
     JobRun:
       type: object
-      required: [id, name, status]
+      required: [id, name, status, attempt]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -2186,7 +2186,9 @@ components:
           type: string
           enum: [queued, running, success, failed, canceled, awaiting_approval, skipped]
         agent_id: { type: string, format: uuid, nullable: true }
-        attempt: { type: integer, default: 1 }
+        # Requeue generation: 0 on first dispatch, +1 each reaper requeue (#178).
+        # Required + default 0: the server always emits it, and 0 is a real value.
+        attempt: { type: integer, minimum: 0, default: 0 }
         exit_code: { type: integer, nullable: true }
         error: { type: string, nullable: true }
         started_at: { type: string, format: date-time, nullable: true }
