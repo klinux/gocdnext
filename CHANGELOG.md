@@ -8,6 +8,24 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.77.0 — 2026-07-27
+
+A queue-depth signal for agent-fleet autoscaling.
+
+### Added
+
+- **`gocdnext_queue_depth{stage_status="dispatchable"}` (#185).** A new value on
+  the queue-depth gauge counting jobs that can be handed to an agent *right now* —
+  queued, in their run's active (lowest-ordinal non-terminal) stage, unassigned,
+  not an approval gate, and not held behind a `concurrency: serial` gate. Unlike
+  `queued` (runs) and `pending` (queued+running jobs across all stages) it
+  excludes future-stage, running, and serial-gated work, so an HPA/KEDA agent
+  scaler can target it — `ceil((dispatchable + running) / capacity)` — without
+  over-provisioning for jobs that can't run yet. Fed each scheduler tick from a
+  bounded aggregate (drives from the partial `idx_runs_status`, no schema change).
+  The graceful drain (#178) is what makes the scale-down it unlocks safe. Ships
+  with an opt-in KEDA `ScaledObject` in the platform Helm chart.
+
 ## v0.76.1 — 2026-07-27
 
 A parser round-trip fix.
