@@ -153,6 +153,25 @@ func jobToDef(j domain.Job) JobDef {
 		Docker:    j.Docker,
 		Cluster:   j.Cluster,
 	}
+	if j.Deploy != nil {
+		// Mirror parse_job.go's DeployDef→DeploySpec: the marker (environment +
+		// version + revision) and the pipeline-declared native target. Without
+		// this the round-trip silently demotes a deploy job to an ordinary one
+		// (#171) — no deployment revision, no native deploy.
+		def.Deploy = &DeployDef{
+			Environment: j.Deploy.Environment,
+			Version:     j.Deploy.Version,
+			Revision:    j.Deploy.Revision,
+		}
+		if j.Deploy.Target != nil {
+			def.Deploy.Target = &TargetDef{
+				Cluster:     j.Deploy.Target.Cluster,
+				Application: j.Deploy.Target.Application,
+				Namespace:   j.Deploy.Target.Namespace,
+				SyncMode:    j.Deploy.Target.SyncMode,
+			}
+		}
+	}
 	if j.Profile != "" {
 		// Round-trip emits the profile under `agent.profile`; the
 		// extra tags AgentDef carries on parse already merged into
