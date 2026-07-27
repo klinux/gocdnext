@@ -8,6 +8,10 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.76.1 — 2026-07-27
+
+A parser round-trip fix.
+
 ### Fixed
 
 - **`deploy:` block survives a YAML round-trip (#171).** `parser.Emit` (the
