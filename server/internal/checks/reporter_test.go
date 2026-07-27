@@ -339,8 +339,9 @@ func TestCommitStatus_PostedOnCreateAndComplete(t *testing.T) {
 	if s["state"] != "pending" {
 		t.Errorf("create status state = %v, want pending", s["state"])
 	}
-	if c, _ := s["context"].(string); !strings.HasPrefix(c, "ci/gocdnext/") {
-		t.Errorf("context = %v, want ci/gocdnext/ prefix", s["context"])
+	// Project-qualified so two projects on the same repo don't collide (P2).
+	if c, _ := s["context"].(string); !strings.HasPrefix(c, "ci/gocdnext/chk-webhook/") {
+		t.Errorf("context = %v, want ci/gocdnext/<project>/ prefix", s["context"])
 	}
 	// The whole point: the status row links STRAIGHT to the run page.
 	if url, _ := s["target_url"].(string); !strings.Contains(url, "/runs/"+runID.String()) {
@@ -357,6 +358,40 @@ func TestCommitStatus_PostedOnCreateAndComplete(t *testing.T) {
 	}
 	if s = *stub.statusBody.Load(); s["state"] != "success" {
 		t.Errorf("complete status state = %v, want success", s["state"])
+	}
+}
+
+// TestCommitStatus_TerminalUsesPersistedContext pins P1: the terminal update
+// reuses the context STORED on the link, not one re-derived at completion (a
+// changed/removed material could otherwise leave the status stuck in pending).
+func TestCommitStatus_TerminalUsesPersistedContext(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	// Sentinel context on the link — completion must post with THIS exact value,
+	// proving it doesn't re-derive from the (possibly changed) material.
+	if _, err := pool.Exec(ctx,
+		`UPDATE github_check_runs SET status_context='ci/gocdnext/sentinel/x' WHERE run_id=$1`, runID); err != nil {
+		t.Fatalf("set context: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("CompleteCheck: %v", err)
+	}
+	s := *stub.statusBody.Load()
+	if s["context"] != "ci/gocdnext/sentinel/x" {
+		t.Errorf("terminal context = %v, want the persisted ci/gocdnext/sentinel/x", s["context"])
+	}
+	if s["state"] != "success" {
+		t.Errorf("terminal state = %v, want success", s["state"])
 	}
 }
 

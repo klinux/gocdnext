@@ -63,6 +63,11 @@ type GithubCheckRun struct {
 	Owner          string
 	Repo           string
 	HeadSHA        string
+	// StatusContext is the commit-status context posted alongside the check
+	// run (e.g. ci/gocdnext/<project>/<pipeline>). Persisted so the terminal
+	// status update reuses the exact context/identity without re-deriving from
+	// a material that may have changed. Empty on links pre-dating the column.
+	StatusContext string
 	// Completed is TRUE once the check has been PATCHed to a terminal
 	// state. The reporter reads it on a rerun: GitHub won't cleanly
 	// reopen a completed check, so a completed link forces a fresh
@@ -80,6 +85,7 @@ type UpsertGithubCheckRunInput struct {
 	Owner          string
 	Repo           string
 	HeadSHA        string
+	StatusContext  string
 }
 
 // UpsertGithubCheckRun writes the run→check link. Idempotent across
@@ -92,6 +98,7 @@ func (s *Store) UpsertGithubCheckRun(ctx context.Context, in UpsertGithubCheckRu
 		Owner:          in.Owner,
 		Repo:           in.Repo,
 		HeadSha:        in.HeadSHA,
+		StatusContext:  in.StatusContext,
 	})
 	if err != nil {
 		return fmt.Errorf("store: upsert github check run: %w", err)
@@ -117,6 +124,7 @@ func (s *Store) GetGithubCheckRun(ctx context.Context, runID uuid.UUID) (GithubC
 		Owner:          row.Owner,
 		Repo:           row.Repo,
 		HeadSHA:        row.HeadSha,
+		StatusContext:  row.StatusContext,
 		Completed:      row.Completed,
 		CreatedAt:      row.CreatedAt.Time,
 		UpdatedAt:      row.UpdatedAt.Time,

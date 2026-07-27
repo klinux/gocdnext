@@ -12,7 +12,7 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 - **Commit status alongside the check run.** For each pipeline gocdnext now posts
   BOTH a check run (`gocdnext / <pipeline>` — the rich, GitHub-hosted view) AND a
-  commit status (`ci/gocdnext/<pipeline>` — a plain row whose link goes straight
+  commit status (`ci/gocdnext/<project>/<pipeline>` — a plain row whose link goes straight
   to the run, the UX teams migrating from Woodpecker/GoCD expect). The commit
   status is best-effort: it needs the App's **`Commit statuses: write`**
   permission (separate from `Checks: write`); without it the status is skipped

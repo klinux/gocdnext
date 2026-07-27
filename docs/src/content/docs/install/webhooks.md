@@ -75,7 +75,7 @@ App.
 | Pull requests | Read | PR head SHA + PR events |
 | Webhooks | Read & write | auto-register the webhook (above) |
 | **Checks** | **Read & write** | post the `gocdnext / <pipeline>` **check run** — the rich, GitHub-hosted view (coverage + security summary, re-run button) |
-| **Commit statuses** | **Read & write** | post the `ci/gocdnext/<pipeline>` **commit status** — the check row whose link goes **straight to the run** (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks. |
+| **Commit statuses** | **Read & write** | post the `ci/gocdnext/<project>/<pipeline>` **commit status** — the check row whose link goes **straight to the run** (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks. |
 
 gocdnext posts **both** per pipeline: the **check run** (rich view; its run link
 is the "Details" button) and the **commit status** (plain row, links straight to
@@ -87,7 +87,7 @@ entry too.
 :::note[Making a check *required*]
 gocdnext posts these checks; whether GitHub **requires** one for merge is a
 **branch ruleset / branch-protection** setting on the repo or org (require the
-context `ci/gocdnext/<pipeline>` or the check `gocdnext / <pipeline>`). An
+context `ci/gocdnext/<project>/<pipeline>` or the check `gocdnext / <pipeline>`). An
 **org-level ruleset** requires it across many repos by name — no per-repo config.
 :::
 

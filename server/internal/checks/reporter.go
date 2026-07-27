@@ -166,6 +166,7 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 		return fmt.Errorf("create check run: %w", err)
 	}
 
+	sc := statusContext(ctxInfo.projectSlug, ctxInfo.pipelineName)
 	if err := r.store.UpsertGithubCheckRun(ctx, store.UpsertGithubCheckRunInput{
 		RunID:          runID,
 		InstallationID: installationID,
@@ -173,12 +174,21 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 		Owner:          ctxInfo.owner,
 		Repo:           ctxInfo.repo,
 		HeadSHA:        ctxInfo.headSHA,
+		StatusContext:  sc,
 	}); err != nil {
 		return fmt.Errorf("persist check link: %w", err)
 	}
 
 	// Mirror as a commit status (straight-to-run link). Additive + best-effort.
-	r.postCommitStatus(ctx, app, installationID, ctxInfo, runID, "pending")
+	r.postCommitStatus(ctx, app, installationID, ghscm.CreateStatusInput{
+		Owner:       ctxInfo.owner,
+		Repo:        ctxInfo.repo,
+		SHA:         ctxInfo.headSHA,
+		State:       "pending",
+		Context:     sc,
+		TargetURL:   r.detailsURL(runID),
+		Description: fmt.Sprintf("Run #%d on %s", ctxInfo.counter, ctxInfo.branch),
+	}, runID)
 
 	r.log.Info("checks: created",
 		"run_id", runID, "check_run_id", created.ID,
@@ -256,11 +266,23 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	}); err != nil {
 		return fmt.Errorf("patch check run: %w", err)
 	}
-	// Mirror the terminal state onto the commit status. Re-resolve for the
-	// pipeline name/branch/counter the link doesn't carry; best-effort.
+	// Mirror the terminal state onto the commit status, using the PERSISTED
+	// identity + context (never re-derived — the material may have changed).
+	// The description is the only re-resolved, purely cosmetic bit: if it fails
+	// the status still posts with the correct terminal state, never stuck.
+	desc := ""
 	if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
-		r.postCommitStatus(ctx, app, link.InstallationID, rc, runID, statusStateFor(status))
+		desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
 	}
+	r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
+		Owner:       link.Owner,
+		Repo:        link.Repo,
+		SHA:         link.HeadSHA,
+		State:       statusStateFor(status),
+		Context:     link.StatusContext,
+		TargetURL:   r.detailsURL(runID),
+		Description: desc,
+	}, runID)
 	r.log.Info("checks: updated",
 		"run_id", runID, "check_run_id", link.CheckRunID,
 		"status", status, "conclusion", conclusion)
@@ -398,10 +420,21 @@ func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
 		}); err != nil {
 			return fmt.Errorf("reopen check run: %w", err)
 		}
-		// Reset the commit status to pending for the rerun. Best-effort.
+		// Reset the commit status to pending for the rerun — persisted identity +
+		// context, best-effort description.
+		desc := ""
 		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
-			r.postCommitStatus(ctx, app, link.InstallationID, rc, runID, "pending")
+			desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
 		}
+		r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
+			Owner:       link.Owner,
+			Repo:        link.Repo,
+			SHA:         link.HeadSHA,
+			State:       "pending",
+			Context:     link.StatusContext,
+			TargetURL:   r.detailsURL(runID),
+			Description: desc,
+		}, runID)
 		r.log.Info("checks: reopened",
 			"run_id", runID, "check_run_id", link.CheckRunID)
 	}
@@ -533,6 +566,7 @@ func (r *Reporter) composeCheckOutput(ctx context.Context, runID uuid.UUID, stat
 type runContext struct {
 	owner, repo  string
 	headSHA      string
+	projectSlug  string
 	pipelineName string
 	branch       string
 	counter      int64
@@ -629,6 +663,7 @@ func (r *Reporter) resolveRunContext(ctx context.Context, runID uuid.UUID) (*run
 		owner:        owner,
 		repo:         repo,
 		headSHA:      headSHA,
+		projectSlug:  detail.ProjectSlug,
 		pipelineName: detail.PipelineName,
 		branch:       branch,
 		counter:      detail.Counter,
@@ -674,9 +709,14 @@ func conclusionFor(status string) ghscm.CheckRunConclusion {
 
 // statusContext is the commit-status context — deliberately DISTINCT from the
 // check run NAME ("gocdnext / <pipeline>") so the two entries don't collide in
-// the PR checks list, and parallel to the ci/<tool>/<pipeline> convention.
-func statusContext(pipelineName string) string {
-	return "ci/gocdnext/" + pipelineName
+// the PR checks list, and parallel to the ci/<tool>/<pipeline> convention. The
+// project slug qualifies the pipeline name so two projects watching the SAME
+// repo with the same pipeline name don't overwrite each other's status (a
+// status is keyed by repo+sha+context). GitHub compares contexts
+// case-insensitively, so pipeline names differing only by case still collide —
+// keep them repo-unique.
+func statusContext(projectSlug, pipelineName string) string {
+	return "ci/gocdnext/" + projectSlug + "/" + pipelineName
 }
 
 // statusStateFor maps a run status to a GitHub commit-status state
@@ -697,19 +737,20 @@ func statusStateFor(status string) string {
 
 // postCommitStatus mirrors the run state as a commit status whose row links
 // STRAIGHT to the run (target_url) — the entry teams migrating from
-// Woodpecker/GoCD expect, alongside the richer check run. Best-effort: a
-// missing "Commit statuses: write" App permission (or any error) is logged and
+// Woodpecker/GoCD expect, alongside the richer check run. It skips cleanly when
+// Context is empty (a link created before this feature). Best-effort: a missing
+// "Commit statuses: write" App permission (or any error) is logged and
 // swallowed; the check run is authoritative, the status is additive.
-func (r *Reporter) postCommitStatus(ctx context.Context, app *ghscm.AppClient, installationID int64, rc *runContext, runID uuid.UUID, state string) {
-	if err := app.CreateStatus(ctx, installationID, ghscm.CreateStatusInput{
-		Owner:       rc.owner,
-		Repo:        rc.repo,
-		SHA:         rc.headSHA,
-		State:       state,
-		Context:     statusContext(rc.pipelineName),
-		TargetURL:   r.detailsURL(runID),
-		Description: fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch),
-	}); err != nil {
+//
+// Callers pass the identity (owner/repo/sha/context) from the PERSISTED link on
+// terminal/reopen — never re-derived from a material that may have changed —
+// so the terminal update always lands on the same status the pending post
+// created, and can never leave it stuck in `pending`.
+func (r *Reporter) postCommitStatus(ctx context.Context, app *ghscm.AppClient, installationID int64, in ghscm.CreateStatusInput, runID uuid.UUID) {
+	if in.Context == "" {
+		return
+	}
+	if err := app.CreateStatus(ctx, installationID, in); err != nil {
 		r.log.Warn("checks: commit status not posted (App needs 'Commit statuses: write'?)",
 			"run_id", runID, "err", err)
 	}
