@@ -8,6 +8,10 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.76.0 — 2026-07-27
+
+GitHub PR checks that link straight to the run.
+
 ### Added
 
 - **Commit status alongside the check run.** For each pipeline gocdnext now posts
