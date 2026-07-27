@@ -140,6 +140,66 @@ jobs:
 	}
 }
 
+func TestEmit_RoundTripsDeployBlock(t *testing.T) {
+	// Regression for #171: jobToDef never emitted `deploy:`, so a deploy job
+	// round-tripped back as an ordinary job — silently losing the deployment
+	// marker and any native target.
+	const src = `
+name: demo
+stages: [ship]
+materials: [{ manual: true }]
+jobs:
+  release:
+    stage: ship
+    uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
+    with: { command: app sync shop-prod }
+    deploy:
+      environment: production
+      version: 1.27.abc1234
+      revision: ${{ CI_COMMIT_SHA }}
+      target:
+        cluster: prod-hub
+        application: shop-prod
+        namespace: argocd
+        sync_mode: trigger
+`
+	first, err := ParseNamed(strings.NewReader(src), "p", "demo")
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	out, err := Emit(first)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	second, err := ParseNamed(strings.NewReader(string(out)), "p", "demo")
+	if err != nil {
+		t.Fatalf("re-parse: %v\n---\n%s", err, out)
+	}
+
+	for _, p := range []*domain.Pipeline{first, second} {
+		got := p.Jobs[0].Deploy
+		if got == nil {
+			t.Fatalf("deploy block dropped on round-trip\n---\n%s", out)
+		}
+		if got.Environment != "production" {
+			t.Errorf("environment = %q, want production", got.Environment)
+		}
+		if got.Version != "1.27.abc1234" {
+			t.Errorf("version = %q, want the label preserved", got.Version)
+		}
+		if got.Revision != "${{ CI_COMMIT_SHA }}" {
+			t.Errorf("revision = %q, want the raw ref preserved", got.Revision)
+		}
+		if got.Target == nil {
+			t.Fatalf("deploy.target dropped on round-trip\n---\n%s", out)
+		}
+		if got.Target.Cluster != "prod-hub" || got.Target.Application != "shop-prod" ||
+			got.Target.SyncMode != "trigger" || got.Target.Namespace != "argocd" {
+			t.Errorf("target = %+v", got.Target)
+		}
+	}
+}
+
 func TestEmit_StageOrderStable(t *testing.T) {
 	// Jobs are unordered in domain (slice built from map iteration in
 	// the parser). The emitter has to bucket them by the pipeline's

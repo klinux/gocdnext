@@ -8,6 +8,15 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`deploy:` block survives a YAML round-trip (#171).** `parser.Emit` (the
+  reconstruction behind `GET /api/v1/pipelines/{id}/yaml`) never emitted the
+  `deploy:` block, so re-applying the emitted YAML silently demoted a deploy job
+  to an ordinary one — no deployment revision recorded, and no native deploy if
+  the environment had a registered target. `jobToDef` now emits it (environment
+  + version + revision + native target), mirroring the parse side.
+
 ## v0.76.0 — 2026-07-27
 
 GitHub PR checks that link straight to the run.
