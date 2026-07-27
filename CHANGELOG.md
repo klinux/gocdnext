@@ -8,6 +8,17 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Commit status alongside the check run.** For each pipeline gocdnext now posts
+  BOTH a check run (`gocdnext / <pipeline>` — the rich, GitHub-hosted view) AND a
+  commit status (`ci/gocdnext/<pipeline>` — a plain row whose link goes straight
+  to the run, the UX teams migrating from Woodpecker/GoCD expect). The commit
+  status is best-effort: it needs the App's **`Commit statuses: write`**
+  permission (separate from `Checks: write`); without it the status is skipped
+  with a WARN and the run never fails. Either identifier can be required via a
+  branch ruleset.
+
 ## v0.75.0 — 2026-07-25
 
 Graceful agent drain: a `helm upgrade`, scale-down, or pod delete no longer

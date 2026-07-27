@@ -177,6 +177,9 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 		return fmt.Errorf("persist check link: %w", err)
 	}
 
+	// Mirror as a commit status (straight-to-run link). Additive + best-effort.
+	r.postCommitStatus(ctx, app, installationID, ctxInfo, runID, "pending")
+
 	r.log.Info("checks: created",
 		"run_id", runID, "check_run_id", created.ID,
 		"repo", ctxInfo.owner+"/"+ctxInfo.repo, "head_sha", ctxInfo.headSHA)
@@ -252,6 +255,11 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 		},
 	}); err != nil {
 		return fmt.Errorf("patch check run: %w", err)
+	}
+	// Mirror the terminal state onto the commit status. Re-resolve for the
+	// pipeline name/branch/counter the link doesn't carry; best-effort.
+	if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+		r.postCommitStatus(ctx, app, link.InstallationID, rc, runID, statusStateFor(status))
 	}
 	r.log.Info("checks: updated",
 		"run_id", runID, "check_run_id", link.CheckRunID,
@@ -389,6 +397,10 @@ func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
 			},
 		}); err != nil {
 			return fmt.Errorf("reopen check run: %w", err)
+		}
+		// Reset the commit status to pending for the rerun. Best-effort.
+		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+			r.postCommitStatus(ctx, app, link.InstallationID, rc, runID, "pending")
 		}
 		r.log.Info("checks: reopened",
 			"run_id", runID, "check_run_id", link.CheckRunID)
@@ -657,5 +669,48 @@ func conclusionFor(status string) ghscm.CheckRunConclusion {
 		return ghscm.CheckConclusionNeutral
 	default:
 		return ghscm.CheckConclusionNeutral
+	}
+}
+
+// statusContext is the commit-status context — deliberately DISTINCT from the
+// check run NAME ("gocdnext / <pipeline>") so the two entries don't collide in
+// the PR checks list, and parallel to the ci/<tool>/<pipeline> convention.
+func statusContext(pipelineName string) string {
+	return "ci/gocdnext/" + pipelineName
+}
+
+// statusStateFor maps a run status to a GitHub commit-status state
+// (pending|success|failure|error). Skipped → success (neutral/non-blocking,
+// mirroring the check run's conclusion); a non-terminal status → pending.
+func statusStateFor(status string) string {
+	switch status {
+	case string(domain.StatusSuccess), string(domain.StatusSkipped):
+		return "success"
+	case string(domain.StatusFailed):
+		return "failure"
+	case string(domain.StatusCanceled):
+		return "error"
+	default:
+		return "pending"
+	}
+}
+
+// postCommitStatus mirrors the run state as a commit status whose row links
+// STRAIGHT to the run (target_url) — the entry teams migrating from
+// Woodpecker/GoCD expect, alongside the richer check run. Best-effort: a
+// missing "Commit statuses: write" App permission (or any error) is logged and
+// swallowed; the check run is authoritative, the status is additive.
+func (r *Reporter) postCommitStatus(ctx context.Context, app *ghscm.AppClient, installationID int64, rc *runContext, runID uuid.UUID, state string) {
+	if err := app.CreateStatus(ctx, installationID, ghscm.CreateStatusInput{
+		Owner:       rc.owner,
+		Repo:        rc.repo,
+		SHA:         rc.headSHA,
+		State:       state,
+		Context:     statusContext(rc.pipelineName),
+		TargetURL:   r.detailsURL(runID),
+		Description: fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch),
+	}); err != nil {
+		r.log.Warn("checks: commit status not posted (App needs 'Commit statuses: write'?)",
+			"run_id", runID, "err", err)
 	}
 }

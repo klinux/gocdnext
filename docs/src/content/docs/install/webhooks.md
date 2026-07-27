@@ -62,6 +62,35 @@ For OAuth-only flows (no App), the auto-register works if the
 authenticated user has admin on the repo. The platform creates
 the webhook via the REST API.
 
+### Required App permissions
+
+Set these **repository permissions** on the GitHub App (its *Settings →
+Permissions*). Adding one later requires each org's admin to **re-approve** the
+App.
+
+| Permission | Access | Why |
+|---|---|---|
+| Metadata | Read | mandatory baseline |
+| Contents | Read | clone the repo for a run |
+| Pull requests | Read | PR head SHA + PR events |
+| Webhooks | Read & write | auto-register the webhook (above) |
+| **Checks** | **Read & write** | post the `gocdnext / <pipeline>` **check run** — the rich, GitHub-hosted view (coverage + security summary, re-run button) |
+| **Commit statuses** | **Read & write** | post the `ci/gocdnext/<pipeline>` **commit status** — the check row whose link goes **straight to the run** (the UX Woodpecker/GoCD give). A SEPARATE permission from Checks. |
+
+gocdnext posts **both** per pipeline: the **check run** (rich view; its run link
+is the "Details" button) and the **commit status** (plain row, links straight to
+the run). If you grant only **Checks: write**, you still get the check run — the
+commit status **degrades gracefully** (a WARN in the server log on the `403`, the
+run never fails). Grant **Commit statuses: write** to get the straight-to-run
+entry too.
+
+:::note[Making a check *required*]
+gocdnext posts these checks; whether GitHub **requires** one for merge is a
+**branch ruleset / branch-protection** setting on the repo or org (require the
+context `ci/gocdnext/<pipeline>` or the check `gocdnext / <pipeline>`). An
+**org-level ruleset** requires it across many repos by name — no per-repo config.
+:::
+
 ### Manual setup
 
 Per-repo: *Settings → Webhooks → Add webhook*.

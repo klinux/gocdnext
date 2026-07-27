@@ -36,6 +36,8 @@ type githubStub struct {
 	nextCheckID   int64 // default 555
 	createdBody   atomic.Pointer[map[string]any]
 	updatedBody   atomic.Pointer[map[string]any]
+	statusBody    atomic.Pointer[map[string]any] // last commit status POST
+	statusCount   atomic.Int64
 }
 
 func newStub() *githubStub {
@@ -72,6 +74,13 @@ func (g *githubStub) handler(t *testing.T) http.Handler {
 			g.updatedBody.Store(&body)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{}`))
+		case strings.Contains(r.URL.Path, "/statuses/") && r.Method == http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			g.statusBody.Store(&body)
+			g.statusCount.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 1}`))
 		default:
 			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -309,6 +318,45 @@ func TestCompleteCheck_NoOpWhenNoLink(t *testing.T) {
 	}
 	if stub.updatedBody.Load() != nil {
 		t.Error("no PATCH should have happened without a prior link")
+	}
+}
+
+func TestCommitStatus_PostedOnCreateAndComplete(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	sb := stub.statusBody.Load()
+	if sb == nil {
+		t.Fatal("no commit status posted on create")
+	}
+	s := *sb
+	if s["state"] != "pending" {
+		t.Errorf("create status state = %v, want pending", s["state"])
+	}
+	if c, _ := s["context"].(string); !strings.HasPrefix(c, "ci/gocdnext/") {
+		t.Errorf("context = %v, want ci/gocdnext/ prefix", s["context"])
+	}
+	// The whole point: the status row links STRAIGHT to the run page.
+	if url, _ := s["target_url"].(string); !strings.Contains(url, "/runs/"+runID.String()) {
+		t.Errorf("target_url = %v, want the run page", s["target_url"])
+	}
+
+	// CompleteCheck reads the run's CURRENT status, so make it terminal first.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status=$2, finished_at=NOW() WHERE id=$1`, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("CompleteCheck: %v", err)
+	}
+	if s = *stub.statusBody.Load(); s["state"] != "success" {
+		t.Errorf("complete status state = %v, want success", s["state"])
 	}
 }
 
