@@ -76,6 +76,73 @@ func (q *Queries) ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const countDispatchableJobs = `-- name: CountDispatchableJobs :one
+WITH active_runs AS (
+    SELECT r.id, r.pipeline_id, r.definition
+    FROM runs r
+    WHERE r.status IN ('queued', 'running')
+),
+dispatchable_runs AS (
+    -- Drop serial runs gated behind a running sibling: the dispatcher leaves
+    -- them queued (scheduler.go serial gate), so their jobs can't reach an agent
+    -- now and must not inflate the fleet. Mirrors the gate exactly — gated iff
+    -- THIS run is serial AND another run of the same pipeline is running. A
+    -- running run is never gated (it is the active one), so its own still-queued
+    -- stage jobs keep counting.
+    SELECT ar.id
+    FROM active_runs ar
+    WHERE NOT (
+        ar.definition->>'Concurrency' = 'serial'
+        AND EXISTS (
+            SELECT 1 FROM runs sib
+            WHERE sib.pipeline_id = ar.pipeline_id
+              AND sib.status = 'running'
+              AND sib.id <> ar.id
+        )
+    )
+),
+active_stage AS (
+    SELECT s.run_id, MIN(s.ordinal) AS ordinal
+    FROM stage_runs s
+    JOIN dispatchable_runs dr ON dr.id = s.run_id
+    WHERE s.status IN ('queued', 'running')
+    GROUP BY s.run_id
+)
+SELECT COUNT(*)::bigint AS dispatchable_jobs
+FROM job_runs j
+JOIN stage_runs s ON s.id = j.stage_run_id
+JOIN active_stage a ON a.run_id = j.run_id AND a.ordinal = s.ordinal
+WHERE j.status = 'queued'
+  AND j.agent_id IS NULL
+  AND j.approval_gate = false
+`
+
+// Global backlog for autoscaling (#185): job_runs that can be handed to an agent
+// RIGHT NOW — queued, unassigned, not an approval gate, in their run's active
+// (lowest-ordinal non-terminal) stage, AND whose run is not held back by the
+// serial-concurrency gate. This mirrors what the dispatcher actually delivers:
+// the stage gate of ListDispatchableJobs plus the serial gate of scheduler.go.
+//
+// Only remaining looseness vs. real dispatch is needs-satisfaction (checked in
+// Go, not here), so this is a slight UPPER BOUND: a job whose deps haven't
+// finished yet still counts until they do. That's the correct bias for a
+// scale-UP signal (the job WILL want an agent). It never counts future-stage,
+// already-assigned, or serial-gated work — the failure modes of a raw
+// status='queued' count, since every stage's jobs are created 'queued' upfront.
+//
+// Performance (this runs each scheduler tick, per replica):
+//   - Drives from `runs` via the partial idx_runs_status (non-terminal runs
+//     only) — NOT a status scan of stage_runs (which has no status index); the
+//     stage lookup rides UNIQUE(run_id,name) and the job join rides
+//     idx_job_runs_run_id + the partial idx_job_runs_status. Bounded by live
+//     runs, not total history.
+func (q *Queries) CountDispatchableJobs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countDispatchableJobs)
+	var dispatchable_jobs int64
+	err := row.Scan(&dispatchable_jobs)
+	return dispatchable_jobs, err
+}
+
 const getRunForDispatch = `-- name: GetRunForDispatch :one
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions, r.ref,
        r.cause, r.cause_detail, r.service_generation,

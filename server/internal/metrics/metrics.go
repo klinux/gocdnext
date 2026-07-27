@@ -68,13 +68,19 @@ var (
 		[]string{"status"},
 	)
 
-	// QueueDepth tracks jobs waiting per stage type (queued,
-	// awaiting_approval). Updated by the sweeper's tick from a
-	// SELECT count(*) GROUP BY stage; reading is cheap.
+	// QueueDepth tracks non-terminal backlog by stage_status, refreshed each
+	// scheduler tick (scheduler_lifecycle.refreshQueueDepth):
+	//   queued       — runs in status='queued' (run-level).
+	//   pending      — queued+running job_runs (all stages).
+	//   dispatchable — queued job_runs ready for an agent NOW (active stage,
+	//                  unassigned, not an approval gate). This is the
+	//                  autoscaling signal (#185): a KEDA/HPA scaler targets
+	//                  `dispatchable`, not the coarser queued/pending. In a
+	//                  multi-replica server, take max()/avg() across instances.
 	QueueDepth = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gocdnext_queue_depth",
-			Help: "Jobs in non-terminal status, grouped by stage state.",
+			Help: "Non-terminal backlog by stage_status: queued (runs), pending (queued+running jobs), dispatchable (queued jobs ready for an agent — the autoscaling signal).",
 		},
 		[]string{"stage_status"},
 	)

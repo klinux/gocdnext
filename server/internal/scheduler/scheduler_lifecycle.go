@@ -252,6 +252,9 @@ func (s *Scheduler) refreshQueueDepth(ctx context.Context) {
 	}
 	metrics.QueueDepth.WithLabelValues("queued").Set(float64(snap.QueuedRuns))
 	metrics.QueueDepth.WithLabelValues("pending").Set(float64(snap.PendingJobs))
+	// dispatchable is the autoscaling signal (#185): queued jobs ready for an
+	// agent now. A KEDA/HPA scaler targets this, not the coarser queued/pending.
+	metrics.QueueDepth.WithLabelValues("dispatchable").Set(float64(snap.DispatchableJobs))
 }
 
 func (s *Scheduler) drainQueued(ctx context.Context) {
