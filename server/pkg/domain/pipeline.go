@@ -591,7 +591,9 @@ type DeploySpec struct {
 type DeployTargetSpec struct {
 	Cluster     string
 	Application string
-	// Namespace holds the Application CR; defaulted to argocd at parse.
+	// Namespace holds the Application CR. Left as-is at parse (empty when
+	// omitted); defaulted to argocd at target registration
+	// (deploy.NormalizeNamespace), not here.
 	Namespace string
 	// SyncMode is trigger|observe. Required — see TargetDef.
 	SyncMode string
