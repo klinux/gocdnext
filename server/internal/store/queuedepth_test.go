@@ -5,10 +5,43 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/store"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
+
+// seedSerialPipeline seeds a Concurrency=serial pipeline with a single stage and
+// job, so a run's whole dispatchability hinges on the serial gate, not stages.
+func seedSerialPipeline(t *testing.T, pool *pgxpool.Pool) (pipelineID, materialID uuid.UUID) {
+	t.Helper()
+	s := store.New(pool)
+	url, branch := "https://github.com/org/serial", "main"
+	fp := store.FingerprintFor(url, branch)
+	p := &domain.Pipeline{
+		Name:        "serial-build",
+		Concurrency: domain.ConcurrencySerial,
+		Stages:      []string{"build"},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"push"}},
+		}},
+		Jobs: []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+	}
+	ctx := context.Background()
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "serial-demo", Name: "Serial", Pipelines: []*domain.Pipeline{p},
+	})
+	if err != nil {
+		t.Fatalf("seed serial apply: %v", err)
+	}
+	pipelineID = res.Pipelines[0].PipelineID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("seed serial material lookup: %v", err)
+	}
+	return
+}
 
 // The dispatchable count is the autoscaling signal (#185): it must count only
 // job_runs that genuinely want an agent right now — queued, unassigned, not an
@@ -82,5 +115,54 @@ func TestGetQueueDepth_DispatchableExcludesFutureStagesAssignedAndGates(t *testi
 	}
 	if snap.DispatchableJobs != 0 {
 		t.Fatalf("dispatchable = %d after assigning compile, want 0", snap.DispatchableJobs)
+	}
+}
+
+// A serial pipeline dispatches one run at a time: a queued run sitting behind a
+// running sibling can't hand its jobs to an agent, so it must NOT inflate the
+// autoscaling signal (the scheduler's serial gate, mirrored in SQL).
+func TestGetQueueDepth_DispatchableExcludesSerialGatedRuns(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	pipelineID, materialID := seedSerialPipeline(t, pool)
+	mk := func(mod int64, rev, delivery string) store.CreateRunFromModificationInput {
+		return store.CreateRunFromModificationInput{
+			PipelineID: pipelineID, MaterialID: materialID, ModificationID: mod,
+			Revision: rev, Branch: "main", Provider: "github",
+			Delivery: delivery, TriggeredBy: "system:webhook",
+		}
+	}
+	run1, err := s.CreateRunFromModification(ctx, mk(1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "d1"))
+	if err != nil {
+		t.Fatalf("create run1: %v", err)
+	}
+	if _, err := s.CreateRunFromModification(ctx, mk(2, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "d2")); err != nil {
+		t.Fatalf("create run2: %v", err)
+	}
+
+	// Both queued, none running yet: the serial gate only fires against a RUNNING
+	// sibling (mirrors OtherRunningRunForPipeline), so both fronts count. In
+	// production refreshQueueDepth runs right after drainQueued, which starts one
+	// and gates the rest, so this pre-start state never lingers.
+	snap, err := s.GetQueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("queue depth: %v", err)
+	}
+	if snap.DispatchableJobs != 2 {
+		t.Fatalf("dispatchable = %d with both runs queued, want 2", snap.DispatchableJobs)
+	}
+
+	// Start run1 (its predecessor slot). run2 is now serial-gated behind a running
+	// sibling → its compile drops out; run1's own compile still counts. => 1, not 2.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status = 'running' WHERE id = $1`, run1.RunID); err != nil {
+		t.Fatalf("mark run1 running: %v", err)
+	}
+	if snap, err = s.GetQueueDepth(ctx); err != nil {
+		t.Fatalf("queue depth after run1 running: %v", err)
+	}
+	if snap.DispatchableJobs != 1 {
+		t.Fatalf("dispatchable = %d with run2 serial-gated behind running run1, want 1", snap.DispatchableJobs)
 	}
 }

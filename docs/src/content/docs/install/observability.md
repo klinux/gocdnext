@@ -59,11 +59,13 @@ Plus the standard Go runtime metrics (`go_*`, `process_*`).
 :::note[Autoscaling signal]
 `gocdnext_queue_depth{stage_status="dispatchable"}` counts only jobs that can be
 handed to an agent **right now** — queued, in their run's active stage,
-unassigned, and not an approval gate. It excludes future-stage and running work,
-so it is the correct signal to drive agent-fleet autoscaling (HPA/KEDA) without
-over-provisioning for jobs that can't run yet. In a multi-replica deployment take
-`max()`/`avg()` across instances, since every replica's scheduler reports the same
-global backlog.
+unassigned, not an approval gate, and not held back by a serial-concurrency gate
+(a queued run waiting behind a running sibling of a `concurrency: serial`
+pipeline is excluded). It leaves out future-stage, running, and serial-gated
+work, so it is the right signal to drive agent-fleet autoscaling (HPA/KEDA)
+without over-provisioning for jobs that can't run yet. In a multi-replica
+deployment take `max()`/`avg()` across instances, since every replica's scheduler
+reports the same global backlog.
 :::
 
 ### Scrape config

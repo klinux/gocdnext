@@ -106,24 +106,53 @@ WHERE j.run_id = $1
 ORDER BY j.name, j.matrix_key NULLS FIRST;
 
 -- name: CountDispatchableJobs :one
--- Global backlog for autoscaling (#185): job_runs that are ready for an agent
--- RIGHT NOW — queued, unassigned, not an approval gate, and in their run's
--- active (lowest-ordinal non-terminal) stage. This is the stage gate of
--- ListDispatchableJobs aggregated across every run.
+-- Global backlog for autoscaling (#185): job_runs that can be handed to an agent
+-- RIGHT NOW — queued, unassigned, not an approval gate, in their run's active
+-- (lowest-ordinal non-terminal) stage, AND whose run is not held back by the
+-- serial-concurrency gate. This mirrors what the dispatcher actually delivers:
+-- the stage gate of ListDispatchableJobs plus the serial gate of scheduler.go.
 --
--- Needs-satisfaction is checked in Go at dispatch, not here, so this is an
--- UPPER BOUND on immediately-runnable jobs: a job whose deps haven't finished
--- yet still counts until they do. That's the correct bias for a scale-UP signal
--- (the job WILL want an agent), and it never counts future-stage or
--- already-assigned work — the failure mode of a raw status='queued' count,
--- since every stage's jobs are created 'queued' upfront.
+-- Only remaining looseness vs. real dispatch is needs-satisfaction (checked in
+-- Go, not here), so this is a slight UPPER BOUND: a job whose deps haven't
+-- finished yet still counts until they do. That's the correct bias for a
+-- scale-UP signal (the job WILL want an agent). It never counts future-stage,
+-- already-assigned, or serial-gated work — the failure modes of a raw
+-- status='queued' count, since every stage's jobs are created 'queued' upfront.
 --
--- Cost is bounded by non-terminal runs (queued job_runs only exist while a run
--- is active) and the CTE groups the small set of live stage_runs — OK at the
--- scheduler-tick cadence this feeds, not a per-request path.
-WITH active_stage AS (
+-- Performance (this runs each scheduler tick, per replica):
+--   * Drives from `runs` via the partial idx_runs_status (non-terminal runs
+--     only) — NOT a status scan of stage_runs (which has no status index); the
+--     stage lookup rides UNIQUE(run_id,name) and the job join rides
+--     idx_job_runs_run_id + the partial idx_job_runs_status. Bounded by live
+--     runs, not total history.
+WITH active_runs AS (
+    SELECT r.id, r.pipeline_id, r.definition
+    FROM runs r
+    WHERE r.status IN ('queued', 'running')
+),
+dispatchable_runs AS (
+    -- Drop serial runs gated behind a running sibling: the dispatcher leaves
+    -- them queued (scheduler.go serial gate), so their jobs can't reach an agent
+    -- now and must not inflate the fleet. Mirrors the gate exactly — gated iff
+    -- THIS run is serial AND another run of the same pipeline is running. A
+    -- running run is never gated (it is the active one), so its own still-queued
+    -- stage jobs keep counting.
+    SELECT ar.id
+    FROM active_runs ar
+    WHERE NOT (
+        ar.definition->>'Concurrency' = 'serial'
+        AND EXISTS (
+            SELECT 1 FROM runs sib
+            WHERE sib.pipeline_id = ar.pipeline_id
+              AND sib.status = 'running'
+              AND sib.id <> ar.id
+        )
+    )
+),
+active_stage AS (
     SELECT s.run_id, MIN(s.ordinal) AS ordinal
     FROM stage_runs s
+    JOIN dispatchable_runs dr ON dr.id = s.run_id
     WHERE s.status IN ('queued', 'running')
     GROUP BY s.run_id
 )
