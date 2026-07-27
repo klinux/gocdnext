@@ -36,6 +36,8 @@ type githubStub struct {
 	nextCheckID   int64 // default 555
 	createdBody   atomic.Pointer[map[string]any]
 	updatedBody   atomic.Pointer[map[string]any]
+	statusBody    atomic.Pointer[map[string]any] // last commit status POST
+	statusCount   atomic.Int64
 }
 
 func newStub() *githubStub {
@@ -72,6 +74,13 @@ func (g *githubStub) handler(t *testing.T) http.Handler {
 			g.updatedBody.Store(&body)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{}`))
+		case strings.Contains(r.URL.Path, "/statuses/") && r.Method == http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			g.statusBody.Store(&body)
+			g.statusCount.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 1}`))
 		default:
 			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -309,6 +318,80 @@ func TestCompleteCheck_NoOpWhenNoLink(t *testing.T) {
 	}
 	if stub.updatedBody.Load() != nil {
 		t.Error("no PATCH should have happened without a prior link")
+	}
+}
+
+func TestCommitStatus_PostedOnCreateAndComplete(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	sb := stub.statusBody.Load()
+	if sb == nil {
+		t.Fatal("no commit status posted on create")
+	}
+	s := *sb
+	if s["state"] != "pending" {
+		t.Errorf("create status state = %v, want pending", s["state"])
+	}
+	// Project-qualified so two projects on the same repo don't collide (P2).
+	if c, _ := s["context"].(string); !strings.HasPrefix(c, "ci/gocdnext/chk-webhook/") {
+		t.Errorf("context = %v, want ci/gocdnext/<project>/ prefix", s["context"])
+	}
+	// The whole point: the status row links STRAIGHT to the run page.
+	if url, _ := s["target_url"].(string); !strings.Contains(url, "/runs/"+runID.String()) {
+		t.Errorf("target_url = %v, want the run page", s["target_url"])
+	}
+
+	// CompleteCheck reads the run's CURRENT status, so make it terminal first.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status=$2, finished_at=NOW() WHERE id=$1`, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("CompleteCheck: %v", err)
+	}
+	if s = *stub.statusBody.Load(); s["state"] != "success" {
+		t.Errorf("complete status state = %v, want success", s["state"])
+	}
+}
+
+// TestCommitStatus_TerminalUsesPersistedContext pins P1: the terminal update
+// reuses the context STORED on the link, not one re-derived at completion (a
+// changed/removed material could otherwise leave the status stuck in pending).
+func TestCommitStatus_TerminalUsesPersistedContext(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	// Sentinel context on the link — completion must post with THIS exact value,
+	// proving it doesn't re-derive from the (possibly changed) material.
+	if _, err := pool.Exec(ctx,
+		`UPDATE github_check_runs SET status_context='ci/gocdnext/sentinel/x' WHERE run_id=$1`, runID); err != nil {
+		t.Fatalf("set context: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("CompleteCheck: %v", err)
+	}
+	s := *stub.statusBody.Load()
+	if s["context"] != "ci/gocdnext/sentinel/x" {
+		t.Errorf("terminal context = %v, want the persisted ci/gocdnext/sentinel/x", s["context"])
+	}
+	if s["state"] != "success" {
+		t.Errorf("terminal state = %v, want success", s["state"])
 	}
 }
 

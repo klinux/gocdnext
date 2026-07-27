@@ -13,7 +13,7 @@ import (
 
 const getGithubCheckRun = `-- name: GetGithubCheckRun :one
 SELECT run_id, installation_id, check_run_id, owner, repo, head_sha,
-       completed, created_at, updated_at
+       status_context, completed, created_at, updated_at
 FROM github_check_runs
 WHERE run_id = $1
 `
@@ -25,6 +25,7 @@ type GetGithubCheckRunRow struct {
 	Owner          string
 	Repo           string
 	HeadSha        string
+	StatusContext  string
 	Completed      bool
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
@@ -43,6 +44,7 @@ func (q *Queries) GetGithubCheckRun(ctx context.Context, runID pgtype.UUID) (Get
 		&i.Owner,
 		&i.Repo,
 		&i.HeadSha,
+		&i.StatusContext,
 		&i.Completed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -67,14 +69,15 @@ func (q *Queries) MarkGithubCheckRunCompleted(ctx context.Context, runID pgtype.
 
 const upsertGithubCheckRun = `-- name: UpsertGithubCheckRun :exec
 INSERT INTO github_check_runs (
-    run_id, installation_id, check_run_id, owner, repo, head_sha, completed
-) VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+    run_id, installation_id, check_run_id, owner, repo, head_sha, status_context, completed
+) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
 ON CONFLICT (run_id) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     check_run_id    = EXCLUDED.check_run_id,
     owner           = EXCLUDED.owner,
     repo            = EXCLUDED.repo,
     head_sha        = EXCLUDED.head_sha,
+    status_context  = EXCLUDED.status_context,
     completed       = FALSE,
     updated_at      = NOW()
 `
@@ -86,6 +89,7 @@ type UpsertGithubCheckRunParams struct {
 	Owner          string
 	Repo           string
 	HeadSha        string
+	StatusContext  string
 }
 
 // Called right after CreateCheckRun on GitHub responds; caller may
@@ -101,6 +105,7 @@ func (q *Queries) UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubChec
 		arg.Owner,
 		arg.Repo,
 		arg.HeadSha,
+		arg.StatusContext,
 	)
 	return err
 }

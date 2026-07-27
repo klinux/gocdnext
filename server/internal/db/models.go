@@ -278,6 +278,7 @@ type GithubCheckRun struct {
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	Completed      bool
+	StatusContext  string
 }
 
 type Group struct {
