@@ -76,6 +76,44 @@ func (q *Queries) ClearRunQueueReason(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const countDispatchableJobs = `-- name: CountDispatchableJobs :one
+WITH active_stage AS (
+    SELECT s.run_id, MIN(s.ordinal) AS ordinal
+    FROM stage_runs s
+    WHERE s.status IN ('queued', 'running')
+    GROUP BY s.run_id
+)
+SELECT COUNT(*)::bigint AS dispatchable_jobs
+FROM job_runs j
+JOIN stage_runs s ON s.id = j.stage_run_id
+JOIN active_stage a ON a.run_id = j.run_id AND a.ordinal = s.ordinal
+WHERE j.status = 'queued'
+  AND j.agent_id IS NULL
+  AND j.approval_gate = false
+`
+
+// Global backlog for autoscaling (#185): job_runs that are ready for an agent
+// RIGHT NOW — queued, unassigned, not an approval gate, and in their run's
+// active (lowest-ordinal non-terminal) stage. This is the stage gate of
+// ListDispatchableJobs aggregated across every run.
+//
+// Needs-satisfaction is checked in Go at dispatch, not here, so this is an
+// UPPER BOUND on immediately-runnable jobs: a job whose deps haven't finished
+// yet still counts until they do. That's the correct bias for a scale-UP signal
+// (the job WILL want an agent), and it never counts future-stage or
+// already-assigned work — the failure mode of a raw status='queued' count,
+// since every stage's jobs are created 'queued' upfront.
+//
+// Cost is bounded by non-terminal runs (queued job_runs only exist while a run
+// is active) and the CTE groups the small set of live stage_runs — OK at the
+// scheduler-tick cadence this feeds, not a per-request path.
+func (q *Queries) CountDispatchableJobs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countDispatchableJobs)
+	var dispatchable_jobs int64
+	err := row.Scan(&dispatchable_jobs)
+	return dispatchable_jobs, err
+}
+
 const getRunForDispatch = `-- name: GetRunForDispatch :one
 SELECT r.id, r.pipeline_id, p.project_id, r.counter, r.status, r.revisions, r.ref,
        r.cause, r.cause_detail, r.service_generation,

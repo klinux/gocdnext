@@ -72,17 +72,31 @@ func (s *Store) GetDashboardMetrics(ctx context.Context) (DashboardMetrics, erro
 type QueueDepthSnapshot struct {
 	QueuedRuns  int64
 	PendingJobs int64
+	// DispatchableJobs is the autoscaling signal (#185): queued job_runs that
+	// are ready for an agent NOW (active stage, unassigned, not a gate). Unlike
+	// PendingJobs it excludes future-stage and running work, so it doesn't
+	// over-provision the fleet for jobs that can't run yet.
+	DispatchableJobs int64
 }
 
 // GetQueueDepth fetches just the backlog counts. Cheap enough to
-// run every scheduler tick — one indexed aggregate against
-// runs+job_runs.
+// run every scheduler tick — two indexed aggregates against
+// runs+job_runs (one for the dashboard backlog, one for the
+// dispatchable autoscaling signal).
 func (s *Store) GetQueueDepth(ctx context.Context) (QueueDepthSnapshot, error) {
 	row, err := s.q.DashboardQueueDepth(ctx)
 	if err != nil {
 		return QueueDepthSnapshot{}, fmt.Errorf("store: queue depth: %w", err)
 	}
-	return QueueDepthSnapshot{QueuedRuns: row.QueuedRuns, PendingJobs: row.PendingJobs}, nil
+	dispatchable, err := s.q.CountDispatchableJobs(ctx)
+	if err != nil {
+		return QueueDepthSnapshot{}, fmt.Errorf("store: dispatchable jobs: %w", err)
+	}
+	return QueueDepthSnapshot{
+		QueuedRuns:       row.QueuedRuns,
+		PendingJobs:      row.PendingJobs,
+		DispatchableJobs: dispatchable,
+	}, nil
 }
 
 // GlobalRunSummary is the row shape returned by ListRunsGlobal; it

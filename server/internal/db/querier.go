@@ -207,6 +207,22 @@ type Querier interface {
 	// Application cluster OR its Rollout cluster) can't be deleted — also enforced by
 	// both FKs' ON DELETE RESTRICT; this gives the friendly message.
 	CountDeployTargetsForCluster(ctx context.Context, cluster string) (int64, error)
+	// Global backlog for autoscaling (#185): job_runs that are ready for an agent
+	// RIGHT NOW — queued, unassigned, not an approval gate, and in their run's
+	// active (lowest-ordinal non-terminal) stage. This is the stage gate of
+	// ListDispatchableJobs aggregated across every run.
+	//
+	// Needs-satisfaction is checked in Go at dispatch, not here, so this is an
+	// UPPER BOUND on immediately-runnable jobs: a job whose deps haven't finished
+	// yet still counts until they do. That's the correct bias for a scale-UP signal
+	// (the job WILL want an agent), and it never counts future-stage or
+	// already-assigned work — the failure mode of a raw status='queued' count,
+	// since every stage's jobs are created 'queued' upfront.
+	//
+	// Cost is bounded by non-terminal runs (queued job_runs only exist while a run
+	// is active) and the CTE groups the small set of live stage_runs — OK at the
+	// scheduler-tick cadence this feeds, not a per-request path.
+	CountDispatchableJobs(ctx context.Context) (int64, error)
 	CountFindingsForProject(ctx context.Context, arg CountFindingsForProjectParams) (int64, error)
 	// Real total of fixed identities (the list above is capped); the header count
 	// must not understate when a removed scanner retires a large prior set.

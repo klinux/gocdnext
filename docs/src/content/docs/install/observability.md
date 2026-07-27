@@ -30,10 +30,11 @@ gocdnext_jobs_running 3
 gocdnext_job_duration_seconds_bucket{status="success",le="10"} 41
 …
 
-# HELP gocdnext_queue_depth Jobs/runs in non-terminal status.
+# HELP gocdnext_queue_depth Non-terminal backlog by stage_status.
 # TYPE gocdnext_queue_depth gauge
-gocdnext_queue_depth{stage_status="queued"} 0
-gocdnext_queue_depth{stage_status="pending"} 2
+gocdnext_queue_depth{stage_status="queued"} 0        # runs in status=queued
+gocdnext_queue_depth{stage_status="pending"} 2       # queued+running job_runs (all stages)
+gocdnext_queue_depth{stage_status="dispatchable"} 2  # queued jobs ready for an agent NOW — the autoscaling signal
 
 # HELP gocdnext_agents_online Agents with an active session on this replica.
 # TYPE gocdnext_agents_online gauge
@@ -54,6 +55,16 @@ gocdnext_webhook_deliveries_total{provider="github",outcome="accepted"} 412
 ```
 
 Plus the standard Go runtime metrics (`go_*`, `process_*`).
+
+:::note[Autoscaling signal]
+`gocdnext_queue_depth{stage_status="dispatchable"}` counts only jobs that can be
+handed to an agent **right now** — queued, in their run's active stage,
+unassigned, and not an approval gate. It excludes future-stage and running work,
+so it is the correct signal to drive agent-fleet autoscaling (HPA/KEDA) without
+over-provisioning for jobs that can't run yet. In a multi-replica deployment take
+`max()`/`avg()` across instances, since every replica's scheduler reports the same
+global backlog.
+:::
 
 ### Scrape config
 
