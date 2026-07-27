@@ -84,6 +84,11 @@ commit status **degrades gracefully** (a WARN in the server log on the `403`, th
 run never fails). Grant **Commit statuses: write** to get the straight-to-run
 entry too.
 
+The commit-status context is `ci/gocdnext/<project>/<pipeline>`, project-qualified
+so two projects on the same repo don't overwrite each other's status. GitHub
+compares contexts **case-insensitively**, so keep project/pipeline names
+repo-unique even across case — two that differ only by case would still collide.
+
 :::note[Making a check *required*]
 gocdnext posts these checks; whether GitHub **requires** one for merge is a
 **branch ruleset / branch-protection** setting on the repo or org (require the
