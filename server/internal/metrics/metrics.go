@@ -149,6 +149,44 @@ var (
 		Name: "gocdnext_supersede_lock_busy_total",
 		Help: "Deploy dispatches deferred because the lane-env supersede lock was held.",
 	})
+
+	// JobsReclaimed counts per-job reclaim outcomes from the reaper
+	// (reason=stale) and the register-fence (reason=register_fence).
+	// outcome ∈ requeued | failed_max | skipped | error. `skipped` is
+	// race-normal (a snapshot-CAS no-op, amplified across replicas) —
+	// don't alert on it.
+	JobsReclaimed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_jobs_reclaimed_total",
+		Help: "Stale/abandoned job reclaims by reason and per-job outcome.",
+	}, []string{"reason", "outcome"})
+
+	// JobReclaimSweeps counts reclaim SWEEP calls — once per
+	// ReclaimStaleJobs / ReclaimAgentJobs invocation, including empty
+	// sweeps — so a top-level store error that returns before any
+	// per-job result is still visible. outcome ∈ success | error.
+	JobReclaimSweeps = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_job_reclaim_sweeps_total",
+		Help: "Reclaim sweeps by reason and outcome (success|error).",
+	}, []string{"reason", "outcome"})
+
+	// AgentDrain counts graceful-drain outcomes observed server-side at
+	// stream close: clean (no in-flight jobs left) vs abandoned (jobs
+	// still running → requeued by the reaper). Only draining sessions
+	// emit; a crash/network disconnect does not.
+	AgentDrain = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_agent_drain_total",
+		Help: "Agent graceful-drain outcomes at stream close (clean|abandoned).",
+	}, []string{"outcome"})
+
+	// AgentDrainDuration is the wall-clock from the first Draining frame
+	// to stream close, split by outcome so clean/abandoned distributions
+	// don't mix. Buckets span the near-zero clean case to the agent's
+	// termination grace (~400s).
+	AgentDrainDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gocdnext_agent_drain_duration_seconds",
+		Help:    "Seconds from the Draining signal to stream close, by outcome.",
+		Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 420, 600},
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -164,6 +202,10 @@ func init() {
 		RunsSuperseded,
 		SupersedeBackstopErrors,
 		SupersedeLockBusy,
+		JobsReclaimed,
+		JobReclaimSweeps,
+		AgentDrain,
+		AgentDrainDuration,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),

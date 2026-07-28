@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -13,6 +14,7 @@ import (
 
 	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
 	"github.com/gocdnext/gocdnext/proto/grpcconsts"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -137,6 +139,68 @@ func TestConnect_DrainingKeepsStreamLive(t *testing.T) {
 		t.Fatalf("expected Pong after draining (session still live), got %T", msg.Kind)
 	}
 	_ = stream.CloseSend()
+}
+
+// A draining session with no in-flight jobs, once its stream closes, emits
+// gocdnext_agent_drain_total{clean} (and, being co-located, the duration
+// observation) from the Connect defer. The metric fires server-side after the
+// recv loop returns, so we poll for it.
+func TestConnect_DrainMetricCleanOnClose(t *testing.T) {
+	pool, client := bootServer(t)
+	seedAgentViaSQL(t, pool, "runner-drainmetric", store.HashToken("tok"))
+
+	reg, err := client.Register(context.Background(), &gocdnextv1.RegisterRequest{
+		AgentId: "runner-drainmetric", Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, grpcconsts.SessionHeader, reg.SessionId)
+
+	stream, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	cleanBefore := testutil.ToFloat64(metrics.AgentDrain.WithLabelValues("clean"))
+
+	// Drain, then a heartbeat→pong round-trip confirms the server processed the
+	// Draining frame (so drainStartedAt is set) before we close.
+	if err := stream.Send(&gocdnextv1.AgentMessage{
+		Kind: &gocdnextv1.AgentMessage_Draining{Draining: &gocdnextv1.Draining{}},
+	}); err != nil {
+		t.Fatalf("Send draining: %v", err)
+	}
+	if err := stream.Send(&gocdnextv1.AgentMessage{
+		Kind: &gocdnextv1.AgentMessage_Heartbeat{Heartbeat: &gocdnextv1.Heartbeat{At: timestamppb.Now()}},
+	}); err != nil {
+		t.Fatalf("Send heartbeat: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv pong: %v", err)
+	}
+
+	// Close → the server's recv loop returns → the Connect defer runs → metric.
+	_ = stream.CloseSend()
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+
+	var delta float64
+	for i := 0; i < 100; i++ {
+		delta = testutil.ToFloat64(metrics.AgentDrain.WithLabelValues("clean")) - cleanBefore
+		if delta == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if delta != 1 {
+		t.Fatalf("agent_drain_total{clean} delta = %v, want 1 (no in-flight jobs → clean)", delta)
+	}
 }
 
 func TestConnect_SessionRevokedOnStreamClose(t *testing.T) {

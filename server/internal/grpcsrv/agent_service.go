@@ -18,6 +18,7 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/checks"
 	"github.com/gocdnext/gocdnext/server/internal/logarchive"
 	"github.com/gocdnext/gocdnext/server/internal/logstream"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -276,36 +277,45 @@ func (a *AgentService) Register(ctx context.Context, req *gocdnextv1.RegisterReq
 	a.sessions.RevokeForAgent(agent.ID)
 
 	var notifyRunIDs []uuid.UUID
-	if results, err := a.store.ReclaimAgentJobs(ctx, agent.ID, a.registerFenceMaxAttempts); err != nil {
+	results, err := a.store.ReclaimAgentJobs(ctx, agent.ID, a.registerFenceMaxAttempts)
+	switch {
+	case err != nil:
+		// Sweep-level failure: count it here or it's invisible (the per-job
+		// counter never runs when there are no results).
+		metrics.JobReclaimSweeps.WithLabelValues("register_fence", "error").Inc()
 		a.log.Warn("agent register: fence failed",
 			"agent_id", req.GetAgentId(), "agent_uuid", agent.ID, "err", err)
-	} else if len(results) > 0 {
-		var requeued, failed, skipped, errored int
-		seenRuns := make(map[uuid.UUID]struct{}, len(results))
-		for _, r := range results {
-			switch {
-			case r.Err != nil:
-				errored++
-				a.log.Warn("agent register: fence entry error",
-					"agent_uuid", agent.ID, "job_id", r.JobRunID, "err", r.Err)
-			case r.Action == store.ReclaimActionRequeued:
-				requeued++
-				if _, dup := seenRuns[r.RunID]; !dup {
-					seenRuns[r.RunID] = struct{}{}
-					notifyRunIDs = append(notifyRunIDs, r.RunID)
+	default:
+		metrics.JobReclaimSweeps.WithLabelValues("register_fence", "success").Inc()
+		if len(results) > 0 {
+			var requeued, failed, skipped, errored int
+			seenRuns := make(map[uuid.UUID]struct{}, len(results))
+			for _, r := range results {
+				metrics.JobsReclaimed.WithLabelValues("register_fence", r.OutcomeLabel()).Inc()
+				switch {
+				case r.Err != nil:
+					errored++
+					a.log.Warn("agent register: fence entry error",
+						"agent_uuid", agent.ID, "job_id", r.JobRunID, "err", r.Err)
+				case r.Action == store.ReclaimActionRequeued:
+					requeued++
+					if _, dup := seenRuns[r.RunID]; !dup {
+						seenRuns[r.RunID] = struct{}{}
+						notifyRunIDs = append(notifyRunIDs, r.RunID)
+					}
+					a.failDeadDeployRevision(ctx, r.JobRunID, r.Attempt)
+				case r.Action == store.ReclaimActionFailed:
+					failed++
+					a.failDeadDeployRevision(ctx, r.JobRunID, r.Attempt)
+				default:
+					skipped++
 				}
-				a.failDeadDeployRevision(ctx, r.JobRunID, r.Attempt)
-			case r.Action == store.ReclaimActionFailed:
-				failed++
-				a.failDeadDeployRevision(ctx, r.JobRunID, r.Attempt)
-			default:
-				skipped++
 			}
+			a.log.Info("agent register: fence reclaimed orphans",
+				"agent_id", req.GetAgentId(), "agent_uuid", agent.ID,
+				"requeued", requeued, "failed", failed,
+				"skipped", skipped, "errors", errored)
 		}
-		a.log.Info("agent register: fence reclaimed orphans",
-			"agent_id", req.GetAgentId(), "agent_uuid", agent.ID,
-			"requeued", requeued, "failed", failed,
-			"skipped", skipped, "errors", errored)
 	}
 
 	upd := store.RegisterUpdate{

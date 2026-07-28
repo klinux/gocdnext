@@ -52,6 +52,24 @@ gocdnext_retention_dropped_log_partitions_total 6
 # HELP gocdnext_webhook_deliveries_total Inbound webhook deliveries by provider and outcome.
 # TYPE gocdnext_webhook_deliveries_total counter
 gocdnext_webhook_deliveries_total{provider="github",outcome="accepted"} 412
+
+# HELP gocdnext_jobs_reclaimed_total Stale/abandoned job reclaims by reason and per-job outcome.
+# TYPE gocdnext_jobs_reclaimed_total counter
+gocdnext_jobs_reclaimed_total{reason="stale",outcome="requeued"} 7
+gocdnext_jobs_reclaimed_total{reason="register_fence",outcome="requeued"} 2
+
+# HELP gocdnext_job_reclaim_sweeps_total Reclaim sweeps by reason and outcome (success|error).
+# TYPE gocdnext_job_reclaim_sweeps_total counter
+gocdnext_job_reclaim_sweeps_total{reason="stale",outcome="success"} 5039
+
+# HELP gocdnext_agent_drain_total Agent graceful-drain outcomes at stream close (clean|abandoned).
+# TYPE gocdnext_agent_drain_total counter
+gocdnext_agent_drain_total{outcome="clean"} 22
+gocdnext_agent_drain_total{outcome="abandoned"} 1
+
+# HELP gocdnext_agent_drain_duration_seconds Seconds from the Draining signal to stream close, by outcome.
+# TYPE gocdnext_agent_drain_duration_seconds histogram
+gocdnext_agent_drain_duration_seconds_bucket{outcome="clean",le="30"} 21
 ```
 
 Plus the standard Go runtime metrics (`go_*`, `process_*`).
