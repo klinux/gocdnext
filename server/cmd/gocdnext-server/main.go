@@ -639,8 +639,13 @@ func main() {
 		logger.Warn("auth: DISABLED — API is open; set GOCDNEXT_AUTH_ENABLED=true in prod")
 	}
 
-	grpcServer := grpc.NewServer()
+	// Chain* forms so a future otelgrpc StatsHandler / auth interceptor composes.
+	grpcServer := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcsrv.MetricsUnaryInterceptor),
+		grpc.ChainStreamInterceptor(grpcsrv.MetricsStreamInterceptor),
+	)
 	gocdnextv1.RegisterAgentServiceServer(grpcServer, agentService)
+	grpcsrv.InitGRPCMetrics() // pre-seed zero series so rate()/error-rate work from scrape 1
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
