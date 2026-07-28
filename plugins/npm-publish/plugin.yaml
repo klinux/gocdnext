@@ -44,15 +44,15 @@ inputs:
     required: false
     description: >
       Basic-auth username for a private registry (Nexus/Artifactory).
-      Pair with `password`; substitute a secret, e.g.
-      `username: ${{ secrets.NEXUS_USERNAME }}`.
+      Pair with `password`; reference a declared secret, e.g.
+      `secrets: [NEXUS_USERNAME]` then `username: ${{ NEXUS_USERNAME }}`.
   password:
     required: false
     description: >
-      Basic-auth password/token for a private registry. Substitute a
-      secret, e.g. `password: ${{ secrets.NEXUS_PASSWORD }}`. Written
-      (base64, with the username) to the user-scoped .npmrc only —
-      never argv; masked in logs.
+      Basic-auth password/token for a private registry, e.g.
+      `secrets: [NEXUS_PASSWORD]` then `password: ${{ NEXUS_PASSWORD }}`.
+      Written (base64, with the username) to the user-scoped .npmrc
+      only — never argv; masked in logs.
   if-exists:
     required: false
     default: "fail"
@@ -102,10 +102,11 @@ examples:
         matrix:
           pkg: [shell-contract, module-register]
       uses: ghcr.io/klinux/gocdnext-plugin-npm-publish@v1
+      secrets: [NEXUS_USERNAME, NEXUS_PASSWORD]
       with:
         dir: packages/{{ matrix.pkg }}
         registry: https://nexus.example/repository/npm-hosted/
         auth: basic
-        username: ${{ secrets.NEXUS_USERNAME }}
-        password: ${{ secrets.NEXUS_PASSWORD }}
+        username: ${{ NEXUS_USERNAME }}
+        password: ${{ NEXUS_PASSWORD }}
         if-exists: skip

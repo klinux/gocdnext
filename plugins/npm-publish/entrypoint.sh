@@ -18,6 +18,14 @@ DIR="${PLUGIN_DIR:-.}"
 REGISTRY="${PLUGIN_REGISTRY:-https://registry.npmjs.org}"
 REGISTRY="${REGISTRY%/}"
 
+# Fail-closed: a registry URL with embedded userinfo (user:pass@host) would leak
+# into .npmrc, the --registry argv, AND the progress log below — reject it. The
+# credential goes through auth/username/password or NPM_TOKEN, never the URL.
+REG_HOST_PATH="${REGISTRY#*//}"   # host+path, no scheme; the .npmrc key adds the trailing slash
+case "${REG_HOST_PATH%%/*}" in
+    *@*) fail "registry URL must not embed credentials (user:pass@host); use auth/username/password or NPM_TOKEN" ;;
+esac
+
 NAME=$(jq -r '.name // empty' "${DIR}/package.json")
 VERSION=$(jq -r '.version // empty' "${DIR}/package.json")
 [ -n "${NAME}" ] && [ -n "${VERSION}" ] || fail "package.json must carry name + version"
@@ -41,7 +49,6 @@ fi
 # always-auth=true so the private-registry existence check (npm view) and the
 # publish both authenticate.
 if [ "${DRY_RUN}" != "true" ]; then
-    REG_HOST_PATH="${REGISTRY#*//}"   # host+path, no scheme; the format adds the trailing slash
     NPMRC="${HOME}/.npmrc"
     case "${AUTH_MODE}" in
         token)

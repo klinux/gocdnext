@@ -60,4 +60,14 @@ if run PLUGIN_IF_EXISTS="fail"; then
     fail "no-auth: expected failure without token or username/password"
 fi
 
+# --- registry URL with embedded credentials → fail-closed (no leak to log/argv) ---
+rm -rf "$TMP/home"; mkdir -p "$TMP/home"; : > "$TMP/calls.log"
+if env NPM_TOKEN="tok" HOME="$TMP/home" PLUGIN_DIR="$TMP/pkg" \
+       PLUGIN_REGISTRY="https://sneaky:leak@nexus.example/repository/npm-hosted/" \
+       PATH="$TMP:$PATH" bash "$HERE/entrypoint.sh" >"$TMP/out.log" 2>&1; then
+    fail "embedded-creds registry: expected fail-closed rejection"
+fi
+grep -qF "leak" "$TMP/calls.log" && fail "embedded-creds: credential reached npm argv"
+grep -qF "leak" "$TMP/home/.npmrc" 2>/dev/null && fail "embedded-creds: credential written to .npmrc"
+
 echo "PASS: npm-publish entrypoint"
