@@ -98,13 +98,13 @@ examples:
       username/password auth, idempotent per package. One job per dir
       via a matrix.
     yaml: |
-      strategy:
+      parallel:
         matrix:
-          pkg: [shell-contract, module-register]
+          - PKG: [shell-contract, module-register]
       uses: ghcr.io/klinux/gocdnext-plugin-npm-publish@v1
       secrets: [NEXUS_USERNAME, NEXUS_PASSWORD]
       with:
-        dir: packages/{{ matrix.pkg }}
+        dir: packages/${{ PKG }}
         registry: https://nexus.example/repository/npm-hosted/
         auth: basic
         username: ${{ NEXUS_USERNAME }}
