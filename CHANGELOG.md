@@ -8,6 +8,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.79.0 — 2026-07-28
+
+npm-publish: basic auth for private registries.
+
+### Added
+
+- **npm-publish plugin — basic auth (#195).** The plugin now publishes to
+  npm-compatible **private** registries that use username/password — Nexus,
+  Artifactory, Verdaccio, GitHub Packages — not just token registries. New
+  `auth` (`auto`|`token`|`basic`), `username`, `password` inputs (`auto` picks
+  basic when a username+password are set, else token). The credential is
+  base64'd into a user-scoped `.npmrc` (never argv/workspace, `chmod 600`), and
+  a registry URL with embedded `user:pass@host` is rejected fail-closed so it
+  can't leak into logs/argv. Monorepos fan out with a `parallel.matrix` over the
+  package dirs.
+
 ## v0.78.0 — 2026-07-28
 
 Observability phase 2 — reclaim, drain, and gRPC metrics.
