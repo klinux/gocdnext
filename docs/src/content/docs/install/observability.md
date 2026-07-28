@@ -221,6 +221,10 @@ It covers:
 - Webhook deliveries (provider × outcome)
 - Log archive outcomes
 - Daily partition drops + server RSS
+- Fleet & autoscaling: queue depth by state (incl. dispatchable), the KEDA
+  signal → desired replicas, fleet saturation
+- gRPC & job lifecycle: reclaim + sweep errors, agent drain outcomes, gRPC
+  request/error rate + unary p95 latency
 
 Import via *Dashboards → New → Import* and paste the JSON; pick
 your Prometheus datasource on the variables panel and you're done.
