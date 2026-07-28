@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/scheduler"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -103,7 +105,17 @@ func TestReaper_Sweep_RequeuesOfflineAgentJobs(t *testing.T) {
 	reaper := scheduler.NewReaper(s, quietLogger()).
 		WithStaleness(10 * time.Second).
 		WithMaxAttempts(3)
+
+	// Metric deltas (global registry — assert the change, not the absolute).
+	reqBefore := testutil.ToFloat64(metrics.JobsReclaimed.WithLabelValues("stale", "requeued"))
+	sweepBefore := testutil.ToFloat64(metrics.JobReclaimSweeps.WithLabelValues("stale", "success"))
 	reaper.Sweep(ctx)
+	if d := testutil.ToFloat64(metrics.JobsReclaimed.WithLabelValues("stale", "requeued")) - reqBefore; d != 1 {
+		t.Fatalf("jobs_reclaimed{stale,requeued} delta = %v, want 1", d)
+	}
+	if d := testutil.ToFloat64(metrics.JobReclaimSweeps.WithLabelValues("stale", "success")) - sweepBefore; d != 1 {
+		t.Fatalf("job_reclaim_sweeps{stale,success} delta = %v, want 1", d)
+	}
 
 	var (
 		status    string
@@ -130,8 +142,13 @@ func TestReaper_Sweep_NoStaleJobsIsNoop(t *testing.T) {
 	s := store.New(pool)
 
 	reaper := scheduler.NewReaper(s, quietLogger())
-	// Empty DB — sweep must return without error and not panic.
+	// Empty DB — sweep must return without error and not panic, and still count
+	// one successful sweep (the did-it-run signal, independent of row count).
+	before := testutil.ToFloat64(metrics.JobReclaimSweeps.WithLabelValues("stale", "success"))
 	reaper.Sweep(context.Background())
+	if d := testutil.ToFloat64(metrics.JobReclaimSweeps.WithLabelValues("stale", "success")) - before; d != 1 {
+		t.Fatalf("empty sweep should count one success, delta = %v", d)
+	}
 }
 
 // TestReaper_Sweep_FencesAgentBeforeNotify is the regression test

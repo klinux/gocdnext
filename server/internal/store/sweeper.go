@@ -47,6 +47,25 @@ type ReclaimResult struct {
 	Err                    error
 }
 
+// OutcomeLabel maps a reclaim result to a bounded Prometheus label value for
+// gocdnext_jobs_reclaimed_total{outcome}. Err wins over Action because the
+// fail-at-max error branch (ReclaimStaleJobs/ReclaimAgentJobs) sets Err and
+// leaves Action at its "" zero value; a zero Action with no error falls through
+// to "skipped", mirroring the callers' `default: skipped++` accounting.
+func (r ReclaimResult) OutcomeLabel() string {
+	if r.Err != nil {
+		return "error"
+	}
+	switch r.Action {
+	case ReclaimActionRequeued:
+		return "requeued"
+	case ReclaimActionFailed:
+		return "failed_max"
+	default:
+		return "skipped"
+	}
+}
+
 // MarkAgentSeen bumps agents.last_seen_at. Called from the heartbeat handler
 // so the reaper can distinguish live agents (with recent heartbeats) from
 // zombies whose TCP stream is still open but the process is hung.

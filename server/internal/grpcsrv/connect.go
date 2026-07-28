@@ -92,6 +92,23 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	defer func() {
 		a.sessions.Revoke(sessionID)
 		<-pumpDone
+		// Drain outcome (#191): only draining sessions emit. `running` is stable
+		// here — the recv loop has returned, so no concurrent DecRunning. clean =
+		// no in-flight jobs left at close; abandoned = jobs still running (the
+		// reaper requeues them). Emitted BEFORE the superseded early-return below
+		// so a supersede-by-register drain still counts.
+		if sess.draining.Load() {
+			outcome := "clean"
+			if sess.running.Load() > 0 {
+				outcome = "abandoned"
+			}
+			metrics.AgentDrain.WithLabelValues(outcome).Inc()
+			if started := sess.drainStartedAt.Load(); started != 0 {
+				if d := time.Since(time.Unix(0, started)).Seconds(); d >= 0 {
+					metrics.AgentDrainDuration.WithLabelValues(outcome).Observe(d)
+				}
+			}
+		}
 		// Session-aware offline marking: if a successor agent
 		// process already Registered (the supersededByRegister
 		// flag is set by RevokeForAgent / CreateSession's internal
@@ -184,6 +201,9 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 			// Read/write the flag on THIS sess pointer (like revoked) so a
 			// re-registered successor is unaffected.
 			if !sess.draining.Swap(true) {
+				// Stamp the drain start once, for the duration metric emitted
+				// in the Connect defer.
+				sess.drainStartedAt.Store(time.Now().UnixNano())
 				log.Info("agent draining — no new assignments to this session")
 			}
 		case *gocdnextv1.AgentMessage_Progress:
