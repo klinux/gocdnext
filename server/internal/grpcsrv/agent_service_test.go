@@ -624,8 +624,12 @@ func bootServerWithAutoRegister(t *testing.T, autoRegToken string) (*pgxpool.Poo
 		WithAutoRegisterToken(autoRegToken)
 
 	lis := bufconn.Listen(1 << 20)
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(grpcsrv.MetricsUnaryInterceptor),
+		grpc.ChainStreamInterceptor(grpcsrv.MetricsStreamInterceptor),
+	)
 	gocdnextv1.RegisterAgentServiceServer(grpcSrv, svc)
+	grpcsrv.InitGRPCMetrics()
 	go func() { _ = grpcSrv.Serve(lis) }()
 
 	conn, err := grpc.NewClient("passthrough:///bufnet",
