@@ -69,5 +69,6 @@ if env NPM_TOKEN="tok" HOME="$TMP/home" PLUGIN_DIR="$TMP/pkg" \
 fi
 grep -qF "leak" "$TMP/calls.log" && fail "embedded-creds: credential reached npm argv"
 grep -qF "leak" "$TMP/home/.npmrc" 2>/dev/null && fail "embedded-creds: credential written to .npmrc"
+grep -qF "leak" "$TMP/out.log" && fail "embedded-creds: credential appeared in log output"
 
 echo "PASS: npm-publish entrypoint"
