@@ -1,13 +1,17 @@
 name: npm-publish
 category: registry
 description: >
-  Publish a package to npm (or any compatible registry). The token
-  comes via the job's `secrets:` and is written to a USER-scoped
-  .npmrc — never argv, never the workspace (a workspace .npmrc
-  could leak into artifacts). `if-exists: skip` makes retried
-  pipelines idempotent: name@version is immutable on npm, and a
-  rerun that already published should not fail the run. dry-run
-  packs and validates without uploading.
+  Publish a package to npm or any npm-compatible **private** registry
+  (Nexus, Artifactory, Verdaccio, GitHub Packages, …). Two auth modes:
+  `token` (NPM_TOKEN via `secrets:`) and `basic` (username + password,
+  what Nexus/Artifactory use) — `auto` picks basic when a username +
+  password are set, else token. Either way the credential is written
+  to a USER-scoped .npmrc — never argv, never the workspace (a
+  workspace .npmrc could leak into artifacts). `if-exists: skip` makes
+  retried pipelines idempotent: name@version is immutable, and a rerun
+  that already published should not fail the run. dry-run packs and
+  validates without uploading. Publishes ONE package (`dir`); for a
+  monorepo, fan out with a matrix over the package dirs.
 
 inputs:
   dir:
@@ -29,6 +33,26 @@ inputs:
     default: "https://registry.npmjs.org"
     description: >
       Registry URL — point at a private registry if needed.
+  auth:
+    required: false
+    default: "auto"
+    description: >
+      auto | token | basic. auto = basic when username + password are
+      both set, else token. token needs NPM_TOKEN (secrets:); basic
+      needs username + password (below).
+  username:
+    required: false
+    description: >
+      Basic-auth username for a private registry (Nexus/Artifactory).
+      Pair with `password`; reference a declared secret, e.g.
+      `secrets: [NEXUS_USERNAME]` then `username: ${{ NEXUS_USERNAME }}`.
+  password:
+    required: false
+    description: >
+      Basic-auth password/token for a private registry, e.g.
+      `secrets: [NEXUS_PASSWORD]` then `password: ${{ NEXUS_PASSWORD }}`.
+      Written (base64, with the username) to the user-scoped .npmrc
+      only — never argv; masked in logs.
   if-exists:
     required: false
     default: "fail"
@@ -67,3 +91,22 @@ examples:
       uses: ghcr.io/klinux/gocdnext-plugin-npm-publish@v1
       with:
         dry-run: "true"
+
+  - name: private registry (Nexus) basic auth, monorepo matrix
+    description: >
+      Publish every workspace package to a Nexus npm-hosted repo with
+      username/password auth, idempotent per package. One job per dir
+      via a matrix.
+    yaml: |
+      strategy:
+        matrix:
+          pkg: [shell-contract, module-register]
+      uses: ghcr.io/klinux/gocdnext-plugin-npm-publish@v1
+      secrets: [NEXUS_USERNAME, NEXUS_PASSWORD]
+      with:
+        dir: packages/{{ matrix.pkg }}
+        registry: https://nexus.example/repository/npm-hosted/
+        auth: basic
+        username: ${{ NEXUS_USERNAME }}
+        password: ${{ NEXUS_PASSWORD }}
+        if-exists: skip
