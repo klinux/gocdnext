@@ -8,6 +8,33 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.78.0 — 2026-07-28
+
+Observability phase 2 — reclaim, drain, and gRPC metrics.
+
+### Added
+
+- **Job reclaim metrics (#191).** `gocdnext_jobs_reclaimed_total{reason,outcome}`
+  (reason `stale`|`register_fence`; outcome `requeued`|`failed_max`|`skipped`|`error`)
+  and `gocdnext_job_reclaim_sweeps_total{reason,outcome}` (counted once per sweep,
+  so a top-level sweep failure — a DB blip before any per-job result — is visible
+  where the per-job counter can't be). Requeue churn from the reaper and the
+  register-fence is now observable.
+- **Agent drain metrics (#191).** `gocdnext_agent_drain_total{outcome}` (`clean`|
+  `abandoned`) and `gocdnext_agent_drain_duration_seconds{outcome}`, emitted
+  server-side at stream close — so a `helm upgrade` / scale-down drain (#178) is no
+  longer a black box. `clean` means no in-flight jobs were left; `abandoned` means
+  jobs were still running and got requeued.
+- **gRPC server metrics (#191).** `gocdnext_grpc_server_started_total`,
+  `gocdnext_grpc_server_handled_total{grpc_method,code}`, and (unary-only)
+  `gocdnext_grpc_server_handling_seconds`. Hand-rolled interceptors so the Connect
+  bidi stream — the log-line firehose — pays **no per-message cost** (the stream
+  interceptor records once at open/close and never wraps RecvMsg/SendMsg).
+- **Dashboard panels (#191).** The starter Grafana dashboard gains a Fleet &
+  Autoscaling row (queue depth incl. `dispatchable`, the KEDA signal → desired
+  replicas, fleet saturation) and a gRPC & job-lifecycle row (reclaim + sweep
+  errors, drain outcomes, gRPC rate/errors/latency).
+
 ## v0.77.0 — 2026-07-27
 
 A queue-depth signal for agent-fleet autoscaling.
