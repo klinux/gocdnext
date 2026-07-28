@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/grpcsrv"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -196,9 +197,14 @@ func (r *Reaper) Sweep(ctx context.Context) {
 
 	results, err := r.store.ReclaimStaleJobs(ctx, r.maxAttempts, r.staleness)
 	if err != nil {
+		// Sweep-level failure (DB outage etc.) returns before any per-job
+		// result, so it's invisible to jobs_reclaimed_total — count it here.
+		metrics.JobReclaimSweeps.WithLabelValues("stale", "error").Inc()
 		r.log.Warn("reaper: sweep failed", "err", err)
 		return
 	}
+	// Once per sweep, including the healthy empty case.
+	metrics.JobReclaimSweeps.WithLabelValues("stale", "success").Inc()
 	if len(results) == 0 {
 		return
 	}
@@ -239,6 +245,7 @@ func (r *Reaper) Sweep(ctx context.Context) {
 		})
 	}
 	for _, res := range results {
+		metrics.JobsReclaimed.WithLabelValues("stale", res.OutcomeLabel()).Inc()
 		switch {
 		case res.Err != nil:
 			errored++

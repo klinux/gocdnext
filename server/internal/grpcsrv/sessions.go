@@ -78,6 +78,10 @@ type Session struct {
 	// stays LIVE while draining — it keeps delivering JobResults (DecRunning) and
 	// receiving Pong/Cancel; only NEW-assignment selection/dispatch is refused.
 	draining atomic.Bool
+	// drainStartedAt is the unix-nanos timestamp of the first Draining frame,
+	// set once alongside `draining` in the recv loop. Read once in the Connect
+	// defer (same goroutine writes+reads) to record the drain-duration metric.
+	drainStartedAt atomic.Int64
 	// state is the connect lifecycle: registered → connecting → ready.
 	// A session is PUBLISHED (in byID/latestByAg) at Register/CreateSession
 	// but stays `registered` — NOT schedulable — until Connect claims it and
