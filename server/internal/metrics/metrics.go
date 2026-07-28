@@ -187,6 +187,30 @@ var (
 		Help:    "Seconds from the Draining signal to stream close, by outcome.",
 		Buckets: []float64{0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 420, 600},
 	}, []string{"outcome"})
+
+	// gRPC server metrics (#191). grpc_method is the full method string
+	// (/gocdnext.v1.AgentService/<RPC>), code is status.Code(err).String().
+	// Both bounded (6 methods, ~17 codes). Emitted by the hand-rolled
+	// interceptors in grpcsrv (a per-message counter on the Connect
+	// firehose was deliberately avoided).
+	GRPCServerStarted = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_grpc_server_started_total",
+		Help: "gRPC requests started, by method.",
+	}, []string{"grpc_method"})
+
+	GRPCServerHandled = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_grpc_server_handled_total",
+		Help: "gRPC requests completed, by method and status code.",
+	}, []string{"grpc_method", "code"})
+
+	// GRPCServerHandling is UNARY-only: the long-lived Connect stream's
+	// handling time is the whole session, which would pollute a latency
+	// histogram, so the stream interceptor does not observe it.
+	GRPCServerHandling = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gocdnext_grpc_server_handling_seconds",
+		Help:    "Handling latency of unary gRPC methods (the Connect stream is excluded).",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"grpc_method"})
 )
 
 func init() {
@@ -206,6 +230,9 @@ func init() {
 		JobReclaimSweeps,
 		AgentDrain,
 		AgentDrainDuration,
+		GRPCServerStarted,
+		GRPCServerHandled,
+		GRPCServerHandling,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),

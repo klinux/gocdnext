@@ -40,6 +40,16 @@ gocdnext_queue_depth{stage_status="dispatchable"} 2  # queued jobs ready for an 
 # TYPE gocdnext_agents_online gauge
 gocdnext_agents_online 4
 
+# HELP gocdnext_grpc_server_started_total gRPC requests started, by method.
+# TYPE gocdnext_grpc_server_started_total counter
+gocdnext_grpc_server_started_total{grpc_method="/gocdnext.v1.AgentService/Register"} 63
+# HELP gocdnext_grpc_server_handled_total gRPC requests completed, by method and status code.
+# TYPE gocdnext_grpc_server_handled_total counter
+gocdnext_grpc_server_handled_total{grpc_method="/gocdnext.v1.AgentService/Connect",code="Canceled"} 41
+# HELP gocdnext_grpc_server_handling_seconds Handling latency of unary gRPC methods (the Connect stream is excluded).
+# TYPE gocdnext_grpc_server_handling_seconds histogram
+gocdnext_grpc_server_handling_seconds_bucket{grpc_method="/gocdnext.v1.AgentService/Register",le="0.1"} 61
+
 # HELP gocdnext_log_archive_jobs_total Cold-archive job outcomes by result.
 # TYPE gocdnext_log_archive_jobs_total counter
 gocdnext_log_archive_jobs_total{result="success"} 18
