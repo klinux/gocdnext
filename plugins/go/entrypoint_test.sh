@@ -29,16 +29,20 @@ EOF
 chmod +x "$TMP/go"
 
 fails=0
+# HOME is isolated to $TMP/home on every entrypoint run: the entrypoint calls
+# `git config --global --add safe.directory '*'`, which would otherwise mutate
+# the runner's real ~/.gitconfig (permanently disabling Git's dubious-ownership
+# protection for that user). Scoping HOME keeps the test hermetic.
 run() { # run <logfile> <env-assignments...> -- runs the entrypoint in a fresh workspace
   local log="$1"; shift
   : >"$log"
-  ( cd "$TMP/ws" && env "$@" LOG="$log" PATH="$TMP:$PATH" bash "$ENTRY" >/dev/null 2>&1 )
+  ( cd "$TMP/ws" && env "$@" HOME="$TMP/home" LOG="$log" PATH="$TMP:$PATH" bash "$ENTRY" >/dev/null 2>&1 )
 }
 check() { # check <logfile> <grep-pattern> <message>
   grep -q "$2" "$1" || { echo "FAIL: $3"; echo "--- $1 ---"; cat "$1"; fails=$((fails+1)); }
 }
 
-mkdir -p "$TMP/ws/api"
+mkdir -p "$TMP/ws/api" "$TMP/home"
 
 # 1. Default toolchain is `auto` (the fix).
 run "$TMP/1.log" PLUGIN_COMMAND="test ./..."
@@ -50,7 +54,7 @@ check "$TMP/2.log" '^GOTOOLCHAIN=local$' "PLUGIN_TOOLCHAIN=local should be honor
 
 # 3. PLUGIN_COMMAND required -> exit 2, go never invoked.
 : >"$TMP/3.log"
-( cd "$TMP/ws" && env LOG="$TMP/3.log" PATH="$TMP:$PATH" bash "$ENTRY" >/dev/null 2>&1 )
+( cd "$TMP/ws" && env HOME="$TMP/home" LOG="$TMP/3.log" PATH="$TMP:$PATH" bash "$ENTRY" >/dev/null 2>&1 )
 rc=$?
 [ "$rc" -eq 2 ] || { echo "FAIL: missing PLUGIN_COMMAND should exit 2 (got $rc)"; fails=$((fails+1)); }
 [ -s "$TMP/3.log" ] && { echo "FAIL: go was invoked despite missing PLUGIN_COMMAND"; fails=$((fails+1)); }
