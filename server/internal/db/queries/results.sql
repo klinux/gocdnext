@@ -33,6 +33,13 @@ UPDATE projects
 SET log_archive_enabled = $2
 WHERE slug = $1;
 
+-- name: GetProjectCheckReportingBySlug :one
+-- Surfaces the per-project GitHub check reporting mode by slug — what the
+-- project-settings UI reads when populating the select. Column is NOT NULL
+-- DEFAULT 'both', so a row always yields a value; ErrNoRows = no such project.
+SELECT check_reporting_mode
+FROM projects WHERE slug = $1;
+
 -- name: GetProjectArchiveFlagForRun :one
 -- Joins runs -> pipelines -> projects so the archive hook can
 -- resolve a job_run's project flag in one query.

@@ -63,6 +63,7 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProject
 
 const getRunWithPipeline = `-- name: GetRunWithPipeline :one
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
+       p.check_reporting_mode,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
        r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
@@ -80,6 +81,7 @@ type GetRunWithPipelineRow struct {
 	PipelineID         pgtype.UUID
 	PipelineName       string
 	ProjectSlug        string
+	CheckReportingMode string
 	Counter            int64
 	Cause              string
 	CauseDetail        []byte
@@ -110,6 +112,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.PipelineID,
 		&i.PipelineName,
 		&i.ProjectSlug,
+		&i.CheckReportingMode,
 		&i.Counter,
 		&i.Cause,
 		&i.CauseDetail,

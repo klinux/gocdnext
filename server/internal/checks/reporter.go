@@ -139,6 +139,21 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 	if ctxInfo == nil {
 		return nil // non-reportable cause, non-GitHub repo, etc.
 	}
+
+	// Effective mode: STICKY to the mode this run started in — a mid-run
+	// settings flip must not change how an in-flight run reports. reopen's
+	// recreate path routes through here for the SAME run, so the persisted
+	// row's mode wins over the project's current setting. Fresh run → no row
+	// yet → the project's current mode.
+	mode := normalizeMode(ctxInfo.reportingMode)
+	if existing, gerr := r.store.GetGithubCheckRun(ctx, runID); gerr == nil {
+		mode = normalizeMode(existing.ReportingMode)
+	} else if !errors.Is(gerr, store.ErrCheckRunNotFound) {
+		return gerr
+	}
+
+	// The installation is needed in EVERY mode — the commit status is posted
+	// through the same App installation as the check run.
 	installationID, err := app.InstallationID(ctx, ctxInfo.owner, ctxInfo.repo)
 	if errors.Is(err, ghscm.ErrNoInstallation) {
 		r.log.Info("checks: app not installed, skipping",
@@ -149,51 +164,70 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 		return fmt.Errorf("installation lookup: %w", err)
 	}
 
-	created, err := app.CreateCheckRun(ctx, installationID, ghscm.CreateCheckRunInput{
-		Owner:      ctxInfo.owner,
-		Repo:       ctxInfo.repo,
-		Name:       fmt.Sprintf("gocdnext / %s", ctxInfo.pipelineName),
-		HeadSHA:    ctxInfo.headSHA,
-		Status:     ghscm.CheckStatusInProgress,
-		DetailsURL: r.detailsURL(runID),
-		ExternalID: runID.String(),
-		Output: &ghscm.CheckRunOutput{
-			Title:   "Pipeline queued",
-			Summary: fmt.Sprintf("Run #%d on %s — follow the run for details.", ctxInfo.counter, ctxInfo.branch),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("create check run: %w", err)
+	// Create the rich Check Run unless the mode is commit_status. When skipped,
+	// the row still persists (identity) with a NULL check_run_id.
+	var checkRunID *int64
+	if postsCheckRun(mode) {
+		created, cerr := app.CreateCheckRun(ctx, installationID, ghscm.CreateCheckRunInput{
+			Owner:      ctxInfo.owner,
+			Repo:       ctxInfo.repo,
+			Name:       fmt.Sprintf("gocdnext / %s", ctxInfo.pipelineName),
+			HeadSHA:    ctxInfo.headSHA,
+			Status:     ghscm.CheckStatusInProgress,
+			DetailsURL: r.detailsURL(runID),
+			ExternalID: runID.String(),
+			Output: &ghscm.CheckRunOutput{
+				Title:   "Pipeline queued",
+				Summary: fmt.Sprintf("Run #%d on %s — follow the run for details.", ctxInfo.counter, ctxInfo.branch),
+			},
+		})
+		if cerr != nil {
+			return fmt.Errorf("create check run: %w", cerr)
+		}
+		id := created.ID
+		checkRunID = &id
 	}
 
 	sc := statusContext(ctxInfo.projectSlug, ctxInfo.pipelineName)
 	if err := r.store.UpsertGithubCheckRun(ctx, store.UpsertGithubCheckRunInput{
 		RunID:          runID,
 		InstallationID: installationID,
-		CheckRunID:     created.ID,
+		CheckRunID:     checkRunID,
 		Owner:          ctxInfo.owner,
 		Repo:           ctxInfo.repo,
 		HeadSHA:        ctxInfo.headSHA,
 		StatusContext:  sc,
+		ReportingMode:  mode,
 	}); err != nil {
 		return fmt.Errorf("persist check link: %w", err)
 	}
 
-	// Mirror as a commit status (straight-to-run link). Additive + best-effort.
-	r.postCommitStatus(ctx, app, installationID, ghscm.CreateStatusInput{
-		Owner:       ctxInfo.owner,
-		Repo:        ctxInfo.repo,
-		SHA:         ctxInfo.headSHA,
-		State:       "pending",
-		Context:     sc,
-		TargetURL:   r.detailsURL(runID),
-		Description: fmt.Sprintf("Run #%d on %s", ctxInfo.counter, ctxInfo.branch),
-	}, runID)
+	// Mirror as a commit status (straight-to-run link) unless the mode is
+	// check_run. Additive + best-effort.
+	if postsCommitStatus(mode) {
+		r.postCommitStatus(ctx, app, installationID, ghscm.CreateStatusInput{
+			Owner:       ctxInfo.owner,
+			Repo:        ctxInfo.repo,
+			SHA:         ctxInfo.headSHA,
+			State:       "pending",
+			Context:     sc,
+			TargetURL:   r.detailsURL(runID),
+			Description: fmt.Sprintf("Run #%d on %s", ctxInfo.counter, ctxInfo.branch),
+		}, runID)
+	}
 
 	r.log.Info("checks: created",
-		"run_id", runID, "check_run_id", created.ID,
+		"run_id", runID, "mode", mode, "check_run_id", derefInt64(checkRunID),
 		"repo", ctxInfo.owner+"/"+ctxInfo.repo, "head_sha", ctxInfo.headSHA)
 	return nil
+}
+
+// derefInt64 renders a nullable check-run id for logs (0 = commit_status mode).
+func derefInt64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // CompleteCheck is the synchronous version of ReportRunCompleted.
@@ -246,6 +280,7 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	}
 	status = current
 
+	mode := normalizeMode(link.ReportingMode)
 	conclusion := conclusionFor(status)
 	// Coverage + security enrichment via the shared composer: the check
 	// summary carries per-series coverage deltas and the security posture
@@ -253,38 +288,45 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	// GitHub. Best-effort: a lookup failure degrades to the plain summary.
 	title, summary := r.composeCheckOutput(ctx, runID, status, true)
 
-	if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
-		Owner:      link.Owner,
-		Repo:       link.Repo,
-		CheckRunID: link.CheckRunID,
-		Status:     ghscm.CheckStatusCompleted,
-		Conclusion: conclusion,
-		Output: &ghscm.CheckRunOutput{
-			Title:   title,
-			Summary: summary,
-		},
-	}); err != nil {
-		return fmt.Errorf("patch check run: %w", err)
+	// Complete the Check Run (both/check_run). Skipped cleanly in commit_status
+	// mode, where the row exists as identity but check_run_id is NULL.
+	if postsCheckRun(mode) && link.CheckRunID != nil {
+		if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
+			Owner:      link.Owner,
+			Repo:       link.Repo,
+			CheckRunID: *link.CheckRunID,
+			Status:     ghscm.CheckStatusCompleted,
+			Conclusion: conclusion,
+			Output: &ghscm.CheckRunOutput{
+				Title:   title,
+				Summary: summary,
+			},
+		}); err != nil {
+			return fmt.Errorf("patch check run: %w", err)
+		}
 	}
-	// Mirror the terminal state onto the commit status, using the PERSISTED
-	// identity + context (never re-derived — the material may have changed).
-	// The description is the only re-resolved, purely cosmetic bit: if it fails
-	// the status still posts with the correct terminal state, never stuck.
-	desc := ""
-	if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
-		desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
+	// Mirror the terminal state onto the commit status (both/commit_status),
+	// using the PERSISTED identity + context (never re-derived — the material
+	// may have changed). The description is the only re-resolved, purely
+	// cosmetic bit: if it fails the status still posts with the correct
+	// terminal state, never stuck.
+	if postsCommitStatus(mode) {
+		desc := ""
+		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+			desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
+		}
+		r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
+			Owner:       link.Owner,
+			Repo:        link.Repo,
+			SHA:         link.HeadSHA,
+			State:       statusStateFor(status),
+			Context:     link.StatusContext,
+			TargetURL:   r.detailsURL(runID),
+			Description: desc,
+		}, runID)
 	}
-	r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
-		Owner:       link.Owner,
-		Repo:        link.Repo,
-		SHA:         link.HeadSHA,
-		State:       statusStateFor(status),
-		Context:     link.StatusContext,
-		TargetURL:   r.detailsURL(runID),
-		Description: desc,
-	}, runID)
 	r.log.Info("checks: updated",
-		"run_id", runID, "check_run_id", link.CheckRunID,
+		"run_id", runID, "mode", mode, "check_run_id", derefInt64(link.CheckRunID),
 		"status", status, "conclusion", conclusion)
 	// Record that this check run is now terminal so a later rerun recreates
 	// it instead of reusing it — GitHub won't cleanly reopen a completed
@@ -335,6 +377,12 @@ func (r *Reporter) refreshSecurityLocked(ctx context.Context, runID uuid.UUID) e
 	if terminal && !link.Completed {
 		return r.completeCheckLocked(ctx, runID, current)
 	}
+	// commit_status mode has no Check Run to enrich — the security line lives
+	// only on the rich check output. The terminal convergence above already
+	// posted the commit status; nothing else to refresh.
+	if link.CheckRunID == nil {
+		return nil
+	}
 	// Otherwise re-PATCH output, reasserting (not deriving) the current state:
 	// terminal+completed → re-send status=completed + conclusion + output;
 	// still running → in_progress + output, no conclusion.
@@ -342,7 +390,7 @@ func (r *Reporter) refreshSecurityLocked(ctx context.Context, runID uuid.UUID) e
 	in := ghscm.UpdateCheckRunInput{
 		Owner:      link.Owner,
 		Repo:       link.Repo,
-		CheckRunID: link.CheckRunID,
+		CheckRunID: *link.CheckRunID,
 		Output:     &ghscm.CheckRunOutput{Title: title, Summary: summary},
 	}
 	if terminal {
@@ -408,35 +456,43 @@ func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
 		}
 		r.log.Info("checks: reopened (new check run)", "run_id", runID)
 	default:
-		if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
-			Owner:      link.Owner,
-			Repo:       link.Repo,
-			CheckRunID: link.CheckRunID,
-			Status:     ghscm.CheckStatusInProgress,
-			Output: &ghscm.CheckRunOutput{
-				Title:   "Pipeline re-running",
-				Summary: "A rerun is in progress — follow the run for details.",
-			},
-		}); err != nil {
-			return fmt.Errorf("reopen check run: %w", err)
+		// Reopen in the run's PERSISTED mode (link.ReportingMode), never the
+		// project's current setting — a mid-run flip must not change how an
+		// in-flight run reports.
+		mode := normalizeMode(link.ReportingMode)
+		if postsCheckRun(mode) && link.CheckRunID != nil {
+			if err := app.UpdateCheckRun(ctx, link.InstallationID, ghscm.UpdateCheckRunInput{
+				Owner:      link.Owner,
+				Repo:       link.Repo,
+				CheckRunID: *link.CheckRunID,
+				Status:     ghscm.CheckStatusInProgress,
+				Output: &ghscm.CheckRunOutput{
+					Title:   "Pipeline re-running",
+					Summary: "A rerun is in progress — follow the run for details.",
+				},
+			}); err != nil {
+				return fmt.Errorf("reopen check run: %w", err)
+			}
 		}
 		// Reset the commit status to pending for the rerun — persisted identity +
 		// context, best-effort description.
-		desc := ""
-		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
-			desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
+		if postsCommitStatus(mode) {
+			desc := ""
+			if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+				desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
+			}
+			r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
+				Owner:       link.Owner,
+				Repo:        link.Repo,
+				SHA:         link.HeadSHA,
+				State:       "pending",
+				Context:     link.StatusContext,
+				TargetURL:   r.detailsURL(runID),
+				Description: desc,
+			}, runID)
 		}
-		r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
-			Owner:       link.Owner,
-			Repo:        link.Repo,
-			SHA:         link.HeadSHA,
-			State:       "pending",
-			Context:     link.StatusContext,
-			TargetURL:   r.detailsURL(runID),
-			Description: desc,
-		}, runID)
 		r.log.Info("checks: reopened",
-			"run_id", runID, "check_run_id", link.CheckRunID)
+			"run_id", runID, "mode", mode, "check_run_id", derefInt64(link.CheckRunID))
 	}
 
 	// Self-heal the race: a very fast rerun can finish before this reopen
@@ -564,12 +620,13 @@ func (r *Reporter) composeCheckOutput(ctx context.Context, runID uuid.UUID, stat
 // so resolveRunContext can return nil cleanly when the run shouldn't
 // report.
 type runContext struct {
-	owner, repo  string
-	headSHA      string
-	projectSlug  string
-	pipelineName string
-	branch       string
-	counter      int64
+	owner, repo   string
+	headSHA       string
+	projectSlug   string
+	pipelineName  string
+	branch        string
+	counter       int64
+	reportingMode string // project's current check_reporting_mode
 }
 
 func (r *Reporter) resolveRunContext(ctx context.Context, runID uuid.UUID) (*runContext, error) {
@@ -660,14 +717,36 @@ func (r *Reporter) resolveRunContext(ctx context.Context, runID uuid.UUID) (*run
 	}
 
 	return &runContext{
-		owner:        owner,
-		repo:         repo,
-		headSHA:      headSHA,
-		projectSlug:  detail.ProjectSlug,
-		pipelineName: detail.PipelineName,
-		branch:       branch,
-		counter:      detail.Counter,
+		owner:         owner,
+		repo:          repo,
+		headSHA:       headSHA,
+		projectSlug:   detail.ProjectSlug,
+		pipelineName:  detail.PipelineName,
+		branch:        branch,
+		counter:       detail.Counter,
+		reportingMode: detail.CheckReportingMode,
 	}, nil
+}
+
+// Reporting-mode predicates. The effective mode is persisted per-run on the
+// github_check_runs row (never re-derived mid-run), so complete/reopen read it
+// back from the link. normalizeMode treats an empty value (a link pre-dating
+// the column) as the backward-compatible default.
+func normalizeMode(mode string) string {
+	if mode == "" {
+		return store.CheckReportingBoth
+	}
+	return mode
+}
+
+func postsCheckRun(mode string) bool {
+	m := normalizeMode(mode)
+	return m == store.CheckReportingBoth || m == store.CheckReportingCheckRun
+}
+
+func postsCommitStatus(mode string) bool {
+	m := normalizeMode(mode)
+	return m == store.CheckReportingBoth || m == store.CheckReportingCommitStatus
 }
 
 func (r *Reporter) detailsURL(runID uuid.UUID) string {

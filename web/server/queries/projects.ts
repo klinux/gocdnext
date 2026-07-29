@@ -96,6 +96,19 @@ export async function getProjectLogArchive(
   );
 }
 
+export type CheckReportingMode = "both" | "check_run" | "commit_status";
+export type CheckReportingSettings = {
+  mode: CheckReportingMode;
+  default_mode: string;
+};
+export async function getProjectCheckReporting(
+  slug: string,
+): Promise<CheckReportingSettings> {
+  return readJSON<CheckReportingSettings>(
+    `/api/v1/projects/${encodeURIComponent(slug)}/check-reporting`,
+  );
+}
+
 export async function getRunDetail(
   id: string,
   logsPerJob = 200,

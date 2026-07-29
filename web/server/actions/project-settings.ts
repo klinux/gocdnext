@@ -113,6 +113,56 @@ export async function setProjectLogArchive(
   }
 }
 
+// GitHub check reporting mode on the projects table: both (Check Run +
+// Commit Status), check_run (only the rich check), commit_status (only the
+// straight-to-run status). Default is both; the server re-validates against
+// the same enum + a DB CHECK constraint.
+const setCheckReportingSchema = z.object({
+  slug: z.string().min(1),
+  mode: z.enum(["both", "check_run", "commit_status"]),
+});
+
+export async function setProjectCheckReporting(
+  input: z.infer<typeof setCheckReportingSchema>,
+): Promise<ActionResult> {
+  const parsed = setCheckReportingSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "invalid input",
+    };
+  }
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(parsed.data.slug)}/check-reporting`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method: "PUT",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      body: JSON.stringify({ mode: parsed.data.mode }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `server ${res.status}: ${body.trim().slice(0, 300) || "save failed"}`,
+      };
+    }
+    revalidatePath(`/projects/${parsed.data.slug}/settings`);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // Project labels — free-form key:value grouping tags (team:payments,
 // tier:critical). The server replaces the whole set on PUT and re-validates
 // (key required, bounds); this is a client-friendly pre-check.

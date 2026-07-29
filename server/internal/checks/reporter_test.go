@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -175,6 +176,15 @@ func throwawayPEM(t *testing.T) []byte {
 	})
 }
 
+// crid derefs a nullable check-run id for assertions (0 = commit_status mode,
+// where no GitHub Check Run exists).
+func crid(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
 func TestNewReporter_ReturnsNilWhenDisabled(t *testing.T) {
 	if r := checks.NewReporter(nil, nil, "", nil); r != nil {
 		t.Error("expected nil reporter when store+app+base all empty")
@@ -214,8 +224,8 @@ func TestCreateCheck_PushRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGithubCheckRun: %v", err)
 	}
-	if link.CheckRunID != 555 {
-		t.Errorf("check_run_id = %d", link.CheckRunID)
+	if crid(link.CheckRunID) != 555 {
+		t.Errorf("check_run_id = %d", crid(link.CheckRunID))
 	}
 	if link.Owner != "org" || link.Repo != "repo" {
 		t.Errorf("owner/repo = %s/%s", link.Owner, link.Repo)
@@ -470,9 +480,9 @@ func TestReopenCheck_ReusesExistingCheckInProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("link after: %v", err)
 	}
-	if after.CheckRunID != before.CheckRunID {
+	if crid(after.CheckRunID) != crid(before.CheckRunID) {
 		t.Errorf("check_run_id changed %d -> %d (re-open must reuse, not recreate)",
-			before.CheckRunID, after.CheckRunID)
+			crid(before.CheckRunID), crid(after.CheckRunID))
 	}
 }
 
@@ -535,9 +545,9 @@ func TestReopenCheck_RecreatesWhenPriorCheckCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("link after: %v", err)
 	}
-	if after.CheckRunID != 777 || after.CheckRunID == before.CheckRunID {
+	if crid(after.CheckRunID) != 777 || crid(after.CheckRunID) == crid(before.CheckRunID) {
 		t.Errorf("link must re-point to the new check run: before=%d after=%d (want 777)",
-			before.CheckRunID, after.CheckRunID)
+			crid(before.CheckRunID), crid(after.CheckRunID))
 	}
 	if after.Completed {
 		t.Error("recreated check must reset completed=false")
@@ -606,5 +616,207 @@ func TestCompleteCheck_SkipsStaleCompletionWhenRunReopened(t *testing.T) {
 	}
 	if got := stub.updatedBody.Load(); got != nil {
 		t.Errorf("stale completion patched a re-opened run's check: %v", *got)
+	}
+}
+
+// setProjectMode flips the (single) seeded project's check_reporting_mode.
+func setProjectMode(t *testing.T, pool *pgxpool.Pool, mode string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE projects SET check_reporting_mode = $1`, mode); err != nil {
+		t.Fatalf("set project mode: %v", err)
+	}
+}
+
+// check_run mode posts ONLY the rich Check Run — no commit status.
+func TestCreateCheck_CheckRunMode_SkipsCommitStatus(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	setProjectMode(t, pool, store.CheckReportingCheckRun)
+
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	if stub.createdBody.Load() == nil {
+		t.Error("check_run mode must still POST the Check Run")
+	}
+	if stub.statusCount.Load() != 0 {
+		t.Errorf("check_run mode must NOT post a commit status, got %d", stub.statusCount.Load())
+	}
+	link, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if crid(link.CheckRunID) != 555 {
+		t.Errorf("check_run_id = %d, want a real id", crid(link.CheckRunID))
+	}
+	if link.ReportingMode != store.CheckReportingCheckRun {
+		t.Errorf("persisted mode = %q, want check_run", link.ReportingMode)
+	}
+}
+
+// commit_status mode posts ONLY the straight-to-run Commit Status — no Check
+// Run — but STILL persists the identity row (with a NULL check_run_id) so the
+// terminal transition can land.
+func TestCreateCheck_CommitStatusMode_SkipsCheckRun(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	setProjectMode(t, pool, store.CheckReportingCommitStatus)
+
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	if stub.createdBody.Load() != nil {
+		t.Error("commit_status mode must NOT POST a Check Run")
+	}
+	sb := stub.statusBody.Load()
+	if sb == nil {
+		t.Fatal("commit_status mode must post the commit status")
+	}
+	if (*sb)["state"] != "pending" {
+		t.Errorf("create status state = %v, want pending", (*sb)["state"])
+	}
+	link, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("identity row must persist even without a Check Run: %v", err)
+	}
+	if link.CheckRunID != nil {
+		t.Errorf("check_run_id = %d, want NULL in commit_status mode", crid(link.CheckRunID))
+	}
+	if link.ReportingMode != store.CheckReportingCommitStatus {
+		t.Errorf("persisted mode = %q, want commit_status", link.ReportingMode)
+	}
+	if link.StatusContext == "" {
+		t.Error("status_context must persist so the terminal transition reuses it")
+	}
+}
+
+// The regression the review flagged: in commit_status mode the terminal
+// transition must still post (pending → success) AND flip completed=true —
+// NOT get stuck at the initial pending because there's no Check Run.
+func TestCommitStatusMode_TerminalTransitionAndCompletedFlag(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	setProjectMode(t, pool, store.CheckReportingCommitStatus)
+
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("CreateCheck: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err != nil {
+		t.Fatalf("CompleteCheck: %v", err)
+	}
+	// The terminal commit status must have posted success (not stuck pending).
+	sb := stub.statusBody.Load()
+	if sb == nil || (*sb)["state"] != "success" {
+		t.Errorf("terminal commit status state = %v, want success", sb)
+	}
+	// No Check Run PATCH must have happened (there is no check run).
+	if stub.updatedBody.Load() != nil {
+		t.Errorf("commit_status mode must not PATCH a Check Run, got %v", *stub.updatedBody.Load())
+	}
+	// completed lifecycle must be defined even without a Check Run.
+	link, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if !link.Completed {
+		t.Error("commit_status terminal must flip completed=true")
+	}
+}
+
+// WATCHPOINT: a job rerun on the SAME run after a settings flip must reopen in
+// the mode the run STARTED in (persisted on the row), not the project's current
+// mode. Start commit_status → complete → flip project to check_run → reopen: the
+// recreate must stay commit_status (no Check Run POST, id still NULL).
+func TestReopenCheck_UsesPersistedModeNotCurrentProject(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	setProjectMode(t, pool, store.CheckReportingCommitStatus)
+
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='failed', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusFailed)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// Admin flips the project to check_run AFTER the run started + completed.
+	setProjectMode(t, pool, store.CheckReportingCheckRun)
+
+	// Rerun the same run.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='running', finished_at=NULL WHERE id=$1`, runID); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	stub.createdBody.Store(nil)
+	stub.updatedBody.Store(nil)
+
+	if err := r.ReopenCheck(ctx, runID); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	// Sticky commit_status → the reopen must NOT create a Check Run.
+	if stub.createdBody.Load() != nil {
+		t.Error("reopen used the project's CURRENT mode (check_run) instead of the run's persisted commit_status")
+	}
+	link, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if link.CheckRunID != nil {
+		t.Errorf("check_run_id = %d, want still NULL (sticky commit_status)", crid(link.CheckRunID))
+	}
+	if link.ReportingMode != store.CheckReportingCommitStatus {
+		t.Errorf("persisted mode drifted to %q, want commit_status", link.ReportingMode)
+	}
+}
+
+// Store round-trip + the DB CHECK constraint (defense in depth) rejects an
+// invalid mode even if a caller bypasses the API-edge validation.
+func TestProjectCheckReporting_StoreRoundTripAndDBCheck(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	ctx := context.Background()
+	s := store.New(pool)
+	// seedWebhookRun creates a project (slug chk-webhook) — reuse it.
+	seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	const slug = "chk-webhook"
+
+	// Default is 'both'.
+	if mode, err := s.GetProjectCheckReportingBySlug(ctx, slug); err != nil || mode != store.CheckReportingBoth {
+		t.Fatalf("default mode = %q, err=%v; want both", mode, err)
+	}
+	// Round-trip a valid value.
+	if err := s.SetProjectCheckReportingBySlug(ctx, slug, store.CheckReportingCommitStatus); err != nil {
+		t.Fatalf("set valid: %v", err)
+	}
+	if mode, _ := s.GetProjectCheckReportingBySlug(ctx, slug); mode != store.CheckReportingCommitStatus {
+		t.Errorf("round-trip mode = %q, want commit_status", mode)
+	}
+	// The DB CHECK constraint rejects a bogus value (defense in depth).
+	if err := s.SetProjectCheckReportingBySlug(ctx, slug, "bogus"); err == nil {
+		t.Error("DB CHECK must reject an invalid check_reporting_mode")
+	}
+	// Unknown project → ErrProjectNotFound, not an opaque error.
+	if err := s.SetProjectCheckReportingBySlug(ctx, "no-such-project", store.CheckReportingBoth); !errors.Is(err, store.ErrProjectNotFound) {
+		t.Errorf("set on missing project = %v, want ErrProjectNotFound", err)
 	}
 }
