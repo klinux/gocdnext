@@ -35,5 +35,11 @@ CREATE INDEX idx_github_check_runs_check_id
 DROP INDEX IF EXISTS idx_github_check_runs_check_id;
 CREATE INDEX idx_github_check_runs_check_id ON github_check_runs(check_run_id);
 ALTER TABLE github_check_runs DROP COLUMN reporting_mode;
+-- commit_status-only rows carry a NULL check_run_id — the pre-migration code
+-- can't operate a reporting identity without a Check Run, so drop them before
+-- restoring NOT NULL (otherwise the ALTER fails on the existing NULLs). These
+-- rows only gate rerun reuse-vs-recreate; losing them just means the next run
+-- re-reports from scratch.
+DELETE FROM github_check_runs WHERE check_run_id IS NULL;
 ALTER TABLE github_check_runs ALTER COLUMN check_run_id SET NOT NULL;
 ALTER TABLE projects DROP COLUMN check_reporting_mode;

@@ -203,17 +203,18 @@ func (r *Reporter) CreateCheck(ctx context.Context, runID uuid.UUID) error {
 	}
 
 	// Mirror as a commit status (straight-to-run link) unless the mode is
-	// check_run. Additive + best-effort.
-	if postsCommitStatus(mode) {
-		r.postCommitStatus(ctx, app, installationID, ghscm.CreateStatusInput{
-			Owner:       ctxInfo.owner,
-			Repo:        ctxInfo.repo,
-			SHA:         ctxInfo.headSHA,
-			State:       "pending",
-			Context:     sc,
-			TargetURL:   r.detailsURL(runID),
-			Description: fmt.Sprintf("Run #%d on %s", ctxInfo.counter, ctxInfo.branch),
-		}, runID)
+	// check_run. Best-effort in both/check_run; hard-fails in commit_status
+	// (the only channel there).
+	if err := r.postStatusForMode(ctx, app, mode, installationID, ghscm.CreateStatusInput{
+		Owner:       ctxInfo.owner,
+		Repo:        ctxInfo.repo,
+		SHA:         ctxInfo.headSHA,
+		State:       "pending",
+		Context:     sc,
+		TargetURL:   r.detailsURL(runID),
+		Description: fmt.Sprintf("Run #%d on %s", ctxInfo.counter, ctxInfo.branch),
+	}, runID); err != nil {
+		return err
 	}
 
 	r.log.Info("checks: created",
@@ -307,23 +308,24 @@ func (r *Reporter) completeCheckLocked(ctx context.Context, runID uuid.UUID, sta
 	}
 	// Mirror the terminal state onto the commit status (both/commit_status),
 	// using the PERSISTED identity + context (never re-derived — the material
-	// may have changed). The description is the only re-resolved, purely
-	// cosmetic bit: if it fails the status still posts with the correct
-	// terminal state, never stuck.
-	if postsCommitStatus(mode) {
-		desc := ""
-		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
-			desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
-		}
-		r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
-			Owner:       link.Owner,
-			Repo:        link.Repo,
-			SHA:         link.HeadSHA,
-			State:       statusStateFor(status),
-			Context:     link.StatusContext,
-			TargetURL:   r.detailsURL(runID),
-			Description: desc,
-		}, runID)
+	// may have changed). In commit_status mode the status is the ONLY channel,
+	// so a failed post hard-fails here — returning BEFORE MarkGithubCheckRun
+	// Completed below, so `completed` stays false and a later refresh retries
+	// rather than the run reading "completed" with a stuck/absent status.
+	desc := ""
+	if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+		desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
+	}
+	if err := r.postStatusForMode(ctx, app, mode, link.InstallationID, ghscm.CreateStatusInput{
+		Owner:       link.Owner,
+		Repo:        link.Repo,
+		SHA:         link.HeadSHA,
+		State:       statusStateFor(status),
+		Context:     link.StatusContext,
+		TargetURL:   r.detailsURL(runID),
+		Description: desc,
+	}, runID); err != nil {
+		return err
 	}
 	r.log.Info("checks: updated",
 		"run_id", runID, "mode", mode, "check_run_id", derefInt64(link.CheckRunID),
@@ -475,21 +477,21 @@ func (r *Reporter) reopenLocked(ctx context.Context, runID uuid.UUID) error {
 			}
 		}
 		// Reset the commit status to pending for the rerun — persisted identity +
-		// context, best-effort description.
-		if postsCommitStatus(mode) {
-			desc := ""
-			if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
-				desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
-			}
-			r.postCommitStatus(ctx, app, link.InstallationID, ghscm.CreateStatusInput{
-				Owner:       link.Owner,
-				Repo:        link.Repo,
-				SHA:         link.HeadSHA,
-				State:       "pending",
-				Context:     link.StatusContext,
-				TargetURL:   r.detailsURL(runID),
-				Description: desc,
-			}, runID)
+		// context. Best-effort in both/check_run; hard-fails in commit_status.
+		desc := ""
+		if rc, rerr := r.resolveRunContext(ctx, runID); rerr == nil && rc != nil {
+			desc = fmt.Sprintf("Run #%d on %s", rc.counter, rc.branch)
+		}
+		if err := r.postStatusForMode(ctx, app, mode, link.InstallationID, ghscm.CreateStatusInput{
+			Owner:       link.Owner,
+			Repo:        link.Repo,
+			SHA:         link.HeadSHA,
+			State:       "pending",
+			Context:     link.StatusContext,
+			TargetURL:   r.detailsURL(runID),
+			Description: desc,
+		}, runID); err != nil {
+			return err
 		}
 		r.log.Info("checks: reopened",
 			"run_id", runID, "mode", mode, "check_run_id", derefInt64(link.CheckRunID))
@@ -825,12 +827,32 @@ func statusStateFor(status string) string {
 // terminal/reopen — never re-derived from a material that may have changed —
 // so the terminal update always lands on the same status the pending post
 // created, and can never leave it stuck in `pending`.
-func (r *Reporter) postCommitStatus(ctx context.Context, app *ghscm.AppClient, installationID int64, in ghscm.CreateStatusInput, runID uuid.UUID) {
+func (r *Reporter) postCommitStatus(ctx context.Context, app *ghscm.AppClient, installationID int64, in ghscm.CreateStatusInput, runID uuid.UUID) error {
 	if in.Context == "" {
-		return
+		return nil
 	}
 	if err := app.CreateStatus(ctx, installationID, in); err != nil {
 		r.log.Warn("checks: commit status not posted (App needs 'Commit statuses: write'?)",
 			"run_id", runID, "err", err)
+		return err
 	}
+	return nil
+}
+
+// postStatusForMode posts the commit status and, in commit_status mode — where
+// it is the ONLY channel — propagates a post failure as a hard error so the
+// caller does NOT mark the run completed on a status that never landed (e.g. a
+// 403 for a missing "Commit statuses: write" permission would otherwise leave
+// GitHub stuck at pending while the link reads completed). In both/check_run
+// the Check Run is authoritative, so a status failure stays best-effort
+// (logged + swallowed). No-op when the mode doesn't post a status.
+func (r *Reporter) postStatusForMode(ctx context.Context, app *ghscm.AppClient, mode string, installationID int64, in ghscm.CreateStatusInput, runID uuid.UUID) error {
+	if !postsCommitStatus(mode) {
+		return nil
+	}
+	err := r.postCommitStatus(ctx, app, installationID, in, runID)
+	if err != nil && mode == store.CheckReportingCommitStatus {
+		return fmt.Errorf("commit status is the only reporting channel in commit_status mode: %w", err)
+	}
+	return nil
 }

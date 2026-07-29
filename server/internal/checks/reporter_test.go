@@ -39,6 +39,7 @@ type githubStub struct {
 	updatedBody   atomic.Pointer[map[string]any]
 	statusBody    atomic.Pointer[map[string]any] // last commit status POST
 	statusCount   atomic.Int64
+	statusStatus  int // HTTP code for the commit-status POST; 0/201 = OK
 }
 
 func newStub() *githubStub {
@@ -80,6 +81,10 @@ func (g *githubStub) handler(t *testing.T) http.Handler {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			g.statusBody.Store(&body)
 			g.statusCount.Add(1)
+			if g.statusStatus != 0 && g.statusStatus != http.StatusCreated {
+				http.Error(w, "forbidden", g.statusStatus)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id": 1}`))
 		default:
@@ -734,6 +739,43 @@ func TestCommitStatusMode_TerminalTransitionAndCompletedFlag(t *testing.T) {
 	}
 	if !link.Completed {
 		t.Error("commit_status terminal must flip completed=true")
+	}
+}
+
+// In commit_status mode the commit status is the ONLY channel, so a failed
+// terminal post (e.g. 403 for a missing "Commit statuses: write" scope) must be
+// LOUD — CompleteCheck returns an error and the link is NOT marked completed,
+// so a later refresh can retry instead of the run reading "completed" with a
+// stuck/absent status. (In both/check_run the Check Run is authoritative and a
+// status failure stays best-effort — covered by the other tests.)
+func TestCommitStatusMode_TerminalStatusFailureIsLoud(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	stub := newStub()
+	r := newReporter(t, pool, stub)
+	ctx := context.Background()
+	runID := seedWebhookRun(t, pool, "https://github.com/org/repo", string(domain.CauseWebhook))
+	setProjectMode(t, pool, store.CheckReportingCommitStatus)
+
+	// The initial pending status posts fine.
+	if err := r.CreateCheck(ctx, runID); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Now GitHub rejects the status POST.
+	stub.statusStatus = http.StatusForbidden
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+
+	if err := r.CompleteCheck(ctx, runID, string(domain.StatusSuccess)); err == nil {
+		t.Error("commit_status terminal status failure must return an error, not be swallowed")
+	}
+	link, err := store.New(pool).GetGithubCheckRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if link.Completed {
+		t.Error("must NOT mark completed when the only channel (commit status) failed to post")
 	}
 }
 
