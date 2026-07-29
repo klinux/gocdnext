@@ -2,9 +2,10 @@ name: go
 category: build
 description: >
   Run `go` toolchain commands — build, test, vet, mod, etc.
-  Ships with go:1.25-alpine + git + make; operator provides the
+  Ships with go:1.26-alpine + git + make; operator provides the
   subcommand + args via `command:` and optionally changes
-  working-dir. Exits with the go CLI's exit code.
+  working-dir. Defaults GOTOOLCHAIN=auto so go.mod's toolchain
+  directive is honored on any project. Exits with the go CLI's exit code.
 
 inputs:
   command:
@@ -25,6 +26,16 @@ inputs:
       portable cross-compile or static release binaries. Set
       "true" to fail loud if the base image ever drops gcc
       (defensive — race-detector tests need cgo).
+  toolchain:
+    required: false
+    default: "auto"
+    description: >
+      Sets GOTOOLCHAIN. "auto" (default) honors the `go`/`toolchain`
+      directive in go.mod, downloading the required toolchain on
+      demand into the tar'd $GOMODCACHE — this needs GOPROXY + the
+      sum DB to serve `golang.org/toolchain`. "local" is hermetic:
+      no download, and it fails loudly if the image's Go is older
+      than go.mod requires (use in air-gapped runners).
 
 examples:
   - name: test with race detector
@@ -48,22 +59,43 @@ examples:
       Tar + restore the module + build caches across runs. Plugin
       redirects $GOMODCACHE and $GOCACHE to .go-mod/ and
       .go-cache/ inside the workspace so the `cache:` block
-      captures both. Key is hash-of-go.sum so dependency bumps
-      invalidate automatically — different branches sharing the
-      same go.sum share the cache safely (contents are content-
-      addressable, multi-version safe). Note: don't pass
-      `-count=1` unless you want to bypass the test cache — go
-      memoises pass/fail per test binary, and `-count=1` defeats
-      that memo.
+      captures both (an `auto` toolchain download also lands in
+      .go-mod, so it's cached too). Key on go.mod AND go.sum —
+      each `hash` token takes ONE path, so use two tokens; hashing
+      go.mod (not just go.sum) invalidates on a `go`/`toolchain`
+      bump. Only list files that exist — a `hash` over a missing
+      file aborts the job, so a dep-free module with no go.sum
+      should key on go.mod alone (workspaces: add go.work /
+      go.work.sum). Don't pass `-count=1` unless you want to bypass
+      the test cache — go memoises pass/fail per test binary.
     yaml: |
       cache:
-        - key: go-{{ hash "go.sum" }}
+        - key: go-{{ hash "go.mod" }}-{{ hash "go.sum" }}
           paths:
             - .go-mod
             - .go-cache
       uses: ghcr.io/klinux/gocdnext-plugin-go@v1
       with:
         command: test -race ./...
+
+  - name: cached test run in a monorepo subdir
+    description: >
+      `cache:` keys/paths resolve at the runner's scriptWorkDir
+      (repo root by default), while `working-dir` is a second cd
+      inside the plugin where .go-mod/.go-cache land — so align
+      BOTH to the same base. With the module in `api/`, hash
+      `api/go.mod` + `api/go.sum` and cache `api/.go-mod` +
+      `api/.go-cache`.
+    yaml: |
+      cache:
+        - key: go-api-{{ hash "api/go.mod" }}-{{ hash "api/go.sum" }}
+          paths:
+            - api/.go-mod
+            - api/.go-cache
+      uses: ghcr.io/klinux/gocdnext-plugin-go@v1
+      with:
+        command: test -race ./...
+        working-dir: api
 
   - name: static binary for distroless / scratch
     description: >

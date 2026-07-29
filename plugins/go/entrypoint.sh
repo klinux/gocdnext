@@ -11,6 +11,12 @@
 #                                   "true" forces cgo for projects
 #                                   that import C deps + want explicit
 #                                   audit trail.
+#   PLUGIN_TOOLCHAIN    (optional)  "auto" (default) | "local". Sets
+#                                   GOTOOLCHAIN. "auto" honors go.mod's
+#                                   toolchain directive (may download via
+#                                   GOPROXY); "local" is hermetic (no
+#                                   download, fails if the image Go is
+#                                   behind go.mod).
 #
 # Exits with the go CLI's own exit code.
 
@@ -64,6 +70,19 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 export GOMODCACHE="${GOMODCACHE:-.go-mod}"
 export GOCACHE="${GOCACHE:-.go-cache}"
 mkdir -p "${GOMODCACHE}" "${GOCACHE}"
+
+# Toolchain selection. The official golang image pins GOTOOLCHAIN=local,
+# so a project whose go.mod requires a NEWER Go than this image fails hard
+# ("go.mod requires go >= X; GOTOOLCHAIN=local"). Default to `auto` so the
+# `go`/`toolchain` directive in go.mod is honored: `go` downloads the
+# required toolchain on demand INTO $GOMODCACHE (.go-mod) — which the
+# `cache:` block already tars, so it's a one-time cost that self-heals
+# future go.mod bumps. This depends on GOPROXY + the sum DB being able to
+# serve `golang.org/toolchain`; a hermetic/air-gapped runner can pin
+# `toolchain: local` to forbid the download (fails loud if the image Go is
+# behind). When the installed Go already satisfies go.mod, `auto`
+# downloads nothing.
+export GOTOOLCHAIN="${PLUGIN_TOOLCHAIN:-auto}"
 
 # CGO knob. Empty = leave the toolchain default alone (CGO_ENABLED=1
 # on linux/amd64 with a C toolchain present, which the alpine base
