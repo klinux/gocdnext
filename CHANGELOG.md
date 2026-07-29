@@ -8,6 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **go plugin — honor `go.mod`'s toolchain; bump base to Go 1.26.** The plugin shipped
+  `golang:1.25-alpine`, and the official image pins `GOTOOLCHAIN=local`, so any project
+  whose `go.mod` required a newer Go (e.g. `go 1.26.1`) failed on the first command
+  (`go.mod requires go >= …; GOTOOLCHAIN=local`) — contradicting the plugin's "serves
+  any go.mod project" contract. The entrypoint now defaults **`GOTOOLCHAIN=auto`**, so
+  the `toolchain` directive is honored and the required toolchain is downloaded on
+  demand into the already-cached `$GOMODCACHE`; the base image is bumped to
+  `golang:1.26-alpine`. New optional `toolchain: local` input restores the hermetic
+  (no-download) behavior for air-gapped runners. Adds the plugin's first
+  `entrypoint_test.sh`, and fixes the `cache:` example (one path per `hash` token,
+  key on `go.mod`+`go.sum`, monorepo `working-dir` shape).
+
 ## v0.79.0 — 2026-07-28
 
 npm-publish: basic auth for private registries.

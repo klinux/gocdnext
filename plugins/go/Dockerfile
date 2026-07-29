@@ -8,10 +8,14 @@
 #                                   Defaults to /workspace (repo root).
 #
 # Uses the official golang image so the same plugin serves any
-# go.mod project without rebuilding per-toolchain. Operators who
-# need to pin a specific toolchain can set `uses: gocdnext/go@v1`
-# and that maps to whatever the catalog ships as v1.
-FROM golang:1.25-alpine
+# go.mod project without rebuilding per-toolchain. The official image
+# pins GOTOOLCHAIN=local, so a project whose go.mod requires a NEWER Go
+# than this image would fail; the entrypoint therefore defaults
+# GOTOOLCHAIN=auto (honors go.mod's toolchain directive, downloading on
+# demand into the tar'd $GOMODCACHE) — set `toolchain: local` to keep the
+# old hermetic behavior. Bump this base image to track the current stable
+# Go so the common case needs no toolchain download.
+FROM golang:1.26-alpine
 
 # git for `go get` / VCS-fetched deps; ca-certificates for module
 # proxy TLS; make for projects whose test target leans on it.
