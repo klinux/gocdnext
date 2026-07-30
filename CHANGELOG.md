@@ -8,6 +8,10 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.80.1 — 2026-07-29
+
+go plugin: absolute GOMODCACHE/GOCACHE for Go 1.26 (hotfix for v0.80.0's Go 1.26 bump).
+
 ### Fixed
 
 - **go plugin — absolute `GOMODCACHE`/`GOCACHE` (Go 1.26).** Go 1.26 hard-rejects
