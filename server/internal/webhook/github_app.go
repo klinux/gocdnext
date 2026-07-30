@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -15,11 +14,6 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 )
-
-// appDeliveryStaleAfter is how long a claimed-but-unfinished delivery may sit in
-// 'processing' before a redelivery assumes the prior attempt crashed and
-// re-claims it. Well above a rerun's few-second runtime.
-const appDeliveryStaleAfter = 5 * time.Minute
 
 // HandleGitHubApp receives webhooks delivered to the GitHub APP (not the
 // per-repo webhook): `check_run`/`check_suite` `rerequested` (the PR "Re-run"
@@ -183,72 +177,51 @@ func (h *Handler) handleCheckRerun(w http.ResponseWriter, r *http.Request, body 
 		return
 	}
 
-	// Idempotency gate: claim the delivery. Redelivery / concurrent → skip.
-	claim, err := h.store.ClaimAppDelivery(r.Context(), delivery, "check_run", appDeliveryStaleAfter)
-	if err != nil {
-		rec.status = store.WebhookStatusError
-		rec.errText = "claim delivery: " + err.Error()
-		// 5xx so GitHub redelivers; stale-reclaim recovers any half-claim.
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if claim != store.AppDeliveryClaimed {
-		rec.status = store.WebhookStatusIgnored
-		h.log.Info("github app re-run: duplicate delivery",
-			"delivery", delivery, "run_id", runID)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	// Re-run. The terminal guard lives in RerunRun (shared with the HTTP path).
-	res, rerr := h.store.RerunRun(r.Context(), store.RerunRunInput{
-		RunID:       runID,
-		TriggeredBy: "github:rerun:" + delivery,
-	})
-	if rerr != nil {
-		// Release the claim so a manual GitHub redelivery (same id) — or an
-		// automatic one on the 5xx below — can retry.
-		_ = h.store.ReleaseAppDelivery(r.Context(), delivery)
-		switch {
-		case errors.Is(rerr, store.ErrRunActive):
-			// The run is still going — a redundant re-run request. Drop (204).
-			rec.status = store.WebhookStatusIgnored
-			h.log.Info("github app re-run: run still active", "delivery", delivery, "run_id", runID)
-			w.WriteHeader(http.StatusNoContent)
-		case errors.Is(rerr, store.ErrRunNotFound),
-			errors.Is(rerr, store.ErrNoModificationForPipeline),
-			errors.Is(rerr, store.ErrRunRevisionsMissing):
-			// Not rerunnable (deleted run / pruned revision). Drop (204).
-			rec.status = store.WebhookStatusIgnored
-			h.log.Info("github app re-run: not rerunnable", "delivery", delivery, "run_id", runID, "err", rerr)
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			rec.status = store.WebhookStatusError
-			rec.errText = "rerun: " + rerr.Error()
-			h.log.Error("github app re-run failed", "delivery", delivery, "run_id", runID, "err", rerr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+	// Re-run + record the delivery ATOMICALLY (claim + create-run + link run_id
+	// commit together — see store.RerunForAppDelivery). The terminal guard lives
+	// in the shared rerun path, so a still-active run surfaces ErrRunActive here
+	// before any claim. A duplicate/concurrent delivery → ErrAppDeliveryAlreadyClaimed
+	// (its tx rolled back, no second run).
+	res, rerr := h.store.RerunForAppDelivery(r.Context(), runID, delivery, "check_run", "github:rerun:"+delivery)
+	switch {
+	case rerr == nil:
+		if h.reporter != nil {
+			h.reporter.ReportRunReopened(r.Context(), res.RunID)
 		}
-		return
+		// No gocdnext RBAC here: a verified check_run rerequested is trusted —
+		// GitHub gates the re-run button by repo write + the App-secret HMAC
+		// proves authenticity. Recorded as a system event; sender/cause ride
+		// the metadata.
+		audit.Emit(r.Context(), h.log, h.store, store.AuditActionRunRerun, "run", res.RunID.String(),
+			map[string]any{
+				"rerun_of": runID.String(),
+				"counter":  res.Counter,
+				"cause":    "github_rerun",
+				"delivery": delivery,
+			})
+		rec.status = store.WebhookStatusAccepted
+		h.log.Info("github app re-run", "delivery", delivery, "rerun_of", runID, "run_id", res.RunID)
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(rerr, store.ErrAppDeliveryAlreadyClaimed):
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("github app re-run: duplicate delivery", "delivery", delivery, "run_id", runID)
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(rerr, store.ErrRunActive):
+		// The run is still going — a redundant re-run request. Drop (204).
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("github app re-run: run still active", "delivery", delivery, "run_id", runID)
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(rerr, store.ErrRunNotFound),
+		errors.Is(rerr, store.ErrNoModificationForPipeline),
+		errors.Is(rerr, store.ErrRunRevisionsMissing):
+		// Not rerunnable (deleted run / pruned revision). Drop (204).
+		rec.status = store.WebhookStatusIgnored
+		h.log.Info("github app re-run: not rerunnable", "delivery", delivery, "run_id", runID, "err", rerr)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		rec.status = store.WebhookStatusError
+		rec.errText = "rerun: " + rerr.Error()
+		h.log.Error("github app re-run failed", "delivery", delivery, "run_id", runID, "err", rerr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
-
-	// Success: mark the delivery done, report the reopen (post-commit), audit.
-	if err := h.store.MarkAppDeliveryDone(r.Context(), delivery, res.RunID); err != nil {
-		h.log.Warn("github app re-run: mark delivery done failed", "delivery", delivery, "err", err)
-	}
-	if h.reporter != nil {
-		h.reporter.ReportRunReopened(r.Context(), res.RunID)
-	}
-	// No gocdnext RBAC here: a verified check_run rerequested is trusted because
-	// GitHub gates the re-run button by repo write + the App-secret HMAC proves
-	// authenticity. Recorded as a system event; the sender/cause ride metadata.
-	audit.Emit(r.Context(), h.log, h.store, store.AuditActionRunRerun, "run", res.RunID.String(),
-		map[string]any{
-			"rerun_of": runID.String(),
-			"counter":  res.Counter,
-			"cause":    "github_rerun",
-			"delivery": delivery,
-		})
-	rec.status = store.WebhookStatusAccepted
-	h.log.Info("github app re-run", "delivery", delivery, "rerun_of", runID, "run_id", res.RunID)
-	w.WriteHeader(http.StatusNoContent)
 }

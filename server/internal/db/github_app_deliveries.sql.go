@@ -22,10 +22,11 @@ type ClaimGithubAppDeliveryParams struct {
 	Event      string
 }
 
-// Atomically claim a delivery id for processing. Returns rows-affected: 1 = we
-// claimed it (proceed), 0 = a row already exists (redelivery or concurrent
-// handler — caller inspects it via GetGithubAppDelivery). The PK makes this the
-// mutual-exclusion point: concurrent redeliveries can't both claim.
+// Atomically claim a delivery id. Returns rows-affected: 1 = we claimed it
+// (proceed), 0 = a row already exists (duplicate/concurrent — the caller's tx
+// rolls back). Run inside the run-creation transaction so the claim + the run
+// commit together (exactly-once, crash-safe). The PK is the mutual-exclusion
+// point: a concurrent claim blocks here until this tx commits or rolls back.
 func (q *Queries) ClaimGithubAppDelivery(ctx context.Context, arg ClaimGithubAppDeliveryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, claimGithubAppDelivery, arg.DeliveryID, arg.Event)
 	if err != nil {
@@ -35,90 +36,30 @@ func (q *Queries) ClaimGithubAppDelivery(ctx context.Context, arg ClaimGithubApp
 }
 
 const deleteOldGithubAppDeliveries = `-- name: DeleteOldGithubAppDeliveries :execrows
-DELETE FROM github_app_deliveries
-WHERE status = 'done' AND updated_at < $1
+DELETE FROM github_app_deliveries WHERE created_at < $1
 `
 
-// Retention sweep: prune completed ledger rows past the cutoff ($1). Keys are
-// opaque delivery ids, safe to drop once well past their redelivery window.
-func (q *Queries) DeleteOldGithubAppDeliveries(ctx context.Context, updatedAt pgtype.Timestamptz) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteOldGithubAppDeliveries, updatedAt)
+// Retention sweep: prune ledger rows past the cutoff ($1). Keys are opaque
+// delivery ids, safe to drop once well past their redelivery window.
+func (q *Queries) DeleteOldGithubAppDeliveries(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldGithubAppDeliveries, createdAt)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const getGithubAppDelivery = `-- name: GetGithubAppDelivery :one
-SELECT delivery_id, event, status, run_id, created_at, updated_at
-FROM github_app_deliveries
-WHERE delivery_id = $1
+const setGithubAppDeliveryRun = `-- name: SetGithubAppDeliveryRun :exec
+UPDATE github_app_deliveries SET run_id = $2 WHERE delivery_id = $1
 `
 
-func (q *Queries) GetGithubAppDelivery(ctx context.Context, deliveryID string) (GithubAppDelivery, error) {
-	row := q.db.QueryRow(ctx, getGithubAppDelivery, deliveryID)
-	var i GithubAppDelivery
-	err := row.Scan(
-		&i.DeliveryID,
-		&i.Event,
-		&i.Status,
-		&i.RunID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const markGithubAppDeliveryDone = `-- name: MarkGithubAppDeliveryDone :exec
-UPDATE github_app_deliveries
-SET status = 'done', run_id = $2, updated_at = NOW()
-WHERE delivery_id = $1
-`
-
-type MarkGithubAppDeliveryDoneParams struct {
+type SetGithubAppDeliveryRunParams struct {
 	DeliveryID string
 	RunID      pgtype.UUID
 }
 
-// Mark a claimed delivery done + link the run it produced. Redeliveries then
-// see status='done' and short-circuit.
-func (q *Queries) MarkGithubAppDeliveryDone(ctx context.Context, arg MarkGithubAppDeliveryDoneParams) error {
-	_, err := q.db.Exec(ctx, markGithubAppDeliveryDone, arg.DeliveryID, arg.RunID)
-	return err
-}
-
-const reclaimStaleGithubAppDelivery = `-- name: ReclaimStaleGithubAppDelivery :execrows
-UPDATE github_app_deliveries
-SET updated_at = NOW()
-WHERE delivery_id = $1
-  AND status = 'processing'
-  AND updated_at < $2
-`
-
-type ReclaimStaleGithubAppDeliveryParams struct {
-	DeliveryID string
-	UpdatedAt  pgtype.Timestamptz
-}
-
-// Re-claim a crashed attempt: a row stuck in 'processing' older than the stale
-// cutoff ($2) is taken over (updated_at bumped). Rows-affected 1 = we won the
-// re-claim (proceed), 0 = someone else already did or it's no longer stale.
-func (q *Queries) ReclaimStaleGithubAppDelivery(ctx context.Context, arg ReclaimStaleGithubAppDeliveryParams) (int64, error) {
-	result, err := q.db.Exec(ctx, reclaimStaleGithubAppDelivery, arg.DeliveryID, arg.UpdatedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const releaseGithubAppDelivery = `-- name: ReleaseGithubAppDelivery :exec
-DELETE FROM github_app_deliveries
-WHERE delivery_id = $1 AND status = 'processing'
-`
-
-// Release a claim after a failed rerun so GitHub's automatic redelivery can
-// retry cleanly (a user re-click is a new delivery id anyway).
-func (q *Queries) ReleaseGithubAppDelivery(ctx context.Context, deliveryID string) error {
-	_, err := q.db.Exec(ctx, releaseGithubAppDelivery, deliveryID)
+// Link the run this delivery produced (same tx as the claim + run insert).
+func (q *Queries) SetGithubAppDeliveryRun(ctx context.Context, arg SetGithubAppDeliveryRunParams) error {
+	_, err := q.db.Exec(ctx, setGithubAppDeliveryRun, arg.DeliveryID, arg.RunID)
 	return err
 }

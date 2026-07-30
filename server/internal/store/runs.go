@@ -82,6 +82,13 @@ type RunCreated struct {
 // lifting (counter + stage_runs + job_runs + NOTIFY) lives there so other
 // trigger paths (upstream, cron, manual) share the same insertion logic.
 func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromModificationInput) (RunCreated, error) {
+	return s.createRunFromModification(ctx, in, nil)
+}
+
+// createRunFromModification is CreateRunFromModification with an optional
+// run-tx hook (store-internal) so a caller can make "create the run + record
+// something" atomic — see RerunForAppDelivery.
+func (s *Store) createRunFromModification(ctx context.Context, in CreateRunFromModificationInput, withinTx runTxHook) (RunCreated, error) {
 	base := map[string]any{
 		"provider":        in.Provider,
 		"delivery":        in.Delivery,
@@ -127,8 +134,17 @@ func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromM
 		Revisions:   revisions,
 		TriggeredBy: in.TriggeredBy,
 		Ref:         laneRef,
+		withinTx:    withinTx,
 	})
 }
+
+// runTxHook runs extra store work INSIDE the run-creation transaction, after
+// the run row exists (runID known) and just before commit. Returning an error
+// rolls the WHOLE tx back — no run is created. This is how "create a run + X"
+// is made atomic (e.g. claim a GitHub App webhook delivery so a crash or a
+// redelivery can never leave an orphan run / a stuck claim). q is the tx-bound
+// querier — do all DB work through it, never s.q.
+type runTxHook func(ctx context.Context, q *db.Queries, runID uuid.UUID) error
 
 // insertRunSkeletonInput is the minimal payload for creating a queued run:
 // whatever already-serialized cause + revisions the caller computed.
@@ -143,6 +159,9 @@ type insertRunSkeletonInput struct {
 	// stamp time (the single write point) so the lane index can't hit the
 	// Postgres btree entry limit on a pathological webhook ref.
 	Ref string
+	// withinTx (optional) runs in the run-creation tx just before commit; an
+	// error rolls the run back. Store-internal only (unexported).
+	withinTx runTxHook
 }
 
 // maxRefLen caps the stamped runs.ref. Git refs are far shorter; truncation
@@ -469,6 +488,15 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 
 	if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", RunQueuedChannel, result.RunID.String()); err != nil {
 		return RunCreated{}, fmt.Errorf("store: notify run_queued: %w", err)
+	}
+
+	// Atomic side-work (e.g. claiming a webhook delivery). Runs on THIS tx's
+	// querier; an error rolls the whole run creation back (deferred Rollback),
+	// so the run + the hook's writes are all-or-nothing.
+	if in.withinTx != nil {
+		if err := in.withinTx(ctx, q, result.RunID); err != nil {
+			return RunCreated{}, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

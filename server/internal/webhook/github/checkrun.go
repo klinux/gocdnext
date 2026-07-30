@@ -28,15 +28,22 @@ type CheckRunEvent struct {
 
 // ParseCheckRunEvent decodes a `check_run`/`check_suite` webhook body.
 func ParseCheckRunEvent(body []byte) (CheckRunEvent, error) {
+	type appObj struct {
+		ID int64 `json:"id"`
+	}
 	var raw struct {
 		Action   string `json:"action"`
 		CheckRun struct {
 			ID         int64  `json:"id"`
 			ExternalID string `json:"external_id"`
-			App        struct {
-				ID int64 `json:"id"`
-			} `json:"app"`
+			App        appObj `json:"app"`
 		} `json:"check_run"`
+		// check_suite payloads carry app at check_suite.app.id (there's no
+		// check_run object), so read it too — the secret resolver needs an app
+		// id to verify + 204 a deferred check_suite instead of 401ing it.
+		CheckSuite struct {
+			App appObj `json:"app"`
+		} `json:"check_suite"`
 		Installation struct {
 			ID int64 `json:"id"`
 		} `json:"installation"`
@@ -50,11 +57,15 @@ func ParseCheckRunEvent(body []byte) (CheckRunEvent, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return CheckRunEvent{}, fmt.Errorf("parse check_run event: %w", err)
 	}
+	appID := raw.CheckRun.App.ID
+	if appID == 0 {
+		appID = raw.CheckSuite.App.ID
+	}
 	return CheckRunEvent{
 		Action:         raw.Action,
 		CheckRunID:     raw.CheckRun.ID,
 		ExternalID:     raw.CheckRun.ExternalID,
-		AppID:          raw.CheckRun.App.ID,
+		AppID:          appID,
 		InstallationID: raw.Installation.ID,
 		Owner:          raw.Repository.Owner.Login,
 		Repo:           raw.Repository.Name,

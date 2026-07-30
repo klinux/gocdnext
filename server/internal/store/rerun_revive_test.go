@@ -249,6 +249,11 @@ func TestRerunRun_PreservesTagCauseForCIVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create original tag run: %v", err)
 	}
+	// RerunRun requires a terminal run (rejects active ones); finish it first.
+	if _, err := pool.Exec(ctx,
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, orig.RunID); err != nil {
+		t.Fatalf("finish original run: %v", err)
+	}
 
 	rerun, err := s.RerunRun(ctx, store.RerunRunInput{RunID: orig.RunID, TriggeredBy: "user:test"})
 	if err != nil {

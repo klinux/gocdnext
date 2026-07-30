@@ -153,14 +153,14 @@ func TestGitHubApp_RerunOnRerequested(t *testing.T) {
 	if n := runCount(t, pool, "app-rerun"); n != 2 {
 		t.Errorf("run count = %d, want 2 (a rerun was created)", n)
 	}
-	// Delivery ledger recorded done.
-	var status string
+	// Ledger row exists and is linked to the new run (recorded atomically).
+	var linked bool
 	if err := pool.QueryRow(context.Background(),
-		`SELECT status FROM github_app_deliveries WHERE delivery_id='d-1'`).Scan(&status); err != nil {
+		`SELECT run_id IS NOT NULL FROM github_app_deliveries WHERE delivery_id='d-1'`).Scan(&linked); err != nil {
 		t.Fatalf("delivery row: %v", err)
 	}
-	if status != "done" {
-		t.Errorf("delivery status = %q, want done", status)
+	if !linked {
+		t.Error("delivery ledger row must link the created run (run_id set)")
 	}
 }
 
