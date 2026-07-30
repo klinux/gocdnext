@@ -21,6 +21,7 @@ cat >"$TMP/go" <<'EOF'
   echo "GOTOOLCHAIN=${GOTOOLCHAIN:-<unset>}"
   echo "CGO_ENABLED=${CGO_ENABLED:-<unset>}"
   echo "GOMODCACHE=${GOMODCACHE:-<unset>}"
+  echo "GOCACHE=${GOCACHE:-<unset>}"
   echo "PWD=$(pwd)"
   echo "ARGS=$*"
 } >> "$LOG"
@@ -67,9 +68,22 @@ check "$TMP/4.log" "PWD=$TMP/ws/api\$" "PLUGIN_WORKING_DIR should cd into the su
 run "$TMP/5.log" PLUGIN_COMMAND="build ./..." PLUGIN_CGO="false"
 check "$TMP/5.log" '^CGO_ENABLED=0$' "PLUGIN_CGO=false should set CGO_ENABLED=0"
 
-# 6. GOMODCACHE redirected into the workspace (default .go-mod).
+# 6. GOMODCACHE + GOCACHE default to ABSOLUTE paths under the workspace (Go 1.26
+# rejects relative for BOTH).
 run "$TMP/6.log" PLUGIN_COMMAND="test ./..."
-check "$TMP/6.log" '^GOMODCACHE=.go-mod$' "GOMODCACHE should be redirected to .go-mod"
+check "$TMP/6.log" "^GOMODCACHE=$TMP/ws/.go-mod\$" "GOMODCACHE should be an absolute .go-mod under the workspace"
+check "$TMP/6.log" "^GOCACHE=$TMP/ws/.go-cache\$" "GOCACHE should be an absolute .go-cache under the workspace"
+
+# 7. An explicit RELATIVE override (variables:/profile/env) is normalised to
+# absolute — the corner case a plain `${VAR:-default}` would miss.
+run "$TMP/7.log" PLUGIN_COMMAND="test ./..." GOMODCACHE=".rel-mod" GOCACHE=".rel-cache"
+check "$TMP/7.log" "^GOMODCACHE=$TMP/ws/.rel-mod\$" "relative GOMODCACHE override should be anchored to CWD"
+check "$TMP/7.log" "^GOCACHE=$TMP/ws/.rel-cache\$" "relative GOCACHE override should be anchored to CWD"
+
+# 8. An ABSOLUTE override is preserved as-is (use a creatable path — the
+# entrypoint mkdir -p's it).
+run "$TMP/8.log" PLUGIN_COMMAND="test ./..." GOMODCACHE="$TMP/abs-mod"
+check "$TMP/8.log" "^GOMODCACHE=$TMP/abs-mod\$" "absolute GOMODCACHE override should be kept"
 
 if [ "$fails" -eq 0 ]; then
   echo "PASS: go entrypoint"

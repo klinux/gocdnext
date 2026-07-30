@@ -67,8 +67,23 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # holds compiled package artefacts (incremental builds + test
 # result memoisation). Base image's defaults sit outside the
 # workspace at /root/go + /root/.cache/go-build.
-export GOMODCACHE="${GOMODCACHE:-.go-mod}"
-export GOCACHE="${GOCACHE:-.go-cache}"
+#
+# ABSOLUTE paths, anchored to the CWD ($PWD is the working-dir after the cd
+# above): Go 1.26 hard-rejects a relative GOMODCACHE/GOCACHE ("must be absolute
+# path") — 1.25 tolerated it. Normalise BOTH the default AND an explicit
+# relative override (a `${VAR:-default}` only guards the UNSET case, so a
+# relative value from variables:/profile/env would otherwise slip through).
+# They still resolve to .go-mod/.go-cache under the (working-)dir, so the
+# `cache:` paths are unchanged.
+abs_under_cwd() {
+    case "$1" in
+        /*) printf '%s' "$1" ;;                # already absolute — keep
+        *)  printf '%s/%s' "$(pwd)" "$1" ;;    # relative — anchor to CWD
+    esac
+}
+GOMODCACHE="$(abs_under_cwd "${GOMODCACHE:-.go-mod}")"
+GOCACHE="$(abs_under_cwd "${GOCACHE:-.go-cache}")"
+export GOMODCACHE GOCACHE
 mkdir -p "${GOMODCACHE}" "${GOCACHE}"
 
 # Toolchain selection. The official golang image pins GOTOOLCHAIN=local,
