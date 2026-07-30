@@ -707,6 +707,10 @@ func main() {
 	// /api/webhooks stays outside the auth middleware's enforcement
 	// path — it authenticates via HMAC signature, not sessions.
 	r.Post("/api/webhooks/github", webhookHandler.HandleGitHub)
+	// The GitHub APP webhook (distinct from the per-repo webhook above): it's
+	// where check_run/check_suite `rerequested` (the PR "Re-run" button) is
+	// delivered, signed with the App's own webhook secret. Verified separately.
+	r.Post("/api/webhooks/github/app", webhookHandler.HandleGitHubApp)
 	r.Post("/api/webhooks/gitlab", webhookHandler.HandleGitLab)
 	r.Post("/api/webhooks/bitbucket", webhookHandler.HandleBitbucket)
 

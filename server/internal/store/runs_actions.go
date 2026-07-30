@@ -19,6 +19,7 @@ import (
 // maps these to HTTP status codes (404 / 409 / 422).
 var (
 	ErrRunAlreadyTerminal        = errors.New("store: run already terminal")
+	ErrRunActive                 = errors.New("store: run still active (queued/running)")
 	ErrNoModificationForPipeline = errors.New("store: no modification for pipeline")
 	ErrRunRevisionsMissing       = errors.New("store: run has no revisions to replay")
 	ErrJobRunNotFound            = errors.New("store: job_run not found")
@@ -476,12 +477,28 @@ type RerunRunInput struct {
 // snapshot stored on the original row, so it works for webhook,
 // pull_request and manual origins alike.
 func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, error) {
+	return s.rerunRun(ctx, in, runHooks{})
+}
+
+// rerunRun is RerunRun with optional run-tx hooks so a caller can make "create
+// the rerun + record something" atomic (see RerunForAppDelivery). The terminal
+// guard + all reads happen before run creation; the hooks run inside the
+// run-creation tx (before → at tx start; after → just before commit).
+func (s *Store) rerunRun(ctx context.Context, in RerunRunInput, hooks runHooks) (RunCreated, error) {
 	row, err := s.q.GetRunForAction(ctx, pgUUID(in.RunID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RunCreated{}, ErrRunNotFound
 	}
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: rerun: lookup: %w", err)
+	}
+
+	// Only a terminal run can be rerun — re-running a queued/running one would
+	// duplicate the in-flight run. Shared guard: the HTTP rerun handler maps
+	// ErrRunActive to 409, the GitHub App re-run webhook logs it + 204. (Mirrors
+	// CancelRun's status gate, inverted.)
+	if row.Status == "queued" || row.Status == "running" {
+		return RunCreated{}, ErrRunActive
 	}
 
 	materialID, revision, branch, err := pickPrimaryRevision(row.Revisions)
@@ -537,7 +554,7 @@ func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, err
 	if cause == "" {
 		cause = "manual"
 	}
-	return s.CreateRunFromModification(ctx, CreateRunFromModificationInput{
+	return s.createRunFromModification(ctx, CreateRunFromModificationInput{
 		PipelineID:     fromPgUUID(row.PipelineID),
 		MaterialID:     materialID,
 		ModificationID: modKey.ID,
@@ -548,7 +565,7 @@ func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, err
 		TriggeredBy:    triggeredBy,
 		Cause:          cause,
 		CauseDetail:    causeDetail,
-	})
+	}, hooks)
 }
 
 // TriggerManualRunInput configures a manual pipeline trigger.

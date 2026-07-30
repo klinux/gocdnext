@@ -144,6 +144,58 @@ func (s *Store) ListBootstrapVCSIntegrations(ctx context.Context) ([]BootstrapVC
 	return out, nil
 }
 
+// ErrAppWebhookSecretNotResolved means no single enabled GitHub App
+// integration could be matched for verifying an App-delivered webhook (zero
+// matches, or — defensively — more than one). Callers fail closed.
+var ErrAppWebhookSecretNotResolved = errors.New("store: github app webhook secret not resolved")
+
+// AppWebhookSecretByAppID returns the decrypted webhook secret for the enabled
+// GitHub App integration whose app_id matches — used to verify an App-delivered
+// webhook (e.g. check_run rerequested, whose payload carries check_run.app.id).
+// Fails closed: no match, no stored secret, or (defensively, should the partial
+// unique index be absent) more than one match. Reuses the decrypting bootstrap
+// loader; the App-webhook path is low volume, so the extra work is negligible.
+func (s *Store) AppWebhookSecretByAppID(ctx context.Context, appID int64) (string, error) {
+	ints, err := s.ListBootstrapVCSIntegrations(ctx)
+	if err != nil {
+		return "", err
+	}
+	var found string
+	n := 0
+	for _, in := range ints {
+		if in.Kind == VCSKindGitHubApp && in.AppID != nil && *in.AppID == appID && in.WebhookSecret != "" {
+			found = in.WebhookSecret
+			n++
+		}
+	}
+	if n != 1 {
+		return "", ErrAppWebhookSecretNotResolved
+	}
+	return found, nil
+}
+
+// SoleAppWebhookSecret returns the decrypted webhook secret when EXACTLY ONE
+// enabled GitHub App integration has one — the fail-closed fallback for events
+// (ping) that don't carry a resolvable app_id. Zero or many → error.
+func (s *Store) SoleAppWebhookSecret(ctx context.Context) (string, error) {
+	ints, err := s.ListBootstrapVCSIntegrations(ctx)
+	if err != nil {
+		return "", err
+	}
+	var found string
+	n := 0
+	for _, in := range ints {
+		if in.Kind == VCSKindGitHubApp && in.WebhookSecret != "" {
+			found = in.WebhookSecret
+			n++
+		}
+	}
+	if n != 1 {
+		return "", ErrAppWebhookSecretNotResolved
+	}
+	return found, nil
+}
+
 // UpsertVCSIntegration creates or updates by name. Empty
 // PrivateKeyPEM / WebhookSecret on update preserve the existing
 // ciphertext.
