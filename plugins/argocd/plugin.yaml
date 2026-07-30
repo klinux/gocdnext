@@ -34,8 +34,23 @@ inputs:
     required: false
     default: "false"
     description: >
-      "true" → `--insecure`. Skips TLS verification — only for
-      dev clusters with self-signed certs.
+      "true" → `--insecure`. Skips TLS verification entirely — only for
+      dev clusters with self-signed certs. If the Argo CD server just has
+      a cert from an INTERNAL CA (the common corp case), prefer `ca_cert`
+      over this: it verifies the chain instead of skipping it. Mutually
+      exclusive with `ca_cert` (setting both is rejected — `--insecure`
+      would silently defeat the CA).
+  ca_cert:
+    required: false
+    description: >
+      PEM of the CA (or full chain) that signed the Argo CD server cert,
+      for a server whose issuer isn't in the public bundle this image
+      ships (internal/corporate CA). Written to a file and passed as
+      `--server-crt`, so TLS is VERIFIED against it rather than skipped —
+      the MITM-safe alternative to `insecure`. Pipe the PEM through
+      `secrets:` (a multi-line value is fine). Must contain a
+      `-----BEGIN CERTIFICATE-----` block or the job fails fast. Mutually
+      exclusive with `insecure`.
   grpc_web:
     required: false
     default: "false"
@@ -142,6 +157,27 @@ examples:
             environment: production
             version: ${CI_TAG_NAME}
           secrets: [ARGOCD_SERVER, ARGOCD_TOKEN]
+
+  - name: internal-CA Argo CD (verified TLS)
+    description: >
+      Argo CD served behind an internal/corporate CA the plugin image
+      doesn't trust — a plain connect fails `x509: certificate signed by
+      unknown authority`. Pass the CA's PEM via `ca_cert` (through
+      `secrets:`) so the chain is VERIFIED, instead of reaching for
+      `insecure` (which skips verification). The two are mutually
+      exclusive.
+    yaml: |
+      jobs:
+        deploy-prod:
+          stage: deploy
+          uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1
+          with:
+            server: ${{ ARGOCD_SERVER }}
+            auth_token: ${{ ARGOCD_TOKEN }}
+            grpc_web: "true"
+            ca_cert: ${{ ARGOCD_CA }}       # PEM of the internal CA
+            command: app sync api-prod
+          secrets: [ARGOCD_SERVER, ARGOCD_TOKEN, ARGOCD_CA]
 
   - name: rollback after failure
     description: >

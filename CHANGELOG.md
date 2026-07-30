@@ -8,6 +8,18 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **argocd plugin — `ca_cert` input (verified TLS for an internal CA).** An Argo CD
+  server behind an internal/corporate CA made the CLI fail `x509: certificate signed
+  by unknown authority` (the image ships only the public CA bundle). The plugin now
+  takes a `ca_cert` PEM, writes it to a file, and passes `--server-crt` so the chain
+  is **verified** — the MITM-safe alternative to `insecure` (which skips verification
+  entirely). The two are mutually exclusive (setting both fails fast, since
+  `--insecure` would silently defeat the CA); a `ca_cert` without a
+  `-----BEGIN CERTIFICATE-----` block also fails fast rather than degrading into a
+  murky connection error.
+
 ## v0.80.1 — 2026-07-29
 
 go plugin: absolute GOMODCACHE/GOCACHE for Go 1.26 (hotfix for v0.80.0's Go 1.26 bump).
