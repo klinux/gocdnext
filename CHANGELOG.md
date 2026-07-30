@@ -8,9 +8,30 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.80.0 — 2026-07-29
+
+Configurable GitHub check reporting + the PR "Re-run" button wired; go plugin honors go.mod's toolchain.
+
+### Added
+
+- **Per-project GitHub check reporting mode (#198).** A new *Settings → GitHub
+  checks* control picks how each run reports to GitHub: `both` (the rich Check
+  Run **and** the legacy Commit Status — the default), `check_run` only, or
+  `commit_status` only. The effective mode is persisted per-run so a mid-run
+  settings change can't strand the reporting, and switching off the commit
+  status warns that a branch-protection *required* check may need repointing.
+- **GitHub App re-run — the PR "Re-run" button now works (#199).** gocdnext now
+  receives the GitHub App's `check_run` `rerequested` webhook on a dedicated
+  `/api/webhooks/github/app` route (verified against the App's own webhook
+  secret) and re-runs the corresponding pipeline. Exactly-once + crash-safe (a
+  per-delivery ledger claims in the same transaction that creates the rerun), and
+  re-running an already-active run is rejected with `409` instead of duplicating
+  it. Requires the GitHub App to be configured with a webhook secret + the
+  `check_run` event subscription.
+
 ### Fixed
 
-- **go plugin — honor `go.mod`'s toolchain; bump base to Go 1.26.** The plugin shipped
+- **go plugin — honor `go.mod`'s toolchain; bump base to Go 1.26 (#197).** The plugin shipped
   `golang:1.25-alpine`, and the official image pins `GOTOOLCHAIN=local`, so any project
   whose `go.mod` required a newer Go (e.g. `go 1.26.1`) failed on the first command
   (`go.mod requires go >= …; GOTOOLCHAIN=local`) — contradicting the plugin's "serves
