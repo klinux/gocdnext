@@ -67,9 +67,10 @@ check "$TMP/4.log" "PWD=$TMP/ws/api\$" "PLUGIN_WORKING_DIR should cd into the su
 run "$TMP/5.log" PLUGIN_COMMAND="build ./..." PLUGIN_CGO="false"
 check "$TMP/5.log" '^CGO_ENABLED=0$' "PLUGIN_CGO=false should set CGO_ENABLED=0"
 
-# 6. GOMODCACHE redirected into the workspace (default .go-mod).
+# 6. GOMODCACHE redirected into the workspace as an ABSOLUTE path ending in
+# .go-mod (Go 1.26 rejects a relative GOMODCACHE).
 run "$TMP/6.log" PLUGIN_COMMAND="test ./..."
-check "$TMP/6.log" '^GOMODCACHE=.go-mod$' "GOMODCACHE should be redirected to .go-mod"
+check "$TMP/6.log" "^GOMODCACHE=$TMP/ws/.go-mod\$" "GOMODCACHE should be an absolute .go-mod under the workspace"
 
 if [ "$fails" -eq 0 ]; then
   echo "PASS: go entrypoint"

@@ -8,6 +8,16 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **go plugin — absolute `GOMODCACHE`/`GOCACHE` (Go 1.26).** Go 1.26 hard-rejects
+  a relative `GOMODCACHE` (`GOMODCACHE entry is relative; must be absolute path`)
+  — v0.80.0's bump to Go 1.26 surfaced it, since the plugin redirected the caches
+  to relative `.go-mod`/`.go-cache` (which Go 1.25 tolerated). They're now
+  anchored to `$PWD` (absolute), still resolving under the working dir so the
+  `cache:` paths are unchanged. Caught by re-validating a real project on the
+  bumped plugin.
+
 ## v0.80.0 — 2026-07-29
 
 Configurable GitHub check reporting + the PR "Re-run" button wired; go plugin honors go.mod's toolchain.
