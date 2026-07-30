@@ -8,6 +8,10 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.81.0 — 2026-07-30
+
+argocd plugin: verify TLS against an internal CA via a new `ca_cert` input.
+
 ### Added
 
 - **argocd plugin — `ca_cert` input (verified TLS for an internal CA).** An Argo CD
