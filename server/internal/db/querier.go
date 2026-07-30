@@ -695,6 +695,10 @@ type Querier interface {
 	GetProjectArchiveFlagForRun(ctx context.Context, id pgtype.UUID) (*bool, error)
 	GetProjectByID(ctx context.Context, id pgtype.UUID) (GetProjectByIDRow, error)
 	GetProjectBySlug(ctx context.Context, slug string) (GetProjectBySlugRow, error)
+	// Surfaces the per-project GitHub check reporting mode by slug — what the
+	// project-settings UI reads when populating the select. Column is NOT NULL
+	// DEFAULT 'both', so a row always yields a value; ErrNoRows = no such project.
+	GetProjectCheckReportingBySlug(ctx context.Context, slug string) (string, error)
 	GetProjectCron(ctx context.Context, id pgtype.UUID) (ProjectCron, error)
 	// Aggregated before the cascading delete so the caller can surface
 	// "deleted N pipelines, M runs, K secrets" without probing each
@@ -1994,6 +1998,9 @@ type Querier interface {
 	// than insert. updated_at bumps so we can spot stale rows later.
 	// completed is forced FALSE: a (re)created check run is open again, so a
 	// rerun that recreates the check resets the lifecycle flag.
+	// check_run_id is NULL in commit_status mode (no GitHub Check Run exists);
+	// reporting_mode is the per-run effective mode, persisted so complete/reopen
+	// read it back instead of re-deriving from the project's current setting.
 	UpsertGithubCheckRun(ctx context.Context, arg UpsertGithubCheckRunParams) error
 	// Global scope: project_id = NULL, shadowed by a same-name project secret
 	// at resolution time. Targets the partial UNIQUE index
