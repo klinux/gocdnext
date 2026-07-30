@@ -65,4 +65,32 @@ out="$(PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="s3cr3t-tok" \
 echo "$out" | grep -qE '^==> argocd .*app set my-app' || fail "resolved command not echoed for visibility"
 echo "$out" | grep -q "s3cr3t-tok" && fail "auth token leaked into the echoed command"
 
+# ── 5. ca_cert is written to a file and passed via --server-crt (verify path) ──
+rm -f "$TMP/args"
+PEM=$'-----BEGIN CERTIFICATE-----\nMIIBfakeCApayloadForTest\n-----END CERTIFICATE-----'
+PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="tok" \
+  PLUGIN_COMMAND="app sync my-app" PLUGIN_CA_CERT="$PEM" run
+grep -qx -- "--server-crt" "$TMP/args" || fail "ca_cert did not add --server-crt"
+# The stub records each arg on its own line, so the CA file path is the line
+# right after --server-crt. `exec argocd` replaces the shell, so the entrypoint's
+# EXIT trap never fires — the temp file survives for this assertion (and dies with
+# the container in prod).
+crt_path="$(grep -A1 -x -- '--server-crt' "$TMP/args" | tail -1)"
+[ -n "$crt_path" ] && [ -f "$crt_path" ] || fail "--server-crt path does not exist ($crt_path)"
+grep -q "BEGIN CERTIFICATE" "$crt_path" || fail "ca_cert PEM not written to the --server-crt file"
+grep -qx -- "--insecure" "$TMP/args" && fail "insecure must not be set when only ca_cert is given"
+rm -f "$crt_path"
+
+# ── 6. insecure + ca_cert together is rejected (contradiction, fails loud) ──
+if PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="tok" \
+     PLUGIN_COMMAND="app sync my-app" PLUGIN_INSECURE="true" PLUGIN_CA_CERT="$PEM" run 2>/dev/null; then
+    fail "insecure + ca_cert both set was accepted (should exit non-zero)"
+fi
+
+# ── 7. a non-PEM ca_cert is rejected (a garbled secret ≠ a silent net error) ──
+if PLUGIN_SERVER="https://argo.test" PLUGIN_AUTH_TOKEN="tok" \
+     PLUGIN_COMMAND="app sync my-app" PLUGIN_CA_CERT="not-a-pem" run 2>/dev/null; then
+    fail "non-PEM ca_cert was accepted (should exit non-zero)"
+fi
+
 echo "PASS: argocd entrypoint"

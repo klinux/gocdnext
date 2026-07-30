@@ -29,9 +29,40 @@ export ARGOCD_SERVER="${PLUGIN_SERVER#https://}"
 export ARGOCD_SERVER="${ARGOCD_SERVER#http://}"
 export ARGOCD_AUTH_TOKEN="${PLUGIN_AUTH_TOKEN}"
 
+# TLS trust for an Argo CD whose serving cert the base image's public-CA
+# bundle doesn't chain to (an internal / self-signed CA — common inside a
+# corp network; a plain connect fails "x509: certificate signed by unknown
+# authority"). Two MUTUALLY EXCLUSIVE modes:
+#   insecure=true  -> --insecure: skip verification entirely (dev/self-signed).
+#   ca_cert=<PEM>  -> write the PEM to a file + pass --server-crt: the chain is
+#                     VERIFIED against that CA (the recommended, MITM-safe path).
+# Both at once is contradictory — --insecure would silently defeat the CA, so a
+# deploy that reads as "verified" wouldn't be. Reject it loudly.
+if [ "${PLUGIN_INSECURE:-false}" = "true" ] && [ -n "${PLUGIN_CA_CERT:-}" ]; then
+    echo "gocdnext/argocd: set either insecure OR ca_cert, not both — --insecure defeats ca_cert" >&2
+    exit 2
+fi
+
 flags=()
 if [ "${PLUGIN_INSECURE:-false}" = "true" ]; then
     flags+=("--insecure")
+fi
+if [ -n "${PLUGIN_CA_CERT:-}" ]; then
+    # Guard against a garbled/empty secret degrading into a "connection
+    # failed" that looks like a network fault: require a PEM marker up front.
+    case "${PLUGIN_CA_CERT}" in
+        *"-----BEGIN CERTIFICATE-----"*) : ;;
+        *) echo "gocdnext/argocd: ca_cert must be a PEM certificate (no -----BEGIN CERTIFICATE----- found)" >&2; exit 2 ;;
+    esac
+    # 077 umask: the CA is public key material, but no reason to leave it
+    # world-readable in the task container.
+    ca_file="$(mktemp)"
+    ( umask 077; printf '%s\n' "${PLUGIN_CA_CERT}" > "${ca_file}" )
+    # Best-effort cleanup on an error exit before `exec`; the final `exec
+    # argocd` replaces this shell so this trap won't fire on the happy path —
+    # the ephemeral task container reclaims the file either way.
+    trap 'rm -f "${ca_file}"' EXIT
+    flags+=("--server-crt" "${ca_file}")
 fi
 if [ "${PLUGIN_GRPC_WEB:-false}" = "true" ]; then
     flags+=("--grpc-web")
