@@ -118,6 +118,11 @@ type Querier interface {
 	// LOCKED lets replicas claim disjoint batches without contending. Each row gets its
 	// OWN claim_id (gen_random_uuid is volatile, evaluated per row).
 	ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatchesParams) ([]DeployWatch, error)
+	// Atomically claim a delivery id for processing. Returns rows-affected: 1 = we
+	// claimed it (proceed), 0 = a row already exists (redelivery or concurrent
+	// handler — caller inspects it via GetGithubAppDelivery). The PK makes this the
+	// mutual-exclusion point: concurrent redeliveries can't both claim.
+	ClaimGithubAppDelivery(ctx context.Context, arg ClaimGithubAppDeliveryParams) (int64, error)
 	// Claim the right to fire a superseded run's external effects. Succeeds when the
 	// effects aren't already done AND no LIVE claim holds it — a claim older than the
 	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
@@ -368,6 +373,9 @@ type Querier interface {
 	// growing the schema to carry per-attempt log namespacing.
 	DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
+	// Retention sweep: prune completed ledger rows past the cutoff ($1). Keys are
+	// opaque delivery ids, safe to drop once well past their redelivery window.
+	DeleteOldGithubAppDeliveries(ctx context.Context, updatedAt pgtype.Timestamptz) (int64, error)
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	// Removes a setting; the boot path then falls back to env config.
 	DeletePlatformSetting(ctx context.Context, key string) error
@@ -620,6 +628,7 @@ type Querier interface {
 	// read so the claim query stays a plain deploy_watches SELECT (its row model is shared).
 	GetDeployWatchCancelRequestedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (DeploymentRevision, error)
+	GetGithubAppDelivery(ctx context.Context, deliveryID string) (GithubAppDelivery, error)
 	// Reporter needs owner/repo/check_run_id to patch a check when the
 	// run finishes. Returns ErrNoRows when the run didn't produce a
 	// check (most common path: no App installed, or feature disabled).
@@ -1460,6 +1469,9 @@ type Querier interface {
 	// no deadline change; the terminal DECISION already resumed the deadline). Fenced on
 	// claim_id; `gate_actioned_at IS NULL` makes a re-tick a no-op.
 	MarkGateActioned(ctx context.Context, arg MarkGateActionedParams) (int64, error)
+	// Mark a claimed delivery done + link the run it produced. Redeliveries then
+	// see status='done' and short-circuit.
+	MarkGithubAppDeliveryDone(ctx context.Context, arg MarkGithubAppDeliveryDoneParams) error
 	// Flips the link's lifecycle flag after the check is PATCHed to a terminal
 	// state on GitHub. A later rerun reads this to decide reuse vs. recreate:
 	// GitHub won't cleanly reopen a completed check (completed_at is set-once), so
@@ -1605,6 +1617,13 @@ type Querier interface {
 	// recent) is skipped — the replay path is still expected to
 	// land the cancel on its next Connect frame.
 	ReclaimPendingCancelsForOfflineAgent(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimPendingCancelsForOfflineAgentRow, error)
+	// Re-claim a crashed attempt: a row stuck in 'processing' older than the stale
+	// cutoff ($2) is taken over (updated_at bumped). Rows-affected 1 = we won the
+	// re-claim (proceed), 0 = someone else already did or it's no longer stale.
+	ReclaimStaleGithubAppDelivery(ctx context.Context, arg ReclaimStaleGithubAppDeliveryParams) (int64, error)
+	// Release a claim after a failed rerun so GitHub's automatic redelivery can
+	// retry cleanly (a user re-click is a new delivery id anyway).
+	ReleaseGithubAppDelivery(ctx context.Context, deliveryID string) error
 	// The pipelines that break most, among projects carrying label_key, over the
 	// window — from the rollup. EXISTS (not a label JOIN) so each pipeline appears
 	// once regardless of how many label values its project has. min_runs guards

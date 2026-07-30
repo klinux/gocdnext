@@ -19,6 +19,7 @@ import (
 // maps these to HTTP status codes (404 / 409 / 422).
 var (
 	ErrRunAlreadyTerminal        = errors.New("store: run already terminal")
+	ErrRunActive                 = errors.New("store: run still active (queued/running)")
 	ErrNoModificationForPipeline = errors.New("store: no modification for pipeline")
 	ErrRunRevisionsMissing       = errors.New("store: run has no revisions to replay")
 	ErrJobRunNotFound            = errors.New("store: job_run not found")
@@ -482,6 +483,14 @@ func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, err
 	}
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: rerun: lookup: %w", err)
+	}
+
+	// Only a terminal run can be rerun — re-running a queued/running one would
+	// duplicate the in-flight run. Shared guard: the HTTP rerun handler maps
+	// ErrRunActive to 409, the GitHub App re-run webhook logs it + 204. (Mirrors
+	// CancelRun's status gate, inverted.)
+	if row.Status == "queued" || row.Status == "running" {
+		return RunCreated{}, ErrRunActive
 	}
 
 	materialID, revision, branch, err := pickPrimaryRevision(row.Revisions)

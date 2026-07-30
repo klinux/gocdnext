@@ -494,9 +494,33 @@ func TestCancelJob_AlreadyTerminal(t *testing.T) {
 	}
 }
 
+// finishRun marks a run terminal so it can be rerun (rerun rejects active runs).
+func finishRun(t *testing.T, pool *pgxpool.Pool, runID uuid.UUID) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE runs SET status='success', finished_at=NOW() WHERE id=$1`, runID); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+}
+
+// TestRerun_ActiveRunConflict — rerunning a still-active (queued/running) run is
+// rejected with 409; rerun creates a NEW run and racing it against the live one
+// would duplicate it. (Same guard the GitHub App re-run webhook relies on.)
+func TestRerun_ActiveRunConflict(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool) // left active
+	rr := doPost(h, "/api/v1/runs/"+runID.String()+"/rerun", nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d want 409; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRerun_Success(t *testing.T) {
 	h, pool := handler(t)
 	runID, _ := seedRunWithModification(t, pool)
+	// A run must be terminal to rerun — the realistic case (rerun a finished
+	// run). An active run is rejected (see TestRerun_ActiveRunConflict).
+	finishRun(t, pool, runID)
 
 	rr := doPost(h, "/api/v1/runs/"+runID.String()+"/rerun", []byte(`{"triggered_by":"klinux"}`))
 	if rr.Code != http.StatusAccepted {
@@ -806,6 +830,7 @@ func TestRerun_ReopensGithubCheckForNewRun(t *testing.T) {
 	spy := &spyChecksReporter{}
 	h = h.WithChecksReporter(spy)
 	runID, _ := seedRunWithModification(t, pool)
+	finishRun(t, pool, runID) // rerun requires a terminal run
 
 	rr := doPost(h, "/api/v1/runs/"+runID.String()+"/rerun", nil)
 	if rr.Code != http.StatusAccepted {

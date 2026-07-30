@@ -268,6 +268,15 @@ type Environment struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type GithubAppDelivery struct {
+	DeliveryID string
+	Event      string
+	Status     string
+	RunID      pgtype.UUID
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type GithubCheckRun struct {
 	RunID          pgtype.UUID
 	InstallationID int64
