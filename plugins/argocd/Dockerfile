@@ -18,6 +18,13 @@
 #                                       "app rollback my-app 3"
 #   PLUGIN_INSECURE       (optional)  "true" → --insecure (skip TLS
 #                                     verification). Off by default.
+#                                     Mutually exclusive with CA_CERT.
+#   PLUGIN_CA_CERT        (optional)  PEM of the CA that signed the Argo
+#                                     CD server cert (internal/corp CA).
+#                                     Written to a file + passed as
+#                                     --server-crt so TLS is VERIFIED,
+#                                     not skipped. Mutually exclusive
+#                                     with INSECURE.
 #   PLUGIN_GRPC_WEB       (optional)  "true" → --grpc-web (use
 #                                     when Argo is behind an L7
 #                                     reverse proxy that doesn't
