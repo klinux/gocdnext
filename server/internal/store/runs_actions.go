@@ -477,14 +477,14 @@ type RerunRunInput struct {
 // snapshot stored on the original row, so it works for webhook,
 // pull_request and manual origins alike.
 func (s *Store) RerunRun(ctx context.Context, in RerunRunInput) (RunCreated, error) {
-	return s.rerunRun(ctx, in, nil)
+	return s.rerunRun(ctx, in, runHooks{})
 }
 
-// rerunRun is RerunRun with an optional run-tx hook so a caller can make
-// "create the rerun + record something" atomic (see RerunForAppDelivery). The
-// terminal guard + all reads happen before the hook; the hook runs inside the
-// run-creation tx just before commit.
-func (s *Store) rerunRun(ctx context.Context, in RerunRunInput, withinTx runTxHook) (RunCreated, error) {
+// rerunRun is RerunRun with optional run-tx hooks so a caller can make "create
+// the rerun + record something" atomic (see RerunForAppDelivery). The terminal
+// guard + all reads happen before run creation; the hooks run inside the
+// run-creation tx (before → at tx start; after → just before commit).
+func (s *Store) rerunRun(ctx context.Context, in RerunRunInput, hooks runHooks) (RunCreated, error) {
 	row, err := s.q.GetRunForAction(ctx, pgUUID(in.RunID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RunCreated{}, ErrRunNotFound
@@ -565,7 +565,7 @@ func (s *Store) rerunRun(ctx context.Context, in RerunRunInput, withinTx runTxHo
 		TriggeredBy:    triggeredBy,
 		Cause:          cause,
 		CauseDetail:    causeDetail,
-	}, withinTx)
+	}, hooks)
 }
 
 // TriggerManualRunInput configures a manual pipeline trigger.

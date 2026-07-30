@@ -27,28 +27,36 @@ var ErrAppDeliveryAlreadyClaimed = errors.New("store: github app delivery alread
 // The terminal guard (ErrRunActive) and not-rerunnable errors surface from the
 // shared rerun path before the claim, so those never leave a ledger row.
 func (s *Store) RerunForAppDelivery(ctx context.Context, runID uuid.UUID, deliveryID, event, triggeredBy string) (RunCreated, error) {
-	hook := func(ctx context.Context, q *db.Queries, newRunID uuid.UUID) error {
-		n, err := q.ClaimGithubAppDelivery(ctx, db.ClaimGithubAppDeliveryParams{
-			DeliveryID: deliveryID,
-			Event:      event,
-		})
-		if err != nil {
-			return fmt.Errorf("store: claim app delivery: %w", err)
-		}
-		if n == 0 {
-			// Already claimed (duplicate/concurrent) — abort so the whole run
-			// creation rolls back.
-			return ErrAppDeliveryAlreadyClaimed
-		}
-		if err := q.SetGithubAppDeliveryRun(ctx, db.SetGithubAppDeliveryRunParams{
-			DeliveryID: deliveryID,
-			RunID:      pgUUID(newRunID),
-		}); err != nil {
-			return fmt.Errorf("store: link app delivery run: %w", err)
-		}
-		return nil
+	hooks := runHooks{
+		// Claim FIRST — before the counter/InsertRun. A concurrent duplicate
+		// blocks here on the ledger PK, then loses (n==0) and rolls back, rather
+		// than racing to the same (pipeline_id, counter) and 500ing on that
+		// unique. No expensive run work happens before the dedupe.
+		before: func(ctx context.Context, q *db.Queries) error {
+			n, err := q.ClaimGithubAppDelivery(ctx, db.ClaimGithubAppDeliveryParams{
+				DeliveryID: deliveryID,
+				Event:      event,
+			})
+			if err != nil {
+				return fmt.Errorf("store: claim app delivery: %w", err)
+			}
+			if n == 0 {
+				return ErrAppDeliveryAlreadyClaimed
+			}
+			return nil
+		},
+		// Link the run this delivery produced — same tx as the claim + insert.
+		after: func(ctx context.Context, q *db.Queries, newRunID uuid.UUID) error {
+			if err := q.SetGithubAppDeliveryRun(ctx, db.SetGithubAppDeliveryRunParams{
+				DeliveryID: deliveryID,
+				RunID:      pgUUID(newRunID),
+			}); err != nil {
+				return fmt.Errorf("store: link app delivery run: %w", err)
+			}
+			return nil
+		},
 	}
-	return s.rerunRun(ctx, RerunRunInput{RunID: runID, TriggeredBy: triggeredBy}, hook)
+	return s.rerunRun(ctx, RerunRunInput{RunID: runID, TriggeredBy: triggeredBy}, hooks)
 }
 
 // SweepAppDeliveries prunes ledger rows older than the cutoff and returns the

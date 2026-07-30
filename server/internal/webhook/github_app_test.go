@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -246,5 +247,74 @@ func TestGitHubApp_CrossCheckMismatchIgnored(t *testing.T) {
 	}
 	if n := runCount(t, pool, "app-rerun"); n != 1 {
 		t.Errorf("run count = %d, want 1 (identity mismatch must not rerun)", n)
+	}
+}
+
+// Two concurrent redeliveries of the SAME X-GitHub-Delivery must both return
+// 204 and create EXACTLY ONE rerun — the loser blocks on the ledger PK claim
+// (at tx start, before the counter/InsertRun) and rolls back, never colliding
+// on runs(pipeline_id, counter) or 500ing.
+func TestGitHubApp_ConcurrentSameDeliveryOneRun(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newAppServer(t, s)
+	runID := seedRerunnableRun(t, pool, s, true)
+
+	body := checkRunBody("rerequested", runID.String(), testCheckID, testAppID, testInstID)
+	sig := signBody(body)
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp := postApp(t, srv, "check_run", "conc-1", body, sig)
+			codes[i] = resp.StatusCode
+			resp.Body.Close()
+		}(i)
+	}
+	wg.Wait()
+	for _, c := range codes {
+		if c != http.StatusNoContent {
+			t.Errorf("concurrent delivery status = %d, want 204 (idempotent, no 500)", c)
+		}
+	}
+	if n := runCount(t, pool, "app-rerun"); n != 2 {
+		t.Errorf("run count = %d, want 2 (exactly one rerun from concurrent duplicates)", n)
+	}
+}
+
+func checkSuiteBody(action string, appID, instID int64) []byte {
+	return []byte(fmt.Sprintf(`{
+		"action": %q,
+		"check_suite": {"app": {"id": %d}},
+		"installation": {"id": %d},
+		"repository": {"name": %q, "owner": {"login": %q}}
+	}`, action, appID, instID, testRepo, testOwner))
+}
+
+// A check_suite event (deferred — no check_run object) must still AUTHENTICATE
+// in a multi-App install: its app id lives at check_suite.app.id, so the secret
+// resolver can pick the right App instead of failing the sole-App fallback and
+// 401ing. Verified → the deferred event is ignored (204), not redelivered.
+func TestGitHubApp_CheckSuiteMultiAppAuthenticates(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	srv := newAppServer(t, s) // seeds testAppID with testSecret
+	// A SECOND enabled github_app with a different app_id + secret makes the
+	// sole-App fallback fail — so a 204 proves check_suite.app.id was used.
+	otherID := testAppID + 1
+	if _, err := s.UpsertVCSIntegration(context.Background(), store.UpsertVCSIntegrationInput{
+		Name: "other-app", Kind: "github_app", AppID: &otherID,
+		WebhookSecret: "other-secret", Enabled: true,
+	}); err != nil {
+		t.Fatalf("seed second app: %v", err)
+	}
+
+	body := checkSuiteBody("rerequested", testAppID, testInstID) // our app, signed with testSecret
+	resp := postApp(t, srv, "check_suite", "cs-1", body, signBody(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("check_suite status = %d, want 204 (authenticated via check_suite.app.id, then ignored)", resp.StatusCode)
 	}
 }

@@ -82,13 +82,13 @@ type RunCreated struct {
 // lifting (counter + stage_runs + job_runs + NOTIFY) lives there so other
 // trigger paths (upstream, cron, manual) share the same insertion logic.
 func (s *Store) CreateRunFromModification(ctx context.Context, in CreateRunFromModificationInput) (RunCreated, error) {
-	return s.createRunFromModification(ctx, in, nil)
+	return s.createRunFromModification(ctx, in, runHooks{})
 }
 
-// createRunFromModification is CreateRunFromModification with an optional
-// run-tx hook (store-internal) so a caller can make "create the run + record
+// createRunFromModification is CreateRunFromModification with optional run-tx
+// hooks (store-internal) so a caller can make "create the run + record
 // something" atomic — see RerunForAppDelivery.
-func (s *Store) createRunFromModification(ctx context.Context, in CreateRunFromModificationInput, withinTx runTxHook) (RunCreated, error) {
+func (s *Store) createRunFromModification(ctx context.Context, in CreateRunFromModificationInput, hooks runHooks) (RunCreated, error) {
 	base := map[string]any{
 		"provider":        in.Provider,
 		"delivery":        in.Delivery,
@@ -134,17 +134,24 @@ func (s *Store) createRunFromModification(ctx context.Context, in CreateRunFromM
 		Revisions:   revisions,
 		TriggeredBy: in.TriggeredBy,
 		Ref:         laneRef,
-		withinTx:    withinTx,
+		hooks:       hooks,
 	})
 }
 
-// runTxHook runs extra store work INSIDE the run-creation transaction, after
-// the run row exists (runID known) and just before commit. Returning an error
-// rolls the WHOLE tx back — no run is created. This is how "create a run + X"
-// is made atomic (e.g. claim a GitHub App webhook delivery so a crash or a
-// redelivery can never leave an orphan run / a stuck claim). q is the tx-bound
-// querier — do all DB work through it, never s.q.
-type runTxHook func(ctx context.Context, q *db.Queries, runID uuid.UUID) error
+// runHooks lets a caller run extra store work INSIDE the run-creation
+// transaction so "create a run + X" is atomic (e.g. claim a GitHub App webhook
+// delivery). Both hooks use the tx-bound querier q; returning an error rolls
+// the WHOLE tx back (no run created). Store-internal (unexported fields).
+//
+//   - before runs FIRST, before NextRunCounter/InsertRun — the place to claim
+//     an idempotency key so a concurrent duplicate loses the claim here (cheap)
+//     instead of colliding on the (pipeline_id, counter) unique later.
+//   - after runs once the run row exists (runID known), before commit — e.g. to
+//     link the claimed delivery to the run it produced.
+type runHooks struct {
+	before func(ctx context.Context, q *db.Queries) error
+	after  func(ctx context.Context, q *db.Queries, runID uuid.UUID) error
+}
 
 // insertRunSkeletonInput is the minimal payload for creating a queued run:
 // whatever already-serialized cause + revisions the caller computed.
@@ -159,9 +166,8 @@ type insertRunSkeletonInput struct {
 	// stamp time (the single write point) so the lane index can't hit the
 	// Postgres btree entry limit on a pathological webhook ref.
 	Ref string
-	// withinTx (optional) runs in the run-creation tx just before commit; an
-	// error rolls the run back. Store-internal only (unexported).
-	withinTx runTxHook
+	// hooks (optional) run inside the run-creation tx — see runHooks.
+	hooks runHooks
 }
 
 // maxRefLen caps the stamped runs.ref. Git refs are far shorter; truncation
@@ -248,6 +254,15 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
+
+	// before-hook FIRST — before the counter/InsertRun. A claim here means a
+	// concurrent duplicate loses on the ledger PK (cheap) rather than colliding
+	// on runs' (pipeline_id, counter) unique after the expensive work.
+	if in.hooks.before != nil {
+		if err := in.hooks.before(ctx, q); err != nil {
+			return RunCreated{}, err
+		}
+	}
 
 	pipelineRow, err := q.GetPipelineDefinition(ctx, pgUUID(in.PipelineID))
 	if err != nil {
@@ -490,11 +505,11 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		return RunCreated{}, fmt.Errorf("store: notify run_queued: %w", err)
 	}
 
-	// Atomic side-work (e.g. claiming a webhook delivery). Runs on THIS tx's
+	// after-hook: the run row now exists (result.RunID). Runs on THIS tx's
 	// querier; an error rolls the whole run creation back (deferred Rollback),
 	// so the run + the hook's writes are all-or-nothing.
-	if in.withinTx != nil {
-		if err := in.withinTx(ctx, q, result.RunID); err != nil {
+	if in.hooks.after != nil {
+		if err := in.hooks.after(ctx, q, result.RunID); err != nil {
 			return RunCreated{}, err
 		}
 	}
