@@ -118,6 +118,12 @@ type Querier interface {
 	// LOCKED lets replicas claim disjoint batches without contending. Each row gets its
 	// OWN claim_id (gen_random_uuid is volatile, evaluated per row).
 	ClaimDeployWatches(ctx context.Context, arg ClaimDeployWatchesParams) ([]DeployWatch, error)
+	// Atomically claim a delivery id. Returns rows-affected: 1 = we claimed it
+	// (proceed), 0 = a row already exists (duplicate/concurrent — the caller's tx
+	// rolls back). Run inside the run-creation transaction so the claim + the run
+	// commit together (exactly-once, crash-safe). The PK is the mutual-exclusion
+	// point: a concurrent claim blocks here until this tx commits or rolls back.
+	ClaimGithubAppDelivery(ctx context.Context, arg ClaimGithubAppDeliveryParams) (int64, error)
 	// Claim the right to fire a superseded run's external effects. Succeeds when the
 	// effects aren't already done AND no LIVE claim holds it — a claim older than the
 	// lease is reclaimable (the prior claimer crashed mid-effects). Stamps claimed_at
@@ -368,6 +374,9 @@ type Querier interface {
 	// growing the schema to carry per-attempt log namespacing.
 	DeleteLogLinesByJob(ctx context.Context, jobRunID pgtype.UUID) error
 	DeleteMaterial(ctx context.Context, id pgtype.UUID) error
+	// Retention sweep: prune ledger rows past the cutoff ($1). Keys are opaque
+	// delivery ids, safe to drop once well past their redelivery window.
+	DeleteOldGithubAppDeliveries(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error)
 	DeletePipeline(ctx context.Context, id pgtype.UUID) error
 	// Removes a setting; the boot path then falls back to env config.
 	DeletePlatformSetting(ctx context.Context, key string) error
@@ -1731,6 +1740,8 @@ type Querier interface {
 	// a row matched; no row → not found / wrong project (handler 404s). The state
 	// value is validated by the handler AND the column CHECK.
 	SetFindingState(ctx context.Context, arg SetFindingStateParams) (int64, error)
+	// Link the run this delivery produced (same tx as the claim + run insert).
+	SetGithubAppDeliveryRun(ctx context.Context, arg SetGithubAppDeliveryRunParams) error
 	// Replaces the project-level notifications list. Admin/maintainer
 	// UI writes here; the column has a NOT NULL default of '[]' so a
 	// fresh project never needs an initial INSERT against this field.
