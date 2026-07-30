@@ -59,15 +59,23 @@ func (s *Store) WithRunCheckLock(ctx context.Context, runID uuid.UUID, fn func()
 type GithubCheckRun struct {
 	RunID          uuid.UUID
 	InstallationID int64
-	CheckRunID     int64
-	Owner          string
-	Repo           string
-	HeadSHA        string
+	// CheckRunID is nil in commit_status mode — the row exists as the run's
+	// GitHub-reporting identity, but no GitHub Check Run was created. A non-nil
+	// id means there is a real check to PATCH.
+	CheckRunID *int64
+	Owner      string
+	Repo       string
+	HeadSHA    string
 	// StatusContext is the commit-status context posted alongside the check
 	// run (e.g. ci/gocdnext/<project>/<pipeline>). Persisted so the terminal
 	// status update reuses the exact context/identity without re-deriving from
 	// a material that may have changed. Empty on links pre-dating the column.
 	StatusContext string
+	// ReportingMode is the per-run effective mode (both|check_run|commit_status),
+	// persisted at create so complete/reopen/security read it back instead of
+	// re-deriving from the project's current setting — a mid-run flip can't
+	// strand the reporting.
+	ReportingMode string
 	// Completed is TRUE once the check has been PATCHed to a terminal
 	// state. The reporter reads it on a rerun: GitHub won't cleanly
 	// reopen a completed check, so a completed link forces a fresh
@@ -81,11 +89,12 @@ type GithubCheckRun struct {
 type UpsertGithubCheckRunInput struct {
 	RunID          uuid.UUID
 	InstallationID int64
-	CheckRunID     int64
+	CheckRunID     *int64 // nil in commit_status mode (no GitHub Check Run)
 	Owner          string
 	Repo           string
 	HeadSHA        string
 	StatusContext  string
+	ReportingMode  string
 }
 
 // UpsertGithubCheckRun writes the run→check link. Idempotent across
@@ -99,6 +108,7 @@ func (s *Store) UpsertGithubCheckRun(ctx context.Context, in UpsertGithubCheckRu
 		Repo:           in.Repo,
 		HeadSha:        in.HeadSHA,
 		StatusContext:  in.StatusContext,
+		ReportingMode:  in.ReportingMode,
 	})
 	if err != nil {
 		return fmt.Errorf("store: upsert github check run: %w", err)
@@ -125,6 +135,7 @@ func (s *Store) GetGithubCheckRun(ctx context.Context, runID uuid.UUID) (GithubC
 		Repo:           row.Repo,
 		HeadSHA:        row.HeadSha,
 		StatusContext:  row.StatusContext,
+		ReportingMode:  row.ReportingMode,
 		Completed:      row.Completed,
 		CreatedAt:      row.CreatedAt.Time,
 		UpdatedAt:      row.UpdatedAt.Time,
@@ -139,6 +150,58 @@ func (s *Store) GetGithubCheckRun(ctx context.Context, runID uuid.UUID) (GithubC
 func (s *Store) MarkGithubCheckRunCompleted(ctx context.Context, runID uuid.UUID) error {
 	if err := s.q.MarkGithubCheckRunCompleted(ctx, pgUUID(runID)); err != nil {
 		return fmt.Errorf("store: mark github check run completed: %w", err)
+	}
+	return nil
+}
+
+// Check reporting modes — how gocdnext surfaces a run's state to GitHub.
+//
+//	Both         — Check Run + legacy Commit Status (default, current behavior)
+//	CheckRun     — only the rich Check Run
+//	CommitStatus — only the straight-to-run Commit Status (Woodpecker/GoCD style)
+const (
+	CheckReportingBoth         = "both"
+	CheckReportingCheckRun     = "check_run"
+	CheckReportingCommitStatus = "commit_status"
+)
+
+// ValidCheckReportingMode reports whether m is one of the three known modes.
+// The DB has a CHECK constraint too — this is the fail-fast at the API edge.
+func ValidCheckReportingMode(m string) bool {
+	switch m {
+	case CheckReportingBoth, CheckReportingCheckRun, CheckReportingCommitStatus:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetProjectCheckReportingBySlug returns the project's GitHub check reporting
+// mode. The column is NOT NULL DEFAULT 'both', so an existing project always
+// yields a value; a missing project returns ErrProjectNotFound.
+func (s *Store) GetProjectCheckReportingBySlug(ctx context.Context, slug string) (string, error) {
+	mode, err := s.q.GetProjectCheckReportingBySlug(ctx, slug)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrProjectNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: get project check reporting mode: %w", err)
+	}
+	return mode, nil
+}
+
+// SetProjectCheckReportingBySlug writes the per-project mode. Returns
+// ErrProjectNotFound (not an opaque 500) when the slug matches no project.
+// Raw Exec so RowsAffected distinguishes "not found" from "no-op update".
+func (s *Store) SetProjectCheckReportingBySlug(ctx context.Context, slug, mode string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE projects SET check_reporting_mode = $2 WHERE slug = $1`,
+		slug, mode)
+	if err != nil {
+		return fmt.Errorf("store: set project check reporting mode: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrProjectNotFound
 	}
 	return nil
 }

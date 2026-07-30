@@ -203,6 +203,7 @@ ORDER BY r.pipeline_id, r.created_at DESC;
 -- response but avoids a per-run "did this pipeline have
 -- notifications?" lookup.
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
+       p.check_reporting_mode,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
        r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,

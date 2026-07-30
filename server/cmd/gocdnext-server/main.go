@@ -785,6 +785,8 @@ func main() {
 		p.Put("/api/v1/projects/{slug}/poll-interval", projectsHandler.SetPollInterval)
 		p.Get("/api/v1/projects/{slug}/log-archive", projectsHandler.GetLogArchiveSettings)
 		p.Put("/api/v1/projects/{slug}/log-archive", projectsHandler.SetLogArchiveSettings)
+		p.Get("/api/v1/projects/{slug}/check-reporting", projectsHandler.GetCheckReporting)
+		p.Put("/api/v1/projects/{slug}/check-reporting", projectsHandler.SetCheckReporting)
 		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
 		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
 		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)

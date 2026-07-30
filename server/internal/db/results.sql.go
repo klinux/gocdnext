@@ -284,6 +284,21 @@ func (q *Queries) GetProjectArchiveFlagForRun(ctx context.Context, id pgtype.UUI
 	return log_archive_enabled, err
 }
 
+const getProjectCheckReportingBySlug = `-- name: GetProjectCheckReportingBySlug :one
+SELECT check_reporting_mode
+FROM projects WHERE slug = $1
+`
+
+// Surfaces the per-project GitHub check reporting mode by slug — what the
+// project-settings UI reads when populating the select. Column is NOT NULL
+// DEFAULT 'both', so a row always yields a value; ErrNoRows = no such project.
+func (q *Queries) GetProjectCheckReportingBySlug(ctx context.Context, slug string) (string, error) {
+	row := q.db.QueryRow(ctx, getProjectCheckReportingBySlug, slug)
+	var check_reporting_mode string
+	err := row.Scan(&check_reporting_mode)
+	return check_reporting_mode, err
+}
+
 const getRunProgress = `-- name: GetRunProgress :one
 SELECT
     COUNT(*) FILTER (WHERE status IN ('queued', 'running'))::BIGINT AS unfinished,

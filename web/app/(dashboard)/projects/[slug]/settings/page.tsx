@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 
 import { ProjectPollSettings } from "@/components/projects/project-poll-settings.client";
 import { ProjectLogArchiveSettings } from "@/components/projects/project-log-archive-settings.client";
+import { ProjectGithubChecksSettings } from "@/components/projects/project-github-checks-settings.client";
 import { ProjectLabelsCard } from "@/components/projects/project-labels.client";
 import { ProjectComplianceCard } from "@/components/projects/project-compliance.client";
 import { ProjectCompliancePreview } from "@/components/projects/project-compliance-preview.client";
@@ -10,6 +11,7 @@ import {
   GocdnextAPIError,
   getProjectDetail,
   getProjectLogArchive,
+  getProjectCheckReporting,
 } from "@/server/queries/projects";
 import {
   getEffectivePipelinePreview,
@@ -56,6 +58,17 @@ export default async function ProjectSettingsPage({
     archive = await getProjectLogArchive(slug);
   } catch {
     archive = null;
+  }
+
+  // GitHub check reporting mode (both|check_run|commit_status). Separate
+  // endpoint; degrades to null (card hidden) if it can't be read.
+  let checkReporting: Awaited<
+    ReturnType<typeof getProjectCheckReporting>
+  > | null = null;
+  try {
+    checkReporting = await getProjectCheckReporting(slug);
+  } catch {
+    checkReporting = null;
   }
 
   // Compliance framework assignment is admin-only (the API routes are
@@ -113,6 +126,13 @@ export default async function ProjectSettingsPage({
           initialEnabled={archive.enabled}
           globalPolicy={archive.global_policy ?? "auto"}
           hasArtifactBackend={archive.has_artifact_backend}
+        />
+      ) : null}
+
+      {checkReporting ? (
+        <ProjectGithubChecksSettings
+          slug={slug}
+          initialMode={checkReporting.mode}
         />
       ) : null}
 

@@ -271,7 +271,7 @@ type Environment struct {
 type GithubCheckRun struct {
 	RunID          pgtype.UUID
 	InstallationID int64
-	CheckRunID     int64
+	CheckRunID     *int64
 	Owner          string
 	Repo           string
 	HeadSha        string
@@ -279,6 +279,7 @@ type GithubCheckRun struct {
 	UpdatedAt      pgtype.Timestamptz
 	Completed      bool
 	StatusContext  string
+	ReportingMode  string
 }
 
 type Group struct {
@@ -415,15 +416,16 @@ type PolicyFramework struct {
 }
 
 type Project struct {
-	ID                pgtype.UUID
-	Slug              string
-	Name              string
-	Description       *string
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
-	ConfigPath        string
-	Notifications     []byte
-	LogArchiveEnabled *bool
+	ID                 pgtype.UUID
+	Slug               string
+	Name               string
+	Description        *string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	ConfigPath         string
+	Notifications      []byte
+	LogArchiveEnabled  *bool
+	CheckReportingMode string
 }
 
 type ProjectCron struct {

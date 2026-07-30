@@ -369,10 +369,14 @@ type StageDetail struct {
 
 type RunDetail struct {
 	RunSummary
-	ProjectSlug string          `json:"project_slug"`
-	CauseDetail json.RawMessage `json:"cause_detail,omitempty"`
-	Revisions   json.RawMessage `json:"revisions,omitempty"`
-	Stages      []StageDetail   `json:"stages"`
+	ProjectSlug string `json:"project_slug"`
+	// CheckReportingMode is the owning project's GitHub check reporting mode
+	// (both|check_run|commit_status); the checks reporter reads it to decide
+	// which surfaces to post for this run.
+	CheckReportingMode string          `json:"check_reporting_mode"`
+	CauseDetail        json.RawMessage `json:"cause_detail,omitempty"`
+	Revisions          json.RawMessage `json:"revisions,omitempty"`
+	Stages             []StageDetail   `json:"stages"`
 }
 
 type LogLineSummary struct {
@@ -980,10 +984,11 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			FinishedAt:   pgTimePtr(run.FinishedAt),
 			TriggeredBy:  stringValue(run.TriggeredBy),
 		},
-		ProjectSlug: run.ProjectSlug,
-		CauseDetail: run.CauseDetail,
-		Revisions:   run.Revisions,
-		Stages:      []StageDetail{},
+		ProjectSlug:        run.ProjectSlug,
+		CheckReportingMode: run.CheckReportingMode,
+		CauseDetail:        run.CauseDetail,
+		Revisions:          run.Revisions,
+		Stages:             []StageDetail{},
 	}
 
 	// Decode the pipeline definition just once — only the
