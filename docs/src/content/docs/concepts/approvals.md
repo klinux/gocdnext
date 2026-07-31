@@ -11,6 +11,13 @@ Approval gates pause a run at a specific job until human(s) click
 - Destructive operations (data migration, mass-update).
 - Compliance flows (separation of duties).
 
+A gate answers **who** may approve. It does not answer **whether anyone
+should right now** — during a month-end close or an incident the gate is
+still armed and still clickable. That is what an
+[environment change-freeze](/gocdnext/docs/concepts/environment-freeze/)
+is for: while the environment a gate governs is frozen, approving it is
+refused with `409`. Rejecting stays available.
+
 ## The simplest gate
 
 ```yaml
@@ -387,3 +394,9 @@ filtering by user, project, action.
   approve permission was deactivated AFTER they approved, their
   approval is still valid (it landed at the time they were
   authorized). The audit trail records the historical state.
+- **Approve returns 409 and the message mentions a frozen
+  environment**: the gate governs a deploy environment under a
+  [change-freeze](/gocdnext/docs/concepts/environment-freeze/). It is
+  not a permissions problem and not a stale tab — a maintainer has to
+  lift the freeze. The error names every frozen environment that gate
+  governs, so you don't discover them one retry at a time.
