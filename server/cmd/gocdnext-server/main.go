@@ -797,6 +797,14 @@ func main() {
 		p.Delete("/api/v1/projects/{slug}/crons/{id}", projectsHandler.DeleteProjectCron)
 		p.Post("/api/v1/projects/{slug}/run-all", projectsHandler.RunAllPipelines)
 		p.Post("/api/v1/projects/{slug}/environments/{envID}/rollback", projectsHandler.RollbackEnvironment)
+		// Environment change-freeze (#202). Keyed by NAME, not environments.id:
+		// environment rows are lazy (created at the first deploy), so a maintainer
+		// must be able to freeze `production` BEFORE anything has ever shipped
+		// there — the first-ever deploy is exactly the one a freeze must stop.
+		// Maintainer, matching every other deploy-governance action in this group;
+		// the read side stays on the viewer-readable /environments listing.
+		p.Put("/api/v1/projects/{slug}/environment-freezes/{name}", projectsHandler.FreezeEnvironment)
+		p.Delete("/api/v1/projects/{slug}/environment-freezes/{name}", projectsHandler.UnfreezeEnvironment)
 		// Delete is admin-only (enforced in the handler): the cascade drops deploy
 		// history + any gated target, so it mustn't be maintainer-reachable.
 		p.Delete("/api/v1/projects/{slug}/environments/{envID}", projectsHandler.DeleteEnvironment)
