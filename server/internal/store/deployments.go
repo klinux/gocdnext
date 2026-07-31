@@ -306,13 +306,42 @@ func (s *Store) DeleteDeploymentRevision(ctx context.Context, id uuid.UUID) erro
 // EnvironmentWithCurrent pairs an environment with its current
 // deployment (newest successful revision), or Current=nil when nothing
 // has deployed there yet. Backs the Environments tab.
+//
+// It does NOT embed Environment. The listing must also surface FREEZE-ONLY
+// rows (00078) — a pre-emptive freeze on an env nothing has deployed to yet,
+// or an orphan freeze left by deleting a frozen env — and those have no
+// environments row at all. Embedding the strong type would force a zero UUID
+// and zero timestamps onto them, which the UI would faithfully render as
+// "id 00000000-…, created 0001-01-01". So the LISTING shape gets optional
+// identity, and the strong `Environment` type (with a real ID) stays exactly
+// as it is for every flow that needs an actual environment row.
 type EnvironmentWithCurrent struct {
-	Environment
+	// ID is nil for a freeze-only row. HasEnvironmentRow is the explicit
+	// discriminator: callers gate id-dependent affordances (history, rollback,
+	// delete) on it rather than on a nil check they might forget.
+	ID                *uuid.UUID
+	HasEnvironmentRow bool
+	ProjectID         uuid.UUID
+	Name              string
+	Description       string
+	// CreatedAt/UpdatedAt are nil for a freeze-only row.
+	CreatedAt *time.Time
+	UpdatedAt *time.Time
+
+	// Frozen is the change-freeze state. FrozenBy/FreezeReason are
+	// operator-sensitive (they can carry incident detail) and are redacted
+	// below maintainer at the API boundary; Frozen/FrozenAt are not.
+	Frozen       bool
+	FrozenAt     *time.Time
+	FrozenBy     string
+	FreezeReason string
+
 	Current *DeploymentRevision
 }
 
-// ListEnvironmentsWithCurrent returns every environment of a project
-// with its current deployment attached — one query, no N+1.
+// ListEnvironmentsWithCurrent returns every environment of a project with its
+// current deployment attached, PLUS any environment that exists only as a
+// change-freeze — one query, no N+1.
 func (s *Store) ListEnvironmentsWithCurrent(ctx context.Context, projectID uuid.UUID) ([]EnvironmentWithCurrent, error) {
 	rows, err := s.q.ListEnvironmentsWithCurrentByProject(ctx, pgUUID(projectID))
 	if err != nil {
@@ -321,20 +350,27 @@ func (s *Store) ListEnvironmentsWithCurrent(ctx context.Context, projectID uuid.
 	out := make([]EnvironmentWithCurrent, 0, len(rows))
 	for _, r := range rows {
 		ewc := EnvironmentWithCurrent{
-			Environment: Environment{
-				ID:          fromPgUUID(r.ID),
-				ProjectID:   projectID,
-				Name:        r.Name,
-				Description: r.Description,
-				CreatedAt:   r.CreatedAt.Time,
-				UpdatedAt:   r.UpdatedAt.Time,
-			},
+			HasEnvironmentRow: r.HasEnvironmentRow,
+			ProjectID:         projectID,
+			Name:              r.Name,
+			Description:       r.Description,
+			CreatedAt:         pgTimePtr(r.CreatedAt),
+			UpdatedAt:         pgTimePtr(r.UpdatedAt),
+			Frozen:            r.Frozen,
+			FrozenAt:          pgTimePtr(r.FrozenAt),
+			FrozenBy:          r.FrozenBy,
+			FreezeReason:      r.FreezeReason,
 		}
-		// current_id NULL = nothing deployed yet (see query comment).
-		if r.CurrentID.Valid {
+		if r.ID.Valid {
+			id := fromPgUUID(r.ID)
+			ewc.ID = &id
+		}
+		// current_id NULL = nothing deployed yet (see query comment). A
+		// freeze-only row can never have one — the LATERAL probes on e.id.
+		if r.CurrentID.Valid && ewc.ID != nil {
 			ewc.Current = &DeploymentRevision{
 				ID:            fromPgUUID(r.CurrentID),
-				EnvironmentID: ewc.ID,
+				EnvironmentID: *ewc.ID,
 				RunID:         pgUUIDPtr(r.CurrentRunID),
 				Attempt:       r.CurrentAttempt,
 				Version:       r.CurrentVersion,
@@ -450,11 +486,54 @@ func (s *Store) RollbackToRevision(ctx context.Context, in RollbackInput) (Rerun
 		return RerunJobResult{}, ErrRollbackRunGone
 	}
 
-	return s.RerunJob(ctx, RerunJobInput{
+	// A rollback IS a deploy to this environment, so a change-freeze must refuse
+	// it — and the check has to happen inside the rerun's own transaction, not
+	// before it: RerunJob opens its own tx, so a pre-check here would leave a
+	// window for a freeze to commit between "not frozen" and the rerun write.
+	// The guard takes ProjectEnvFreezeLockKey before any row lock (global lock
+	// order) and re-reads the table under it.
+	return s.rerunJobTx(ctx, RerunJobInput{
 		JobRunID:    *rev.JobRunID,
 		TriggeredBy: in.TriggeredBy,
 		IsRollback:  true,
+	}, func(ctx context.Context, tx pgx.Tx) error {
+		return guardRollbackNotFrozen(ctx, tx, in.ProjectID, in.EnvironmentID)
 	})
+}
+
+// guardRollbackNotFrozen resolves the environment's NAME from its id inside the
+// rollback tx, then locks + freeze-checks on that name.
+//
+// The name lookup is here rather than in the caller because it must see the same
+// snapshot as the check: freezes are name-keyed (environments rows are lazy and
+// can be deleted/recreated), so resolving the name outside the tx would risk
+// locking one name and rolling back to another.
+func guardRollbackNotFrozen(ctx context.Context, tx pgx.Tx, projectID, envID uuid.UUID) error {
+	var name string
+	err := tx.QueryRow(ctx,
+		`SELECT name FROM environments WHERE id = $1 AND project_id = $2`,
+		pgUUID(envID), pgUUID(projectID)).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Deleted between the ownership check above and here. Not a freeze
+		// concern — report it as the missing environment it is.
+		return ErrEnvironmentNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: rollback freeze check: resolve environment: %w", err)
+	}
+	if err := lockProjectEnvFreeze(ctx, tx, projectID, name); err != nil {
+		return err
+	}
+	var frozen bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM environment_freezes WHERE project_id = $1 AND name = $2)`,
+		pgUUID(projectID), name).Scan(&frozen); err != nil {
+		return fmt.Errorf("store: rollback freeze check: %w", err)
+	}
+	if frozen {
+		return fmt.Errorf("%w: %s", ErrEnvironmentFrozen, name)
+	}
+	return nil
 }
 
 // EnvironmentBelongsToProject reports whether envID is owned by

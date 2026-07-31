@@ -147,6 +147,9 @@ func (s *Store) ListRunsGlobal(ctx context.Context, limit int32, offset int64, f
 				Status:       r.Status,
 				HasServices:  r.HasServices,
 				ServiceNames: r.ServiceNames,
+				// Same as the project cards: the global runs list must be able
+				// to explain a held run (#202) without a per-row lookup.
+				QueueReason:  stringValue(r.QueueReason),
 				CancelReason: stringValue(r.CancelReason),
 				SupersededBy: pgUUIDPtr(r.SupersededBy),
 				CreatedAt:    r.CreatedAt.Time,
