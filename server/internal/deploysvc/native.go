@@ -46,6 +46,13 @@ const (
 	// DecisionGated: a DECLARED takeover found the target gated under the lock. Terminal
 	// — the pipeline must drop `deploy.target`, or an admin must ungate it.
 	DecisionGated NativeDecision = "gated"
+	// DecisionFrozen: the environment is under a change-freeze (#202). NOT an
+	// error and NOT terminal — the freeze landed between the scheduler's
+	// pre-scan and the admitting tx, so the job stays queued with a
+	// `frozen-deploy:<env>` reason and retries once the environment thaws.
+	// Distinct from DecisionSkip so the scheduler can stamp that reason (a
+	// lost CAS explains nothing to the operator; a freeze does).
+	DecisionFrozen NativeDecision = "frozen"
 	// DecisionSkip: the dispatch CAS was lost (another tick/replica won). Do nothing;
 	// the job is no longer this tick's to act on.
 	DecisionSkip NativeDecision = "skip"
@@ -166,8 +173,14 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 	}
 
 	startIn := store.StartNativeDeployInput{
-		JobRunID:         in.JobRunID,
+		JobRunID: in.JobRunID,
+		// Both the id AND the name: the takeover writes rows keyed by id, but
+		// the change-freeze (#202) is keyed by NAME (environments rows are
+		// lazy, so a freeze can predate one). Sourcing the name from the same
+		// input the scheduler resolved the target with keeps the locked name
+		// identical to the deployed one.
 		EnvironmentID:    tgt.EnvironmentID,
+		Environment:      in.Environment,
 		RunID:            in.RunID,
 		Version:          in.Version,
 		DeployedBy:       in.DeployedBy,
@@ -195,6 +208,12 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 		var outcome store.DeclaredTakeoverOutcome
 		res, outcome, err = d.store.StartNativeDeployDeclared(ctx, startIn, *in.Declared)
 		if err != nil {
+			// A change-freeze refusal is an expected outcome of the admission
+			// re-check, not an infrastructure failure — map it to its own
+			// decision instead of a fail-closed error the caller can only log.
+			if errors.Is(err, store.ErrEnvironmentFrozen) {
+				return NativeDeployResult{Decision: DecisionFrozen}, nil
+			}
 			return NativeDeployResult{}, fmt.Errorf("deploysvc: start declared native deploy: %w", err)
 		}
 		switch outcome {
@@ -208,6 +227,9 @@ func (d *NativeDeployer) TakeOver(ctx context.Context, in NativeDeployInput) (Na
 	} else {
 		res, err = d.store.StartNativeDeploy(ctx, startIn)
 		if err != nil {
+			if errors.Is(err, store.ErrEnvironmentFrozen) {
+				return NativeDeployResult{Decision: DecisionFrozen}, nil
+			}
 			return NativeDeployResult{}, fmt.Errorf("deploysvc: start native deploy: %w", err) // fail-closed
 		}
 	}

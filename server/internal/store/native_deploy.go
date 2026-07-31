@@ -22,6 +22,12 @@ type StartNativeDeployInput struct {
 	Version       string
 	DeployedBy    string
 
+	// Environment is the env NAME, carried alongside EnvironmentID so the
+	// change-freeze re-check (00078) can key its advisory lock without a
+	// second lookup — and, more importantly, without any risk that the name
+	// used for the lock diverges from the one the operator froze.
+	Environment string
+
 	ProjectID        uuid.UUID
 	SyncMode         string
 	Cluster          string
@@ -58,6 +64,13 @@ type StartNativeDeployResult struct {
 // this commit but before Sync leaves a recoverable pre-Sync watch (the watcher
 // deadline-fails it). Sync itself is issued by the caller OUTSIDE this tx (external
 // I/O must not hold a DB tx/lock).
+//
+// This tx is ALSO the native path's admission boundary for the change-freeze
+// (00078): it takes ProjectEnvFreezeLockKey and re-reads environment_freezes
+// before touching anything, returning ErrEnvironmentFrozen. That sentinel is an
+// EXPECTED skip, not a failure — a freeze can legitimately land between the
+// scheduler's pre-scan and here, and mapping it to a failed deploy would
+// terminalize a job that simply has to wait.
 func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput) (StartNativeDeployResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -65,6 +78,10 @@ func (s *Store) StartNativeDeploy(ctx context.Context, in StartNativeDeployInput
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
+
+	if err := guardDeployAdmissionNotFrozen(ctx, tx, q, in.ProjectID, in.Environment); err != nil {
+		return StartNativeDeployResult{}, err
+	}
 
 	res, err := startNativeDeployTx(ctx, q, in)
 	if err != nil {
@@ -193,6 +210,14 @@ func (s *Store) StartNativeDeployDeclared(ctx context.Context, in StartNativeDep
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
+
+	// Freeze admission check FIRST — before the deploy_target row lock, per the
+	// global lock order (advisory locks, then row FOR UPDATE). A declared target
+	// is still a deploy into the frozen environment, so it must be refused on
+	// exactly the same terms as an undeclared one.
+	if err := guardDeployAdmissionNotFrozen(ctx, tx, q, in.ProjectID, want.Environment); err != nil {
+		return StartNativeDeployResult{}, "", err
+	}
 
 	tgt, err := q.LockDeployTargetForDeploy(ctx, db.LockDeployTargetForDeployParams{
 		ProjectID: pgUUID(in.ProjectID),

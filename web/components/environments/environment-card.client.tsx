@@ -8,12 +8,17 @@ import {
   ChevronUp,
   Eye,
   GitBranch,
+  Loader2,
   Pencil,
   Plus,
   RefreshCw,
   Rocket,
   RotateCcw,
+  Snowflake,
 } from "lucide-react";
+import { useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
@@ -30,6 +35,8 @@ import { RollbackButton } from "@/components/environments/rollback-button.client
 import { useDeployWatch } from "@/components/environments/deploy-watches-provider.client";
 import { NativeWatchChip } from "@/components/environments/native-watch-chip.client";
 import { RolloutGatePrompt } from "@/components/environments/rollout-gate-buttons.client";
+import { FreezeDialog } from "@/components/environments/freeze-dialog.client";
+import { unfreezeEnvironment } from "@/server/actions/environments";
 import { statusTone, type StatusTone } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type {
@@ -93,7 +100,13 @@ export function EnvironmentCard({
   const [history, setHistory] = useState<HistoryState>({ phase: "idle" });
   const [open, setOpen] = useState(false);
 
+  // A freeze-only card (#202) has no environments row, so there is nothing to
+  // fetch history for, roll back to, or delete. `id` drives all three URLs.
+  const environmentId = environment.id;
+  const hasRow = environment.has_environment_row && environmentId !== undefined;
+
   async function toggleHistory() {
+    if (!hasRow) return;
     if (open) {
       setOpen(false);
       return;
@@ -108,7 +121,7 @@ export function EnvironmentCard({
         // fetchers' normalization.
         const base = apiBaseURL.replace(/\/+$/, "");
         const res = await fetch(
-          `${base}/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environment.id)}/deployments`,
+          `${base}/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}/deployments`,
           { credentials: "include", headers: { Accept: "application/json" } },
         );
         if (!res.ok) {
@@ -147,11 +160,21 @@ export function EnvironmentCard({
           <p className="text-sm text-muted-foreground">{environment.description}</p>
         ) : null}
 
+        {environment.frozen ? <FrozenBanner environment={environment} /> : null}
+
         {current ? (
           <CurrentDeploy slug={slug} current={current} />
-        ) : (
+        ) : hasRow ? (
           <p className="text-sm text-muted-foreground">
             Nothing has shipped to this environment yet.
+          </p>
+        ) : (
+          // Freeze-only: there is no environments row behind this card, so
+          // saying "nothing has shipped yet" would imply an environment that
+          // doesn't exist. Say what it actually is.
+          <p className="text-sm text-muted-foreground">
+            This environment doesn&apos;t exist yet — the freeze is holding the
+            first deploy that would create it.
           </p>
         )}
 
@@ -184,40 +207,135 @@ export function EnvironmentCard({
         ) : null}
 
         <div>
-          <div className="flex items-center justify-between gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="-ml-2 h-7 text-xs text-muted-foreground"
-              onClick={toggleHistory}
-              aria-expanded={open}
-            >
-              {open ? (
-                <ChevronUp className="size-3.5" aria-hidden />
-              ) : (
-                <ChevronDown className="size-3.5" aria-hidden />
-              )}
-              History
-            </Button>
-            {isAdmin ? (
-              <RemoveEnvironment
-                slug={slug}
-                environmentId={environment.id}
-                environmentName={environment.name}
-              />
-            ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* History / Remove address the environments row by id, so they are
+                hidden entirely on a freeze-only card — there is no row. */}
+            {hasRow ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-ml-2 h-7 text-xs text-muted-foreground"
+                onClick={toggleHistory}
+                aria-expanded={open}
+              >
+                {open ? (
+                  <ChevronUp className="size-3.5" aria-hidden />
+                ) : (
+                  <ChevronDown className="size-3.5" aria-hidden />
+                )}
+                History
+              </Button>
+            ) : (
+              <span />
+            )}
+            <span className="flex items-center gap-2">
+              {canManage ? (
+                <FreezeControl slug={slug} environment={environment} />
+              ) : null}
+              {isAdmin && hasRow ? (
+                <RemoveEnvironment
+                  slug={slug}
+                  environmentId={environmentId}
+                  environmentName={environment.name}
+                />
+              ) : null}
+            </span>
           </div>
-          {open ? (
+          {open && hasRow ? (
             <DeployHistory
               state={history}
               slug={slug}
-              environmentId={environment.id}
+              environmentId={environmentId}
               environmentName={environment.name}
             />
           ) : null}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// FrozenBanner is the card-level "this is stopped, and here's why" (#202). Amber
+// (a hold, not a failure) matching the RolloutGatePrompt tone right below it.
+//
+// `freeze_reason` / `frozen_by` are REDACTED by the server for viewers, so their
+// absence means "not allowed to see", never "not set" — the banner must still
+// state the freeze clearly without them.
+function FrozenBanner({ environment }: { environment: EnvironmentSummary }) {
+  return (
+    <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs">
+      <p className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
+        <Snowflake className="size-3.5" aria-hidden />
+        Frozen — no deploy to this environment will be admitted
+      </p>
+      {environment.freeze_reason ? (
+        <p className="text-muted-foreground">{environment.freeze_reason}</p>
+      ) : null}
+      {environment.frozen_at ? (
+        <p className="text-muted-foreground">
+          since <RelativeTime at={environment.frozen_at} fallback="—" />
+          {environment.frozen_by ? ` by ${environment.frozen_by}` : null}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// FreezeControl is the maintainer toggle. Freezing opens a dialog (the reason is
+// required); unfreezing is a single click — lifting a hold needs no extra input,
+// and the server wakes the held runs immediately.
+function FreezeControl({
+  slug,
+  environment,
+}: {
+  slug: string;
+  environment: EnvironmentSummary;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+
+  if (!environment.frozen) {
+    return (
+      <FreezeDialog
+        slug={slug}
+        environment={environment.name}
+        trigger={
+          <Button variant="outline" size="sm" className="h-7 text-xs">
+            <Snowflake className="mr-1 size-3.5" aria-hidden /> Freeze
+          </Button>
+        }
+      />
+    );
+  }
+
+  function unfreeze() {
+    startTransition(async () => {
+      const res = await unfreezeEnvironment({ slug, name: environment.name });
+      if (!res.ok) {
+        toast.error(`Unfreeze ${environment.name}: ${res.error}`);
+        return;
+      }
+      toast.success(`${environment.name} unfrozen — held deploys resume`);
+      router.refresh();
+    });
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-7 text-xs"
+      onClick={unfreeze}
+      disabled={pending}
+    >
+      {pending ? (
+        <Loader2 className="mr-1 size-3.5 animate-spin" aria-hidden />
+      ) : (
+        <Snowflake className="mr-1 size-3.5" aria-hidden />
+      )}
+      Unfreeze
+    </Button>
   );
 }
 

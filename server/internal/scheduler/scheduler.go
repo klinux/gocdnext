@@ -144,29 +144,27 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		}
 	}
 
-	// Past the gate — clear any prior queue_reason so a run that was
-	// previously stamped 'serial-busy:X' (and is now proceeding
-	// because X finished) doesn't carry the stale message into its
-	// running window. Idempotent in SQL (IS NOT NULL guard), so the
-	// common path (no prior stamp) is cheap.
-	if err := s.store.ClearRunQueueReason(ctx, runID); err != nil {
-		s.log.Warn("scheduler: clear queue_reason failed", "run_id", runID, "err", err)
-	}
-
 	jobs, err := s.store.ListDispatchableJobs(ctx, runID)
 	if err != nil {
 		s.log.Warn("scheduler: list jobs", "run_id", runID, "err", err)
 		return
 	}
 	if len(jobs) == 0 {
+		// Nothing to dispatch, so nothing holds the run: drop any stale reason
+		// (a 'serial-busy:X' whose X finished) exactly as the pre-freeze code
+		// did at this point. Idempotent in SQL, so the common path is cheap.
+		if err := s.store.ClearRunQueueReason(ctx, runID); err != nil {
+			s.log.Warn("scheduler: clear queue_reason failed", "run_id", runID, "err", err)
+		}
 		return
 	}
 
-	materials, err := s.store.ListPipelineMaterials(ctx, run.PipelineID)
-	if err != nil {
-		s.log.Warn("scheduler: list materials", "pipeline_id", run.PipelineID, "err", err)
-		return
-	}
+	// hold accumulates the ONE explanation this tick will stamp on the run.
+	// Every gate below records into it instead of writing immediately: the
+	// column is run-level while the blockers are per-job, so writing per job
+	// churns the row and makes the final message depend on job ordering. See
+	// holdPriority for the total order.
+	var hold runHold
 
 	// Snapshot of every job_run in this run, keyed by name. The
 	// needs-satisfaction gate below consults this once per candidate
@@ -185,6 +183,39 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		return
 	}
 	statusMap := buildJobStatusMap(statusList)
+
+	// Environment change-freeze pre-scan (#202). Runs BEFORE the per-job loop so
+	// one batched query answers for the whole active stage, and it is fed only
+	// the jobs that already pass the needs gate — a deploy still waiting on an
+	// upstream is not being held by a freeze, and must not donate the run's
+	// queue explanation.
+	//
+	// It also has to come before ListPipelineMaterials, which is why that query
+	// moved down here and became lazy: a run whose every ready job is frozen
+	// should not pay for a materials round-trip it will not use.
+	ready := make([]store.DispatchableJob, 0, len(jobs))
+	for _, job := range jobs {
+		if check := needsSatisfied(job.Needs, statusMap); check.Ok {
+			ready = append(ready, job)
+		}
+	}
+	freeze := s.scanFrozenDeployEnvs(ctx, run, ready)
+
+	// Materials are needed only by the plugin/agent assignment builder, so the
+	// lookup is lazy + at-most-once per tick: a run fully held by a freeze (or
+	// one that only takes the native path) never issues it.
+	var (
+		materials    []store.Material
+		materialsErr error
+		materialsSet bool
+	)
+	materialsFor := func() ([]store.Material, error) {
+		if !materialsSet {
+			materials, materialsErr = s.store.ListPipelineMaterials(ctx, run.PipelineID)
+			materialsSet = true
+		}
+		return materials, materialsErr
+	}
 
 	// Cache the user-stage outcome so we don't re-query it for
 	// every synth notification job in the same tick. nil = not
@@ -266,6 +297,32 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			continue
 		}
 
+		// Environment change-freeze early gate (#202). Positioned HERE — after the
+		// needs gate, before the native takeover block — on purpose: it is the last
+		// point before this iteration starts doing work that has side effects
+		// (tryNativeDeploy's HasTarget / declarative reconcile / target upsert) or
+		// costs a round-trip nobody will use (agent selection, secrets, artifacts,
+		// OIDC tokens, kubeconfig).
+		//
+		// This is an OPTIMISATION, not the guarantee: the memo is a snapshot from
+		// the top of the tick, so a freeze that lands after it still gets caught by
+		// the authoritative re-check inside the admitting transaction. Skipping the
+		// job leaves it queued with its `frozen-deploy:<env>` stamp, which persists
+		// untouched (IS DISTINCT FROM) until the environment thaws.
+		//
+		// Note this holds ONE JOB, not the whole run: a stage with a frozen
+		// `production` deploy and a non-frozen `staging` deploy still dispatches
+		// staging. The run-level queue_reason names the dominant blocker; it does
+		// not mean everything stopped.
+		if freeze.any() {
+			if env := freeze.envFor(job.Name); env != "" && freeze.holds(env) {
+				hold.record(holdFrozen, store.FreezeQueueReasonPrefix+freeze.winner)
+				s.log.Debug("scheduler: deploy held by environment freeze",
+					"run_id", runID, "job_id", job.ID, "job_name", job.Name, "environment", env)
+				continue
+			}
+		}
+
 		// Native deploy takeover (ADR-0001, Model A): a `deploy:` job with a registered
 		// target is server-managed (server drives the sync + watch) and uses NO agent —
 		// so it MUST be attempted BEFORE FindIdleWithTags, or it would sit queued forever
@@ -273,7 +330,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// path only when no target is registered (or the deployer isn't wired).
 		if s.native != nil && !job.DeployRollback {
 			if jobDef, derr := jobDefFromDefinition(run.Definition, job.Name); derr == nil && jobDef.Deploy != nil {
-				if s.tryNativeDeploy(ctx, run, job, jobDef) {
+				if s.tryNativeDeploy(ctx, run, job, jobDef, &hold) {
 					continue
 				}
 				// fallthrough: no registered target → plugin/agent path below.
@@ -310,6 +367,16 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		if profErr != nil {
 			s.failJobWithError(ctx, job, fmt.Sprintf("runner profile: %v", profErr))
 			continue
+		}
+
+		materials, mErr := materialsFor()
+		if mErr != nil {
+			// break, NOT return: applyRunHold below is the tick's single
+			// queue_reason write, so returning from inside the loop would drop
+			// an explanation an earlier job already recorded (the operator would
+			// see a blank reason until the next tick happened to succeed).
+			s.log.Warn("scheduler: list materials", "pipeline_id", run.PipelineID, "err", mErr)
+			break
 		}
 
 		// Resolve a clone token for each git material URL before
@@ -418,20 +485,50 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// already guarded + handled in tryNativeDeploy above; a deploy job reaching here
 		// is a plugin fallback (or native is off), and still needs the same protection.
 		if deployTarget != nil && !job.DeployRollback {
-			guard, outcome := s.beginDeployGuard(ctx, run, job, deployTarget.Environment)
+			guard, outcome := s.beginDeployGuard(ctx, run, job, deployTarget.Environment, &hold)
 			if outcome != guardProceed {
 				continue // blocked / busy / fail-closed — queue_reason set or logged
 			}
 			deployGuard = guard
 		}
 
-		assigned, ok, err := s.store.AssignJob(ctx, job.ID, agentID)
+		// ADMISSION. For a deploy job this is the freeze guarantee's boundary: a
+		// dedicated method takes ProjectEnvFreezeLockKey, re-reads
+		// environment_freezes under it and performs the CAS in ONE transaction,
+		// so a freeze that committed after the pre-scan cannot be raced. Every
+		// other job keeps using the plain AssignJob — the common hot path must
+		// not pay for a lock it can never need.
+		var (
+			assigned store.AssignedJob
+			claimed  bool
+		)
+		if deployTarget != nil {
+			var admission store.DeployAdmission
+			assigned, admission, err = s.store.AssignDeployJobIfEnvNotFrozen(
+				ctx, job.ID, agentID, run.ProjectID, deployTarget.Environment)
+			// An EXPECTED skip, never a job failure: the freeze legitimately
+			// landed between the pre-scan and here. Stamp the reason and retry
+			// on the next tick.
+			if err == nil && admission == store.DeployAdmissionFrozen {
+				releaseDeployGuard()
+				// The pre-scan missed this one (the freeze landed between the
+				// scan and the admitting tx), so the memo has no winner to
+				// defer to — this env owns the reason.
+				hold.record(holdFrozen, store.FreezeQueueReasonPrefix+deployTarget.Environment)
+				s.log.Debug("scheduler: deploy refused at admission by environment freeze",
+					"run_id", runID, "job_id", job.ID, "environment", deployTarget.Environment)
+				continue
+			}
+			claimed = admission == store.DeployAdmitted
+		} else {
+			assigned, claimed, err = s.store.AssignJob(ctx, job.ID, agentID)
+		}
 		if err != nil {
 			releaseDeployGuard()
 			s.log.Warn("scheduler: assign", "job_id", job.ID, "err", err)
 			continue
 		}
-		if !ok {
+		if !claimed {
 			// Lost optimistic race with another scheduler tick / replica.
 			releaseDeployGuard()
 			continue
@@ -497,6 +594,9 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			"agent_id", agentID)
 		// (Deploy revision was created above, before DispatchAssignment.)
 	}
+
+	// ONE queue_reason write per tick, after every gate has had its say.
+	s.applyRunHold(ctx, run, hold)
 
 	if dispatched > 0 {
 		if err := s.store.MarkRunRunning(ctx, runID); err != nil {

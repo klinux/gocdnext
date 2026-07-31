@@ -705,6 +705,10 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 			Status:       lr.Status,
 			HasServices:  lr.HasServices,
 			ServiceNames: lr.ServiceNames,
+			// queue_reason so a pipeline card can say WHY its latest run is
+			// sitting still — "Frozen: production" (#202) rather than a bare
+			// queued badge that looks identical to a missing agent.
+			QueueReason:  stringValue(lr.QueueReason),
 			CancelReason: stringValue(lr.CancelReason),
 			SupersededBy: pgUUIDPtr(lr.SupersededBy),
 			CreatedAt:    lr.CreatedAt.Time,

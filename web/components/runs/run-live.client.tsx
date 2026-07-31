@@ -268,6 +268,7 @@ export function RunLive({ initial, runId, apiBaseURL }: Props) {
             status={data.status}
             cancelReason={data.cancel_reason}
             supersededBy={data.superseded_by}
+            queueReason={data.queue_reason}
             className="text-[10px]"
           />
           {live ? (

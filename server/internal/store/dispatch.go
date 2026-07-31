@@ -188,15 +188,29 @@ func (s *Store) SetRunQueueReason(ctx context.Context, runID uuid.UUID, reason s
 // SetActiveRunQueueReason records a queue/backpressure reason on an in-flight run
 // that may already be running. Used by dispatch-time gates after earlier stages
 // have promoted the run out of queued.
-func (s *Store) SetActiveRunQueueReason(ctx context.Context, runID uuid.UUID, reason string) error {
-	if _, err := s.pool.Exec(ctx, `
+//
+// `queue_reason IS DISTINCT FROM $2` makes a re-stamp of the SAME reason a no-op
+// write. The environment freeze (00078) is the reason this matters: a run held
+// by a frozen `production` is re-evaluated on every scheduler tick, and without
+// this guard each tick would rewrite an identical value — pure WAL, dead tuples
+// and replication traffic for a run that hasn't changed. IS DISTINCT FROM (not
+// `<>`) so a NULL current value still matches and gets stamped.
+//
+// Returns changed=true only when a row was actually written, i.e. on a real
+// TRANSITION. Callers use it to log once per transition instead of once per
+// tick: a run parked behind a frozen environment for a day would otherwise emit
+// ~5,760 identical lines at the default 15s tick.
+func (s *Store) SetActiveRunQueueReason(ctx context.Context, runID uuid.UUID, reason string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE runs
 		SET queue_reason = $2
 		WHERE id = $1 AND status IN ('queued', 'running')
-	`, pgUUID(runID), reason); err != nil {
-		return fmt.Errorf("store: set active queue_reason: %w", err)
+		  AND queue_reason IS DISTINCT FROM $2
+	`, pgUUID(runID), reason)
+	if err != nil {
+		return false, fmt.Errorf("store: set active queue_reason: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // ClearRunQueueReason removes a previously-stamped reason. Idempotent

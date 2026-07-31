@@ -13,6 +13,10 @@ SELECT r.id,
        r.counter,
        r.cause,
        r.status,
+       -- queue_reason rides along so the runs list can explain a held run
+       -- ("Frozen: production") without a per-row lookup — same rationale as
+       -- cancel_reason above.
+       r.queue_reason,
        r.cancel_reason,
        r.superseded_by,
        r.has_services,

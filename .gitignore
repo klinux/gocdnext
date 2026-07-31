@@ -14,6 +14,10 @@ go.sum.lock
 
 # Node / Next.js
 web/node_modules/
+# pnpm's content-addressable store. `pnpm install` puts it here whenever the
+# global store isn't writable/configured (a fresh machine, CI, a sandbox), so it
+# appears at the repo root and is trivially committed by accident.
+.pnpm-store/
 # .next anywhere — the web app builds to web/.next, and a stray `next build`
 # run from another dir (e.g. server/) must not leak its output into git.
 .next/
