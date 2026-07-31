@@ -225,6 +225,102 @@ export async function deleteEnvironment(
   }
 }
 
+// The environment-name grammar the server enforces (server/pkg/domain:
+// deployEnvRE). Validated client-side purely for a fast, specific message — the
+// server re-validates and stays the authority.
+const environmentNameSchema = z
+  .string()
+  .min(1, "environment name is required")
+  .max(64, "environment name is at most 64 characters")
+  .regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+    "start with a letter or digit, then letters, digits, dot, dash or underscore",
+  );
+
+const freezeEnvironmentSchema = z.object({
+  slug: z.string().min(1),
+  name: environmentNameSchema,
+  reason: z
+    .string()
+    .trim()
+    .min(1, "a reason is required")
+    .max(500, "reason is at most 500 characters"),
+});
+
+// freezeEnvironment puts a deploy environment under a system-enforced
+// change-freeze (#202): while it holds, gocdnext admits no promotion to that
+// environment — approving a gate that governs it is refused, its deploy jobs
+// stay queued, and rollback is refused.
+//
+// Keyed by NAME rather than environment id on purpose: environments are created
+// lazily at their first deploy, so this is also how you pre-emptively freeze one
+// that has never been deployed to — the first-ever deploy is exactly the one a
+// freeze must stop.
+//
+// Idempotent server-side: re-freezing does NOT reset who froze it, when, or why.
+export async function freezeEnvironment(
+  input: z.infer<typeof freezeEnvironmentSchema>,
+): Promise<ActionResult> {
+  const parsed = freezeEnvironmentSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  const { slug, name, reason } = parsed.data;
+  return callFreezeEndpoint(slug, name, "PUT", { reason });
+}
+
+const unfreezeEnvironmentSchema = z.object({
+  slug: z.string().min(1),
+  name: environmentNameSchema,
+});
+
+// unfreezeEnvironment lifts the change-freeze. The server wakes every run the
+// freeze was holding, so deploys resume immediately rather than on the next
+// scheduler tick. Idempotent.
+export async function unfreezeEnvironment(
+  input: z.infer<typeof unfreezeEnvironmentSchema>,
+): Promise<ActionResult> {
+  const parsed = unfreezeEnvironmentSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "invalid input" };
+  }
+  const { slug, name } = parsed.data;
+  return callFreezeEndpoint(slug, name, "DELETE");
+}
+
+async function callFreezeEndpoint(
+  slug: string,
+  name: string,
+  method: "PUT" | "DELETE",
+  body?: { reason: string },
+): Promise<ActionResult> {
+  try {
+    const url =
+      env.GOCDNEXT_API_URL.replace(/\/+$/, "") +
+      `/api/v1/projects/${encodeURIComponent(slug)}/environment-freezes/${encodeURIComponent(name)}`;
+    const session = (await cookies()).get("gocdnext_session")?.value;
+    const res = await fetch(url, {
+      method,
+      cache: "no-store",
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(session ? { Cookie: `gocdnext_session=${session}` } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!res.ok) {
+      // The handler writes user-ready messages per status (invalid name,
+      // missing reason, not a maintainer), so surface the body verbatim.
+      const text = (await res.text()).trim();
+      return { ok: false, error: text || `server error (${res.status})` };
+    }
+    revalidatePath(`/projects/${slug}/environments`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 const rolloutGateSchema = z.object({
   slug: z.string().min(1),
   revisionId: z.string().min(1),
