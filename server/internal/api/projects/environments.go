@@ -32,11 +32,32 @@ type deploymentDTO struct {
 }
 
 type environmentDTO struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	// ID / CreatedAt / UpdatedAt are OPTIONAL because a row can be
+	// freeze-only: `environments` rows are lazy, so a pre-emptive freeze on an
+	// env nothing has deployed to — or an orphan freeze left behind by
+	// deleting a frozen env — has no environments row at all. Emitting a zero
+	// UUID and a zero time for those would have the UI render
+	// "00000000-0000-…" and "0001-01-01"; absent is honest, and
+	// has_environment_row is the explicit discriminator the client gates on.
+	ID          string     `json:"id,omitempty"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	// No omitempty: it is the discriminator, and a silently-absent `false`
+	// would read as "unknown" on the client.
+	HasEnvironmentRow bool `json:"has_environment_row"`
+
+	// Change-freeze (00078). `frozen` and `frozen_at` are VIEWER-readable —
+	// "production is frozen" is operational state everyone needs. `freeze_reason`
+	// and `frozen_by` are not: a reason routinely carries incident detail
+	// ("frozen: PCI audit finding INC-4412"), so they are redacted below
+	// maintainer, mirroring how /deploy-watches redacts its config fields.
+	Frozen       bool       `json:"frozen"`
+	FrozenAt     *time.Time `json:"frozen_at,omitempty"`
+	FrozenBy     string     `json:"frozen_by,omitempty"`
+	FreezeReason string     `json:"freeze_reason,omitempty"`
+
 	// No omitempty: an environment with nothing deployed emits an
 	// explicit "current": null so the TS contract (DeploymentRecord |
 	// null) is stable rather than "field sometimes absent".
@@ -100,14 +121,31 @@ func (h *Handler) ListEnvironments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// showFreezeDetail defaults true so an auth-disabled deployment (no user in
+	// context) sees everything — same sensitive-default as ListDeployWatches.
+	// With auth on, RequireAuth guarantees a user and the role gates it.
+	showFreezeDetail := true
+	if u, ok := authapi.UserFromContext(r.Context()); ok {
+		showFreezeDetail = store.RoleSatisfies(u.Role, store.RoleMaintainer)
+	}
+
 	out := make([]environmentDTO, 0, len(envs))
 	for _, e := range envs {
 		dto := environmentDTO{
-			ID:          e.ID.String(),
-			Name:        e.Name,
-			Description: e.Description,
-			CreatedAt:   e.CreatedAt,
-			UpdatedAt:   e.UpdatedAt,
+			Name:              e.Name,
+			Description:       e.Description,
+			CreatedAt:         e.CreatedAt,
+			UpdatedAt:         e.UpdatedAt,
+			HasEnvironmentRow: e.HasEnvironmentRow,
+			Frozen:            e.Frozen,
+			FrozenAt:          e.FrozenAt,
+		}
+		if e.ID != nil {
+			dto.ID = e.ID.String()
+		}
+		if showFreezeDetail {
+			dto.FrozenBy = e.FrozenBy
+			dto.FreezeReason = e.FreezeReason
 		}
 		if e.Current != nil {
 			cur := toDeploymentDTO(*e.Current)
@@ -250,6 +288,11 @@ func (h *Handler) RollbackEnvironment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "can only roll back to a successful deploy", http.StatusUnprocessableEntity)
 	case errors.Is(err, store.ErrRollbackRunGone):
 		http.Error(w, "the target deploy's run was garbage-collected; cannot roll back to it", http.StatusUnprocessableEntity)
+	case errors.Is(err, store.ErrEnvironmentFrozen):
+		// A rollback is a deploy, so the change-freeze refuses it like any other
+		// (#202). 409, not 403: nothing is wrong with the caller's permissions —
+		// the environment's state is what conflicts, and it is temporary.
+		http.Error(w, "this environment is frozen — lift the freeze before rolling back", http.StatusConflict)
 	case errors.Is(err, store.ErrJobRunActive):
 		http.Error(w, "the deploy job is still active — wait for it to finish", http.StatusConflict)
 	default:

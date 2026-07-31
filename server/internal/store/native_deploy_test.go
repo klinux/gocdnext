@@ -33,7 +33,7 @@ func TestStartNativeDeploy_Atomic(t *testing.T) {
 	}
 
 	res, err := s.StartNativeDeploy(ctx, store.StartNativeDeployInput{
-		JobRunID: jobUnitID, EnvironmentID: envID, RunID: runID, Version: "v1", DeployedBy: "svc",
+		JobRunID: jobUnitID, EnvironmentID: envID, Environment: "production", RunID: runID, Version: "v1", DeployedBy: "svc",
 		ProjectID: projectID, SyncMode: "trigger", Cluster: "prod-gke", Application: "checkout",
 		Namespace: "argocd", ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
 	})
@@ -98,7 +98,7 @@ func TestStartNativeDeploy_LostRace(t *testing.T) {
 	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
 
 	res, err := s.StartNativeDeploy(ctx, store.StartNativeDeployInput{
-		JobRunID: jobCompileID, EnvironmentID: envID, RunID: runID, Version: "v1", DeployedBy: "svc",
+		JobRunID: jobCompileID, EnvironmentID: envID, Environment: "production", RunID: runID, Version: "v1", DeployedBy: "svc",
 		ProjectID: projectID, SyncMode: "trigger", Cluster: "prod-gke", Application: "checkout",
 		Namespace: "argocd", ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
 	})
@@ -168,7 +168,7 @@ func seedDeclaredTakeover(t *testing.T, pool *pgxpool.Pool, s *store.Store) (run
 
 func declaredInput(runID, jobUnitID, projectID, envID uuid.UUID) store.StartNativeDeployInput {
 	return store.StartNativeDeployInput{
-		JobRunID: jobUnitID, EnvironmentID: envID, RunID: runID, Version: "v1", DeployedBy: "svc",
+		JobRunID: jobUnitID, EnvironmentID: envID, Environment: "production", RunID: runID, Version: "v1", DeployedBy: "svc",
 		ProjectID: projectID, SyncMode: "trigger", Cluster: "prod-gke", Application: "checkout",
 		Namespace: "argocd", ExpectedRevision: "v1", DeadlineAt: time.Now().Add(10 * time.Minute),
 	}

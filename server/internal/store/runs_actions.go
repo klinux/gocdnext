@@ -704,11 +704,35 @@ type RerunJobResult struct {
 // sees a clean slate instead of the previous run's output
 // intermixed with this one.
 func (s *Store) RerunJob(ctx context.Context, in RerunJobInput) (RerunJobResult, error) {
+	return s.rerunJobTx(ctx, in, nil)
+}
+
+// rerunGuard is an admission check the caller injects into the rerun
+// TRANSACTION, before any row lock is taken.
+//
+// It exists for the deploy rollback path. A rollback is a deploy, so a
+// change-freeze must refuse it — but RerunJob opens its own transaction, so a
+// pre-check in RollbackToRevision would be check-then-act across a transaction
+// boundary: a freeze committing in that gap would still let the rollback
+// through. Running the check inside the tx, under the same advisory lock the
+// freeze itself takes, closes it. Returning an error aborts the whole rerun.
+//
+// Called BEFORE the job_runs FOR UPDATE so the mandatory global lock order
+// (advisory keys, then row locks) is preserved.
+type rerunGuard func(ctx context.Context, tx pgx.Tx) error
+
+func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGuard) (RerunJobResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return RerunJobResult{}, fmt.Errorf("store: rerun job: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if guard != nil {
+		if err := guard(ctx, tx); err != nil {
+			return RerunJobResult{}, err
+		}
+	}
 
 	// FOR UPDATE locks the row for the life of the tx so the
 	// check-then-reset below is atomic against a concurrent
