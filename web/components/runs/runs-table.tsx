@@ -85,6 +85,7 @@ export function RunsTable({
                     status={r.status}
                     cancelReason={r.cancel_reason}
                     supersededBy={r.superseded_by}
+                    queueReason={r.queue_reason}
                   />
                 </TableCell>
                 <TableCell className="truncate">

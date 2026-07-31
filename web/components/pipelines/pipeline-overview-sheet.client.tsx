@@ -97,6 +97,7 @@ export function PipelineOverviewSheet({
                   status={run.status}
                   cancelReason={run.cancel_reason}
                   supersededBy={run.superseded_by}
+                  queueReason={run.queue_reason}
                   className="text-[10px]"
                 />
                 <LiveDuration
@@ -711,6 +712,7 @@ function RecentRunRow({ run }: { run: RunSummary }) {
             status={run.status}
             cancelReason={run.cancel_reason}
             supersededBy={run.superseded_by}
+            queueReason={run.queue_reason}
             className="text-[10px]"
             linkWinner={false}
           />

@@ -187,6 +187,9 @@ ORDER BY run_id, ordinal;
 -- can label them without that fetch.
 SELECT DISTINCT ON (r.pipeline_id)
   r.pipeline_id, r.id, r.counter, r.cause, r.status,
+  -- queue_reason: the pipeline card renders "Frozen: production" on a run held
+  -- by an environment freeze (00078), same slot as cancel_reason.
+  r.queue_reason,
   r.cancel_reason, r.superseded_by,
   r.created_at, r.started_at, r.finished_at, r.triggered_by,
   r.has_services, r.service_names

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,11 +122,23 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Load the gate row under the tx so the allow-list check, the
-	// "is it pending?" check, and any UPDATE all see the same
-	// snapshot. Checking allow-list in Go (vs. in SQL) keeps the
-	// error ergonomics distinct: "not allowed" vs. "not pending"
-	// vs. "not found" each surface a dedicated sentinel.
+	// The read/lock sequence below follows the MANDATORY GLOBAL LOCK ORDER
+	// documented on store.ProjectEnvFreezeLockKey:
+	//
+	//   (1) LaneEnvLockKey(s), name-ordered   (2) ProjectEnvFreezeLockKey(s),
+	//   name-ordered                          (3) row FOR UPDATE
+	//
+	// which is why the gate row is first read WITHOUT a row lock: the lane and
+	// freeze keys have to be taken before any FOR UPDATE, and computing the lane
+	// key needs the run's pipeline/ref/mode. Dispatch takes lane-then-freeze; if
+	// approval took freeze-then-lane (which is what happens if the freeze check
+	// sits after the FOR UPDATE, since writeGatePassMarkers takes the lane lock
+	// at the very end) the two invert and deadlock — undetectably, because the
+	// lane lock is session-level on another connection.
+	//
+	// EVERYTHING below runs on q.WithTx(tx), never on s.q: a second pooled
+	// connection acquired while this tx holds locks self-deadlocks outright at
+	// MaxConns=1 and burns a connection at any pool size.
 	var (
 		gate           bool
 		status         string
@@ -136,22 +149,26 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		stageRunID     pgtype.UUID
 		gateName       string
 		runSuperseded  bool
+		projectID      pgtype.UUID
+		pipelineID     pgtype.UUID
+		runRef         string
+		runDefinition  []byte
 	)
-	// FOR UPDATE OF j locks ONLY the gate row (not the run) so the gate's status
-	// can't flip under us between this read and the vote/flip below — closing the
-	// orphan-vote window where a concurrent supersede cancels the gate after we read
-	// it as pending. Locking only the job row keeps the global order job_runs ->
-	// (nothing here) intact; we deliberately do NOT lock runs (that would invert the
-	// job->runs order the result cascade uses and could deadlock). r.superseded_by
-	// tells "not pending because superseded" apart from a normal already-decided gate.
+	// Plain SELECT, no FOR UPDATE — see the lock-order note above. runs carries
+	// no project_id (only pipeline_id), so the project comes through pipelines.
+	// r.definition is the run's own snapshot: the gate's governed envs must be
+	// read from what this run was created with, not from a pipeline row that may
+	// have been re-applied since.
 	err = tx.QueryRow(ctx, `
 		SELECT j.approval_gate, j.status, j.approvers, j.approver_groups, j.approval_required,
-		       j.run_id, j.stage_run_id, j.name, (r.superseded_by IS NOT NULL)
+		       j.run_id, j.stage_run_id, j.name, (r.superseded_by IS NOT NULL),
+		       p.project_id, r.pipeline_id, r.ref, r.definition
 		FROM job_runs j
 		JOIN runs r ON r.id = j.run_id
+		JOIN pipelines p ON p.id = r.pipeline_id
 		WHERE j.id = $1
-		FOR UPDATE OF j
-	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID, &gateName, &runSuperseded)
+	`, d.JobRunID).Scan(&gate, &status, &approvers, &approverGroups, &required, &parentRun, &stageRunID,
+		&gateName, &runSuperseded, &projectID, &pipelineID, &runRef, &runDefinition)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
@@ -161,6 +178,9 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	if !gate {
 		return ApprovalResult{}, ErrApprovalGateNotFound
 	}
+	// The pending/superseded checks are REPEATED under the row lock further down
+	// — this early copy only avoids paying for locks on an obviously-decided
+	// gate. The authoritative revalidation is the locked one.
 	if status != "awaiting_approval" {
 		// A superseded run's gates are canceled by the supersede terminalizer; report
 		// that distinctly (and BEFORE any vote insert, so no orphan vote accrues).
@@ -178,6 +198,10 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 	// BOTH lists = "any authenticated user" (permissive default,
 	// same as the pre-groups era). Group intersection requires a
 	// second read, skipped when the gate lists no groups.
+	//
+	// Runs BEFORE any lock: an unauthorized approver must not be able to make
+	// the server take advisory locks on a production environment, however
+	// briefly.
 	if len(approvers) > 0 || len(approverGroups) > 0 {
 		// Match the approvers list against EITHER the display label
 		// (User — name-preferred) OR the email. Under OIDC the `name`
@@ -201,6 +225,72 @@ func (s *Store) decideGate(ctx context.Context, d ApprovalDecision, decision, ne
 		}
 		if !allowed {
 			return ApprovalResult{}, ErrApproverNotAllowed
+		}
+	}
+
+	// Locks, in the mandatory global order. ONLY on approve: a rejection cannot
+	// promote anything to a frozen environment, so it pays for neither the
+	// lane/freeze locks nor the freeze query — it only takes the common row lock
+	// below. Making reject wait on a frozen env's lock would also be actively
+	// wrong: "stop this from shipping" is exactly what you still want to be able
+	// to do during a change-freeze.
+	var governedEnvs []string
+	if decision == "approved" {
+		governedEnvs, err = lockApprovalEnvs(ctx, tx, fromPgUUID(projectID), fromPgUUID(pipelineID),
+			runRef, gateName, runDefinition)
+		if err != nil {
+			return ApprovalResult{}, err
+		}
+	}
+
+	// NOW the row lock (step 3 of the order). FOR UPDATE OF j locks ONLY the gate
+	// row (not the run) so the gate's status can't flip under us between here and
+	// the vote/flip below — closing the orphan-vote window where a concurrent
+	// supersede cancels the gate after we read it as pending. Locking only the job
+	// row keeps the global order job_runs -> (nothing here) intact; we deliberately
+	// do NOT lock runs (that would invert the job->runs order the result cascade
+	// uses and could deadlock). Common to approve AND reject.
+	if err := tx.QueryRow(ctx, `
+		SELECT j.approval_gate, j.status, (r.superseded_by IS NOT NULL)
+		FROM job_runs j
+		JOIN runs r ON r.id = j.run_id
+		WHERE j.id = $1
+		FOR UPDATE OF j
+	`, d.JobRunID).Scan(&gate, &status, &runSuperseded); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ApprovalResult{}, ErrApprovalGateNotFound
+		}
+		return ApprovalResult{}, fmt.Errorf("store: revalidate approval row: %w", err)
+	}
+	// approval_gate is re-read under the lock, not just status: the unlocked
+	// read above happened before any lock was taken, and defence in depth here
+	// costs one already-fetched column. A row that stopped being a gate between
+	// the two reads must not receive an approval decision.
+	if !gate {
+		return ApprovalResult{}, ErrApprovalGateNotFound
+	}
+	if status != "awaiting_approval" {
+		if runSuperseded {
+			return ApprovalResult{}, ErrApprovalSuperseded
+		}
+		return ApprovalResult{}, ErrApprovalNotPending
+	}
+
+	// The freeze check itself, under the locks taken above and on the tx-bound
+	// queries handle. Locking (not merely reading) is what serialises an approve
+	// against a concurrent freeze: whichever takes the lock first wins, and a
+	// freeze that lost the race applies to the NEXT approval. It is also a
+	// backstop over the dispatch seam — an approval that slipped through here
+	// would still be refused at admission.
+	if decision == "approved" && len(governedEnvs) > 0 {
+		frozen, ferr := frozenGovernedEnvsTx(ctx, s.q.WithTx(tx), fromPgUUID(projectID), governedEnvs)
+		if ferr != nil {
+			return ApprovalResult{}, ferr
+		}
+		if len(frozen) > 0 {
+			// Name EVERY frozen env, not just the first: the operator otherwise
+			// unfreezes one, retries, and gets refused again by the next.
+			return ApprovalResult{}, fmt.Errorf("%w: %s", ErrEnvironmentFrozen, strings.Join(frozen, ", "))
 		}
 	}
 

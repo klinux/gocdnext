@@ -17,23 +17,28 @@ import (
 // vocabulary and a typo at a call site surfaces as a
 // compile-time miss instead of a silent orphan in the log.
 const (
-	AuditActionProjectApply           = "project.apply"
-	AuditActionProjectDelete          = "project.delete"
-	AuditActionProjectSync            = "project.sync"
-	AuditActionSecretSet              = "secret.set"
-	AuditActionSecretDelete           = "secret.delete"
-	AuditActionGlobalSecretSet        = "global_secret.set"
-	AuditActionGlobalSecretDelete     = "global_secret.delete"
-	AuditActionCachePurge             = "cache.purge"
-	AuditActionRunTrigger             = "run.trigger"
-	AuditActionRunCancel              = "run.cancel"
-	AuditActionRunRerun               = "run.rerun"
-	AuditActionRunSuperseded          = "run.superseded"
-	AuditActionJobRerun               = "job.rerun"
-	AuditActionDeployRollback         = "deploy.rollback"
-	AuditActionDeployTargetSet        = "deploy_target.set"
-	AuditActionDeployTargetDelete     = "deploy_target.delete"
-	AuditActionEnvironmentDelete      = "environment.delete"
+	AuditActionProjectApply       = "project.apply"
+	AuditActionProjectDelete      = "project.delete"
+	AuditActionProjectSync        = "project.sync"
+	AuditActionSecretSet          = "secret.set"
+	AuditActionSecretDelete       = "secret.delete"
+	AuditActionGlobalSecretSet    = "global_secret.set"
+	AuditActionGlobalSecretDelete = "global_secret.delete"
+	AuditActionCachePurge         = "cache.purge"
+	AuditActionRunTrigger         = "run.trigger"
+	AuditActionRunCancel          = "run.cancel"
+	AuditActionRunRerun           = "run.rerun"
+	AuditActionRunSuperseded      = "run.superseded"
+	AuditActionJobRerun           = "job.rerun"
+	AuditActionDeployRollback     = "deploy.rollback"
+	AuditActionDeployTargetSet    = "deploy_target.set"
+	AuditActionDeployTargetDelete = "deploy_target.delete"
+	AuditActionEnvironmentDelete  = "environment.delete"
+	// Environment change-freeze (00078). Unlike most actions here these are
+	// emitted from INSIDE the store's own mutation tx (not via audit.Emit), so
+	// the freeze and its history commit atomically — see FreezeEnvironment.
+	AuditActionEnvironmentFreeze      = "environment.freeze"
+	AuditActionEnvironmentUnfreeze    = "environment.unfreeze"
 	AuditActionJobCancel              = "job.cancel"
 	AuditActionApprovalApprove        = "approval.approve"
 	AuditActionApprovalReject         = "approval.reject"
@@ -129,15 +134,9 @@ func (s *Store) EmitAuditEvent(ctx context.Context, in AuditEmit) (AuditEvent, e
 	if in.Action == "" || in.TargetType == "" {
 		return AuditEvent{}, fmt.Errorf("store: audit emit: action and target_type required")
 	}
-	var metaBytes []byte
-	if len(in.Metadata) == 0 {
-		metaBytes = []byte(`{}`)
-	} else {
-		b, err := json.Marshal(in.Metadata)
-		if err != nil {
-			return AuditEvent{}, fmt.Errorf("store: audit emit: marshal metadata: %w", err)
-		}
-		metaBytes = b
+	metaBytes, err := marshalAuditMetadata(in.Metadata)
+	if err != nil {
+		return AuditEvent{}, fmt.Errorf("store: audit emit: %w", err)
 	}
 	row, err := s.q.InsertAuditEvent(ctx, db.InsertAuditEventParams{
 		ActorID:    nullableUUID(in.ActorID),
@@ -229,6 +228,21 @@ func (s *Store) ListAuditEvents(ctx context.Context, f ListAuditEventsFilter) (A
 		Limit:  f.Limit,
 		Offset: f.Offset,
 	}, nil
+}
+
+// marshalAuditMetadata renders the metadata map as the JSONB payload, with nil /
+// empty collapsing to `{}` (the column is NOT NULL). Shared by EmitAuditEvent and
+// by the in-transaction emitters (environment freeze) so both produce the same
+// shape — a metadata blob that differs by writer would break the admin filters.
+func marshalAuditMetadata(metadata map[string]any) ([]byte, error) {
+	if len(metadata) == 0 {
+		return []byte(`{}`), nil
+	}
+	b, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal metadata: %w", err)
+	}
+	return b, nil
 }
 
 // nullableUUID returns a pgtype.UUID where uuid.Nil maps to the

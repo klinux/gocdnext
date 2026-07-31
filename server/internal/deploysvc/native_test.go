@@ -3,6 +3,7 @@ package deploysvc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -204,4 +205,60 @@ func TestTakeOver_StartErrorFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("a StartNativeDeploy error must fail closed")
 	}
+}
+
+// A change-freeze refusal from the admission re-check is mapped to its OWN
+// decision, not to a fail-closed error (#202).
+//
+// The distinction is what keeps a freeze from looking like an outage: an error
+// makes the scheduler log a warning every tick with no operator-facing
+// explanation, while DecisionFrozen lets it stamp `frozen-deploy:<env>` and stay
+// quiet. Both the plain and the DECLARED takeover paths must map it.
+func TestTakeOver_FrozenEnvironmentMapsToDecisionFrozen(t *testing.T) {
+	frozen := fmt.Errorf("%w: production", store.ErrEnvironmentFrozen)
+
+	t.Run("plain takeover", func(t *testing.T) {
+		sync := &fakeSyncerSvc{}
+		st := &fakeNativeStore{target: triggerTarget(), startErr: frozen}
+		res, err := newDeployer(sync, st).TakeOver(context.Background(), input())
+		if err != nil {
+			t.Fatalf("TakeOver returned an error for a freeze: %v", err)
+		}
+		if res.Decision != DecisionFrozen {
+			t.Fatalf("decision = %q, want frozen", res.Decision)
+		}
+		if sync.called {
+			t.Error("a refused takeover must not issue a Sync")
+		}
+	})
+
+	t.Run("declared takeover", func(t *testing.T) {
+		sync := &fakeSyncerSvc{}
+		st := &fakeNativeStore{target: triggerTarget(), startErr: frozen}
+		in := input()
+		in.Declared = &DeclaredExpectation{
+			Environment: "production", Cluster: "prod",
+			Application: "checkout", Namespace: "argocd", SyncMode: "trigger",
+		}
+		res, err := newDeployer(sync, st).TakeOver(context.Background(), in)
+		if err != nil {
+			t.Fatalf("declared TakeOver returned an error for a freeze: %v", err)
+		}
+		if res.Decision != DecisionFrozen {
+			t.Fatalf("decision = %q, want frozen", res.Decision)
+		}
+		if sync.called {
+			t.Error("a refused declared takeover must not issue a Sync")
+		}
+	})
+
+	t.Run("a real failure still fails closed", func(t *testing.T) {
+		// Regression guard for over-broad matching: only the freeze sentinel is
+		// a clean skip; anything else must keep its fail-closed behaviour.
+		sync := &fakeSyncerSvc{}
+		st := &fakeNativeStore{target: triggerTarget(), startErr: errors.New("connection refused")}
+		if _, err := newDeployer(sync, st).TakeOver(context.Background(), input()); err == nil {
+			t.Fatal("an infrastructure failure was swallowed as a decision")
+		}
+	})
 }

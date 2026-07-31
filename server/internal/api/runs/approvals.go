@@ -130,6 +130,13 @@ func (h *Handler) decideGate(w http.ResponseWriter, r *http.Request, approve boo
 		http.Error(w, "approval gate not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrApprovalSuperseded):
 		http.Error(w, "run was superseded by a newer revision", http.StatusConflict)
+	case errors.Is(err, store.ErrEnvironmentFrozen):
+		// The gate governs a frozen deploy environment (#202). The store's
+		// message names EVERY frozen env it governs, so the approver doesn't
+		// discover them one retry at a time. Only approve can hit this — a
+		// rejection can't promote anything, and refusing it during a freeze
+		// would block the one decision you still want available.
+		http.Error(w, "cannot approve: "+err.Error(), http.StatusConflict)
 	case errors.Is(err, store.ErrApprovalNotPending):
 		http.Error(w, "gate already decided", http.StatusConflict)
 	case errors.Is(err, store.ErrApproverNotAllowed):
