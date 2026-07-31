@@ -111,6 +111,13 @@ export type RunSummary = {
   // pipelines list can label declared services without the per-card
   // /services fetch. Empty array when the run declared none.
   service_names: string[];
+  // Why a queued/running run isn't advancing, as a `key:detail` pair. Today:
+  // `serial-busy:<run-id>` (waiting on a predecessor) and
+  // `frozen-deploy:<env>` (#202 — an environment change-freeze is holding a
+  // deploy job). Absent when nothing is blocking. A `frozen-deploy` reason
+  // names the DOMINANT blocker, not a whole-run halt: sibling jobs in the same
+  // stage that don't target a frozen environment keep running.
+  queue_reason?: string;
   // Set when a run was canceled: the operator-visible reason. For a supersede
   // (#97) it's "superseded by #N" (counter only) — the UI renders it as a muted
   // badge in the canceled tone. Absent for runs that weren't canceled.
@@ -816,11 +823,25 @@ export type DeploymentRecord = {
 };
 
 export type EnvironmentSummary = {
-  id: string;
+  // id / created_at / updated_at are OPTIONAL because a row can be
+  // freeze-only (#202): environment rows are created lazily at the first
+  // deploy, so a pre-emptive freeze — or the orphan freeze left behind when a
+  // frozen environment is deleted — has no environments row at all. Gate every
+  // id-dependent affordance (history, rollback, remove) on has_environment_row
+  // rather than on a truthiness check that is easy to forget.
+  id?: string;
   name: string;
   description?: string;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
+  has_environment_row: boolean;
+  // Change-freeze state. `frozen` / `frozen_at` are viewer-readable; the
+  // server REDACTS freeze_reason and frozen_by below maintainer, so treat
+  // their absence as "not allowed to see", never as "not set".
+  frozen: boolean;
+  frozen_at?: string;
+  frozen_by?: string;
+  freeze_reason?: string;
   current: DeploymentRecord | null;
 };
 

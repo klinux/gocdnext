@@ -47,3 +47,33 @@ describe("RunStatusBadge", () => {
     expect(screen.queryByText(/superseded/i)).toBeNull();
   });
 });
+
+describe("RunStatusBadge — held by an environment freeze (#202)", () => {
+  it("shows the freeze pill ALONGSIDE the status, not instead of it", () => {
+    // Unlike a supersede (terminal — the badge replaces the outcome), a freeze
+    // holds a run that is still live: dropping "queued" would lose real state.
+    render(<RunStatusBadge status="queued" queueReason="frozen-deploy:production" />);
+    expect(screen.getByText("Frozen: production")).toBeTruthy();
+    expect(screen.getByText("Queued")).toBeTruthy();
+  });
+
+  it("shows it on a running run too — a mixed stage keeps dispatching", () => {
+    // A stage with a frozen `production` deploy and a dispatchable `staging`
+    // one promotes the run to running while the freeze still owns the reason.
+    render(<RunStatusBadge status="running" queueReason="frozen-deploy:production" />);
+    expect(screen.getByText("Frozen: production")).toBeTruthy();
+  });
+
+  it("never shows it on a terminal run", () => {
+    // queue_reason on a finished run is a leftover from when it was waiting;
+    // "Frozen: production" next to "success" would be actively misleading.
+    render(<RunStatusBadge status="success" queueReason="frozen-deploy:production" />);
+    expect(screen.queryByText("Frozen: production")).toBeNull();
+  });
+
+  it("ignores an unknown queue reason", () => {
+    render(<RunStatusBadge status="queued" queueReason="serial-busy:abc" />);
+    expect(screen.queryByText(/serial-busy/)).toBeNull();
+    expect(screen.getByText("Queued")).toBeTruthy();
+  });
+});

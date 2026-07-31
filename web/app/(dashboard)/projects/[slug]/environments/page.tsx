@@ -1,11 +1,12 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { Plus, Rocket } from "lucide-react";
+import { Plus, Rocket, Snowflake } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EnvironmentCard } from "@/components/environments/environment-card.client";
 import { DeployTargetDialog } from "@/components/environments/deploy-target-dialog.client";
 import { DeployWatchesProvider } from "@/components/environments/deploy-watches-provider.client";
+import { FreezeDialog } from "@/components/environments/freeze-dialog.client";
 import { env } from "@/lib/env";
 import { type AuthState, resolveAuthState } from "@/server/queries/auth";
 import {
@@ -93,15 +94,31 @@ export default async function EnvironmentsPage({
           (ArgoCD) drives it, or your plugin (Helm, kubectl) performs it.
         </p>
         {canManage ? (
-          <DeployTargetDialog
-            slug={slug}
-            trigger={
-              <Button size="sm" className="shrink-0">
-                <Plus className="mr-1 size-4" aria-hidden /> Register native
-                target
-              </Button>
-            }
-          />
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {/* Page-level, NOT inside a card, and that placement is the point:
+                environments are created lazily at their first deploy, so an
+                environment you want to freeze pre-emptively has no card to
+                hang a button on — and the first-ever deploy is exactly the one
+                a freeze must stop. */}
+            <FreezeDialog
+              slug={slug}
+              trigger={
+                <Button variant="outline" size="sm">
+                  <Snowflake className="mr-1 size-4" aria-hidden /> Freeze an
+                  environment
+                </Button>
+              }
+            />
+            <DeployTargetDialog
+              slug={slug}
+              trigger={
+                <Button size="sm">
+                  <Plus className="mr-1 size-4" aria-hidden /> Register native
+                  target
+                </Button>
+              }
+            />
+          </div>
         ) : null}
       </header>
 
@@ -117,7 +134,12 @@ export default async function EnvironmentsPage({
           <div className="grid gap-4 sm:grid-cols-2">
             {environments.map((e) => (
               <EnvironmentCard
-                key={e.id}
+                // Keyed by NAME, never by id: `id` is absent on a freeze-only
+                // row (#202), so two orphan freezes would share an `undefined`
+                // key and React would carry one card's local state (open
+                // history, pending state) onto the other after an unfreeze.
+                // Name is unique per project by construction.
+                key={e.name}
                 slug={slug}
                 environment={e}
                 deployTarget={targetByEnv.get(e.name)}
