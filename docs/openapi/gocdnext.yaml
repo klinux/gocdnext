@@ -559,6 +559,91 @@ paths:
         "204": { description: deleted }
         "404": { description: project or deploy target not found }
 
+  /api/v1/projects/{slug}/environment-freezes/{name}:
+    put:
+      tags: [projects]
+      summary: Freeze a deploy environment (maintainer+).
+      description: >
+        System-enforced change-freeze. While the environment is frozen, gocdnext
+        admits NO promotion to it: approving a gate that governs it returns 409,
+        its deploy jobs stay queued with `queue_reason=frozen-deploy:<name>`, and
+        a rollback returns 409. Keyed by NAME, not by environment id, so an
+        environment that has never been deployed to (its row is created lazily at
+        the first deploy) can be frozen pre-emptively — the first-ever deploy is
+        exactly the one a freeze must stop. Idempotent: re-freezing does not
+        reset who froze it, when, or why. The guarantee is at the ADMISSION
+        boundary — a deploy admitted before the freeze committed still executes.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+          description: environment name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: >
+                    Required, and recorded in the audit log. Readable by
+                    maintainers and admins only — GET /environments REDACTS
+                    `freeze_reason` and `frozen_by` for viewers, who see just
+                    `frozen` and `frozen_at`. Do not put anything here that a
+                    viewer is expected to act on.
+                  example: "month-end close — no prod deploys until 2026-08-03"
+      responses:
+        "200":
+          description: frozen (changed=false when it was already frozen)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environment: { type: string }
+                  frozen: { type: boolean, example: true }
+                  changed: { type: boolean }
+        "400": { description: invalid environment name, or missing/oversized reason }
+        "403": { description: requires maintainer }
+        "404": { description: project not found }
+        "422": { description: the account has no usable email/name/id to record as the actor }
+    delete:
+      tags: [projects]
+      summary: Lift a deploy environment's change-freeze (maintainer+).
+      description: >
+        Idempotent. On a real thaw, every run currently held by the freeze is
+        woken with a run_queued notification so deploys resume immediately rather
+        than on the next scheduler tick; that wake is best-effort (the periodic
+        tick is the backstop), so `woken_runs` is informational.
+      parameters:
+        - $ref: "#/components/parameters/ProjectSlug"
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+          description: environment name
+      responses:
+        "200":
+          description: unfrozen (changed=false when it wasn't frozen)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environment: { type: string }
+                  frozen: { type: boolean, example: false }
+                  changed: { type: boolean }
+                  woken_runs: { type: integer }
+        "400": { description: invalid environment name }
+        "403": { description: requires maintainer }
+        "404": { description: project not found }
+
   /api/v1/projects/{slug}/deploy-watches:
     get:
       tags: [projects]
