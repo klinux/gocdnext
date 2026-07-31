@@ -10,17 +10,46 @@
 // from no fault of the tests. TRUNCATE is fully transactional, hits
 // every table the migrations created, and runs in <1ms on the data
 // shapes our tests build — so the reset path becomes deterministic.
+//
+// # Running without a container runtime
+//
+// Set GOCDNEXT_TEST_DSN to an existing, EMPTY Postgres database and the
+// container is skipped entirely — migrations and the per-test TRUNCATE run
+// against it exactly as they would against the container:
+//
+//	createdb gocdnext_test
+//	GOCDNEXT_TEST_ALLOW_TRUNCATE=1 \
+//	  GOCDNEXT_TEST_DSN='postgres://…/gocdnext_test?sslmode=disable' go test -p 1 ./...
+//
+// BOTH variables are required, and the database name must end in `_test`: the
+// first SetupPool TRUNCATEs every table in `public`, so a stale export pointing
+// at a development database would otherwise be silent, total data loss.
+//
+// This exists so the suite is reproducible on a machine with no Docker (a plain
+// `brew install postgresql` is enough). Two caveats, both of which the container
+// flow handles for you:
+//
+//   - Run packages SERIALLY (`-p 1`). Each package normally gets its own
+//     container; pointed at one shared database they truncate each other's rows
+//     mid-run and fail in ways that look like real bugs.
+//   - The database is not disposable. A package that DROPs schema objects (the
+//     retention suite drops log_lines partitions) leaves it unusable for the
+//     next run — recreate it.
+//
+// CI keeps using testcontainers; this is a local-development affordance.
 package dbtest
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -67,6 +96,27 @@ func ensureContainer(t *testing.T) {
 	sharedOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
+
+		// Operator-supplied database: skip the container entirely. Everything
+		// downstream (migrations, table list, TRUNCATE) is identical, so the
+		// tests cannot tell the difference.
+		if dsn := os.Getenv("GOCDNEXT_TEST_DSN"); dsn != "" {
+			if err := guardOperatorDSN(dsn); err != nil {
+				sharedErr = err
+				return
+			}
+			if err := runMigrations(dsn); err != nil {
+				sharedErr = fmt.Errorf("GOCDNEXT_TEST_DSN migrations: %w", err)
+				return
+			}
+			tables, err := readTableList(ctx, dsn)
+			if err != nil {
+				sharedErr = fmt.Errorf("GOCDNEXT_TEST_DSN table list: %w", err)
+				return
+			}
+			sharedDSN, sharedTables = dsn, tables
+			return
+		}
 
 		ctr, err := postgres.Run(ctx,
 			"postgres:16-alpine",
@@ -159,6 +209,42 @@ func readTableList(ctx context.Context, dsn string) ([]string, error) {
 	return out, nil
 }
 
+// truncateAllowEnv is the second, INDEPENDENT thing an operator must set before
+// dbtest will wipe a database it did not create.
+const truncateAllowEnv = "GOCDNEXT_TEST_ALLOW_TRUNCATE"
+
+// guardOperatorDSN refuses to touch a database that does not look disposable.
+//
+// The first SetupPool against this DSN runs TRUNCATE … CASCADE over EVERY table
+// in `public`. Pointed at a development or staging database by a stale shell
+// export, that is total data loss with no confirmation step — so a comment in
+// the package doc is not an adequate control. Two independent signals are
+// required, because either one alone is easy to satisfy by accident:
+//
+//  1. the database NAME ends in `_test` (a `psql` URL copied from a real
+//     environment will not), and
+//  2. GOCDNEXT_TEST_ALLOW_TRUNCATE=1 is set (a deliberate, per-shell act).
+//
+// The container path is unaffected: it owns the database it wipes.
+func guardOperatorDSN(dsn string) error {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("dbtest: GOCDNEXT_TEST_DSN is not a valid connection string: %w", err)
+	}
+	name := cfg.ConnConfig.Database
+	if !strings.HasSuffix(name, "_test") {
+		return fmt.Errorf(
+			"dbtest: refusing to run against database %q — GOCDNEXT_TEST_DSN wipes EVERY table in `public`, "+
+				"so the database name must end in `_test` (e.g. createdb gocdnext_test)", name)
+	}
+	if os.Getenv(truncateAllowEnv) != "1" {
+		return fmt.Errorf(
+			"dbtest: refusing to run against database %q — every table in `public` will be TRUNCATEd. "+
+				"Set %s=1 to confirm this database is disposable", name, truncateAllowEnv)
+	}
+	return nil
+}
+
 // truncateAll wipes every user table in one statement so foreign
 // keys collapse with CASCADE without an order dance, and identity
 // columns reset so generated IDs are deterministic across tests.
@@ -168,7 +254,9 @@ func truncateAll(pool *pgxpool.Pool) error {
 	}
 	quoted := make([]string, len(sharedTables))
 	for i, t := range sharedTables {
-		quoted[i] = `"` + t + `"`
+		// pgx.Identifier handles quoting + escaping; hand-rolled `"`+t+`"`
+		// breaks on any name containing a quote.
+		quoted[i] = pgx.Identifier{t}.Sanitize()
 	}
 	stmt := "TRUNCATE TABLE " + strings.Join(quoted, ", ") + " RESTART IDENTITY CASCADE"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
