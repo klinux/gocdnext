@@ -8,6 +8,43 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.82.0 — 2026-07-31
+
+Environment change-freezes: a maintainer can stop all promotion to a deploy
+environment, enforced by the system rather than by asking approvers to hold off.
+
+### Added
+
+- **Environment change-freeze (#202).** Approval gates answer *who* may approve,
+  never *whether anyone should right now* — during a month-end close, a holiday or
+  an incident the only lever was telling approvers "don't approve". A maintainer can
+  now freeze an environment: while `production` is frozen, gocdnext admits **no**
+  promotion to it — approving a gate that governs it returns 409, its deploy jobs
+  stay queued with `queue_reason=frozen-deploy:<env>`, and rollback returns 409. A
+  reason is required and lands in the audit log in the same transaction as the
+  freeze itself, so a freeze can never be recorded without who set it and why.
+  `PUT`/`DELETE /api/v1/projects/{slug}/environment-freezes/{name}`, maintainer-gated.
+
+  Three things worth knowing operationally:
+
+  - **An environment does not have to exist yet.** Environment rows are created at
+    the first deploy, so freezes are keyed by `(project, name)` — you can freeze
+    `production` before anything has ever shipped there, which is precisely the
+    deploy a freeze most needs to stop. Such a freeze shows up as a card of its own,
+    and survives deleting and re-creating the environment.
+  - **The name must match `deploy.environment` exactly**, including case: freezing
+    `production` does not block a pipeline that declares `prod`.
+  - **It holds the deploy job, not the run.** A stage with a frozen `production`
+    deploy and a dispatchable `staging` one still ships staging; the run shows the
+    freeze as its dominant queue reason.
+
+  The guarantee is at the **admission boundary**: once the endpoint returns, nothing
+  new is admitted. A deploy admitted *before* the freeze committed still finishes —
+  cancelling in-flight work is deliberately out of scope.
+
+  Viewers see *that* an environment is frozen and since when; the reason and the
+  actor are maintainer-only, since a reason routinely names an incident.
+
 ## v0.81.0 — 2026-07-30
 
 argocd plugin: verify TLS against an internal CA via a new `ca_cert` input.
