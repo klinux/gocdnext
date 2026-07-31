@@ -30,7 +30,10 @@ const (
 // caller must Release it. On guardSkip / guardError the guard is already released (or
 // was never taken) and the caller skips the job. Shared by the native takeover and the
 // plugin/agent dispatch path so both enforce supersede identically.
-func (s *Scheduler) beginDeployGuard(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, env string) (*store.DeploymentRevisionGuard, deployGuardOutcome) {
+// hold accumulates the run-level queue_reason instead of each gate writing it:
+// see holdPriority. A supersede state loses to a change-freeze, so recording is
+// the only way both gates can have an opinion without fighting over the column.
+func (s *Scheduler) beginDeployGuard(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, env string, hold *runHold) (*store.DeploymentRevisionGuard, deployGuardOutcome) {
 	laneMode, err := supersedeModeFromDefinition(run.Definition)
 	if err != nil {
 		s.log.Warn("scheduler: read supersede mode for deployment guard",
@@ -56,20 +59,16 @@ func (s *Scheduler) beginDeployGuard(ctx context.Context, run store.RunForDispat
 	switch status {
 	case store.DeploymentRevisionGuardLockBusy:
 		metrics.SupersedeLockBusy.Inc()
-		if err := s.store.SetActiveRunQueueReason(ctx, run.ID, "supersede-lock-busy:"+env); err != nil {
-			s.log.Warn("scheduler: set supersede lock-busy queue_reason",
-				"run_id", run.ID, "job_id", job.ID, "environment", env, "err", err)
-		}
+		hold.record(holdSupersedeLockBusy, "supersede-lock-busy:"+env)
 		// Debug, not Info: fires every tick a lane-env stays contended.
 		s.log.Debug("scheduler: deployment guard lock busy",
 			"run_id", run.ID, "job_id", job.ID, "environment", env)
 		return nil, guardSkip
 	case store.DeploymentRevisionGuardBlocked:
-		if err := s.store.SetActiveRunQueueReason(ctx, run.ID, "supersede-blocked:"+env); err != nil {
-			s.log.Warn("scheduler: set supersede blocked queue_reason",
-				"run_id", run.ID, "job_id", job.ID, "environment", env, "err", err)
-		}
-		s.log.Info("scheduler: deployment blocked by newer gate-pass",
+		hold.record(holdSupersedeBlocked, "supersede-blocked:"+env)
+		// Debug, not Info: like the lock-busy case this repeats every tick while
+		// the newer run holds the lane; applyRunHold logs the TRANSITION once.
+		s.log.Debug("scheduler: deployment blocked by newer gate-pass",
 			"run_id", run.ID, "job_id", job.ID, "environment", env)
 		return nil, guardSkip
 	}
@@ -82,10 +81,10 @@ func (s *Scheduler) beginDeployGuard(ctx context.Context, run store.RunForDispat
 // version error); false to fall through to the plugin/agent path (no registered
 // target). The supersede guard is held across the whole takeover so the #97 TOCTOU
 // guarantee matches the plugin path.
-func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, jobDef domain.Job) bool {
+func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatch, job store.DispatchableJob, jobDef domain.Job, hold *runHold) bool {
 	env := jobDef.Deploy.Environment
 
-	guard, outcome := s.beginDeployGuard(ctx, run, job, env)
+	guard, outcome := s.beginDeployGuard(ctx, run, job, env, hold)
 	if outcome != guardProceed {
 		return true // blocked / busy / fail-closed — nothing dispatched this tick
 	}
@@ -184,6 +183,14 @@ func (s *Scheduler) tryNativeDeploy(ctx context.Context, run store.RunForDispatc
 		return true
 	case deploysvc.DecisionSkip:
 		return true // lost the dispatch CAS to another tick/replica
+	case deploysvc.DecisionFrozen:
+		// The authoritative admission re-check caught a freeze that landed after
+		// the scheduler's pre-scan. A CLEAN SKIP, never a failed deploy: nothing
+		// was started, and the job retries when the environment thaws.
+		hold.record(holdFrozen, store.FreezeQueueReasonPrefix+env)
+		s.log.Debug("scheduler: native deploy refused at admission by environment freeze",
+			"run_id", run.ID, "job_id", job.ID, "environment", env)
+		return true
 	case deploysvc.DecisionGated:
 		// The target was gated between the reconcile and the takeover. Terminal, and
 		// loud: silently running the plugin path would deploy by a mechanism the file
