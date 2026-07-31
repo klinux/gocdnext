@@ -19,6 +19,10 @@ func TestSpecEmbedded(t *testing.T) {
 		"/api/v1/me",
 		"/api/v1/runs",
 		"/api/v1/projects",
+		// The change-freeze endpoints are part of the PUBLIC contract (#202):
+		// an operator automating a month-end freeze finds them here or not at
+		// all, so an implementation that forgets to document them should fail.
+		"/api/v1/projects/{slug}/environment-freezes/{name}",
 		"/metrics",
 		"/healthz",
 		"/readyz",
