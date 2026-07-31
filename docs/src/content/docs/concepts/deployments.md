@@ -106,6 +106,7 @@ per environment and the full revision history. Via the API:
 | `GET` | `/api/v1/projects/{slug}/environments` | environments with their current version |
 | `GET` | `/api/v1/projects/{slug}/environments/{envID}/deployments` | revision history for one environment |
 | `POST` | `/api/v1/projects/{slug}/environments/{envID}/rollback` | roll back (see below) |
+| `PUT`/`DELETE` | `/api/v1/projects/{slug}/environment-freezes/{name}` | [freeze / unfreeze](/gocdnext/docs/concepts/environment-freeze/) the environment (maintainer) |
 
 ## One-click rollback
 
@@ -127,6 +128,10 @@ dispatch path — same agent, same secrets, same `id_tokens:`. If the
 source run has since been pruned (its outputs are gone), the roll-back
 action isn't offered: there's nothing immutable left to replay.
 
+A rollback **is** a deploy, so it is refused with `409` while the
+environment is under a
+[change-freeze](/gocdnext/docs/concepts/environment-freeze/).
+
 ## What this is not
 
 - **Not an executor** — *unless* the environment has a
@@ -136,7 +141,9 @@ action isn't offered: there's nothing immutable left to replay.
   target is the deliberate opt-in that makes gocdnext drive the deploy.
 - **Not a gate.** Gating a deploy is the job of an
   [approval](/gocdnext/docs/concepts/approvals/) on a *separate* job
-  upstream of the deploy.
+  upstream of the deploy. To stop *all* promotion to an environment for
+  a while — regardless of who would approve — use an
+  [environment change-freeze](/gocdnext/docs/concepts/environment-freeze/).
 - **Not a health monitor.** Success tracks the deploy *job*. If your
   rollout needs a post-deploy smoke test, make it part of the
   `script:` (or a downstream job) so its failure fails the deploy.
@@ -146,3 +153,4 @@ action isn't offered: there's nothing immutable left to replay.
 - [`deploy:` in the YAML reference](/gocdnext/docs/pipelines/yaml-reference/#deployments-deploy)
 - [Job outputs](/gocdnext/docs/pipelines/yaml-reference/#job-outputs-outputs) — where `version` usually comes from
 - [Approval gates](/gocdnext/docs/concepts/approvals/) — the gate half of promote → deploy
+- [Environment change-freeze](/gocdnext/docs/concepts/environment-freeze/) — stop all promotion to an environment
