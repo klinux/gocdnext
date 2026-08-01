@@ -634,6 +634,66 @@ type ApprovalSpec struct {
 	// re-materialise; the existing gate keeps its frozen quorum.
 	QuorumByLabel map[string]int
 	Description   string
+	// Timeout bounds how long the gate may sit in `awaiting_approval`
+	// before the expirer cancels it. YAML source is the job-level
+	// `timeout:` key.
+	//
+	// Three states, and the distinction is load-bearing:
+	//   0                    — inherit the server default
+	//                          (config.ApprovalDefaultTimeout). This is the
+	//                          common case: operators bound abandoned gates
+	//                          fleet-wide without every pipeline opting in.
+	//   > 0                  — this gate's own window.
+	//   ApprovalTimeoutNever — never expire. For gates that legitimately wait
+	//                          (compliance window, release scheduled weeks
+	//                          out) and must survive the fleet default.
+	//
+	// An expired gate terminalises as `canceled`, NOT `failed`: abandonment
+	// is not a build failure, and the dashboard's success rate is
+	// success/(success+failed) with canceled excluded — see
+	// queries/dashboard.sql. Reporting it as failed would silently degrade
+	// every pipeline's success metric.
+	Timeout time.Duration
+}
+
+// ApprovalTimeoutNever is the sentinel for `timeout: never` on an approval
+// gate — "wait indefinitely, ignore the server default". Negative so it can
+// never collide with a real window and so the zero value keeps meaning
+// "inherit"; every consumer must check for it explicitly before treating
+// ApprovalSpec.Timeout as a duration.
+const ApprovalTimeoutNever time.Duration = -1
+
+// ApprovalTimeoutBounds are the accepted range for an explicit gate timeout.
+// The floor keeps the window meaningful relative to the expirer's sweep
+// cadence (a 10s window can't be honoured with any precision); the ceiling
+// is well past the point where a gate is abandoned by any definition, and
+// bounds the value the parser accepts from user YAML.
+const (
+	ApprovalTimeoutMin = time.Minute
+	ApprovalTimeoutMax = 90 * 24 * time.Hour
+)
+
+// EffectiveApprovalTimeout resolves a gate's window against the server
+// default, returning ok=false when the gate must never expire. Centralised
+// here so the parser, the expirer, and the API all agree on precedence —
+// gate-level beats server-level, and `never` beats both.
+//
+// A non-positive serverDefault means the fleet-wide expirer is disabled, so
+// a gate that didn't set its own window never expires either.
+func (a *ApprovalSpec) EffectiveApprovalTimeout(serverDefault time.Duration) (time.Duration, bool) {
+	if a == nil {
+		return 0, false
+	}
+	switch {
+	case a.Timeout == ApprovalTimeoutNever:
+		return 0, false
+	case a.Timeout > 0:
+		return a.Timeout, true
+	case serverDefault > 0:
+		return serverDefault, true
+	default:
+		return 0, false
+	}
 }
 
 // CacheSpec pairs a cache key with the directories the agent
