@@ -79,3 +79,63 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm run build
+
+  # Renders the Helm chart and asserts the env vars it is supposed to
+  # produce. `go` and `web` never touch charts/, so without this a
+  # template regression ships silently — the chart is only rendered at
+  # release time, long after review.
+  #
+  # The concrete trigger: a knob whose documented "disable" value is 0.
+  # Go templates treat NUMERIC 0 as false, so the natural
+  # `{{- if .Values.x }}` drops the env var entirely, and a server that
+  # falls back to a default when the var is unset then does the OPPOSITE
+  # of what the operator asked. That class of bug is invisible in review
+  # and invisible in `helm lint`; only a render catches it.
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same pinned version the release workflow packages with, so CI
+      # can't pass on a helm that differs from the one that ships.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint
+        run: helm lint charts/gocdnext --set database.url=postgres://x
+
+      # database.url is required for the chart to render at all; every
+      # case below carries it so a failure is never that precondition.
+      - name: Render matrix
+        run: |
+          set -euo pipefail
+          render() {
+            helm template charts/gocdnext --set database.url=postgres://x "$@"
+          }
+          # Value of an env var in the rendered output, or empty when the
+          # var is absent. Matches the `- name: X` / `value: Y` pair.
+          value_of() {
+            grep -A1 -- "- name: $1\$" | sed -n 's/^ *value: //p' | head -1
+          }
+
+          fail=0
+          expect() { # <label> <want> <got>
+            if [ "$2" = "$3" ]; then
+              echo "ok   $1: $3"
+            else
+              echo "FAIL $1: want [$2] got [$3]"; fail=1
+            fi
+          }
+
+          var=GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT
+
+          expect "default"      '"168h"'  "$(render | value_of $var)"
+          # The regression this job exists for: numeric 0 must survive.
+          expect "numeric 0"    '"0"'     "$(render --set approvals.defaultTimeout=0 | value_of $var)"
+          expect "never"        '"never"' "$(render --set approvals.defaultTimeout=never | value_of $var)"
+          expect "explicit 24h" '"24h"'   "$(render --set approvals.defaultTimeout=24h | value_of $var)"
+          # An explicitly null value means "not set" — the var is omitted
+          # and the server applies its own default.
+          expect "null omits"   ''        "$(render --set approvals.defaultTimeout=null | value_of $var)"
+
+          exit $fail
