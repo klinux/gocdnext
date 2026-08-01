@@ -8,6 +8,65 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Approval gates now expire (#205).** An abandoned gate had only two exits — a
+  human clicking, or supersede cancelling it when a newer run arrived — so a gate
+  nobody returned to kept its run in `running` indefinitely. Every gate now carries
+  a window, **7 days by default and with no YAML required**, set fleet-wide via
+  `GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT` (accepts Go duration syntax; `never`/`off`
+  disables it). Per-gate `timeout:` overrides the default; `timeout: never` opts a
+  gate out entirely, for the compliance-window and scheduled-release cases.
+  Precedence is gate → server default → never.
+
+  An expired gate terminalises its run as **`canceled`, not `failed`** — the
+  dashboard's success rate is `success/(success+failed)` with canceled excluded,
+  so reporting abandonment as failure would silently degrade every pipeline's
+  metric. The run carries `cancel_reason = "approval timeout (<window>) on gate
+  <name>"` and the gate records `decision = expired`, distinct from a rejection.
+  Each expiry increments `gocdnext_approvals_expired_total` and *attempts* an
+  `approval.expired` audit event — the audit write is best-effort and logged on
+  failure, matching the audit package's contract that losing a row must never
+  undo an action that already committed. The DB terminalisation reuses supersede's
+  in-transaction cascade, so a run's still-executing jobs are cancelled too —
+  gates are armed from run creation, so a stage-0 build can be running while a
+  later gate times out. After the commit, `CancelJob` frames, `services:` teardown
+  and the GitHub check close are pushed. The check close matters because expiry
+  terminalises straight to canceled and skips the `JobResult` path that normally
+  reports a conclusion; without it a check opened for the run would sit
+  `in_progress` on the PR forever.
+
+  Those post-commit effects are **best-effort, on the same footing as the API
+  cancel path** — not supersede's durable claim/lease/replay. The cancel itself is
+  committed and never at risk; what can be lost is promptness. Missed `CancelJob`
+  frames are recovered by the agent reconnect-replay and the reaper, but a
+  `services:` teardown that reaches no connected k8s agent is **not** retried, so
+  pods can leak until a manual sweep. In practice that needs a gate whose window
+  is short enough to expire while jobs are still running — the 7-day default
+  leaves nothing running to leak. Durable retry for this path is tracked
+  separately.
+
+  The candidate scan is keyset-paginated with a cursor that resumes across sweeps
+  and wraps at the end of the queue. That is a correctness requirement, not a
+  tuning choice: whether a gate expired is only knowable after reading its run
+  definition, so any single capped query truncates the set before that filter runs
+  and lets a wall of `never` gates permanently hide an expirable one behind them.
+
+  On first boot after upgrading, the pre-existing backlog of abandoned gates is
+  expired, bounded at 50 runs per sweep so it drains over several ticks instead of
+  arriving as one burst of audit rows, agent frames and check updates.
+
+### Fixed
+
+- **`timeout:` on an approval gate did nothing.** The key was accepted by the YAML
+  schema and merged by `extends`, but never lowered into the domain type, so the
+  documented auto-cancel behaviour silently never ran — a pipeline that set
+  `timeout: 24h` waited forever. Now enforced, with validation: out-of-range
+  (below `1m`, above `2160h`), negative, ambiguous `0`, and the `7d` day-suffix shape
+  Go's duration parser rejects all fail at apply time with an actionable message
+  instead of being dropped. `timeout:` on a non-approval job remains parsed and
+  unenforced — execution timeouts are tracked separately.
+
 ## v0.82.0 — 2026-07-31
 
 Environment change-freezes: a maintainer can stop all promotion to a deploy

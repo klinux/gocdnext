@@ -43,6 +43,11 @@ const (
 	AuditActionApprovalApprove        = "approval.approve"
 	AuditActionApprovalReject         = "approval.reject"
 	AuditActionApprovalQuorumOverride = "approval.quorum_overridden"
+	// AuditActionApprovalExpired records a gate the expirer canceled because
+	// nobody decided it inside its window. Distinct from approval.reject: a
+	// rejection is a decision, an expiry is the absence of one — conflating
+	// them would make "how often do we reject?" unanswerable.
+	AuditActionApprovalExpired = "approval.expired"
 	// Rollout gate decisions (ADR-0001 Phase 2). The durable per-step record — the
 	// transient job_run_approvals votes are deleted when the step's gate clears.
 	AuditActionRolloutGateApprove = "rollout_gate.approve"

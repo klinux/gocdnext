@@ -311,12 +311,21 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 				quorumByLabel[lower] = override
 			}
 		}
+		// `timeout:` on a gate is the WAIT window, not an execution limit —
+		// the one job-level knob a gate legitimately carries, which is why
+		// it isn't in the rejection list above. Unset inherits the server
+		// default; `never` opts out. See parseApprovalTimeout.
+		approvalTimeout, err := parseApprovalTimeout(name, jd.Timeout)
+		if err != nil {
+			return domain.Job{}, err
+		}
 		j.Approval = &domain.ApprovalSpec{
 			Approvers:      append([]string(nil), jd.Approval.Approvers...),
 			ApproverGroups: append([]string(nil), jd.Approval.ApproverGroups...),
 			Required:       required,
 			QuorumByLabel:  quorumByLabel,
 			Description:    jd.Approval.Description,
+			Timeout:        approvalTimeout,
 		}
 		return j, nil
 	}

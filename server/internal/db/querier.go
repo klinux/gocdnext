@@ -502,6 +502,21 @@ type Querier interface {
 	// holding ProjectEnvFreezeLockKey. Kept separate from GetEnvironmentFreeze so
 	// the hot path scans one bool instead of three columns it would discard.
 	EnvironmentIsFrozen(ctx context.Context, arg EnvironmentIsFrozenParams) (bool, error)
+	// Flip the run of an expired gate to canceled, carrying a human-readable
+	// reason. Same shape and guard as CancelActiveRun/SupersedeRun (idempotent —
+	// a second call on a terminal run returns no rows).
+	//
+	// CANCELED, NOT FAILED, and that is load-bearing: the dashboard computes
+	// success rate as success/(success+failed) with canceled excluded
+	// (queries/dashboard.sql), so reporting an abandoned gate as a failure would
+	// silently degrade every pipeline's success metric. Nobody's build broke —
+	// nobody decided.
+	//
+	// cancel_reason cites the window that elapsed, never an approver identity or
+	// any ref value. service_generation is RETURNED in this same UPDATE (#97) so
+	// the service cleanup carries it as max_generation and a later rerun that
+	// revives the run into a higher generation keeps its fresh pods.
+	ExpireApprovalRun(ctx context.Context, arg ExpireApprovalRunParams) (ExpireApprovalRunRow, error)
 	// Keep-last policy: per pipeline, rank the runs that produced
 	// non-deleted artefacts by recency (run.created_at DESC); any run
 	// beyond position N has ALL its non-pinned artefacts stamped with
@@ -1276,6 +1291,45 @@ type Querier interface {
 	// the URI update lands. The read path already serves from the
 	// archive, so the rows are pure cost — sweep them on a slow tick.
 	ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pgtype.UUID, error)
+	// Candidate gates for the approval expirer: every gate still parked in
+	// `awaiting_approval` whose wait already exceeds the SHORTEST window that
+	// could possibly apply (domain.ApprovalTimeoutMin). The expirer then resolves
+	// each candidate's effective window from the run's pipeline definition —
+	// per-gate `timeout:` beats the server default, and `never` opts out — because
+	// the window lives in JSON, not in a column.
+	//
+	// Deliberately NOT pre-filtered by the server default: a gate may declare a
+	// window far shorter than the fleet default, and filtering on the default
+	// would never surface it.
+	//
+	// Cost: driven by the partial index idx_job_runs_awaiting_approval
+	// (awaiting_since ASC) WHERE status = 'awaiting_approval' — migration 00017,
+	// which matches this predicate exactly. The join to runs is a PK lookup per
+	// row. The row set is the pending-approval queue, i.e. bounded by how many
+	// decisions humans owe, not by run history — hundreds at the pathological end.
+	// The projection is deliberately narrow (no definition JSON): the expirer
+	// fetches definitions only for candidates it must resolve, deduped by run.
+	//
+	// KEYSET-PAGINATED, and that is a correctness requirement, not an optimisation.
+	// Whether a candidate actually expired is only knowable in Go (the window lives
+	// in the definition JSON), so a plain `ORDER BY awaiting_since ASC LIMIT n`
+	// truncates the set BEFORE that decision: n older gates that are `never` or
+	// merely still-inside-a-7-day-window would hide a newer gate with
+	// `timeout: 5m` from every sweep, forever. Paging past them is the only way the
+	// filter gets to see everything.
+	//
+	// (cursor_since, cursor_id) is the keyset cursor — the id breaks ties because
+	// awaiting_since is NOT unique: every gate of a run is stamped in one
+	// transaction, so siblings share a timestamp to the microsecond, and a
+	// timestamp-only cursor would either skip or re-serve them forever. The caller
+	// resumes the cursor ACROSS sweeps and wraps at the end of the queue, so a
+	// bounded per-sweep scan still visits every gate eventually.
+	//
+	// Written as the expanded (a > c OR (a = c AND b > d)) rather than the row
+	// comparison (a, b) > (c, d): sqlc infers a row comparison's later elements
+	// from the type of the first and mistypes the id cursor as a timestamptz.
+	// Semantically identical, and still sargable on awaiting_since.
+	ListPendingApprovalGates(ctx context.Context, arg ListPendingApprovalGatesParams) ([]ListPendingApprovalGatesRow, error)
 	// The agent calls this right after Register + Connect lands so
 	// it picks up any cancels that were requested while its session
 	// was being recycled. Returns (job_run_id, run_id) pairs the
@@ -1540,6 +1594,17 @@ type Querier interface {
 	// defer (which captured the prior value) finds no rows to
 	// update and no-ops — preserving the successor's online state.
 	MarkAgentOffline(ctx context.Context, arg MarkAgentOfflineParams) error
+	// Stamp the gate row with the expiry decision so the UI and the audit trail
+	// can say WHY it died rather than showing a bare cancel. Guarded on
+	// status = 'awaiting_approval', which doubles as the race check: a human who
+	// approved or rejected between the candidate scan and this write moves the row
+	// out of that status, this returns no rows, and the expirer abandons the whole
+	// expiry instead of cancelling a run someone just decided on.
+	//
+	// decided_by stays NULL — nobody decided. The `expired` decision value is what
+	// distinguishes this from an approve/reject; status is left to the shared
+	// cancel cascade (CancelQueuedJobsInRun already covers awaiting_approval rows).
+	MarkApprovalGateExpired(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	// Called after the server HEADs the storage and confirms the object is
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.

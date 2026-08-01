@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 type Config struct {
@@ -66,6 +68,21 @@ type Config struct {
 	// load; default 1h. The issuer itself is gated on PublicBase +
 	// SecretKeyHex being configured.
 	OIDCTokenTTL time.Duration
+	// ApprovalDefaultTimeout bounds how long an approval gate may sit in
+	// `awaiting_approval` before the expirer cancels it, for every gate
+	// that does not declare its own `timeout:`. Fleet-wide by design: an
+	// abandoned gate keeps its run in `running` forever, and that must be
+	// bounded without each pipeline author opting in.
+	//
+	// Default 168h (7 days) — long enough to survive a holiday weekend or
+	// a short vacation, short enough that the backlog stays bounded.
+	// Clamped to [domain.ApprovalTimeoutMin, domain.ApprovalTimeoutMax],
+	// the same range the parser enforces on per-gate windows.
+	//
+	// 0 disables expiry fleet-wide (env "never" / "off" / "0"), restoring
+	// the wait-forever behaviour. A per-gate `timeout:` still applies —
+	// this knob is only the fallback for gates that set none.
+	ApprovalDefaultTimeout time.Duration
 	// LogMonthsAhead controls how many future months of partitions
 	// the sweeper keeps stocked. Default 3 — daily ticks refresh.
 	LogMonthsAhead int
@@ -319,6 +336,55 @@ func Load() (*Config, error) {
 		}
 		c.LogRetention = d
 	}
+	// Approval-gate expiry default. Accepts Go's time.ParseDuration syntax
+	// ("168h" for 7 days), or "never"/"off"/"0" to disable expiry
+	// fleet-wide. A typo aborts boot rather than silently reverting to the
+	// default: an operator who set this had an intent, and quietly
+	// substituting a different window would be the wrong kind of quiet.
+	// Out-of-range values clamp instead — unambiguous intent, just outside
+	// what the sweep can honour.
+	c.ApprovalDefaultTimeout = 168 * time.Hour
+	if raw := strings.TrimSpace(env("GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT", "")); raw != "" {
+		switch {
+		case strings.EqualFold(raw, "never"), strings.EqualFold(raw, "off"), raw == "0":
+			c.ApprovalDefaultTimeout = 0
+		default:
+			d, derr := time.ParseDuration(raw)
+			if derr != nil {
+				return nil, fmt.Errorf(
+					"GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT: %w (use Go duration syntax such as %q for 7 days, or %q to disable)",
+					derr, "168h", "never")
+			}
+			if d < 0 {
+				return nil, fmt.Errorf(
+					"GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT: %q is negative — use %q to disable expiry",
+					raw, "never")
+			}
+			// EVERY spelling of zero disables, checked on the PARSED value —
+			// not just the literal "0" handled above. "0s"/"0h"/"0m0s" are
+			// valid Go durations, so testing the raw string alone lets them
+			// fall through to the range clamp below and silently become a
+			// ONE MINUTE fleet-wide window: an operator trying to turn expiry
+			// off would instead auto-cancel every pending gate within the
+			// minute. The clamp must never see a zero.
+			if d == 0 {
+				c.ApprovalDefaultTimeout = 0
+				break
+			}
+			switch {
+			case d < domain.ApprovalTimeoutMin:
+				slog.Warn("GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT below minimum; clamping",
+					"requested", d, "min", domain.ApprovalTimeoutMin)
+				d = domain.ApprovalTimeoutMin
+			case d > domain.ApprovalTimeoutMax:
+				slog.Warn("GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT above maximum; clamping",
+					"requested", d, "max", domain.ApprovalTimeoutMax)
+				d = domain.ApprovalTimeoutMax
+			}
+			c.ApprovalDefaultTimeout = d
+		}
+	}
+
 	logMonthsAhead, err := strconv.Atoi(env("GOCDNEXT_LOG_MONTHS_AHEAD", "3"))
 	if err != nil {
 		return nil, fmt.Errorf("GOCDNEXT_LOG_MONTHS_AHEAD: %w", err)

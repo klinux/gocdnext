@@ -263,6 +263,15 @@ func jobToDef(j domain.Job) JobDef {
 				def.Approval.QuorumByLabel[k] = v
 			}
 		}
+		// The gate's wait window lives on the JOB, not inside approval: —
+		// that's where the parser reads it from. Dropping it here is the same
+		// bug the comment above describes for Required/ApproverGroups, with a
+		// worse failure: a reapply of the reconstructed YAML would demote an
+		// explicit `never` (or an explicit short window) to "inherit the
+		// server default", so a deliberately-unbounded compliance gate would
+		// silently start expiring. Zero stays absent — emitting `timeout: 0s`
+		// would turn "inherit" into a value the parser rejects as ambiguous.
+		def.Timeout = emitApprovalTimeout(j.Approval.Timeout)
 	}
 	for _, dep := range j.ArtifactDeps {
 		def.NeedsArtifacts = append(def.NeedsArtifacts, NeedsArtifactDef{
