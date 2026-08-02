@@ -77,7 +77,7 @@ type Querier interface {
 	// path; cancel here only fires on upstream stage failure. Jobs
 	// inside the synthetic _notifications stage are preserved so
 	// `on: failure` notifications still fire.
-	CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error
+	CancelQueuedJobsInRun(ctx context.Context, arg CancelQueuedJobsInRunParams) error
 	// When a user stage fails we stop dispatching the rest of the run's user
 	// stages. Running work stays untouched; the agent will still report its
 	// outcome. The synthetic _notifications stage is preserved on purpose —
@@ -85,6 +85,20 @@ type Querier interface {
 	// to fire. The scheduler filters the notification jobs by `on:` when
 	// dispatching so only the matching ones actually run.
 	CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID) error
+	// #207: the run-scoped cancel's ONE job statement. In a single UPDATE it flips
+	// queued/awaiting_approval jobs straight to 'canceled', and STAMPS running jobs
+	// with cancel_requested_at (leaving them 'running' — the agent/watcher/reaper
+	// finalises them to 'canceled' via CompleteJobRun's CASE). Both get
+	// cancel_origin='user_run' (COALESCE = first-origin-wins). NO agent_id filter:
+	// a server-managed native deploy (agent_id NULL) must be stamped too, so the
+	// watcher/reaper sees the intent. RETURNS (id, agent_id, status) so the caller
+	// fanouts a CancelJob frame ONLY to rows that are running AND agent_id.Valid;
+	// native rows are driven by the watcher/reaper, not a frame.
+	//
+	// Lock order (#207): this runs FIRST in CancelRun (jobs), before stages and the
+	// run, matching the completion cascade's job → stage → run order so the two never
+	// deadlock (40P01).
+	CancelRunJobs(ctx context.Context, runID pgtype.UUID) ([]CancelRunJobsRow, error)
 	// Atomically marks a bounded batch of artefacts as 'deleting' and
 	// returns their storage keys so the sweeper can call Store.Delete and
 	// then remove the DB row.
@@ -184,9 +198,17 @@ type Querier interface {
 	// dispatch. NULL caller param falls back to '{}' so the legacy
 	// non-output completion path stays a one-line change at the call
 	// site.
+	// #207: the terminal status is DERIVED from cancel_requested_at, not taken
+	// verbatim from the agent. A killed-container cancel comes back as FAILED, but a
+	// stamped cancel_requested_at means the cancel won the DB race — record 'canceled'
+	// regardless of the reported result. A genuine success wins only if its CAS
+	// commits BEFORE the stamp (then this UPDATE no-ops on the non-terminal guard).
+	// outputs are governed by the EFFECTIVE status: only an un-canceled success keeps
+	// them, so a success+cancel never leaves published outputs on a canceled row.
+	// The effective status is RETURNED so the handler logs/metrics/finalizes on it.
 	CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error)
-	CompleteRun(ctx context.Context, arg CompleteRunParams) error
-	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error
+	CompleteRun(ctx context.Context, arg CompleteRunParams) (int64, error)
+	CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) (int64, error)
 	// Per (label-value group, framework): how many of the group's projects are bound
 	// to that framework. Only frameworks with at least one bound project in the
 	// group appear; the store pairs these with the group totals for the percentage.
@@ -803,9 +825,11 @@ type Querier interface {
 	// CompositeResolver decrypts or fetches per source.
 	GetSecretEntriesByProject(ctx context.Context, arg GetSecretEntriesByProjectParams) ([]GetSecretEntriesByProjectRow, error)
 	GetServiceAccountByID(ctx context.Context, id pgtype.UUID) (ServiceAccount, error)
-	// Counts jobs still working vs already-failed within a stage — the numbers
-	// the caller uses to decide whether to promote the stage. `awaiting_approval`
+	// Counts jobs still working vs already-failed vs canceled within a stage — the
+	// numbers the caller uses to decide whether to promote the stage. `awaiting_approval`
 	// is unfinished too: the gate hasn't decided yet, so the stage can't close.
+	// canceled is counted separately so the stage derives failed > canceled > success
+	// (#207): a canceled job must not let a stage/run close green.
 	GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error)
 	// The 0-based ordinal of a stage_run within its run. The cascade fire uses the
 	// just-completed stage's ordinal to find the NEXT stage's ready gates.
@@ -1504,6 +1528,12 @@ type Querier interface {
 	// environment deleted-and-recreated, or rollout routing changed since the reconcile,
 	// must not be written from a pre-lock snapshot.
 	LockDeployTargetForDeploy(ctx context.Context, arg LockDeployTargetForDeployParams) (LockDeployTargetForDeployRow, error)
+	// Serialises the stage rollup (#207): the completion cascade locks the stage_run
+	// row FOR UPDATE before reading GetStageProgress, so two sibling jobs finishing in
+	// parallel can't both compute progress and race to close the stage. Returns the
+	// current status so the caller early-exits when the stage is already terminal
+	// (another sibling closed it first).
+	LockStageRunForUpdate(ctx context.Context, id pgtype.UUID) (string, error)
 	// Generation-aware offline mark. Only flips status when the
 	// closing handler's observed generation still matches the row.
 	// A successor Register bumps session_generation, so an old
@@ -1590,6 +1620,17 @@ type Querier interface {
 	// per project, so aggregating in SQL saves an N×round-trip dance
 	// when compared with looping the per-slug query per project.
 	ProjectMetricsAggregated(ctx context.Context, sinceWindow pgtype.Interval) ([]ProjectMetricsAggregatedRow, error)
+	// #207 native recovery: a server-managed native deploy runs with agent_id NULL and
+	// is normally cancel-finalised by its deploy watcher (FinalizeDeployWatch). This is
+	// the BACKSTOP for when the watch VANISHED (crash/manual delete) with the job still
+	// running + cancel-requested — nobody else would ever finalise it (the offline-agent
+	// reaper JOINs agents and so never matches a NULL agent). Terminalise 'canceled';
+	// the caller cascades the stage/run + finalizes the revision in the SAME tx.
+	//
+	// Two guards (Kleber invariant): (1) a GRACE window on cancel_requested_at so we
+	// never race the watcher's own finalize on a freshly-stamped row; (2) NO deploy_watch
+	// row of ANY status may exist for the job — a live/claimed watch still owns it.
+	ReclaimAbandonedNativeCancels(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimAbandonedNativeCancelsRow, error)
 	// Flips a running job back to queued, IF it is still running, still
 	// under the retry cap, AND its (agent_id, attempt) STILL matches the
 	// snapshot the caller observed when it decided the job was stale.
@@ -1838,27 +1879,20 @@ type Querier interface {
 	// (a re-click that lands in the brief window between dispatch
 	// attempts shouldn't reset the requested-at clock).
 	//
-	// Predicate guards: only stamp when the row is STILL running
-	// AND has an agent_id pinned (no-op on rows that finished
-	// between the cancel handler's read and this write). The
-	// handler ran GetJobRunForCancel under FOR UPDATE in the same
-	// tx, so by definition the row was running at SELECT time —
-	// but a result handler in another tx can have committed in
-	// between if the cancel handler is using a separate tx. The
-	// guards keep us honest in either calling shape.
+	// Predicate guard: only stamp when the row is STILL running (no-op on rows that
+	// finished between the cancel handler's read and this write). NO agent_id filter
+	// (#207): a server-managed native deploy runs with agent_id NULL and must be
+	// stamped too — the watcher/reaper honours the intent since there is no agent
+	// frame to send. The caller sends a CancelJob frame only when agent_id IS valid.
 	StampCancelRequestedAt(ctx context.Context, id pgtype.UUID) (StampCancelRequestedAtRow, error)
-	// Batch variant of StampCancelRequestedAt used by the run-scoped
-	// cancel path. Stamps cancel_requested_at on EVERY running job
-	// belonging to the run that hasn't been stamped yet. The handler
-	// then attempts gRPC dispatch per row; any dispatch that lands in
-	// the Revoke→Register race window is rescued by the same replay
-	// + reaper paths that cover the job-scoped cancel.
-	//
-	// COALESCE preserves the FIRST stamp's at-time across re-cancel
-	// attempts (the same idempotency as the single-row variant).
-	// Returns (id, agent_id) per stamped row so the handler can
-	// correlate Dispatch failures with their owning agent.
-	StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error)
+	// Batch stamp of EVERY running job of a run, used by the SUPERSEDE terminalizer
+	// (the run-cancel path uses CancelRunJobs instead). Stamps cancel_requested_at +
+	// cancel_origin (COALESCE = first-origin-wins, e.g. 'supersede'). NO agent_id
+	// filter (#207): a server-managed native deploy (agent_id NULL) must be stamped
+	// too so the watcher/reaper honours the cancel — the caller fanouts a CancelJob
+	// frame only to the returned rows whose agent_id IS valid. A dispatch landing in
+	// the Revoke→Register window is rescued by the same replay + reaper paths.
+	StampCancelRequestedAtForRun(ctx context.Context, arg StampCancelRequestedAtForRunParams) ([]StampCancelRequestedAtForRunRow, error)
 	// UNFENCED stamp of the correlation anchor at dispatch, before any watcher has
 	// claimed the watch (so the fenced MarkDeployWatchSyncRequested can't be used yet).
 	// Monotonic: `WHERE sync_requested_at IS NULL` — a later dispatch/retry never reopens
@@ -1948,25 +1982,23 @@ type Querier interface {
 	// state. Returns the run_id so the caller can fire a NOTIFY to
 	// nudge the scheduler back into the dispatch loop.
 	//
-	// The row goes back to (queued, NULL, attempt unchanged) — we do
-	// NOT bump attempt here. The attempt counter exists to detect
-	// crashes mid-execution; a dispatch failure that never reached the
-	// agent doesn't count as an attempt.
-	// cancel_requested_at = NULL: defensive clear in case a cancel
-	// landed in the AssignJob→DispatchAssignment window (operator
-	// raced the scheduler). The row is going back to 'queued' with
-	// agent_id NULL — there's no agent to replay against, and the
-	// next AssignJob may pick a different agent entirely; carrying
-	// the stamp forward would let ListPendingCancelsForAgent honor
-	// it against an agent that never received the cancel intent.
+	// TWO-OUTCOME (#207): the outcome depends on whether a cancel was stamped
+	// between AssignJob and the failed Dispatch.
 	//
-	// logs_archive_uri / logs_archived_at = NULL: an AssignJob that
-	// bounced into UnassignJob almost never had time to archive logs
-	// (the archiver fires from terminal status, not the brief
-	// running window before Dispatch failed), but if a redispatch
-	// picks the same row up later, reads against the row would
-	// otherwise see a stale archive pointer. Defensive mirror of
-	// the RerunJob reset list.
+	//   * NO cancel_requested_at → back to (queued, NULL agent, attempt unchanged) —
+	//     the attempt counter detects crashes mid-execution; a dispatch that never
+	//     reached the agent doesn't count. The cancel stamp+origin are cleared (there's
+	//     nothing to replay against; the next AssignJob may pick a different agent).
+	//   * cancel_requested_at SET → the operator canceled in the AssignJob→Dispatch
+	//     window. Do NOT resurrect the job into 'queued' (that would erase the cancel).
+	//     Terminalise 'canceled', KEEP cancel_requested_at + cancel_origin (audit at-time
+	//     + who), and let the caller cascade the stage/run IN THE SAME TX.
+	//
+	// logs_archive_uri / logs_archived_at = NULL either way: a redispatch picking the
+	// row up must not read a stale archive pointer (mirrors the RerunJob reset list).
+	//
+	// Snapshot-CAS: only acts on (running, $agentID, $attempt) — anything else means a
+	// reaper/fence moved the row and our undo would clobber legitimate state.
 	UnassignJob(ctx context.Context, arg UnassignJobParams) (UnassignJobRow, error)
 	// Called from the gRPC heartbeat handler so the reaper can tell which agents
 	// are still alive. Tiny write per heartbeat (default cadence 30s).

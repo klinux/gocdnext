@@ -13,7 +13,11 @@ import (
 
 const cancelQueuedJobsInRun = `-- name: CancelQueuedJobsInRun :exec
 UPDATE job_runs j
-SET status = 'canceled', finished_at = COALESCE(j.finished_at, NOW())
+SET status = 'canceled', finished_at = COALESCE(j.finished_at, NOW()),
+    -- #207: this is the fail-fast DEPENDENCY cancel (an upstream stage failed).
+    -- An upstream rerun SHOULD revive these (they were canceled by the system,
+    -- not the user), so cancel_origin='dependency' — RerunJob only skips 'user_job'.
+    cancel_origin = COALESCE(j.cancel_origin, $2)
 FROM stage_runs s
 WHERE j.run_id = $1
   AND s.id = j.stage_run_id
@@ -21,14 +25,19 @@ WHERE j.run_id = $1
   AND j.status IN ('queued', 'awaiting_approval')
 `
 
+type CancelQueuedJobsInRunParams struct {
+	RunID  pgtype.UUID
+	Origin *string
+}
+
 // Pending approval gates in a failed run also get canceled so a
 // rejected deploy doesn't leave a "ready to approve" ghost sitting
 // in the UI with no path forward. Reject is the intended decision
 // path; cancel here only fires on upstream stage failure. Jobs
 // inside the synthetic _notifications stage are preserved so
 // `on: failure` notifications still fire.
-func (q *Queries) CancelQueuedJobsInRun(ctx context.Context, runID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, cancelQueuedJobsInRun, runID)
+func (q *Queries) CancelQueuedJobsInRun(ctx context.Context, arg CancelQueuedJobsInRunParams) error {
+	_, err := q.db.Exec(ctx, cancelQueuedJobsInRun, arg.RunID, arg.Origin)
 	return err
 }
 
@@ -53,13 +62,16 @@ func (q *Queries) CancelQueuedStagesInRun(ctx context.Context, runID pgtype.UUID
 
 const completeJobRun = `-- name: CompleteJobRun :one
 UPDATE job_runs
-SET status = $2, exit_code = $3, error = $4, finished_at = NOW(),
-    outputs = COALESCE($5::jsonb, '{}'::jsonb)
+SET status = CASE WHEN cancel_requested_at IS NOT NULL THEN 'canceled' ELSE $2 END,
+    exit_code = $3, error = $4, finished_at = NOW(),
+    outputs = CASE WHEN cancel_requested_at IS NULL AND $2 = 'success'
+                   THEN COALESCE($5::jsonb, '{}'::jsonb)
+                   ELSE '{}'::jsonb END
 WHERE id = $1
   AND status IN ('queued', 'running')
   AND agent_id IS NOT DISTINCT FROM $6::uuid
   AND attempt = $7::int
-RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at
+RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at, status
 `
 
 type CompleteJobRunParams struct {
@@ -80,6 +92,7 @@ type CompleteJobRunRow struct {
 	Name       string
 	StartedAt  pgtype.Timestamptz
 	FinishedAt pgtype.Timestamptz
+	Status     string
 }
 
 // Flips a queued or running job to its terminal state, IF the caller's
@@ -109,6 +122,14 @@ type CompleteJobRunRow struct {
 // dispatch. NULL caller param falls back to '{}' so the legacy
 // non-output completion path stays a one-line change at the call
 // site.
+// #207: the terminal status is DERIVED from cancel_requested_at, not taken
+// verbatim from the agent. A killed-container cancel comes back as FAILED, but a
+// stamped cancel_requested_at means the cancel won the DB race — record 'canceled'
+// regardless of the reported result. A genuine success wins only if its CAS
+// commits BEFORE the stamp (then this UPDATE no-ops on the non-terminal guard).
+// outputs are governed by the EFFECTIVE status: only an un-canceled success keeps
+// them, so a success+cancel never leaves published outputs on a canceled row.
+// The effective status is RETURNED so the handler logs/metrics/finalizes on it.
 func (q *Queries) CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) (CompleteJobRunRow, error) {
 	row := q.db.QueryRow(ctx, completeJobRun,
 		arg.ID,
@@ -128,11 +149,12 @@ func (q *Queries) CompleteJobRun(ctx context.Context, arg CompleteJobRunParams) 
 		&i.Name,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Status,
 	)
 	return i, err
 }
 
-const completeRun = `-- name: CompleteRun :exec
+const completeRun = `-- name: CompleteRun :execrows
 UPDATE runs
 SET status = $2, finished_at = COALESCE(finished_at, NOW())
 WHERE id = $1 AND status IN ('queued', 'running')
@@ -143,12 +165,15 @@ type CompleteRunParams struct {
 	Status string
 }
 
-func (q *Queries) CompleteRun(ctx context.Context, arg CompleteRunParams) error {
-	_, err := q.db.Exec(ctx, completeRun, arg.ID, arg.Status)
-	return err
+func (q *Queries) CompleteRun(ctx context.Context, arg CompleteRunParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeRun, arg.ID, arg.Status)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const completeStageRun = `-- name: CompleteStageRun :exec
+const completeStageRun = `-- name: CompleteStageRun :execrows
 UPDATE stage_runs
 SET status = $2, finished_at = COALESCE(finished_at, NOW())
 WHERE id = $1 AND status IN ('queued', 'running')
@@ -159,9 +184,12 @@ type CompleteStageRunParams struct {
 	Status string
 }
 
-func (q *Queries) CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) error {
-	_, err := q.db.Exec(ctx, completeStageRun, arg.ID, arg.Status)
-	return err
+func (q *Queries) CompleteStageRun(ctx context.Context, arg CompleteStageRunParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeStageRun, arg.ID, arg.Status)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const failJobRunWithReason = `-- name: FailJobRunWithReason :one
@@ -347,7 +375,8 @@ func (q *Queries) GetRunUserStageOutcome(ctx context.Context, runID pgtype.UUID)
 const getStageProgress = `-- name: GetStageProgress :one
 SELECT
     COUNT(*) FILTER (WHERE status IN ('queued', 'running', 'awaiting_approval'))::BIGINT AS unfinished,
-    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT                                    AS failed
+    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT                                    AS failed,
+    COUNT(*) FILTER (WHERE status = 'canceled')::BIGINT                                  AS canceled
 FROM job_runs
 WHERE stage_run_id = $1
 `
@@ -355,15 +384,18 @@ WHERE stage_run_id = $1
 type GetStageProgressRow struct {
 	Unfinished int64
 	Failed     int64
+	Canceled   int64
 }
 
-// Counts jobs still working vs already-failed within a stage — the numbers
-// the caller uses to decide whether to promote the stage. `awaiting_approval`
+// Counts jobs still working vs already-failed vs canceled within a stage — the
+// numbers the caller uses to decide whether to promote the stage. `awaiting_approval`
 // is unfinished too: the gate hasn't decided yet, so the stage can't close.
+// canceled is counted separately so the stage derives failed > canceled > success
+// (#207): a canceled job must not let a stage/run close green.
 func (q *Queries) GetStageProgress(ctx context.Context, stageRunID pgtype.UUID) (GetStageProgressRow, error) {
 	row := q.db.QueryRow(ctx, getStageProgress, stageRunID)
 	var i GetStageProgressRow
-	err := row.Scan(&i.Unfinished, &i.Failed)
+	err := row.Scan(&i.Unfinished, &i.Failed, &i.Canceled)
 	return i, err
 }
 
@@ -484,6 +516,22 @@ func (q *Queries) ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pg
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockStageRunForUpdate = `-- name: LockStageRunForUpdate :one
+SELECT status FROM stage_runs WHERE id = $1 FOR UPDATE
+`
+
+// Serialises the stage rollup (#207): the completion cascade locks the stage_run
+// row FOR UPDATE before reading GetStageProgress, so two sibling jobs finishing in
+// parallel can't both compute progress and race to close the stage. Returns the
+// current status so the caller early-exits when the stage is already terminal
+// (another sibling closed it first).
+func (q *Queries) LockStageRunForUpdate(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lockStageRunForUpdate, id)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }
 
 const markJobLogsArchived = `-- name: MarkJobLogsArchived :exec

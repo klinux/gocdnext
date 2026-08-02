@@ -44,6 +44,15 @@ func TestDecide(t *testing.T) {
 			want:    Verdict{Effect: FinalizeFailed, Reason: ReasonDeadlineExceeded},
 		},
 		{
+			// #207: a NON-rollout cancel terminates immediately so the watcher fires
+			// (previously unhandled → the native job hung). The revision status is then
+			// corrected to canceled by FinalizeDeployWatch's effective-status override.
+			name:    "non-rollout cancel terminates immediately",
+			state:   converged,
+			anchors: withCancel(base), // base is non-rollout (RolloutAware=false)
+			want:    Verdict{Effect: FinalizeFailed, Reason: ReasonCanceled},
+		},
+		{
 			name:    "past deadline beats degraded-within-window",
 			state:   DeployState{Sync: SyncOutOfSync, Health: HealthDegraded},
 			anchors: withDegraded(withDeadline(base, now.Add(-1*time.Second)), tp(-1*time.Minute)),
@@ -341,6 +350,7 @@ func abortActioned(w WatchAnchors) WatchAnchors {
 	return w
 }
 
+func withCancel(w WatchAnchors) WatchAnchors                { w.CancelRequested = true; return w }
 func withDeadline(w WatchAnchors, d time.Time) WatchAnchors { w.DeadlineAt = d; return w }
 func withDegraded(w WatchAnchors, since *time.Time) WatchAnchors {
 	w.DegradedSince = since

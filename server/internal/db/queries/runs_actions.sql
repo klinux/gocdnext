@@ -254,27 +254,56 @@ FOR UPDATE;
 -- absence of an exit_code is the honest signal ("never started").
 UPDATE job_runs
 SET status      = 'canceled',
-    finished_at = COALESCE(finished_at, NOW())
+    finished_at = COALESCE(finished_at, NOW()),
+    -- #207: a user's deliberate single-job cancel. cancel_origin='user_job' is
+    -- what RerunJob's revival checks (IS DISTINCT FROM 'user_job') so an upstream
+    -- rerun does NOT resurrect a queued job the user explicitly canceled.
+    cancel_origin = COALESCE(cancel_origin, 'user_job')
 WHERE id = $1 AND status = 'queued'
 RETURNING id;
 
--- name: StampCancelRequestedAtForRun :many
--- Batch variant of StampCancelRequestedAt used by the run-scoped
--- cancel path. Stamps cancel_requested_at on EVERY running job
--- belonging to the run that hasn't been stamped yet. The handler
--- then attempts gRPC dispatch per row; any dispatch that lands in
--- the Revoke→Register race window is rescued by the same replay
--- + reaper paths that cover the job-scoped cancel.
+-- name: CancelRunJobs :many
+-- #207: the run-scoped cancel's ONE job statement. In a single UPDATE it flips
+-- queued/awaiting_approval jobs straight to 'canceled', and STAMPS running jobs
+-- with cancel_requested_at (leaving them 'running' — the agent/watcher/reaper
+-- finalises them to 'canceled' via CompleteJobRun's CASE). Both get
+-- cancel_origin='user_run' (COALESCE = first-origin-wins). NO agent_id filter:
+-- a server-managed native deploy (agent_id NULL) must be stamped too, so the
+-- watcher/reaper sees the intent. RETURNS (id, agent_id, status) so the caller
+-- fanouts a CancelJob frame ONLY to rows that are running AND agent_id.Valid;
+-- native rows are driven by the watcher/reaper, not a frame.
 --
--- COALESCE preserves the FIRST stamp's at-time across re-cancel
--- attempts (the same idempotency as the single-row variant).
--- Returns (id, agent_id) per stamped row so the handler can
--- correlate Dispatch failures with their owning agent.
+-- Lock order (#207): this runs FIRST in CancelRun (jobs), before stages and the
+-- run, matching the completion cascade's job → stage → run order so the two never
+-- deadlock (40P01).
+UPDATE job_runs j
+SET status = CASE WHEN j.status = 'running' THEN j.status ELSE 'canceled' END,
+    finished_at = CASE WHEN j.status = 'running'
+                       THEN j.finished_at ELSE COALESCE(j.finished_at, NOW()) END,
+    cancel_requested_at = CASE WHEN j.status = 'running'
+                              THEN COALESCE(j.cancel_requested_at, NOW())
+                              ELSE j.cancel_requested_at END,
+    cancel_origin = COALESCE(j.cancel_origin, 'user_run')
+FROM stage_runs s
+WHERE j.run_id = $1
+  AND s.id = j.stage_run_id
+  AND s.name != '_notifications'
+  AND j.status IN ('queued', 'running', 'awaiting_approval')
+RETURNING j.id, j.agent_id, j.status;
+
+-- name: StampCancelRequestedAtForRun :many
+-- Batch stamp of EVERY running job of a run, used by the SUPERSEDE terminalizer
+-- (the run-cancel path uses CancelRunJobs instead). Stamps cancel_requested_at +
+-- cancel_origin (COALESCE = first-origin-wins, e.g. 'supersede'). NO agent_id
+-- filter (#207): a server-managed native deploy (agent_id NULL) must be stamped
+-- too so the watcher/reaper honours the cancel — the caller fanouts a CancelJob
+-- frame only to the returned rows whose agent_id IS valid. A dispatch landing in
+-- the Revoke→Register window is rescued by the same replay + reaper paths.
 UPDATE job_runs
-SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
+SET cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
+    cancel_origin = COALESCE(cancel_origin, @origin)
 WHERE run_id = $1
   AND status = 'running'
-  AND agent_id IS NOT NULL
 RETURNING id, agent_id;
 
 -- name: StampCancelRequestedAt :one
@@ -292,19 +321,16 @@ RETURNING id, agent_id;
 -- (a re-click that lands in the brief window between dispatch
 -- attempts shouldn't reset the requested-at clock).
 --
--- Predicate guards: only stamp when the row is STILL running
--- AND has an agent_id pinned (no-op on rows that finished
--- between the cancel handler's read and this write). The
--- handler ran GetJobRunForCancel under FOR UPDATE in the same
--- tx, so by definition the row was running at SELECT time —
--- but a result handler in another tx can have committed in
--- between if the cancel handler is using a separate tx. The
--- guards keep us honest in either calling shape.
+-- Predicate guard: only stamp when the row is STILL running (no-op on rows that
+-- finished between the cancel handler's read and this write). NO agent_id filter
+-- (#207): a server-managed native deploy runs with agent_id NULL and must be
+-- stamped too — the watcher/reaper honours the intent since there is no agent
+-- frame to send. The caller sends a CancelJob frame only when agent_id IS valid.
 UPDATE job_runs
-SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
+SET cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
+    cancel_origin = COALESCE(cancel_origin, 'user_job')
 WHERE id = $1
   AND status = 'running'
-  AND agent_id IS NOT NULL
 RETURNING id, agent_id, cancel_requested_at;
 
 -- name: ListPendingCancelsForAgent :many
@@ -381,7 +407,31 @@ WHERE jr.agent_id = a.id
         OR a.last_seen_at IS NULL
         OR a.last_seen_at < NOW() - sqlc.arg(grace_interval)::INTERVAL
       )
-RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.agent_id, jr.cancel_requested_at, jr.name;
+RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.agent_id, jr.attempt, jr.cancel_requested_at, jr.name;
+
+-- name: ReclaimAbandonedNativeCancels :many
+-- #207 native recovery: a server-managed native deploy runs with agent_id NULL and
+-- is normally cancel-finalised by its deploy watcher (FinalizeDeployWatch). This is
+-- the BACKSTOP for when the watch VANISHED (crash/manual delete) with the job still
+-- running + cancel-requested — nobody else would ever finalise it (the offline-agent
+-- reaper JOINs agents and so never matches a NULL agent). Terminalise 'canceled';
+-- the caller cascades the stage/run + finalizes the revision in the SAME tx.
+--
+-- Two guards (Kleber invariant): (1) a GRACE window on cancel_requested_at so we
+-- never race the watcher's own finalize on a freshly-stamped row; (2) NO deploy_watch
+-- row of ANY status may exist for the job — a live/claimed watch still owns it.
+UPDATE job_runs jr
+SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
+WHERE jr.status = 'running'
+  AND jr.agent_id IS NULL
+  AND jr.cancel_requested_at IS NOT NULL
+  AND jr.cancel_requested_at < NOW() - sqlc.arg(grace_interval)::INTERVAL
+  AND NOT EXISTS (
+      SELECT 1 FROM deploy_watches dw
+      JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+      WHERE dr.job_run_id = jr.id
+  )
+RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.attempt, jr.name;
 
 -- name: GetLatestModificationForPipeline :one
 -- Most recent modification across any material attached to a

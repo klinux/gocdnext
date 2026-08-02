@@ -254,7 +254,7 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 				continue
 			}
 			if !store.NotificationTriggerMatches(notif.On, o) {
-				if _, _, err := s.store.SkipNotificationJob(ctx, job.ID); err != nil {
+				if _, _, err := s.store.SkipJob(ctx, job.ID); err != nil {
 					s.log.Warn("scheduler: skip notification", "job_id", job.ID, "err", err)
 				}
 				continue
@@ -287,7 +287,14 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		//     so the next tick re-evaluates with fresh status map.
 		if check := needsSatisfied(job.Needs, statusMap); !check.Ok {
 			if check.UpstreamTerminal {
-				s.failJobNeedsUnmet(ctx, job, check.Detail)
+				// #207: a dependent blocked by a CANCELED/skipped upstream is SKIPPED
+				// (a cancel's fallout must not count as a failure); a failed/absent
+				// upstream still FAILS it (fail-loud).
+				if check.Skip {
+					s.skipJobNeedsUnmet(ctx, job, check.Detail)
+				} else {
+					s.failJobNeedsUnmet(ctx, job, check.Detail)
+				}
 			} else {
 				s.log.Info("scheduler: needs not yet satisfied, leaving queued",
 					"run_id", runID, "job_id", job.ID, "job_name", job.Name,
@@ -627,24 +634,30 @@ func (s *Scheduler) rollbackUndispatchedAssignment(ctx context.Context, runID uu
 				"job_id", job.ID, "revision_id", deployRevID, "reason", reason, "err", derr)
 		}
 	}
-	runIDForNotify, ok, undoErr := s.store.UnassignJob(ctx, job.ID, agentID, assigned.Attempt)
+	runIDForNotify, outcome, ok, undoErr := s.store.UnassignJob(ctx, job.ID, agentID, assigned.Attempt)
 	switch {
 	case undoErr != nil:
 		s.log.Warn("scheduler: undispatched assignment rollback errored",
 			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
 			"reason", reason, "cause", cause, "unassign_err", undoErr)
-	case ok:
+	case !ok:
+		// Snapshot didn't match — a concurrent path already claimed this row in a
+		// different state. Leave it.
+		s.log.Warn("scheduler: undispatched assignment snapshot stale — leaving row alone",
+			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
+			"reason", reason, "err", cause)
+	case outcome == "canceled":
+		// A cancel landed in the AssignJob→Dispatch window (#207): the job was
+		// terminalised 'canceled' and its stage/run cascade ran in the same tx. No
+		// NotifyRunQueued — the job is terminal, there's nothing to re-dispatch.
+		s.log.Info("scheduler: undispatched assignment canceled (cancel raced dispatch)",
+			"run_id", runID, "job_id", job.ID, "agent_id", agentID, "reason", reason)
+	default: // queued
 		if nerr := s.store.NotifyRunQueued(ctx, runIDForNotify); nerr != nil {
 			s.log.Warn("scheduler: undispatched assignment notify failed",
 				"run_id", runIDForNotify, "reason", reason, "err", nerr)
 		}
 		s.log.Warn("scheduler: undispatched assignment rolled back to queued",
-			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
-			"reason", reason, "err", cause)
-	default:
-		// Snapshot didn't match — a concurrent path already claimed this row in a
-		// different state. Leave it.
-		s.log.Warn("scheduler: undispatched assignment snapshot stale — leaving row alone",
 			"run_id", runID, "job_id", job.ID, "agent_id", agentID,
 			"reason", reason, "err", cause)
 	}

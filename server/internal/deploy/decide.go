@@ -162,8 +162,10 @@ func Decide(state DeployState, w WatchAnchors, now time.Time, degradedWindow tim
 	pastDeadline := now.After(w.DeadlineAt)
 
 	// (1) Cancel/supersede of a ROLLOUT deploy. Abort-safe → above the Observe-error
-	// gate. Non-rollout cancels are terminated outside the watcher, so this is
-	// RolloutAware-only and a plain deploy is untouched.
+	// gate. A rollout must be ABORTED and the abort OBSERVED (or the deadline hit)
+	// before terminalizing, so it can't share the immediate-terminal path (1b) uses
+	// for a plain deploy — a blanket "terminal on cancel" would abandon the watch
+	// before the abort is actioned/observed.
 	if w.CancelRequested && w.RolloutAware {
 		if w.RolloutAbortActionedAt == nil {
 			if hasKnownAbortTarget(state, w) {
@@ -180,6 +182,17 @@ func Decide(state DeployState, w WatchAnchors, now time.Time, degradedWindow tim
 			return Verdict{Effect: FinalizeFailed, Reason: ReasonCanceled}
 		}
 		return Verdict{Effect: Continue} // abort issued; wait to observe it / deadline
+	}
+
+	// (1b) Cancel of a NON-rollout deploy (#207). There's no rollout to abort/observe,
+	// so it was previously unhandled — the watcher never fired and the native job hung
+	// until the reaper. Terminate immediately so FinalizeDeployWatch fires; the
+	// revision's ACTUAL status is then the job's EFFECTIVE status (canceled) via the
+	// effective-status override in FinalizeDeployWatch — the FinalizeFailed effect here
+	// just means "stop watching now" (no FinalizeCanceled effect exists). gocdnext does
+	// not force-abort the external GitOps sync; it governs only what gocdnext records.
+	if w.CancelRequested && !w.RolloutAware {
+		return Verdict{Effect: FinalizeFailed, Reason: ReasonCanceled}
 	}
 
 	// (2) Gate REJECT — abort-safe. Fires even under a control-mode Observe error, via
