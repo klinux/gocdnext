@@ -330,6 +330,19 @@ func (s *Store) UnfreezeEnvironment(ctx context.Context, projectID uuid.UUID, na
 		return false, err
 	}
 
+	// Stamp the freeze-epoch floor (#208): a REAL unfreeze grants a fresh
+	// approval-expiry window so lifting a change-freeze doesn't instantly cancel
+	// the gates it was holding. Under the freeze advisory lock already held above,
+	// so an expiry racing this reads a floor consistent with the freeze state it
+	// checks under the same key. Only on the delete-succeeded path — an idempotent
+	// unfreeze (the ErrNoRows branch above) returns before here and never renews.
+	if err := q.UpsertFreezeEpoch(ctx, db.UpsertFreezeEpochParams{
+		ProjectID:   pgUUID(projectID),
+		Environment: env,
+	}); err != nil {
+		return false, fmt.Errorf("store: unfreeze environment epoch: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("store: unfreeze environment commit: %w", err)
 	}

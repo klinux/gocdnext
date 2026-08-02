@@ -34,6 +34,12 @@ import (
 // whose window is short enough to expire while its run's jobs still execute
 // (`timeout: 5m` on a late-stage gate) — which is why the failure is logged at
 // WARN naming the run, instead of being silently swallowed.
+//
+// #208 narrows it further: a gate whose governed environment is frozen does NOT
+// expire during the freeze (ExpireApprovalGate returns ErrApprovalGateFrozen and
+// the sweep skips it), so the "expiry cancels a run whose jobs are still running"
+// collision cannot happen for a frozen env until the freeze is lifted — and a
+// lift grants a fresh window before any expiry can fire.
 
 // fireCancelEffects pushes CancelJob frames to jobs still executing inside the
 // canceled run and broadcasts the service teardown — the same two effects the

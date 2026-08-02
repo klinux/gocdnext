@@ -40,6 +40,10 @@ func TestParseApprovalTimeout(t *testing.T) {
 		{"never opts out entirely", "never", domain.ApprovalTimeoutNever},
 		{"never is case-insensitive", "Never", domain.ApprovalTimeoutNever},
 		{"never tolerates surrounding space", "  never  ", domain.ApprovalTimeoutNever},
+		// `off` is the accepted synonym for `never` (#208) — the fleet-wide env
+		// var already honours it, and the per-gate spelling now matches.
+		{"off opts out like never", "off", domain.ApprovalTimeoutNever},
+		{"off is case-insensitive", "OFF", domain.ApprovalTimeoutNever},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

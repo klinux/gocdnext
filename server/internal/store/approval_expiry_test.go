@@ -53,6 +53,25 @@ func gateStateOf(t *testing.T, f gateFixture, jobRunID uuid.UUID) gateState {
 	return g
 }
 
+// expireInput builds the ExpireApprovalGate input for a gate, capturing the
+// CURRENT awaiting_since (which the #208 TOCTOU guard now matches exactly) and
+// the fixture pipeline. Capture BEFORE any mutation you want to model as racing
+// the expiry (an approve, a rerun re-park) so `AwaitingSince` reflects what the
+// candidate scan saw. freezeEnvs is the gate's governed envs (nil for the base
+// gate pipeline, which governs no deploy env).
+func (f gateFixture) expireInput(t *testing.T, gate, runID uuid.UUID, window time.Duration, freezeEnvs []string, reason string) ExpireApprovalGateInput {
+	t.Helper()
+	var since time.Time
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT awaiting_since FROM job_runs WHERE id = $1`, gate).Scan(&since); err != nil {
+		t.Fatalf("read awaiting_since: %v", err)
+	}
+	return ExpireApprovalGateInput{
+		JobRunID: gate, RunID: runID, PipelineID: f.pipelineID,
+		FreezeEnvs: freezeEnvs, Window: window, AwaitingSince: since, Reason: reason,
+	}
+}
+
 func TestListPendingApprovalGates(t *testing.T) {
 	f := newGateFixture(t, "expiry-list")
 	old := f.createRun(t, "main")
@@ -112,7 +131,7 @@ func TestResolveApprovalWindow(t *testing.T) {
 
 	// The fixture's gates declare no timeout, so they inherit whatever the
 	// server default is.
-	d, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-staging", 168*time.Hour)
+	d, _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-staging", 168*time.Hour)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -121,16 +140,16 @@ func TestResolveApprovalWindow(t *testing.T) {
 	}
 
 	// No server default and no gate window: nothing expires.
-	if _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-staging", 0); err != nil || ok {
+	if _, _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-staging", 0); err != nil || ok {
 		t.Fatalf("with no default, expected (_, false, nil), got (_, %v, %v)", ok, err)
 	}
 
 	// A job that isn't a gate in the definition resolves to "never expire" —
 	// fail-safe, since cancelling a run we can't explain is the worse error.
-	if _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "compile", 168*time.Hour); err != nil || ok {
+	if _, _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "compile", 168*time.Hour); err != nil || ok {
 		t.Fatalf("non-gate job should not expire, got (%v, %v)", ok, err)
 	}
-	if _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "ghost", 168*time.Hour); err != nil || ok {
+	if _, _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "ghost", 168*time.Hour); err != nil || ok {
 		t.Fatalf("unknown job should not expire, got (%v, %v)", ok, err)
 	}
 }
@@ -146,7 +165,7 @@ func TestExpireApprovalGate_CancelsNeverFails(t *testing.T) {
 	gate := jobRunID(t, f, run.RunID, "approve-staging")
 	backdateGate(t, f, run.RunID, "approve-staging", 8*24*time.Hour)
 
-	if _, err := f.s.ExpireApprovalGate(f.ctx, gate, run.RunID, "approval timeout (168h)"); err != nil {
+	if _, err := f.s.ExpireApprovalGate(f.ctx, f.expireInput(t, gate, run.RunID, 168*time.Hour, nil, "approval timeout (168h)")); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
 
@@ -191,9 +210,13 @@ func TestExpireApprovalGate_DecidedUnderUsIsRefused(t *testing.T) {
 	gate := jobRunID(t, f, run.RunID, "approve-staging")
 	backdateGate(t, f, run.RunID, "approve-staging", 8*24*time.Hour)
 
+	// Capture the input at "scan time" — BEFORE the human approves — so the
+	// TOCTOU guard sees the awaiting_since the scan observed, then the approve
+	// moves the row out from under the expiry.
+	in := f.expireInput(t, gate, run.RunID, 168*time.Hour, nil, "approval timeout (168h)")
 	f.approveGate(t, run.RunID, "approve-staging")
 
-	_, err := f.s.ExpireApprovalGate(f.ctx, gate, run.RunID, "approval timeout (168h)")
+	_, err := f.s.ExpireApprovalGate(f.ctx, in)
 	if !errors.Is(err, ErrApprovalGateDecided) {
 		t.Fatalf("err = %v, want ErrApprovalGateDecided", err)
 	}
@@ -209,12 +232,13 @@ func TestExpireApprovalGate_TerminalRunIsRefused(t *testing.T) {
 	gate := jobRunID(t, f, run.RunID, "approve-staging")
 	backdateGate(t, f, run.RunID, "approve-staging", 8*24*time.Hour)
 
-	if _, err := f.s.ExpireApprovalGate(f.ctx, gate, run.RunID, "approval timeout (168h)"); err != nil {
+	in := f.expireInput(t, gate, run.RunID, 168*time.Hour, nil, "approval timeout (168h)")
+	if _, err := f.s.ExpireApprovalGate(f.ctx, in); err != nil {
 		t.Fatalf("first expire: %v", err)
 	}
 	// Second call: the run is terminal, so nothing to do. Idempotent rather
 	// than an error the caller has to special-case beyond the sentinel.
-	_, err := f.s.ExpireApprovalGate(f.ctx, gate, run.RunID, "approval timeout (168h)")
+	_, err := f.s.ExpireApprovalGate(f.ctx, in)
 	if !errors.Is(err, ErrRunAlreadyTerminal) && !errors.Is(err, ErrApprovalGateDecided) {
 		t.Fatalf("second expire err = %v, want a terminal/decided sentinel", err)
 	}
@@ -246,11 +270,11 @@ func TestResolveApprovalWindow_NeverBeatsServerDefault(t *testing.T) {
 	}
 	run := f.createRun(t, "main")
 
-	if _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-staging", time.Hour); err != nil || ok {
+	if _, _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-staging", time.Hour); err != nil || ok {
 		t.Fatalf("never must beat the server default, got (%v, %v)", ok, err)
 	}
 	// A sibling gate that did NOT opt out still inherits the default.
-	if d, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-prod", time.Hour); err != nil || !ok || d != time.Hour {
+	if d, _, ok, err := f.s.ResolveApprovalWindow(f.ctx, run.RunID, "approve-prod", time.Hour); err != nil || !ok || d != time.Hour {
 		t.Fatalf("sibling gate = (%v, %v, %v), want (1h, true, nil)", d, ok, err)
 	}
 }

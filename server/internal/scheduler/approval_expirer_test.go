@@ -364,3 +364,84 @@ func TestApprovalExpirer_CancelLimitDefersRatherThanSkips(t *testing.T) {
 		}
 	}
 }
+
+// seedGateGoverningEnv applies gate -> deploy(env) and returns the run + project,
+// so a #208 freeze test can hold the env the gate governs.
+func seedGateGoverningEnv(t *testing.T, pool *pgxpool.Pool, slug, env string) (runID, projectID uuid.UUID) {
+	t.Helper()
+	s := store.New(pool)
+	ctx := context.Background()
+	url := "https://github.com/org/" + slug
+	fp := domain.GitFingerprint(url, "main")
+	applied, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: slug, Name: slug,
+		Pipelines: []*domain.Pipeline{{
+			Name:   "ci",
+			Stages: []string{"gate", "deploy"},
+			Materials: []domain.Material{{
+				Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+				Git: &domain.GitMaterial{URL: url, Branch: "main", Events: []string{"push"}},
+			}},
+			Jobs: []domain.Job{
+				{Name: "approve", Stage: "gate", Approval: &domain.ApprovalSpec{Required: 1}},
+				{Name: "shipit", Stage: "deploy", Image: "alpine",
+					Tasks: []domain.Task{{Script: "true"}}, Deploy: &domain.DeploySpec{Environment: env}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("material: %v", err)
+	}
+	run, err := s.CreateRunFromModification(ctx, store.CreateRunFromModificationInput{
+		PipelineID: applied.Pipelines[0].PipelineID, MaterialID: materialID, ModificationID: 1,
+		Revision: "abc", Branch: "main", Provider: "github", Delivery: "d", TriggeredBy: "system:test",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	return run.RunID, applied.ProjectID
+}
+
+// End-to-end (#208): a gate whose governed env is frozen is SKIPPED by the whole
+// Sweep — no cancel, no metric — and expires normally once the freeze is lifted
+// (past the fresh window). Exercises the wiring ResolveApprovalWindow ->
+// GovernedFreezeEnvs -> expireOne -> ExpireApprovalGate's in-tx freeze check.
+func TestApprovalExpirer_FrozenGovernedEnvIsSkipped(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, projectID := seedGateGoverningEnv(t, pool, "expirer-frozen", "prod")
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET awaiting_since = NOW() - INTERVAL '72 hours'
+		 WHERE run_id=$1 AND name='approve' AND status='awaiting_approval'`, runID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	if froze, err := s.FreezeEnvironment(ctx, projectID, "prod", freezeActor(), "release freeze"); err != nil || !froze {
+		t.Fatalf("freeze prod: (%v, %v)", froze, err)
+	}
+
+	before := testutil.ToFloat64(metrics.ApprovalsExpired)
+	scheduler.NewApprovalExpirer(s, time.Hour, quietLogger()).Sweep(ctx)
+
+	if d := testutil.ToFloat64(metrics.ApprovalsExpired) - before; d != 0 {
+		t.Fatalf("approvals_expired delta = %v under a freeze, want 0 (paused)", d)
+	}
+	if got := gateStatus(t, pool, runID, "approve"); got != "awaiting_approval" {
+		t.Fatalf("gate status = %q under a freeze, want awaiting_approval", got)
+	}
+
+	// Lift the freeze; the last_unfrozen_at floor grants a fresh window, so the
+	// very next sweep must NOT expire it yet either.
+	if removed, err := s.UnfreezeEnvironment(ctx, projectID, "prod", freezeActor()); err != nil || !removed {
+		t.Fatalf("unfreeze prod: (%v, %v)", removed, err)
+	}
+	scheduler.NewApprovalExpirer(s, time.Hour, quietLogger()).Sweep(ctx)
+	if got := gateStatus(t, pool, runID, "approve"); got != "awaiting_approval" {
+		t.Fatalf("gate status = %q right after unfreeze, want awaiting_approval (fresh window)", got)
+	}
+}

@@ -229,7 +229,7 @@ func (e *ApprovalExpirer) Sweep(ctx context.Context) {
 			key := gateKey{runID: c.RunID, jobName: c.JobName}
 			w, ok := windows[key]
 			if !ok {
-				d, expires, rerr := e.store.ResolveApprovalWindow(ctx, c.RunID, c.JobName, e.defaultTimeout)
+				d, freezeEnvs, expires, rerr := e.store.ResolveApprovalWindow(ctx, c.RunID, c.JobName, e.defaultTimeout)
 				if rerr != nil {
 					// Fail CLOSED for a destructive action: a definition we
 					// can't read is a run we can't justify cancelling. Skip
@@ -238,16 +238,20 @@ func (e *ApprovalExpirer) Sweep(ctx context.Context) {
 						"run_id", c.RunID, "job", c.JobName, "err", rerr)
 					continue
 				}
-				w = runWindow{d: d, expires: expires}
+				w = runWindow{d: d, freezeEnvs: freezeEnvs, expires: expires}
 				windows[key] = w
 			}
 			if !w.expires {
 				continue // `timeout: never`, or no window applies at all
 			}
+			// Coarse pre-filter only — a valid LOWER bound: the freeze floor
+			// (#208) can only push effective_start LATER, so a gate still inside
+			// awaiting_since+window is definitely not expired. The AUTHORITATIVE,
+			// floor-and-freeze-aware decision is made in-tx by ExpireApprovalGate.
 			if time.Since(c.AwaitingSince) < w.d {
-				continue // still inside its window
+				continue
 			}
-			if e.expireOne(ctx, c, w.d) {
+			if e.expireOne(ctx, c, w) {
 				expired++
 			}
 		}
@@ -277,28 +281,49 @@ type gateKey struct {
 	jobName string
 }
 
-// runWindow memoises one gate's resolved window across a sweep.
+// runWindow memoises one gate's resolved window across a sweep. freezeEnvs is
+// the gate's GovernedFreezeEnvs (#208), carried so the in-tx freeze check does
+// not re-decode the definition per candidate.
 type runWindow struct {
-	d       time.Duration
-	expires bool
+	d          time.Duration
+	freezeEnvs []string
+	expires    bool
 }
 
 // expireOne terminalises a single abandoned gate's run and fires the external
 // effects. Returns whether the run was actually canceled — a gate decided
 // under us, or a run already terminal, counts as neither success nor failure.
-func (e *ApprovalExpirer) expireOne(ctx context.Context, c store.PendingApprovalGate, window time.Duration) bool {
+func (e *ApprovalExpirer) expireOne(ctx context.Context, c store.PendingApprovalGate, w runWindow) bool {
 	// The reason lands in runs.cancel_reason and is rendered in the UI. It cites
 	// the window and the gate NAME only — never an approver identity, a ref, or
 	// any other value that shouldn't travel into a log line.
-	reason := fmt.Sprintf("approval timeout (%s) on gate %q", window, c.JobName)
+	reason := fmt.Sprintf("approval timeout (%s) on gate %q", w.d, c.JobName)
 
-	res, err := e.store.ExpireApprovalGate(ctx, c.JobRunID, c.RunID, reason)
+	res, err := e.store.ExpireApprovalGate(ctx, store.ExpireApprovalGateInput{
+		JobRunID:      c.JobRunID,
+		RunID:         c.RunID,
+		PipelineID:    c.PipelineID,
+		FreezeEnvs:    w.freezeEnvs,
+		Window:        w.d,
+		AwaitingSince: c.AwaitingSince,
+		Reason:        reason,
+	})
 	switch {
 	case errors.Is(err, store.ErrApprovalGateDecided):
 		// Someone clicked between the scan and the write. That's the outcome
 		// this whole component exists to force — not a problem.
 		return false
 	case errors.Is(err, store.ErrRunAlreadyTerminal), errors.Is(err, store.ErrRunNotFound):
+		return false
+	case errors.Is(err, store.ErrApprovalGateFrozen),
+		errors.Is(err, store.ErrApprovalGateContended),
+		errors.Is(err, store.ErrApprovalGateWithinWindow):
+		// The freeze pause (#208): the gate is deliberately held, a concurrent
+		// freeze/unfreeze forced a lock back-off, or an unfreeze granted a fresh
+		// window. All benign — retried next sweep, no metric, no cancel. Debug so
+		// a frozen fleet doesn't spam the log every interval.
+		e.log.Debug("approval expirer: paused by freeze",
+			"run_id", c.RunID, "job", c.JobName, "reason", err)
 		return false
 	case err != nil:
 		e.log.Warn("approval expirer: expire gate",
@@ -309,7 +334,7 @@ func (e *ApprovalExpirer) expireOne(ctx context.Context, c store.PendingApproval
 	metrics.ApprovalsExpired.Inc()
 	e.log.Info("approval expirer: gate expired",
 		"run_id", c.RunID, "job", c.JobName,
-		"counter", c.Counter, "window", window,
+		"counter", c.Counter, "window", w.d,
 		"awaiting_since", c.AwaitingSince)
 
 	// Audit is best-effort and post-commit, matching the audit package's
@@ -323,7 +348,7 @@ func (e *ApprovalExpirer) expireOne(ctx context.Context, c store.PendingApproval
 			"run_id":         c.RunID.String(),
 			"counter":        c.Counter,
 			"job_name":       c.JobName,
-			"window_seconds": int64(window / time.Second),
+			"window_seconds": int64(w.d / time.Second),
 			"waited_seconds": int64(time.Since(c.AwaitingSince) / time.Second),
 		},
 	}); aerr != nil {

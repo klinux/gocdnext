@@ -62,9 +62,18 @@ LIMIT sqlc.arg(page_size);
 -- decided_by stays NULL — nobody decided. The `expired` decision value is what
 -- distinguishes this from an approve/reject; status is left to the shared
 -- cancel cascade (CancelQueuedJobsInRun already covers awaiting_approval rows).
+--
+-- TOCTOU guard (#208): relate the row to the run AND the exact awaiting_since
+-- the candidate scan observed. A rerun that re-parks the gate (re-stamping
+-- awaiting_since to a fresh instant) or a human deciding between the scan and
+-- this write moves the row off the (run_id, awaiting_since) the expiry was
+-- authorised for, so this returns no rows and the whole expiry aborts instead
+-- of cancelling a run under a window that was just reset.
 UPDATE job_runs
 SET decision = 'expired', decided_at = NOW()
 WHERE id = $1
+  AND run_id = @run_id
+  AND awaiting_since = @awaiting_since
   AND approval_gate = true
   AND status = 'awaiting_approval'
 RETURNING id;

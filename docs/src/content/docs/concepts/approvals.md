@@ -315,8 +315,11 @@ jobs:
 Precedence is `timeout:` → server default → never expire.
 
 Accepted values are Go duration syntax between `1m` and `2160h` (90 days), or
-`never`. Go's duration parser has **no day unit** — write `168h`, not `7d`; the
-parser rejects the `d` suffix with a message naming the hours equivalent.
+`never` (`off` is accepted as a synonym). Go's duration parser has **no day
+unit** — write `168h`, not `7d`; the parser rejects the `d` suffix with a
+message naming the hours equivalent. A bare `0` is rejected as ambiguous: use
+`never`/`off` to wait indefinitely, or omit the key to inherit the server
+default.
 
 ### Expired runs are canceled, not failed
 
@@ -350,6 +353,24 @@ server logs a warning naming the run. This only comes up with a window short
 enough to expire while jobs are still running; under the 7-day default there is
 nothing left running to leak.
 :::
+
+### A freeze pauses expiry
+
+A gate's expiry never fights an [environment
+change-freeze](/gocdnext/docs/concepts/environment-freeze/). While an
+environment a gate governs is frozen, that gate **does not expire** — the whole
+point of a freeze is to hold promotions to that environment, and auto-cancelling
+the pending gate would defeat it. The check is authoritative at cancel time, so
+a freeze applied at the last second still wins.
+
+Lifting the freeze **restarts the clock**: the gate gets a fresh full window
+measured from the moment of the unfreeze, not from when it originally started
+awaiting. A gate that sat through a two-week freeze is not cancelled the instant
+the freeze lifts — someone gets the normal window to come back and decide.
+
+This applies to the environments a gate governs — the deploy (and migration)
+environments downstream of it. A gate that governs nothing freezable is
+unaffected.
 
 ### Gates that must wait
 

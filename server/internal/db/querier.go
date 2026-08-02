@@ -741,6 +741,12 @@ type Querier interface {
 	// cheaper than two for what's already the hottest path on
 	// webhook-heavy workloads.
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	// Authoritative project_id for a pipeline, resolved INSIDE the expiry tx (#208):
+	// an approval-expiry candidate carries only pipeline_id, and the freeze check
+	// needs the project to build the per-(project, env) freeze lock key and probe
+	// environment_freezes. pipeline -> project is immutable, so a plain PK lookup is
+	// authoritative without a lock.
+	GetPipelineProjectID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	// Single-row lookup by string key. Returns the full envelope so
 	// the caller can decrypt the secret half locally with the cipher
 	// (no plaintext crosses the store boundary unless the caller
@@ -1604,7 +1610,14 @@ type Querier interface {
 	// decided_by stays NULL — nobody decided. The `expired` decision value is what
 	// distinguishes this from an approve/reject; status is left to the shared
 	// cancel cascade (CancelQueuedJobsInRun already covers awaiting_approval rows).
-	MarkApprovalGateExpired(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	//
+	// TOCTOU guard (#208): relate the row to the run AND the exact awaiting_since
+	// the candidate scan observed. A rerun that re-parks the gate (re-stamping
+	// awaiting_since to a fresh instant) or a human deciding between the scan and
+	// this write moves the row off the (run_id, awaiting_since) the expiry was
+	// authorised for, so this returns no rows and the whole expiry aborts instead
+	// of cancelling a run under a window that was just reset.
+	MarkApprovalGateExpired(ctx context.Context, arg MarkApprovalGateExpiredParams) (pgtype.UUID, error)
 	// Called after the server HEADs the storage and confirms the object is
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.
@@ -1652,6 +1665,13 @@ type Querier interface {
 	// retrying (via the lease), so a crash — or a cleanup that had no target yet — is
 	// recovered rather than silently dropped.
 	MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error
+	// The most recent unfreeze instant across a gate's GovernedFreezeEnvs — the
+	// floor the expirer folds into effective_start = max(awaiting_since, this). MAX
+	// over no matching rows (envs that were never frozen) is NULL, which the caller
+	// reads as "no floor" and falls back to awaiting_since — identical to pre-#208
+	// behaviour for the un-frozen case. Read under the freeze advisory lock so the
+	// floor is serialized against a concurrent unfreeze upsert.
+	MaxLastUnfrozenAt(ctx context.Context, arg MaxLastUnfrozenAtParams) (pgtype.Timestamptz, error)
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Returns the run_id of an in-flight predecessor blocking the
 	// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
@@ -2152,6 +2172,17 @@ type Querier interface {
 	// id so the dispatch path can attach a revision regardless of which
 	// side of the conflict it hit.
 	UpsertEnvironment(ctx context.Context, arg UpsertEnvironmentParams) (pgtype.UUID, error)
+	// Record (or refresh) the instant a freeze was lifted on (project, env), the
+	// FLOOR the approval expirer adds to a gate's expiry clock (#208). clock_timestamp()
+	// (real wall time), NOT now()/transaction-start, because the expirer compares it
+	// against clock_timestamp() taken after acquiring its locks.
+	//
+	// Called ONLY on a real unfreeze (a freeze row was actually deleted), inside
+	// UnfreezeEnvironment's tx under the per-(project, env) freeze advisory lock, so
+	// an expiry racing the unfreeze reads a floor consistent with the freeze state it
+	// checks under the same lock. An idempotent unfreeze that deleted nothing does
+	// NOT call this, so it never renews a window nobody was waiting on.
+	UpsertFreezeEpoch(ctx context.Context, arg UpsertFreezeEpochParams) error
 	// Called right after CreateCheckRun on GitHub responds; caller may
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.

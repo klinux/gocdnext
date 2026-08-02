@@ -9,9 +9,16 @@ import (
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
-// approvalTimeoutNeverLiteral is the YAML spelling of "this gate must never
-// expire", the explicit opt-out from the server-wide default.
-const approvalTimeoutNeverLiteral = "never"
+// approvalTimeoutNeverLiteral is the canonical YAML spelling of "this gate must
+// never expire", the explicit opt-out from the server-wide default.
+// approvalTimeoutOffLiteral is an accepted synonym: the fleet-wide env var
+// (GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT) already honours never/off/0, and a
+// per-gate `timeout:` should read the same — a `0` still stays a hard error
+// (ambiguous with "inherit the default"; see the d==0 branch below).
+const (
+	approvalTimeoutNeverLiteral = "never"
+	approvalTimeoutOffLiteral   = "off"
+)
 
 // daySuffixRE recognises the `7d` / `1.5d` shapes Go's ParseDuration rejects,
 // so the error can name the fix instead of echoing "unknown unit d". Digit
@@ -33,7 +40,8 @@ func parseApprovalTimeout(jobName, raw string) (time.Duration, error) {
 	if trimmed == "" {
 		return 0, nil
 	}
-	if strings.EqualFold(trimmed, approvalTimeoutNeverLiteral) {
+	if strings.EqualFold(trimmed, approvalTimeoutNeverLiteral) ||
+		strings.EqualFold(trimmed, approvalTimeoutOffLiteral) {
 		return domain.ApprovalTimeoutNever, nil
 	}
 
