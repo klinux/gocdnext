@@ -13,8 +13,9 @@ import (
 )
 
 // lockApprovalEnvs takes, in the mandatory global order, every advisory lock an
-// APPROVE of `gateName` needs, and returns the concrete deploy environments the
-// gate governs (sorted, deduped — domain.GovernedEnvs' contract).
+// APPROVE of `gateName` needs, and returns the concrete environments the gate
+// governs for FREEZE purposes — a deploy OR a bare `environment:` job, a
+// migration (sorted, deduped — domain.GovernedFreezeEnvs' contract, #206).
 //
 // Order within the function mirrors the global order exactly:
 //
@@ -41,16 +42,24 @@ func lockApprovalEnvs(ctx context.Context, tx pgx.Tx, projectID, pipelineID uuid
 	if err := json.Unmarshal(definition, &def); err != nil {
 		return nil, fmt.Errorf("store: approval freeze: decode run definition: %w", err)
 	}
-	envs := def.GovernedEnvs(gateName) // sorted, concrete, deduped
-	if len(envs) == 0 {
+	// Two DISTINCT env sets (#206). Lane locks are a supersede/deploy concern, so
+	// they use the deploy-only GovernedEnvs (widening them would let a migration
+	// contend the lane / imply a supersede backstop it never has). Freeze locks +
+	// the freeze CHECK use GovernedFreezeEnvs, which also counts bare
+	// `environment:` jobs (a migration) — so a gate that governs ONLY a migration
+	// is still freeze-aware. Return the freeze set: the caller's approve-time
+	// check runs against it.
+	laneEnvs := def.GovernedEnvs(gateName)         // sorted, concrete, deduped
+	freezeEnvs := def.GovernedFreezeEnvs(gateName) // superset (deploy + environment:)
+	if len(laneEnvs) == 0 && len(freezeEnvs) == 0 {
 		return nil, nil
 	}
 
 	// (1) lane locks, name order. Only supersede pipelines have a lane backstop;
 	// for supersede=off writeGatePassMarkers is a no-op, so there is no lane
-	// lock to order against.
+	// lock to order against. Deploy-only — a migration takes no lane lock.
 	if def.Supersede == domain.SupersedeBranch || def.Supersede == domain.SupersedePipeline {
-		for _, env := range envs {
+		for _, env := range laneEnvs {
 			key := LaneEnvLockKey(pipelineID, def.Supersede, runRef, env)
 			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, key); err != nil {
 				return nil, fmt.Errorf("store: approval lane lock: %w", err)
@@ -58,13 +67,13 @@ func lockApprovalEnvs(ctx context.Context, tx pgx.Tx, projectID, pipelineID uuid
 		}
 	}
 
-	// (2) freeze locks, name order.
-	for _, env := range envs {
+	// (2) freeze locks, name order — over the freeze set (incl. migration envs).
+	for _, env := range freezeEnvs {
 		if err := lockProjectEnvFreeze(ctx, tx, projectID, env); err != nil {
 			return nil, err
 		}
 	}
-	return envs, nil
+	return freezeEnvs, nil
 }
 
 // frozenGovernedEnvsTx is FrozenGovernedEnvs bound to a caller-owned tx.

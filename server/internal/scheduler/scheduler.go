@@ -311,13 +311,14 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// untouched (IS DISTINCT FROM) until the environment thaws.
 		//
 		// Note this holds ONE JOB, not the whole run: a stage with a frozen
-		// `production` deploy and a non-frozen `staging` deploy still dispatches
-		// staging. The run-level queue_reason names the dominant blocker; it does
-		// not mean everything stopped.
+		// `production` job and a non-frozen `staging` job still dispatches staging.
+		// The held job may be a deploy OR a bare `environment:` job (a migration).
+		// The run-level queue_reason names the dominant blocker; it does not mean
+		// everything stopped.
 		if freeze.any() {
 			if env := freeze.envFor(job.Name); env != "" && freeze.holds(env) {
 				hold.record(holdFrozen, store.FreezeQueueReasonPrefix+freeze.winner)
-				s.log.Debug("scheduler: deploy held by environment freeze",
+				s.log.Debug("scheduler: job held by environment freeze",
 					"run_id", runID, "job_id", job.ID, "job_name", job.Name, "environment", env)
 				continue
 			}
@@ -502,7 +503,8 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			assigned store.AssignedJob
 			claimed  bool
 		)
-		if deployTarget != nil {
+		switch {
+		case deployTarget != nil:
 			var admission store.DeployAdmission
 			assigned, admission, err = s.store.AssignDeployJobIfEnvNotFrozen(
 				ctx, job.ID, agentID, run.ProjectID, deployTarget.Environment)
@@ -520,7 +522,23 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 				continue
 			}
 			claimed = admission == store.DeployAdmitted
-		} else {
+		case freeze.envFor(job.Name) != "":
+			// #206: a NON-deploy job that declares environment: (a migration). It
+			// takes the same freeze-checked admission as a deploy, but WITHOUT the
+			// deploy guard above (no lane lock, no deployment revision) — no guard
+			// was acquired for it, so there is nothing to release on the skip.
+			env := freeze.envFor(job.Name)
+			var admission store.DeployAdmission
+			assigned, admission, err = s.store.AssignJobIfEnvNotFrozen(
+				ctx, job.ID, agentID, run.ProjectID, env)
+			if err == nil && admission == store.DeployAdmissionFrozen {
+				hold.record(holdFrozen, store.FreezeQueueReasonPrefix+env)
+				s.log.Debug("scheduler: job refused at admission by environment freeze",
+					"run_id", runID, "job_id", job.ID, "environment", env)
+				continue
+			}
+			claimed = admission == store.DeployAdmitted
+		default:
 			assigned, claimed, err = s.store.AssignJob(ctx, job.ID, agentID)
 		}
 		if err != nil {

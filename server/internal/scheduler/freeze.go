@@ -51,8 +51,9 @@ func (h *runHold) record(p holdPriority, reason string) {
 
 func (h *runHold) held() bool { return h.priority != holdNone }
 
-// freezeMemo is one tick's answer to "which of this run's ready deploy jobs are
-// held by an environment change-freeze?" (#202).
+// freezeMemo is one tick's answer to "which of this run's ready env-declaring
+// jobs (a deploy OR a migration) are held by an environment change-freeze?"
+// (#202, #206).
 //
 // Built ONCE per dispatchRun from ONE pipeline decode and ONE batched query,
 // then consulted per job. The alternatives — a freeze probe inside the per-job
@@ -70,8 +71,9 @@ type freezeMemo struct {
 	// non-deterministic pick would flip the stamp between
 	// `frozen-deploy:prod` and `frozen-deploy:staging` on every tick.
 	winner string
-	// envByJob maps job name -> deploy environment, from the single decode. The
-	// early gate reads it instead of re-decoding the pipeline per candidate.
+	// envByJob maps job name -> declared environment (deploy: OR job-level
+	// environment:, via Job.TargetEnvironment), from the single decode. The early
+	// gate reads it instead of re-decoding the pipeline per candidate.
 	envByJob map[string]string
 }
 
@@ -85,17 +87,20 @@ func (m freezeMemo) holds(env string) bool {
 	return ok
 }
 
-// envFor returns the deploy environment of a job, or "" for a non-deploy job.
+// envFor returns the declared environment of a job (deploy: or environment:), or
+// "" for a job that declares none.
 func (m freezeMemo) envFor(jobName string) string { return m.envByJob[jobName] }
 
-// deployEnvIndex decodes the run's pipeline snapshot ONCE and indexes each job's
-// deploy environment by job name.
+// declaredEnvIndex decodes the run's pipeline snapshot ONCE and indexes each
+// job's declared environment by job name — a `deploy:` marker OR a bare
+// `environment:` (a migration), via Job.TargetEnvironment. That is what lets a
+// freeze hold a non-deploy job.
 //
 // The per-call alternative (jobDefFromDefinition) unmarshals the ENTIRE pipeline
 // definition every time, so reaching for it inside a per-job loop turns one
 // decode into N. See BenchmarkFreezePreScan for the measured difference on a
 // 50-job pipeline.
-func deployEnvIndex(definition []byte) (map[string]string, error) {
+func declaredEnvIndex(definition []byte) (map[string]string, error) {
 	if len(definition) == 0 {
 		return nil, nil
 	}
@@ -105,13 +110,14 @@ func deployEnvIndex(definition []byte) (map[string]string, error) {
 	}
 	var out map[string]string
 	for _, j := range def.Jobs {
-		if j.Deploy == nil || j.Deploy.Environment == "" {
+		env := j.TargetEnvironment()
+		if env == "" {
 			continue
 		}
 		if out == nil {
 			out = make(map[string]string, 4)
 		}
-		out[j.Name] = j.Deploy.Environment
+		out[j.Name] = env
 	}
 	return out, nil
 }
@@ -126,25 +132,26 @@ func deployEnvIndex(definition []byte) (map[string]string, error) {
 // dependency, hiding the actual blocker from the operator.
 //
 // Returns a zero memo without touching the database when the pipeline has no
-// deploy job at all, so deploy-less pipelines keep their hot path untouched.
+// env-declaring job at all, so env-less pipelines keep their hot path untouched.
 func (s *Scheduler) scanFrozenDeployEnvs(ctx context.Context, run store.RunForDispatch, ready []store.DispatchableJob) freezeMemo {
-	envByJob, err := deployEnvIndex(run.Definition)
+	envByJob, err := declaredEnvIndex(run.Definition)
 	if err != nil {
 		// The dispatch path below reports a bad definition on its own terms;
-		// here it just means we cannot tell which jobs deploy, so the pre-scan
-		// contributes nothing and the authoritative admission check still holds.
+		// here it just means we cannot tell which jobs target an environment, so
+		// the pre-scan contributes nothing and the authoritative admission check
+		// still holds.
 		s.log.Warn("scheduler: freeze pre-scan decode", "run_id", run.ID, "err", err)
 		return freezeMemo{}
 	}
 	if len(envByJob) == 0 {
-		return freezeMemo{} // no deploy jobs at all — no query, no allocation
+		return freezeMemo{} // no env-declaring jobs at all — no query, no allocation
 	}
 
 	seen := make(map[string]struct{}, 2)
 	var envs []string
 	for _, job := range ready {
-		env, isDeploy := envByJob[job.Name]
-		if !isDeploy {
+		env, hasEnv := envByJob[job.Name]
+		if !hasEnv {
 			continue
 		}
 		if _, dup := seen[env]; dup {

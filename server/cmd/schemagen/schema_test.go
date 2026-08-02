@@ -194,3 +194,36 @@ func TestPolicyFragmentJobPrefixIsDraft04Compatible(t *testing.T) {
 		t.Error("jobs must NOT use propertyNames — the editor's Draft-04 validator ignores it")
 	}
 }
+
+// TestSchema_JobEnvironmentIsOptionalString locks the #206 override: the
+// yaml.Node-backed `environment` field must surface as a plain optional string,
+// and its orphan `$defs.Node` (which reflection would otherwise emit) must be
+// dropped so the web editor never sees it.
+func TestSchema_JobEnvironmentIsOptionalString(t *testing.T) {
+	s, err := reflectSchema(parserSrc, "pipeline", &parser.File{}, false)
+	if err != nil {
+		t.Fatalf("reflect schema: %v", err)
+	}
+	if _, ok := s.Definitions["Node"]; ok {
+		t.Error("$defs.Node leaked into the schema — the yaml.Node override must delete it")
+	}
+	job, ok := s.Definitions["JobDef"]
+	if !ok || job.Properties == nil {
+		t.Fatal("JobDef definition missing")
+	}
+	env, ok := job.Properties.Get("environment")
+	if !ok {
+		t.Fatal("JobDef.environment property missing")
+	}
+	if env.Type != "string" {
+		t.Errorf("environment type = %q, want string", env.Type)
+	}
+	if env.Ref != "" {
+		t.Errorf("environment must not be a $ref (got %q)", env.Ref)
+	}
+	for _, r := range job.Required {
+		if r == "environment" {
+			t.Error("environment must be optional, but it is in JobDef.required")
+		}
+	}
+}

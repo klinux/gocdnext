@@ -255,6 +255,16 @@ type JobDef struct {
 	// mutually exclusive with `approval:` (a gate executes nothing).
 	// See DeployDef.
 	Deploy *DeployDef `yaml:"deploy,omitempty"`
+
+	// Environment declares which deployment environment this job acts
+	// on so a change-freeze holds it, even without a `deploy:` marker
+	// (a prod migration). A raw yaml.Node — NOT a string — so the
+	// parser can tell an ABSENT key (zero node) from an explicit but
+	// empty declaration (`environment:` → !!null, `environment: ""`):
+	// the empty forms are a loud parse error, never a silent no-env
+	// that would drop freeze protection. toJob resolves + validates it.
+	// (schemagen overrides this to a plain optional string.)
+	Environment yaml.Node `yaml:"environment,omitempty"`
 }
 
 // DeployDef is the YAML shape of a job's `deploy:` block. Custom

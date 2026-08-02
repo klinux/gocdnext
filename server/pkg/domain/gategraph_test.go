@@ -281,3 +281,46 @@ func TestGateGraph_GateGovernsNoDeploy(t *testing.T) {
 		t.Fatalf("gate governing no deploy must have empty env set, got %v", got)
 	}
 }
+
+// migrate is a bare `environment:` job (a prod migration): no Deploy marker, so it
+// is invisible to GovernedEnvs but must appear in GovernedFreezeEnvs.
+func migrate(name, stage, env string, needs ...string) Job {
+	return Job{Name: name, Stage: stage, Needs: needs, Environment: env}
+}
+
+func TestGateGraph_GovernedFreezeEnvs_CountsMigrationButGovernedEnvsDoesNot(t *testing.T) {
+	// approve → migrate(prod). The gate governs the migration for FREEZE, but the
+	// migration is not a deploy, so supersede/gate-pass (GovernedEnvs) must not see it.
+	p := &Pipeline{
+		Stages: []string{"approve", "migration"},
+		Jobs: []Job{
+			gate("approve-migrate", "approve"),
+			migrate("migrate-prod", "migration", "prod"),
+		},
+	}
+	if got := p.GovernedEnvs("approve-migrate"); len(got) != 0 {
+		t.Fatalf("GovernedEnvs must stay deploy-only (empty for a migration gate), got %v", got)
+	}
+	if got := p.GovernedFreezeEnvs("approve-migrate"); !reflect.DeepEqual(got, []string{"prod"}) {
+		t.Fatalf("GovernedFreezeEnvs(approve-migrate) = %v, want [prod]", got)
+	}
+}
+
+func TestGateGraph_GovernedFreezeEnvs_SupersetOfDeploy(t *testing.T) {
+	// A gate governing both a deploy (staging) and a migration (prod): the freeze
+	// variant is the union; the deploy-only variant sees only staging.
+	p := &Pipeline{
+		Stages: []string{"approve", "work"},
+		Jobs: []Job{
+			gate("approve", "approve"),
+			deploy("deploy-staging", "work", "staging"),
+			migrate("migrate-prod", "work", "prod"),
+		},
+	}
+	if got := p.GovernedEnvs("approve"); !reflect.DeepEqual(got, []string{"staging"}) {
+		t.Fatalf("GovernedEnvs(approve) = %v, want [staging] (deploy-only)", got)
+	}
+	if got := p.GovernedFreezeEnvs("approve"); !reflect.DeepEqual(got, []string{"prod", "staging"}) {
+		t.Fatalf("GovernedFreezeEnvs(approve) = %v, want [prod staging]", got)
+	}
+}
