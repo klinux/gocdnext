@@ -151,7 +151,7 @@ the freeze landing. Everything queued behind it is held.
 
 Lifting is one click, no reason required. Runs that were being held are
 woken immediately rather than waiting for the next scheduler tick, so
-deploys resume in about a second. There is no re-approval: a gate that
+held jobs resume in about a second. There is no re-approval: a gate that
 was already approved stays approved.
 
 If a held run somehow isn't woken, the scheduler's periodic tick picks

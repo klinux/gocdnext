@@ -13,8 +13,9 @@ import (
 )
 
 // lockApprovalEnvs takes, in the mandatory global order, every advisory lock an
-// APPROVE of `gateName` needs, and returns the concrete deploy environments the
-// gate governs (sorted, deduped — domain.GovernedEnvs' contract).
+// APPROVE of `gateName` needs, and returns the concrete environments the gate
+// governs for FREEZE purposes — a deploy OR a bare `environment:` job, a
+// migration (sorted, deduped — domain.GovernedFreezeEnvs' contract, #206).
 //
 // Order within the function mirrors the global order exactly:
 //
@@ -48,7 +49,7 @@ func lockApprovalEnvs(ctx context.Context, tx pgx.Tx, projectID, pipelineID uuid
 	// `environment:` jobs (a migration) — so a gate that governs ONLY a migration
 	// is still freeze-aware. Return the freeze set: the caller's approve-time
 	// check runs against it.
-	laneEnvs := def.GovernedEnvs(gateName)        // sorted, concrete, deduped
+	laneEnvs := def.GovernedEnvs(gateName)         // sorted, concrete, deduped
 	freezeEnvs := def.GovernedFreezeEnvs(gateName) // superset (deploy + environment:)
 	if len(laneEnvs) == 0 && len(freezeEnvs) == 0 {
 		return nil, nil

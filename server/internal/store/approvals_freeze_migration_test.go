@@ -37,7 +37,7 @@ func seedGovernedMigrationPipeline(t *testing.T, pool *pgxpool.Pool, slug, env s
 				{
 					Name: "migrate", Stage: "migration", Image: "goose",
 					Tasks:       []domain.Task{{Script: "goose up"}},
-					Environment: env,      // acts on the env, but is NOT a deploy
+					Environment: env,              // acts on the env, but is NOT a deploy
 					Needs:       []string{"gate"}, // governed by the gate
 				},
 			},

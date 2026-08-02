@@ -311,13 +311,14 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 		// untouched (IS DISTINCT FROM) until the environment thaws.
 		//
 		// Note this holds ONE JOB, not the whole run: a stage with a frozen
-		// `production` deploy and a non-frozen `staging` deploy still dispatches
-		// staging. The run-level queue_reason names the dominant blocker; it does
-		// not mean everything stopped.
+		// `production` job and a non-frozen `staging` job still dispatches staging.
+		// The held job may be a deploy OR a bare `environment:` job (a migration).
+		// The run-level queue_reason names the dominant blocker; it does not mean
+		// everything stopped.
 		if freeze.any() {
 			if env := freeze.envFor(job.Name); env != "" && freeze.holds(env) {
 				hold.record(holdFrozen, store.FreezeQueueReasonPrefix+freeze.winner)
-				s.log.Debug("scheduler: deploy held by environment freeze",
+				s.log.Debug("scheduler: job held by environment freeze",
 					"run_id", runID, "job_id", job.ID, "job_name", job.Name, "environment", env)
 				continue
 			}

@@ -51,8 +51,9 @@ func (h *runHold) record(p holdPriority, reason string) {
 
 func (h *runHold) held() bool { return h.priority != holdNone }
 
-// freezeMemo is one tick's answer to "which of this run's ready deploy jobs are
-// held by an environment change-freeze?" (#202).
+// freezeMemo is one tick's answer to "which of this run's ready env-declaring
+// jobs (a deploy OR a migration) are held by an environment change-freeze?"
+// (#202, #206).
 //
 // Built ONCE per dispatchRun from ONE pipeline decode and ONE batched query,
 // then consulted per job. The alternatives — a freeze probe inside the per-job
