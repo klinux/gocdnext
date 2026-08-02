@@ -566,13 +566,14 @@ paths:
       description: >
         System-enforced change-freeze. While the environment is frozen, gocdnext
         admits NO promotion to it: approving a gate that governs it returns 409,
-        its deploy jobs stay queued with `queue_reason=frozen-deploy:<name>`, and
-        a rollback returns 409. Keyed by NAME, not by environment id, so an
-        environment that has never been deployed to (its row is created lazily at
-        the first deploy) can be frozen pre-emptively — the first-ever deploy is
-        exactly the one a freeze must stop. Idempotent: re-freezing does not
-        reset who froze it, when, or why. The guarantee is at the ADMISSION
-        boundary — a deploy admitted before the freeze committed still executes.
+        jobs targeting it (a deploy or a migration) stay queued with
+        `queue_reason=frozen-deploy:<name>`, and a rollback returns 409. Keyed by
+        NAME, not by environment id, so an environment that has never been
+        deployed to (its row is created lazily at the first deploy) can be frozen
+        pre-emptively — the first-ever deploy is exactly the one a freeze must
+        stop. Idempotent: re-freezing does not reset who froze it, when, or why.
+        The guarantee is at the ADMISSION boundary — a job admitted before the
+        freeze committed still executes.
       parameters:
         - $ref: "#/components/parameters/ProjectSlug"
         - in: path
@@ -618,9 +619,9 @@ paths:
       summary: Lift a deploy environment's change-freeze (maintainer+).
       description: >
         Idempotent. On a real thaw, every run currently held by the freeze is
-        woken with a run_queued notification so deploys resume immediately rather
-        than on the next scheduler tick; that wake is best-effort (the periodic
-        tick is the backstop), so `woken_runs` is informational.
+        woken with a run_queued notification so held jobs resume immediately
+        rather than on the next scheduler tick; that wake is best-effort (the
+        periodic tick is the backstop), so `woken_runs` is informational.
       parameters:
         - $ref: "#/components/parameters/ProjectSlug"
         - in: path

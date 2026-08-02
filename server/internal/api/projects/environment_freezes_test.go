@@ -457,7 +457,7 @@ func TestFreezeEndpoints_RequireMaintainerThroughTheMiddleware(t *testing.T) {
 }
 
 // Unfreezing wakes the runs the freeze was holding with a run_queued
-// notification, so deploys resume at once instead of after a full tick.
+// notification, so held jobs resume at once instead of after a full tick.
 func TestUnfreezeEnvironment_NotifiesHeldRuns(t *testing.T) {
 	router, s, pool := freezeRouter(t)
 	ctx := context.Background()
@@ -589,7 +589,7 @@ func seedHeldRun(t *testing.T, pool *pgxpool.Pool, slug, queueReason string) uui
 // The store trims, so `%20production%20` freezes and unfreezes the environment
 // stored as `production` either way. The wake is what breaks: it composes the
 // exact `frozen-deploy:<name>` stamp the scheduler wrote, so an untrimmed name
-// matches nothing, no NOTIFY goes out, and the "deploys resume immediately"
+// matches nothing, no NOTIFY goes out, and the "held jobs resume immediately"
 // promise silently degrades to "wait up to a full tick". The handler therefore
 // normalises ONCE, up front, and every later use reads the normalised value.
 func TestUnfreezeEnvironment_PaddedNameStillWakesHeldRuns(t *testing.T) {
