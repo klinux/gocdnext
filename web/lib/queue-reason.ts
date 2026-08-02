@@ -4,7 +4,8 @@
 //
 // Known keys today:
 //   serial-busy:<run-id>       the pipeline is serial and a predecessor is live
-//   frozen-deploy:<env>        an environment change-freeze is holding a deploy (#202)
+//   frozen-deploy:<env>        an environment change-freeze is holding a job
+//                              targeting <env> — a deploy OR a migration (#202, #206)
 //   supersede-blocked:<env>    a newer run in the lane already cleared this env
 //   supersede-lock-busy:<env>  the lane-env lock is contended this tick
 
@@ -37,9 +38,11 @@ export function formatQueueReason(reason?: string): QueueReason | null {
       return {
         label: `Frozen: ${detail}`,
         // Deliberately explicit that this is not a whole-run halt: a stage can
-        // hold a frozen `production` deploy while its `staging` sibling runs,
-        // and an operator reading "Frozen" alone would conclude otherwise.
-        title: `A change-freeze on ${detail} is holding this run's deploy to it. Other jobs in the run are unaffected.`,
+        // hold a frozen `production` job while its `staging` sibling runs, and an
+        // operator reading "Frozen" alone would conclude otherwise. "jobs" (not
+        // "deploy"): the hold covers any job targeting the env — a deploy OR a
+        // migration (#206) — and there may be several targeting the same env.
+        title: `A change-freeze on ${detail} is holding jobs in this run that target it. Jobs targeting other environments are unaffected.`,
       };
     case "supersede-blocked":
       return {

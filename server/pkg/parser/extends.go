@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // hiddenJobPrefix marks "template-only" jobs that exist solely to
@@ -164,6 +166,15 @@ func mergeJobDef(base, child JobDef) JobDef {
 	}
 	if child.Approval != nil {
 		out.Approval = child.Approval
+	}
+
+	// Environment (#206): child-wins-or-zero. `out := base` would otherwise both
+	// leak the base's `environment:` to the child AND drop a child's own. This
+	// keeps the current contract — a DIRECT declaration on the child works; base
+	// inheritance is deliberately NOT added (that's #209, with deploy:/cluster:).
+	out.Environment = yaml.Node{}
+	if !child.Environment.IsZero() {
+		out.Environment = child.Environment
 	}
 
 	return out

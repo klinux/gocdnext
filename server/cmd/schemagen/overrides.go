@@ -25,6 +25,7 @@ func applyOverrides(s *jsonschema.Schema) {
 	overrideMaterialSpec(s)
 	overrideJobOutputs(s)
 	overrideIDTokenAud(s)
+	overrideJobEnvironment(s)
 }
 
 func strType() *jsonschema.Schema { return &jsonschema.Schema{Type: "string"} }
@@ -121,6 +122,28 @@ func overrideJobOutputs(s *jsonschema.Schema) {
 			{Ref: "#/$defs/OutputDef"},
 		},
 	}
+}
+
+// overrideJobEnvironment replaces the reflected shape of JobDef `environment`
+// with a plain optional string. In Go the field is a yaml.Node (presence-aware
+// parsing: absent vs `environment:` null vs `""`), which reflection emits as a
+// $ref to a useless internal `Node` object — the editor would show a nested
+// mess. Force {type: string} and drop the now-orphan $defs.Node so the web
+// editor sees a clean string. NOTE: yaml.Node is used ONLY by `environment`; if
+// a second yaml.Node field appears, the delete must move behind a last-user check.
+func overrideJobEnvironment(s *jsonschema.Schema) {
+	job, ok := s.Definitions["JobDef"]
+	if !ok || job.Properties == nil {
+		return
+	}
+	if _, ok := job.Properties.Get("environment"); !ok {
+		return
+	}
+	job.Properties.Set("environment", &jsonschema.Schema{
+		Type:        "string",
+		Description: "Deployment environment this job acts on, so a change-freeze holds it even without a deploy: marker (e.g. a prod migration).",
+	})
+	delete(s.Definitions, "Node")
 }
 
 // overrideIDTokenAud accepts both a scalar aud and a sequence (GitLab parity —

@@ -45,7 +45,7 @@ func BenchmarkFreezeEnvLookup_IndexOnce(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		idx, err := deployEnvIndex(def)
+		idx, err := declaredEnvIndex(def)
 		if err != nil {
 			b.Fatal(err)
 		}

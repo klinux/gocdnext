@@ -172,6 +172,11 @@ func jobToDef(j domain.Job) JobDef {
 			}
 		}
 	}
+	if j.Environment != "" {
+		// JobDef.Environment is a yaml.Node (presence-aware on parse); emit it as a
+		// plain string scalar. Left zero (absent) when the job declares no env.
+		def.Environment = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: j.Environment}
+	}
 	if j.Profile != "" {
 		// Round-trip emits the profile under `agent.profile`; the
 		// extra tags AgentDef carries on parse already merged into

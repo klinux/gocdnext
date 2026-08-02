@@ -148,15 +148,36 @@ const (
 // untouched: the overwhelming majority of dispatches are non-deploy jobs, and
 // they must not pay for a lock + a freeze probe they can never need.
 func (s *Store) AssignDeployJobIfEnvNotFrozen(ctx context.Context, jobID, agentID, projectID uuid.UUID, env string) (AssignedJob, DeployAdmission, error) {
+	return s.admitJobIfEnvNotFrozen(ctx, jobID, agentID, projectID, env)
+}
+
+// AssignJobIfEnvNotFrozen is the admission boundary for a NON-deploy job that
+// declares `environment:` (#206) — a prod migration and the like. It shares the
+// exact primitive as the deploy path (freeze lock → re-check → row CAS, one tx),
+// but the CALLER differs: a migration is NOT a deploy, so the scheduler routes it
+// here WITHOUT beginDeployGuard (no lane/supersede lock, no deployment revision).
+// That is safe under the global lock order: Lane precedes Freeze only when BOTH
+// are held, and a migration holds only Freeze + the row CAS.
+func (s *Store) AssignJobIfEnvNotFrozen(ctx context.Context, jobID, agentID, projectID uuid.UUID, env string) (AssignedJob, DeployAdmission, error) {
+	return s.admitJobIfEnvNotFrozen(ctx, jobID, agentID, projectID, env)
+}
+
+// admitJobIfEnvNotFrozen is the shared admission core: take the per-(project,
+// env) freeze lock, re-read environment_freezes under it, and CAS the row —
+// all in ONE transaction. Freeze and unfreeze take the same lock, so once the
+// freeze endpoint returns, no job targeting that environment can be admitted.
+func (s *Store) admitJobIfEnvNotFrozen(ctx context.Context, jobID, agentID, projectID uuid.UUID, env string) (AssignedJob, DeployAdmission, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return AssignedJob{}, "", fmt.Errorf("store: assign deploy job begin: %w", err)
+		return AssignedJob{}, "", fmt.Errorf("store: assign job begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Global lock order: the caller already holds the lane-env SESSION lock
-	// (the supersede guard) when supersede is on; the freeze lock comes next,
-	// and only then the row-level CAS inside AssignJob.
+	// Global lock order: for a deploy the caller already holds the lane-env
+	// SESSION lock (the supersede guard) when supersede is on; the freeze lock
+	// comes next, and only then the row-level CAS. A migration holds no lane lock
+	// (Lane precedes Freeze only when both are held), so it takes just the freeze
+	// lock here.
 	if err := lockProjectEnvFreeze(ctx, tx, projectID, env); err != nil {
 		return AssignedJob{}, "", err
 	}
@@ -167,7 +188,7 @@ func (s *Store) AssignDeployJobIfEnvNotFrozen(ctx context.Context, jobID, agentI
 		Name:      env,
 	})
 	if err != nil {
-		return AssignedJob{}, "", fmt.Errorf("store: assign deploy job freeze check: %w", err)
+		return AssignedJob{}, "", fmt.Errorf("store: assign job freeze check: %w", err)
 	}
 	if frozen {
 		return AssignedJob{}, DeployAdmissionFrozen, nil
@@ -181,10 +202,10 @@ func (s *Store) AssignDeployJobIfEnvNotFrozen(ctx context.Context, jobID, agentI
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AssignedJob{}, DeployAdmissionLost, nil
 		}
-		return AssignedJob{}, "", fmt.Errorf("store: assign deploy job: %w", err)
+		return AssignedJob{}, "", fmt.Errorf("store: assign job: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return AssignedJob{}, "", fmt.Errorf("store: assign deploy job commit: %w", err)
+		return AssignedJob{}, "", fmt.Errorf("store: assign job commit: %w", err)
 	}
 	return AssignedJob{
 		ID:      fromPgUUID(row.ID),

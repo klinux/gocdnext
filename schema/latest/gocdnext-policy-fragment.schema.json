@@ -348,6 +348,10 @@
         "deploy": {
           "$ref": "#/$defs/DeployDef",
           "description": "Deploy marks this job as a deployment to a named environment\n(#39). Tracking marker only — the job's `uses:`/`script:`\nstill performs the deploy. Valid ONLY on an executable job;\nmutually exclusive with `approval:` (a gate executes nothing).\nSee DeployDef."
+        },
+        "environment": {
+          "type": "string",
+          "description": "Deployment environment this job acts on, so a change-freeze holds it even without a deploy: marker (e.g. a prod migration)."
         }
       },
       "additionalProperties": false,

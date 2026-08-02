@@ -537,6 +537,30 @@ type Job struct {
 	// DeploySpec. omitempty: the dispatch fast-path and the common
 	// non-deploy job never carry "Deploy":null.
 	Deploy *DeploySpec `json:",omitempty"`
+
+	// Environment declares which deployment environment this
+	// (executable) job ACTS ON, independent of the tracking Deploy
+	// marker — a prod DB migration (a plain goose/kustomize job, no
+	// Deploy) declares `environment: prod` so a change-freeze holds it.
+	// It creates no deployment_revision and no native takeover; its
+	// only job is freeze membership. Empty = the job declares no env.
+	// When both are set they MUST be equal (enforced at parse), so
+	// TargetEnvironment has a single answer. omitempty keeps the common
+	// non-env job's JSONB definition free of "Environment":"".
+	Environment string `json:",omitempty"`
+}
+
+// TargetEnvironment returns the deployment environment this job acts on
+// — the Deploy marker's env when present (a tracking deploy), else the
+// bare Environment declaration (a migration or other env-acting job).
+// It is the single precedence rule every freeze reader shares; parse
+// guarantees the two agree when both are set, so the order is a
+// formality, not a conflict resolution. Empty = the job declares no env.
+func (j Job) TargetEnvironment() string {
+	if j.Deploy != nil && j.Deploy.Environment != "" {
+		return j.Deploy.Environment
+	}
+	return j.Environment
 }
 
 // IDTokenSpec is the audience contract for one job id_token.

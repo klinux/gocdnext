@@ -122,3 +122,31 @@ func TestGitFingerprint_DifferentReposStayDistinct(t *testing.T) {
 		t.Errorf("different repos hashed to the same fingerprint")
 	}
 }
+
+// TestJob_TargetEnvironment covers the single precedence rule every
+// freeze reader shares: Deploy env wins when present, else the bare
+// Environment declaration, else "".
+func TestJob_TargetEnvironment(t *testing.T) {
+	cases := []struct {
+		name string
+		job  domain.Job
+		want string
+	}{
+		{"neither", domain.Job{}, ""},
+		{"environment only", domain.Job{Environment: "prod"}, "prod"},
+		{"deploy only", domain.Job{Deploy: &domain.DeploySpec{Environment: "staging"}}, "staging"},
+		{
+			"both equal (parse guarantees this)",
+			domain.Job{Environment: "prod", Deploy: &domain.DeploySpec{Environment: "prod"}},
+			"prod",
+		},
+		{"deploy with empty env falls back to environment", domain.Job{Environment: "prod", Deploy: &domain.DeploySpec{}}, "prod"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.job.TargetEnvironment(); got != tc.want {
+				t.Errorf("TargetEnvironment() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

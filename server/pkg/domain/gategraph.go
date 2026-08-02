@@ -120,6 +120,35 @@ func (p *Pipeline) GovernedEnvs(gateName string) []string {
 	return out
 }
 
+// GovernedFreezeEnvs returns the sorted, deduped environment names that approval
+// gate `gateName` governs for FREEZE purposes — deploy jobs AND bare
+// `environment:` jobs (a migration), via Job.TargetEnvironment. It is a strict
+// superset of GovernedEnvs, deliberately kept SEPARATE: GovernedEnvs feeds
+// supersede + gate-pass, where a non-deploy job has no lane/supersede backstop, so
+// counting a migration env there would be unsafe. Only the freeze/approval-freeze
+// paths read this variant. Empty when the gate governs no env-declaring job.
+func (p *Pipeline) GovernedFreezeEnvs(gateName string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, d := range p.Jobs {
+		env := d.TargetEnvironment()
+		if env == "" {
+			continue
+		}
+		for _, g := range p.governingGatesForJob(d) {
+			if g != gateName {
+				continue
+			}
+			if _, dup := seen[env]; !dup {
+				seen[env] = struct{}{}
+				out = append(out, env)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ReadyGateEnvsAtStart returns the concrete deploy envs governed by the approval
 // gates that are READY the instant a run is created — gates in the first stage with
 // no unmet needs (nothing precedes them). Used by the #97 creation supersede fire:
