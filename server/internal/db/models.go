@@ -277,6 +277,12 @@ type EnvironmentFreeze struct {
 	Reason    string
 }
 
+type EnvironmentFreezeEpoch struct {
+	ProjectID      pgtype.UUID
+	Environment    string
+	LastUnfrozenAt pgtype.Timestamptz
+}
+
 type GithubAppDelivery struct {
 	DeliveryID string
 	Event      string

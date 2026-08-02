@@ -287,8 +287,19 @@ operations where each step needs its own review.
 
 ### Auto-cancel after timeout
 
-The `awaiting_approval` status can sit forever. To auto-cancel
-after a window:
+An abandoned gate has only two other exits: a human clicking, or
+[supersede](#latest-wins-supersede) cancelling it when a newer run arrives.
+Neither is guaranteed, so without a window a gate nobody returns to keeps its
+run in `running` forever.
+
+**Every gate has a window by default — no YAML required.** The server default
+is **7 days**, set fleet-wide by the operator:
+
+```bash
+GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT=168h   # default; "never" disables it
+```
+
+Override it per gate with the job-level `timeout:`:
 
 ```yaml
 jobs:
@@ -298,11 +309,87 @@ jobs:
       description: "Approve prod"
       approver_groups: [release-approvers]
       required: 1
-    timeout: 24h
+    timeout: 24h     # this gate only; omit to inherit the server default
 ```
 
-After 24h the job is killed (`failed` with a timeout reason); the
-run terminates.
+Precedence is `timeout:` → server default → never expire.
+
+Accepted values are Go duration syntax between `1m` and `2160h` (90 days), or
+`never` (`off` is accepted as a synonym). Go's duration parser has **no day
+unit** — write `168h`, not `7d`; the parser rejects the `d` suffix with a
+message naming the hours equivalent. A bare `0` is rejected as ambiguous: use
+`never`/`off` to wait indefinitely, or omit the key to inherit the server
+default.
+
+### Expired runs are canceled, not failed
+
+An expired gate terminalises its run as **`canceled`** with
+`cancel_reason = "approval timeout (168h) on gate \"approve-prod\""`, and the
+gate itself records `decision = expired` (distinct from a rejection — a reject
+is a decision, an expiry is the absence of one).
+
+This is deliberate and load-bearing for your metrics: the dashboard computes
+success rate as `success / (success + failed)` with canceled excluded, so
+reporting abandonment as a failure would silently degrade every pipeline's
+success rate. Nobody's build broke — nobody decided. DORA is unaffected either
+way, since an expired gate never becomes a deploy.
+
+Each expiry increments `gocdnext_approvals_expired_total` — a rising rate means
+teams are opening gates they never come back to — and writes an
+`approval.expired` audit event.
+
+The audit write is best-effort: it happens after the cancel commits, so a
+failure is logged rather than rolled back. Don't treat the audit log as a
+complete ledger of expiries; the metric is the reliable count.
+
+Cancelling also stops the run's still-executing jobs and tears down its
+`services:` containers. Gates are armed from run creation, so a first-stage
+build can still be running when a later gate times out.
+
+:::note
+The teardown is best-effort. If no Kubernetes agent is connected at the moment
+the gate expires, `services:` pods can survive until a manual cleanup — the
+server logs a warning naming the run. This only comes up with a window short
+enough to expire while jobs are still running; under the 7-day default there is
+nothing left running to leak.
+:::
+
+### A freeze pauses expiry
+
+A gate's expiry never fights an [environment
+change-freeze](/gocdnext/docs/concepts/environment-freeze/). While an
+environment a gate governs is frozen, that gate **does not expire** — the whole
+point of a freeze is to hold promotions to that environment, and auto-cancelling
+the pending gate would defeat it. The check is authoritative at cancel time, so
+a freeze applied at the last second still wins.
+
+Lifting the freeze **restarts the clock**: the gate gets a fresh full window
+measured from the moment of the unfreeze, not from when it originally started
+awaiting. A gate that sat through a two-week freeze is not cancelled the instant
+the freeze lifts — someone gets the normal window to come back and decide.
+
+This applies to the environments a gate governs — the deploy (and migration)
+environments downstream of it. A gate that governs nothing freezable is
+unaffected.
+
+### Gates that must wait
+
+Some gates legitimately sit for weeks — a compliance window, a release
+scheduled for next month. Opt those out explicitly:
+
+```yaml
+    timeout: never
+```
+
+`never` beats the server default; nothing else does.
+
+:::caution
+The window is measured from when the gate started awaiting, which is **run
+creation** — gates are armed for the whole run, not when their stage is
+reached. A pipeline whose earlier stages take hours burns that time out of the
+window. Harmless at the 7-day default; worth checking if you set a window
+shorter than the pipeline's own duration.
+:::
 
 ## Latest-wins supersede
 

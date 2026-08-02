@@ -985,6 +985,27 @@ func main() {
 		}
 	}()
 
+	// Approval expirer: cancels runs whose approval gate sat unanswered past
+	// its window. Separate from the reaper on purpose — that one handles dead
+	// agents on a 90s horizon, this one handles humans who never came back, on
+	// a days-long one. Without it an abandoned gate keeps its run in `running`
+	// indefinitely, since the only other exits are a human clicking or
+	// supersede cancelling it when a newer run shows up.
+	go func() {
+		expirer := scheduler.NewApprovalExpirer(st, cfg.ApprovalDefaultTimeout, logger).
+			WithDispatcher(sessions)
+		if checksReporter != nil {
+			// Same reporter the AgentService and the scheduler's supersede path
+			// use, so an expiry closes the very check run the JobResult path
+			// would have — expiry skips that path, so without this the check
+			// stays in_progress on the PR forever.
+			expirer = expirer.WithChecksReporter(checksReporter)
+		}
+		if err := expirer.Run(ctx); err != nil {
+			logger.Error("approval expirer exited", "err", err)
+		}
+	}()
+
 	// Deploy watcher (ADR-0001, Inc.6): claims in-flight deploy_watches and drives
 	// each to convergence. Idle (claims nothing) until a `deploy:` job creates a
 	// watch. worker id = hostname so a restarted replica reclaims its own leases.

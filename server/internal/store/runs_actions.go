@@ -43,14 +43,18 @@ var (
 // upstream rerun resurrects a downstream that a SYSTEM cancel stopped
 // (dependency / user_run / supersede / NULL) but NOT one the user deliberately
 // canceled ALONE (user_job). The full value set — user_job, user_run, supersede,
-// dependency, approval_expiry (reserved for #208) — mirrors the CHECK in migration
-// 00079. Only the two origins passed from Go (as query params) need constants; the
-// rest are written as literals in the cancel SQL where the row is stamped.
+// dependency, approval_expiry — mirrors the CHECK in migration 00079. Only the
+// origins passed from Go (as query params) need constants; the rest are written
+// as literals in the cancel SQL where the row is stamped.
 type CancelOrigin string
 
 const (
 	cancelOriginSupersede  CancelOrigin = "supersede"
 	cancelOriginDependency CancelOrigin = "dependency"
+	// cancelOriginApprovalExpiry stamps the run/jobs an approval-timeout sweep
+	// cancels (#208). It is a SYSTEM origin — an upstream rerun revives a job
+	// stopped this way (it is not the deliberate user_job single-job cancel).
+	cancelOriginApprovalExpiry CancelOrigin = "approval_expiry"
 )
 
 // RunningJobRef points the HTTP handler at a job_run that was still

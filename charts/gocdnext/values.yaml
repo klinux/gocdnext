@@ -370,6 +370,29 @@ caches:
 # sweeper rotates partitions ahead and drops them past `retention`.
 # Cold archive (slice 3) ships terminal-job logs to the artefact
 # backend and drops the rows — toggle via `archive.policy`.
+# Approval gates. An abandoned gate would otherwise keep its run in
+# `running` forever — the only other exits are a human clicking or a
+# newer run superseding it, and neither is guaranteed.
+approvals:
+  # How long a gate may sit unanswered before its run is CANCELED (not
+  # failed, so pipeline success rate is unaffected). Applies to every
+  # gate that doesn't declare its own `timeout:` in YAML, so operators
+  # bound abandonment without each pipeline opting in.
+  #
+  # Go duration string with no `d` unit — "168h" is 7 days, the default.
+  # Clamped to [1m, 2160h].
+  #
+  # To disable fleet-wide, prefer the string "never" over 0. Both are
+  # accepted by the server, but a bare 0 is easy to write as a YAML
+  # number and reads as "off" to a human while meaning nothing to a
+  # Helm `if` — the template renders on key presence precisely so that
+  # `--set approvals.defaultTimeout=0` still reaches the server rather
+  # than silently restoring the 7-day default.
+  #
+  # Gates with their own `timeout:` keep expiring either way; this knob
+  # is only the fallback for gates that declare none.
+  defaultTimeout: "168h"
+
 logs:
   # Retention window for the partitioned heap. Go duration string;
   # empty disables drops (partitions still get created ahead of

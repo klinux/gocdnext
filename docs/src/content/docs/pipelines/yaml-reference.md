@@ -278,7 +278,7 @@ Per-key:
 | `parallel.matrix` | list | expand the job into one cell per cartesian product |
 | `parallel.count` | int | run N identical copies (no matrix) |
 | `rules` | — | **rejected at parse** — was accepted-but-unenforced; use `when.paths` / `approval:` (issue #40) |
-| `timeout` | duration | hard kill after — `30m`, `2h` |
+| `timeout` | duration | **approval gates only** — wait window before the gate expires (`24h`, `168h`, `never`; no `d` unit). On a non-gate job it is parsed but **not enforced**; see [Timeout](#timeout) |
 | `retry` | int | retry count on `failed` |
 | `tags` | `[]string` | extra constraints unioned with the agent profile |
 | `agent` | block | runner profile + extra tags |
@@ -1055,15 +1055,31 @@ against the profile's `max_cpu` / `max_mem` at apply time.
 
 ## Timeout
 
+On an **approval gate**, `timeout:` is the wait window — how long the gate may
+sit unanswered before the run is canceled:
+
 ```yaml
 jobs:
-  long-thing:
-    timeout: 2h
+  approve-prod:
+    stage: gate
+    approval:
+      approver_groups: [release-approvers]
+    timeout: 24h      # or `never` to opt out; omit to inherit the server default
 ```
 
-Hard kill if the job hasn't reached terminal status within the
-window. Default is no timeout. Use this to protect against wedged
-tests or infinite loops.
+Every gate has a window whether or not you set one: the server default is 7
+days (`GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT`). Accepted values are Go duration
+syntax between `1m` and `2160h` (90 days), or `never` — there is no `d` unit,
+so write `168h` rather than `7d`. An expired gate cancels its run — it does
+**not** fail it. See [Approvals →
+Auto-cancel](/concepts/approvals/#auto-cancel-after-timeout) for the full
+semantics.
+
+:::caution[Execution timeout is not implemented yet]
+On a **non-approval** job, `timeout:` is accepted by the parser and then
+ignored — there is no hard kill for a wedged build. This page previously
+documented it as one; it never was. Don't rely on it to bound a runaway job.
+:::
 
 ## Editor IntelliSense (autocomplete + hover docs)
 

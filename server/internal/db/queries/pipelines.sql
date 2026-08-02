@@ -31,3 +31,11 @@ ORDER BY name;
 
 -- name: DeletePipeline :exec
 DELETE FROM pipelines WHERE id = $1;
+
+-- name: GetPipelineProjectID :one
+-- Authoritative project_id for a pipeline, resolved INSIDE the expiry tx (#208):
+-- an approval-expiry candidate carries only pipeline_id, and the freeze check
+-- needs the project to build the per-(project, env) freeze lock key and probe
+-- environment_freezes. pipeline -> project is immutable, so a plain PK lookup is
+-- authoritative without a lock.
+SELECT project_id FROM pipelines WHERE id = $1;

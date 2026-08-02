@@ -502,6 +502,21 @@ type Querier interface {
 	// holding ProjectEnvFreezeLockKey. Kept separate from GetEnvironmentFreeze so
 	// the hot path scans one bool instead of three columns it would discard.
 	EnvironmentIsFrozen(ctx context.Context, arg EnvironmentIsFrozenParams) (bool, error)
+	// Flip the run of an expired gate to canceled, carrying a human-readable
+	// reason. Same shape and guard as CancelActiveRun/SupersedeRun (idempotent —
+	// a second call on a terminal run returns no rows).
+	//
+	// CANCELED, NOT FAILED, and that is load-bearing: the dashboard computes
+	// success rate as success/(success+failed) with canceled excluded
+	// (queries/dashboard.sql), so reporting an abandoned gate as a failure would
+	// silently degrade every pipeline's success metric. Nobody's build broke —
+	// nobody decided.
+	//
+	// cancel_reason cites the window that elapsed, never an approver identity or
+	// any ref value. service_generation is RETURNED in this same UPDATE (#97) so
+	// the service cleanup carries it as max_generation and a later rerun that
+	// revives the run into a higher generation keeps its fresh pods.
+	ExpireApprovalRun(ctx context.Context, arg ExpireApprovalRunParams) (ExpireApprovalRunRow, error)
 	// Keep-last policy: per pipeline, rank the runs that produced
 	// non-deleted artefacts by recency (run.created_at DESC); any run
 	// beyond position N has ALL its non-pinned artefacts stamped with
@@ -726,6 +741,12 @@ type Querier interface {
 	// cheaper than two for what's already the hottest path on
 	// webhook-heavy workloads.
 	GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (GetPipelineDefinitionRow, error)
+	// Authoritative project_id for a pipeline, resolved INSIDE the expiry tx (#208):
+	// an approval-expiry candidate carries only pipeline_id, and the freeze check
+	// needs the project to build the per-(project, env) freeze lock key and probe
+	// environment_freezes. pipeline -> project is immutable, so a plain PK lookup is
+	// authoritative without a lock.
+	GetPipelineProjectID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	// Single-row lookup by string key. Returns the full envelope so
 	// the caller can decrypt the secret half locally with the cipher
 	// (no plaintext crosses the store boundary unless the caller
@@ -1276,6 +1297,45 @@ type Querier interface {
 	// the URI update lands. The read path already serves from the
 	// archive, so the rows are pure cost — sweep them on a slow tick.
 	ListOrphanedArchivedJobs(ctx context.Context, lim int32) ([]pgtype.UUID, error)
+	// Candidate gates for the approval expirer: every gate still parked in
+	// `awaiting_approval` whose wait already exceeds the SHORTEST window that
+	// could possibly apply (domain.ApprovalTimeoutMin). The expirer then resolves
+	// each candidate's effective window from the run's pipeline definition —
+	// per-gate `timeout:` beats the server default, and `never` opts out — because
+	// the window lives in JSON, not in a column.
+	//
+	// Deliberately NOT pre-filtered by the server default: a gate may declare a
+	// window far shorter than the fleet default, and filtering on the default
+	// would never surface it.
+	//
+	// Cost: driven by the partial index idx_job_runs_awaiting_approval
+	// (awaiting_since ASC) WHERE status = 'awaiting_approval' — migration 00017,
+	// which matches this predicate exactly. The join to runs is a PK lookup per
+	// row. The row set is the pending-approval queue, i.e. bounded by how many
+	// decisions humans owe, not by run history — hundreds at the pathological end.
+	// The projection is deliberately narrow (no definition JSON): the expirer
+	// fetches definitions only for candidates it must resolve, deduped by run.
+	//
+	// KEYSET-PAGINATED, and that is a correctness requirement, not an optimisation.
+	// Whether a candidate actually expired is only knowable in Go (the window lives
+	// in the definition JSON), so a plain `ORDER BY awaiting_since ASC LIMIT n`
+	// truncates the set BEFORE that decision: n older gates that are `never` or
+	// merely still-inside-a-7-day-window would hide a newer gate with
+	// `timeout: 5m` from every sweep, forever. Paging past them is the only way the
+	// filter gets to see everything.
+	//
+	// (cursor_since, cursor_id) is the keyset cursor — the id breaks ties because
+	// awaiting_since is NOT unique: every gate of a run is stamped in one
+	// transaction, so siblings share a timestamp to the microsecond, and a
+	// timestamp-only cursor would either skip or re-serve them forever. The caller
+	// resumes the cursor ACROSS sweeps and wraps at the end of the queue, so a
+	// bounded per-sweep scan still visits every gate eventually.
+	//
+	// Written as the expanded (a > c OR (a = c AND b > d)) rather than the row
+	// comparison (a, b) > (c, d): sqlc infers a row comparison's later elements
+	// from the type of the first and mistypes the id cursor as a timestamptz.
+	// Semantically identical, and still sargable on awaiting_since.
+	ListPendingApprovalGates(ctx context.Context, arg ListPendingApprovalGatesParams) ([]ListPendingApprovalGatesRow, error)
 	// The agent calls this right after Register + Connect lands so
 	// it picks up any cancels that were requested while its session
 	// was being recycled. Returns (job_run_id, run_id) pairs the
@@ -1540,6 +1600,24 @@ type Querier interface {
 	// defer (which captured the prior value) finds no rows to
 	// update and no-ops — preserving the successor's online state.
 	MarkAgentOffline(ctx context.Context, arg MarkAgentOfflineParams) error
+	// Stamp the gate row with the expiry decision so the UI and the audit trail
+	// can say WHY it died rather than showing a bare cancel. Guarded on
+	// status = 'awaiting_approval', which doubles as the race check: a human who
+	// approved or rejected between the candidate scan and this write moves the row
+	// out of that status, this returns no rows, and the expirer abandons the whole
+	// expiry instead of cancelling a run someone just decided on.
+	//
+	// decided_by stays NULL — nobody decided. The `expired` decision value is what
+	// distinguishes this from an approve/reject; status is left to the shared
+	// cancel cascade (CancelQueuedJobsInRun already covers awaiting_approval rows).
+	//
+	// TOCTOU guard (#208): relate the row to the run AND the exact awaiting_since
+	// the candidate scan observed. A rerun that re-parks the gate (re-stamping
+	// awaiting_since to a fresh instant) or a human deciding between the scan and
+	// this write moves the row off the (run_id, awaiting_since) the expiry was
+	// authorised for, so this returns no rows and the whole expiry aborts instead
+	// of cancelling a run under a window that was just reset.
+	MarkApprovalGateExpired(ctx context.Context, arg MarkApprovalGateExpiredParams) (pgtype.UUID, error)
 	// Called after the server HEADs the storage and confirms the object is
 	// there. Bumps status + records size/sha. Safe to call once; subsequent
 	// calls update nothing (status already 'ready'), returning 0 rows.
@@ -1587,6 +1665,13 @@ type Querier interface {
 	// retrying (via the lease), so a crash — or a cleanup that had no target yet — is
 	// recovered rather than silently dropped.
 	MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) error
+	// The most recent unfreeze instant across a gate's GovernedFreezeEnvs — the
+	// floor the expirer folds into effective_start = max(awaiting_since, this). MAX
+	// over no matching rows (envs that were never frozen) is NULL, which the caller
+	// reads as "no floor" and falls back to awaiting_since — identical to pre-#208
+	// behaviour for the un-frozen case. Read under the freeze advisory lock so the
+	// floor is serialized against a concurrent unfreeze upsert.
+	MaxLastUnfrozenAt(ctx context.Context, arg MaxLastUnfrozenAtParams) (pgtype.Timestamptz, error)
 	NextRunCounter(ctx context.Context, pipelineID pgtype.UUID) (int64, error)
 	// Returns the run_id of an in-flight predecessor blocking the
 	// pipeline's serial-concurrency gate, or pgx.ErrNoRows if none.
@@ -2087,6 +2172,17 @@ type Querier interface {
 	// id so the dispatch path can attach a revision regardless of which
 	// side of the conflict it hit.
 	UpsertEnvironment(ctx context.Context, arg UpsertEnvironmentParams) (pgtype.UUID, error)
+	// Record (or refresh) the instant a freeze was lifted on (project, env), the
+	// FLOOR the approval expirer adds to a gate's expiry clock (#208). clock_timestamp()
+	// (real wall time), NOT now()/transaction-start, because the expirer compares it
+	// against clock_timestamp() taken after acquiring its locks.
+	//
+	// Called ONLY on a real unfreeze (a freeze row was actually deleted), inside
+	// UnfreezeEnvironment's tx under the per-(project, env) freeze advisory lock, so
+	// an expiry racing the unfreeze reads a floor consistent with the freeze state it
+	// checks under the same lock. An idempotent unfreeze that deleted nothing does
+	// NOT call this, so it never renews a window nobody was waiting on.
+	UpsertFreezeEpoch(ctx context.Context, arg UpsertFreezeEpochParams) error
 	// Called right after CreateCheckRun on GitHub responds; caller may
 	// already have an entry from a previous retry so we upsert rather
 	// than insert. updated_at bumps so we can spot stale rows later.
