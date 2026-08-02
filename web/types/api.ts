@@ -815,7 +815,7 @@ export type DeploymentRecord = {
   run_id?: string;
   attempt: number;
   version: string;
-  status: "in_progress" | "success" | "failed";
+  status: "in_progress" | "success" | "failed" | "canceled";
   is_rollback: boolean;
   deployed_by?: string;
   created_at: string;

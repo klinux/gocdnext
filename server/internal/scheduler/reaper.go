@@ -195,6 +195,26 @@ func (r *Reaper) Sweep(ctx context.Context) {
 		}
 	}
 
+	// #207 native-cancel backstop: a cancel-requested server-managed native deploy
+	// (agent_id NULL) whose deploy_watch vanished is owned by nobody — finalise it
+	// 'canceled' (+ revision). Also BEFORE ReclaimStaleJobs, same rationale. Gated by
+	// staleness so it never races the watcher's own finalize on a fresh stamp.
+	if native, err := r.store.ReclaimAbandonedNativeCancels(ctx, r.staleness); err != nil {
+		r.log.Warn("reaper: reclaim abandoned native cancels failed", "err", err)
+	} else if len(native) > 0 {
+		notifySeen := make(map[uuid.UUID]struct{}, len(native))
+		for _, c := range native {
+			r.log.Info("reaper: abandoned native cancel finalised",
+				"run_id", c.RunID, "job_run_id", c.JobRunID)
+			if _, dup := notifySeen[c.RunID]; !dup {
+				notifySeen[c.RunID] = struct{}{}
+				if err := r.store.NotifyRunQueued(ctx, c.RunID); err != nil {
+					r.log.Warn("reaper: native cancel notify failed", "run_id", c.RunID, "err", err)
+				}
+			}
+		}
+	}
+
 	results, err := r.store.ReclaimStaleJobs(ctx, r.maxAttempts, r.staleness)
 	if err != nil {
 		// Sweep-level failure (DB outage etc.) returns before any per-job

@@ -201,37 +201,37 @@ RETURNING id, run_id, stage_run_id, name, attempt;
 -- state. Returns the run_id so the caller can fire a NOTIFY to
 -- nudge the scheduler back into the dispatch loop.
 --
--- The row goes back to (queued, NULL, attempt unchanged) — we do
--- NOT bump attempt here. The attempt counter exists to detect
--- crashes mid-execution; a dispatch failure that never reached the
--- agent doesn't count as an attempt.
--- cancel_requested_at = NULL: defensive clear in case a cancel
--- landed in the AssignJob→DispatchAssignment window (operator
--- raced the scheduler). The row is going back to 'queued' with
--- agent_id NULL — there's no agent to replay against, and the
--- next AssignJob may pick a different agent entirely; carrying
--- the stamp forward would let ListPendingCancelsForAgent honor
--- it against an agent that never received the cancel intent.
+-- TWO-OUTCOME (#207): the outcome depends on whether a cancel was stamped
+-- between AssignJob and the failed Dispatch.
 --
--- logs_archive_uri / logs_archived_at = NULL: an AssignJob that
--- bounced into UnassignJob almost never had time to archive logs
--- (the archiver fires from terminal status, not the brief
--- running window before Dispatch failed), but if a redispatch
--- picks the same row up later, reads against the row would
--- otherwise see a stale archive pointer. Defensive mirror of
--- the RerunJob reset list.
+--   * NO cancel_requested_at → back to (queued, NULL agent, attempt unchanged) —
+--     the attempt counter detects crashes mid-execution; a dispatch that never
+--     reached the agent doesn't count. The cancel stamp+origin are cleared (there's
+--     nothing to replay against; the next AssignJob may pick a different agent).
+--   * cancel_requested_at SET → the operator canceled in the AssignJob→Dispatch
+--     window. Do NOT resurrect the job into 'queued' (that would erase the cancel).
+--     Terminalise 'canceled', KEEP cancel_requested_at + cancel_origin (audit at-time
+--     + who), and let the caller cascade the stage/run IN THE SAME TX.
+--
+-- logs_archive_uri / logs_archived_at = NULL either way: a redispatch picking the
+-- row up must not read a stale archive pointer (mirrors the RerunJob reset list).
+--
+-- Snapshot-CAS: only acts on (running, $agentID, $attempt) — anything else means a
+-- reaper/fence moved the row and our undo would clobber legitimate state.
 UPDATE job_runs
-SET status = 'queued',
-    agent_id = NULL,
-    started_at = NULL,
-    cancel_requested_at = NULL,
-    logs_archive_uri = NULL,
-    logs_archived_at = NULL
+SET status              = CASE WHEN cancel_requested_at IS NOT NULL THEN 'canceled' ELSE 'queued' END,
+    agent_id            = CASE WHEN cancel_requested_at IS NOT NULL THEN agent_id   ELSE NULL END,
+    started_at          = CASE WHEN cancel_requested_at IS NOT NULL THEN started_at ELSE NULL END,
+    finished_at         = CASE WHEN cancel_requested_at IS NOT NULL THEN NOW()      ELSE finished_at END,
+    cancel_requested_at = CASE WHEN cancel_requested_at IS NOT NULL THEN cancel_requested_at ELSE NULL END,
+    cancel_origin       = CASE WHEN cancel_requested_at IS NOT NULL THEN cancel_origin       ELSE NULL END,
+    logs_archive_uri    = NULL,
+    logs_archived_at    = NULL
 WHERE id = $1
   AND status = 'running'
   AND agent_id = $2
   AND attempt = @expected_attempt::int
-RETURNING id, run_id;
+RETURNING id, run_id, stage_run_id, status;
 
 -- name: MarkRunRunningIfQueued :exec
 UPDATE runs

@@ -423,7 +423,9 @@ func (s *Store) supersedeOne(ctx context.Context, tx pgx.Tx, q *db.Queries, id u
 	if err := q.CancelQueuedStagesInRun(ctx, pgUUID(id)); err != nil {
 		return nil, fmt.Errorf("store: supersede stages: %w", err)
 	}
-	if err := q.CancelQueuedJobsInRun(ctx, pgUUID(id)); err != nil {
+	if err := q.CancelQueuedJobsInRun(ctx, db.CancelQueuedJobsInRunParams{
+		RunID: pgUUID(id), Origin: nullableString(string(cancelOriginSupersede)),
+	}); err != nil {
 		return nil, fmt.Errorf("store: supersede jobs: %w", err)
 	}
 	// Snapshot AFTER cancel: one UPDATE stamps cancel_requested_at on every
@@ -431,13 +433,19 @@ func (s *Store) supersedeOne(ctx context.Context, tx pgx.Tx, q *db.Queries, id u
 	// By now every job of the run is either canceled (above) or committed-running
 	// (AssignJob won the row before our cancel locked it), so this captures
 	// exactly the jobs the caller must signal — no queued→running gap left.
-	stamped, err := q.StampCancelRequestedAtForRun(ctx, pgUUID(id))
+	stamped, err := q.StampCancelRequestedAtForRun(ctx, db.StampCancelRequestedAtForRunParams{
+		RunID: pgUUID(id), Origin: nullableString(string(cancelOriginSupersede)),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: supersede stamp pending: %w", err)
 	}
+	// Fanout only to agent-owned running rows; native (agent_id NULL) jobs are now
+	// stamped too (no agent filter) but driven by the watcher/reaper, not a frame.
 	running := make([]RunningJobRef, 0, len(stamped))
 	for _, r := range stamped {
-		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
+		if r.AgentID.Valid {
+			running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
+		}
 	}
 
 	// Signal the effects listener (scheduler) to fire external effects for this

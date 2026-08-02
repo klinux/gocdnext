@@ -282,7 +282,7 @@ type DeployWatchFinalizeResult struct {
 func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUID, status, reason string) (DeployWatchFinalizeResult, error) {
 	// Validate up front (mirrors FinalizeDeploymentRevision) — a clean error rather
 	// than letting the revision's status CHECK abort the tx.
-	if status != DeployStatusSuccess && status != DeployStatusFailed {
+	if status != DeployStatusSuccess && status != DeployStatusFailed && status != DeployStatusCanceled {
 		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch: invalid status %q", status)
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -303,28 +303,34 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 		return DeployWatchFinalizeResult{Finalized: false}, nil
 	}
 
-	// Lease held: terminalize the revision and learn its job link.
-	rev, err := q.FinalizeDeploymentRevisionByID(ctx, db.FinalizeDeploymentRevisionByIDParams{
-		ID: pgUUID(revID), Status: status,
-	})
+	// #207 ORDER: complete the native job FIRST so its EFFECTIVE status (the
+	// CompleteJobRun CASE turns a cancel-stamped row into 'canceled' regardless of
+	// the watcher's convergence verdict) drives the revision status. Finalizing the
+	// revision first (the old order) could record 'success' while the job lands
+	// 'canceled' — a lie about the cluster.
+	rev, err := q.GetDeploymentRevision(ctx, pgUUID(revID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// The revision was already terminal (e.g. the job/reaper path finalized it,
-			// which also deleted the watch — so this delete would have matched 0; being
-			// here means a rare interleave). The watch is gone; commit and move on.
+			// Revision gone (job/reaper path finalized + deleted it in a rare interleave).
 			if err := tx.Commit(ctx); err != nil {
 				return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
 			}
 			return DeployWatchFinalizeResult{Finalized: true}, nil
 		}
-		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch revision: %w", err)
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch read revision: %w", err)
+	}
+	if rev.Status != DeployStatusInProgress {
+		// Already terminal (job/reaper path won) — nothing to do.
+		if err := tx.Commit(ctx); err != nil {
+			return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch commit: %w", err)
+		}
+		return DeployWatchFinalizeResult{Finalized: true}, nil
 	}
 
 	res := DeployWatchFinalizeResult{Finalized: true}
-	// Complete the server-managed deploy job_run in the SAME tx. It runs with NO agent
-	// (Model A), so expected_agent_id=NULL matches via IS NOT DISTINCT FROM. ErrNoRows
-	// means it's already terminal or agent-run (not server-managed) — the revision
-	// terminalization stands regardless.
+	// effectiveStatus starts as the watcher's verdict; a completed native job's CASE
+	// may override it to 'canceled'.
+	effectiveStatus := status
 	if rev.JobRunID.Valid {
 		exit := int32(0)
 		var jobErr *string
@@ -343,6 +349,7 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 		})
 		switch {
 		case cerr == nil:
+			effectiveStatus = row.Status // canceled if cancel_requested_at was stamped
 			comp := JobCompletion{
 				JobRunID:   fromPgUUID(row.ID),
 				RunID:      fromPgUUID(row.RunID),
@@ -359,10 +366,18 @@ func (s *Store) FinalizeDeployWatch(ctx context.Context, revID, claimID uuid.UUI
 			}
 			res.RunID = comp.RunID
 		case errors.Is(cerr, pgx.ErrNoRows):
-			// not a server-managed running job — nothing to complete.
+			// not a server-managed running job — nothing to complete; the watcher's
+			// verdict stands as the revision status.
 		default:
 			return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch job: %w", cerr)
 		}
+	}
+
+	// Finalize the revision with the EFFECTIVE status (guarded on in_progress).
+	if _, err := q.FinalizeDeploymentRevisionByID(ctx, db.FinalizeDeploymentRevisionByIDParams{
+		ID: pgUUID(revID), Status: effectiveStatus,
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return DeployWatchFinalizeResult{}, fmt.Errorf("store: finalize deploy watch revision: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -430,11 +431,12 @@ func TestCancelJob_DispatchFailureDefersToReplayPath(t *testing.T) {
 	}
 }
 
-// TestCancelJob_RunningWithNoAgentReturns503 — row marked running
-// but agent_id is NULL (transient window between AssignJob committing
-// and the session ack landing). No one to dispatch to → 503; the
-// operator retries when the agent's session is up.
-func TestCancelJob_RunningWithNoAgentReturns503(t *testing.T) {
+// TestCancelJob_NativeRunningNoAgentAccepts202 (#207) — a running row with
+// agent_id NULL is a SERVER-MANAGED native deploy. There's no agent frame to send,
+// but the cancel is ACCEPTED: cancel_requested_at + cancel_origin=user_job are
+// stamped and the deploy watcher / reaper finalises the row. The handler returns
+// 202 canceling and NEVER calls Dispatch(uuid.Nil).
+func TestCancelJob_NativeRunningNoAgentAccepts202(t *testing.T) {
 	h, pool := handler(t)
 	runID, _ := seedRunWithModification(t, pool)
 	jobID := firstJobIDOfRun(t, pool, runID)
@@ -449,14 +451,29 @@ func TestCancelJob_RunningWithNoAgentReturns503(t *testing.T) {
 	h = h.WithCancelDispatcher(disp)
 
 	rr := doPost(h, "/api/v1/job_runs/"+jobID.String()+"/cancel", nil)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 canceling; body=%s", rr.Code, rr.Body.String())
 	}
-	// No dispatch should have happened — there was no agent to push to.
+	if !strings.Contains(rr.Body.String(), `"status":"canceling"`) {
+		t.Errorf("body = %s, want status=canceling", rr.Body.String())
+	}
+	// NEVER Dispatch(uuid.Nil) — no agent to push to.
 	if len(disp.calls) != 0 {
-		t.Errorf("dispatcher calls = %d, want 0 when agent_id is NULL", len(disp.calls))
+		t.Errorf("dispatcher calls = %d, want 0 for a native (agent_id NULL) job", len(disp.calls))
 	}
-	_ = runID
+	// The cancel is accepted: intent + origin stamped for the watcher/reaper.
+	var stamp *time.Time
+	var origin *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cancel_requested_at, cancel_origin FROM job_runs WHERE id=$1`, jobID).Scan(&stamp, &origin); err != nil {
+		t.Fatalf("read stamp: %v", err)
+	}
+	if stamp == nil {
+		t.Error("native cancel must stamp cancel_requested_at")
+	}
+	if origin == nil || *origin != "user_job" {
+		t.Errorf("cancel_origin = %v, want user_job", origin)
+	}
 }
 
 // errSimulatedSessionGone stands in for the real

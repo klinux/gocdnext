@@ -169,6 +169,16 @@ var (
 		Help: "Reclaim sweeps by reason and outcome (success|error).",
 	}, []string{"reason", "outcome"})
 
+	// JobResultValidationFailed counts server-side integrity downgrades of an
+	// agent-reported success (#207): the artifacts didn't reconcile, or the
+	// declared outputs failed validation. It preserves the integrity signal when a
+	// concurrent cancel makes the row land 'canceled' (the failure would otherwise
+	// be invisible). kind is a FIXED label set — never the error message.
+	JobResultValidationFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_job_result_validation_failed_total",
+		Help: "Server-side downgrades of a reported success by integrity kind (artifacts|outputs).",
+	}, []string{"kind"})
+
 	// AgentDrain counts graceful-drain outcomes observed server-side at
 	// stream close: clean (no in-flight jobs left) vs abandoned (jobs
 	// still running → requeued by the reaper). Only draining sessions
@@ -228,6 +238,7 @@ func init() {
 		SupersedeLockBusy,
 		JobsReclaimed,
 		JobReclaimSweeps,
+		JobResultValidationFailed,
 		AgentDrain,
 		AgentDrainDuration,
 		GRPCServerStarted,
@@ -256,7 +267,10 @@ func Handler() http.Handler {
 // future status doesn't blow up cardinality.
 func JobStatusLabel(status string) string {
 	switch status {
-	case "success", "failed", "cancelled", "skipped":
+	// domain.StatusCanceled is "canceled" (one l); the old two-l "cancelled" here
+	// meant every canceled job bucketed as "unknown" (#207). GitHub Checks keep
+	// their own two-l "cancelled" conclusion — that's the GitHub API spelling.
+	case "success", "failed", "canceled", "skipped":
 		return status
 	default:
 		return "unknown"

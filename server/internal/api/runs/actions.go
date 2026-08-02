@@ -131,12 +131,11 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 //     via the pending-cancel path in agent_service.Register; if
 //     the agent stays offline, the reaper finalises via
 //     ReclaimPendingCancelsForOfflineAgent.
-//   - running path with no agent_id yet → 503 with retry hint.
-//     This is the AssignJob window (status='running' but agent_id
-//     transiently NULL); the cancel_requested_at predicate didn't
-//     stamp because there's nothing to attribute it to yet.
-//     Operator retries; AssignJob's atomic UPDATE will have
-//     populated agent_id by then.
+//   - running path, native (agent_id NULL) → 202, status=canceling,
+//     signaled=false, deferred=true. A server-managed native deploy
+//     has no agent session; cancel_requested_at IS stamped (#207)
+//     and the deploy watcher / reaper finalises the row. Never
+//     Dispatch(uuid.Nil).
 func (h *Handler) respondCancelJob(
 	w http.ResponseWriter, r *http.Request, jobRunID uuid.UUID, res store.CancelJobRunResult,
 ) {
@@ -155,18 +154,14 @@ func (h *Handler) respondCancelJob(
 	// lands when the agent's JobResult arrives, which only happens
 	// after we successfully push CancelJob down the session.
 	if res.Dispatched == nil {
-		// Transient: row is running but the agent's session ack
-		// hasn't landed yet — cancel_requested_at was NOT stamped
-		// (the stamp predicate requires agent_id NOT NULL), so
-		// there's nothing to replay either. Tell the operator to
-		// retry once AssignJob has populated agent_id; the reaper
-		// won't reclaim a row without cancel_requested_at via the
-		// pending-cancel path.
-		h.log.Warn("cancel job: running row has no agent_id (session not yet acked)",
+		// Native (server-managed, agent_id NULL): there is no agent frame to send,
+		// but the cancel IS accepted — cancel_requested_at is stamped in
+		// CancelJobRun's tx (#207) and the deploy watcher / reaper finalises the row.
+		// Answer 202 canceling (deferred), NEVER Dispatch(uuid.Nil).
+		h.log.Info("cancel job: native (agent_id NULL) — accepted, driven by watcher/reaper",
 			"run_id", res.RunID, "job_run_id", jobRunID)
-		h.emitCancelAudit(r, jobRunID, res, false /*signaled*/, false /*deferred*/)
-		writeCancelDispatchFailed(w, jobRunID, res,
-			"agent session not yet established; retry in a moment")
+		h.emitCancelAudit(r, jobRunID, res, false /*signaled*/, true /*deferred*/)
+		writeCancelAccepted(w, jobRunID, res, false /*signaled*/, "canceling")
 		return
 	}
 

@@ -18,6 +18,7 @@ func TestNeedsSatisfied(t *testing.T) {
 		status          JobStatusMap
 		wantOk          bool
 		wantTerminal    bool
+		wantSkip        bool   // #207: dependent should be SKIPPED (cancel-family) vs FAILED
 		wantDetailMatch string // substring; empty = don't check
 	}{
 		{
@@ -75,24 +76,68 @@ func TestNeedsSatisfied(t *testing.T) {
 			wantDetailMatch: "build: failed",
 		},
 		{
-			name:  "single dep canceled cascades (terminal)",
+			name:  "single dep canceled → SKIP the dependent (#207)",
 			needs: []string{"build"},
 			status: JobStatusMap{
 				"build": {row("", "canceled")},
 			},
 			wantOk:          false,
 			wantTerminal:    true,
+			wantSkip:        true,
 			wantDetailMatch: "build: canceled",
 		},
 		{
-			name:  "single dep skipped cascades (terminal)",
+			name:  "single dep skipped → SKIP the dependent (#207)",
 			needs: []string{"build"},
 			status: JobStatusMap{
 				"build": {row("", "skipped")},
 			},
 			wantOk:          false,
 			wantTerminal:    true,
+			wantSkip:        true,
 			wantDetailMatch: "build: skipped",
+		},
+		{
+			name:  "canceled + still-running → WAIT, not skip early (#207)",
+			needs: []string{"a", "b"},
+			status: JobStatusMap{
+				"a": {row("", "canceled")},
+				"b": {row("", "running")},
+			},
+			wantOk:       false,
+			wantTerminal: false, // must not decide skip while b could still fail
+		},
+		{
+			name:  "canceled + failed → FAIL dominates (#207)",
+			needs: []string{"a", "b"},
+			status: JobStatusMap{
+				"a": {row("", "canceled")},
+				"b": {row("", "failed")},
+			},
+			wantOk:          false,
+			wantTerminal:    true,
+			wantSkip:        false, // a real failure must not be masked as a skip
+			wantDetailMatch: "b: failed",
+		},
+		{
+			name:  "canceled + succeeded → SKIP (all terminal, none failed) (#207)",
+			needs: []string{"a", "b"},
+			status: JobStatusMap{
+				"a": {row("", "canceled")},
+				"b": {row("", "success")},
+			},
+			wantOk:       false,
+			wantTerminal: true,
+			wantSkip:     true,
+		},
+		{
+			name:  "matrix: one cell canceled + one running → WAIT (#207)",
+			needs: []string{"build"},
+			status: JobStatusMap{
+				"build": {row("node-18", "canceled"), row("node-20", "running")},
+			},
+			wantOk:       false,
+			wantTerminal: false,
 		},
 		{
 			name:            "missing dep treated as terminal",
@@ -210,6 +255,9 @@ func TestNeedsSatisfied(t *testing.T) {
 			if !tt.wantOk && got.UpstreamTerminal != tt.wantTerminal {
 				t.Errorf("UpstreamTerminal = %v, want %v (detail=%q)",
 					got.UpstreamTerminal, tt.wantTerminal, got.Detail)
+			}
+			if !tt.wantOk && tt.wantTerminal && got.Skip != tt.wantSkip {
+				t.Errorf("Skip = %v, want %v (detail=%q)", got.Skip, tt.wantSkip, got.Detail)
 			}
 			if tt.wantDetailMatch != "" && !strings.Contains(got.Detail, tt.wantDetailMatch) {
 				t.Errorf("Detail = %q, want substring %q", got.Detail, tt.wantDetailMatch)

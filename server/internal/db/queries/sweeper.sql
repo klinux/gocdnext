@@ -42,6 +42,12 @@ SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id,
 FROM job_runs j
 LEFT JOIN agents a ON a.id = j.agent_id
 WHERE j.status = 'running'
+  -- #207: a cancel-requested running job is NOT the reaper's to requeue or fail —
+  -- it must terminalise 'canceled'. Cancel-pending AGENT jobs are finalised by
+  -- ReclaimPendingCancelsForOfflineAgent; cancel-pending NATIVE (agent_id NULL) jobs
+  -- whose watch vanished by ReclaimAbandonedNativeCancels. Excluding them here keeps
+  -- the general reaper from stamping 'failed'/re-queuing over a cancel intent.
+  AND j.cancel_requested_at IS NULL
   -- Server-managed native deploy (ADR-0001): a `deploy:` job with a registered
   -- target runs with NO agent (the server drives the sync + watch), so it would
   -- otherwise trip Category 2 below. While a deploy_watch is alive the WATCHER owns
@@ -136,11 +142,14 @@ WHERE j.status = 'running'
 -- from RerunJob's reset for the same reason.
 UPDATE job_runs
 SET status = 'queued', agent_id = NULL, started_at = NULL, finished_at = NULL,
-    exit_code = NULL, error = NULL, cancel_requested_at = NULL,
+    exit_code = NULL, error = NULL, cancel_requested_at = NULL, cancel_origin = NULL,
     logs_archive_uri = NULL, logs_archived_at = NULL,
     attempt = attempt + 1
 WHERE id = $1
   AND status = 'running'
+  -- #207: never requeue a cancel-requested row (belt-and-suspenders vs a cancel
+  -- landing between the SELECT and this CAS) — it must terminalise 'canceled'.
+  AND cancel_requested_at IS NULL
   AND attempt < @max_attempts::int
   AND attempt = @expected_attempt::int
   AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
@@ -169,6 +178,9 @@ UPDATE job_runs
 SET status = 'failed', finished_at = NOW(), exit_code = -1, error = @reason::text
 WHERE id = $1
   AND status = 'running'
+  -- #207: never FAIL a cancel-requested row — an intentional cancel must land
+  -- 'canceled', not 'failed' (which would pollute the failure metric + DORA).
+  AND cancel_requested_at IS NULL
   AND attempt = @expected_attempt::int
   AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
 RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at;

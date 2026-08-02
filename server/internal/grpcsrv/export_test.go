@@ -5,6 +5,27 @@ package grpcsrv
 // without race-prone double-bookkeeping. Lives in _test.go so
 // nothing leaks into production binaries.
 
+import (
+	"context"
+
+	gocdnextv1 "github.com/gocdnext/gocdnext/proto/gen/go/gocdnext/v1"
+)
+
+// discardLogger satisfies the private logger interface with no output.
+type discardLogger struct{}
+
+func (discardLogger) Debug(string, ...any) {}
+func (discardLogger) Info(string, ...any)  {}
+func (discardLogger) Warn(string, ...any)  {}
+
+// HandleJobResultForTest drives the private handleJobResult so a regression test
+// can exercise the #207 validation-downgrade counter (and effective-status
+// threading) without choreographing the full Connect stream. No archiver is
+// wired in the test, so the nil batcher is never dereferenced.
+func (a *AgentService) HandleJobResultForTest(ctx context.Context, sess *Session, r *gocdnextv1.JobResult) {
+	a.handleJobResult(ctx, discardLogger{}, sess, nil, r)
+}
+
 // SupersededByRegisterForTest reads the supersededByRegister flag
 // the Connect-handler defer relies on to decide MarkAgentOffline.
 // Tests use it to lock in the dual-set strategy (RevokeForAgent +

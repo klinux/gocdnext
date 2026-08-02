@@ -2,9 +2,24 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+
+	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// RollbackUndispatchedAssignmentForTest drives the private
+// rollbackUndispatchedAssignment so a black-box test can lock its #207
+// orchestration: delete the pre-dispatch revision, and NotifyRunQueued ONLY on the
+// 'queued' outcome (never on 'canceled').
+func RollbackUndispatchedAssignmentForTest(s *Scheduler, ctx context.Context, runID, jobID, agentID uuid.UUID, attempt int32, deployRevID uuid.UUID) {
+	s.rollbackUndispatchedAssignment(ctx, runID,
+		store.DispatchableJob{ID: jobID, RunID: runID},
+		agentID,
+		store.AssignedJob{ID: jobID, RunID: runID, AgentID: agentID, Attempt: attempt},
+		deployRevID, "test", errors.New("test dispatch failure"))
+}
 
 // GroupNeedsOutputs exposes the pure grouping/validation helper for
 // black-box tests in the scheduler_test package. The non-exported

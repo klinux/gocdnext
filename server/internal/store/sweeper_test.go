@@ -889,12 +889,15 @@ func TestUnassignJob_RollsBackOnExactSnapshot(t *testing.T) {
 	var attempt int32
 	_ = pool.QueryRow(ctx, `SELECT attempt FROM job_runs WHERE id=$1`, jobID).Scan(&attempt)
 
-	runID, ok, err := s.UnassignJob(ctx, jobID, agentID, attempt)
+	runID, outcome, ok, err := s.UnassignJob(ctx, jobID, agentID, attempt)
 	if err != nil {
 		t.Fatalf("UnassignJob: %v", err)
 	}
 	if !ok {
 		t.Fatal("UnassignJob ok=false on exact snapshot")
+	}
+	if outcome != "queued" {
+		t.Errorf("outcome = %q, want queued (no cancel stamped)", outcome)
 	}
 	if runID == uuid.Nil {
 		t.Fatal("UnassignJob returned uuid.Nil run id")
@@ -929,7 +932,7 @@ func TestUnassignJob_NoopOnStaleSnapshot(t *testing.T) {
 	// Simulate concurrent attempt-bump (a redispatch on the same row).
 	_, _ = pool.Exec(ctx, `UPDATE job_runs SET attempt=attempt+1 WHERE id=$1`, jobID)
 
-	_, ok, err := s.UnassignJob(ctx, jobID, agentID, 0 /*stale attempt*/)
+	_, _, ok, err := s.UnassignJob(ctx, jobID, agentID, 0 /*stale attempt*/)
 	if err != nil {
 		t.Fatalf("UnassignJob: %v", err)
 	}

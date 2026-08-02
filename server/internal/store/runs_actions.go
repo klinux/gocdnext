@@ -38,6 +38,21 @@ var (
 	ErrSnapshotStale = errors.New("store: snapshot stale — row changed under us")
 )
 
+// CancelOrigin records WHO/WHAT canceled a job_run (#207), persisted in
+// job_runs.cancel_origin. It is the discriminator RerunJob's revival uses: an
+// upstream rerun resurrects a downstream that a SYSTEM cancel stopped
+// (dependency / user_run / supersede / NULL) but NOT one the user deliberately
+// canceled ALONE (user_job). The full value set — user_job, user_run, supersede,
+// dependency, approval_expiry (reserved for #208) — mirrors the CHECK in migration
+// 00079. Only the two origins passed from Go (as query params) need constants; the
+// rest are written as literals in the cancel SQL where the row is stamped.
+type CancelOrigin string
+
+const (
+	cancelOriginSupersede  CancelOrigin = "supersede"
+	cancelOriginDependency CancelOrigin = "dependency"
+)
+
 // RunningJobRef points the HTTP handler at a job_run that was still
 // executing on an agent when CancelRun fired. The handler uses the
 // pair to dispatch a `CancelJob` gRPC message down the owning
@@ -72,8 +87,8 @@ type CancelRunResult struct {
 // the agent reports a final JobResult — that keeps the audit
 // trail honest about when each one actually stopped.
 func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult, error) {
-	// Check that the run exists before we start. Distinguishing "not
-	// found" from "already terminal" matters for 404 vs 409.
+	// Existence pre-check (read): distinguishes 404 (not found) from 409 (already
+	// terminal) — CancelActiveRun's 0-row result below can't tell them apart.
 	row, err := s.q.GetRunForAction(ctx, pgUUID(runID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CancelRunResult{}, ErrRunNotFound
@@ -85,11 +100,31 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 		return CancelRunResult{}, ErrRunAlreadyTerminal
 	}
 
-	// Cancel the run row FIRST so any racing scheduler pass sees the new
-	// status before it tries to claim the next job. CancelActiveRun is a no-op
-	// if the status moved away under us between the SELECT above and this UPDATE
-	// — the downstream stage/job cancellations still gate on status='queued'.
-	canceled, err := s.q.CancelActiveRun(ctx, pgUUID(runID))
+	// ONE transaction, lock order jobs → stages → run (#207). Completion's cascade
+	// locks job → stage → run; a run-FIRST cancel would hold the run waiting on a
+	// job while a concurrent final result holds the job waiting on the run ⇒ 40P01.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	// (1) jobs: one statement — queued/awaiting → canceled, running → stamp
+	// (cancel_requested_at + cancel_origin=user_run, left 'running' for the
+	// agent/watcher/reaper to finalise). No agent_id filter, so a native deploy
+	// (agent_id NULL) is stamped too. RETURNS the CancelJob fanout candidates.
+	jobs, err := q.CancelRunJobs(ctx, pgUUID(runID))
+	if err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: jobs: %w", err)
+	}
+	// (2) stages.
+	if err := q.CancelQueuedStagesInRun(ctx, pgUUID(runID)); err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: stages: %w", err)
+	}
+	// (3) run LAST. If the CAS finds 0 rows the run terminalized under us — roll
+	// the whole tx back (jobs/stages cancel undone) and answer 409.
+	canceled, err := q.CancelActiveRun(ctx, pgUUID(runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CancelRunResult{}, ErrRunAlreadyTerminal
@@ -97,33 +132,19 @@ func (s *Store) CancelRun(ctx context.Context, runID uuid.UUID) (CancelRunResult
 		return CancelRunResult{}, fmt.Errorf("store: cancel run: update: %w", err)
 	}
 
-	if err := s.q.CancelQueuedStagesInRun(ctx, pgUUID(runID)); err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: stages: %w", err)
-	}
-	if err := s.q.CancelQueuedJobsInRun(ctx, pgUUID(runID)); err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: jobs: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		return CancelRunResult{}, fmt.Errorf("store: cancel run: commit: %w", err)
 	}
 
-	// Snapshot + stamp running jobs AFTER the queued cancel (review MED, mirrors
-	// supersede's terminalizer). AssignJob is a bare `status='queued'` CAS that
-	// never checks runs.status, so a job queued when we started can flip to
-	// running concurrently. Snapshotting BEFORE the cancel would miss it AND
-	// CancelQueuedJobsInRun would skip it (now running) — leaving a job executing
-	// inside a canceled run with no CancelJob frame. Canceling first forces the
-	// contention onto the shared job_runs row; by now every job is either canceled
-	// (above) or committed-running, and StampCancelRequestedAtForRun stamps the
-	// cancel intent AND RETURNS (id, agent_id) as the exact CancelJob work-list.
-	// The intent stamp is what lets a Dispatch landing in the Revoke→Register race
-	// window survive: the agent's next Register replays it, the reaper finalises
-	// stragglers. A job whose JobResult already cleared agent_id is terminal and
-	// correctly absent (it finished; no frame needed).
-	stamped, err := s.q.StampCancelRequestedAtForRun(ctx, pgUUID(runID))
-	if err != nil {
-		return CancelRunResult{}, fmt.Errorf("store: cancel run: stamp pending: %w", err)
-	}
-	running := make([]RunningJobRef, 0, len(stamped))
-	for _, r := range stamped {
-		running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
+	// Fanout list: only rows still running AND owned by an agent get a CancelJob
+	// frame; native (agent_id NULL) rows are driven by the watcher/reaper. The
+	// stamped intent survives a Dispatch that lands in the Revoke→Register window
+	// (replayed by the agent's next Register / finalised by the reaper).
+	running := make([]RunningJobRef, 0, len(jobs))
+	for _, r := range jobs {
+		if r.Status == "running" && r.AgentID.Valid {
+			running = append(running, RunningJobRef{JobID: fromPgUUID(r.ID), AgentID: fromPgUUID(r.AgentID)})
+		}
 	}
 	return CancelRunResult{RunningJobs: running, ServiceGeneration: canceled.ServiceGeneration}, nil
 }
@@ -227,26 +248,18 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 		//
 		// Two skip conditions:
 		//
-		//   1. Already stamped (re-click): row.CancelRequestedAt
-		//      is Valid → no-op, the first click's at-time is
-		//      authoritative.
-		//   2. agent_id IS NULL: the AssignJob window — status is
-		//      'running' but the row hasn't yet been attributed
-		//      to an agent (race-improbable but defensible). The
-		//      stamp's predicate refuses the row; we'd interpret
-		//      that as invariant violation. Skip the stamp; the
-		//      handler sees Dispatched=nil and returns 503 with
-		//      a retry hint, the same path as before this column
-		//      existed. By the time the operator retries, AssignJob
-		//      has populated agent_id and the stamp lands cleanly.
+		// Skip only when already stamped (re-click): the first click's at-time is
+		// authoritative. Otherwise stamp REGARDLESS of agent_id (#207): a
+		// server-managed native deploy runs with agent_id NULL and must record the
+		// cancel intent too — there is no agent frame to send, so the watcher/reaper
+		// finalises it. Under FOR UPDATE the row is running, so the stamp's
+		// status='running' predicate (no agent filter anymore) always matches.
 		alreadyRequested := row.CancelRequestedAt.Valid
-		if !alreadyRequested && row.AgentID.Valid {
+		if !alreadyRequested {
 			if _, err := q.StampCancelRequestedAt(ctx, pgUUID(jobRunID)); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
-					// The row is running AND agent_id is set (we
-					// just checked row.AgentID.Valid) — the only
-					// way the predicate misses here is a logic
-					// bug. Surface so we notice.
+					// The row is running under FOR UPDATE — the only way the predicate
+					// misses is a logic bug. Surface so we notice.
 					return CancelJobRunResult{}, fmt.Errorf(
 						"store: cancel job: stamp missed under FOR UPDATE — invariant violation")
 				}
@@ -269,15 +282,10 @@ func (s *Store) CancelJobRun(ctx context.Context, jobRunID uuid.UUID) (CancelJob
 			JobName:       row.Name,
 			NeedsDispatch: true,
 		}
-		// agent_id may legitimately be NULL even with status='running'
-		// during the brief window between AssignJob committing and the
-		// agent's session ack landing. Without an agent there's no one
-		// to push CancelJob to AND the stamp predicate (StampCancel-
-		// RequestedAt requires agent_id NOT NULL) refused the row, so
-		// cancel_requested_at is NOT set. Dispatched stays nil; the
-		// handler returns 503 with a retry hint. Operator retries
-		// once AssignJob has populated agent_id; on retry both the
-		// stamp and Dispatch land normally.
+		// Fanout a CancelJob frame ONLY to an agent-owned row. A native
+		// (agent_id NULL) job has no agent session to push to — the cancel is
+		// already ACCEPTED (stamped above) and the watcher/reaper drives it, so
+		// Dispatched stays nil and the handler answers 202 (never Dispatch(uuid.Nil)).
 		if row.AgentID.Valid {
 			out.Dispatched = &RunningJobRef{
 				JobID:   jobRunID,
@@ -449,6 +457,17 @@ func (s *Store) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, grace 
 			return nil, fmt.Errorf("store: reclaim pending cancels: cascade %s: %w",
 				comp.JobRunID, err)
 		}
+		// #207: if this canceled job carried a deploy: marker, finalise its revision
+		// 'canceled' in the SAME tx so the job + revision stay atomically consistent
+		// (job canceled while the revision lingers 'in_progress' or, worse, 'failed'
+		// would misreport the deploy). 0 rows for a non-deploy job (guarded on
+		// status='in_progress' + job_run/attempt).
+		if _, err := q.FinalizeDeploymentRevision(ctx, db.FinalizeDeploymentRevisionParams{
+			JobRunID: r.ID, Attempt: r.Attempt, Status: DeployStatusCanceled,
+		}); err != nil {
+			return nil, fmt.Errorf("store: reclaim pending cancels: finalize revision %s: %w",
+				comp.JobRunID, err)
+		}
 		out = append(out, FinalizedPendingCancel{
 			JobRunID:          comp.JobRunID,
 			RunID:             comp.RunID,
@@ -460,6 +479,61 @@ func (s *Store) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, grace 
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("store: reclaim pending cancels: commit: %w", err)
+	}
+	return out, nil
+}
+
+// ReclaimAbandonedNativeCancels is the reaper backstop for a cancel-requested
+// server-managed native deploy (agent_id NULL) whose deploy_watch vanished (#207).
+// It terminalises 'canceled', cascades the stage/run, and finalises the deploy
+// revision 'canceled' — all in one tx so job + stage/run + revision stay atomically
+// consistent. grace guards against racing the watcher's own finalize on a
+// freshly-stamped row. Returns the finalised rows (for the reaper's log/metric).
+func (s *Store) ReclaimAbandonedNativeCancels(ctx context.Context, grace time.Duration) ([]FinalizedPendingCancel, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("store: reclaim native cancels: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	rows, err := q.ReclaimAbandonedNativeCancels(ctx,
+		pgtype.Interval{Microseconds: grace.Microseconds(), Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("store: reclaim native cancels: %w", err)
+	}
+	if len(rows) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: reclaim native cancels: commit (empty): %w", err)
+		}
+		return nil, nil
+	}
+
+	out := make([]FinalizedPendingCancel, 0, len(rows))
+	for _, r := range rows {
+		comp := JobCompletion{
+			JobRunID:   fromPgUUID(r.ID),
+			RunID:      fromPgUUID(r.RunID),
+			StageRunID: fromPgUUID(r.StageRunID),
+			JobName:    r.Name,
+		}
+		if err := cascadeAfterJobCompletion(ctx, q, r.StageRunID, r.RunID, &comp); err != nil {
+			return nil, fmt.Errorf("store: reclaim native cancels: cascade %s: %w", comp.JobRunID, err)
+		}
+		if _, err := q.FinalizeDeploymentRevision(ctx, db.FinalizeDeploymentRevisionParams{
+			JobRunID: r.ID, Attempt: r.Attempt, Status: DeployStatusCanceled,
+		}); err != nil {
+			return nil, fmt.Errorf("store: reclaim native cancels: finalize revision %s: %w", comp.JobRunID, err)
+		}
+		out = append(out, FinalizedPendingCancel{
+			JobRunID:   comp.JobRunID,
+			RunID:      comp.RunID,
+			StageRunID: comp.StageRunID,
+		})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: reclaim native cancels: commit: %w", err)
 	}
 	return out, nil
 }
@@ -775,6 +849,7 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 			exit_code           = NULL,
 			error               = NULL,
 			cancel_requested_at = NULL,
+			cancel_origin       = NULL,
 			logs_archive_uri    = NULL,
 			logs_archived_at    = NULL,
 			deploy_rollback     = $2,
@@ -890,8 +965,11 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 	// and completed 'success' with the prod gate dead in 'canceled'.)
 	//
 	// Scope: strictly downstream stages (ordinal greater than the rerun
-	// job's stage) whose rows the SYSTEM canceled — cancel_requested_at
-	// IS NULL leaves a user's explicit cancel-kill intact. Non-gate jobs
+	// job's stage) whose rows the SYSTEM canceled — cancel_origin IS
+	// DISTINCT FROM 'user_job' (#207) revives dependency/run/supersede/NULL
+	// cancels but leaves a user's DELIBERATE single-job cancel (user_job)
+	// dead. IS DISTINCT FROM (not <>) so a NULL origin on a pre-migration
+	// row still revives. Non-gate jobs
 	// go back to 'queued'. Gates go straight back to 'awaiting_approval'
 	// (re-stamping awaiting_since) because the dispatch query only sees
 	// 'queued' rows: a gate revived as 'queued' would either be picked up
@@ -901,10 +979,11 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 	if _, err := tx.Exec(ctx, `
 		UPDATE job_runs
 		SET status = 'queued', agent_id = NULL, started_at = NULL,
-		    finished_at = NULL, exit_code = NULL, error = NULL
+		    finished_at = NULL, exit_code = NULL, error = NULL,
+		    cancel_requested_at = NULL, cancel_origin = NULL
 		WHERE run_id = $1
 		  AND status = 'canceled'
-		  AND cancel_requested_at IS NULL
+		  AND cancel_origin IS DISTINCT FROM 'user_job'
 		  AND approval_gate = false
 		  AND stage_run_id IN (
 		      SELECT id FROM stage_runs
@@ -919,10 +998,11 @@ func (s *Store) rerunJobTx(ctx context.Context, in RerunJobInput, guard rerunGua
 		SET status = 'awaiting_approval', awaiting_since = NOW(),
 		    agent_id = NULL, started_at = NULL, finished_at = NULL,
 		    exit_code = NULL, error = NULL,
+		    cancel_requested_at = NULL, cancel_origin = NULL,
 		    decided_by = NULL, decided_at = NULL, decision = NULL
 		WHERE run_id = $1
 		  AND status = 'canceled'
-		  AND cancel_requested_at IS NULL
+		  AND cancel_origin IS DISTINCT FROM 'user_job'
 		  AND approval_gate = true
 		  AND stage_run_id IN (
 		      SELECT id FROM stage_runs
