@@ -59,7 +59,9 @@ export function FreezeDialog({ slug, trigger, environment }: Props) {
         toast.error(`Freeze ${name.trim() || "environment"}: ${res.error}`);
         return;
       }
-      toast.success(`${name.trim()} is frozen — no deploys will be admitted`);
+      toast.success(
+        `${name.trim()} is frozen — no jobs targeting it will be admitted`,
+      );
       setOpen(false);
       setReason("");
       if (!nameLocked) setName("");
@@ -83,9 +85,9 @@ export function FreezeDialog({ slug, trigger, environment }: Props) {
           </DialogTitle>
           <DialogDescription>
             While frozen, gocdnext admits no promotion to this environment:
-            approving a gate that governs it is refused, its deploy jobs stay
-            queued, and rollback is refused. A deploy already admitted keeps
-            running — the freeze stops what starts next.
+            approving a gate that governs it is refused, jobs targeting it (a
+            deploy or a migration) stay queued, and rollback is refused. A job
+            already admitted keeps running — the freeze stops what starts next.
           </DialogDescription>
         </DialogHeader>
 

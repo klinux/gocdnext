@@ -78,8 +78,8 @@ func (h *Handler) FreezeEnvironment(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/v1/projects/{slug}/environment-freezes/{name}.
 //
 // After the freeze is lifted, every run currently held by it is woken with the
-// same run_queued NOTIFY a fresh run fires, so deploys resume immediately rather
-// than after up to a full scheduler tick. That wake is BEST-EFFORT by
+// same run_queued NOTIFY a fresh run fires, so held jobs resume immediately
+// rather than after up to a full scheduler tick. That wake is BEST-EFFORT by
 // construction — it keys on the `frozen-deploy:<name>` stamp, so a run that was
 // never stamped (frozen in the window between the pre-scan and the admission
 // re-check) is not in the list. The periodic drain tick is the backstop, and it
