@@ -502,7 +502,8 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 			assigned store.AssignedJob
 			claimed  bool
 		)
-		if deployTarget != nil {
+		switch {
+		case deployTarget != nil:
 			var admission store.DeployAdmission
 			assigned, admission, err = s.store.AssignDeployJobIfEnvNotFrozen(
 				ctx, job.ID, agentID, run.ProjectID, deployTarget.Environment)
@@ -520,7 +521,23 @@ func (s *Scheduler) dispatchRun(ctx context.Context, runID uuid.UUID) {
 				continue
 			}
 			claimed = admission == store.DeployAdmitted
-		} else {
+		case freeze.envFor(job.Name) != "":
+			// #206: a NON-deploy job that declares environment: (a migration). It
+			// takes the same freeze-checked admission as a deploy, but WITHOUT the
+			// deploy guard above (no lane lock, no deployment revision) — no guard
+			// was acquired for it, so there is nothing to release on the skip.
+			env := freeze.envFor(job.Name)
+			var admission store.DeployAdmission
+			assigned, admission, err = s.store.AssignJobIfEnvNotFrozen(
+				ctx, job.ID, agentID, run.ProjectID, env)
+			if err == nil && admission == store.DeployAdmissionFrozen {
+				hold.record(holdFrozen, store.FreezeQueueReasonPrefix+env)
+				s.log.Debug("scheduler: job refused at admission by environment freeze",
+					"run_id", runID, "job_id", job.ID, "environment", env)
+				continue
+			}
+			claimed = admission == store.DeployAdmitted
+		default:
 			assigned, claimed, err = s.store.AssignJob(ctx, job.ID, agentID)
 		}
 		if err != nil {

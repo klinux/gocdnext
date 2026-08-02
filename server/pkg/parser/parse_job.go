@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/gocdnext/gocdnext/proto/cachekey"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -235,10 +237,11 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 			jd.Settings != nil || jd.Artifacts != nil ||
 			len(jd.NeedsArtifacts) > 0 || len(jd.Cache) > 0 ||
 			jd.Docker || len(jd.IDTokens) > 0 || jd.Deploy != nil ||
-			jd.Cluster != "" {
+			jd.Cluster != "" || !jd.Environment.IsZero() {
 			return domain.Job{}, fmt.Errorf(
-				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens/deploy/cluster — it only blocks on a human decision. "+
-					"For a promote-then-deploy flow, put deploy: on a separate executable job with needs: [<this-gate>]",
+				"job %q: approval gate cannot declare script/uses/image/artifacts/cache/docker/id_tokens/deploy/cluster/environment — it only blocks on a human decision. "+
+					"A gate GOVERNS an environment via downstream jobs; it does not act on one. "+
+					"For a promote-then-deploy flow, put deploy:/environment: on a separate executable job with needs: [<this-gate>]",
 				name,
 			)
 		}
@@ -436,6 +439,57 @@ func toJob(name string, jd JobDef, pipelineVars map[string]string) (domain.Job, 
 			}
 			j.Deploy.Target = spec
 		}
+	}
+
+	// Environment declaration (#206): the job ACTS ON this environment so a
+	// change-freeze holds it, without a `deploy:` marker (a prod migration). It
+	// is a raw yaml.Node so absent (zero node) is distinct from an explicit but
+	// empty declaration — the empty forms fail loud, never a silent no-env that
+	// would drop freeze protection. Validated AFTER task assembly (like deploy:)
+	// so "executable" is a real check; gate+environment was rejected above.
+	if !jd.Environment.IsZero() {
+		if len(j.Tasks) == 0 {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: environment: requires an executable job (script:, uses:, or image:+settings:) — it marks which environment the job acts on so a freeze holds it",
+				name)
+		}
+		// Follow an anchor alias (bounded) to its target, then insist on a string
+		// SCALAR. ShortTag resolves the implicit type: `environment: 123`/`true`
+		// are !!int/!!bool and rejected (a plain Decode into string would silently
+		// stringify them); a seq/map is !!seq/!!map; `environment:` alone is !!null.
+		n := jd.Environment
+		for depth := 0; n.Kind == yaml.AliasNode && n.Alias != nil && depth < 10; depth++ {
+			n = *n.Alias
+		}
+		if n.ShortTag() == "!!null" {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: environment must not be empty — omit the key entirely if the job declares no environment",
+				name)
+		}
+		if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!str" {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: environment must be a string (got %s)", name, n.ShortTag())
+		}
+		env := strings.TrimSpace(n.Value)
+		if env == "" {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: environment must not be empty — omit the key entirely if the job declares no environment",
+				name)
+		}
+		if !domain.ValidEnvironmentName(env) {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: environment %q has forbidden characters — start alphanumeric, then alphanumeric + . _ - (max 64)",
+				name, env)
+		}
+		// If the job ALSO carries a deploy: marker they must agree, so
+		// TargetEnvironment has a single answer and a freeze can't be dodged by
+		// declaring `environment: production` next to `deploy.environment: staging`.
+		if j.Deploy != nil && j.Deploy.Environment != env {
+			return domain.Job{}, fmt.Errorf(
+				"job %q: environment %q must equal deploy.environment %q (they target the same environment — declare only one, or make them match)",
+				name, env, j.Deploy.Environment)
+		}
+		j.Environment = env
 	}
 
 	if jd.Parallel != nil && len(jd.Parallel.Matrix) > 0 {

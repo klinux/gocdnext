@@ -1,6 +1,6 @@
 ---
 title: Environment change-freeze
-description: "Freeze a deploy environment and gocdnext admits no promotion to it — approving its gate, dispatching its deploy job, and rolling it back are all refused until a maintainer lifts the freeze."
+description: "Freeze a deploy environment and gocdnext admits no promotion to it — approving its gate, dispatching any job that targets it (a deploy or a migration), and rolling it back are all refused until a maintainer lifts the freeze."
 ---
 
 An [approval gate](/gocdnext/docs/concepts/approvals/) answers **who**
@@ -17,7 +17,7 @@ gocdnext admits **no** promotion to it:
 | Action during a freeze | Result |
 |---|---|
 | Approving a gate that governs the frozen environment | **409** — the error names every frozen environment that gate governs |
-| Dispatching a deploy job targeting it | Held: the job stays `queued`, the run shows `Frozen: production` |
+| Dispatching a job that targets it — a deploy **or** a migration (see below) | Held: the job stays `queued`, the run shows `Frozen: production` |
 | [Rolling back](/gocdnext/docs/concepts/deployments/#one-click-rollback) that environment | **409** |
 | **Rejecting** a gate | **Allowed** — see below |
 
@@ -72,33 +72,79 @@ The same keying means a freeze **survives deleting the environment**.
 Deleting a frozen environment leaves the freeze behind (still visible,
 still liftable), so delete-and-recreate is not a way to launder one away.
 
+## Migrations and other jobs that act on an environment
+
+A `deploy:` marker is not the only way a job touches production. A
+database migration is a plain `goose`/`kustomize` job — it changes prod,
+but it declares no `deploy:`, so on its own a freeze could not see it.
+
+Declare the environment on the job with `environment:`:
+
+```yaml
+jobs:
+  migrate-prod:
+    stage: migration
+    image: goose
+    script: ["goose up"]
+    environment: production     # this job ACTS ON production
+```
+
+A freeze on `production` now holds `migrate-prod` at dispatch exactly
+like a deploy, and — because the gate that governs it is freeze-aware
+too — the `approve → migrate` gate in front of it is refused with a
+**409** while the freeze is on. A single-job **rerun** of the migration
+is held the same way.
+
+`environment:` is valid on any **executable** job. It is rejected on an
+approval gate (a gate *governs* an environment through the jobs after
+it; it does not act on one) and on a job that runs nothing. If a job
+carries **both** `deploy:` and `environment:`, they must name the same
+environment.
+
+**This is declare-the-env, and it is opt-in.** A freeze holds a job
+because the job *says* which environment it targets — not because it
+happens to point at a protected cluster. A job that runs against a prod
+cluster without an `environment:` (or `deploy:`) is **not** held.
+
+:::caution
+A change-freeze is an **operational** control, not a security boundary.
+Because the environment is declared in the repo, anyone who can edit the
+pipeline can remove or rename `environment:` and route around a freeze.
+It stops honest mistakes and coordinates a team; it does not defend
+against a malicious or compromised pipeline author.
+:::
+
+Inheriting `environment:` through `extends:` is not supported yet —
+declare it directly on the job.
+
 ## Two things that surprise people
 
-**The name must match `deploy.environment` exactly — including case.**
-The freeze is matched against the environment name in your pipeline
-YAML, as a plain string. Freezing `production` does **not** hold a
-pipeline that declares `environment: prod`, and `Production` is a
-different environment from `production`. If a deploy you expected to be
-held is running, check the name first.
+**The name must match exactly — including case.** The freeze is matched
+against the environment name in your pipeline YAML (`deploy.environment`
+or a job's `environment:`), as a plain string. Freezing `production`
+does **not** hold a job that declares `environment: prod`, and
+`Production` is a different environment from `production`. If a job you
+expected to be held is running, check the name first.
 
-**A freeze holds the deploy job, not the whole run.** A stage with a
-frozen `production` deploy and a `staging` deploy that isn't frozen will
-still ship staging. The run displays the freeze as its dominant queue
-reason because that is the blocker a human has to act on — it does not
-mean everything stopped.
+**A freeze holds the jobs that target the environment, not the whole
+run.** A stage with a frozen `production` job and a `staging` job that
+isn't frozen will still run staging. The run displays the freeze as its
+dominant queue reason because that is the blocker a human has to act on —
+it does not mean everything stopped.
 
 ## What the guarantee covers
 
 The guarantee is at the **admission boundary**: once the freeze call
-returns, no new deploy to that environment is *admitted*.
+returns, no new job targeting that environment (a deploy or a migration)
+is *admitted*.
 
-A deploy **admitted just before** the freeze committed still runs to
+A job **admitted just before** the freeze committed still runs to
 completion — the agent already has it, or the ArgoCD sync already went
 out. Freezing does not reach across the network to stop work in flight,
-and gocdnext does not pretend otherwise: cancelling an in-flight deploy
-is a separate action you take deliberately.
+and gocdnext does not pretend otherwise: cancelling an in-flight job is
+a separate action you take deliberately.
 
-In practice the window is the moment between a deploy being assigned and
+In practice the window is the moment between a job being assigned and
 the freeze landing. Everything queued behind it is held.
 
 ## Lifting a freeze
@@ -145,9 +191,10 @@ been deployed to.
 ## What this is not
 
 - **Not a pipeline pause.** The unit is a deploy *environment*, not a
-  pipeline. Freezing `production` holds every pipeline in the project
-  that deploys to it; it does not stop those pipelines from building
-  and testing.
+  pipeline. Freezing `production` holds every job in the project that
+  targets it — a deploy or a migration — but it does not stop those
+  pipelines from building and testing, or from shipping to other
+  environments.
 - **Not a cancel.** Work already admitted finishes. See
   [What the guarantee covers](#what-the-guarantee-covers).
 - **Not scheduled.** Freezes are manual: someone sets it, someone lifts
