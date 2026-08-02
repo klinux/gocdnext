@@ -8,7 +8,20 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.83.0 — 2026-08-02
+
 ### Added
+
+- **Environment freeze holds migration jobs, not just deploys (#206).** A change-freeze
+  (#202) stopped *deploys* into a frozen environment, but the risky operation a freeze
+  most needs to stop often runs *just before* the deploy — a schema migration, a data
+  backfill. Any job can now carry `environment:` to declare which environment it acts on
+  even when it is not a `deploy:` job, and the freeze holds it at the same admission
+  boundary: while `production` is frozen, a job with `environment: production` stays
+  queued instead of being assigned. Freeze governance is computed from a superset of the
+  gate's deploy environments (so a gated migration is covered), while the deploy-only
+  admission path is unchanged. Closes the gap where a freeze blocked the promotion but
+  not the migration it depended on.
 
 - **Approval gates now expire (#205).** An abandoned gate had only two exits — a
   human clicking, or supersede cancelling it when a newer run arrived — so a gate
@@ -57,6 +70,28 @@ convention that minor bumps may carry breaking changes until 1.0).
   arriving as one burst of audit rows, agent frames and check updates.
 
 ### Fixed
+
+- **A canceled running job now records `canceled`, not `failed` (#207).** Cancelling a
+  job mid-execution recorded it as `failed`, so an intentional cancel polluted the
+  dashboard's failure metric and DORA — a deliberate stop looked like a broken build.
+  The terminal status is now derived server-side from the cancel request: a stamped
+  cancel wins over the agent's reported result, deterministically. Stage/run rollups
+  count canceled distinctly (a canceled job no longer closes its stage green); a
+  `needs:` dependent of a canceled upstream is **skipped**, not failed (a cancel's
+  fallout stays off the failure metric), while a failed/absent upstream still fails
+  loud; the offline-agent reaper and server-managed native deploys are consistent, so a
+  canceled deploy records a `canceled` revision (excluded from DORA). Also fixes the
+  metric label spelled `cancelled` that bucketed every canceled job as `unknown`.
+
+- **The approval-expiry sweeper pauses under an environment freeze (#208).** The new
+  expiry sweeper was blind to freeze (#202): a change-freeze longer than a gate's window
+  silently cancelled the very pending production gates the freeze exists to protect. The
+  freeze check is now authoritative *inside* the cancel transaction (a pre-scan races a
+  concurrent freeze), and lifting a freeze grants a fresh full window measured from the
+  unfreeze — a gate that sat through a two-week freeze is not cancelled the instant it
+  lifts. A rerun that re-parks a gate between the scan and the cancel is no longer
+  expired out from under itself. `off` is accepted as a synonym for `never` on the
+  per-gate `timeout:`.
 
 - **`timeout:` on an approval gate did nothing.** The key was accepted by the YAML
   schema and merged by `extends`, but never lowered into the domain type, so the
