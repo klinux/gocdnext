@@ -20,6 +20,22 @@ func (q *Queries) DeletePipeline(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const getPipelineProjectID = `-- name: GetPipelineProjectID :one
+SELECT project_id FROM pipelines WHERE id = $1
+`
+
+// Authoritative project_id for a pipeline, resolved INSIDE the expiry tx (#208):
+// an approval-expiry candidate carries only pipeline_id, and the freeze check
+// needs the project to build the per-(project, env) freeze lock key and probe
+// environment_freezes. pipeline -> project is immutable, so a plain PK lookup is
+// authoritative without a lock.
+func (q *Queries) GetPipelineProjectID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getPipelineProjectID, id)
+	var project_id pgtype.UUID
+	err := row.Scan(&project_id)
+	return project_id, err
+}
+
 const listPipelinesByProject = `-- name: ListPipelinesByProject :many
 SELECT id, name, definition_version
 FROM pipelines

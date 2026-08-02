@@ -127,6 +127,19 @@ spec:
               value: /var/run/secrets/gcs/service-account.json
             {{- end }}
             {{- end }}
+            {{- /*
+              Rendered on KEY PRESENCE, not truthiness. Go templates treat a
+              NUMERIC 0 as false (a quoted "0" is a non-empty string and would
+              be truthy), so a plain `if` drops the var for `defaultTimeout: 0`
+              — and the server falls back to 168h when the var is unset, so a
+              value documented as "disable" would silently re-enable the 7-day
+              default. kindIs "invalid" is the nil test; every other value,
+              numeric 0 included, renders.
+            */}}
+            {{- if not (kindIs "invalid" .Values.approvals.defaultTimeout) }}
+            - name: GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT
+              value: {{ .Values.approvals.defaultTimeout | quote }}
+            {{- end }}
             {{- if .Values.logs.retention }}
             - name: GOCDNEXT_LOG_RETENTION
               value: {{ .Values.logs.retention | quote }}

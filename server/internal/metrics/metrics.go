@@ -134,6 +134,16 @@ var (
 		Help: "Runs canceled by latest-wins supersede.",
 	})
 
+	// ApprovalsExpired counts approval gates the expirer canceled because nobody
+	// decided them inside their window. This is the abandonment signal: a rising
+	// rate means teams are opening gates they never come back to, and the number
+	// is the whole reason to measure instead of guess. Labelless to keep
+	// cardinality flat (no pipeline / env / approver identity).
+	ApprovalsExpired = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gocdnext_approvals_expired_total",
+		Help: "Approval gates canceled after their wait window elapsed with no decision.",
+	})
+
 	// SupersedeBackstopErrors counts dispatch-guard failures that fail CLOSED (#97):
 	// the deploy is NOT dispatched and the job is left for retry. Non-zero means the
 	// supersede backstop hit a DB/guard error — worth alerting on.
@@ -234,6 +244,7 @@ func init() {
 		RetentionDroppedLogPartitions,
 		WebhookDeliveries,
 		RunsSuperseded,
+		ApprovalsExpired,
 		SupersedeBackstopErrors,
 		SupersedeLockBusy,
 		JobsReclaimed,

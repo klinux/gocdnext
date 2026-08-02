@@ -63,6 +63,12 @@ for the value-side names.
 | `GOCDNEXT_CACHE_PROJECT_QUOTA_BYTES` | `0` | Per-project cap (disabled by default) |
 | `GOCDNEXT_CACHE_GLOBAL_QUOTA_BYTES` | `0` | Global cap (disabled by default) |
 
+## Approvals
+
+| Var | Default | Notes |
+|---|---|---|
+| `GOCDNEXT_APPROVAL_DEFAULT_TIMEOUT` | `168h` | How long an approval gate may sit unanswered before its run is **canceled** (not failed). Applies to every gate that doesn't set its own `timeout:` in YAML. Go duration, no `d` unit (`168h` = 7 days); clamped to `[1m, 2160h]`. `never` / `off` / `0` disables the fleet-wide window — per-gate `timeout:` still applies. A typo aborts boot. |
+
 ## Logs
 
 | Var | Default | Notes |
