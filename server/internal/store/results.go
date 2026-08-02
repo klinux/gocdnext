@@ -264,6 +264,12 @@ type JobCompletion struct {
 	StartedAt  *time.Time
 	FinishedAt *time.Time
 
+	// JobStatus is the EFFECTIVE terminal status the DB recorded — which is
+	// 'canceled' when cancel_requested_at was stamped, NOT the agent-reported
+	// success/failed (#207). The handler logs/metrics/finalizes the deploy revision
+	// on this value, so a canceled job never counts as a failure.
+	JobStatus string
+
 	StageCompleted bool
 	StageStatus    string
 
@@ -329,6 +335,7 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 		StageRunID: fromPgUUID(row.StageRunID),
 		AgentID:    fromPgUUID(row.AgentID),
 		JobName:    row.Name,
+		JobStatus:  row.Status, // EFFECTIVE status (canceled overrides the reported one)
 		StartedAt:  pgTimePtr(row.StartedAt),
 		FinishedAt: pgTimePtr(row.FinishedAt),
 	}
@@ -360,6 +367,18 @@ func (s *Store) CompleteJob(ctx context.Context, in CompleteJobInput) (JobComple
 // handle (q := s.q.WithTx(tx)) so rollback on error wipes the
 // partially-stamped stage/run rows.
 func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, runID pgtype.UUID, comp *JobCompletion) error {
+	// Serialise the rollup (#207): lock the stage_run row FOR UPDATE before reading
+	// progress, so two sibling jobs finishing in parallel can't both compute
+	// progress and race to close the stage. If it's already terminal, another
+	// sibling closed it first — nothing to do.
+	stageRunStatus, err := q.LockStageRunForUpdate(ctx, stageRunID)
+	if err != nil {
+		return fmt.Errorf("store: lock stage run: %w", err)
+	}
+	if stageRunStatus != string(domain.StatusQueued) && stageRunStatus != string(domain.StatusRunning) {
+		return nil
+	}
+
 	stage, err := q.GetStageProgress(ctx, stageRunID)
 	if err != nil {
 		return fmt.Errorf("store: stage progress: %w", err)
@@ -368,14 +387,25 @@ func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, r
 		return nil
 	}
 
+	// Priority: failed > canceled > success. A canceled job must not let a stage
+	// close green, but a real failure still dominates a cancel.
 	stageStatus := string(domain.StatusSuccess)
-	if stage.Failed > 0 {
+	switch {
+	case stage.Failed > 0:
 		stageStatus = string(domain.StatusFailed)
+	case stage.Canceled > 0:
+		stageStatus = string(domain.StatusCanceled)
 	}
-	if err := q.CompleteStageRun(ctx, db.CompleteStageRunParams{
+	stageRows, err := q.CompleteStageRun(ctx, db.CompleteStageRunParams{
 		ID: stageRunID, Status: stageStatus,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("store: complete stage: %w", err)
+	}
+	if stageRows == 0 {
+		// Lost the CAS to a concurrent terminalizer — do not declare completion or
+		// fire fail-fast on a stage we didn't actually close.
+		return nil
 	}
 	comp.StageCompleted = true
 	comp.StageStatus = stageStatus
@@ -394,7 +424,9 @@ func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, r
 		if err := q.CancelQueuedStagesInRun(ctx, runID); err != nil {
 			return fmt.Errorf("store: cancel stages: %w", err)
 		}
-		if err := q.CancelQueuedJobsInRun(ctx, runID); err != nil {
+		if err := q.CancelQueuedJobsInRun(ctx, db.CancelQueuedJobsInRunParams{
+			RunID: runID, Origin: nullableString(string(cancelOriginDependency)),
+		}); err != nil {
 			return fmt.Errorf("store: cancel jobs: %w", err)
 		}
 	}
@@ -417,14 +449,26 @@ func cascadeAfterJobCompletion(ctx context.Context, q *db.Queries, stageRunID, r
 	if err != nil {
 		return fmt.Errorf("store: user stage outcome: %w", err)
 	}
+	// Priority: failed > canceled > success (#207). GetRunUserStageOutcome already
+	// counts both; today only Failed was consulted, so a run whose only non-success
+	// user job was canceled wrongly derived success.
 	runStatus := string(domain.StatusSuccess)
-	if userOutcome.Failed > 0 {
+	switch {
+	case userOutcome.Failed > 0:
 		runStatus = string(domain.StatusFailed)
+	case userOutcome.Canceled > 0:
+		runStatus = string(domain.StatusCanceled)
 	}
-	if err := q.CompleteRun(ctx, db.CompleteRunParams{
+	runRows, err := q.CompleteRun(ctx, db.CompleteRunParams{
 		ID: runID, Status: runStatus,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("store: complete run: %w", err)
+	}
+	if runRows == 0 {
+		// The run was already terminalized (e.g. CancelActiveRun won) — don't
+		// declare RunCompleted or emit run-terminal effects on a CAS we lost.
+		return nil
 	}
 	comp.RunCompleted = true
 	comp.RunStatus = runStatus
@@ -479,13 +523,14 @@ func NotificationTriggerMatches(on domain.NotificationTrigger, o UserStageOutcom
 	}
 }
 
-// SkipNotificationJob marks a queued notification job as skipped
-// and cascades — the stage can close once the last notification
-// is either dispatched or skipped. Returns ok=false when the row
-// wasn't in 'queued' (another tick raced us or the job already
-// transitioned). The cascade pass lets the run complete cleanly
-// even when every notification skipped (no dispatches at all).
-func (s *Store) SkipNotificationJob(ctx context.Context, jobRunID uuid.UUID) (JobCompletion, bool, error) {
+// SkipJob marks a QUEUED job as skipped and cascades the stage/run. Used for two
+// "by design, never going to run" cases: a synthetic notification whose `on:`
+// trigger doesn't match, and (#207) a downstream whose `needs:` are unmet because an
+// upstream was CANCELED/skipped (a cancel's fallout should not hit the failure
+// metric — that stays for a genuine `failed`/absent upstream, via FailJobWithReason).
+// Returns ok=false when the row wasn't 'queued' (another tick raced us). The cascade
+// lets the stage/run close cleanly.
+func (s *Store) SkipJob(ctx context.Context, jobRunID uuid.UUID) (JobCompletion, bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return JobCompletion{}, false, fmt.Errorf("store: skip job: begin: %w", err)

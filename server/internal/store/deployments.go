@@ -15,11 +15,15 @@ import (
 )
 
 // Deployment status values (deployment_revisions.status). Mirrors the
-// CHECK constraint in migration 00046.
+// CHECK constraint in migrations 00046 + 00079 (canceled).
 const (
 	DeployStatusInProgress = "in_progress"
 	DeployStatusSuccess    = "success"
 	DeployStatusFailed     = "failed"
+	// DeployStatusCanceled: the deploy job was canceled (#207). Never becomes the
+	// current deployment, stays in history, excluded from DORA (the analytics
+	// queries filter status IN ('success','failed')).
+	DeployStatusCanceled = "canceled"
 )
 
 // Environment is a project-scoped deploy target (#39).
@@ -279,7 +283,7 @@ func (s *Store) CreateDeploymentRevision(ctx context.Context, in CreateDeploymen
 // Returns rows updated — 0 means no deploy: block on this attempt, or
 // already finalised (the status='in_progress' guard is idempotent).
 func (s *Store) FinalizeDeploymentRevision(ctx context.Context, jobRunID uuid.UUID, attempt int32, status string) (int64, error) {
-	if status != DeployStatusSuccess && status != DeployStatusFailed {
+	if status != DeployStatusSuccess && status != DeployStatusFailed && status != DeployStatusCanceled {
 		return 0, fmt.Errorf("store: finalize deployment revision: invalid status %q", status)
 	}
 	n, err := s.q.FinalizeDeploymentRevision(ctx, db.FinalizeDeploymentRevisionParams{

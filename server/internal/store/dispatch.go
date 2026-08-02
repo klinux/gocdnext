@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
+	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
 // DispatchableJob carries the queued-job shape the scheduler needs to build a
@@ -285,19 +286,47 @@ func (s *Store) AssignJob(ctx context.Context, jobID, agentID uuid.UUID) (Assign
 // attempt is NOT bumped: a Dispatch that never reached an agent
 // doesn't count as a failed attempt. The retry-cap logic in
 // ReclaimJobForRetry is for AGENT-side failures.
-func (s *Store) UnassignJob(ctx context.Context, jobID, agentID uuid.UUID, expectedAttempt int32) (uuid.UUID, bool, error) {
-	row, err := s.q.UnassignJob(ctx, db.UnassignJobParams{
+// Two-outcome (#207): the returned `outcome` is 'queued' (no cancel was stamped —
+// the caller fires NotifyRunQueued to re-dispatch) or 'canceled' (a cancel landed
+// in the AssignJob→Dispatch window — the job is terminalised and its stage/run
+// cascade runs IN THIS SAME TX; the caller does NOT notify). The method ALWAYS
+// opens a transaction before the CAS: the outcome is only known after RETURNING,
+// and the canceled path must terminalise + cascade atomically (a crash between them
+// would strand the stage/run). ok=false when the CAS missed.
+func (s *Store) UnassignJob(ctx context.Context, jobID, agentID uuid.UUID, expectedAttempt int32) (runID uuid.UUID, outcome string, ok bool, err error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return uuid.Nil, "", false, fmt.Errorf("store: unassign job: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	row, err := q.UnassignJob(ctx, db.UnassignJobParams{
 		ID:              pgUUID(jobID),
 		AgentID:         pgUUID(agentID),
 		ExpectedAttempt: expectedAttempt,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return uuid.Nil, false, nil
+			return uuid.Nil, "", false, nil
 		}
-		return uuid.Nil, false, fmt.Errorf("store: unassign job: %w", err)
+		return uuid.Nil, "", false, fmt.Errorf("store: unassign job: %w", err)
 	}
-	return fromPgUUID(row.RunID), true, nil
+
+	if row.Status == string(domain.StatusCanceled) {
+		comp := JobCompletion{
+			JobRunID:   fromPgUUID(row.ID),
+			RunID:      fromPgUUID(row.RunID),
+			StageRunID: fromPgUUID(row.StageRunID),
+		}
+		if err := cascadeAfterJobCompletion(ctx, q, row.StageRunID, row.RunID, &comp); err != nil {
+			return uuid.Nil, "", false, fmt.Errorf("store: unassign job: cascade: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, "", false, fmt.Errorf("store: unassign job: commit: %w", err)
+	}
+	return fromPgUUID(row.RunID), row.Status, true, nil
 }
 
 // MarkRunRunning promotes a queued run (idempotent: no-op if already running).

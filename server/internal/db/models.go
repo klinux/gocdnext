@@ -344,6 +344,7 @@ type JobRun struct {
 	ApprovalQuorumLabel *string
 	CancelRequestedAt   pgtype.Timestamptz
 	DeployRollback      bool
+	CancelOrigin        *string
 }
 
 type JobRunApproval struct {

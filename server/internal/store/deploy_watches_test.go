@@ -459,6 +459,58 @@ func TestFinalizeDeployWatch_CompletesServerManagedJob(t *testing.T) {
 	}
 }
 
+// #207 Part 6b: a server-managed (native) deploy job with cancel_requested_at stamped
+// must land BOTH the job AND its revision `canceled`, even though the watcher's verdict
+// is `failed` (deploy.Decide's non-rollout cancel = FinalizeFailed). The finalize order
+// is job-first: CompleteJobRun's CASE derives `canceled` from the stamp, and THAT
+// effective status — not the watcher's `failed` — drives FinalizeDeploymentRevisionByID.
+// The old order (revision-first) would record a `failed` revision under a `canceled` job.
+func TestFinalizeDeployWatch_CancelStampDrivesCanceledRevision(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	runID, jobID, revID, claimID := seedServerManagedDeploy(t, s, pool)
+
+	// A cancel won the DB race before the watcher finalizes (native, agent_id NULL).
+	if _, err := pool.Exec(ctx,
+		`UPDATE job_runs SET cancel_requested_at=NOW(), cancel_origin='user_run' WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("stamp cancel: %v", err)
+	}
+
+	// The watcher's verdict for a non-rollout cancel is FinalizeFailed → status "failed".
+	res, err := s.FinalizeDeployWatch(ctx, revID, claimID, store.DeployStatusFailed, "canceled")
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if !res.Finalized || res.RunID != runID {
+		t.Fatalf("res = %+v, want finalized with run %v", res, runID)
+	}
+
+	var jobStatus string
+	_ = pool.QueryRow(ctx, `SELECT status FROM job_runs WHERE id=$1`, jobID).Scan(&jobStatus)
+	if jobStatus != "canceled" {
+		t.Fatalf("job status = %q, want canceled (cancel_requested_at CASE overrides failed)", jobStatus)
+	}
+	// The load-bearing assertion: revision follows the EFFECTIVE job status, not "failed".
+	if rev, _ := s.GetDeploymentRevision(ctx, revID); rev.Status != store.DeployStatusCanceled {
+		t.Fatalf("revision = %q, want canceled (effective status drives the revision, never success/failed under a canceled job)", rev.Status)
+	}
+	// The build stage (the deploy job's stage) derives canceled from its one canceled
+	// job — failed>canceled>success priority, no failures here. (The run itself stays
+	// running: seedRunningJob leaves a second stage's `unit` job queued.)
+	var stageStatus string
+	_ = pool.QueryRow(ctx,
+		`SELECT sr.status FROM stage_runs sr JOIN job_runs jr ON jr.stage_run_id=sr.id WHERE jr.id=$1`,
+		jobID).Scan(&stageStatus)
+	if stageStatus != "canceled" {
+		t.Fatalf("stage status = %q, want canceled", stageStatus)
+	}
+	if _, err := s.GetDeployWatch(ctx, revID); err != store.ErrDeployWatchNotFound {
+		t.Fatalf("watch not gone: %v", err)
+	}
+}
+
 func TestFinalizeDeployWatch_FailedJobCarriesReason(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
@@ -563,7 +615,8 @@ func TestFinalizeDeployWatch_InvalidStatus(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim: %v (err %v)", claimed, err)
 	}
-	if _, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "canceled", ""); err == nil {
+	// 'canceled' is now a VALID terminal (#207); use a genuinely bogus status.
+	if _, err := s.FinalizeDeployWatch(ctx, revID, claimed[0].ClaimID, "bogus", ""); err == nil {
 		t.Fatal("finalize with invalid status = nil error, want a validation error")
 	}
 	// The watch must survive (validation happened before any DB effect).

@@ -63,7 +63,10 @@ func TestJobStatusLabel(t *testing.T) {
 	}{
 		{"success", "success"},
 		{"failed", "failed"},
-		{"cancelled", "cancelled"},
+		// #207: the domain spelling is "canceled" (one l). The old two-l "cancelled"
+		// meant every canceled job bucketed as "unknown".
+		{"canceled", "canceled"},
+		{"cancelled", "unknown"},
 		{"skipped", "skipped"},
 		{"running", "unknown"},
 		{"", "unknown"},

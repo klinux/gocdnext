@@ -49,6 +49,24 @@ func (s *Scheduler) failJobNeedsUnmet(ctx context.Context, job store.Dispatchabl
 		"run_id", job.RunID, "job_id", job.ID, "job_name", job.Name, "reason", msg)
 }
 
+// skipJobNeedsUnmet terminalises a downstream job 'skipped' (not 'failed') when its
+// `needs:` can't be met because an upstream was CANCELED or itself skipped (#207).
+// A cancel's fallout must not hit the failure metric / DORA: the dependent didn't
+// run, but it wasn't a failure. The stage of only-skipped dependents derives success
+// (they're not counted as failed/canceled), while the run stays 'canceled' from the
+// earlier canceled upstream (GetRunUserStageOutcome counts it). SkipJob cascades so
+// the stage/run can close. A genuine failed/absent upstream still routes to
+// failJobNeedsUnmet — fail-loud is preserved for real failures.
+func (s *Scheduler) skipJobNeedsUnmet(ctx context.Context, job store.DispatchableJob, detail string) {
+	if _, _, err := s.store.SkipJob(ctx, job.ID); err != nil {
+		s.log.Warn("scheduler: skip job needs-unmet",
+			"job_id", job.ID, "job_name", job.Name, "err", err)
+		return
+	}
+	s.log.Info("scheduler: job skipped — needs unmet (upstream canceled/skipped)",
+		"run_id", job.RunID, "job_id", job.ID, "job_name", job.Name, "detail", detail)
+}
+
 // buildNeedsOutputs assembles the NeedsOutputs table for a downstream
 // job's `${{ needs.X.outputs.Y }}` substitution (issue #10). Scoped
 // to job.Needs so the query is cheap; runs AFTER the gate so all

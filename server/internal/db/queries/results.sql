@@ -124,26 +124,48 @@ ON CONFLICT (job_run_id, seq, at) DO NOTHING;
 -- dispatch. NULL caller param falls back to '{}' so the legacy
 -- non-output completion path stays a one-line change at the call
 -- site.
+-- #207: the terminal status is DERIVED from cancel_requested_at, not taken
+-- verbatim from the agent. A killed-container cancel comes back as FAILED, but a
+-- stamped cancel_requested_at means the cancel won the DB race — record 'canceled'
+-- regardless of the reported result. A genuine success wins only if its CAS
+-- commits BEFORE the stamp (then this UPDATE no-ops on the non-terminal guard).
+-- outputs are governed by the EFFECTIVE status: only an un-canceled success keeps
+-- them, so a success+cancel never leaves published outputs on a canceled row.
+-- The effective status is RETURNED so the handler logs/metrics/finalizes on it.
 UPDATE job_runs
-SET status = $2, exit_code = $3, error = $4, finished_at = NOW(),
-    outputs = COALESCE(@outputs::jsonb, '{}'::jsonb)
+SET status = CASE WHEN cancel_requested_at IS NOT NULL THEN 'canceled' ELSE $2 END,
+    exit_code = $3, error = $4, finished_at = NOW(),
+    outputs = CASE WHEN cancel_requested_at IS NULL AND $2 = 'success'
+                   THEN COALESCE(@outputs::jsonb, '{}'::jsonb)
+                   ELSE '{}'::jsonb END
 WHERE id = $1
   AND status IN ('queued', 'running')
   AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
   AND attempt = @expected_attempt::int
-RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at;
+RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at, status;
 
 -- name: GetStageProgress :one
--- Counts jobs still working vs already-failed within a stage — the numbers
--- the caller uses to decide whether to promote the stage. `awaiting_approval`
+-- Counts jobs still working vs already-failed vs canceled within a stage — the
+-- numbers the caller uses to decide whether to promote the stage. `awaiting_approval`
 -- is unfinished too: the gate hasn't decided yet, so the stage can't close.
+-- canceled is counted separately so the stage derives failed > canceled > success
+-- (#207): a canceled job must not let a stage/run close green.
 SELECT
     COUNT(*) FILTER (WHERE status IN ('queued', 'running', 'awaiting_approval'))::BIGINT AS unfinished,
-    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT                                    AS failed
+    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT                                    AS failed,
+    COUNT(*) FILTER (WHERE status = 'canceled')::BIGINT                                  AS canceled
 FROM job_runs
 WHERE stage_run_id = $1;
 
--- name: CompleteStageRun :exec
+-- name: LockStageRunForUpdate :one
+-- Serialises the stage rollup (#207): the completion cascade locks the stage_run
+-- row FOR UPDATE before reading GetStageProgress, so two sibling jobs finishing in
+-- parallel can't both compute progress and race to close the stage. Returns the
+-- current status so the caller early-exits when the stage is already terminal
+-- (another sibling closed it first).
+SELECT status FROM stage_runs WHERE id = $1 FOR UPDATE;
+
+-- name: CompleteStageRun :execrows
 UPDATE stage_runs
 SET status = $2, finished_at = COALESCE(finished_at, NOW())
 WHERE id = $1 AND status IN ('queued', 'running');
@@ -155,7 +177,7 @@ SELECT
 FROM stage_runs
 WHERE run_id = $1;
 
--- name: CompleteRun :exec
+-- name: CompleteRun :execrows
 UPDATE runs
 SET status = $2, finished_at = COALESCE(finished_at, NOW())
 WHERE id = $1 AND status IN ('queued', 'running');
@@ -234,7 +256,11 @@ WHERE run_id = $1
 -- inside the synthetic _notifications stage are preserved so
 -- `on: failure` notifications still fire.
 UPDATE job_runs j
-SET status = 'canceled', finished_at = COALESCE(j.finished_at, NOW())
+SET status = 'canceled', finished_at = COALESCE(j.finished_at, NOW()),
+    -- #207: this is the fail-fast DEPENDENCY cancel (an upstream stage failed).
+    -- An upstream rerun SHOULD revive these (they were canceled by the system,
+    -- not the user), so cancel_origin='dependency' — RerunJob only skips 'user_job'.
+    cancel_origin = COALESCE(j.cancel_origin, @origin)
 FROM stage_runs s
 WHERE j.run_id = $1
   AND s.id = j.stage_run_id

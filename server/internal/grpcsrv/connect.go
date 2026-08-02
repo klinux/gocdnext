@@ -787,6 +787,12 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// something's off; we override the reported status in that case.
 	artifactErr := a.confirmArtifacts(ctx, log, r.GetArtifacts())
 	if artifactErr != "" && status == string(domain.StatusSuccess) {
+		// A reported success we DOWNGRADE — the integrity signal. It is preserved
+		// even when a concurrent cancel later makes the row land 'canceled' (#207):
+		// `status` here is still the agent-reported success, so the count survives.
+		// Fixed-label metric — never the detail string. A reported `failed` isn't a
+		// downgrade, so it doesn't count.
+		metrics.JobResultValidationFailed.WithLabelValues("artifacts").Inc()
 		status = string(domain.StatusFailed)
 		if r.GetError() == "" {
 			r.Error = "artifact reconciliation: " + artifactErr
@@ -804,6 +810,9 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// is just to drop the values before CompleteJob.
 	if err := validateJobOutputs(r.GetOutputs()); err != nil {
 		if status == string(domain.StatusSuccess) {
+			// A reported success we downgrade — count it (a reported failure is not a
+			// downgrade).
+			metrics.JobResultValidationFailed.WithLabelValues("outputs").Inc()
 			status = string(domain.StatusFailed)
 			if r.GetError() == "" {
 				r.Error = "outputs validation: " + err.Error()
@@ -887,15 +896,17 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	if comp.StartedAt != nil && comp.FinishedAt != nil {
 		duration := comp.FinishedAt.Sub(*comp.StartedAt).Seconds()
 		if duration >= 0 {
+			// EFFECTIVE status (#207): a cancel-won job is 'canceled', so it never
+			// counts against the failure bucket.
 			metrics.JobDurationSeconds.
-				WithLabelValues(metrics.JobStatusLabel(status)).
+				WithLabelValues(metrics.JobStatusLabel(comp.JobStatus)).
 				Observe(duration)
 		}
 	}
 
 	log.Info("agent job result",
 		"run_id", comp.RunID, "job_id", comp.JobRunID, "job_name", comp.JobName,
-		"status", status, "exit_code", r.GetExitCode(),
+		"status", comp.JobStatus, "reported_status", status, "exit_code", r.GetExitCode(),
 		"stage_done", comp.StageCompleted, "stage_status", comp.StageStatus,
 		"run_done", comp.RunCompleted, "run_status", comp.RunStatus)
 
@@ -927,9 +938,14 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 	// success counts), so the worst case is a stale in_progress entry
 	// in the timeline. A lightweight reconciler (finalise in_progress
 	// revisions whose job_run is already terminal) is the post-v1 fix.
+	// EFFECTIVE status (#207): a canceled deploy job records a 'canceled' revision
+	// (never becomes current, stays in history, excluded from DORA), not 'failed'.
 	deployStatus := store.DeployStatusFailed
-	if status == string(domain.StatusSuccess) {
+	switch comp.JobStatus {
+	case string(domain.StatusSuccess):
 		deployStatus = store.DeployStatusSuccess
+	case string(domain.StatusCanceled):
+		deployStatus = store.DeployStatusCanceled
 	}
 	if _, err := a.store.FinalizeDeploymentRevision(ctx, comp.JobRunID, expectedAttempt, deployStatus); err != nil {
 		log.Warn("deploy tracking: finalize revision", "job_id", comp.JobRunID, "err", err)

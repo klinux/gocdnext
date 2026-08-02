@@ -49,7 +49,11 @@ func (q *Queries) CancelActiveRun(ctx context.Context, id pgtype.UUID) (CancelAc
 const cancelQueuedJobRun = `-- name: CancelQueuedJobRun :one
 UPDATE job_runs
 SET status      = 'canceled',
-    finished_at = COALESCE(finished_at, NOW())
+    finished_at = COALESCE(finished_at, NOW()),
+    -- #207: a user's deliberate single-job cancel. cancel_origin='user_job' is
+    -- what RerunJob's revival checks (IS DISTINCT FROM 'user_job') so an upstream
+    -- rerun does NOT resurrect a queued job the user explicitly canceled.
+    cancel_origin = COALESCE(cancel_origin, 'user_job')
 WHERE id = $1 AND status = 'queued'
 RETURNING id
 `
@@ -68,6 +72,62 @@ func (q *Queries) CancelQueuedJobRun(ctx context.Context, id pgtype.UUID) (pgtyp
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const cancelRunJobs = `-- name: CancelRunJobs :many
+UPDATE job_runs j
+SET status = CASE WHEN j.status = 'running' THEN j.status ELSE 'canceled' END,
+    finished_at = CASE WHEN j.status = 'running'
+                       THEN j.finished_at ELSE COALESCE(j.finished_at, NOW()) END,
+    cancel_requested_at = CASE WHEN j.status = 'running'
+                              THEN COALESCE(j.cancel_requested_at, NOW())
+                              ELSE j.cancel_requested_at END,
+    cancel_origin = COALESCE(j.cancel_origin, 'user_run')
+FROM stage_runs s
+WHERE j.run_id = $1
+  AND s.id = j.stage_run_id
+  AND s.name != '_notifications'
+  AND j.status IN ('queued', 'running', 'awaiting_approval')
+RETURNING j.id, j.agent_id, j.status
+`
+
+type CancelRunJobsRow struct {
+	ID      pgtype.UUID
+	AgentID pgtype.UUID
+	Status  string
+}
+
+// #207: the run-scoped cancel's ONE job statement. In a single UPDATE it flips
+// queued/awaiting_approval jobs straight to 'canceled', and STAMPS running jobs
+// with cancel_requested_at (leaving them 'running' — the agent/watcher/reaper
+// finalises them to 'canceled' via CompleteJobRun's CASE). Both get
+// cancel_origin='user_run' (COALESCE = first-origin-wins). NO agent_id filter:
+// a server-managed native deploy (agent_id NULL) must be stamped too, so the
+// watcher/reaper sees the intent. RETURNS (id, agent_id, status) so the caller
+// fanouts a CancelJob frame ONLY to rows that are running AND agent_id.Valid;
+// native rows are driven by the watcher/reaper, not a frame.
+//
+// Lock order (#207): this runs FIRST in CancelRun (jobs), before stages and the
+// run, matching the completion cascade's job → stage → run order so the two never
+// deadlock (40P01).
+func (q *Queries) CancelRunJobs(ctx context.Context, runID pgtype.UUID) ([]CancelRunJobsRow, error) {
+	rows, err := q.db.Query(ctx, cancelRunJobs, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CancelRunJobsRow{}
+	for rows.Next() {
+		var i CancelRunJobsRow
+		if err := rows.Scan(&i.ID, &i.AgentID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const claimSupersedeEffects = `-- name: ClaimSupersedeEffects :one
@@ -560,6 +620,65 @@ func (q *Queries) MarkSupersedeEffectsDone(ctx context.Context, id pgtype.UUID) 
 	return err
 }
 
+const reclaimAbandonedNativeCancels = `-- name: ReclaimAbandonedNativeCancels :many
+UPDATE job_runs jr
+SET status = 'canceled', finished_at = COALESCE(finished_at, NOW())
+WHERE jr.status = 'running'
+  AND jr.agent_id IS NULL
+  AND jr.cancel_requested_at IS NOT NULL
+  AND jr.cancel_requested_at < NOW() - $1::INTERVAL
+  AND NOT EXISTS (
+      SELECT 1 FROM deploy_watches dw
+      JOIN deployment_revisions dr ON dr.id = dw.deployment_revision_id
+      WHERE dr.job_run_id = jr.id
+  )
+RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.attempt, jr.name
+`
+
+type ReclaimAbandonedNativeCancelsRow struct {
+	ID         pgtype.UUID
+	RunID      pgtype.UUID
+	StageRunID pgtype.UUID
+	Attempt    int32
+	Name       string
+}
+
+// #207 native recovery: a server-managed native deploy runs with agent_id NULL and
+// is normally cancel-finalised by its deploy watcher (FinalizeDeployWatch). This is
+// the BACKSTOP for when the watch VANISHED (crash/manual delete) with the job still
+// running + cancel-requested — nobody else would ever finalise it (the offline-agent
+// reaper JOINs agents and so never matches a NULL agent). Terminalise 'canceled';
+// the caller cascades the stage/run + finalizes the revision in the SAME tx.
+//
+// Two guards (Kleber invariant): (1) a GRACE window on cancel_requested_at so we
+// never race the watcher's own finalize on a freshly-stamped row; (2) NO deploy_watch
+// row of ANY status may exist for the job — a live/claimed watch still owns it.
+func (q *Queries) ReclaimAbandonedNativeCancels(ctx context.Context, graceInterval pgtype.Interval) ([]ReclaimAbandonedNativeCancelsRow, error) {
+	rows, err := q.db.Query(ctx, reclaimAbandonedNativeCancels, graceInterval)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReclaimAbandonedNativeCancelsRow{}
+	for rows.Next() {
+		var i ReclaimAbandonedNativeCancelsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.StageRunID,
+			&i.Attempt,
+			&i.Name,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const reclaimPendingCancelsForOfflineAgent = `-- name: ReclaimPendingCancelsForOfflineAgent :many
 UPDATE job_runs jr
 SET status      = 'canceled',
@@ -573,7 +692,7 @@ WHERE jr.agent_id = a.id
         OR a.last_seen_at IS NULL
         OR a.last_seen_at < NOW() - $1::INTERVAL
       )
-RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.agent_id, jr.cancel_requested_at, jr.name
+RETURNING jr.id, jr.run_id, jr.stage_run_id, jr.agent_id, jr.attempt, jr.cancel_requested_at, jr.name
 `
 
 type ReclaimPendingCancelsForOfflineAgentRow struct {
@@ -581,6 +700,7 @@ type ReclaimPendingCancelsForOfflineAgentRow struct {
 	RunID             pgtype.UUID
 	StageRunID        pgtype.UUID
 	AgentID           pgtype.UUID
+	Attempt           int32
 	CancelRequestedAt pgtype.Timestamptz
 	Name              string
 }
@@ -640,6 +760,7 @@ func (q *Queries) ReclaimPendingCancelsForOfflineAgent(ctx context.Context, grac
 			&i.RunID,
 			&i.StageRunID,
 			&i.AgentID,
+			&i.Attempt,
 			&i.CancelRequestedAt,
 			&i.Name,
 		); err != nil {
@@ -670,10 +791,10 @@ func (q *Queries) RunHasSupersededBy(ctx context.Context, id pgtype.UUID) (bool,
 
 const stampCancelRequestedAt = `-- name: StampCancelRequestedAt :one
 UPDATE job_runs
-SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
+SET cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
+    cancel_origin = COALESCE(cancel_origin, 'user_job')
 WHERE id = $1
   AND status = 'running'
-  AND agent_id IS NOT NULL
 RETURNING id, agent_id, cancel_requested_at
 `
 
@@ -697,14 +818,11 @@ type StampCancelRequestedAtRow struct {
 // (a re-click that lands in the brief window between dispatch
 // attempts shouldn't reset the requested-at clock).
 //
-// Predicate guards: only stamp when the row is STILL running
-// AND has an agent_id pinned (no-op on rows that finished
-// between the cancel handler's read and this write). The
-// handler ran GetJobRunForCancel under FOR UPDATE in the same
-// tx, so by definition the row was running at SELECT time —
-// but a result handler in another tx can have committed in
-// between if the cancel handler is using a separate tx. The
-// guards keep us honest in either calling shape.
+// Predicate guard: only stamp when the row is STILL running (no-op on rows that
+// finished between the cancel handler's read and this write). NO agent_id filter
+// (#207): a server-managed native deploy runs with agent_id NULL and must be
+// stamped too — the watcher/reaper honours the intent since there is no agent
+// frame to send. The caller sends a CancelJob frame only when agent_id IS valid.
 func (q *Queries) StampCancelRequestedAt(ctx context.Context, id pgtype.UUID) (StampCancelRequestedAtRow, error) {
 	row := q.db.QueryRow(ctx, stampCancelRequestedAt, id)
 	var i StampCancelRequestedAtRow
@@ -714,31 +832,32 @@ func (q *Queries) StampCancelRequestedAt(ctx context.Context, id pgtype.UUID) (S
 
 const stampCancelRequestedAtForRun = `-- name: StampCancelRequestedAtForRun :many
 UPDATE job_runs
-SET cancel_requested_at = COALESCE(cancel_requested_at, NOW())
+SET cancel_requested_at = COALESCE(cancel_requested_at, NOW()),
+    cancel_origin = COALESCE(cancel_origin, $2)
 WHERE run_id = $1
   AND status = 'running'
-  AND agent_id IS NOT NULL
 RETURNING id, agent_id
 `
+
+type StampCancelRequestedAtForRunParams struct {
+	RunID  pgtype.UUID
+	Origin *string
+}
 
 type StampCancelRequestedAtForRunRow struct {
 	ID      pgtype.UUID
 	AgentID pgtype.UUID
 }
 
-// Batch variant of StampCancelRequestedAt used by the run-scoped
-// cancel path. Stamps cancel_requested_at on EVERY running job
-// belonging to the run that hasn't been stamped yet. The handler
-// then attempts gRPC dispatch per row; any dispatch that lands in
-// the Revoke→Register race window is rescued by the same replay
-// + reaper paths that cover the job-scoped cancel.
-//
-// COALESCE preserves the FIRST stamp's at-time across re-cancel
-// attempts (the same idempotency as the single-row variant).
-// Returns (id, agent_id) per stamped row so the handler can
-// correlate Dispatch failures with their owning agent.
-func (q *Queries) StampCancelRequestedAtForRun(ctx context.Context, runID pgtype.UUID) ([]StampCancelRequestedAtForRunRow, error) {
-	rows, err := q.db.Query(ctx, stampCancelRequestedAtForRun, runID)
+// Batch stamp of EVERY running job of a run, used by the SUPERSEDE terminalizer
+// (the run-cancel path uses CancelRunJobs instead). Stamps cancel_requested_at +
+// cancel_origin (COALESCE = first-origin-wins, e.g. 'supersede'). NO agent_id
+// filter (#207): a server-managed native deploy (agent_id NULL) must be stamped
+// too so the watcher/reaper honours the cancel — the caller fanouts a CancelJob
+// frame only to the returned rows whose agent_id IS valid. A dispatch landing in
+// the Revoke→Register window is rescued by the same replay + reaper paths.
+func (q *Queries) StampCancelRequestedAtForRun(ctx context.Context, arg StampCancelRequestedAtForRunParams) ([]StampCancelRequestedAtForRunRow, error) {
+	rows, err := q.db.Query(ctx, stampCancelRequestedAtForRun, arg.RunID, arg.Origin)
 	if err != nil {
 		return nil, err
 	}

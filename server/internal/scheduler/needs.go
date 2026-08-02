@@ -68,7 +68,12 @@ type JobStatusMap map[string][]JobStatusRow
 type NeedsCheck struct {
 	Ok               bool
 	UpstreamTerminal bool
-	Detail           string
+	// Skip (only meaningful when UpstreamTerminal) distinguishes the dependent's
+	// fate (#207): true → the blocker was CANCELED/skipped, so the dependent is
+	// SKIPPED (a cancel's fallout must not hit the failure metric); false → a
+	// FAILED or ABSENT upstream, so the dependent FAILS (preserve fail-loud).
+	Skip   bool
+	Detail string
 }
 
 // needsSatisfied evaluates a downstream job's `needs:` list against
@@ -97,60 +102,71 @@ type NeedsCheck struct {
 //     "All succeed" is conservative and matches what the user
 //     wrote literally.
 //
-//   - Status precedence on multi-row failures: succeeded < running
-//     < queued < awaiting_approval < skipped < canceled < failed.
-//     We DON'T sort by precedence — first-non-succeeded wins. This
-//     keeps the implementation O(N) and the detail string matches
-//     the iteration order, which is deterministic (matrix keys are
-//     sorted at row insert time per store/runs.go).
+//   - Multi-need / multi-row precedence (#207): a FAILED or ABSENT upstream
+//     DOMINATES (return 'fail' immediately). Otherwise, if any upstream is still
+//     non-terminal we WAIT — deciding 'skip' early would be wrong once it
+//     terminalises. Only when every upstream is terminal and none failed does a
+//     canceled/skipped blocker skip the dependent. Iteration is O(N) with a single
+//     early-return on the dominating failure; matrix keys are deterministic (sorted
+//     at row insert per store/runs.go) so the chosen blocker's Detail is stable.
 func needsSatisfied(needs []string, status JobStatusMap) NeedsCheck {
+	// The verdict is decided only AFTER all needs terminalise (#207): a FAILED or
+	// ABSENT upstream dominates and returns 'fail' immediately (the dependent can
+	// never run); otherwise we must not decide 'skip' while any upstream is still
+	// running (it might yet fail). So we track a cancel/skip blocker and a
+	// non-terminal blocker and resolve at the end.
+	var (
+		cancelSkip *NeedsCheck // first canceled/skipped blocker (→ skip the dependent)
+		waiting    *NeedsCheck // first non-terminal blocker (→ wait)
+	)
 	for _, name := range needs {
 		rows, found := status[name]
 		if !found {
-			// Clamp the name BEFORE it flows into the Detail string:
-			// describeBlocker clamps in the steady-state path, but
-			// the missing-dep + no-rows paths build the string here
-			// directly and would otherwise leak an unbounded YAML
-			// name into the job_runs.error column and structured log.
-			// Parser rejects unknown names at apply, but the ghost
-			// integration test (snapshot drift / manual DB poke)
-			// exercises this branch — defense-in-depth.
+			// Missing upstream = fail-family (dominates). Clamp the name BEFORE it
+			// flows into Detail: describeBlocker clamps in the steady-state path, but
+			// this branch builds the string directly and would otherwise leak an
+			// unbounded YAML name into job_runs.error / the log. Parser rejects unknown
+			// names at apply; the ghost integration test exercises this — defense-in-depth.
 			return NeedsCheck{
-				Ok:               false,
-				UpstreamTerminal: true,
-				Detail:           fmt.Sprintf("%s: not in this run", clampNeedsField(name)),
+				Ok: false, UpstreamTerminal: true, Skip: false,
+				Detail: fmt.Sprintf("%s: not in this run", clampNeedsField(name)),
 			}
 		}
 		if len(rows) == 0 {
-			// Status map shouldn't produce empty slices, but be defensive:
-			// an empty entry is structurally indistinguishable from
-			// "missing" for the purpose of waiting forever.
 			return NeedsCheck{
-				Ok:               false,
-				UpstreamTerminal: true,
-				Detail:           fmt.Sprintf("%s: no job_run rows", clampNeedsField(name)),
+				Ok: false, UpstreamTerminal: true, Skip: false,
+				Detail: fmt.Sprintf("%s: no job_run rows", clampNeedsField(name)),
 			}
 		}
 		for _, r := range rows {
 			switch r.Status {
 			case "success":
 				continue
-			case "failed", "canceled", "skipped":
-				return NeedsCheck{
-					Ok:               false,
-					UpstreamTerminal: true,
-					Detail:           describeBlocker(name, r),
+			case "failed":
+				// Fail-family dominates — return now even if others are still running;
+				// a failed upstream means this dependent can never succeed.
+				return NeedsCheck{Ok: false, UpstreamTerminal: true, Skip: false, Detail: describeBlocker(name, r)}
+			case "canceled", "skipped":
+				if cancelSkip == nil {
+					cancelSkip = &NeedsCheck{Ok: false, UpstreamTerminal: true, Skip: true, Detail: describeBlocker(name, r)}
 				}
+				// keep scanning — a later failed/absent upstream still dominates.
 			default:
-				// queued, running, awaiting_approval, or anything else
-				// not in the terminal set — wait for next tick.
-				return NeedsCheck{
-					Ok:               false,
-					UpstreamTerminal: false,
-					Detail:           describeBlocker(name, r),
+				// queued / running / awaiting_approval — not terminal yet.
+				if waiting == nil {
+					waiting = &NeedsCheck{Ok: false, UpstreamTerminal: false, Detail: describeBlocker(name, r)}
 				}
 			}
 		}
+	}
+	// No failed/absent upstream. If anything is still running, WAIT (a cancel/skip
+	// decision now could be wrong once it terminalises). Else a canceled/skipped
+	// blocker skips the dependent; otherwise all succeeded.
+	if waiting != nil {
+		return *waiting
+	}
+	if cancelSkip != nil {
+		return *cancelSkip
 	}
 	return NeedsCheck{Ok: true}
 }
