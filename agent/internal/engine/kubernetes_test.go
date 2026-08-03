@@ -556,6 +556,93 @@ func TestKubernetes_BuildPodSpec_DinDSidecarWhenDockerRequested(t *testing.T) {
 	}
 }
 
+func TestKubernetes_BuildPodSpec_DinDDataHostPathMountsAtVarLibDocker(t *testing.T) {
+	// Opt-in path: DinDDataHostPath set → DinD gets a
+	// /var/lib/docker mount backed by a hostPath volume with
+	// Type=DirectoryOrCreate. Without this the daemon's image +
+	// container state dies with the pod and testcontainers reuse
+	// never hits across jobs.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{
+		DinDDataHostPath: "/mnt/ci/dind-data",
+	})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Image:  "node:22",
+		Script: "docker ps",
+		Docker: true,
+	})
+
+	var dind *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == "dind" {
+			dind = &pod.Spec.Containers[i]
+		}
+	}
+	if dind == nil {
+		t.Fatal("dind container missing")
+	}
+
+	var mount *corev1.VolumeMount
+	for i := range dind.VolumeMounts {
+		if dind.VolumeMounts[i].MountPath == "/var/lib/docker" {
+			mount = &dind.VolumeMounts[i]
+		}
+	}
+	if mount == nil {
+		t.Fatalf("dind /var/lib/docker mount missing: %+v", dind.VolumeMounts)
+	}
+
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == mount.Name {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	if vol == nil {
+		t.Fatalf("volume %q referenced by dind mount not present in pod.Volumes", mount.Name)
+	}
+	if vol.HostPath == nil {
+		t.Fatalf("dind-data volume is not backed by hostPath: %+v", vol.VolumeSource)
+	}
+	if vol.HostPath.Path != "/mnt/ci/dind-data" {
+		t.Errorf("hostPath.Path = %q, want /mnt/ci/dind-data", vol.HostPath.Path)
+	}
+	// DirectoryOrCreate lets kubelet create the path on first use
+	// per node — otherwise a fresh node would fail to schedule the
+	// pod. Using strict Directory would push the burden to the
+	// operator to pre-provision every node.
+	if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+		t.Errorf("hostPath.Type = %v, want DirectoryOrCreate", vol.HostPath.Type)
+	}
+}
+
+func TestKubernetes_BuildPodSpec_NoDinDDataMountWhenPathEmpty(t *testing.T) {
+	// Regression guard: empty DinDDataHostPath is the default and
+	// MUST leave the DinD sidecar unchanged (no /var/lib/docker
+	// mount, no hostPath volume). Silently switching would break
+	// the security posture of clusters that never opted in.
+	k, _ := newFakeEngine(t, engine.KubernetesConfig{})
+	pod := k.BuildPodSpec(engine.ScriptSpec{
+		Image:  "node:22",
+		Script: "docker ps",
+		Docker: true,
+	})
+	for _, c := range pod.Spec.Containers {
+		if c.Name != "dind" {
+			continue
+		}
+		for _, m := range c.VolumeMounts {
+			if m.MountPath == "/var/lib/docker" {
+				t.Errorf("unexpected /var/lib/docker mount when DinDDataHostPath unset: %+v", m)
+			}
+		}
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.HostPath != nil {
+			t.Errorf("unexpected hostPath volume when DinDDataHostPath unset: %+v", v)
+		}
+	}
+}
+
 func TestKubernetes_BuildPodSpec_NoDinDByDefault(t *testing.T) {
 	// Default job must stay single-container — a DinD leak into
 	// every pipeline Pod would be a surprise rollout cost (extra

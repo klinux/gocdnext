@@ -502,6 +502,95 @@ func TestBuildIsolatedJobPodSpec_DockerSocketShared(t *testing.T) {
 	}
 }
 
+// TestBuildIsolatedJobPodSpec_DinDDataHostPath asserts the opt-in
+// hostPath mount at /var/lib/docker propagates end-to-end for
+// isolated mode too (mirrors the shared-mode test in
+// kubernetes_test.go). Cross-job testcontainers reuse doesn't
+// work without both the volume in pod.Volumes AND the mount in
+// the dind container's VolumeMounts.
+func TestBuildIsolatedJobPodSpec_DinDDataHostPath(t *testing.T) {
+	k := NewKubernetesWithClient(fake.NewSimpleClientset(), KubernetesConfig{
+		Namespace:             "ci",
+		WorkspaceMode:         WorkspaceModeIsolated,
+		WorkspaceStorageClass: "pd-ssd",
+		WorkspaceSize:         "10Gi",
+		AgentImage:            "ghcr.io/klinux/gocdnext-agent:test",
+		HousekeeperImage:      "alpine:3.19",
+		DefaultImage:          "alpine:3.19",
+		WorkspaceMountPath:    "/workspace",
+		DinDDataHostPath:      "/mnt/ci/dind-data",
+	})
+	k.nowName = func() string { return "gocdnext-job-test01" }
+
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "node:20",
+		Script:               "docker ps",
+		Docker:               true,
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	dind := findContainer(pod.Spec.Containers, "dind")
+	var mount *corev1.VolumeMount
+	for i := range dind.VolumeMounts {
+		if dind.VolumeMounts[i].MountPath == "/var/lib/docker" {
+			mount = &dind.VolumeMounts[i]
+		}
+	}
+	if mount == nil {
+		t.Fatalf("dind /var/lib/docker mount missing: %+v", dind.VolumeMounts)
+	}
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == mount.Name {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	if vol == nil || vol.HostPath == nil {
+		t.Fatalf("dind-data volume missing or not hostPath: %+v", vol)
+	}
+	if vol.HostPath.Path != "/mnt/ci/dind-data" {
+		t.Errorf("hostPath.Path = %q, want /mnt/ci/dind-data", vol.HostPath.Path)
+	}
+	if vol.HostPath.Type == nil || *vol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+		t.Errorf("hostPath.Type = %v, want DirectoryOrCreate", vol.HostPath.Type)
+	}
+}
+
+// TestBuildIsolatedJobPodSpec_NoDinDDataMountWhenPathEmpty is the
+// regression guard: default config keeps the pre-existing shape
+// (dind-socket only, no hostPath). Silently mounting hostPath on
+// clusters that never opted in would be a security regression.
+func TestBuildIsolatedJobPodSpec_NoDinDDataMountWhenPathEmpty(t *testing.T) {
+	k := newIsolatedTestEngine(t)
+	pod, err := k.BuildIsolatedJobPodSpec(IsolatedJobSpec{
+		RunID:                "r1",
+		JobID:                "j1",
+		Image:                "node:20",
+		Script:               "docker ps",
+		Docker:               true,
+		AssignmentSecretName: "s",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	dind := findContainer(pod.Spec.Containers, "dind")
+	for _, m := range dind.VolumeMounts {
+		if m.MountPath == "/var/lib/docker" {
+			t.Errorf("unexpected /var/lib/docker mount when DinDDataHostPath unset: %+v", m)
+		}
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.HostPath != nil {
+			t.Errorf("unexpected hostPath volume when DinDDataHostPath unset: %+v", v)
+		}
+	}
+}
+
 // TestBuildIsolatedJobPodSpec_NoDockerNoSocketVolume — when the job
 // doesn't ask for docker, no volume + no socket plumbing. Stays
 // minimal so an emptyDir isn't allocated for nothing.

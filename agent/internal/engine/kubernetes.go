@@ -170,6 +170,34 @@ type KubernetesConfig struct {
 	// moby/dind release stream.
 	DinDImage string
 
+	// DinDDataHostPath, when non-empty, mounts a node-local
+	// directory at /var/lib/docker in the DinD sidecar via a
+	// hostPath volume. Docker images + container state written by
+	// testcontainers-based tests survive between jobs scheduled on
+	// the SAME node, so `testcontainers.reuse.enable=true` actually
+	// hits a running container instead of paying the
+	// MySQL/Kafka/Postgres cold-start on every run.
+	//
+	// hostPath Type is DirectoryOrCreate — the kubelet creates the
+	// path if it doesn't exist on the node.
+	//
+	// Trade-offs the operator owns before enabling:
+	//   - Reuse only hits when the same node runs the next job.
+	//     Pair with a small pinned node pool (agent jobNodeSelector)
+	//     for reuse-critical pipelines.
+	//   - Concurrent jobs on the same node share ONE Docker daemon
+	//     state directory. Container-name collisions and unbounded
+	//     disk growth become the operator's problem (a nightly
+	//     `docker system prune -af` DaemonSet is the usual answer).
+	//   - hostPath breaks pod isolation. Enable only in single-
+	//     tenant CI clusters where every job is already trusted.
+	//   - The node's PodSecurity policy must allow hostPath mounts
+	//     for the agent's job namespace.
+	//
+	// Empty (default) → per-job ephemeral /var/lib/docker, no
+	// cross-job reuse (pre-v0.77 behaviour).
+	DinDDataHostPath string
+
 	// PollInterval controls how often we poll the Pod status
 	// transition. Default 1s; tests set lower.
 	PollInterval time.Duration
@@ -322,6 +350,18 @@ const dindSharedSocketPath = dindSharedSocketDir + "/docker.sock"
 // const so the pod spec builder and any future test fixture (or
 // operator describe-grep) refer to the same string.
 const dindSocketVolumeName = "dind-socket"
+
+// dindDataVolumeName names the hostPath volume mounted at
+// /var/lib/docker in the DinD sidecar when
+// KubernetesConfig.DinDDataHostPath is set — enables cross-job
+// testcontainers reuse. Const so the pod spec builder and the
+// tests refer to the same string.
+const dindDataVolumeName = "dind-data"
+
+// dindDataMountPath is where DinD stores its image/container
+// state; also the path Testcontainers reuse assumes when the
+// daemon is warm.
+const dindDataMountPath = "/var/lib/docker"
 
 // dindHost is what SHARED-mode task containers point at:
 // localhost TCP. Shared mode (ReadWriteMany) is the legacy
@@ -511,7 +551,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		// wait ourselves: the daemon readiness check belongs in
 		// user code, same as real-world Woodpecker/GitLab setups.
 		privileged := true
-		containers = append(containers, corev1.Container{
+		dindContainer := corev1.Container{
 			Name:  "dind",
 			Image: k.cfg.DinDImage,
 			Env: []corev1.EnvVar{
@@ -527,7 +567,19 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 				ContainerPort: int32(dindTCPPort),
 				Protocol:      corev1.ProtocolTCP,
 			}},
-		})
+		}
+		// Persistent /var/lib/docker mount for cross-job
+		// testcontainers reuse — only when the operator opted in
+		// via KubernetesConfig.DinDDataHostPath. Empty (default)
+		// keeps the pre-existing ephemeral behaviour so operators
+		// that don't want hostPath aren't silently switched.
+		if k.cfg.DinDDataHostPath != "" {
+			dindContainer.VolumeMounts = append(dindContainer.VolumeMounts, corev1.VolumeMount{
+				Name:      dindDataVolumeName,
+				MountPath: dindDataMountPath,
+			})
+		}
+		containers = append(containers, dindContainer)
 	}
 
 	hostAliases := make([]corev1.HostAlias, 0, len(spec.HostAliases))
@@ -535,6 +587,25 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 		hostAliases = append(hostAliases, corev1.HostAlias{
 			IP:        ha.IP,
 			Hostnames: append([]string(nil), ha.Hostnames...),
+		})
+	}
+
+	volumes := []corev1.Volume{workspaceVolume}
+	if spec.Docker && k.cfg.DinDDataHostPath != "" {
+		// hostPath Type=DirectoryOrCreate keeps the mount safe
+		// on freshly-provisioned nodes — kubelet mkdir's the
+		// path on first use instead of the pod failing to schedule
+		// with a "no such file" mount error. `Directory` would
+		// force the operator to pre-provision on every node.
+		hostPathType := corev1.HostPathDirectoryOrCreate
+		volumes = append(volumes, corev1.Volume{
+			Name: dindDataVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: k.cfg.DinDDataHostPath,
+					Type: &hostPathType,
+				},
+			},
 		})
 	}
 
@@ -549,7 +620,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			ImagePullSecrets: pullSecrets,
-			Volumes:          []corev1.Volume{workspaceVolume},
+			Volumes:          volumes,
 			Containers:       containers,
 			HostAliases:      hostAliases,
 		},

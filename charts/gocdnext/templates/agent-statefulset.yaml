@@ -130,6 +130,10 @@ spec:
             {{- end }}
             - name: GOCDNEXT_K8S_DEFAULT_IMAGE
               value: {{ .Values.agent.defaultJobImage | quote }}
+            {{- with .Values.agent.dindDataHostPath }}
+            - name: GOCDNEXT_K8S_DIND_DATA_HOSTPATH
+              value: {{ . | quote }}
+            {{- end }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_SUCCESS
               value: {{ .Values.agent.jobCleanup.onSuccess | quote }}
             - name: GOCDNEXT_K8S_CLEANUP_ON_FAILURE

@@ -336,6 +336,18 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				},
 			},
 		}
+		dindVolumeMounts := []corev1.VolumeMount{
+			{Name: dindSocketVolumeName, MountPath: dindSharedSocketDir},
+		}
+		// Optional persistent /var/lib/docker mount for cross-job
+		// testcontainers reuse — mirrors the shared-mode path.
+		// Empty (default) preserves the ephemeral behaviour.
+		if k.cfg.DinDDataHostPath != "" {
+			dindVolumeMounts = append(dindVolumeMounts, corev1.VolumeMount{
+				Name:      dindDataVolumeName,
+				MountPath: dindDataMountPath,
+			})
+		}
 		containers = append(containers, corev1.Container{
 			Name:  "dind",
 			Image: k.cfg.DinDImage,
@@ -360,10 +372,8 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 				ContainerPort: int32(dindTCPPort),
 				Protocol:      corev1.ProtocolTCP,
 			}},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: dindSocketVolumeName, MountPath: dindSharedSocketDir},
-			},
-			Lifecycle: dindLifecycle,
+			VolumeMounts: dindVolumeMounts,
+			Lifecycle:    dindLifecycle,
 		})
 		// Task container needs to mount the same shared dir so its
 		// `DOCKER_HOST=unix://…` actually finds the socket file
@@ -398,7 +408,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
 			ImagePullSecrets: pullSecrets,
-			Volumes:          buildIsolatedVolumes(workspaceVolume, assignmentVolume, spec),
+			Volumes:          buildIsolatedVolumes(workspaceVolume, assignmentVolume, spec, k.cfg.DinDDataHostPath),
 			InitContainers:   buildIsolatedInitContainers(prepContainer, spec, k.cfg.HousekeeperImage, workspaceMount),
 			Containers:       containers,
 			HostAliases:      hostAliases,
@@ -468,7 +478,12 @@ func CacheFetchMarkerPath(mountPath string) string {
 // volume is a tmpfs-backed emptyDir — sockets are file-system
 // entries but the bytes flowing through are kernel buffers; sizing
 // the volume large is wasted.
-func buildIsolatedVolumes(workspace, assignment corev1.Volume, spec IsolatedJobSpec) []corev1.Volume {
+//
+// dindDataHostPath, when non-empty, adds a hostPath volume backing
+// the DinD sidecar's /var/lib/docker (cross-job testcontainers
+// reuse). See KubernetesConfig.DinDDataHostPath for the operator
+// trade-offs.
+func buildIsolatedVolumes(workspace, assignment corev1.Volume, spec IsolatedJobSpec, dindDataHostPath string) []corev1.Volume {
 	vols := []corev1.Volume{workspace, assignment}
 	if spec.Docker {
 		vols = append(vols, corev1.Volume{
@@ -479,6 +494,18 @@ func buildIsolatedVolumes(workspace, assignment corev1.Volume, spec IsolatedJobS
 				},
 			},
 		})
+		if dindDataHostPath != "" {
+			hostPathType := corev1.HostPathDirectoryOrCreate
+			vols = append(vols, corev1.Volume{
+				Name: dindDataVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: dindDataHostPath,
+						Type: &hostPathType,
+					},
+				},
+			})
+		}
 	}
 	return vols
 }

@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in persistent `/var/lib/docker` for the DinD sidecar
+  (`agent.dindDataHostPath`).** When set, the DinD sidecar mounts a
+  node-local hostPath at `/var/lib/docker` so Docker images + container
+  state written by testcontainers-based tests survive across jobs
+  scheduled on the same node. Enables `testcontainers.reuse.enable=true`
+  to actually hit a warm container instead of paying the
+  MySQL/Kafka/Postgres cold-start on every run.
+
+  Empty (default) preserves the pre-existing behaviour bit-for-bit —
+  `/var/lib/docker` stays inside the ephemeral pod, no cross-job reuse.
+
+  Trade-offs the operator owns before enabling: same-node scheduling
+  (pair with `agent.jobNodeSelector` for a small pinned pool),
+  single-tenant CI (hostPath breaks pod isolation), a
+  PodSecurity policy that allows hostPath mounts, and self-provisioned
+  GC (a nightly `docker system prune -af` DaemonSet is the usual
+  answer). Works in both `ReadWriteOnce` (isolated) and
+  `ReadWriteMany` (shared) modes.
+
 ## v0.76.1 — 2026-07-27
 
 A parser round-trip fix.

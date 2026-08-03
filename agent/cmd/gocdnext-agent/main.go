@@ -308,6 +308,12 @@ func buildEngine(logger *slog.Logger) (engine.Engine, error) {
 			DefaultImage:       os.Getenv("GOCDNEXT_K8S_DEFAULT_IMAGE"),
 			AgentImage:         os.Getenv("GOCDNEXT_K8S_AGENT_IMAGE"),
 			HousekeeperImage:   os.Getenv("GOCDNEXT_K8S_HOUSEKEEPER_IMAGE"),
+			// DIND_DATA_HOSTPATH: optional node-local dir mounted
+			// at /var/lib/docker in the DinD sidecar so
+			// testcontainers reuse survives across jobs on the
+			// same node. Empty (default) = ephemeral, i.e. current
+			// behaviour. See engine.KubernetesConfig for trade-offs.
+			DinDDataHostPath: os.Getenv("GOCDNEXT_K8S_DIND_DATA_HOSTPATH"),
 		}
 		// Job-pod scheduling baseline. Names use the JOB_ prefix
 		// to avoid confusion with the agent's own pod nodeSelector

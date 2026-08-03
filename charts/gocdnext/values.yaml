@@ -119,6 +119,29 @@ agent:
     # mount path / /tmp default.
     rootOverride: ""
   defaultJobImage: alpine:3.19
+  # dindDataHostPath, when non-empty, mounts a node-local
+  # directory at /var/lib/docker in the DinD sidecar (hostPath,
+  # Type=DirectoryOrCreate). Docker images + testcontainers state
+  # survive across jobs that land on the SAME node, so
+  # `testcontainers.reuse.enable=true` actually hits a running
+  # container instead of paying the MySQL/Kafka/Postgres cold-
+  # start on every run.
+  #
+  # Enable only when:
+  #   - The CI cluster is single-tenant (hostPath breaks pod
+  #     isolation — any job on the node can write to any other
+  #     job's docker state).
+  #   - Consecutive jobs from the same pipeline land on the same
+  #     node. Pair with `agent.jobNodeSelector` pinning to a small
+  #     dedicated pool for reuse-critical pipelines.
+  #   - The namespace's PodSecurity policy allows hostPath mounts.
+  #   - You provision GC yourself. The path grows unbounded; a
+  #     nightly `docker system prune -af` DaemonSet is the usual
+  #     answer.
+  #
+  # Empty (default) = per-job ephemeral /var/lib/docker, no reuse.
+  # Matches pre-v0.77 behaviour bit-for-bit.
+  dindDataHostPath: ""
   jobCleanup:
     onSuccess: true
     # onFailure default of `false` keeps a failed job's Pod around
