@@ -8,6 +8,21 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.83.1 — 2026-08-03
+
+### Fixed
+
+- **`npm-publish` plugin: `ENEEDAUTH` against a path-based private registry (#220).**
+  Publishing to a Nexus/Artifactory registry with a path (`.../repository/<name>`)
+  failed with `need auth … You need to authorize this machine` even with a valid
+  credential — and no `Authorization` header was sent at all. The plugin stripped
+  the registry's trailing slash before `npm publish` / `npm view --registry`, but
+  npm resolves per-registry auth by the registry's canonical nerf-dart, which
+  always ends in `/` (`//host/path/:_authToken`), so the no-slash registry missed
+  the with-slash key the plugin had written. It now passes the trailing-slash form
+  to `npm`, matching the key. Both `basic` and `token` auth were affected;
+  root-path registries (`registry.npmjs.org`) were not.
+
 ## v0.83.0 — 2026-08-02
 
 ### Added
