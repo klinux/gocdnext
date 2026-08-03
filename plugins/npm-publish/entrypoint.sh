@@ -18,6 +18,15 @@ DIR="${PLUGIN_DIR:-.}"
 REGISTRY="${PLUGIN_REGISTRY:-https://registry.npmjs.org}"
 REGISTRY="${REGISTRY%/}"
 
+# npm resolves per-registry auth by the registry's CANONICAL nerf-dart, which
+# ALWAYS ends in '/' (`//host/path/:_authToken`). npm does NOT append that slash
+# when the --registry value lacks it, so a PATH-based private registry
+# (Nexus/Artifactory .../repository/<name>) passed WITHOUT the trailing slash
+# looks up `//host/path:_auth` and misses the `//host/path/:...` key written
+# below → ENEEDAUTH even though the credential is present. Pass the
+# trailing-slash form to `npm view`/`npm publish` so the lookup matches the key.
+REGISTRY_URL="${REGISTRY}/"
+
 # Fail-closed: a registry URL with embedded userinfo (user:pass@host) would leak
 # into .npmrc, the --registry argv, AND the progress log below — reject it. The
 # credential goes through auth/username/password or NPM_TOKEN, never the URL.
@@ -77,17 +86,17 @@ fi
 # Idempotency: name@version is immutable on npm — a retried
 # pipeline that already published must not fail the whole run.
 if [ "${IF_EXISTS}" = "skip" ] && [ "${DRY_RUN}" != "true" ]; then
-    if npm view "${NAME}@${VERSION}" version --registry "${REGISTRY}" >/dev/null 2>&1; then
+    if npm view "${NAME}@${VERSION}" version --registry "${REGISTRY_URL}" >/dev/null 2>&1; then
         echo "==> ${NAME}@${VERSION} already published — if-exists: skip, nothing to do"
         exit 0
     fi
 fi
 
-set -- publish --registry "${REGISTRY}"
+set -- publish --registry "${REGISTRY_URL}"
 [ -n "${PLUGIN_TAG:-}" ] && set -- "$@" --tag "${PLUGIN_TAG}"
 [ -n "${PLUGIN_ACCESS:-}" ] && set -- "$@" --access "${PLUGIN_ACCESS}"
 [ "${DRY_RUN}" = "true" ] && set -- "$@" --dry-run
 
-echo "==> npm publish ${NAME}@${VERSION} (registry=${REGISTRY}${PLUGIN_TAG:+ tag=${PLUGIN_TAG}}${DRY_RUN:+ dry-run=${DRY_RUN}})"
+echo "==> npm publish ${NAME}@${VERSION} (registry=${REGISTRY_URL}${PLUGIN_TAG:+ tag=${PLUGIN_TAG}}${DRY_RUN:+ dry-run=${DRY_RUN}})"
 cd "${DIR}"
 exec npm "$@"
