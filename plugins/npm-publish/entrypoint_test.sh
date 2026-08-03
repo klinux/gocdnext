@@ -43,17 +43,23 @@ grep -qF "//nexus.example/repository/npm-hosted/:always-auth=true" "$TMP/home/.n
 grep -q "npm publish" "$TMP/calls.log" || fail "basic: publish not invoked"
 grep -qF "s3cr3t" "$TMP/calls.log" && fail "basic: password leaked onto npm argv"
 grep -qF "${B64}" "$TMP/calls.log" && fail "basic: _auth base64 leaked onto npm argv"
+# --registry MUST carry the canonical trailing slash so npm's per-registry auth
+# nerf-dart (//host/path/:_auth) matches — a no-slash registry on a path-based
+# private registry misses the key and fails ENEEDAUTH despite valid creds.
+grep -qF "publish --registry ${REG}" "$TMP/calls.log" || fail "basic: publish --registry must keep the trailing slash to match the //host/path/ auth key"
 
 # --- token auth (NPM_TOKEN) → _authToken ---
 run NPM_TOKEN="tok-abc"
 grep -qF "//nexus.example/repository/npm-hosted/:_authToken=tok-abc" "$TMP/home/.npmrc" || fail "token: _authToken line missing/wrong"
 grep -q "npm publish" "$TMP/calls.log" || fail "token: publish not invoked"
 grep -qF "tok-abc" "$TMP/calls.log" && fail "token: token leaked onto npm argv"
+grep -qF "publish --registry ${REG}" "$TMP/calls.log" || fail "token: publish --registry must keep the trailing slash to match the //host/path/ auth key"
 
 # --- idempotent skip: if-exists=skip AND version already published → no publish ---
 run PLUGIN_USERNAME="deployer" PLUGIN_PASSWORD="s3cr3t" PLUGIN_IF_EXISTS="skip" MOCK_VIEW_EXISTS="1"
 grep -q "npm publish" "$TMP/calls.log" && fail "skip: published despite existing version"
 grep -q "npm view" "$TMP/calls.log" || fail "skip: existence check not run"
+grep -qF "version --registry ${REG}" "$TMP/calls.log" || fail "skip: view --registry must keep the trailing slash to match the //host/path/ auth key"
 
 # --- no auth + not dry-run → must fail (exit != 0) ---
 if run PLUGIN_IF_EXISTS="fail"; then
