@@ -271,27 +271,25 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: create run: load pipeline %s: %w", in.PipelineID, err)
 	}
-	var def domain.Pipeline
-	if err := json.Unmarshal(pipelineRow.Definition, &def); err != nil {
-		return RunCreated{}, fmt.Errorf("store: create run: decode definition: %w", err)
+	runDef, err := effectiveDefFromBytes(pipelineRow.Definition)
+	if err != nil {
+		return RunCreated{}, fmt.Errorf("store: create run: %w", err)
 	}
-	if len(def.Stages) == 0 {
+	if len(runDef.pipeline.Stages) == 0 {
 		return RunCreated{}, fmt.Errorf("store: create run: pipeline %s has no stages", in.PipelineID)
 	}
 
 	var pendingAuditEmits []AuditEmit
 	result, err := s.insertRunRowsTx(ctx, tx, q, runRowsSpec{
-		PipelineID:          pipelineRow.ID,
-		SupersedePipelineID: in.PipelineID,
-		Def:                 def,
-		DefBytes:            pipelineRow.Definition,
-		ProjectNotifs:       pipelineRow.ProjectNotifications,
-		Cause:               in.Cause,
-		CauseDetail:         in.CauseDetail,
-		Revisions:           in.Revisions,
-		TriggeredBy:         in.TriggeredBy,
-		Ref:                 in.Ref,
-		AfterHook:           in.hooks.after,
+		PipelineID:    in.PipelineID,
+		Def:           runDef,
+		ProjectNotifs: pipelineRow.ProjectNotifications,
+		Cause:         in.Cause,
+		CauseDetail:   in.CauseDetail,
+		Revisions:     in.Revisions,
+		TriggeredBy:   in.TriggeredBy,
+		Ref:           in.Ref,
+		AfterHook:     in.hooks.after,
 	}, &pendingAuditEmits)
 	if err != nil {
 		return RunCreated{}, err
@@ -313,22 +311,54 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	return result, nil
 }
 
-// runRowsSpec carries an ALREADY-EFFECTIVE, decoded definition plus its exact
-// snapshot bytes and the pipeline/project metadata needed to materialise a run's
-// rows inside a caller-owned transaction. No override or PR logic lives here —
-// both the DB-effective path and (later) the PR-head path share it verbatim.
+// runDefinition couples an effective pipeline definition with its EXACT snapshot
+// bytes so the two can never disagree — a run materialises `pipeline` and
+// persists `bytes` as runs.definition. The fields are unexported; a caller can't
+// assemble a mismatched pair, only build one via a constructor that guarantees
+// `bytes` is a canonical serialisation of `pipeline`.
+type runDefinition struct {
+	pipeline domain.Pipeline
+	bytes    []byte
+}
+
+// effectiveDefFromBytes builds a runDefinition by decoding canonical bytes — the
+// DB-effective path, where the stored bytes are authoritative and the pipeline
+// is derived from them.
+func effectiveDefFromBytes(bytes []byte) (runDefinition, error) {
+	var p domain.Pipeline
+	if err := json.Unmarshal(bytes, &p); err != nil {
+		return runDefinition{}, fmt.Errorf("store: decode definition: %w", err)
+	}
+	return runDefinition{pipeline: p, bytes: bytes}, nil
+}
+
+// effectiveDefFromPipeline builds a runDefinition by serialising the pipeline —
+// the PR-head path, where the pipeline (e.g. post-ApplyPolicies) is authoritative.
+// Uses the same marshaller as ApplyProject so the snapshot form matches the
+// DB-effective path byte-for-byte.
+func effectiveDefFromPipeline(p domain.Pipeline) (runDefinition, error) {
+	bytes, err := marshalPipelineDefinition(&p)
+	if err != nil {
+		return runDefinition{}, fmt.Errorf("store: marshal effective definition: %w", err)
+	}
+	return runDefinition{pipeline: p, bytes: bytes}, nil
+}
+
+// runRowsSpec carries an ALREADY-EFFECTIVE definition (coupled to its exact
+// snapshot bytes via runDefinition) plus the pipeline/project metadata needed to
+// materialise a run's rows inside a caller-owned transaction. No override or PR
+// logic lives here — both the DB-effective path and (later) the PR-head path
+// share it verbatim.
 type runRowsSpec struct {
-	PipelineID          pgtype.UUID     // pipelines.id (counter + InsertRun)
-	SupersedePipelineID uuid.UUID       // domain pipeline id for supersede lane lookup
-	Def                 domain.Pipeline // effective definition (policies already applied)
-	DefBytes            []byte          // exact snapshot bytes persisted to runs.definition
-	ProjectNotifs       []byte          // project-level notifications for inheritance (nil ok)
-	Cause               string
-	CauseDetail         json.RawMessage
-	Revisions           json.RawMessage
-	TriggeredBy         string
-	Ref                 string
-	AfterHook           func(ctx context.Context, q *db.Queries, runID uuid.UUID) error
+	PipelineID    uuid.UUID     // the pipeline the run belongs to AND supersedes within
+	Def           runDefinition // effective definition + its exact snapshot bytes
+	ProjectNotifs []byte        // project-level notifications for inheritance (nil ok)
+	Cause         string
+	CauseDetail   json.RawMessage
+	Revisions     json.RawMessage
+	TriggeredBy   string
+	Ref           string
+	AfterHook     func(ctx context.Context, q *db.Queries, runID uuid.UUID) error
 }
 
 // insertRunRowsTx materialises run + stages + jobs (+ approval gates, supersede
@@ -337,11 +367,11 @@ type runRowsSpec struct {
 // the tx nor drains audits: the caller owns the tx lifecycle and drains the
 // audit emits appended to pendingAuditEmits AFTER it commits.
 func (s *Store) insertRunRowsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, in runRowsSpec, pendingAuditEmits *[]AuditEmit) (RunCreated, error) {
-	counter, err := q.NextRunCounter(ctx, in.PipelineID)
+	counter, err := q.NextRunCounter(ctx, pgUUID(in.PipelineID))
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: create run: counter: %w", err)
 	}
-	def := in.Def
+	def := in.Def.pipeline
 
 	// has_services / service_names are both computed from the SAME def
 	// we just decoded — not re-read inside the SQL — so an ApplyProject
@@ -350,7 +380,7 @@ func (s *Store) insertRunRowsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 	// COMMITTED would let two SELECTs against pipelines.definition
 	// return different values within the same store call.
 	runRow, err := q.InsertRun(ctx, db.InsertRunParams{
-		PipelineID:   in.PipelineID,
+		PipelineID:   pgUUID(in.PipelineID),
 		Counter:      counter,
 		Cause:        in.Cause,
 		CauseDetail:  in.CauseDetail,
@@ -363,7 +393,7 @@ func (s *Store) insertRunRowsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 		// cascade time reads THIS, not the since-drifted pipelines.definition. Same
 		// bytes we just decoded into `def`, so the snapshot can't disagree with the
 		// stages/jobs we materialise.
-		Definition: in.DefBytes,
+		Definition: in.Def.bytes,
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)
@@ -515,7 +545,7 @@ func (s *Store) insertRunRowsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 				laneRef = capRef(in.Ref)
 			}
 			victims, err := s.supersedeLaneSiblings(ctx, tx, supersedeInput{
-				PipelineID:   in.SupersedePipelineID,
+				PipelineID:   in.PipelineID,
 				Ref:          laneRef,
 				LaneMode:     def.Supersede,
 				NewerRunID:   result.RunID,
