@@ -199,6 +199,21 @@ func TestApplyPRHeadConfig_ForkAndOffAreZeroFetch(t *testing.T) {
 			t.Fatalf("base=%d fetch=%d, want %d/0 (off → base, no fetch)", len(base), f.calls, len(materials))
 		}
 	})
+	// GitLab / Bitbucket never reach the head path (SameRepo is a GitHub-only
+	// signal). The provider gate blocks even a (hypothetical) same-repo MR/PR, so
+	// they always run the base flow with ZERO fetch.
+	for _, provider := range []string{"gitlab", "bitbucket"} {
+		t.Run(provider+" provider", func(t *testing.T) {
+			h, _, f, _, ctx, materials := seedWiring(t)
+			ev := wireEvent()
+			ev.Provider = provider
+			ev.SameRepo = true // even set true, the provider gate wins
+			base, _, _ := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
+			if len(base) != len(materials) || f.calls != 0 {
+				t.Fatalf("base=%d fetch=%d, want %d/0 (%s → base, no fetch)", len(base), f.calls, len(materials), provider)
+			}
+		})
+	}
 }
 
 // #3: applyPRHeadConfig returns structured head outcomes and a TYPED resolution
