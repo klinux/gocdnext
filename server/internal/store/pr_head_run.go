@@ -51,6 +51,11 @@ var (
 	// ErrPRHeadInvalidInput: a required field is empty/nil, or cause_detail is not
 	// a non-null JSON object.
 	ErrPRHeadInvalidInput = errors.New("store: pr-head: invalid input")
+	// ErrPRHeadRerunUnsupported: a full rerun of a PR-head run is blocked — it
+	// would re-materialise from the current base definition while carrying the
+	// head's provenance. Job rerun within the run is unaffected. Lifted once the
+	// #209 definition fence lands.
+	ErrPRHeadRerunUnsupported = errors.New("store: pr-head: full rerun not supported for a PR-head run")
 )
 
 // CreatePRHeadRunInput authorises ONE materialisation from a PR head. The
@@ -137,12 +142,28 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 		return RunCreated{}, false, fmt.Errorf("%w: head %q vs pipeline %q", ErrPRHeadNameMismatch, in.RawDef.Name, lc.PipelineName)
 	}
 
-	// Apply the project's current policies to the RAW head definition IN-TX.
+	// Base-authorized envelope: the head drives ONLY the executable graph (stages,
+	// jobs, services, variables). Materials, concurrency, supersede and
+	// notifications stay the BASE's — a PR can't change them from its `.gocdnext/`
+	// (else it could cancel prior runs, drop base serialisation, or suppress a
+	// mandatory notification).
+	var baseDef domain.Pipeline
+	if err := json.Unmarshal(lc.BaseDefinitionRaw, &baseDef); err != nil {
+		return RunCreated{}, false, fmt.Errorf("store: pr-head: decode base definition: %w", err)
+	}
+	candidate := baseDef
+	candidate.Stages = in.RawDef.Stages
+	candidate.Jobs = in.RawDef.Jobs
+	candidate.Services = in.RawDef.Services
+	candidate.Variables = in.RawDef.Variables
+
+	// Apply the project's current policies to the CANDIDATE (base envelope + head
+	// graph) IN-TX.
 	policies, err := policiesForProject(ctx, q, lc.ProjectID)
 	if err != nil {
 		return RunCreated{}, false, fmt.Errorf("store: pr-head: load policies: %w", err)
 	}
-	effective := compliance.ApplyPolicies(in.RawDef, policies)
+	effective := compliance.ApplyPolicies(candidate, policies)
 
 	// Resolve runner-profile image/resource defaults + caps and validate cluster
 	// references on the SAME tx querier — AFTER policies (so policy-injected jobs
@@ -225,6 +246,21 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 		}
 	}
 	return result, true, nil
+}
+
+// isPRHeadCauseDetail reports whether a run's cause_detail marks it a PR-head
+// run (config_source=pr_head) — used to block a full rerun of such a run.
+func isPRHeadCauseDetail(causeDetail []byte) bool {
+	if len(causeDetail) == 0 {
+		return false
+	}
+	var d struct {
+		ConfigSource string `json:"config_source"`
+	}
+	if err := json.Unmarshal(causeDetail, &d); err != nil {
+		return false
+	}
+	return d.ConfigSource == "pr_head"
 }
 
 // prHeadCauseDetail merges the resolver's PR metadata with the store-set

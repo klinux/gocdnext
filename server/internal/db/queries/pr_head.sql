@@ -11,6 +11,7 @@
 SELECT pl.id                       AS pipeline_id,
        pl.name                     AS pipeline_name,
        pl.system_managed           AS system_managed,
+       pl.definition_raw           AS base_definition_raw,
        p.id                        AS project_id,
        p.trust_same_repo_pr_config AS trust_same_repo_pr_config,
        p.notifications             AS project_notifications

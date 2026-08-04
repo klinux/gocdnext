@@ -165,6 +165,93 @@ func TestCreatePRHeadRun_AppliesPolicyInTx(t *testing.T) {
 	}
 }
 
+// #1 envelope: the head drives only the executable graph. A head that tries to
+// change concurrency, supersede, or suppress notifications loses — the run's
+// snapshot keeps the base's values.
+func TestCreatePRHeadRun_BaseEnvelopeWins(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	s.SetAuthCipher(newAuthCipher(t))
+	ctx := context.Background()
+	url, branch := "https://github.com/acme/demo", "main"
+	fp := store.FingerprintFor(url, branch)
+
+	base := &domain.Pipeline{
+		Name: "build", Stages: []string{"build"},
+		Concurrency:   "serial",
+		Supersede:     domain.SupersedePipeline,
+		Notifications: []domain.Notification{{On: "failure", Uses: "ghcr.io/klinux/gocdnext-plugin-slack@v1"}},
+		Materials: []domain.Material{{
+			Type: domain.MaterialGit, Fingerprint: fp, AutoUpdate: true,
+			Git: &domain.GitMaterial{URL: url, Branch: branch, Events: []string{"pull_request"}},
+		}},
+		Jobs: []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+	}
+	res, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "demo", Name: "demo", Pipelines: []*domain.Pipeline{base},
+		SCMSource: &store.SCMSourceInput{Provider: "github", URL: url, DefaultBranch: branch},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	enablePRHead(t, s, ctx)
+	var materialID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT id FROM materials WHERE fingerprint = $1`, fp).Scan(&materialID); err != nil {
+		t.Fatalf("material id: %v", err)
+	}
+
+	// Head tries to override the envelope.
+	head := domain.Pipeline{
+		Name: "build", Stages: []string{"build"},
+		Concurrency:   "parallel",              // base wins → serial
+		Supersede:     domain.SupersedeBranch,  // base wins → pipeline
+		Notifications: []domain.Notification{}, // base wins → keeps its notification
+		Jobs:          []domain.Job{{Name: "compile", Stage: "build", Tasks: []domain.Task{{Script: "make"}}}},
+	}
+	run, created, err := s.CreatePRHeadRun(ctx, prHeadInput(res.ProjectID, materialID, head))
+	if err != nil || !created {
+		t.Fatalf("CreatePRHeadRun = (created=%v, err=%v)", created, err)
+	}
+
+	var eff domain.Pipeline
+	if err := json.Unmarshal([]byte(runDefinitionText(t, pool, ctx, run.RunID)), &eff); err != nil {
+		t.Fatalf("snapshot json: %v", err)
+	}
+	if eff.Concurrency != "serial" {
+		t.Errorf("concurrency = %q, want serial (base envelope)", eff.Concurrency)
+	}
+	if eff.Supersede != domain.SupersedePipeline {
+		t.Errorf("supersede = %q, want pipeline (base envelope)", eff.Supersede)
+	}
+	if len(eff.Notifications) != 1 {
+		t.Errorf("notifications = %d, want 1 (base's, not suppressed by head)", len(eff.Notifications))
+	}
+}
+
+// #2: a full rerun of a PR-head run is blocked with a typed error (it would
+// re-materialise from the current base def while carrying head provenance). Both
+// RerunRun and RerunForAppDelivery go through rerunRun, so this covers both.
+func TestCreatePRHeadRun_FullRerunBlocked(t *testing.T) {
+	s, ctx, projectID, materialID, pool := seedPRHead(t)
+	enablePRHead(t, s, ctx)
+	run, created, err := s.CreatePRHeadRun(ctx, prHeadInput(projectID, materialID, prHeadDef()))
+	if err != nil || !created {
+		t.Fatalf("CreatePRHeadRun = (created=%v, err=%v)", created, err)
+	}
+	// Terminalise so rerun passes the active-run guard and reaches the block.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET status = 'failed' WHERE id = $1`, run.RunID); err != nil {
+		t.Fatalf("terminalise: %v", err)
+	}
+	if _, err := s.RerunRun(ctx, store.RerunRunInput{RunID: run.RunID}); !errors.Is(err, store.ErrPRHeadRerunUnsupported) {
+		t.Fatalf("RerunRun = %v, want ErrPRHeadRerunUnsupported", err)
+	}
+	// No rerun was created.
+	if n := countRows(t, pool, ctx,
+		`SELECT count(*) FROM runs r JOIN pipelines pl ON pl.id = r.pipeline_id WHERE pl.name = 'build'`); n != 1 {
+		t.Fatalf("build runs = %d, want 1 (the original; no rerun)", n)
+	}
+}
+
 func TestCreatePRHeadRun_DisabledToggle(t *testing.T) {
 	s, ctx, projectID, materialID, _ := seedPRHead(t) // toggle left OFF
 	if _, _, err := s.CreatePRHeadRun(ctx, prHeadInput(projectID, materialID, prHeadDef())); !errors.Is(err, store.ErrPRHeadConfigDisabled) {
