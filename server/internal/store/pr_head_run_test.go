@@ -269,6 +269,54 @@ func TestCreatePRHeadRun_NullCauseDetail(t *testing.T) {
 	assertNoWrites(t, pool, ctx, materialID)
 }
 
+// Provenance: the store-set keys win over anything the resolver's CauseDetail
+// tries to put there; the cause is always pull_request; the lane is pr:<number>.
+func TestCreatePRHeadRun_ProvenanceStoreSetWins(t *testing.T) {
+	s, ctx, projectID, materialID, pool := seedPRHead(t)
+	enablePRHead(t, s, ctx)
+	in := prHeadInput(projectID, materialID, prHeadDef())
+	in.CauseDetail = json.RawMessage(`{
+		"pr_number": 42, "pr_title": "legit",
+		"provider": "EVIL", "delivery": "EVIL", "material_id": "EVIL",
+		"config_source": "EVIL", "config_revision": "EVIL", "config_digest": "EVIL"
+	}`)
+	run, created, err := s.CreatePRHeadRun(ctx, in)
+	if err != nil || !created {
+		t.Fatalf("CreatePRHeadRun = (created=%v, err=%v)", created, err)
+	}
+
+	var cause, detailText, ref string
+	if err := pool.QueryRow(ctx, `SELECT cause, cause_detail::text, ref FROM runs WHERE id = $1`, run.RunID).
+		Scan(&cause, &detailText, &ref); err != nil {
+		t.Fatalf("run row: %v", err)
+	}
+	if cause != "pull_request" {
+		t.Errorf("cause = %q, want pull_request", cause)
+	}
+	if ref != "pr:42" {
+		t.Errorf("ref = %q, want pr:42 (lane from pr_number)", ref)
+	}
+	var d map[string]any
+	if err := json.Unmarshal([]byte(detailText), &d); err != nil {
+		t.Fatalf("cause_detail json: %v", err)
+	}
+	if d["provider"] != "github" || d["delivery"] != "delivery-1" {
+		t.Errorf("provider/delivery = %v/%v, want github/delivery-1 (store-set wins)", d["provider"], d["delivery"])
+	}
+	if d["config_source"] != "pr_head" || d["config_revision"] != "headsha01" {
+		t.Errorf("config_source/revision = %v/%v, want pr_head/headsha01", d["config_source"], d["config_revision"])
+	}
+	if d["material_id"] != materialID.String() {
+		t.Errorf("material_id = %v, want %v (store-set)", d["material_id"], materialID)
+	}
+	if dig, _ := d["config_digest"].(string); dig == "EVIL" || dig == "" {
+		t.Errorf("config_digest = %v, want a real store-set digest", d["config_digest"])
+	}
+	if d["pr_title"] != "legit" {
+		t.Errorf("pr_title = %v, want legit (non-store-set key preserved)", d["pr_title"])
+	}
+}
+
 func TestCreatePRHeadRun_DedupReplay(t *testing.T) {
 	s, ctx, projectID, materialID, pool := seedPRHead(t)
 	enablePRHead(t, s, ctx)
@@ -370,6 +418,10 @@ func TestCreatePRHeadRun_ConcurrentDisableLinearized(t *testing.T) {
 	if _, err := tx1.Exec(ctx, `UPDATE projects SET trust_same_repo_pr_config = false WHERE id = $1`, projectID); err != nil {
 		t.Fatalf("t1 update: %v", err)
 	}
+	var t1pid int
+	if err := tx1.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&t1pid); err != nil {
+		t.Fatalf("t1 pid: %v", err)
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -377,17 +429,20 @@ func TestCreatePRHeadRun_ConcurrentDisableLinearized(t *testing.T) {
 		done <- e
 	}()
 
-	// Deterministic barrier: wait until CreatePRHeadRun is blocked on a lock.
+	// Deterministic barrier: wait until a session is blocked SPECIFICALLY by T1
+	// (t1pid appears in its pg_blocking_pids), so an unrelated lock can't release
+	// the test early — this proves CreatePRHeadRun is waiting on T1's row lock.
 	blocked := false
 	for i := 0; i < 300; i++ {
-		if countRows(t, pool, ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`) > 0 {
+		if countRows(t, pool, ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, t1pid) > 0 {
 			blocked = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !blocked {
-		t.Fatal("CreatePRHeadRun did not block on the project FOR SHARE lock")
+		t.Fatal("CreatePRHeadRun did not block on T1's project-row lock")
 	}
 
 	// Commit the disable; the blocked FOR SHARE now reads trust=false.
