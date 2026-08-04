@@ -552,13 +552,34 @@ template fields is intentionally tight:
   reference expression". Unresolved references fail the dispatch
   with the reference **name** (never the value of something else),
   so secret values can't leak via error message.
-- `${VAR}` — soft, shell-style. Passed through to the container
-  and expanded by the shell at runtime. Use this for env vars the
-  agent or runtime injects (`${CI_COMMIT_BRANCH}`, etc.).
+- `${VAR}` — soft, shell-style. **Not** resolved server-side: it is
+  passed through verbatim and expanded later by whatever runs the
+  value. In a `script:` job the job's shell expands it. In a plugin's
+  `with:` field it is expanded **only if that plugin evaluates the
+  value through a shell** — and several don't. The `gradle` plugin,
+  for instance, **word-splits** `command:` / `args:` and execs without
+  re-expanding, so a `${VAR}` written there stays **literal**:
+  `-Dx=${TOKEN}` reaches the tool as the literal text `${TOKEN}`, not
+  its value. Reserve `${VAR}` for env the agent/runtime injects
+  (`${CI_COMMIT_BRANCH}`, etc.) that the tool reads from the
+  environment; when a value must land **inside** the command a plugin
+  runs, use the hard `${{ }}` form instead.
 
 Substitution is single-pass: the result of one reference is never
 re-expanded, so a chain like `${{ A }}` → `${{ B }}` does not
 recurse.
+
+:::caution[A secret on a command line is visible to `ps`]
+`${{ SECRET }}` is resolved to its value **before** dispatch. Put
+that in a **command-line flag** — e.g. `-Dsonar.token=${{ SONAR_TOKEN }}`
+— and the value lands on the process **argv**, readable by anything
+that can run `ps` inside the job container.
+[Log masking](/gocdnext/docs/concepts/secrets/#masking) covers
+streamed **logs**, not `ps`. Prefer the environment path: list the
+secret under `secrets:` and let the tool read it from the env. Only
+put a secret on the command line when the tool offers no env option,
+and keep it under `secrets:` either way so it stays masked in logs.
+:::
 
 ### CI built-ins
 
