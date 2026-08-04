@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/checks"
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -51,6 +52,9 @@ type Handler struct {
 	log      *slog.Logger
 	fetcher  ConfigFetcher
 	reporter *checks.Reporter
+	// pluginCatalog validates PR-head `with:` inputs against the known-plugin
+	// catalog (same check Apply runs). Nil = validation skipped.
+	pluginCatalog *plugins.Catalog
 	// prFiles resolves PR changed-file lists for `when.paths`
 	// filtering (push payloads embed the lists; PR payloads don't).
 	// Nil = PR path filtering fails open. See pathfilter.go.
@@ -84,6 +88,13 @@ func (h *Handler) WithConfigFetcher(f ConfigFetcher) *Handler {
 // skip the check create.
 func (h *Handler) WithChecksReporter(r *checks.Reporter) *Handler {
 	h.reporter = r
+	return h
+}
+
+// WithPluginCatalog validates PR-head `with:` inputs against the plugin catalog
+// (the same check Apply runs on the default-branch config). Nil skips it.
+func (h *Handler) WithPluginCatalog(c *plugins.Catalog) *Handler {
+	h.pluginCatalog = c
 	return h
 }
 

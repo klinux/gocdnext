@@ -373,6 +373,8 @@ func main() {
 			"plugins", len(pluginCatalog.Names()))
 	}
 	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
+	// PR-head config validates `with:` inputs against the same catalog.
+	webhookHandler = webhookHandler.WithPluginCatalog(pluginCatalog)
 	// Native deploy-target registrar (ADR-0001): the store satisfies both the
 	// provider's ClusterGetter (reads Applications via the cluster registry) and
 	// the registrar's Registry (environment + target persistence). The same provider

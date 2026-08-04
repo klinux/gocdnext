@@ -3,11 +3,19 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
+
+// prHeadResolveTimeout bounds the TOTAL head-config resolution (a folder can need
+// many sequential requests, each with its own HTTP timeout). Without it a slow
+// contributor branch could delay the base fan-out — including the mandatory
+// system_managed pipelines — for the whole request budget. Derived from the
+// request context, so a client disconnect still cancels promptly.
+const prHeadResolveTimeout = 30 * time.Second
 
 // applyPRHeadConfig handles the PR-head-config path for a matched PR. It returns
 // (base, outcomes, resolveErr):
@@ -89,7 +97,14 @@ func (h *Handler) applyPRHeadConfig(
 		})
 	}
 
-	plan, err := resolvePRHeadPlan(ctx, h.fetcher, b.Source, b.ConfigPath, ev.HeadSHA, authorized)
+	resolveCtx, cancel := context.WithTimeout(ctx, prHeadResolveTimeout)
+	defer cancel()
+	started := time.Now()
+	plan, err := resolvePRHeadPlan(resolveCtx, h.fetcher, h.pluginCatalog, b.Source, b.ConfigPath, ev.HeadSHA, authorized)
+	// Duration + result of the head resolution (observability the plan calls for).
+	h.log.Info("pr-head: config resolution",
+		"repo", ev.RepoLabel, "pipelines", len(authorized),
+		"duration_ms", time.Since(started).Milliseconds(), "ok", err == nil)
 	if err != nil {
 		// Resolution error blocks the repo pipelines of this plan (no partial repo
 		// runs); system_managed still runs base. The caller maps err to 503/422.

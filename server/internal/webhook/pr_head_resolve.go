@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -62,6 +63,7 @@ type prHeadPlanEntry struct {
 func resolvePRHeadPlan(
 	ctx context.Context,
 	fetcher ConfigFetcher,
+	catalog *plugins.Catalog,
 	source store.SCMSource,
 	configPath, headSHA string,
 	authorized []authorizedPipeline,
@@ -91,6 +93,13 @@ func resolvePRHeadPlan(
 	if err := configsync.ValidateDeclarativeTargets(pipelines); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPRHeadConfigInvalid, err)
 	}
+	// Validate `with:` inputs against the plugin catalog (the same check Apply
+	// runs) so a typo'd input surfaces here, not as a silent ghost env at runtime.
+	for _, p := range pipelines {
+		if err := validatePRHeadPlugins(catalog, p); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrPRHeadConfigInvalid, err)
+		}
+	}
 
 	headByName := make(map[string]*domain.Pipeline, len(pipelines))
 	for _, p := range pipelines {
@@ -111,4 +120,30 @@ func resolvePRHeadPlan(
 		})
 	}
 	return plan, nil
+}
+
+// validatePRHeadPlugins mirrors Apply's plugin-input check: each `with:` map is
+// validated against the catalog so a typo surfaces at resolution, not as a silent
+// PLUGIN_* ghost at runtime. Unknown (third-party) plugins pass through — the
+// catalog encodes that policy. Nil catalog = skip.
+func validatePRHeadPlugins(catalog *plugins.Catalog, p *domain.Pipeline) error {
+	if catalog == nil {
+		return nil
+	}
+	for _, j := range p.Jobs {
+		for _, t := range j.Tasks {
+			if t.Plugin == nil {
+				continue
+			}
+			if err := catalog.Validate(t.Plugin.Image, t.Plugin.Settings); err != nil {
+				return fmt.Errorf("job %q: %w", j.Name, err)
+			}
+		}
+	}
+	for i, n := range p.Notifications {
+		if err := catalog.Validate(n.Uses, n.With); err != nil {
+			return fmt.Errorf("notifications[%d]: %w", i, err)
+		}
+	}
+	return nil
 }

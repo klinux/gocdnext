@@ -108,10 +108,14 @@ func ParseRepoURL(raw string) (owner, repo string, err error) {
 // backwards-compat with older callers. When the path ends in
 // .yaml / .yml it's treated as a single-file config (GitLab-CI
 // style) and a single RawFile is returned.
-// Bounds on a fetched `.gocdnext/` — a defence for the untrusted PR-head path
-// (the content comes from a contributor branch), generous enough that no
-// legitimate config hits them. Enforced DURING the read/loop, not after a full
-// io.ReadAll, so a hostile repo can't force unbounded buffering.
+// Bounds on a fetched `.gocdnext/`. Primarily a defence for the untrusted
+// PR-head path (content from a contributor branch), but applied to EVERY config
+// fetch — including default-branch drift/sync — as defence in depth. Deliberate
+// product decision: a repo whose `.gocdnext/` legitimately exceeds 128 files or
+// 2 MiB (previously accepted on drift) will now fail the fetch. The bounds are
+// generous enough that no realistic config hits them, and they're enforced
+// DURING the read/loop (io.LimitReader), never after an unbounded io.ReadAll, so
+// a hostile repo can't force unbounded buffering.
 const (
 	maxConfigFiles      = 128
 	maxConfigTotalBytes = 2 << 20 // 2 MiB across all files

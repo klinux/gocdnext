@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/scm"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
@@ -66,7 +67,7 @@ func authPipe(name string) authorizedPipeline {
 
 func resolve(t *testing.T, f *fakeCfgFetcher, authorized []authorizedPipeline) ([]prHeadPlanEntry, error) {
 	t.Helper()
-	return resolvePRHeadPlan(context.Background(), f, store.SCMSource{Provider: "github"}, ".gocdnext", "headsha", authorized)
+	return resolvePRHeadPlan(context.Background(), f, nil, store.SCMSource{Provider: "github"}, ".gocdnext", "headsha", authorized)
 }
 
 // Happy path: an authorized pipeline with a matching head definition yields one
@@ -116,7 +117,7 @@ func TestResolvePRHeadPlan_EmptyAuthorizedNoFetch(t *testing.T) {
 	// Empty short-circuits BEFORE the fetcher/SHA guards: a system_managed-only
 	// project never consults the head, so even a nil fetcher and an empty SHA
 	// must not error.
-	if plan, err := resolvePRHeadPlan(context.Background(), nil, store.SCMSource{}, ".gocdnext", "", nil); err != nil || plan != nil {
+	if plan, err := resolvePRHeadPlan(context.Background(), nil, nil, store.SCMSource{}, ".gocdnext", "", nil); err != nil || plan != nil {
 		t.Fatalf("resolve(empty, nil fetcher, empty sha) = (%+v, %v), want (nil, nil)", plan, err)
 	}
 	// And with a real fetcher present it is still never called.
@@ -131,11 +132,11 @@ func TestResolvePRHeadPlan_EmptyAuthorizedNoFetch(t *testing.T) {
 
 // Input guards: a nil fetcher or an empty head SHA is rejected before any fetch.
 func TestResolvePRHeadPlan_InputGuards(t *testing.T) {
-	if _, err := resolvePRHeadPlan(context.Background(), nil, store.SCMSource{}, ".gocdnext", "sha", []authorizedPipeline{authPipe("build")}); err == nil {
+	if _, err := resolvePRHeadPlan(context.Background(), nil, nil, store.SCMSource{}, ".gocdnext", "sha", []authorizedPipeline{authPipe("build")}); err == nil {
 		t.Fatal("nil fetcher: expected an error")
 	}
 	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("build.yaml", "build")}}
-	if _, err := resolvePRHeadPlan(context.Background(), f, store.SCMSource{}, ".gocdnext", "", []authorizedPipeline{authPipe("build")}); err == nil {
+	if _, err := resolvePRHeadPlan(context.Background(), f, nil, store.SCMSource{}, ".gocdnext", "", []authorizedPipeline{authPipe("build")}); err == nil {
 		t.Fatal("empty head SHA: expected an error")
 	}
 	if f.calls != 0 {
@@ -168,6 +169,31 @@ func TestResolvePRHeadPlan_ValidateTargetsFailsClosed(t *testing.T) {
 	}}
 	if _, err := resolve(t, f, []authorizedPipeline{authPipe("build")}); err == nil {
 		t.Fatal("expected a ValidateDeclarativeTargets conflict error")
+	}
+}
+
+// #4: a `with:` input the catalog doesn't know (a typo) fails closed at
+// resolution, instead of passing to runtime as a silent ghost env.
+func TestResolvePRHeadPlan_PluginInputTypoFailsClosed(t *testing.T) {
+	cat := plugins.New()
+	cat.Register(plugins.Spec{
+		Name:   "node",
+		Inputs: map[string]plugins.Input{"command": {Required: true, Description: "cmd"}},
+	})
+	yaml := "name: build\n" +
+		"stages: [build]\n" +
+		"jobs:\n" +
+		"  deps:\n" +
+		"    stage: build\n" +
+		"    uses: gocdnext/node@v1\n" +
+		"    with:\n" +
+		"      command: install\n" +
+		"      typo-input: x\n" // unknown input → catalog validation fails
+	f := &fakeCfgFetcher{files: []scm.RawFile{{Name: "build.yaml", Content: yaml}}}
+	_, err := resolvePRHeadPlan(context.Background(), f, cat,
+		store.SCMSource{Provider: "github"}, ".gocdnext", "sha", []authorizedPipeline{authPipe("build")})
+	if !errors.Is(err, ErrPRHeadConfigInvalid) {
+		t.Fatalf("err = %v, want ErrPRHeadConfigInvalid (plugin input typo)", err)
 	}
 }
 
