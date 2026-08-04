@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -44,18 +45,47 @@ const DefaultRunnerProfileName = "default"
 // — apply is all-or-nothing, no point reporting cap errors that
 // might already be obviated by an earlier reject.
 func (s *Store) ResolveProfiles(ctx context.Context, pipelines []*domain.Pipeline) error {
-	cache := map[string]RunnerProfile{}
+	return resolveProfilesQ(ctx, s.q, pipelines)
+}
 
-	// Probe for the "default" profile once per apply. Used as a
-	// fallback for jobs that declared no profile: — applies ONLY
-	// resource bounds, never image/tags/env/secrets/caps. Probe is
-	// best-effort: missing default = continue with pre-fallback
-	// shape (containers without resources, kubelet/LimitRange
-	// decide). Real DB errors still propagate.
+// resolveProfilesQ is the querier-parameterised body of ResolveProfiles so a
+// caller INSIDE a transaction (CreatePRHeadRun) resolves profile image/resource
+// defaults + caps on the SAME tx querier. Without this a PR-head snapshot would
+// carry unresolved resources and bypass the admin profile cap at dispatch (which
+// reads resources straight from the snapshot). Mutates pipelines in place.
+func resolveProfilesQ(ctx context.Context, q *db.Queries, pipelines []*domain.Pipeline) error {
+	cache := map[string]RunnerProfile{}
+	lookup := func(name string) (RunnerProfile, error) {
+		if p, ok := cache[name]; ok {
+			return p, nil
+		}
+		row, err := q.GetRunnerProfileByName(ctx, name)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RunnerProfile{}, fmt.Errorf("unknown runner profile %q (create it under /admin/profiles before referencing)", name)
+		}
+		if err != nil {
+			return RunnerProfile{}, err
+		}
+		p, cerr := runnerProfileFromRow(row)
+		if cerr != nil {
+			return RunnerProfile{}, cerr
+		}
+		cache[name] = p
+		return p, nil
+	}
+
+	// Probe for the "default" profile once. Fallback for jobs that declared no
+	// profile: — applies ONLY resource bounds, never image/tags/env/secrets/caps.
+	// Missing default = continue with the pre-fallback shape. Real DB errors
+	// still propagate.
 	var defaultProfile *RunnerProfile
-	if p, err := s.GetRunnerProfileByName(ctx, DefaultRunnerProfileName); err == nil {
+	if row, err := q.GetRunnerProfileByName(ctx, DefaultRunnerProfileName); err == nil {
+		p, cerr := runnerProfileFromRow(row)
+		if cerr != nil {
+			return cerr
+		}
 		defaultProfile = &p
-	} else if !errors.Is(err, ErrRunnerProfileNotFound) {
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("probe default runner profile: %w", err)
 	}
 
@@ -64,16 +94,11 @@ func (s *Store) ResolveProfiles(ctx context.Context, pipelines []*domain.Pipelin
 			j := &p.Jobs[i]
 			if j.Profile == "" {
 				if defaultProfile != nil {
-					before := j.Resources
 					fillProfileResources(j, *defaultProfile)
-					if before != j.Resources {
-						slog.Debug("store: filled job resources from `default` profile fallback",
-							"pipeline", p.Name, "job", j.Name)
-					}
 				}
 				continue
 			}
-			profile, err := s.lookupProfile(ctx, cache, j.Profile)
+			profile, err := lookup(j.Profile)
 			if err != nil {
 				return fmt.Errorf("pipeline %q: job %q: %w", p.Name, j.Name, err)
 			}
@@ -86,21 +111,6 @@ func (s *Store) ResolveProfiles(ctx context.Context, pipelines []*domain.Pipelin
 		}
 	}
 	return nil
-}
-
-func (s *Store) lookupProfile(ctx context.Context, cache map[string]RunnerProfile, name string) (RunnerProfile, error) {
-	if p, ok := cache[name]; ok {
-		return p, nil
-	}
-	p, err := s.GetRunnerProfileByName(ctx, name)
-	if err != nil {
-		if errors.Is(err, ErrRunnerProfileNotFound) {
-			return RunnerProfile{}, fmt.Errorf("unknown runner profile %q (create it under /admin/profiles before referencing)", name)
-		}
-		return RunnerProfile{}, err
-	}
-	cache[name] = p
-	return p, nil
 }
 
 func mergeProfileTags(j *domain.Job, p RunnerProfile) {

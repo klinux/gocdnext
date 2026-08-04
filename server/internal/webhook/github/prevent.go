@@ -23,14 +23,22 @@ const (
 // + trigger a run + annotate the run's cause_detail so the UI + future
 // Checks API integration know which PR a run is for.
 type PullRequestEvent struct {
-	Action     string
-	Number     int
-	HTMLURL    string
-	Title      string
-	Author     string
-	HeadSHA    string
-	HeadRef    string
-	BaseRef    string
+	Action  string
+	Number  int
+	HTMLURL string
+	Title   string
+	Author  string
+	HeadSHA string
+	HeadRef string
+	BaseRef string
+	// Repo identity by immutable provider id, for fail-closed same-repo
+	// detection (#223). HeadRepoID / BaseRepoID are 0 when the payload
+	// omitted head.repo / base.repo. SameRepo is true only when all three
+	// ids (head, base, top-level repository) are present, consistent, and
+	// head == base — a fork or malformed payload can never read as same.
+	HeadRepoID int64
+	BaseRepoID int64
+	SameRepo   bool
 	Merged     bool
 	Repository Repository
 	At         time.Time // PR.updated_at, best proxy for "when this action happened"
@@ -78,6 +86,10 @@ type prUser struct {
 type prRef struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
+	// Repo is the repository the ref lives in. Nil when GitHub omits it
+	// (e.g. a fork head whose source repo was deleted) — treated as an
+	// absent id, which fails same-repo detection closed. #223.
+	Repo *Repository `json:"repo"`
 }
 
 type prLabel struct {
@@ -127,8 +139,37 @@ func ParsePullRequestEvent(body []byte) (PullRequestEvent, error) {
 	if p.PullRequest.User != nil {
 		ev.Author = p.PullRequest.User.Login
 	}
+	ev.HeadRepoID = repoID(p.PullRequest.Head.Repo)
+	ev.BaseRepoID = repoID(p.PullRequest.Base.Repo)
+	ev.SameRepo = sameRepoGitHub(ev.HeadRepoID, ev.BaseRepoID, p.Repository.ID)
 	ev.Labels = normaliseLabels(p.PullRequest.Labels)
 	return ev, nil
+}
+
+// repoID returns a repository's immutable provider id, or 0 when GitHub
+// omitted the repo object (e.g. a fork head whose source was deleted).
+func repoID(r *Repository) int64 {
+	if r == nil {
+		return 0
+	}
+	return r.ID
+}
+
+// sameRepoGitHub decides — fail-closed — whether a PR's head and base
+// live in the same repository, by immutable id. It never trusts url or
+// name (a contributor controls both). True only when every id is present
+// (non-zero), the base id agrees with the top-level repository.id (payload
+// self-consistency), and head == base. Any missing, zero, or inconsistent
+// id yields false, so a fork or a malformed payload can never be mistaken
+// for same-repo. Gate for PR-head config (#223).
+func sameRepoGitHub(headRepoID, baseRepoID, topLevelRepoID int64) bool {
+	if headRepoID == 0 || baseRepoID == 0 || topLevelRepoID == 0 {
+		return false
+	}
+	if baseRepoID != topLevelRepoID {
+		return false
+	}
+	return headRepoID == baseRepoID
 }
 
 // ReviewEvent is a pull_request_review webhook, projected to what the lifecycle

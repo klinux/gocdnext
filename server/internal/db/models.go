@@ -439,16 +439,17 @@ type PolicyFramework struct {
 }
 
 type Project struct {
-	ID                 pgtype.UUID
-	Slug               string
-	Name               string
-	Description        *string
-	CreatedAt          pgtype.Timestamptz
-	UpdatedAt          pgtype.Timestamptz
-	ConfigPath         string
-	Notifications      []byte
-	LogArchiveEnabled  *bool
-	CheckReportingMode string
+	ID                    pgtype.UUID
+	Slug                  string
+	Name                  string
+	Description           *string
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+	ConfigPath            string
+	Notifications         []byte
+	LogArchiveEnabled     *bool
+	CheckReportingMode    string
+	TrustSameRepoPrConfig bool
 }
 
 type ProjectCron struct {

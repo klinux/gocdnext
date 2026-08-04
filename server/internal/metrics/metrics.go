@@ -231,6 +231,18 @@ var (
 		Help:    "Handling latency of unary gRPC methods (the Connect stream is excluded).",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"grpc_method"})
+
+	// PRHeadResolution measures PR-head config resolution (#223): the wall-clock
+	// to fetch + parse + validate the head `.gocdnext/` and build the plan,
+	// labelled by outcome. Only the GitHub same-repo opted-in path with repo
+	// pipelines to resolve emits — the base flow never resolves. outcome is a
+	// FIXED, bounded set (ok|fetch_error|invalid) — never the error message, and
+	// no repo/branch/pipeline label (keep cardinality flat).
+	PRHeadResolution = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gocdnext_pr_head_resolution_seconds",
+		Help:    "PR-head config resolution duration by outcome (ok|fetch_error|invalid).",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30},
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -255,6 +267,7 @@ func init() {
 		GRPCServerStarted,
 		GRPCServerHandled,
 		GRPCServerHandling,
+		PRHeadResolution,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),

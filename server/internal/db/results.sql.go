@@ -327,6 +327,21 @@ func (q *Queries) GetProjectCheckReportingBySlug(ctx context.Context, slug strin
 	return check_reporting_mode, err
 }
 
+const getProjectTrustSameRepoPRConfigBySlug = `-- name: GetProjectTrustSameRepoPRConfigBySlug :one
+SELECT trust_same_repo_pr_config
+FROM projects WHERE slug = $1
+`
+
+// Per-project opt-in (#223) for running a same-repo PR against its own
+// `.gocdnext/` (head config). Column is NOT NULL DEFAULT false, so a row always
+// yields a value; ErrNoRows = no such project.
+func (q *Queries) GetProjectTrustSameRepoPRConfigBySlug(ctx context.Context, slug string) (bool, error) {
+	row := q.db.QueryRow(ctx, getProjectTrustSameRepoPRConfigBySlug, slug)
+	var trust_same_repo_pr_config bool
+	err := row.Scan(&trust_same_repo_pr_config)
+	return trust_same_repo_pr_config, err
+}
+
 const getRunProgress = `-- name: GetRunProgress :one
 SELECT
     COUNT(*) FILTER (WHERE status IN ('queued', 'running'))::BIGINT AS unfinished,

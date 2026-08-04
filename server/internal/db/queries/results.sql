@@ -40,6 +40,13 @@ WHERE slug = $1;
 SELECT check_reporting_mode
 FROM projects WHERE slug = $1;
 
+-- name: GetProjectTrustSameRepoPRConfigBySlug :one
+-- Per-project opt-in (#223) for running a same-repo PR against its own
+-- `.gocdnext/` (head config). Column is NOT NULL DEFAULT false, so a row always
+-- yields a value; ErrNoRows = no such project.
+SELECT trust_same_repo_pr_config
+FROM projects WHERE slug = $1;
+
 -- name: GetProjectArchiveFlagForRun :one
 -- Joins runs -> pipelines -> projects so the archive hook can
 -- resolve a job_run's project flag in one query.

@@ -621,6 +621,11 @@ type Querier interface {
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
 	// read path.
 	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
+	// All scm_sources bound to a clone URL, with the owning project's PR-head toggle
+	// + config path (one round-trip for the wiring's source decision). PR-head
+	// config requires EXACTLY ONE binding; 0 or >1 must fail closed rather than
+	// silently pick a LIMIT-1 winner — url is NOT unique (00002_scm_sources.sql:26).
+	FindScmSourcesByURL(ctx context.Context, url string) ([]FindScmSourcesByURLRow, error)
 	// One run's findings (occurrences) with their identity state. Deduped to
 	// identities in the store (worst-severity-wins); kept as occurrences here.
 	FindingsByRun(ctx context.Context, runID pgtype.UUID) ([]FindingsByRunRow, error)
@@ -779,6 +784,10 @@ type Querier interface {
 	// block is absent (pipeline nil means "inherit"; pipeline empty
 	// list means "explicit opt-out" and we skip this entirely).
 	GetProjectNotifications(ctx context.Context, id pgtype.UUID) ([]byte, error)
+	// Per-project opt-in (#223) for running a same-repo PR against its own
+	// `.gocdnext/` (head config). Column is NOT NULL DEFAULT false, so a row always
+	// yields a value; ErrNoRows = no such project.
+	GetProjectTrustSameRepoPRConfigBySlug(ctx context.Context, slug string) (bool, error)
 	GetPullRequest(ctx context.Context, arg GetPullRequestParams) (VcsPullRequest, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
 	// pipeline + revisions without pulling the whole detail query. cause +
@@ -1278,6 +1287,10 @@ type Querier interface {
 	// epic). All metrics derive from deployment_revisions + the producing run.
 	// Distinct label keys across all projects — the dashboard's "group by" picker.
 	ListLabelKeys(ctx context.Context) ([]string, error)
+	// For the matched PR materials, resolve each to its pipeline identity + owning
+	// project, so the wiring can partition system_managed (base flow) from repo
+	// pipelines (head flow) and build the authorized set. Read-only, pre-tx.
+	ListMaterialPipelineIdentities(ctx context.Context, materialIds []pgtype.UUID) ([]ListMaterialPipelineIdentitiesRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	// All materials across pipelines of a project. VSM uses the
 	// `upstream` ones to build edges between pipeline nodes; git ones
@@ -1588,6 +1601,16 @@ type Querier interface {
 	// environment deleted-and-recreated, or rollout routing changed since the reconcile,
 	// must not be written from a pre-lock snapshot.
 	LockDeployTargetForDeploy(ctx context.Context, arg LockDeployTargetForDeployParams) (LockDeployTargetForDeployRow, error)
+	// PR-head config (#223). Anchored on the material as the single identity: it
+	// derives the material's pipeline and owning project, and takes a FOR SHARE lock
+	// on the PROJECT row so a concurrent disable of trust_same_repo_pr_config (or a
+	// project/pipeline delete) is linearised against run creation. The caller MUST
+	// acquire lockComplianceShared BEFORE this query — lock order is
+	// compliance -> project row, matching ApplyProject, to avoid an inverted-order
+	// deadlock. Everything the store-side envelope guard needs comes back in one
+	// round-trip: the pipeline identity + name + system_managed flag, the project id
+	// + trust flag, and the project notifications for inheritance.
+	LockPRHeadRunContext(ctx context.Context, id pgtype.UUID) (LockPRHeadRunContextRow, error)
 	// Serialises the stage rollup (#207): the completion cascade locks the stage_run
 	// row FOR UPDATE before reading GetStageProgress, so two sibling jobs finishing in
 	// parallel can't both compute progress and race to close the stage. Returns the

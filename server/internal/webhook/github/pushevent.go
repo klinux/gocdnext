@@ -69,6 +69,10 @@ func (ev PushEvent) ChangedFiles() (files []string, known bool) {
 
 // Repository is the subset of repo metadata used by the receiver.
 type Repository struct {
+	// ID is the repo's immutable, provider-assigned numeric id. Used
+	// for fail-closed same-repo detection (#223) — never trust url or
+	// full_name for that, a contributor controls both.
+	ID            int64  `json:"id"`
 	FullName      string `json:"full_name"`
 	HTMLURL       string `json:"html_url"`
 	CloneURL      string `json:"clone_url"`

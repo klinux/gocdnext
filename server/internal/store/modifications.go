@@ -39,6 +39,13 @@ type ModificationResult struct {
 // its id — callers typically want to know which modification they ended up
 // referencing, not just whether it was new.
 func (s *Store) InsertModification(ctx context.Context, mod Modification) (ModificationResult, error) {
+	return insertModificationQ(ctx, s.q, mod)
+}
+
+// insertModificationQ is the querier-parameterised body of InsertModification so
+// a caller inside a transaction (e.g. CreatePRHeadRun, which needs modification
+// + run to be atomic) can insert the dedup ledger row on the SAME tx querier.
+func insertModificationQ(ctx context.Context, q *db.Queries, mod Modification) (ModificationResult, error) {
 	params := db.InsertModificationParams{
 		MaterialID:  pgUUID(mod.MaterialID),
 		Revision:    mod.Revision,
@@ -49,13 +56,13 @@ func (s *Store) InsertModification(ctx context.Context, mod Modification) (Modif
 		CommittedAt: timestampOrNull(mod.CommittedAt),
 	}
 
-	row, err := s.q.InsertModification(ctx, params)
+	row, err := q.InsertModification(ctx, params)
 	switch {
 	case err == nil:
 		return ModificationResult{ID: row.ID, Created: true}, nil
 	case errors.Is(err, pgx.ErrNoRows):
 		// Conflict on the unique key — look up the pre-existing row.
-		existing, lookupErr := s.q.GetModificationByKey(ctx, db.GetModificationByKeyParams{
+		existing, lookupErr := q.GetModificationByKey(ctx, db.GetModificationByKeyParams{
 			MaterialID: params.MaterialID,
 			Revision:   params.Revision,
 			Branch:     params.Branch,

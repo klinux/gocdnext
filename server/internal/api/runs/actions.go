@@ -448,6 +448,8 @@ func (h *Handler) Rerun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrRunActive):
 		http.Error(w, "run is still active (queued/running) — cannot rerun", http.StatusConflict)
+	case errors.Is(err, store.ErrPRHeadRerunUnsupported):
+		http.Error(w, "a PR-head run cannot be fully rerun (rerun an individual job, or re-trigger the PR)", http.StatusUnprocessableEntity)
 	case errors.Is(err, store.ErrNoModificationForPipeline),
 		errors.Is(err, store.ErrRunRevisionsMissing):
 		http.Error(w, "cannot replay this run: source revision is no longer available", http.StatusUnprocessableEntity)

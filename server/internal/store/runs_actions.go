@@ -579,6 +579,14 @@ func (s *Store) rerunRun(ctx context.Context, in RerunRunInput, hooks runHooks) 
 		return RunCreated{}, ErrRunActive
 	}
 
+	// #223: a full rerun of a PR-head run would re-materialise from the CURRENT
+	// base definition while still carrying the head's config_source/revision/
+	// digest — a provenance lie. Block it early (a job rerun within the run reuses
+	// the run's own snapshot and is unaffected). Lifted once the #209 fence lands.
+	if isPRHeadCauseDetail(row.CauseDetail) {
+		return RunCreated{}, ErrPRHeadRerunUnsupported
+	}
+
 	materialID, revision, branch, err := pickPrimaryRevision(row.Revisions)
 	if err != nil {
 		return RunCreated{}, err

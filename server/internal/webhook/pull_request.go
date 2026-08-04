@@ -41,6 +41,10 @@ type pullRequestEvent struct {
 	RepoLabel string // for log diagnostics — github.FullName OR gitlab project path
 	At        time.Time
 	Labels    []string
+	// SameRepo is true only for a GitHub same-repo PR, decided by immutable repo
+	// ids (never url/name). It gates the PR-head-config path; every other path
+	// (fork, GitLab, Bitbucket) leaves it false and runs the base flow unchanged.
+	SameRepo bool
 }
 
 // handlePullRequest reacts to GitHub's pull_request webhook. Matching
@@ -102,6 +106,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		RepoLabel: ev.Repository.FullName,
 		At:        ev.At,
 		Labels:    ev.Labels,
+		SameRepo:  ev.SameRepo,
 	})
 }
 
@@ -321,27 +326,20 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 		detail["pr_labels"] = ev.Labels
 	}
 	causeDetail, _ := json.Marshal(detail)
-	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
-		Materials:   materials,
-		Revision:    ev.HeadSHA,
-		Branch:      ev.HeadRef,
-		Author:      ev.Author,
-		Message:     ev.Title,
-		Payload:     json.RawMessage(body),
-		CommittedAt: ev.At,
-		Provider:    ev.Provider,
-		Delivery:    delivery,
-		TriggeredBy: "system:webhook",
-		Cause:       string(domain.CausePullRequest),
-		CauseDetail: causeDetail,
-	})
+	// PR-head config: for a GitHub same-repo PR on an opted-in project, run the
+	// matched repo pipelines from the head `.gocdnext/` and fold their outcomes
+	// into this delivery's runs/status; everything else (forks, system_managed,
+	// toggle off, other providers) stays on the base flow. applyPRHeadConfig owns
+	// BOTH fan-outs (base-first, then head) and returns every created run plus a
+	// typed fail-closed error when the repo plan is blocked.
+	outcomes, resolveErr := h.applyPRHeadConfig(r.Context(), ev, materials, causeDetail, delivery, body)
 	rec.materialID = firstCreatedRunMaterialID(outcomes)
 
 	runs := runsPayload(outcomes)
-	allErrored := len(outcomes) > 0
+	anyOK := false
 	for _, oc := range outcomes {
 		if oc.Err == nil {
-			allErrored = false
+			anyOK = true
 			if oc.RunID != uuid.Nil {
 				h.log.Info(ev.Provider+" webhook: "+logKind+" run queued",
 					"delivery", delivery, "pipeline_id", oc.PipelineID,
@@ -351,7 +349,26 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 			}
 		}
 	}
-	if allErrored {
+	// A blocked repo plan is surfaced to the sender EVEN WHEN base/system_managed
+	// runs were created: the repo pipeline is genuinely absent from this delivery,
+	// and for a transient error the provider must retry. SCM/fetch/lookup → 503
+	// (retryable); ambiguous binding / bad config → 422. The persisted + wire error
+	// is a STABLE per-category message — the full detail stays in the server log
+	// only. Any runs already created ride in the body.
+	if resolveErr != nil {
+		httpStatus, stable := prHeadErrorResponse(resolveErr)
+		rec.status = store.WebhookStatusError
+		rec.errText = stable
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(httpStatus)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"runs":      runs,
+			"error":     stable,
+			"pr_number": ev.Number,
+		})
+		return
+	}
+	if len(outcomes) > 0 && !anyOK {
 		rec.status = store.WebhookStatusError
 		rec.errText = logKind + " fan-out: every pipeline errored"
 		http.Error(w, "internal error", http.StatusInternalServerError)
