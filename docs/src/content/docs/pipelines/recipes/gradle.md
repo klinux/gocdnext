@@ -159,6 +159,50 @@ If you use the `build-logic/` convention pattern, the build cache
 benefits compound — convention compilation is a major chunk of cold
 builds, and warm runs skip it entirely.
 
+### Sonar scan — the token goes in `${{ }}`, not `${VAR}`
+
+Running the `org.sonarqube` Gradle plugin needs the auth token. The
+one non-obvious part is *how* the token reaches Gradle:
+
+```yaml
+sonar:
+  stage: test
+  uses: ghcr.io/klinux/gocdnext-plugin-gradle@v1
+  needs: [check]
+  secrets: [SONAR_TOKEN]                       # injected as env AND masked in logs
+  with:
+    command: sonar --no-daemon -Dsonar.token=${{ SONAR_TOKEN }}
+```
+
+Two traps live in that one line:
+
+- **It must be `${{ SONAR_TOKEN }}` (double brace), not `${SONAR_TOKEN}`.**
+  `command:` is **word-split, not shell-re-expanded** (see the
+  [substitution grammar](/gocdnext/docs/pipelines/yaml-reference/#substitution-grammar)):
+  a single-brace `${SONAR_TOKEN}` would reach Gradle *literal* and the
+  scan fails to authenticate. The hard `${{ }}` form is resolved
+  server-side, so Gradle receives the real value.
+- **The value lands on the process `argv`** — a `ps` inside the job
+  container can read it. Keeping `SONAR_TOKEN` under `secrets:` masks
+  it in the **logs**, but not in `ps`. That residual exposure is
+  usually acceptable for an ephemeral, single-job container; if it
+  isn't, prefer the env path below.
+
+**Prefer the env path when the tool supports it.** `org.sonarqube`
+**≥ 3.3** reads the `SONAR_TOKEN` environment variable on its own, so
+with a recent enough plugin you can drop the `-Dsonar.token` flag
+entirely and keep the token off the command line:
+
+```yaml
+  secrets: [SONAR_TOKEN]                       # read from env by org.sonarqube ≥ 3.3
+  with:
+    command: sonar --no-daemon
+```
+
+If the scan still fails to authenticate with the real value present,
+it's a property-name mismatch, not substitution: older SonarQube
+servers expect `sonar.login` instead of `sonar.token`.
+
 ## Dependency scanning (SCA)
 
 The [`osv-scanner`](/gocdnext/docs/reference/plugins/#osv-scanner) plugin reads a
