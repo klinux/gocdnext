@@ -11,8 +11,9 @@ import (
 )
 
 // PRHeadBinding is one scm_source bound to a clone URL, carrying the owning
-// project's PR-head toggle + config path. The clone URL is NOT unique, so the
-// wiring must require exactly one binding before consulting the head.
+// project's PR-head toggle (Trust) + config path. The clone URL is NOT unique, so
+// the wiring filters to OPTED-IN (Trust) bindings and requires exactly one before
+// consulting the head — 0 opted-in runs the base flow, >1 fails closed.
 type PRHeadBinding struct {
 	Source     SCMSource
 	Trust      bool

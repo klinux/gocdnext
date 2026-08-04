@@ -3,7 +3,6 @@ package webhook
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -330,24 +329,10 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 	// PR-head config: for a GitHub same-repo PR on an opted-in project, run the
 	// matched repo pipelines from the head `.gocdnext/` and fold their outcomes
 	// into this delivery's runs/status; everything else (forks, system_managed,
-	// toggle off, other providers) stays on the base flow. No-op with zero fetch
-	// otherwise — the base flow is untouched.
-	base, headOutcomes, resolveErr := h.applyPRHeadConfig(r.Context(), ev, materials, causeDetail, delivery, body)
-	baseOutcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
-		Materials:   base,
-		Revision:    ev.HeadSHA,
-		Branch:      ev.HeadRef,
-		Author:      ev.Author,
-		Message:     ev.Title,
-		Payload:     json.RawMessage(body),
-		CommittedAt: ev.At,
-		Provider:    ev.Provider,
-		Delivery:    delivery,
-		TriggeredBy: "system:webhook",
-		Cause:       string(domain.CausePullRequest),
-		CauseDetail: causeDetail,
-	})
-	outcomes := append(headOutcomes, baseOutcomes...)
+	// toggle off, other providers) stays on the base flow. applyPRHeadConfig owns
+	// BOTH fan-outs (base-first, then head) and returns every created run plus a
+	// typed fail-closed error when the repo plan is blocked.
+	outcomes, resolveErr := h.applyPRHeadConfig(r.Context(), ev, materials, causeDetail, delivery, body)
 	rec.materialID = firstCreatedRunMaterialID(outcomes)
 
 	runs := runsPayload(outcomes)
@@ -364,17 +349,23 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 			}
 		}
 	}
-	// A head resolution error that produced NO run (and neither did any
-	// system_managed pipeline) is surfaced to the sender rather than a misleading
-	// 202: SCM/fetch → 503 (retryable), bad/missing config → 422.
-	if resolveErr != nil && len(runs) == 0 {
+	// A blocked repo plan is surfaced to the sender EVEN WHEN base/system_managed
+	// runs were created: the repo pipeline is genuinely absent from this delivery,
+	// and for a transient error the provider must retry. SCM/fetch/lookup → 503
+	// (retryable); ambiguous binding / bad config → 422. The persisted + wire error
+	// is a STABLE per-category message — the full detail stays in the server log
+	// only. Any runs already created ride in the body.
+	if resolveErr != nil {
+		httpStatus, stable := prHeadErrorResponse(resolveErr)
 		rec.status = store.WebhookStatusError
-		rec.errText = resolveErr.Error()
-		if errors.Is(resolveErr, ErrPRHeadFetch) {
-			http.Error(w, "pr-head: config fetch failed", http.StatusServiceUnavailable)
-		} else {
-			http.Error(w, resolveErr.Error(), http.StatusUnprocessableEntity)
-		}
+		rec.errText = stable
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(httpStatus)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"runs":      runs,
+			"error":     stable,
+			"pr_number": ev.Number,
+		})
 		return
 	}
 	if len(outcomes) > 0 && !anyOK {

@@ -572,6 +572,24 @@ func TestRerun_Success(t *testing.T) {
 	}
 }
 
+// A pr_head run (config_source=pr_head, an ephemeral head-config run) cannot be
+// fully replayed — its definition lived only on the PR head. The store returns
+// ErrPRHeadRerunUnsupported and the endpoint maps it to 422 (#223).
+func TestRerun_PRHeadRunReturns422(t *testing.T) {
+	h, pool := handler(t)
+	runID, _ := seedRunWithModification(t, pool)
+	finishRun(t, pool, runID)
+	// Stamp the provenance a CreatePRHeadRun would write.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE runs SET cause_detail = '{"config_source":"pr_head"}'::jsonb WHERE id = $1`, runID); err != nil {
+		t.Fatalf("stamp pr_head: %v", err)
+	}
+	rr := doPost(h, "/api/v1/runs/"+runID.String()+"/rerun", []byte(`{"triggered_by":"klinux"}`))
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d want 422; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRerunJob_ReusesRunAndBumpsAttempt(t *testing.T) {
 	// Re-run a single terminal job inside its existing run — should
 	// flip the job back to queued, bump attempt, wipe logs, and

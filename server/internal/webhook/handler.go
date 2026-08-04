@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -62,6 +63,9 @@ type Handler struct {
 	// prCommits fetches a PR's first-commit time (DORA Coding stage) from the
 	// provider API. Nil = the Coding stage is simply not recorded.
 	prCommits PRCommitsFetcher
+	// prHeadResolveTimeout bounds the TOTAL PR-head config resolution. Zero falls
+	// back to defaultPRHeadResolveTimeout; tests set it low to prove the bound.
+	prHeadResolveTimeout time.Duration
 }
 
 // NewHandler builds the webhook handler. The Store must have a
@@ -71,7 +75,7 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{store: s, log: log}
+	return &Handler{store: s, log: log, prHeadResolveTimeout: defaultPRHeadResolveTimeout}
 }
 
 // WithConfigFetcher opts the handler into drift detection: on a push whose

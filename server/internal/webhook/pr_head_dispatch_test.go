@@ -102,25 +102,35 @@ func runCount(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string
 	return n
 }
 
-func materialIDs(ms []store.Material) map[uuid.UUID]bool {
-	out := map[uuid.UUID]bool{}
-	for _, m := range ms {
-		out[m.ID] = true
+// configSource returns the config_source stamped on a pipeline's newest run
+// ("pr_head" for a head run, empty/absent for a base run).
+func configSource(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string) string {
+	t.Helper()
+	var src *string
+	if err := pool.QueryRow(ctx,
+		`SELECT r.cause_detail->>'config_source' FROM runs r JOIN pipelines pl ON pl.id=r.pipeline_id
+		 WHERE pl.name=$1 ORDER BY r.created_at DESC LIMIT 1`, name).Scan(&src); err != nil {
+		t.Fatalf("config_source(%s): %v", name, err)
 	}
-	return out
+	if src == nil {
+		return ""
+	}
+	return *src
 }
 
 // Proof 3: a valid mixed set — system_managed runs on the base flow, the repo
-// pipeline runs from the head. build gets a pr_head run; gov is returned to base.
+// pipeline runs from the head. Base-first: BOTH are created here (gov base + build
+// pr_head), and gov is dispatched before the fetch even happens.
 func TestApplyPRHeadConfig_MixedValid(t *testing.T) {
-	h, s, f, pool, ctx, materials := seedWiring(t)
+	h, _, f, pool, ctx, materials := seedWiring(t)
 	f.files = []scm.RawFile{rawFile("build.yaml", "build")}
 
-	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
-
-	// gov (system_managed) returned to base; build removed (ran via head).
-	if len(base) != 1 {
-		t.Fatalf("base = %d, want 1 (gov only)", len(base))
+	outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
+	if resolveErr != nil {
+		t.Fatalf("resolveErr = %v, want nil", resolveErr)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("outcomes = %d, want 2 (gov base + build head)", len(outcomes))
 	}
 	if f.calls != 1 {
 		t.Fatalf("fetch calls = %d, want 1", f.calls)
@@ -128,35 +138,38 @@ func TestApplyPRHeadConfig_MixedValid(t *testing.T) {
 	if n := runCount(t, pool, ctx, "build"); n != 1 {
 		t.Fatalf("build runs = %d, want 1 (pr_head)", n)
 	}
-	if n := runCount(t, pool, ctx, "gov"); n != 0 {
-		t.Fatalf("gov runs = %d, want 0 (base flow runs later, not here)", n)
+	if n := runCount(t, pool, ctx, "gov"); n != 1 {
+		t.Fatalf("gov runs = %d, want 1 (base flow, dispatched here base-first)", n)
 	}
-	// The build run is a pr_head run.
-	var src string
-	if err := pool.QueryRow(ctx,
-		`SELECT r.cause_detail->>'config_source' FROM runs r JOIN pipelines pl ON pl.id=r.pipeline_id WHERE pl.name='build'`).
-		Scan(&src); err != nil {
-		t.Fatalf("cause_detail: %v", err)
+	if src := configSource(t, pool, ctx, "build"); src != "pr_head" {
+		t.Fatalf("build config_source = %q, want pr_head", src)
 	}
-	if src != "pr_head" {
-		t.Fatalf("config_source = %q, want pr_head", src)
+	if src := configSource(t, pool, ctx, "gov"); src == "pr_head" {
+		t.Fatalf("gov config_source = %q, want base (not pr_head)", src)
 	}
-	_ = s
 }
 
-// Proof 2: a mixed set where head resolution fails — system_managed still runs
-// (returned to base), the repo pipeline is blocked (no run, no partial write).
+// Proof 2: a mixed set where head resolution fails — system_managed still runs on
+// the base flow (base-first), the repo pipeline is blocked (no run, no partial
+// write) and a TYPED error is returned.
 func TestApplyPRHeadConfig_MixedResolveFailBlocksRepoOnly(t *testing.T) {
 	h, _, f, pool, ctx, materials := seedWiring(t)
 	f.files = []scm.RawFile{} // build absent from head → resolve fails (authorized but missing)
 
-	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
+	outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
 
-	if len(base) != 1 {
-		t.Fatalf("base = %d, want 1 (gov still runs base)", len(base))
+	if !errors.Is(resolveErr, ErrPRHeadConfigInvalid) {
+		t.Fatalf("resolveErr = %v, want ErrPRHeadConfigInvalid", resolveErr)
+	}
+	if n := runCount(t, pool, ctx, "gov"); n != 1 {
+		t.Fatalf("gov runs = %d, want 1 (system_managed still runs base)", n)
 	}
 	if n := runCount(t, pool, ctx, "build"); n != 0 {
 		t.Fatalf("build runs = %d, want 0 (repo blocked on resolve failure)", n)
+	}
+	// The gov base run is still in the outcomes so the caller can report it.
+	if len(outcomes) != 1 || outcomes[0].RunID == uuid.Nil {
+		t.Fatalf("outcomes = %+v, want the 1 created gov base run", outcomes)
 	}
 }
 
@@ -168,9 +181,9 @@ func TestApplyPRHeadConfig_OnlySystemManagedNoFetch(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE pipelines SET system_managed = true`); err != nil {
 		t.Fatalf("mark all system_managed: %v", err)
 	}
-	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
-	if len(base) != len(materials) {
-		t.Fatalf("base = %d, want %d (all base)", len(base), len(materials))
+	outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
+	if resolveErr != nil || len(outcomes) != len(materials) {
+		t.Fatalf("outcomes=%d err=%v, want %d/nil (all base)", len(outcomes), resolveErr, len(materials))
 	}
 	if f.calls != 0 {
 		t.Fatalf("fetch calls = %d, want 0 (only system_managed → no fetch)", f.calls)
@@ -178,26 +191,30 @@ func TestApplyPRHeadConfig_OnlySystemManagedNoFetch(t *testing.T) {
 }
 
 // Fork / non-github → base flow, zero fetch. Toggle off → repo runs base, zero
-// fetch. Both keep the base flow byte-for-byte and never touch the head.
+// fetch. Both keep the base flow (all materials fanned out) and never touch the
+// head.
 func TestApplyPRHeadConfig_ForkAndOffAreZeroFetch(t *testing.T) {
+	assertAllBaseNoFetch := func(t *testing.T, outcomes []fanOutOutcome, resolveErr error, f *fakeCfgFetcher, materials []store.Material) {
+		t.Helper()
+		if resolveErr != nil || len(outcomes) != len(materials) || f.calls != 0 {
+			t.Fatalf("outcomes=%d err=%v fetch=%d, want %d/nil/0 (base, no fetch)",
+				len(outcomes), resolveErr, f.calls, len(materials))
+		}
+	}
 	t.Run("fork (SameRepo=false)", func(t *testing.T) {
 		h, _, f, _, ctx, materials := seedWiring(t)
 		ev := wireEvent()
 		ev.SameRepo = false
-		base, _, _ := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
-		if len(base) != len(materials) || f.calls != 0 {
-			t.Fatalf("base=%d fetch=%d, want %d/0", len(base), f.calls, len(materials))
-		}
+		outcomes, resolveErr := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
+		assertAllBaseNoFetch(t, outcomes, resolveErr, f, materials)
 	})
 	t.Run("toggle off", func(t *testing.T) {
 		h, s, f, _, ctx, materials := seedWiring(t)
 		if err := s.SetProjectTrustSameRepoPRConfigBySlug(ctx, "demo", false); err != nil {
 			t.Fatalf("disable: %v", err)
 		}
-		base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
-		if len(base) != len(materials) || f.calls != 0 {
-			t.Fatalf("base=%d fetch=%d, want %d/0 (off → base, no fetch)", len(base), f.calls, len(materials))
-		}
+		outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		assertAllBaseNoFetch(t, outcomes, resolveErr, f, materials)
 	})
 	// GitLab / Bitbucket never reach the head path (SameRepo is a GitHub-only
 	// signal). The provider gate blocks even a (hypothetical) same-repo MR/PR, so
@@ -208,55 +225,99 @@ func TestApplyPRHeadConfig_ForkAndOffAreZeroFetch(t *testing.T) {
 			ev := wireEvent()
 			ev.Provider = provider
 			ev.SameRepo = true // even set true, the provider gate wins
-			base, _, _ := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
-			if len(base) != len(materials) || f.calls != 0 {
-				t.Fatalf("base=%d fetch=%d, want %d/0 (%s → base, no fetch)", len(base), f.calls, len(materials), provider)
-			}
+			outcomes, resolveErr := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
+			assertAllBaseNoFetch(t, outcomes, resolveErr, f, materials)
 		})
 	}
 }
 
-// #3: applyPRHeadConfig returns structured head outcomes and a TYPED resolution
-// error, so the caller can fold them into the delivery's runs/status (and map a
-// fetch failure to 503 vs a bad config to 422) instead of a misleading 202.
+// applyPRHeadConfig returns structured outcomes and a TYPED resolution error, so
+// the caller can fold them into the delivery's runs/status (and map a fetch
+// failure to 503 vs a bad config to 422) instead of a misleading 202.
 func TestApplyPRHeadConfig_OutcomesAndTypedResolveErr(t *testing.T) {
 	t.Run("valid → created head outcome", func(t *testing.T) {
-		h, _, f, _, ctx, materials := seedWiring(t)
+		h, _, f, pool, ctx, materials := seedWiring(t)
 		f.files = []scm.RawFile{rawFile("build.yaml", "build")}
-		_, outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
 		if resolveErr != nil {
 			t.Fatalf("resolveErr = %v, want nil", resolveErr)
 		}
-		if len(outcomes) != 1 || outcomes[0].RunID == uuid.Nil {
-			t.Fatalf("outcomes = %+v, want 1 created head run", outcomes)
+		if len(outcomes) != 2 { // gov base + build head
+			t.Fatalf("outcomes = %d, want 2", len(outcomes))
+		}
+		if src := configSource(t, pool, ctx, "build"); src != "pr_head" {
+			t.Fatalf("build config_source = %q, want pr_head", src)
 		}
 	})
-	t.Run("fetch error → ErrPRHeadFetch, no outcomes", func(t *testing.T) {
-		h, _, f, _, ctx, materials := seedWiring(t)
+	t.Run("fetch error → ErrPRHeadFetch, repo blocked, base ran", func(t *testing.T) {
+		h, _, f, pool, ctx, materials := seedWiring(t)
 		f.err = errors.New("boom")
-		_, outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
 		if !errors.Is(resolveErr, ErrPRHeadFetch) {
 			t.Fatalf("resolveErr = %v, want ErrPRHeadFetch", resolveErr)
 		}
-		if len(outcomes) != 0 {
-			t.Fatalf("outcomes = %+v, want 0 (repo blocked)", outcomes)
+		if n := runCount(t, pool, ctx, "build"); n != 0 {
+			t.Fatalf("build runs = %d, want 0 (repo blocked)", n)
+		}
+		if n := runCount(t, pool, ctx, "gov"); n != 1 {
+			t.Fatalf("gov runs = %d, want 1 (base ran base-first)", n)
+		}
+		if len(outcomes) != 1 { // just the gov base run
+			t.Fatalf("outcomes = %d, want 1 (gov base)", len(outcomes))
 		}
 	})
 	t.Run("invalid/missing config → ErrPRHeadConfigInvalid", func(t *testing.T) {
 		h, _, f, _, ctx, materials := seedWiring(t)
 		f.files = []scm.RawFile{} // build authorized but absent from head
-		_, _, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		_, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
 		if !errors.Is(resolveErr, ErrPRHeadConfigInvalid) {
 			t.Fatalf("resolveErr = %v, want ErrPRHeadConfigInvalid", resolveErr)
 		}
 	})
 }
 
-// Ambiguous binding (the clone URL bound to >1 project) → repo pipelines blocked
-// fail-closed; system_managed still returns to base; no fetch.
+// Ambiguous binding: the clone URL is bound to >1 OPTED-IN project → the repo
+// pipelines fail closed with ErrPRHeadBinding; system_managed still runs base; no
+// fetch. (A second binding that is NOT opted in would leave exactly one trusted
+// binding — not ambiguous — so demo2 must also enable the toggle.)
 func TestApplyPRHeadConfig_AmbiguousBindingBlocksRepo(t *testing.T) {
 	h, s, f, pool, ctx, materials := seedWiring(t)
-	// A second project bound to the SAME url → the URL now resolves to 2 sources.
+	// A second project bound to the SAME url, ALSO opted in → 2 trusted bindings.
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
+		Slug: "demo2", Name: "demo2",
+		SCMSource: &store.SCMSourceInput{Provider: "github", URL: wireURL, DefaultBranch: wireBranch},
+	}); err != nil {
+		t.Fatalf("apply demo2: %v", err)
+	}
+	if err := s.SetProjectTrustSameRepoPRConfigBySlug(ctx, "demo2", true); err != nil {
+		t.Fatalf("enable demo2 toggle: %v", err)
+	}
+
+	outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+
+	if !errors.Is(resolveErr, ErrPRHeadBinding) {
+		t.Fatalf("resolveErr = %v, want ErrPRHeadBinding", resolveErr)
+	}
+	if n := runCount(t, pool, ctx, "gov"); n != 1 {
+		t.Fatalf("gov runs = %d, want 1 (system_managed still runs base)", n)
+	}
+	if n := runCount(t, pool, ctx, "build"); n != 0 {
+		t.Fatalf("build runs = %d, want 0 (ambiguous binding blocks repo)", n)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %d, want 1 (gov base)", len(outcomes))
+	}
+	if f.calls != 0 {
+		t.Fatalf("fetch calls = %d, want 0 (blocked before fetch)", f.calls)
+	}
+}
+
+// A single UNTRUSTED extra binding on the same URL is NOT ambiguous — one trusted
+// binding remains, so the head path still runs for the opted-in project.
+func TestApplyPRHeadConfig_UntrustedSecondBindingNotAmbiguous(t *testing.T) {
+	h, s, f, pool, ctx, materials := seedWiring(t)
+	f.files = []scm.RawFile{rawFile("build.yaml", "build")}
+	// demo2 shares the URL but does NOT opt in (default toggle false).
 	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{
 		Slug: "demo2", Name: "demo2",
 		SCMSource: &store.SCMSourceInput{Provider: "github", URL: wireURL, DefaultBranch: wireBranch},
@@ -264,15 +325,14 @@ func TestApplyPRHeadConfig_AmbiguousBindingBlocksRepo(t *testing.T) {
 		t.Fatalf("apply demo2: %v", err)
 	}
 
-	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
-
-	if ids := materialIDs(base); len(ids) != 1 {
-		t.Fatalf("base = %d, want 1 (gov only; build blocked)", len(base))
+	outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+	if resolveErr != nil {
+		t.Fatalf("resolveErr = %v, want nil (one trusted binding is unambiguous)", resolveErr)
 	}
-	if n := runCount(t, pool, ctx, "build"); n != 0 {
-		t.Fatalf("build runs = %d, want 0 (ambiguous binding blocks repo)", n)
+	if len(outcomes) != 2 {
+		t.Fatalf("outcomes = %d, want 2 (gov base + build head)", len(outcomes))
 	}
-	if f.calls != 0 {
-		t.Fatalf("fetch calls = %d, want 0 (blocked before fetch)", f.calls)
+	if src := configSource(t, pool, ctx, "build"); src != "pr_head" {
+		t.Fatalf("build config_source = %q, want pr_head", src)
 	}
 }
