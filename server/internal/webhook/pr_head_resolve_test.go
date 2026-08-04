@@ -39,12 +39,29 @@ func pipelineYAML(name string) string {
 		"      - make\n"
 }
 
+// deployYAML declares a single deploy job targeting `env` on `cluster` — two of
+// these with the same env but different clusters conflict at
+// ValidateDeclarativeTargets.
+func deployYAML(name, env, cluster string) string {
+	return "name: " + name + "\n" +
+		"stages: [deploy]\n" +
+		"jobs:\n" +
+		"  release:\n" +
+		"    stage: deploy\n" +
+		"    uses: ghcr.io/klinux/gocdnext-plugin-argocd@v1\n" +
+		"    deploy:\n" +
+		"      environment: " + env + "\n" +
+		"      target:\n" +
+		"        cluster: " + cluster + "\n" +
+		"        application: app\n"
+}
+
 func rawFile(fname, name string) scm.RawFile {
 	return scm.RawFile{Name: fname, Content: pipelineYAML(name)}
 }
 
-func authPipe(name string, sys bool) authorizedPipeline {
-	return authorizedPipeline{Name: name, PipelineID: uuid.New(), MaterialID: uuid.New(), SystemManaged: sys}
+func authPipe(name string) authorizedPipeline {
+	return authorizedPipeline{Name: name, PipelineID: uuid.New(), MaterialID: uuid.New()}
 }
 
 func resolve(t *testing.T, f *fakeCfgFetcher, authorized []authorizedPipeline) ([]prHeadPlanEntry, error) {
@@ -56,7 +73,7 @@ func resolve(t *testing.T, f *fakeCfgFetcher, authorized []authorizedPipeline) (
 // plan entry, and the config is fetched exactly once.
 func TestResolvePRHeadPlan_Happy(t *testing.T) {
 	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("build.yaml", "build")}}
-	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build", false)})
+	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build")})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -71,7 +88,7 @@ func TestResolvePRHeadPlan_Happy(t *testing.T) {
 // An authorized pipeline absent from the head fails closed — no partial plan.
 func TestResolvePRHeadPlan_MissingPipelineFailsClosed(t *testing.T) {
 	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("build.yaml", "build")}}
-	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build", false), authPipe("deploy", false)})
+	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build"), authPipe("deploy")})
 	if err == nil {
 		t.Fatal("expected an error when an authorized pipeline is absent from the head")
 	}
@@ -80,11 +97,10 @@ func TestResolvePRHeadPlan_MissingPipelineFailsClosed(t *testing.T) {
 	}
 }
 
-// A pipeline that exists in the head but is NOT authorized by the base is
-// ignored — it never registers or runs.
+// A pipeline in the head but NOT authorized by the base is ignored.
 func TestResolvePRHeadPlan_NewInHeadIgnored(t *testing.T) {
 	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("build.yaml", "build"), rawFile("extra.yaml", "extra")}}
-	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build", false)})
+	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build")})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -93,23 +109,38 @@ func TestResolvePRHeadPlan_NewInHeadIgnored(t *testing.T) {
 	}
 }
 
-// A system_managed authorized pipeline is skipped — its definition stays
-// server-owned, never sourced from the head.
-func TestResolvePRHeadPlan_SystemManagedSkipped(t *testing.T) {
-	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("build.yaml", "build")}}
-	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build", true)})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+// No repo pipelines to resolve (e.g. a PR of only system_managed work, which the
+// caller partitions out) → NO fetch, so a head that deleted `.gocdnext/` can't
+// block the mandatory server-owned pipelines.
+func TestResolvePRHeadPlan_EmptyAuthorizedNoFetch(t *testing.T) {
+	f := &fakeCfgFetcher{err: errors.New("should not be called")}
+	plan, err := resolve(t, f, nil)
+	if err != nil || plan != nil {
+		t.Fatalf("resolve(empty) = (%+v, %v), want (nil, nil)", plan, err)
 	}
-	if len(plan) != 0 {
-		t.Fatalf("plan = %+v, want empty (system_managed uses the server def)", plan)
+	if f.calls != 0 {
+		t.Fatalf("fetch calls = %d, want 0 (no repo pipelines → no fetch)", f.calls)
+	}
+}
+
+// Input guards: a nil fetcher or an empty head SHA is rejected before any fetch.
+func TestResolvePRHeadPlan_InputGuards(t *testing.T) {
+	if _, err := resolvePRHeadPlan(context.Background(), nil, store.SCMSource{}, ".gocdnext", "sha", []authorizedPipeline{authPipe("build")}); err == nil {
+		t.Fatal("nil fetcher: expected an error")
+	}
+	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("build.yaml", "build")}}
+	if _, err := resolvePRHeadPlan(context.Background(), f, store.SCMSource{}, ".gocdnext", "", []authorizedPipeline{authPipe("build")}); err == nil {
+		t.Fatal("empty head SHA: expected an error")
+	}
+	if f.calls != 0 {
+		t.Fatalf("fetch calls = %d, want 0 (guards reject before fetch)", f.calls)
 	}
 }
 
 // A duplicate pipeline name across head files fails closed (via ParseFiles).
 func TestResolvePRHeadPlan_DuplicateNameFailsClosed(t *testing.T) {
 	f := &fakeCfgFetcher{files: []scm.RawFile{rawFile("a.yaml", "build"), rawFile("b.yaml", "build")}}
-	if _, err := resolve(t, f, []authorizedPipeline{authPipe("build", false)}); err == nil {
+	if _, err := resolve(t, f, []authorizedPipeline{authPipe("build")}); err == nil {
 		t.Fatal("expected an error for a duplicate pipeline name")
 	}
 }
@@ -117,15 +148,27 @@ func TestResolvePRHeadPlan_DuplicateNameFailsClosed(t *testing.T) {
 // Malformed YAML in the head fails closed at the parse step.
 func TestResolvePRHeadPlan_ParseErrorFailsClosed(t *testing.T) {
 	f := &fakeCfgFetcher{files: []scm.RawFile{{Name: "build.yaml", Content: "this: is: not: valid: pipeline"}}}
-	if _, err := resolve(t, f, []authorizedPipeline{authPipe("build", false)}); err == nil {
+	if _, err := resolve(t, f, []authorizedPipeline{authPipe("build")}); err == nil {
 		t.Fatal("expected a parse error for malformed config")
+	}
+}
+
+// Conflicting declarative deploy targets for one environment fail closed at
+// ValidateDeclarativeTargets.
+func TestResolvePRHeadPlan_ValidateTargetsFailsClosed(t *testing.T) {
+	f := &fakeCfgFetcher{files: []scm.RawFile{
+		{Name: "a.yaml", Content: deployYAML("build", "prod", "clusterA")},
+		{Name: "b.yaml", Content: deployYAML("other", "prod", "clusterB")},
+	}}
+	if _, err := resolve(t, f, []authorizedPipeline{authPipe("build")}); err == nil {
+		t.Fatal("expected a ValidateDeclarativeTargets conflict error")
 	}
 }
 
 // A fetch error fails closed with no plan (and no silent fallback to base).
 func TestResolvePRHeadPlan_FetchErrorFailsClosed(t *testing.T) {
 	f := &fakeCfgFetcher{err: errors.New("boom")}
-	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build", false)})
+	plan, err := resolve(t, f, []authorizedPipeline{authPipe("build")})
 	if err == nil {
 		t.Fatal("expected a fetch error")
 	}

@@ -11,14 +11,16 @@ import (
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
-// authorizedPipeline is a base-authorized pipeline the head config may drive.
-// The set comes from the base (the project's registered pipelines matched by the
-// PR's base ref) — the head can only ever run pipelines the base already knows.
+// authorizedPipeline is a base-authorized REPO pipeline the head config may
+// drive. The set comes from the base (the project's registered pipelines matched
+// by the PR's base ref), MINUS any system_managed ones: those are partitioned
+// out by the caller (the wiring) and never reach the resolver, so a head that
+// removes or breaks `.gocdnext/` can't suppress a mandatory server-owned
+// pipeline — it keeps running on the base flow.
 type authorizedPipeline struct {
-	Name          string
-	PipelineID    uuid.UUID
-	MaterialID    uuid.UUID
-	SystemManaged bool
+	Name       string
+	PipelineID uuid.UUID
+	MaterialID uuid.UUID
 }
 
 // prHeadPlanEntry is one authorised materialisation: the head definition to run
@@ -32,17 +34,22 @@ type prHeadPlanEntry struct {
 // resolvePRHeadPlan fetches + parses + validates the head `.gocdnext/` ONCE at
 // headSHA (one fetch per (source, configPath, headSHA) tuple — the caller groups
 // materials by that tuple), then builds the plan against the base-authorized
-// set. It writes NOTHING.
+// REPO pipelines. It writes NOTHING.
+//
+// The caller MUST have already partitioned out system_managed pipelines — they
+// run on the base flow, never the head. With no repo pipelines to resolve this
+// does NOT fetch, so a PR made entirely of system_managed work (or one whose
+// head deleted `.gocdnext/`) never blocks the mandatory server-owned pipelines.
 //
 // Fails closed, with no partial plan:
+//   - a nil fetcher or an empty headSHA (which would fetch the wrong ref) → error;
 //   - any fetch / parse (incl. a duplicate pipeline name) / declarative-target
 //     validation error → error;
-//   - an authorized, non-system-managed pipeline ABSENT from the head → error
-//     (never a silent fallback to the base definition).
+//   - an authorized repo pipeline ABSENT from the head → error (never a silent
+//     fallback to the base definition).
 //
-// A head pipeline NOT in the authorized set is IGNORED (a pipeline new in the
-// head never registers or runs). A system_managed authorized pipeline is SKIPPED
-// (its definition is server-owned, never sourced from a PR head).
+// A head pipeline NOT in the authorized set is IGNORED — a pipeline new in the
+// head never registers or runs.
 func resolvePRHeadPlan(
 	ctx context.Context,
 	fetcher ConfigFetcher,
@@ -50,6 +57,16 @@ func resolvePRHeadPlan(
 	configPath, headSHA string,
 	authorized []authorizedPipeline,
 ) ([]prHeadPlanEntry, error) {
+	if fetcher == nil {
+		return nil, fmt.Errorf("pr-head: no config fetcher configured")
+	}
+	if headSHA == "" {
+		return nil, fmt.Errorf("pr-head: empty head SHA")
+	}
+	if len(authorized) == 0 {
+		return nil, nil // nothing to resolve → no fetch
+	}
+
 	files, err := fetcher.Fetch(ctx, source, headSHA, configPath)
 	if err != nil {
 		return nil, fmt.Errorf("pr-head: fetch config: %w", err)
@@ -70,9 +87,6 @@ func resolvePRHeadPlan(
 
 	plan := make([]prHeadPlanEntry, 0, len(authorized))
 	for _, a := range authorized {
-		if a.SystemManaged {
-			continue // server-owned definition, never sourced from a PR head
-		}
 		hd, ok := headByName[a.Name]
 		if !ok {
 			return nil, fmt.Errorf(

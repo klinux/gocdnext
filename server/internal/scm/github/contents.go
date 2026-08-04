@@ -116,6 +116,10 @@ const (
 	maxConfigFiles      = 128
 	maxConfigTotalBytes = 2 << 20 // 2 MiB across all files
 	maxConfigFileBytes  = 1 << 20 // 1 MiB per file
+	// maxContentsAPIBytes caps a single Contents-API response read (a folder
+	// listing, or a single file with inline base64 content). Generous vs
+	// GitHub's ~1 MB inline cap; bounds buffering on a hostile/compromised host.
+	maxContentsAPIBytes = 4 << 20
 )
 
 func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Config, ref, configPath string) ([]RawFile, error) {
@@ -195,8 +199,10 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 // falling back to the download_url when GitHub stubbed the blob
 // (>1 MiB). Extracted so folder and single-file paths share it.
 func materialize(ctx context.Context, client *http.Client, token string, e contentEntry) (string, error) {
-	text, err := decodeInlineContent(e)
-	if err == nil {
+	if text, err := decodeInlineContent(e); err == nil {
+		if len(text) > maxConfigFileBytes {
+			return "", fmt.Errorf("github: inline %s exceeds the %d-byte per-file limit", e.Name, maxConfigFileBytes)
+		}
 		return text, nil
 	}
 	return fetchRaw(ctx, client, token, e.DownloadURL)
@@ -240,7 +246,7 @@ func fetchSingleContent(ctx context.Context, client *http.Client, token, u strin
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxContentsAPIBytes))
 	if resp.StatusCode == http.StatusNotFound {
 		return contentEntry{}, fmt.Errorf("%w: %s", ErrFolderNotFound, u)
 	}
@@ -275,7 +281,7 @@ func fetchContents(ctx context.Context, client *http.Client, token, u string) ([
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxContentsAPIBytes))
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("%w: %s", ErrFolderNotFound, u)
 	}
