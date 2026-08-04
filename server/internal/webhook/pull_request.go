@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -327,12 +328,13 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 	}
 	causeDetail, _ := json.Marshal(detail)
 	// PR-head config: for a GitHub same-repo PR on an opted-in project, run the
-	// matched repo pipelines from the head `.gocdnext/`; everything else (forks,
-	// system_managed, toggle off, other providers) stays on the base flow below.
-	// No-op with zero fetch otherwise — the base flow is untouched.
-	materials = h.applyPRHeadConfig(r.Context(), ev, materials, causeDetail, delivery, body)
-	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
-		Materials:   materials,
+	// matched repo pipelines from the head `.gocdnext/` and fold their outcomes
+	// into this delivery's runs/status; everything else (forks, system_managed,
+	// toggle off, other providers) stays on the base flow. No-op with zero fetch
+	// otherwise — the base flow is untouched.
+	base, headOutcomes, resolveErr := h.applyPRHeadConfig(r.Context(), ev, materials, causeDetail, delivery, body)
+	baseOutcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
+		Materials:   base,
 		Revision:    ev.HeadSHA,
 		Branch:      ev.HeadRef,
 		Author:      ev.Author,
@@ -345,13 +347,14 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 		Cause:       string(domain.CausePullRequest),
 		CauseDetail: causeDetail,
 	})
+	outcomes := append(headOutcomes, baseOutcomes...)
 	rec.materialID = firstCreatedRunMaterialID(outcomes)
 
 	runs := runsPayload(outcomes)
-	allErrored := len(outcomes) > 0
+	anyOK := false
 	for _, oc := range outcomes {
 		if oc.Err == nil {
-			allErrored = false
+			anyOK = true
 			if oc.RunID != uuid.Nil {
 				h.log.Info(ev.Provider+" webhook: "+logKind+" run queued",
 					"delivery", delivery, "pipeline_id", oc.PipelineID,
@@ -361,7 +364,20 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 			}
 		}
 	}
-	if allErrored {
+	// A head resolution error that produced NO run (and neither did any
+	// system_managed pipeline) is surfaced to the sender rather than a misleading
+	// 202: SCM/fetch → 503 (retryable), bad/missing config → 422.
+	if resolveErr != nil && len(runs) == 0 {
+		rec.status = store.WebhookStatusError
+		rec.errText = resolveErr.Error()
+		if errors.Is(resolveErr, ErrPRHeadFetch) {
+			http.Error(w, "pr-head: config fetch failed", http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, resolveErr.Error(), http.StatusUnprocessableEntity)
+		}
+		return
+	}
+	if len(outcomes) > 0 && !anyOK {
 		rec.status = store.WebhookStatusError
 		rec.errText = logKind + " fan-out: every pipeline errored"
 		http.Error(w, "internal error", http.StatusInternalServerError)

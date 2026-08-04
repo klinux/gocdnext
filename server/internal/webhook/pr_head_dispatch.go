@@ -9,26 +9,28 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
-// applyPRHeadConfig handles the PR-head-config path for a matched PR and returns
-// the materials the caller must still fan out on the BASE flow. It is a strict
-// no-op (returns `materials`, ZERO fetch) for anything but a GitHub same-repo PR
-// on a project that opted in — the base flow stays byte-for-byte intact.
+// applyPRHeadConfig handles the PR-head-config path for a matched PR. It returns
+// (base, outcomes, resolveErr):
+//   - base: the materials the caller must still fan out on the BASE flow;
+//   - outcomes: the head runs it created (or per-pipeline create errors), to be
+//     folded into the delivery's runs/status alongside the base outcomes;
+//   - resolveErr: a resolution-level error (fetch/parse/validate/envelope) that
+//     blocked the repo pipelines — the caller maps it to 503/422 when nothing
+//     else ran.
 //
-// Partition + partiality:
-//   - system_managed pipelines ALWAYS run on the base flow, independent of the
-//     head — a head that deletes/breaks `.gocdnext/` can't suppress them;
-//   - repo pipelines run from the head ONLY when the clone URL binds to exactly
-//     one scm_source and that project's toggle is on;
-//   - an ambiguous/missing binding or a resolution error blocks JUST the repo
+// It is a strict no-op (returns materials, nil, nil — ZERO fetch) for anything
+// but a GitHub same-repo PR on a project that opted in. Partition + partiality:
+//   - system_managed ALWAYS runs base, independent of the head;
+//   - repo pipelines run from the head only with an unambiguous binding + toggle
+//     on; an ambiguous/missing binding or a resolution error blocks JUST the repo
 //     pipelines (no silent base fallback) while system_managed still runs;
-//   - toggle OFF → the repo pipelines run on the base flow (not blocked).
+//   - toggle off → repo pipelines run base.
 func (h *Handler) applyPRHeadConfig(
 	ctx context.Context, ev pullRequestEvent, materials []store.Material,
 	causeDetail json.RawMessage, delivery string, body []byte,
-) []store.Material {
-	// Only the GitHub same-repo path — fork / GitLab / Bitbucket never fetch.
+) (base []store.Material, outcomes []fanOutOutcome, resolveErr error) {
 	if ev.Provider != "github" || !ev.SameRepo {
-		return materials
+		return materials, nil, nil
 	}
 
 	ids := make([]uuid.UUID, len(materials))
@@ -38,7 +40,7 @@ func (h *Handler) applyPRHeadConfig(
 	identities, err := h.store.ListMaterialPipelineIdentities(ctx, ids)
 	if err != nil {
 		h.log.Error("pr-head: material identity lookup failed — base flow", "err", err)
-		return materials
+		return materials, nil, nil
 	}
 	byMaterial := make(map[uuid.UUID]store.MaterialPipelineIdentity, len(identities))
 	for _, id := range identities {
@@ -47,7 +49,7 @@ func (h *Handler) applyPRHeadConfig(
 
 	// Partition: repo (non-system-managed) candidates vs base (system_managed, or
 	// a material with no identity — never head-driven).
-	var repo, base []store.Material
+	var repo []store.Material
 	for _, m := range materials {
 		if id, ok := byMaterial[m.ID]; ok && !id.SystemManaged {
 			repo = append(repo, m)
@@ -56,27 +58,25 @@ func (h *Handler) applyPRHeadConfig(
 		}
 	}
 	if len(repo) == 0 {
-		// Nothing to resolve from the head → base flow, and NO fetch: a PR of only
-		// system_managed work never touches the contributor branch.
-		return materials
+		return materials, nil, nil // only system_managed → base, ZERO fetch
 	}
 
 	bindings, err := h.store.FindPRHeadBindingsByURL(ctx, ev.CloneURL)
 	if err != nil || len(bindings) != 1 {
 		// Ambiguous (>1) or missing (0) binding → fail closed: repo pipelines do
-		// NOT run (no silent base fallback); system_managed still runs base.
+		// NOT run (no silent base fallback); system_managed still runs base. It's
+		// an operator misconfiguration, not a client error, so no resolveErr.
 		h.log.Warn("pr-head: ambiguous or missing scm binding — repo pipelines blocked",
 			"repo", ev.RepoLabel, "bindings", len(bindings), "err", err)
-		return base
+		return base, nil, nil
 	}
 	b := bindings[0]
 	if !b.Trust {
-		// Toggle off → the repo pipelines run on the base flow, unchanged.
-		return materials
+		return materials, nil, nil // toggle off → repo runs base, unchanged
 	}
 
-	// Build the base-authorized set from the repo materials in THIS project; a
-	// repo material in another project (shared fingerprint) falls back to base.
+	// Base-authorized set: repo materials in THIS project; a repo material in
+	// another project (shared fingerprint) falls back to base.
 	var authorized []authorizedPipeline
 	for _, m := range repo {
 		id := byMaterial[m.ID]
@@ -91,24 +91,26 @@ func (h *Handler) applyPRHeadConfig(
 
 	plan, err := resolvePRHeadPlan(ctx, h.fetcher, b.Source, b.ConfigPath, ev.HeadSHA, authorized)
 	if err != nil {
-		// Resolution error blocks the repo pipelines of this plan; system_managed
-		// still runs base. No partial repo runs (the plan is all-or-nothing).
+		// Resolution error blocks the repo pipelines of this plan (no partial repo
+		// runs); system_managed still runs base. The caller maps err to 503/422.
 		h.log.Warn("pr-head: config resolution failed — repo pipelines blocked",
 			"repo", ev.RepoLabel, "err", err)
-		return base
+		return base, nil, err
 	}
-	// One run per plan entry — per-material, preserving the base flow's per-
-	// pipeline failure semantics for concurrent store admission errors.
+	// One outcome per plan entry — per-material, preserving per-pipeline failure
+	// semantics (a store admission error on one pipeline doesn't sink the others).
+	outcomes = make([]fanOutOutcome, 0, len(plan))
 	for _, e := range plan {
-		h.createPRHeadRun(ctx, ev, b, e, causeDetail, delivery, body)
+		outcomes = append(outcomes, h.createPRHeadRun(ctx, ev, b, e, causeDetail, delivery, body))
 	}
-	return base
+	return base, outcomes, nil
 }
 
 func (h *Handler) createPRHeadRun(
 	ctx context.Context, ev pullRequestEvent, b store.PRHeadBinding, e prHeadPlanEntry,
 	causeDetail json.RawMessage, delivery string, body []byte,
-) {
+) fanOutOutcome {
+	oc := fanOutOutcome{PipelineID: e.PipelineID, MaterialID: e.MaterialID}
 	run, created, err := h.store.CreatePRHeadRun(ctx, store.CreatePRHeadRunInput{
 		MaterialID:  e.MaterialID,
 		ProjectID:   b.Source.ProjectID,
@@ -125,15 +127,13 @@ func (h *Handler) createPRHeadRun(
 		CauseDetail: causeDetail,
 	})
 	if err != nil {
-		h.log.Error("pr-head: create run failed",
-			"pipeline_id", e.PipelineID, "material_id", e.MaterialID, "err", err)
-		return
+		oc.Err = err
+		return oc
 	}
 	if created {
-		h.log.Info("pr-head run queued",
-			"pipeline_id", e.PipelineID, "run_id", run.RunID, "head_sha", ev.HeadSHA)
-		if h.reporter != nil {
-			h.reporter.ReportRunCreated(ctx, run.RunID)
-		}
+		oc.RunID = run.RunID
+		oc.RunCounter = run.Counter
+		oc.ModCreated = true
 	}
+	return oc
 }

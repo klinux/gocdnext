@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -115,7 +116,7 @@ func TestApplyPRHeadConfig_MixedValid(t *testing.T) {
 	h, s, f, pool, ctx, materials := seedWiring(t)
 	f.files = []scm.RawFile{rawFile("build.yaml", "build")}
 
-	base := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
+	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
 
 	// gov (system_managed) returned to base; build removed (ran via head).
 	if len(base) != 1 {
@@ -149,7 +150,7 @@ func TestApplyPRHeadConfig_MixedResolveFailBlocksRepoOnly(t *testing.T) {
 	h, _, f, pool, ctx, materials := seedWiring(t)
 	f.files = []scm.RawFile{} // build absent from head → resolve fails (authorized but missing)
 
-	base := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
+	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
 
 	if len(base) != 1 {
 		t.Fatalf("base = %d, want 1 (gov still runs base)", len(base))
@@ -167,7 +168,7 @@ func TestApplyPRHeadConfig_OnlySystemManagedNoFetch(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE pipelines SET system_managed = true`); err != nil {
 		t.Fatalf("mark all system_managed: %v", err)
 	}
-	base := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
+	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "delivery-1", []byte("{}"))
 	if len(base) != len(materials) {
 		t.Fatalf("base = %d, want %d (all base)", len(base), len(materials))
 	}
@@ -183,7 +184,7 @@ func TestApplyPRHeadConfig_ForkAndOffAreZeroFetch(t *testing.T) {
 		h, _, f, _, ctx, materials := seedWiring(t)
 		ev := wireEvent()
 		ev.SameRepo = false
-		base := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
+		base, _, _ := h.applyPRHeadConfig(ctx, ev, materials, wireCauseDetail(), "d", []byte("{}"))
 		if len(base) != len(materials) || f.calls != 0 {
 			t.Fatalf("base=%d fetch=%d, want %d/0", len(base), f.calls, len(materials))
 		}
@@ -193,9 +194,45 @@ func TestApplyPRHeadConfig_ForkAndOffAreZeroFetch(t *testing.T) {
 		if err := s.SetProjectTrustSameRepoPRConfigBySlug(ctx, "demo", false); err != nil {
 			t.Fatalf("disable: %v", err)
 		}
-		base := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
 		if len(base) != len(materials) || f.calls != 0 {
 			t.Fatalf("base=%d fetch=%d, want %d/0 (off → base, no fetch)", len(base), f.calls, len(materials))
+		}
+	})
+}
+
+// #3: applyPRHeadConfig returns structured head outcomes and a TYPED resolution
+// error, so the caller can fold them into the delivery's runs/status (and map a
+// fetch failure to 503 vs a bad config to 422) instead of a misleading 202.
+func TestApplyPRHeadConfig_OutcomesAndTypedResolveErr(t *testing.T) {
+	t.Run("valid → created head outcome", func(t *testing.T) {
+		h, _, f, _, ctx, materials := seedWiring(t)
+		f.files = []scm.RawFile{rawFile("build.yaml", "build")}
+		_, outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		if resolveErr != nil {
+			t.Fatalf("resolveErr = %v, want nil", resolveErr)
+		}
+		if len(outcomes) != 1 || outcomes[0].RunID == uuid.Nil {
+			t.Fatalf("outcomes = %+v, want 1 created head run", outcomes)
+		}
+	})
+	t.Run("fetch error → ErrPRHeadFetch, no outcomes", func(t *testing.T) {
+		h, _, f, _, ctx, materials := seedWiring(t)
+		f.err = errors.New("boom")
+		_, outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		if !errors.Is(resolveErr, ErrPRHeadFetch) {
+			t.Fatalf("resolveErr = %v, want ErrPRHeadFetch", resolveErr)
+		}
+		if len(outcomes) != 0 {
+			t.Fatalf("outcomes = %+v, want 0 (repo blocked)", outcomes)
+		}
+	})
+	t.Run("invalid/missing config → ErrPRHeadConfigInvalid", func(t *testing.T) {
+		h, _, f, _, ctx, materials := seedWiring(t)
+		f.files = []scm.RawFile{} // build authorized but absent from head
+		_, _, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+		if !errors.Is(resolveErr, ErrPRHeadConfigInvalid) {
+			t.Fatalf("resolveErr = %v, want ErrPRHeadConfigInvalid", resolveErr)
 		}
 	})
 }
@@ -212,7 +249,7 @@ func TestApplyPRHeadConfig_AmbiguousBindingBlocksRepo(t *testing.T) {
 		t.Fatalf("apply demo2: %v", err)
 	}
 
-	base := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+	base, _, _ := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
 
 	if ids := materialIDs(base); len(ids) != 1 {
 		t.Fatalf("base = %d, want 1 (gov only; build blocked)", len(base))

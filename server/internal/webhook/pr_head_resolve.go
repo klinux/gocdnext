@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -9,6 +10,14 @@ import (
 	"github.com/gocdnext/gocdnext/server/internal/configsync"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
+)
+
+var (
+	// ErrPRHeadFetch wraps a config fetch / SCM failure — transient, maps to 503.
+	ErrPRHeadFetch = errors.New("pr-head: config fetch failed")
+	// ErrPRHeadConfigInvalid wraps a parse / declarative-target / envelope error
+	// (bad or missing head config) — maps to 422.
+	ErrPRHeadConfigInvalid = errors.New("pr-head: config invalid")
 )
 
 // authorizedPipeline is a base-authorized REPO pipeline the head config may
@@ -72,15 +81,15 @@ func resolvePRHeadPlan(
 
 	files, err := fetcher.Fetch(ctx, source, headSHA, configPath)
 	if err != nil {
-		return nil, fmt.Errorf("pr-head: fetch config: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrPRHeadFetch, err)
 	}
 	// ParseFiles already rejects a duplicate pipeline name across files.
 	pipelines, err := configsync.ParseFiles(files)
 	if err != nil {
-		return nil, fmt.Errorf("pr-head: parse config: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrPRHeadConfigInvalid, err)
 	}
 	if err := configsync.ValidateDeclarativeTargets(pipelines); err != nil {
-		return nil, fmt.Errorf("pr-head: validate config: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrPRHeadConfigInvalid, err)
 	}
 
 	headByName := make(map[string]*domain.Pipeline, len(pipelines))
@@ -93,7 +102,7 @@ func resolvePRHeadPlan(
 		hd, ok := headByName[a.Name]
 		if !ok {
 			return nil, fmt.Errorf(
-				"pr-head: pipeline %q is authorized on the base but absent from the head config", a.Name)
+				"%w: pipeline %q is authorized on the base but absent from the head config", ErrPRHeadConfigInvalid, a.Name)
 		}
 		plan = append(plan, prHeadPlanEntry{
 			PipelineID: a.PipelineID,
