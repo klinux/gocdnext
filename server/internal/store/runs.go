@@ -245,8 +245,11 @@ func serviceNames(def domain.Pipeline) []string {
 	return names
 }
 
-// insertRunSkeleton runs the full "create run + stages + jobs + NOTIFY" dance
-// inside one tx. Trigger-specific code prepares cause+revisions and calls in.
+// insertRunSkeleton owns the run-creation transaction: begin, the before-hook,
+// loading + decoding the pipeline's already-effective definition from the DB,
+// then delegating row materialisation to insertRunRowsTx, and finally commit +
+// post-commit audit drain. Trigger-specific code prepares cause+revisions and
+// calls in.
 func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput) (RunCreated, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -268,19 +271,107 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: create run: load pipeline %s: %w", in.PipelineID, err)
 	}
-
-	var def domain.Pipeline
-	if err := json.Unmarshal(pipelineRow.Definition, &def); err != nil {
-		return RunCreated{}, fmt.Errorf("store: create run: decode definition: %w", err)
+	runDef, err := effectiveDefFromBytes(pipelineRow.Definition)
+	if err != nil {
+		return RunCreated{}, fmt.Errorf("store: create run: %w", err)
 	}
-	if len(def.Stages) == 0 {
+	if len(runDef.pipeline.Stages) == 0 {
 		return RunCreated{}, fmt.Errorf("store: create run: pipeline %s has no stages", in.PipelineID)
 	}
 
-	counter, err := q.NextRunCounter(ctx, pipelineRow.ID)
+	var pendingAuditEmits []AuditEmit
+	result, err := s.insertRunRowsTx(ctx, tx, q, runRowsSpec{
+		PipelineID:    in.PipelineID,
+		Def:           runDef,
+		ProjectNotifs: pipelineRow.ProjectNotifications,
+		Cause:         in.Cause,
+		CauseDetail:   in.CauseDetail,
+		Revisions:     in.Revisions,
+		TriggeredBy:   in.TriggeredBy,
+		Ref:           in.Ref,
+		AfterHook:     in.hooks.after,
+	}, &pendingAuditEmits)
+	if err != nil {
+		return RunCreated{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return RunCreated{}, fmt.Errorf("store: create run: commit: %w", err)
+	}
+
+	// Drain queued audit events post-commit. A failure here logs but does not
+	// break the caller — the run already exists, and losing a single audit row
+	// is preferable to surfacing audit outage as a run-creation failure.
+	for _, emit := range pendingAuditEmits {
+		if _, err := s.EmitAuditEvent(ctx, emit); err != nil {
+			slog.Warn("store: audit emit failed (quorum override)",
+				"err", err, "target_id", emit.TargetID, "action", emit.Action)
+		}
+	}
+	return result, nil
+}
+
+// runDefinition couples an effective pipeline definition with its EXACT snapshot
+// bytes so the two can never disagree — a run materialises `pipeline` and
+// persists `bytes` as runs.definition. The fields are unexported; a caller can't
+// assemble a mismatched pair, only build one via a constructor that guarantees
+// `bytes` is a canonical serialisation of `pipeline`.
+type runDefinition struct {
+	pipeline domain.Pipeline
+	bytes    []byte
+}
+
+// effectiveDefFromBytes builds a runDefinition by decoding canonical bytes — the
+// DB-effective path, where the stored bytes are authoritative and the pipeline
+// is derived from them.
+func effectiveDefFromBytes(bytes []byte) (runDefinition, error) {
+	var p domain.Pipeline
+	if err := json.Unmarshal(bytes, &p); err != nil {
+		return runDefinition{}, fmt.Errorf("store: decode definition: %w", err)
+	}
+	return runDefinition{pipeline: p, bytes: bytes}, nil
+}
+
+// effectiveDefFromPipeline builds a runDefinition by serialising the pipeline —
+// the PR-head path, where the pipeline (e.g. post-ApplyPolicies) is authoritative.
+// Uses the same marshaller as ApplyProject so the snapshot form matches the
+// DB-effective path byte-for-byte.
+func effectiveDefFromPipeline(p domain.Pipeline) (runDefinition, error) {
+	bytes, err := marshalPipelineDefinition(&p)
+	if err != nil {
+		return runDefinition{}, fmt.Errorf("store: marshal effective definition: %w", err)
+	}
+	return runDefinition{pipeline: p, bytes: bytes}, nil
+}
+
+// runRowsSpec carries an ALREADY-EFFECTIVE definition (coupled to its exact
+// snapshot bytes via runDefinition) plus the pipeline/project metadata needed to
+// materialise a run's rows inside a caller-owned transaction. No override or PR
+// logic lives here — both the DB-effective path and (later) the PR-head path
+// share it verbatim.
+type runRowsSpec struct {
+	PipelineID    uuid.UUID     // the pipeline the run belongs to AND supersedes within
+	Def           runDefinition // effective definition + its exact snapshot bytes
+	ProjectNotifs []byte        // project-level notifications for inheritance (nil ok)
+	Cause         string
+	CauseDetail   json.RawMessage
+	Revisions     json.RawMessage
+	TriggeredBy   string
+	Ref           string
+	AfterHook     func(ctx context.Context, q *db.Queries, runID uuid.UUID) error
+}
+
+// insertRunRowsTx materialises run + stages + jobs (+ approval gates, supersede
+// lane firing, notification stage, run_queued NOTIFY, and the after-hook) from
+// an effective def, inside the caller's transaction. It neither begins/commits
+// the tx nor drains audits: the caller owns the tx lifecycle and drains the
+// audit emits appended to pendingAuditEmits AFTER it commits.
+func (s *Store) insertRunRowsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, in runRowsSpec, pendingAuditEmits *[]AuditEmit) (RunCreated, error) {
+	counter, err := q.NextRunCounter(ctx, pgUUID(in.PipelineID))
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: create run: counter: %w", err)
 	}
+	def := in.Def.pipeline
 
 	// has_services / service_names are both computed from the SAME def
 	// we just decoded — not re-read inside the SQL — so an ApplyProject
@@ -289,7 +380,7 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	// COMMITTED would let two SELECTs against pipelines.definition
 	// return different values within the same store call.
 	runRow, err := q.InsertRun(ctx, db.InsertRunParams{
-		PipelineID:   pipelineRow.ID,
+		PipelineID:   pgUUID(in.PipelineID),
 		Counter:      counter,
 		Cause:        in.Cause,
 		CauseDetail:  in.CauseDetail,
@@ -302,7 +393,7 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 		// cascade time reads THIS, not the since-drifted pipelines.definition. Same
 		// bytes we just decoded into `def`, so the snapshot can't disagree with the
 		// stages/jobs we materialise.
-		Definition: pipelineRow.Definition,
+		Definition: in.Def.bytes,
 	})
 	if err != nil {
 		return RunCreated{}, fmt.Errorf("store: insert run: %w", err)
@@ -315,9 +406,8 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	// tx to the audit_events table's availability — best-effort is
 	// the package contract. Only quorum overrides (not unchanged
 	// gates) push entries, keeping audit noise proportional to
-	// actual policy events.
-	var pendingAuditEmits []AuditEmit
-
+	// actual policy events. The slice is caller-owned (a pointer param) so the
+	// audit drain runs after the caller commits the tx.
 	stageIDByName := make(map[string]uuid.UUID, len(def.Stages))
 	for i, name := range def.Stages {
 		row, err := q.InsertStageRun(ctx, db.InsertStageRunParams{
@@ -416,7 +506,7 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 				// override actually fired — quorum-unchanged gates
 				// don't deserve audit noise.
 				if overrideLabel != "" {
-					pendingAuditEmits = append(pendingAuditEmits, AuditEmit{
+					*pendingAuditEmits = append(*pendingAuditEmits, AuditEmit{
 						Action:     AuditActionApprovalQuorumOverride,
 						TargetType: "job_run",
 						TargetID:   fromPgUUID(row.ID).String(),
@@ -482,9 +572,9 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	// pipeline side (parser pre-allocates `[]` when the YAML key is
 	// present, leaves nil when absent) so this check is reliable.
 	effectiveNotifications := def.Notifications
-	if effectiveNotifications == nil && len(pipelineRow.ProjectNotifications) > 0 {
+	if effectiveNotifications == nil && len(in.ProjectNotifs) > 0 {
 		var projectNs []domain.Notification
-		if err := json.Unmarshal(pipelineRow.ProjectNotifications, &projectNs); err != nil {
+		if err := json.Unmarshal(in.ProjectNotifs, &projectNs); err != nil {
 			return RunCreated{}, fmt.Errorf("store: decode project notifications: %w", err)
 		}
 		effectiveNotifications = projectNs
@@ -506,26 +596,12 @@ func (s *Store) insertRunSkeleton(ctx context.Context, in insertRunSkeletonInput
 	}
 
 	// after-hook: the run row now exists (result.RunID). Runs on THIS tx's
-	// querier; an error rolls the whole run creation back (deferred Rollback),
-	// so the run + the hook's writes are all-or-nothing.
-	if in.hooks.after != nil {
-		if err := in.hooks.after(ctx, q, result.RunID); err != nil {
+	// querier; an error rolls the whole run creation back (the caller's deferred
+	// Rollback), so the run + the hook's writes are all-or-nothing. The caller
+	// owns commit + the post-commit audit drain.
+	if in.AfterHook != nil {
+		if err := in.AfterHook(ctx, q, result.RunID); err != nil {
 			return RunCreated{}, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return RunCreated{}, fmt.Errorf("store: create run: commit: %w", err)
-	}
-
-	// Drain queued audit events post-commit. A failure here logs
-	// but does not break the caller — the run already exists, and
-	// losing a single audit row is preferable to surfacing audit
-	// outage as a run-creation failure.
-	for _, emit := range pendingAuditEmits {
-		if _, err := s.EmitAuditEvent(ctx, emit); err != nil {
-			slog.Warn("store: audit emit failed (quorum override)",
-				"err", err, "target_id", emit.TargetID, "action", emit.Action)
 		}
 	}
 	return result, nil

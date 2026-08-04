@@ -373,6 +373,8 @@ func main() {
 			"plugins", len(pluginCatalog.Names()))
 	}
 	projectsHandler = projectsHandler.WithPluginCatalog(pluginCatalog)
+	// PR-head config validates `with:` inputs against the same catalog.
+	webhookHandler = webhookHandler.WithPluginCatalog(pluginCatalog)
 	// Native deploy-target registrar (ADR-0001): the store satisfies both the
 	// provider's ClusterGetter (reads Applications via the cluster registry) and
 	// the registrar's Registry (environment + target persistence). The same provider
@@ -791,6 +793,11 @@ func main() {
 		p.Put("/api/v1/projects/{slug}/log-archive", projectsHandler.SetLogArchiveSettings)
 		p.Get("/api/v1/projects/{slug}/check-reporting", projectsHandler.GetCheckReporting)
 		p.Put("/api/v1/projects/{slug}/check-reporting", projectsHandler.SetCheckReporting)
+		// PR-head config opt-in (#223). GET is maintainer+ (read-only); the PUT
+		// enforces ADMIN in-handler — enabling it lets same-repo PR authors
+		// control jobs/images/profiles/OIDC/deploys for that run.
+		p.Get("/api/v1/projects/{slug}/pr-head-config", projectsHandler.GetPRHeadTrust)
+		p.Put("/api/v1/projects/{slug}/pr-head-config", projectsHandler.SetPRHeadTrust)
 		p.Get("/api/v1/projects/{slug}/crons", projectsHandler.ListProjectCrons)
 		p.Post("/api/v1/projects/{slug}/crons", projectsHandler.CreateProjectCron)
 		p.Put("/api/v1/projects/{slug}/crons/{id}", projectsHandler.UpdateProjectCron)

@@ -10,10 +10,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/gocdnext/gocdnext/server/internal/checks"
+	"github.com/gocdnext/gocdnext/server/internal/plugins"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/internal/webhook/github"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
@@ -51,6 +53,9 @@ type Handler struct {
 	log      *slog.Logger
 	fetcher  ConfigFetcher
 	reporter *checks.Reporter
+	// pluginCatalog validates PR-head `with:` inputs against the known-plugin
+	// catalog (same check Apply runs). Nil = validation skipped.
+	pluginCatalog *plugins.Catalog
 	// prFiles resolves PR changed-file lists for `when.paths`
 	// filtering (push payloads embed the lists; PR payloads don't).
 	// Nil = PR path filtering fails open. See pathfilter.go.
@@ -58,6 +63,9 @@ type Handler struct {
 	// prCommits fetches a PR's first-commit time (DORA Coding stage) from the
 	// provider API. Nil = the Coding stage is simply not recorded.
 	prCommits PRCommitsFetcher
+	// prHeadResolveTimeout bounds the TOTAL PR-head config resolution. Zero falls
+	// back to defaultPRHeadResolveTimeout; tests set it low to prove the bound.
+	prHeadResolveTimeout time.Duration
 }
 
 // NewHandler builds the webhook handler. The Store must have a
@@ -67,7 +75,7 @@ func NewHandler(s *store.Store, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{store: s, log: log}
+	return &Handler{store: s, log: log, prHeadResolveTimeout: defaultPRHeadResolveTimeout}
 }
 
 // WithConfigFetcher opts the handler into drift detection: on a push whose
@@ -84,6 +92,13 @@ func (h *Handler) WithConfigFetcher(f ConfigFetcher) *Handler {
 // skip the check create.
 func (h *Handler) WithChecksReporter(r *checks.Reporter) *Handler {
 	h.reporter = r
+	return h
+}
+
+// WithPluginCatalog validates PR-head `with:` inputs against the plugin catalog
+// (the same check Apply runs on the default-branch config). Nil skips it.
+func (h *Handler) WithPluginCatalog(c *plugins.Catalog) *Handler {
+	h.pluginCatalog = c
 	return h
 }
 
