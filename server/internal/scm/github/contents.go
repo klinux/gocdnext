@@ -108,6 +108,16 @@ func ParseRepoURL(raw string) (owner, repo string, err error) {
 // backwards-compat with older callers. When the path ends in
 // .yaml / .yml it's treated as a single-file config (GitLab-CI
 // style) and a single RawFile is returned.
+// Bounds on a fetched `.gocdnext/` — a defence for the untrusted PR-head path
+// (the content comes from a contributor branch), generous enough that no
+// legitimate config hits them. Enforced DURING the read/loop, not after a full
+// io.ReadAll, so a hostile repo can't force unbounded buffering.
+const (
+	maxConfigFiles      = 128
+	maxConfigTotalBytes = 2 << 20 // 2 MiB across all files
+	maxConfigFileBytes  = 1 << 20 // 1 MiB per file
+)
+
 func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Config, ref, configPath string) ([]RawFile, error) {
 	if cfg.Owner == "" || cfg.Repo == "" {
 		return nil, fmt.Errorf("github: owner and repo are required")
@@ -155,6 +165,7 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 	}
 
 	out := make([]RawFile, 0, len(entries))
+	total := 0
 	for _, e := range entries {
 		if e.Type != "file" {
 			continue
@@ -164,9 +175,16 @@ func FetchGocdnextFolder(ctx context.Context, httpClient *http.Client, cfg Confi
 		default:
 			continue
 		}
+		if len(out) >= maxConfigFiles {
+			return nil, fmt.Errorf("github: %s has more than %d config files", configPath, maxConfigFiles)
+		}
 		text, err := materialize(ctx, httpClient, cfg.Token, e)
 		if err != nil {
 			return nil, fmt.Errorf("github: fetch %s: %w", e.Name, err)
+		}
+		total += len(text)
+		if total > maxConfigTotalBytes {
+			return nil, fmt.Errorf("github: %s config exceeds the %d-byte total limit", configPath, maxConfigTotalBytes)
 		}
 		out = append(out, RawFile{Name: e.Name, Content: text})
 	}
@@ -306,9 +324,14 @@ func fetchRaw(ctx context.Context, client *http.Client, token, rawURL string) (s
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("github: raw %s returned %d", rawURL, resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	// Cap the read itself (LimitReader) so a hostile branch can't force us to
+	// buffer an unbounded body; +1 lets us detect an over-limit file.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxConfigFileBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxConfigFileBytes {
+		return "", fmt.Errorf("github: raw %s exceeds the %d-byte per-file limit", rawURL, maxConfigFileBytes)
 	}
 	return string(body), nil
 }
