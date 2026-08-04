@@ -44,6 +44,13 @@ var (
 	ErrPRHeadNoStages = errors.New("store: pr-head: definition has no stages")
 	// ErrPRHeadTooManyJobs: matrix + policies would materialise > maxPRHeadJobRuns.
 	ErrPRHeadTooManyJobs = errors.New("store: pr-head: too many job_runs after matrix + policies")
+	// ErrPRHeadProfile: a runner profile is unknown or a resource exceeds its cap.
+	ErrPRHeadProfile = errors.New("store: pr-head: runner profile resolution failed")
+	// ErrPRHeadCluster: a referenced cluster is not registered.
+	ErrPRHeadCluster = errors.New("store: pr-head: cluster resolution failed")
+	// ErrPRHeadInvalidInput: a required field is empty/nil, or cause_detail is not
+	// a non-null JSON object.
+	ErrPRHeadInvalidInput = errors.New("store: pr-head: invalid input")
 )
 
 // CreatePRHeadRunInput authorises ONE materialisation from a PR head. The
@@ -51,22 +58,20 @@ var (
 // under the lock, never trusted as independent inputs.
 type CreatePRHeadRunInput struct {
 	MaterialID  uuid.UUID       // PRIMARY identity; pipeline + project derived under lock
+	ProjectID   uuid.UUID       // REQUIRED: the project the resolver bound this material to; verified under lock
 	RawDef      domain.Pipeline // the parsed head definition (RAW, pre-policy)
-	Revision    string          // head SHA (also the modification revision)
-	Branch      string          // head ref
+	Revision    string          // head SHA — the single provenance source (dedup + config_revision + digest)
+	Branch      string          // head ref (required; a NULL branch would break the dedup unique key)
 	Author      string
 	Message     string
 	Payload     json.RawMessage
 	CommittedAt time.Time
 	TriggeredBy string
-	Ref         string          // supersede lane key (e.g. "pr:<n>")
-	Cause       string          // defaults to pull_request
-	CauseDetail json.RawMessage // PR metadata from the resolver; config_* keys are store-set
-	// ConfigRevision is the head SHA the config was fetched at (for cause_detail).
-	ConfigRevision string
-	// ExpectedProjectID, when non-nil, is verified against the material's owning
-	// project under the lock — a resolver binding check. uuid.Nil skips it.
-	ExpectedProjectID uuid.UUID
+	Provider    string          // required, store-set into cause_detail (e.g. "github")
+	Delivery    string          // required, store-set into cause_detail (webhook delivery id)
+	CauseDetail json.RawMessage // PR metadata (pr_number, pr_title, ...); config_* keys are store-set.
+	// The lane is derived from CauseDetail's pr_number (like the push/webhook
+	// path); the cause is always pull_request. Neither is a caller input.
 }
 
 // CreatePRHeadRun authorises and materialises a single run from a PR head
@@ -87,6 +92,11 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 	}
 	if len(in.RawDef.Stages) == 0 {
 		return RunCreated{}, false, ErrPRHeadNoStages
+	}
+	// Required provenance. Empty branch would also break the dedup unique key
+	// (material_id, revision, branch).
+	if in.ProjectID == uuid.Nil || in.Revision == "" || in.Branch == "" || in.Provider == "" || in.Delivery == "" {
+		return RunCreated{}, false, ErrPRHeadInvalidInput
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -112,8 +122,9 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 		return RunCreated{}, false, fmt.Errorf("store: pr-head: lock context: %w", err)
 	}
 
-	// Envelope guards for this single materialisation.
-	if in.ExpectedProjectID != uuid.Nil && fromPgUUID(lc.ProjectID) != in.ExpectedProjectID {
+	// Envelope guards for this single materialisation. The project binding is
+	// mandatory: the resolver knows the project, so the material MUST derive to it.
+	if fromPgUUID(lc.ProjectID) != in.ProjectID {
 		return RunCreated{}, false, ErrPRHeadProjectMismatch
 	}
 	if !lc.TrustSameRepoPrConfig {
@@ -132,6 +143,19 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 		return RunCreated{}, false, fmt.Errorf("store: pr-head: load policies: %w", err)
 	}
 	effective := compliance.ApplyPolicies(in.RawDef, policies)
+
+	// Resolve runner-profile image/resource defaults + caps and validate cluster
+	// references on the SAME tx querier — AFTER policies (so policy-injected jobs
+	// are covered) and BEFORE the cap + snapshot. Without this the head snapshot
+	// would carry unresolved resources and bypass the admin profile cap at
+	// dispatch (which reads resources straight from the snapshot).
+	pipes := []*domain.Pipeline{&effective}
+	if err := resolveProfilesQ(ctx, q, pipes); err != nil {
+		return RunCreated{}, false, fmt.Errorf("%w: %v", ErrPRHeadProfile, err)
+	}
+	if err := resolveClustersQ(ctx, q, pipes); err != nil {
+		return RunCreated{}, false, fmt.Errorf("%w: %v", ErrPRHeadCluster, err)
+	}
 
 	// Cap the materialised job_runs (matrix + synthesized notification jobs)
 	// BEFORE any write — the head matrix is attacker-controllable.
@@ -168,11 +192,10 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 		return RunCreated{}, false, nil
 	}
 
-	cause := in.Cause
-	if cause == "" {
-		cause = string(domain.CausePullRequest)
+	causeDetail, err := prHeadCauseDetail(in, modRes.ID, runDef.bytes)
+	if err != nil {
+		return RunCreated{}, false, fmt.Errorf("%w: %v", ErrPRHeadInvalidInput, err)
 	}
-	causeDetail := prHeadCauseDetail(in.CauseDetail, in.MaterialID, modRes.ID, in.ConfigRevision, runDef.bytes)
 	revisions, _ := json.Marshal(map[string]any{
 		in.MaterialID.String(): map[string]string{"revision": in.Revision, "branch": in.Branch},
 	})
@@ -182,11 +205,11 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 		PipelineID:    fromPgUUID(lc.PipelineID),
 		Def:           runDef,
 		ProjectNotifs: lc.ProjectNotifications,
-		Cause:         cause,
+		Cause:         string(domain.CausePullRequest),
 		CauseDetail:   causeDetail,
 		Revisions:     revisions,
 		TriggeredBy:   in.TriggeredBy,
-		Ref:           in.Ref,
+		Ref:           prHeadLaneRef(causeDetail, in.Branch),
 	}, &pendingAuditEmits)
 	if err != nil {
 		return RunCreated{}, false, err
@@ -204,22 +227,48 @@ func (s *Store) CreatePRHeadRun(ctx context.Context, in CreatePRHeadRunInput) (R
 	return result, true, nil
 }
 
-// prHeadCauseDetail merges the resolver's PR metadata with the store-set config
-// provenance keys. The config_* keys are written LAST so they can't be spoofed
-// by whatever the caller put in CauseDetail.
-func prHeadCauseDetail(base json.RawMessage, materialID uuid.UUID, modID int64, configRev string, defBytes []byte) json.RawMessage {
+// prHeadCauseDetail merges the resolver's PR metadata with the store-set
+// provenance keys. It accepts ONLY a non-null JSON OBJECT for CauseDetail (a
+// "null" or a non-object is an error, not silently dropped — the map would be
+// nil and the assignments would panic). The store-set keys (provider, delivery,
+// material_id, modification_id, config_*) are written LAST so the caller's
+// metadata can't spoof them; config_revision is the single head SHA.
+func prHeadCauseDetail(in CreatePRHeadRunInput, modID int64, defBytes []byte) (json.RawMessage, error) {
 	detail := map[string]any{}
-	if len(base) > 0 {
-		_ = json.Unmarshal(base, &detail)
+	if len(in.CauseDetail) > 0 {
+		if err := json.Unmarshal(in.CauseDetail, &detail); err != nil {
+			return nil, fmt.Errorf("cause_detail must be a json object: %w", err)
+		}
+		if detail == nil { // a literal "null" unmarshals to a nil map
+			return nil, errors.New("cause_detail must be a non-null json object")
+		}
 	}
-	detail["material_id"] = materialID.String()
+	detail["provider"] = in.Provider
+	detail["delivery"] = in.Delivery
+	detail["material_id"] = in.MaterialID.String()
 	detail["modification_id"] = modID
 	detail["config_source"] = "pr_head"
-	detail["config_revision"] = configRev
+	detail["config_revision"] = in.Revision
 	sum := sha256.Sum256(defBytes)
 	detail["config_digest"] = hex.EncodeToString(sum[:])
-	out, _ := json.Marshal(detail)
-	return out
+	out, err := json.Marshal(detail)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// prHeadLaneRef derives the supersede lane the same way the push/webhook path
+// does: pr:<number> from the cause_detail's pr_number, falling back to the head
+// branch when the number is missing/malformed.
+func prHeadLaneRef(causeDetail json.RawMessage, branch string) string {
+	var detail map[string]any
+	if err := json.Unmarshal(causeDetail, &detail); err == nil {
+		if pr, ok := prLaneRef(detail["pr_number"]); ok {
+			return pr
+		}
+	}
+	return branch
 }
 
 // prHeadJobCount returns the number of job_runs a run of `def` would

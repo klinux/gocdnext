@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gocdnext/gocdnext/server/internal/db"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -20,6 +21,13 @@ import (
 //
 // Cached per apply: one existence probe per distinct cluster name.
 func (s *Store) ResolveClusters(ctx context.Context, pipelines []*domain.Pipeline) error {
+	return resolveClustersQ(ctx, s.q, pipelines)
+}
+
+// resolveClustersQ is the querier-parameterised body of ResolveClusters so a
+// caller inside a transaction (CreatePRHeadRun) validates `cluster:` references
+// on the same tx querier — an unknown cluster fails loudly citing the NAME.
+func resolveClustersQ(ctx context.Context, q *db.Queries, pipelines []*domain.Pipeline) error {
 	checked := map[string]struct{}{}
 	probe := func(pipeline, job, field, name string) error {
 		if name == "" {
@@ -28,7 +36,7 @@ func (s *Store) ResolveClusters(ctx context.Context, pipelines []*domain.Pipelin
 		if _, ok := checked[name]; ok {
 			return nil
 		}
-		exists, err := s.q.ClusterExists(ctx, name)
+		exists, err := q.ClusterExists(ctx, name)
 		if err != nil {
 			return fmt.Errorf("pipeline %q: job %q: check cluster %q: %w", pipeline, job, name, err)
 		}
