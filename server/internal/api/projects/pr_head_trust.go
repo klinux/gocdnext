@@ -19,8 +19,11 @@ type prHeadTrustResponse struct {
 	Enabled bool `json:"enabled"`
 }
 
+// prHeadTrustRequest uses a *bool so a missing `enabled` (or a typo'd key like
+// `enable`, rejected by DisallowUnknownFields) is a 400 rather than silently
+// decoding to false — this is a security setting, not a preference.
 type prHeadTrustRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled"`
 }
 
 // GetPRHeadTrust handles GET /api/v1/projects/{slug}/pr-head-config — the
@@ -59,18 +62,33 @@ func (h *Handler) SetPRHeadTrust(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "slug is required", http.StatusBadRequest)
 		return
 	}
-	u, ok := authapi.UserFromContext(r.Context())
-	if !ok || !store.RoleSatisfies(u.Role, store.RoleAdmin) {
+	// ADMIN ONLY. Match the codebase convention (deploy targets, environments):
+	// enforce admin only when a user IS present in context. An auth-disabled
+	// install has no user, and the existing contract treats that as the local
+	// operator = admin — so the toggle stays changeable there rather than being
+	// permanently un-settable.
+	if u, ok := authapi.UserFromContext(r.Context()); ok && !store.RoleSatisfies(u.Role, store.RoleAdmin) {
 		http.Error(w, "changing PR-head config trust requires admin", http.StatusForbidden)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
 	var req prHeadTrustRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.store.SetProjectTrustSameRepoPRConfigBySlug(r.Context(), slug, req.Enabled); err != nil {
+	if req.Enabled == nil {
+		http.Error(w, "field 'enabled' (bool) is required", http.StatusBadRequest)
+		return
+	}
+	if dec.More() {
+		http.Error(w, "unexpected trailing content after the JSON object", http.StatusBadRequest)
+		return
+	}
+	enabled := *req.Enabled
+	if err := h.store.SetProjectTrustSameRepoPRConfigBySlug(r.Context(), slug, enabled); err != nil {
 		if errors.Is(err, store.ErrProjectNotFound) {
 			http.Error(w, "project not found", http.StatusNotFound)
 			return
@@ -79,11 +97,11 @@ func (h *Handler) SetPRHeadTrust(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	h.log.Info("project pr-head-config trust updated", "slug", slug, "enabled", req.Enabled)
+	h.log.Info("project pr-head-config trust updated", "slug", slug, "enabled", enabled)
 	audit.Emit(r.Context(), h.log, h.store,
 		store.AuditActionProjectPRHeadTrustSet, "project", slug,
-		map[string]any{"slug": slug, "enabled": req.Enabled})
+		map[string]any{"slug": slug, "enabled": enabled})
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(prHeadTrustResponse{Enabled: req.Enabled})
+	_ = json.NewEncoder(w).Encode(prHeadTrustResponse{Enabled: enabled})
 }

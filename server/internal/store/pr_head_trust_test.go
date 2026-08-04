@@ -44,6 +44,30 @@ func TestProjectTrustSameRepoPRConfig_GetSetRoundTrip(t *testing.T) {
 	}
 }
 
+// A drift re-apply (or any ApplyProject) must NOT reset the security toggle:
+// UpsertProject's ON CONFLICT only touches name/description/config_path, so an
+// enabled flag survives a config sync. This pins that so a future column added
+// to the upsert SET can't silently disable the feature.
+func TestProjectTrustSameRepoPRConfig_PreservedAcrossApply(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "pay", Name: "pay"}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if err := s.SetProjectTrustSameRepoPRConfigBySlug(ctx, "pay", true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	// Re-apply the project (what a default-branch push / drift sync does).
+	if _, err := s.ApplyProject(ctx, store.ApplyProjectInput{Slug: "pay", Name: "pay"}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got, err := s.GetProjectTrustSameRepoPRConfigBySlug(ctx, "pay"); err != nil || !got {
+		t.Fatalf("after re-apply = %v (err=%v), want true (preserved)", got, err)
+	}
+}
+
 func TestProjectTrustSameRepoPRConfig_UnknownProject(t *testing.T) {
 	pool := dbtest.SetupPool(t)
 	s := store.New(pool)
