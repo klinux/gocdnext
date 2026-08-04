@@ -128,6 +128,55 @@ func TestDispatchPR_FetchErrorReturns503WithBaseRun(t *testing.T) {
 	}
 }
 
+// Finding (round 3): a MISSING binding (0 rows) is surfaced as 422, distinct from
+// "all toggles off" (a legitimate base flow). Covers both a head-only project —
+// the original silent-202 regression — and a mixed one.
+func TestDispatchPR_MissingBindingReturns422(t *testing.T) {
+	t.Run("mixed → 422 with the system_managed run in the body", func(t *testing.T) {
+		h, _, _, pool, ctx, _ := seedWiring(t)
+		if _, err := pool.Exec(ctx, `DELETE FROM scm_sources`); err != nil {
+			t.Fatalf("delete scm_sources: %v", err)
+		}
+		rr, rec := dispatchHTTP(t, h, wireEvent(), []byte("{}"))
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+		}
+		body := decodeBody(t, rr)
+		if body.Error != "pr-head: no scm binding for repo" || rec.errText != "pr-head: no scm binding for repo" {
+			t.Fatalf("error = %q / errText = %q, want stable missing-binding message", body.Error, rec.errText)
+		}
+		if len(body.Runs) != 1 {
+			t.Fatalf("runs = %d, want 1 (gov base run rides in the 422 body)", len(body.Runs))
+		}
+		if n := runCount(t, pool, ctx, "gov"); n != 1 {
+			t.Fatalf("gov runs = %d, want 1", n)
+		}
+		if n := runCount(t, pool, ctx, "build"); n != 0 {
+			t.Fatalf("build runs = %d, want 0 (repo blocked)", n)
+		}
+	})
+	t.Run("head-only → 422 with runs:[] (no silent 202)", func(t *testing.T) {
+		h, _, _, pool, ctx, _ := seedWiring(t)
+		// Both pipelines are repo (no system_managed) → a head-only project.
+		if _, err := pool.Exec(ctx, `UPDATE pipelines SET system_managed = false`); err != nil {
+			t.Fatalf("clear system_managed: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM scm_sources`); err != nil {
+			t.Fatalf("delete scm_sources: %v", err)
+		}
+		rr, _ := dispatchHTTP(t, h, wireEvent(), []byte("{}"))
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 (not a silent 202); body=%s", rr.Code, rr.Body.String())
+		}
+		if got := len(decodeBody(t, rr).Runs); got != 0 {
+			t.Fatalf("runs = %d, want 0 (every repo pipeline blocked)", got)
+		}
+		if n := runCount(t, pool, ctx, "build") + runCount(t, pool, ctx, "gov"); n != 0 {
+			t.Fatalf("runs created = %d, want 0 (all repo, binding missing)", n)
+		}
+	})
+}
+
 // A parseable-but-invalid head (authorized pipeline absent) → 422.
 func TestDispatchPR_InvalidConfigReturns422(t *testing.T) {
 	h, _, f, _, _, _ := seedWiring(t)

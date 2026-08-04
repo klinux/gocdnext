@@ -336,3 +336,30 @@ func TestApplyPRHeadConfig_UntrustedSecondBindingNotAmbiguous(t *testing.T) {
 		t.Fatalf("build config_source = %q, want pr_head", src)
 	}
 }
+
+// A MISSING binding (0 rows — e.g. a concurrent scm_source deletion between HMAC
+// auth and dispatch) is distinct from "all toggles off": it fails the repo
+// pipelines closed with ErrPRHeadBindingMissing (never a silent base run), while
+// system_managed still runs base. No fetch.
+func TestApplyPRHeadConfig_MissingBindingBlocksRepo(t *testing.T) {
+	h, _, f, pool, ctx, materials := seedWiring(t)
+	if _, err := pool.Exec(ctx, `DELETE FROM scm_sources`); err != nil {
+		t.Fatalf("delete scm_sources: %v", err)
+	}
+	outcomes, resolveErr := h.applyPRHeadConfig(ctx, wireEvent(), materials, wireCauseDetail(), "d", []byte("{}"))
+	if !errors.Is(resolveErr, ErrPRHeadBindingMissing) {
+		t.Fatalf("resolveErr = %v, want ErrPRHeadBindingMissing", resolveErr)
+	}
+	if n := runCount(t, pool, ctx, "gov"); n != 1 {
+		t.Fatalf("gov runs = %d, want 1 (system_managed still runs base)", n)
+	}
+	if n := runCount(t, pool, ctx, "build"); n != 0 {
+		t.Fatalf("build runs = %d, want 0 (repo blocked, binding missing)", n)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %d, want 1 (gov base)", len(outcomes))
+	}
+	if f.calls != 0 {
+		t.Fatalf("fetch calls = %d, want 0 (blocked before fetch)", f.calls)
+	}
+}

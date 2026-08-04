@@ -20,6 +20,11 @@ var (
 	// maps to more than one OPTED-IN project — an ambiguous binding we refuse to
 	// guess between. Operator misconfiguration, not retryable → 422.
 	ErrPRHeadBinding = errors.New("pr-head: ambiguous scm binding")
+	// ErrPRHeadBindingMissing fails the REPO pipelines closed because the PR's clone
+	// URL has NO scm binding at all — reachable via a concurrent scm_source deletion
+	// between HMAC auth and dispatch. Fail closed rather than silently run the base
+	// definition for a repo we can no longer authorize → 422.
+	ErrPRHeadBindingMissing = errors.New("pr-head: no scm binding for repo")
 	// ErrPRHeadUnavailable fails the REPO pipelines closed because a transient
 	// store error (identity or binding lookup) prevented resolving the head plan.
 	// Retryable → 503. We do NOT silently run the base definition for a head-enabled
@@ -105,12 +110,21 @@ func (h *Handler) applyPRHeadConfig(
 		return h.fanOutPRBase(ctx, ev, base, causeDetail, delivery, body),
 			fmt.Errorf("%w: binding lookup", ErrPRHeadUnavailable)
 	}
+	if len(bindings) == 0 {
+		// No scm binding AT ALL for a repo material we just matched — the source was
+		// deleted between HMAC auth and dispatch. Fail closed: system_managed still
+		// runs base; the repo pipelines are blocked → 422. This is distinct from
+		// "all toggles off" below (which is a legitimate base flow).
+		h.log.Warn("pr-head: no scm binding for repo — repo pipelines blocked",
+			"repo", ev.RepoLabel, "delivery", delivery)
+		return h.fanOutPRBase(ctx, ev, base, causeDetail, delivery, body), ErrPRHeadBindingMissing
+	}
 	// Only an OPTED-IN (trusted) binding carries head config. The clone URL is NOT
-	// unique, so filter to trusted before deciding: 0 trusted → nobody opted in, run
-	// base for everyone (incl. repo, unchanged); >1 trusted → two opted-in projects
-	// on the same URL, we refuse to guess which head config wins → fail closed. This
-	// keeps a project that never opted in from being blocked just because it shares
-	// a clone URL with an opted-in one.
+	// unique, so filter to trusted before deciding: 0 trusted → every binding has
+	// the toggle off, nobody opted in, run base for everyone (incl. repo, unchanged);
+	// >1 trusted → two opted-in projects on the same URL, we refuse to guess which
+	// head config wins → fail closed. This keeps a project that never opted in from
+	// being blocked just because it shares a clone URL with an opted-in one.
 	var trusted []store.PRHeadBinding
 	for _, b := range bindings {
 		if b.Trust {
@@ -230,6 +244,8 @@ func prHeadErrorResponse(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrPRHeadFetch), errors.Is(err, ErrPRHeadUnavailable):
 		return http.StatusServiceUnavailable, "pr-head: config temporarily unavailable"
+	case errors.Is(err, ErrPRHeadBindingMissing):
+		return http.StatusUnprocessableEntity, "pr-head: no scm binding for repo"
 	case errors.Is(err, ErrPRHeadBinding):
 		return http.StatusUnprocessableEntity, "pr-head: ambiguous scm binding"
 	default: // ErrPRHeadConfigInvalid + any unexpected
@@ -259,6 +275,12 @@ func (h *Handler) createPRHeadRun(
 	})
 	if err != nil {
 		oc.Err = err
+		// Per-material log, mirroring fanOutMaterials: in a MIXED delivery a base run
+		// leaves anyOK=true, so without this the head failure would surface neither in
+		// the response nor the log.
+		h.log.Warn("pr-head: head run creation failed",
+			"repo", ev.RepoLabel, "delivery", delivery,
+			"pipeline_id", e.PipelineID, "material_id", e.MaterialID, "err", err)
 		return oc
 	}
 	if created {
