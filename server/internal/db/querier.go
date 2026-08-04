@@ -1592,6 +1592,16 @@ type Querier interface {
 	// environment deleted-and-recreated, or rollout routing changed since the reconcile,
 	// must not be written from a pre-lock snapshot.
 	LockDeployTargetForDeploy(ctx context.Context, arg LockDeployTargetForDeployParams) (LockDeployTargetForDeployRow, error)
+	// PR-head config (#223). Anchored on the material as the single identity: it
+	// derives the material's pipeline and owning project, and takes a FOR SHARE lock
+	// on the PROJECT row so a concurrent disable of trust_same_repo_pr_config (or a
+	// project/pipeline delete) is linearised against run creation. The caller MUST
+	// acquire lockComplianceShared BEFORE this query — lock order is
+	// compliance -> project row, matching ApplyProject, to avoid an inverted-order
+	// deadlock. Everything the store-side envelope guard needs comes back in one
+	// round-trip: the pipeline identity + name + system_managed flag, the project id
+	// + trust flag, and the project notifications for inheritance.
+	LockPRHeadRunContext(ctx context.Context, id pgtype.UUID) (LockPRHeadRunContextRow, error)
 	// Serialises the stage rollup (#207): the completion cascade locks the stage_run
 	// row FOR UPDATE before reading GetStageProgress, so two sibling jobs finishing in
 	// parallel can't both compute progress and race to close the stage. Returns the
