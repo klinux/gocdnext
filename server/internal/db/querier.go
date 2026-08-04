@@ -779,6 +779,10 @@ type Querier interface {
 	// block is absent (pipeline nil means "inherit"; pipeline empty
 	// list means "explicit opt-out" and we skip this entirely).
 	GetProjectNotifications(ctx context.Context, id pgtype.UUID) ([]byte, error)
+	// Per-project opt-in (#223) for running a same-repo PR against its own
+	// `.gocdnext/` (head config). Column is NOT NULL DEFAULT false, so a row always
+	// yields a value; ErrNoRows = no such project.
+	GetProjectTrustSameRepoPRConfigBySlug(ctx context.Context, slug string) (bool, error)
 	GetPullRequest(ctx context.Context, arg GetPullRequestParams) (VcsPullRequest, error)
 	// Thin row used by cancel/rerun handlers to check status + find the
 	// pipeline + revisions without pulling the whole detail query. cause +
