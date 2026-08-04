@@ -8,6 +8,36 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.84.0 — 2026-08-04
+
+### Added
+
+- **Same-repo PR-head config (#223).** For a GitHub same-repo pull request on a
+  project that has opted in — a new admin-only `trust_same_repo_pr_config` toggle,
+  default off — the matched repo pipelines now run from the **PR's own `.gocdnext/`
+  (head config)** instead of the default-branch definition, so a contributor can
+  validate a pipeline change on the very PR that introduces it. Everything else stays
+  on the base flow with zero extra fetch: forks, GitLab/Bitbucket, `system_managed`
+  pipelines, and toggle-off. The head controls only the executable graph (stages,
+  jobs, services, variables); the base envelope (materials, concurrency, supersede,
+  notifications) is preserved and every compliance policy is re-applied to the head
+  definition inside the run transaction. Fail-closed throughout — a missing or
+  ambiguous SCM binding, or any fetch/parse/validation error, blocks the repo
+  pipelines (`422`/`503`) while the mandatory `system_managed` pipelines always run
+  base, dispatched first so a slow contributor branch never delays them. A full rerun
+  of a `pr_head` run is refused with a typed `422` (individual job rerun and
+  re-triggering the PR still work). New metric
+  `gocdnext_pr_head_resolution_seconds{outcome}`. Same-repo is decided by immutable
+  provider repo ids, never by URL or name.
+
+### Documentation
+
+- **Plugin-arg interpolation `${VAR}` vs `${{ }}` clarified, with the SonarQube token
+  pattern documented (#222).** Runtime shell expansion (`${VAR}`) vs gocdnext
+  substitution (`${{ }}`) were easy to confuse in plugin `args:`; the reference now
+  spells out which resolves where, using `-Dsonar.token=${SONAR_TOKEN}` as the
+  worked example.
+
 ## v0.83.1 — 2026-08-03
 
 ### Fixed
