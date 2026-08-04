@@ -41,6 +41,10 @@ type pullRequestEvent struct {
 	RepoLabel string // for log diagnostics — github.FullName OR gitlab project path
 	At        time.Time
 	Labels    []string
+	// SameRepo is true only for a GitHub same-repo PR, decided by immutable repo
+	// ids (never url/name). It gates the PR-head-config path; every other path
+	// (fork, GitLab, Bitbucket) leaves it false and runs the base flow unchanged.
+	SameRepo bool
 }
 
 // handlePullRequest reacts to GitHub's pull_request webhook. Matching
@@ -102,6 +106,7 @@ func (h *Handler) handlePullRequest(w http.ResponseWriter, r *http.Request, body
 		RepoLabel: ev.Repository.FullName,
 		At:        ev.At,
 		Labels:    ev.Labels,
+		SameRepo:  ev.SameRepo,
 	})
 }
 
@@ -321,6 +326,11 @@ func (h *Handler) dispatchPullRequest(w http.ResponseWriter, r *http.Request, bo
 		detail["pr_labels"] = ev.Labels
 	}
 	causeDetail, _ := json.Marshal(detail)
+	// PR-head config: for a GitHub same-repo PR on an opted-in project, run the
+	// matched repo pipelines from the head `.gocdnext/`; everything else (forks,
+	// system_managed, toggle off, other providers) stays on the base flow below.
+	// No-op with zero fetch otherwise — the base flow is untouched.
+	materials = h.applyPRHeadConfig(r.Context(), ev, materials, causeDetail, delivery, body)
 	outcomes := fanOutMaterials(r.Context(), h.log, h.store, fanOutInput{
 		Materials:   materials,
 		Revision:    ev.HeadSHA,

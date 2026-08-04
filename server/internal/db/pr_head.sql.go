@@ -11,6 +11,103 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const findScmSourcesByURL = `-- name: FindScmSourcesByURL :many
+SELECT s.id, s.project_id, s.provider, s.url, s.default_branch, s.auth_ref,
+       p.trust_same_repo_pr_config, p.config_path
+FROM scm_sources s
+JOIN projects p ON p.id = s.project_id
+WHERE s.url = $1
+`
+
+type FindScmSourcesByURLRow struct {
+	ID                    pgtype.UUID
+	ProjectID             pgtype.UUID
+	Provider              string
+	Url                   string
+	DefaultBranch         string
+	AuthRef               *string
+	TrustSameRepoPrConfig bool
+	ConfigPath            string
+}
+
+// All scm_sources bound to a clone URL, with the owning project's PR-head toggle
+// + config path (one round-trip for the wiring's source decision). PR-head
+// config requires EXACTLY ONE binding; 0 or >1 must fail closed rather than
+// silently pick a LIMIT-1 winner — url is NOT unique (00002_scm_sources.sql:26).
+func (q *Queries) FindScmSourcesByURL(ctx context.Context, url string) ([]FindScmSourcesByURLRow, error) {
+	rows, err := q.db.Query(ctx, findScmSourcesByURL, url)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FindScmSourcesByURLRow{}
+	for rows.Next() {
+		var i FindScmSourcesByURLRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Provider,
+			&i.Url,
+			&i.DefaultBranch,
+			&i.AuthRef,
+			&i.TrustSameRepoPrConfig,
+			&i.ConfigPath,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMaterialPipelineIdentities = `-- name: ListMaterialPipelineIdentities :many
+SELECT m.id AS material_id, pl.id AS pipeline_id, pl.name AS pipeline_name,
+       pl.system_managed, pl.project_id
+FROM materials m
+JOIN pipelines pl ON pl.id = m.pipeline_id
+WHERE m.id = ANY($1::uuid[])
+`
+
+type ListMaterialPipelineIdentitiesRow struct {
+	MaterialID    pgtype.UUID
+	PipelineID    pgtype.UUID
+	PipelineName  string
+	SystemManaged bool
+	ProjectID     pgtype.UUID
+}
+
+// For the matched PR materials, resolve each to its pipeline identity + owning
+// project, so the wiring can partition system_managed (base flow) from repo
+// pipelines (head flow) and build the authorized set. Read-only, pre-tx.
+func (q *Queries) ListMaterialPipelineIdentities(ctx context.Context, materialIds []pgtype.UUID) ([]ListMaterialPipelineIdentitiesRow, error) {
+	rows, err := q.db.Query(ctx, listMaterialPipelineIdentities, materialIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMaterialPipelineIdentitiesRow{}
+	for rows.Next() {
+		var i ListMaterialPipelineIdentitiesRow
+		if err := rows.Scan(
+			&i.MaterialID,
+			&i.PipelineID,
+			&i.PipelineName,
+			&i.SystemManaged,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockPRHeadRunContext = `-- name: LockPRHeadRunContext :one
 SELECT pl.id                       AS pipeline_id,
        pl.name                     AS pipeline_name,

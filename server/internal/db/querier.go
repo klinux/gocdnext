@@ -621,6 +621,11 @@ type Querier interface {
 	// GetScmSourceWebhookSecret to keep ciphertext out of the general
 	// read path.
 	FindScmSourceByURL(ctx context.Context, url string) (FindScmSourceByURLRow, error)
+	// All scm_sources bound to a clone URL, with the owning project's PR-head toggle
+	// + config path (one round-trip for the wiring's source decision). PR-head
+	// config requires EXACTLY ONE binding; 0 or >1 must fail closed rather than
+	// silently pick a LIMIT-1 winner — url is NOT unique (00002_scm_sources.sql:26).
+	FindScmSourcesByURL(ctx context.Context, url string) ([]FindScmSourcesByURLRow, error)
 	// One run's findings (occurrences) with their identity state. Deduped to
 	// identities in the store (worst-severity-wins); kept as occurrences here.
 	FindingsByRun(ctx context.Context, runID pgtype.UUID) ([]FindingsByRunRow, error)
@@ -1282,6 +1287,10 @@ type Querier interface {
 	// epic). All metrics derive from deployment_revisions + the producing run.
 	// Distinct label keys across all projects — the dashboard's "group by" picker.
 	ListLabelKeys(ctx context.Context) ([]string, error)
+	// For the matched PR materials, resolve each to its pipeline identity + owning
+	// project, so the wiring can partition system_managed (base flow) from repo
+	// pipelines (head flow) and build the authorized set. Read-only, pre-tx.
+	ListMaterialPipelineIdentities(ctx context.Context, materialIds []pgtype.UUID) ([]ListMaterialPipelineIdentitiesRow, error)
 	ListMaterialsByPipeline(ctx context.Context, pipelineID pgtype.UUID) ([]Material, error)
 	// All materials across pipelines of a project. VSM uses the
 	// `upstream` ones to build edges between pipeline nodes; git ones
