@@ -113,9 +113,15 @@ func TestResolvePRHeadPlan_NewInHeadIgnored(t *testing.T) {
 // caller partitions out) → NO fetch, so a head that deleted `.gocdnext/` can't
 // block the mandatory server-owned pipelines.
 func TestResolvePRHeadPlan_EmptyAuthorizedNoFetch(t *testing.T) {
+	// Empty short-circuits BEFORE the fetcher/SHA guards: a system_managed-only
+	// project never consults the head, so even a nil fetcher and an empty SHA
+	// must not error.
+	if plan, err := resolvePRHeadPlan(context.Background(), nil, store.SCMSource{}, ".gocdnext", "", nil); err != nil || plan != nil {
+		t.Fatalf("resolve(empty, nil fetcher, empty sha) = (%+v, %v), want (nil, nil)", plan, err)
+	}
+	// And with a real fetcher present it is still never called.
 	f := &fakeCfgFetcher{err: errors.New("should not be called")}
-	plan, err := resolve(t, f, nil)
-	if err != nil || plan != nil {
+	if plan, err := resolve(t, f, nil); err != nil || plan != nil {
 		t.Fatalf("resolve(empty) = (%+v, %v), want (nil, nil)", plan, err)
 	}
 	if f.calls != 0 {

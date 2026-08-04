@@ -57,14 +57,17 @@ func resolvePRHeadPlan(
 	configPath, headSHA string,
 	authorized []authorizedPipeline,
 ) ([]prHeadPlanEntry, error) {
+	// Nothing to resolve (e.g. a PR of only system_managed work) → no fetch, and
+	// no dependency on the fetcher or head SHA either: a project that never
+	// consults the head must not error on a missing fetcher or a malformed SHA.
+	if len(authorized) == 0 {
+		return nil, nil
+	}
 	if fetcher == nil {
 		return nil, fmt.Errorf("pr-head: no config fetcher configured")
 	}
 	if headSHA == "" {
 		return nil, fmt.Errorf("pr-head: empty head SHA")
-	}
-	if len(authorized) == 0 {
-		return nil, nil // nothing to resolve → no fetch
 	}
 
 	files, err := fetcher.Fetch(ctx, source, headSHA, configPath)
