@@ -10,6 +10,7 @@ import {
   Loader2,
   Minus,
   ShieldCheck,
+  Snowflake,
   X,
 } from "lucide-react";
 
@@ -368,7 +369,7 @@ function RowStages({
                   col.jobs.map((job) => (
                     <StageBox
                       key={job.key}
-                      tone={job.run ? statusTone(job.run.status) : "neutral"}
+                      tone={boxTone(job)}
                       tooltip={`${col.name}:${job.name} · ${job.run?.status ?? "not run"}`}
                       job={runId != null && job.run ? job : undefined}
                       runId={runId}
@@ -400,6 +401,21 @@ function RowStages({
   );
 }
 
+// StageBoxTone is the render tone: the shared StatusTone plus a LOCAL "frozen"
+// variant for an awaiting gate held by an environment freeze (#227). Kept local
+// so the exhaustive Record<StatusTone,…> maps in lib/status don't need a case.
+type StageBoxTone = StatusTone | "frozen";
+
+// boxTone maps a job to its node tone — an awaiting_approval gate whose governed
+// env is frozen renders as "frozen" (ice + snowflake) so the operator sees, from
+// the flow, that Approve is on hold.
+function boxTone(job: MergedJob): StageBoxTone {
+  const run = job.run;
+  if (!run) return "neutral";
+  if (run.status === "awaiting_approval" && run.held_by_freeze) return "frozen";
+  return statusTone(run.status);
+}
+
 // StageBox is one 30px status box. With a live job + runId it becomes the
 // job-action dropdown trigger (View status / Restart / Approve / Reject /
 // Cancel); otherwise it's a hover tooltip.
@@ -409,7 +425,7 @@ function StageBox({
   job,
   runId,
 }: {
-  tone: StatusTone;
+  tone: StageBoxTone;
   tooltip: string;
   job?: MergedJob;
   runId?: string;
@@ -418,12 +434,16 @@ function StageBox({
     <span
       className={cn(
         "flex size-[30px] items-center justify-center rounded-full border-[1.5px]",
-        nodeBorder[tone],
-        boxBg[tone],
-        tone === "running" && "animate-pulse",
+        tone === "frozen"
+          ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300"
+          : cn(nodeBorder[tone], boxBg[tone], tone === "running" && "animate-pulse"),
       )}
     >
-      <StageGlyph tone={tone} />
+      {tone === "frozen" ? (
+        <Snowflake className="size-3.5" aria-hidden />
+      ) : (
+        <StageGlyph tone={tone} />
+      )}
     </span>
   );
   if (job && runId) {
