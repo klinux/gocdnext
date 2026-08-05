@@ -8,6 +8,27 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.85.0 — 2026-08-05
+
+### Added
+
+- **Environment-freeze hold is visible on the approval gate (#227).** When an
+  environment is frozen (#202), a waiting approval gate that governs it now shows
+  it — where the operator actually decides. On the **project pipelines flow/list**
+  (both views), the awaiting **APPROVE node** renders a distinct ice/frozen tone
+  with a snowflake instead of the usual amber, and its Approve action is disabled
+  with an "on hold — approval is paused while `<env>` is frozen" reason; **Reject
+  stays available** (the server permits it during a freeze). The run-detail gate
+  card carries the same signal as a drill-down. Previously the node looked
+  identical whether or not the environment was frozen and clicking Approve failed
+  with a 409 — exactly the surprise this removes. The hold is derived from the
+  run's immutable snapshot via the same governance the approve/expiry paths block
+  on, so the badge can never disagree with the actual block, and it is advisory:
+  the server re-checks under locks on approve. Computed on the project page only
+  while an approval is waiting (a focused, project-scoped snapshot lookup — no
+  extra cost on the common poll, no VSM impact). New metric
+  `gocdnext_gate_freeze_annotation_errors_total{surface,kind}`.
+
 ## v0.84.0 — 2026-08-04
 
 ### Added
