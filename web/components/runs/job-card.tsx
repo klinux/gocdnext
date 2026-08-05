@@ -7,6 +7,7 @@ import {
   Loader2,
   Minus,
   ShieldCheck,
+  Snowflake,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -183,6 +184,35 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
                 <RelativeTime at={job.awaiting_since} fallback="—" />
               </span>
             ) : null}
+            {/* Freeze hold (#227): a governed env is frozen, so approving is
+                paused. Collapse many envs to a count in the visible label
+                (names can be up to 64 chars each); the full list rides in the
+                title + an sr-only span for assistive tech. */}
+            {job.held_by_freeze ? (
+              (() => {
+                const envs = job.frozen_envs ?? [];
+                return (
+                  <Badge
+                    variant="outline"
+                    className="gap-1 border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                    title={`Approval paused — frozen environment${
+                      envs.length > 1 ? "s" : ""
+                    }: ${envs.join(", ")}`}
+                  >
+                    <Snowflake className="h-3 w-3" aria-hidden />
+                    <span>
+                      On hold —{" "}
+                      {envs.length === 1
+                        ? `${envs.join(", ")} frozen`
+                        : `${envs.length} environments frozen`}
+                    </span>
+                    {envs.length > 1 ? (
+                      <span className="sr-only">: {envs.join(", ")}</span>
+                    ) : null}
+                  </Badge>
+                );
+              })()
+            ) : null}
             {/* PR-label-driven quorum: render a discreet badge ONLY
                 when an override actually fired. Native `title` keeps
                 the explanation off the visual surface but accessible
@@ -212,6 +242,8 @@ export function JobCard({ job, runID, apiBaseURL = "" }: Props) {
             jobName={job.name}
             description={job.approval_description}
             approvers={job.approvers}
+            heldByFreeze={job.held_by_freeze}
+            frozenEnvs={job.frozen_envs}
           />
         </div>
       ) : null}

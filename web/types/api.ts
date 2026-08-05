@@ -138,6 +138,11 @@ export type JobRunSummaryLite = {
   status: string;
   started_at?: string;
   finished_at?: string;
+  // Freeze hold (#227) on an awaiting_approval gate: the project flow/list
+  // renders its APPROVE node frozen + disables Approve there. Snake_case matches
+  // the server JSON; omitted for every non-held gate.
+  held_by_freeze?: boolean;
+  frozen_envs?: string[];
 };
 
 export type StageRunSummary = {
@@ -277,6 +282,14 @@ export type JobDetail = {
   decided_by?: string;
   decided_at?: string;
   decision?: "approved" | "rejected" | string;
+  // held_by_freeze is true when this awaiting gate governs an
+  // environment currently under a change-freeze (#227): approving is
+  // blocked server-side, so the UI shows an "on hold" badge + disables
+  // Approve. frozen_envs names the frozen governed envs. Omitted on the
+  // wire for every non-held gate. Snake_case matches the server JSON —
+  // this codebase uses wire keys verbatim (no camelCase mapping).
+  held_by_freeze?: boolean;
+  frozen_envs?: string[];
 
   // Notification-job metadata. Populated only for jobs in the
   // synthetic `_notifications` stage; the UI keys off these to

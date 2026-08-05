@@ -62,13 +62,15 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProject
 }
 
 const getRunWithPipeline = `-- name: GetRunWithPipeline :one
-SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
+SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
+       p.id AS project_id, p.slug AS project_slug,
        p.check_reporting_mode,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
        r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
-       pl.definition AS pipeline_definition
+       COALESCE(NULLIF(r.definition, '{}'::jsonb), pl.definition) AS pipeline_definition,
+       (r.definition <> '{}'::jsonb) AS has_run_snapshot
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id
@@ -80,6 +82,7 @@ type GetRunWithPipelineRow struct {
 	ID                 pgtype.UUID
 	PipelineID         pgtype.UUID
 	PipelineName       string
+	ProjectID          pgtype.UUID
 	ProjectSlug        string
 	CheckReportingMode string
 	Counter            int64
@@ -97,6 +100,7 @@ type GetRunWithPipelineRow struct {
 	FinishedAt         pgtype.Timestamptz
 	TriggeredBy        *string
 	PipelineDefinition []byte
+	HasRunSnapshot     bool
 }
 
 // pl.definition is returned so the read path can decode the
@@ -104,6 +108,13 @@ type GetRunWithPipelineRow struct {
 // without a second round-trip. Adds one JSONB column to the
 // response but avoids a per-run "did this pipeline have
 // notifications?" lookup.
+// pipeline_definition is the run's IMMUTABLE SNAPSHOT (runs.definition,
+// migration 00067) when present, else the live pl.definition — ONE JSONB, not
+// two, so a poll never transfers/deserialises both. has_run_snapshot flags which
+// it is: true → the read path can compute a gate's freeze-hold state (#227) from
+// this same snapshot (the exact def the approve/expiry paths block on); false
+// (an orphaned '{}' snapshot) → it fell back to the live def, so Notifications
+// still render but no freeze annotation runs. project_id feeds the freeze lookup.
 func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error) {
 	row := q.db.QueryRow(ctx, getRunWithPipeline, id)
 	var i GetRunWithPipelineRow
@@ -111,6 +122,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.ID,
 		&i.PipelineID,
 		&i.PipelineName,
+		&i.ProjectID,
 		&i.ProjectSlug,
 		&i.CheckReportingMode,
 		&i.Counter,
@@ -128,6 +140,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.FinishedAt,
 		&i.TriggeredBy,
 		&i.PipelineDefinition,
+		&i.HasRunSnapshot,
 	)
 	return i, err
 }
@@ -750,6 +763,52 @@ func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWit
 			&i.LatestRunAt,
 			&i.StatusAgg,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunSnapshotsForFreeze = `-- name: ListRunSnapshotsForFreeze :many
+SELECT r.id AS run_id, r.definition
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+WHERE pl.project_id = $1
+  AND r.id = ANY($2::uuid[])
+  AND r.definition <> '{}'::jsonb
+`
+
+type ListRunSnapshotsForFreezeParams struct {
+	ProjectID pgtype.UUID
+	RunIds    []pgtype.UUID
+}
+
+type ListRunSnapshotsForFreezeRow struct {
+	RunID      pgtype.UUID
+	Definition []byte
+}
+
+// Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
+// (runs.definition, migration 00067) for a handful of runs that have an
+// awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
+// least one approval is waiting, so the common poll never pays it — unlike the
+// shared LatestRun query (which also feeds VSM), this never touches the hot path.
+// The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
+// are excluded so the caller falls back to "no badge".
+func (q *Queries) ListRunSnapshotsForFreeze(ctx context.Context, arg ListRunSnapshotsForFreezeParams) ([]ListRunSnapshotsForFreezeRow, error) {
+	rows, err := q.db.Query(ctx, listRunSnapshotsForFreeze, arg.ProjectID, arg.RunIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunSnapshotsForFreezeRow{}
+	for rows.Next() {
+		var i ListRunSnapshotsForFreezeRow
+		if err := rows.Scan(&i.RunID, &i.Definition); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

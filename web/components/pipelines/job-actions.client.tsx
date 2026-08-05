@@ -2,10 +2,11 @@
 
 import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Check, FileText, RotateCcw, X } from "lucide-react";
+import { Check, FileText, RotateCcw, Snowflake, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
+import { freezeReason } from "@/lib/freeze";
 import { approveJob, rejectJob } from "@/server/actions/approvals";
 import { cancelJob, cancelRun, rerunJob, rerunRun } from "@/server/actions/runs";
 import { ApprovalRejectDialog } from "@/components/pipelines/approval-reject-dialog.client";
@@ -60,6 +61,10 @@ export function JobActions({
   // decision here lets an operator approve without drilling into the run.
   // The server re-checks role + quorum on POST — these are convenience.
   const isAwaiting = status === "awaiting_approval";
+  // Freeze hold (#227): the gate governs a frozen env, so approving is blocked
+  // server-side. Disable Approve here + explain; Reject stays available.
+  const held = !!job.run?.held_by_freeze;
+  const frozenEnvs = job.run?.frozen_envs;
 
   const onRestart = () => {
     startTransition(async () => {
@@ -125,6 +130,9 @@ export function JobActions({
   };
 
   const onApprove = () => {
+    // Guard the poll-race: if a freeze arrived since render, don't fire into a
+    // 409. The server stays the authority.
+    if (held) return;
     startTransition(async () => {
       const res = await approveJob({ jobRunID: jobRunId, runID: runId });
       if (!res.ok) {
@@ -167,7 +175,7 @@ export function JobActions({
           >
             {children}
           </TooltipTrigger>
-          <TooltipContent>{tooltip}</TooltipContent>
+          <TooltipContent>{held ? freezeReason(frozenEnvs) : tooltip}</TooltipContent>
         </Tooltip>
         <DropdownMenuContent align={align} className="w-auto min-w-[180px]">
           <DropdownMenuItem onClick={() => setSheetOpen(true)}>
@@ -181,7 +189,21 @@ export function JobActions({
           {isAwaiting ? (
             <>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={onApprove} disabled={pending}>
+              {held ? (
+                <div className="px-2 py-1.5 text-xs">
+                  <div className="flex items-center gap-1 font-medium text-cyan-700 dark:text-cyan-300">
+                    <Snowflake className="size-3" aria-hidden />
+                    On hold
+                  </div>
+                  <p className="mt-0.5 max-w-[220px] break-words text-muted-foreground">
+                    {freezeReason(frozenEnvs)}
+                    {frozenEnvs && frozenEnvs.length > 1
+                      ? ` — ${frozenEnvs.join(", ")}`
+                      : ""}
+                  </p>
+                </div>
+              ) : null}
+              <DropdownMenuItem onClick={onApprove} disabled={pending || held}>
                 <Check className="size-4 text-emerald-500" />
                 <span>Approve</span>
               </DropdownMenuItem>

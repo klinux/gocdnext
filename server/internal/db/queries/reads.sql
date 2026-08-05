@@ -162,6 +162,21 @@ FROM job_runs
 WHERE run_id = ANY($1::uuid[])
 ORDER BY run_id, stage_run_id, name;
 
+-- name: ListRunSnapshotsForFreeze :many
+-- Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
+-- (runs.definition, migration 00067) for a handful of runs that have an
+-- awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
+-- least one approval is waiting, so the common poll never pays it — unlike the
+-- shared LatestRun query (which also feeds VSM), this never touches the hot path.
+-- The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
+-- are excluded so the caller falls back to "no badge".
+SELECT r.id AS run_id, r.definition
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+WHERE pl.project_id = @project_id
+  AND r.id = ANY(@run_ids::uuid[])
+  AND r.definition <> '{}'::jsonb;
+
 -- name: ListStageRunsForRuns :many
 -- Batch-loads stage_runs for every run whose id is in the input
 -- array — the project detail page renders one pipeline card per
@@ -205,13 +220,22 @@ ORDER BY r.pipeline_id, r.created_at DESC;
 -- without a second round-trip. Adds one JSONB column to the
 -- response but avoids a per-run "did this pipeline have
 -- notifications?" lookup.
-SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
+-- pipeline_definition is the run's IMMUTABLE SNAPSHOT (runs.definition,
+-- migration 00067) when present, else the live pl.definition — ONE JSONB, not
+-- two, so a poll never transfers/deserialises both. has_run_snapshot flags which
+-- it is: true → the read path can compute a gate's freeze-hold state (#227) from
+-- this same snapshot (the exact def the approve/expiry paths block on); false
+-- (an orphaned '{}' snapshot) → it fell back to the live def, so Notifications
+-- still render but no freeze annotation runs. project_id feeds the freeze lookup.
+SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
+       p.id AS project_id, p.slug AS project_slug,
        p.check_reporting_mode,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
        r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
-       pl.definition AS pipeline_definition
+       COALESCE(NULLIF(r.definition, '{}'::jsonb), pl.definition) AS pipeline_definition,
+       (r.definition <> '{}'::jsonb) AS has_run_snapshot
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id

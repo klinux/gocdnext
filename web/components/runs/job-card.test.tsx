@@ -1,7 +1,22 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
 import { JobCard } from "./job-card";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import type { JobDetail } from "@/types/api";
+
+// An awaiting gate mounts ApprovalButtons, which imports the approvals server
+// action + sonner + a Tooltip. Mock the module boundaries so a render-only test
+// stays hermetic; the Tooltip needs its provider (app root supplies it in prod).
+vi.mock("@/server/actions/approvals", () => ({
+  approveJob: vi.fn(async () => ({ ok: true })),
+  rejectJob: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+function renderCard(ui: ReactElement) {
+  return render(<TooltipProvider>{ui}</TooltipProvider>);
+}
 
 // Minimum JobDetail fixture — fields the component reads. Any
 // field omitted is implicitly the "happy" default.
@@ -98,5 +113,54 @@ describe("JobCard — compliance enforced badge", () => {
   it("does not badge a repo-authored job", () => {
     render(<JobCard job={makeJob({ name: "compile" })} runID="run-1" />);
     expect(screen.queryByText(/enforced/i)).toBeNull();
+  });
+});
+
+describe("JobCard — freeze hold (#227)", () => {
+  function heldGate(overrides: Partial<JobDetail> = {}): JobDetail {
+    return makeJob({
+      status: "awaiting_approval",
+      approval_gate: true,
+      started_at: undefined,
+      held_by_freeze: true,
+      frozen_envs: ["production"],
+      ...overrides,
+    });
+  }
+
+  it("shows the On hold badge and disables Approve (Reject stays enabled) when a governed env is frozen", () => {
+    renderCard(<JobCard job={heldGate()} runID="run-1" />);
+    expect(screen.getByText(/On hold/i)).toBeTruthy();
+    expect(screen.getByText(/production frozen/i)).toBeTruthy();
+
+    const approve = screen.getByRole("button", { name: /Approve/i });
+    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    const reject = screen.getByRole("button", { name: /Reject/i });
+    expect((reject as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("collapses several frozen envs to a count in the visible label", () => {
+    renderCard(
+      <JobCard job={heldGate({ frozen_envs: ["staging", "production"] })} runID="run-1" />,
+    );
+    expect(screen.getByText(/2 environments frozen/i)).toBeTruthy();
+  });
+
+  // Unfreeze (true → false): the badge clears and Approve re-enables (review #4).
+  it("clears the badge and re-enables Approve on unfreeze", () => {
+    const { rerender } = renderCard(<JobCard job={heldGate()} runID="run-1" />);
+    expect(screen.getByText(/On hold/i)).toBeTruthy();
+
+    rerender(
+      <TooltipProvider>
+        <JobCard
+          job={heldGate({ held_by_freeze: false, frozen_envs: undefined })}
+          runID="run-1"
+        />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByText(/On hold/i)).toBeNull();
+    const approve = screen.getByRole("button", { name: /Approve/i });
+    expect((approve as HTMLButtonElement).disabled).toBe(false);
   });
 });

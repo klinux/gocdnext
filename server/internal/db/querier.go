@@ -834,6 +834,13 @@ type Querier interface {
 	// without a second round-trip. Adds one JSONB column to the
 	// response but avoids a per-run "did this pipeline have
 	// notifications?" lookup.
+	// pipeline_definition is the run's IMMUTABLE SNAPSHOT (runs.definition,
+	// migration 00067) when present, else the live pl.definition — ONE JSONB, not
+	// two, so a poll never transfers/deserialises both. has_run_snapshot flags which
+	// it is: true → the read path can compute a gate's freeze-hold state (#227) from
+	// this same snapshot (the exact def the approve/expiry paths block on); false
+	// (an orphaned '{}' snapshot) → it fell back to the live def, so Notifications
+	// still render but no freeze annotation runs. project_id feeds the freeze lookup.
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	GetRunnerProfile(ctx context.Context, id pgtype.UUID) (RunnerProfile, error)
 	// Pipeline apply + scheduler dispatch both look up by name (the
@@ -1437,6 +1444,14 @@ type Querier interface {
 	// resolving `needs_artifacts` on a downstream job. An empty paths
 	// array returns all of that job's artefacts.
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
+	// Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
+	// (runs.definition, migration 00067) for a handful of runs that have an
+	// awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
+	// least one approval is waiting, so the common poll never pays it — unlike the
+	// shared LatestRun query (which also feeds VSM), this never touches the hot path.
+	// The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
+	// are excluded so the caller falls back to "no badge".
+	ListRunSnapshotsForFreeze(ctx context.Context, arg ListRunSnapshotsForFreezeParams) ([]ListRunSnapshotsForFreezeRow, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
 	// Running jobs of a run that carry a pending cancel intent (supersede stamped
