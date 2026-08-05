@@ -773,6 +773,52 @@ func (q *Queries) ListProjectsWithCounts(ctx context.Context) ([]ListProjectsWit
 	return items, nil
 }
 
+const listRunSnapshotsForFreeze = `-- name: ListRunSnapshotsForFreeze :many
+SELECT r.id AS run_id, r.definition
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+WHERE pl.project_id = $1
+  AND r.id = ANY($2::uuid[])
+  AND r.definition <> '{}'::jsonb
+`
+
+type ListRunSnapshotsForFreezeParams struct {
+	ProjectID pgtype.UUID
+	RunIds    []pgtype.UUID
+}
+
+type ListRunSnapshotsForFreezeRow struct {
+	RunID      pgtype.UUID
+	Definition []byte
+}
+
+// Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
+// (runs.definition, migration 00067) for a handful of runs that have an
+// awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
+// least one approval is waiting, so the common poll never pays it — unlike the
+// shared LatestRun query (which also feeds VSM), this never touches the hot path.
+// The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
+// are excluded so the caller falls back to "no badge".
+func (q *Queries) ListRunSnapshotsForFreeze(ctx context.Context, arg ListRunSnapshotsForFreezeParams) ([]ListRunSnapshotsForFreezeRow, error) {
+	rows, err := q.db.Query(ctx, listRunSnapshotsForFreeze, arg.ProjectID, arg.RunIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunSnapshotsForFreezeRow{}
+	for rows.Next() {
+		var i ListRunSnapshotsForFreezeRow
+		if err := rows.Scan(&i.RunID, &i.Definition); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunsByProjectSlug = `-- name: ListRunsByProjectSlug :many
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
        r.counter, r.cause, r.status, r.queue_reason,

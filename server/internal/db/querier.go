@@ -1444,6 +1444,14 @@ type Querier interface {
 	// resolving `needs_artifacts` on a downstream job. An empty paths
 	// array returns all of that job's artefacts.
 	ListReadyArtifactsByRunAndJobName(ctx context.Context, arg ListReadyArtifactsByRunAndJobNameParams) ([]ListReadyArtifactsByRunAndJobNameRow, error)
+	// Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
+	// (runs.definition, migration 00067) for a handful of runs that have an
+	// awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
+	// least one approval is waiting, so the common poll never pays it — unlike the
+	// shared LatestRun query (which also feeds VSM), this never touches the hot path.
+	// The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
+	// are excluded so the caller falls back to "no badge".
+	ListRunSnapshotsForFreeze(ctx context.Context, arg ListRunSnapshotsForFreezeParams) ([]ListRunSnapshotsForFreezeRow, error)
 	// Admin UI hot path. Sorted by name so the table reads alphabetical.
 	ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, error)
 	// Running jobs of a run that carry a pending cancel intent (supersede stamped

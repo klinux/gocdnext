@@ -205,6 +205,13 @@ type JobRunSummaryLite struct {
 	Status     string     `json:"status"`
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// HeldByFreeze marks an awaiting_approval gate whose governed env is currently
+	// frozen (#227) so the project flow/list can render the APPROVE node as frozen
+	// and disable Approve there — where the operator actually decides, without
+	// drilling into the run. Same snapshot-derived signal as the run-detail
+	// JobDetail; omitted for every non-held gate.
+	HeldByFreeze bool     `json:"held_by_freeze,omitempty"`
+	FrozenEnvs   []string `json:"frozen_envs,omitempty"`
 }
 
 // DefinitionJob pairs a job name with its stage — extracted from
@@ -781,22 +788,34 @@ func (s *Store) GetProjectDetail(ctx context.Context, slug string, runLimit int3
 		if err != nil {
 			return ProjectDetail{}, fmt.Errorf("store: list job runs: %w", err)
 		}
+		var awaitingGates []projAwaitingGate
 		for _, jr := range jobRows {
 			pos, ok := stageByID[fromPgUUID(jr.StageRunID)]
 			if !ok {
 				continue
 			}
-			detail.Pipelines[pos.pipeline].LatestRunStages[pos.stage].Jobs = append(
-				detail.Pipelines[pos.pipeline].LatestRunStages[pos.stage].Jobs,
-				JobRunSummaryLite{
-					ID:         fromPgUUID(jr.ID),
-					Name:       jr.Name,
-					Status:     jr.Status,
-					StartedAt:  pgTimePtr(jr.StartedAt),
-					FinishedAt: pgTimePtr(jr.FinishedAt),
-				},
-			)
+			jobs := &detail.Pipelines[pos.pipeline].LatestRunStages[pos.stage].Jobs
+			*jobs = append(*jobs, JobRunSummaryLite{
+				ID:         fromPgUUID(jr.ID),
+				Name:       jr.Name,
+				Status:     jr.Status,
+				StartedAt:  pgTimePtr(jr.StartedAt),
+				FinishedAt: pgTimePtr(jr.FinishedAt),
+			})
+			// Correlate an awaiting gate by run_id + job_run_id (NOT gate name —
+			// different pipelines routinely name a gate "approve"), so the freeze
+			// annotation stamps the right node from the right run's snapshot.
+			if jr.Status == "awaiting_approval" {
+				awaitingGates = append(awaitingGates, projAwaitingGate{
+					pipeline: pos.pipeline, stage: pos.stage, job: len(*jobs) - 1,
+					runID: fromPgUUID(jr.RunID), gate: jr.Name,
+				})
+			}
 		}
+		// #227: stamp held_by_freeze on the awaiting gates from each run's IMMUTABLE
+		// snapshot. Costs two focused queries ONLY while an approval is waiting; the
+		// common poll (no awaiting gate) does nothing.
+		s.annotateProjectGateFreezes(ctx, fromPgUUID(proj.ID), detail.Pipelines, awaitingGates)
 	}
 	for _, r := range runs {
 		detail.Runs = append(detail.Runs, RunSummary{
@@ -1176,18 +1195,40 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 	return detail, nil
 }
 
-// freezeAnnotationErrs samples the degraded-annotation log (#227): a persistent
-// decode/lookup failure repeats on every ~2s detail poll, so we log the first and
-// then every 128th to keep a diagnosable run_id trail without flooding. The
-// counter metric carries the full rate for alerting.
-var freezeAnnotationErrs atomic.Uint64
+// freezeAnnotationSamplers throttles the degraded-annotation log (#227) PER
+// surface/kind: a persistent decode/lookup failure repeats on every ~3s poll, so
+// we log the first and then every 128th of EACH combination, so a new surface's
+// first error always surfaces without being masked by another's flood. Pre-seeded
+// (no writes after init) so lookups are lock-free. The counter metric carries the
+// full rate for alerting.
+var freezeAnnotationSamplers = map[string]*atomic.Uint64{
+	"run_detail/decode":     new(atomic.Uint64),
+	"run_detail/lookup":     new(atomic.Uint64),
+	"project_detail/decode": new(atomic.Uint64),
+	"project_detail/lookup": new(atomic.Uint64),
+}
 
-func noteFreezeAnnotationErr(runID uuid.UUID, kind string, err error) {
-	metrics.RunDetailFreezeAnnotationErrors.WithLabelValues(kind).Inc()
-	if n := freezeAnnotationErrs.Add(1); n == 1 || n%128 == 0 {
-		slog.Default().Warn("run detail: gate freeze annotation degraded — Approve left enabled",
-			"kind", kind, "run_id", runID, "occurrences", n, "err", err)
+// noteFreezeAnnotationErr records a degraded freeze annotation: it bumps the
+// bounded metric and emits a sampled, contextual Warn. runID is omitted from the
+// log when uuid.Nil (the project-wide freeze lookup isn't tied to one run — never
+// invent an arbitrary run id).
+func noteFreezeAnnotationErr(surface, kind string, projectID, runID uuid.UUID, err error) {
+	metrics.GateFreezeAnnotationErrors.WithLabelValues(surface, kind).Inc()
+	sampler := freezeAnnotationSamplers[surface+"/"+kind]
+	if sampler == nil { // unknown label combo — log unconditionally rather than drop
+		slog.Default().Warn("gate freeze annotation degraded — Approve left enabled",
+			"surface", surface, "kind", kind, "project_id", projectID, "err", err)
+		return
 	}
+	n := sampler.Add(1)
+	if n != 1 && n%128 != 0 {
+		return
+	}
+	attrs := []any{"surface", surface, "kind", kind, "project_id", projectID, "occurrences", n, "err", err}
+	if runID != uuid.Nil {
+		attrs = append(attrs, "run_id", runID)
+	}
+	slog.Default().Warn("gate freeze annotation degraded — Approve left enabled", attrs...)
 }
 
 // annotateGateFreezes stamps HeldByFreeze + FrozenEnvs onto every awaiting
@@ -1223,7 +1264,7 @@ func (s *Store) annotateGateFreezes(
 
 	var def domain.Pipeline
 	if err := json.Unmarshal(snapshot, &def); err != nil {
-		noteFreezeAnnotationErr(runID, "decode", err)
+		noteFreezeAnnotationErr("run_detail", "decode", projectID, runID, err)
 		return // graceful: a bad snapshot never blanks the page or invents a hold
 	}
 
@@ -1246,7 +1287,7 @@ func (s *Store) annotateGateFreezes(
 	}
 	frozen, err := s.FrozenEnvironments(ctx, projectID, names)
 	if err != nil {
-		noteFreezeAnnotationErr(runID, "lookup", err)
+		noteFreezeAnnotationErr("run_detail", "lookup", projectID, runID, err)
 		return
 	}
 	if len(frozen) == 0 {
@@ -1274,6 +1315,104 @@ func (s *Store) annotateGateFreezes(
 				jd.FrozenEnvs = held
 				jd.HeldByFreeze = true
 			}
+		}
+	}
+}
+
+// projAwaitingGate locates one awaiting approval gate on the project-detail strip
+// — by index into detail.Pipelines[].LatestRunStages[].Jobs — plus the run + gate
+// name it came from, so the freeze pass stamps the exact node from the RIGHT run's
+// snapshot (correlated by run_id + job_run position, never by gate name).
+type projAwaitingGate struct {
+	pipeline, stage, job int
+	runID                uuid.UUID
+	gate                 string
+}
+
+// annotateProjectGateFreezes stamps HeldByFreeze/FrozenEnvs onto the project
+// strip's awaiting approval gates (#227), from each run's IMMUTABLE snapshot — the
+// exact set the approve/expiry paths block on. Runs only when a gate is awaiting,
+// then issues exactly two focused queries: one project-scoped snapshot batch + one
+// project-wide FrozenEnvironments. Fail-safe: an undecodable snapshot degrades ONLY
+// its run; a query error drops all badges but never blanks the strip; both bump
+// the metric + a sampled log.
+func (s *Store) annotateProjectGateFreezes(
+	ctx context.Context, projectID uuid.UUID, pipelines []PipelineSummary, awaiting []projAwaitingGate,
+) {
+	if len(awaiting) == 0 {
+		return
+	}
+	runSet := make(map[uuid.UUID]struct{}, len(awaiting))
+	for _, a := range awaiting {
+		runSet[a.runID] = struct{}{}
+	}
+	runIDs := make([]pgtype.UUID, 0, len(runSet))
+	for id := range runSet {
+		runIDs = append(runIDs, pgUUID(id))
+	}
+	rows, err := s.q.ListRunSnapshotsForFreeze(ctx, db.ListRunSnapshotsForFreezeParams{
+		ProjectID: pgUUID(projectID),
+		RunIds:    runIDs,
+	})
+	if err != nil {
+		noteFreezeAnnotationErr("project_detail", "lookup", projectID, uuid.Nil, err)
+		return
+	}
+	// Decode each snapshot, indexed by run id; a bad snapshot degrades ONLY its run.
+	defByRun := make(map[uuid.UUID]domain.Pipeline, len(rows))
+	for _, r := range rows {
+		var def domain.Pipeline
+		if err := json.Unmarshal(r.Definition, &def); err != nil {
+			noteFreezeAnnotationErr("project_detail", "decode", projectID, fromPgUUID(r.RunID), err)
+			continue
+		}
+		defByRun[fromPgUUID(r.RunID)] = def
+	}
+
+	// Per gate: governed freeze envs from ITS run's snapshot; union to check once.
+	govByGate := make([][]string, len(awaiting))
+	union := map[string]struct{}{}
+	for i, a := range awaiting {
+		def, ok := defByRun[a.runID] // absent when the run had a '{}' or undecodable snapshot
+		if !ok {
+			continue
+		}
+		envs := def.GovernedFreezeEnvs(a.gate)
+		govByGate[i] = envs
+		for _, e := range envs {
+			union[e] = struct{}{}
+		}
+	}
+	if len(union) == 0 {
+		return
+	}
+	names := make([]string, 0, len(union))
+	for e := range union {
+		names = append(names, e)
+	}
+	frozen, err := s.FrozenEnvironments(ctx, projectID, names)
+	if err != nil {
+		noteFreezeAnnotationErr("project_detail", "lookup", projectID, uuid.Nil, err)
+		return
+	}
+	if len(frozen) == 0 {
+		return
+	}
+	frozenSet := make(map[string]struct{}, len(frozen))
+	for _, e := range frozen {
+		frozenSet[e] = struct{}{}
+	}
+	for i, a := range awaiting {
+		var held []string // preserves GovernedFreezeEnvs' sorted order
+		for _, e := range govByGate[i] {
+			if _, ok := frozenSet[e]; ok {
+				held = append(held, e)
+			}
+		}
+		if len(held) > 0 {
+			jd := &pipelines[a.pipeline].LatestRunStages[a.stage].Jobs[a.job]
+			jd.FrozenEnvs = held
+			jd.HeldByFreeze = true
 		}
 	}
 }

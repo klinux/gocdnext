@@ -162,6 +162,21 @@ FROM job_runs
 WHERE run_id = ANY($1::uuid[])
 ORDER BY run_id, stage_run_id, name;
 
+-- name: ListRunSnapshotsForFreeze :many
+-- Focused, project-scoped batch fetch of the IMMUTABLE run snapshots
+-- (runs.definition, migration 00067) for a handful of runs that have an
+-- awaiting_approval gate on the project-detail strip (#227). Run ONLY when at
+-- least one approval is waiting, so the common poll never pays it — unlike the
+-- shared LatestRun query (which also feeds VSM), this never touches the hot path.
+-- The pl.project_id predicate isolates by construction; '{}' (orphaned) snapshots
+-- are excluded so the caller falls back to "no badge".
+SELECT r.id AS run_id, r.definition
+FROM runs r
+JOIN pipelines pl ON pl.id = r.pipeline_id
+WHERE pl.project_id = @project_id
+  AND r.id = ANY(@run_ids::uuid[])
+  AND r.definition <> '{}'::jsonb;
+
 -- name: ListStageRunsForRuns :many
 -- Batch-loads stage_runs for every run whose id is in the input
 -- array — the project detail page renders one pipeline card per

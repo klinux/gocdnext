@@ -232,16 +232,17 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"grpc_method"})
 
-	// RunDetailFreezeAnnotationErrors counts degraded computations of a gate's
-	// freeze-hold badge on the run-detail read path (#227): a run snapshot that
-	// won't decode (kind=decode) or a freeze lookup that errored (kind=lookup).
-	// The result fails safe (no badge), so this is the ONLY signal that a
-	// persistent failure is leaving Approve enabled — alert on a rising rate.
-	// kind is a FIXED label set, never the error message.
-	RunDetailFreezeAnnotationErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "gocdnext_run_detail_freeze_annotation_errors_total",
-		Help: "Degraded gate freeze-hold annotations on run detail, by kind (decode|lookup).",
-	}, []string{"kind"})
+	// GateFreezeAnnotationErrors counts degraded computations of a gate's
+	// freeze-hold state (#227), on either surface that renders it: the run-detail
+	// page or the project-detail flow/list. A run snapshot that won't decode
+	// (kind=decode) or a freeze lookup that errored (kind=lookup). The result
+	// fails safe (no badge), so this is the ONLY signal that a persistent failure
+	// is leaving Approve enabled — alert on a rising rate. surface + kind are
+	// FIXED label sets, never the error message.
+	GateFreezeAnnotationErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_gate_freeze_annotation_errors_total",
+		Help: "Degraded gate freeze-hold annotations by surface (run_detail|project_detail) and kind (decode|lookup).",
+	}, []string{"surface", "kind"})
 
 	// PRHeadResolution measures PR-head config resolution (#223): the wall-clock
 	// to fetch + parse + validate the head `.gocdnext/` and build the plan,
@@ -279,7 +280,7 @@ func init() {
 		GRPCServerHandled,
 		GRPCServerHandling,
 		PRHeadResolution,
-		RunDetailFreezeAnnotationErrors,
+		GateFreezeAnnotationErrors,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
