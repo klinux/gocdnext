@@ -348,6 +348,18 @@ type JobDetail struct {
 	DecidedAt           *time.Time `json:"decided_at,omitempty"`
 	Decision            string     `json:"decision,omitempty"`
 
+	// HeldByFreeze is true when this awaiting_approval gate governs an
+	// environment currently under a change-freeze (#227): approving is
+	// blocked server-side, so the UI renders an "on hold" badge + disables
+	// Approve instead of letting the click 409. FrozenEnvs names the frozen
+	// governed envs (sorted). Both are computed from the run's IMMUTABLE
+	// SNAPSHOT via domain.GovernedFreezeEnvs — the exact set the approve /
+	// expiry paths block on — so the badge can't disagree with the real
+	// block. Advisory only: the approve path re-checks under locks and stays
+	// authoritative. Omitted (false/absent) for every non-held gate.
+	HeldByFreeze bool     `json:"held_by_freeze,omitempty"`
+	FrozenEnvs   []string `json:"frozen_envs,omitempty"`
+
 	// Notification metadata — populated only for synthetic jobs
 	// in the `_notifications` stage. The UI keys off NotifyOn
 	// to render the trigger pill and NotifyUses for the friendly
@@ -1125,6 +1137,12 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 		jobsByStage[jd.StageRunID] = append(jobsByStage[jd.StageRunID], jd)
 	}
 
+	// #227: annotate each awaiting approval gate with its freeze-hold state,
+	// computed from the run's IMMUTABLE SNAPSHOT (the exact set the approve /
+	// expiry paths block on). No-op unless a gate is actually awaiting — mutates
+	// jobsByStage in place before the stages are assembled below.
+	s.annotateGateFreezes(ctx, jobsByStage, fromPgUUID(run.ProjectID), run.RunDefinition)
+
 	for _, st := range stages {
 		jobs := jobsByStage[fromPgUUID(st.ID)]
 		if jobs == nil {
@@ -1142,6 +1160,88 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 		detail.Stages = append(detail.Stages, sd)
 	}
 	return detail, nil
+}
+
+// annotateGateFreezes stamps HeldByFreeze + FrozenEnvs onto every awaiting
+// approval gate whose governed environment is currently frozen (#227). It uses
+// the run's IMMUTABLE SNAPSHOT (domain.GovernedFreezeEnvs) — the exact env set
+// the approve/expiry paths block on — so the read-side badge can never disagree
+// with the write-side block. It mutates jobsByStage in place.
+//
+// Fail-safe and cheap: it is a no-op when nothing is awaiting (the common case —
+// no snapshot decode, no query), when the snapshot is empty ('{}' for pre-00067
+// historical runs), when no gate governs any env, or when the freeze lookup
+// errors — in every such case the gate simply carries no freeze fields rather
+// than blanking the run page or fabricating a freeze.
+func (s *Store) annotateGateFreezes(
+	ctx context.Context, jobsByStage map[uuid.UUID][]JobDetail, projectID uuid.UUID, snapshot []byte,
+) {
+	awaiting := func(jd JobDetail) bool {
+		return jd.ApprovalGate && jd.Status == "awaiting_approval"
+	}
+
+	gateNames := map[string]struct{}{}
+	for _, jds := range jobsByStage {
+		for _, jd := range jds {
+			if awaiting(jd) {
+				gateNames[jd.Name] = struct{}{}
+			}
+		}
+	}
+	if len(gateNames) == 0 || len(snapshot) == 0 {
+		return
+	}
+
+	var def domain.Pipeline
+	if err := json.Unmarshal(snapshot, &def); err != nil {
+		return // graceful: a bad snapshot never blanks the page or invents a hold
+	}
+
+	// Per-gate governed freeze envs (sorted) + the union to freeze-check once.
+	perGate := make(map[string][]string, len(gateNames))
+	union := map[string]struct{}{}
+	for name := range gateNames {
+		envs := def.GovernedFreezeEnvs(name)
+		perGate[name] = envs
+		for _, e := range envs {
+			union[e] = struct{}{}
+		}
+	}
+	if len(union) == 0 {
+		return // gates govern no env → nothing to hold
+	}
+	names := make([]string, 0, len(union))
+	for e := range union {
+		names = append(names, e)
+	}
+	frozen, err := s.FrozenEnvironments(ctx, projectID, names)
+	if err != nil || len(frozen) == 0 {
+		return
+	}
+	frozenSet := make(map[string]struct{}, len(frozen))
+	for _, e := range frozen {
+		frozenSet[e] = struct{}{}
+	}
+
+	for stageID := range jobsByStage {
+		jds := jobsByStage[stageID]
+		for i := range jds {
+			jd := &jds[i]
+			if !awaiting(*jd) {
+				continue
+			}
+			var held []string // preserves GovernedFreezeEnvs' sorted order
+			for _, e := range perGate[jd.Name] {
+				if _, ok := frozenSet[e]; ok {
+					held = append(held, e)
+				}
+			}
+			if len(held) > 0 {
+				jd.FrozenEnvs = held
+				jd.HeldByFreeze = true
+			}
+		}
+	}
 }
 
 // logLinesAfterSeq returns log lines strictly after `sinceSeq` for

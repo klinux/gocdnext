@@ -62,13 +62,15 @@ func (q *Queries) GetProjectBySlug(ctx context.Context, slug string) (GetProject
 }
 
 const getRunWithPipeline = `-- name: GetRunWithPipeline :one
-SELECT r.id, r.pipeline_id, pl.name AS pipeline_name, p.slug AS project_slug,
+SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
+       p.id AS project_id, p.slug AS project_slug,
        p.check_reporting_mode,
        r.counter, r.cause, r.cause_detail, r.status, r.queue_reason,
        r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
-       pl.definition AS pipeline_definition
+       pl.definition AS pipeline_definition,
+       r.definition AS run_definition
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id
@@ -80,6 +82,7 @@ type GetRunWithPipelineRow struct {
 	ID                 pgtype.UUID
 	PipelineID         pgtype.UUID
 	PipelineName       string
+	ProjectID          pgtype.UUID
 	ProjectSlug        string
 	CheckReportingMode string
 	Counter            int64
@@ -97,6 +100,7 @@ type GetRunWithPipelineRow struct {
 	FinishedAt         pgtype.Timestamptz
 	TriggeredBy        *string
 	PipelineDefinition []byte
+	RunDefinition      []byte
 }
 
 // pl.definition is returned so the read path can decode the
@@ -104,6 +108,12 @@ type GetRunWithPipelineRow struct {
 // without a second round-trip. Adds one JSONB column to the
 // response but avoids a per-run "did this pipeline have
 // notifications?" lookup.
+// project_id + r.definition (the run's immutable snapshot, migration
+// 00067) ride along so the read path can compute a gate's freeze-hold
+// state (#227) from the SAME snapshot the approve/expiry paths block
+// on — without a second round-trip. The snapshot is decoded only when
+// an approval gate is actually awaiting. Notifications stay on
+// pl.definition (the live def): pre-00067 runs have a '{}' snapshot.
 func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error) {
 	row := q.db.QueryRow(ctx, getRunWithPipeline, id)
 	var i GetRunWithPipelineRow
@@ -111,6 +121,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.ID,
 		&i.PipelineID,
 		&i.PipelineName,
+		&i.ProjectID,
 		&i.ProjectSlug,
 		&i.CheckReportingMode,
 		&i.Counter,
@@ -128,6 +139,7 @@ func (q *Queries) GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRu
 		&i.FinishedAt,
 		&i.TriggeredBy,
 		&i.PipelineDefinition,
+		&i.RunDefinition,
 	)
 	return i, err
 }
