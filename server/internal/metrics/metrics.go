@@ -232,6 +232,17 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"grpc_method"})
 
+	// RunDetailFreezeAnnotationErrors counts degraded computations of a gate's
+	// freeze-hold badge on the run-detail read path (#227): a run snapshot that
+	// won't decode (kind=decode) or a freeze lookup that errored (kind=lookup).
+	// The result fails safe (no badge), so this is the ONLY signal that a
+	// persistent failure is leaving Approve enabled — alert on a rising rate.
+	// kind is a FIXED label set, never the error message.
+	RunDetailFreezeAnnotationErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_run_detail_freeze_annotation_errors_total",
+		Help: "Degraded gate freeze-hold annotations on run detail, by kind (decode|lookup).",
+	}, []string{"kind"})
+
 	// PRHeadResolution measures PR-head config resolution (#223): the wall-clock
 	// to fetch + parse + validate the head `.gocdnext/` and build the plan,
 	// labelled by outcome. Only the GitHub same-repo opted-in path with repo
@@ -268,6 +279,7 @@ func init() {
 		GRPCServerHandled,
 		GRPCServerHandling,
 		PRHeadResolution,
+		RunDetailFreezeAnnotationErrors,
 		// Standard Go runtime + process metrics for free.
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),

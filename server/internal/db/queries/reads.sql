@@ -205,12 +205,13 @@ ORDER BY r.pipeline_id, r.created_at DESC;
 -- without a second round-trip. Adds one JSONB column to the
 -- response but avoids a per-run "did this pipeline have
 -- notifications?" lookup.
--- project_id + r.definition (the run's immutable snapshot, migration
--- 00067) ride along so the read path can compute a gate's freeze-hold
--- state (#227) from the SAME snapshot the approve/expiry paths block
--- on — without a second round-trip. The snapshot is decoded only when
--- an approval gate is actually awaiting. Notifications stay on
--- pl.definition (the live def): pre-00067 runs have a '{}' snapshot.
+-- pipeline_definition is the run's IMMUTABLE SNAPSHOT (runs.definition,
+-- migration 00067) when present, else the live pl.definition — ONE JSONB, not
+-- two, so a poll never transfers/deserialises both. has_run_snapshot flags which
+-- it is: true → the read path can compute a gate's freeze-hold state (#227) from
+-- this same snapshot (the exact def the approve/expiry paths block on); false
+-- (an orphaned '{}' snapshot) → it fell back to the live def, so Notifications
+-- still render but no freeze annotation runs. project_id feeds the freeze lookup.
 SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
        p.id AS project_id, p.slug AS project_slug,
        p.check_reporting_mode,
@@ -218,8 +219,8 @@ SELECT r.id, r.pipeline_id, pl.name AS pipeline_name,
        r.cancel_reason, r.superseded_by, r.revisions,
        r.has_services, r.service_names,
        r.created_at, r.started_at, r.finished_at, r.triggered_by,
-       pl.definition AS pipeline_definition,
-       r.definition AS run_definition
+       COALESCE(NULLIF(r.definition, '{}'::jsonb), pl.definition) AS pipeline_definition,
+       (r.definition <> '{}'::jsonb) AS has_run_snapshot
 FROM runs r
 JOIN pipelines pl ON pl.id = r.pipeline_id
 JOIN projects p ON p.id = pl.project_id

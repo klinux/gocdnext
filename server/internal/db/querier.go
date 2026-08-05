@@ -834,12 +834,13 @@ type Querier interface {
 	// without a second round-trip. Adds one JSONB column to the
 	// response but avoids a per-run "did this pipeline have
 	// notifications?" lookup.
-	// project_id + r.definition (the run's immutable snapshot, migration
-	// 00067) ride along so the read path can compute a gate's freeze-hold
-	// state (#227) from the SAME snapshot the approve/expiry paths block
-	// on — without a second round-trip. The snapshot is decoded only when
-	// an approval gate is actually awaiting. Notifications stay on
-	// pl.definition (the live def): pre-00067 runs have a '{}' snapshot.
+	// pipeline_definition is the run's IMMUTABLE SNAPSHOT (runs.definition,
+	// migration 00067) when present, else the live pl.definition — ONE JSONB, not
+	// two, so a poll never transfers/deserialises both. has_run_snapshot flags which
+	// it is: true → the read path can compute a gate's freeze-hold state (#227) from
+	// this same snapshot (the exact def the approve/expiry paths block on); false
+	// (an orphaned '{}' snapshot) → it fell back to the live def, so Notifications
+	// still render but no freeze annotation runs. project_id feeds the freeze lookup.
 	GetRunWithPipeline(ctx context.Context, id pgtype.UUID) (GetRunWithPipelineRow, error)
 	GetRunnerProfile(ctx context.Context, id pgtype.UUID) (RunnerProfile, error)
 	// Pipeline apply + scheduler dispatch both look up by name (the

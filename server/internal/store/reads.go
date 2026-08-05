@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
 
@@ -1022,6 +1025,10 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 	}
 
 	jobsByStage := map[uuid.UUID][]JobDetail{}
+	// Track whether any gate is awaiting during the existing mapping pass, so the
+	// freeze annotation (a snapshot decode + a query) is reached only when needed —
+	// no extra full-jobs scan in the common case (#227, review).
+	hasAwaitingGate := false
 	for _, j := range jobs {
 		jd := JobDetail{
 			ID:                  fromPgUUID(j.ID),
@@ -1045,6 +1052,9 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 			DecidedBy:           stringValue(j.DecidedBy),
 			DecidedAt:           pgTimePtr(j.DecidedAt),
 			Decision:            stringValue(j.Decision),
+		}
+		if jd.ApprovalGate && jd.Status == "awaiting_approval" {
+			hasAwaitingGate = true
 		}
 		if j.AgentID.Valid {
 			aid := fromPgUUID(j.AgentID)
@@ -1139,9 +1149,13 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 
 	// #227: annotate each awaiting approval gate with its freeze-hold state,
 	// computed from the run's IMMUTABLE SNAPSHOT (the exact set the approve /
-	// expiry paths block on). No-op unless a gate is actually awaiting — mutates
-	// jobsByStage in place before the stages are assembled below.
-	s.annotateGateFreezes(ctx, jobsByStage, fromPgUUID(run.ProjectID), run.RunDefinition)
+	// expiry paths block on). Reached only when a gate is awaiting AND the run
+	// carries a real snapshot (has_run_snapshot) — an orphaned '{}' run fell back
+	// to the live def for Notifications, which must never drive the freeze badge.
+	// When has_run_snapshot is true, run.PipelineDefinition IS that snapshot.
+	if hasAwaitingGate && run.HasRunSnapshot {
+		s.annotateGateFreezes(ctx, jobsByStage, runID, fromPgUUID(run.ProjectID), run.PipelineDefinition)
+	}
 
 	for _, st := range stages {
 		jobs := jobsByStage[fromPgUUID(st.ID)]
@@ -1162,19 +1176,34 @@ func (s *Store) getRunDetail(ctx context.Context, runID uuid.UUID, window LogWin
 	return detail, nil
 }
 
+// freezeAnnotationErrs samples the degraded-annotation log (#227): a persistent
+// decode/lookup failure repeats on every ~2s detail poll, so we log the first and
+// then every 128th to keep a diagnosable run_id trail without flooding. The
+// counter metric carries the full rate for alerting.
+var freezeAnnotationErrs atomic.Uint64
+
+func noteFreezeAnnotationErr(runID uuid.UUID, kind string, err error) {
+	metrics.RunDetailFreezeAnnotationErrors.WithLabelValues(kind).Inc()
+	if n := freezeAnnotationErrs.Add(1); n == 1 || n%128 == 0 {
+		slog.Default().Warn("run detail: gate freeze annotation degraded — Approve left enabled",
+			"kind", kind, "run_id", runID, "occurrences", n, "err", err)
+	}
+}
+
 // annotateGateFreezes stamps HeldByFreeze + FrozenEnvs onto every awaiting
 // approval gate whose governed environment is currently frozen (#227). It uses
 // the run's IMMUTABLE SNAPSHOT (domain.GovernedFreezeEnvs) — the exact env set
 // the approve/expiry paths block on — so the read-side badge can never disagree
 // with the write-side block. It mutates jobsByStage in place.
 //
-// Fail-safe and cheap: it is a no-op when nothing is awaiting (the common case —
-// no snapshot decode, no query), when the snapshot is empty ('{}' for pre-00067
-// historical runs), when no gate governs any env, or when the freeze lookup
-// errors — in every such case the gate simply carries no freeze fields rather
-// than blanking the run page or fabricating a freeze.
+// Fail-safe: it carries no freeze fields (rather than blanking the page or
+// inventing a hold) when no gate governs any env, the snapshot won't decode, or
+// the freeze lookup errors — the last two also bump
+// metrics.RunDetailFreezeAnnotationErrors + a sampled log, since a persistent
+// degradation silently leaves Approve enabled. The caller reaches this only when
+// a gate is awaiting AND the run carries a real snapshot.
 func (s *Store) annotateGateFreezes(
-	ctx context.Context, jobsByStage map[uuid.UUID][]JobDetail, projectID uuid.UUID, snapshot []byte,
+	ctx context.Context, jobsByStage map[uuid.UUID][]JobDetail, runID, projectID uuid.UUID, snapshot []byte,
 ) {
 	awaiting := func(jd JobDetail) bool {
 		return jd.ApprovalGate && jd.Status == "awaiting_approval"
@@ -1194,6 +1223,7 @@ func (s *Store) annotateGateFreezes(
 
 	var def domain.Pipeline
 	if err := json.Unmarshal(snapshot, &def); err != nil {
+		noteFreezeAnnotationErr(runID, "decode", err)
 		return // graceful: a bad snapshot never blanks the page or invents a hold
 	}
 
@@ -1215,7 +1245,11 @@ func (s *Store) annotateGateFreezes(
 		names = append(names, e)
 	}
 	frozen, err := s.FrozenEnvironments(ctx, projectID, names)
-	if err != nil || len(frozen) == 0 {
+	if err != nil {
+		noteFreezeAnnotationErr(runID, "lookup", err)
+		return
+	}
+	if len(frozen) == 0 {
 		return
 	}
 	frozenSet := make(map[string]struct{}, len(frozen))

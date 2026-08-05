@@ -6,8 +6,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/gocdnext/gocdnext/server/internal/dbtest"
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 	"github.com/gocdnext/gocdnext/server/pkg/domain"
 )
@@ -200,6 +202,34 @@ func TestGetRunDetail_EmptySnapshotGraceful(t *testing.T) {
 	freeze(t, s, projectID, "production")
 	if g := gateOf(t, s, runID); g.HeldByFreeze || len(g.FrozenEnvs) != 0 {
 		t.Fatalf("empty snapshot: held=%v envs=%v, want false/none", g.HeldByFreeze, g.FrozenEnvs)
+	}
+}
+
+// A non-'{}' but semantically INVALID snapshot (a JSON string, not a pipeline
+// object) → decode fails → fail-safe (no badge, no crash) AND the decode-error
+// counter increments so a persistent corruption isn't completely silent (review).
+func TestGetRunDetail_InvalidSnapshotGracefulAndCounted(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	runID, projectID := seedGatePipeline(t, pool, "freeze-invalid", []domain.Job{deployJob("ship-production", "production")})
+
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE runs SET definition='"garbage"'::jsonb WHERE id=$1`, runID); err != nil {
+		t.Fatalf("corrupt snapshot: %v", err)
+	}
+	freeze(t, s, projectID, "production")
+
+	// Delta, not Reset() — the registry is process-wide and shared with sibling
+	// tests running in parallel.
+	before := testutil.ToFloat64(metrics.RunDetailFreezeAnnotationErrors.WithLabelValues("decode"))
+	g := gateOf(t, s, runID)
+	after := testutil.ToFloat64(metrics.RunDetailFreezeAnnotationErrors.WithLabelValues("decode"))
+
+	if g.HeldByFreeze || len(g.FrozenEnvs) != 0 {
+		t.Fatalf("invalid snapshot: held=%v envs=%v, want false/none (fail-safe)", g.HeldByFreeze, g.FrozenEnvs)
+	}
+	if after <= before {
+		t.Fatalf("decode-error counter did not increment: before=%v after=%v", before, after)
 	}
 }
 
