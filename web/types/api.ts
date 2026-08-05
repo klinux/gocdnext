@@ -138,6 +138,11 @@ export type JobRunSummaryLite = {
   status: string;
   started_at?: string;
   finished_at?: string;
+  // Freeze hold (#227) on an awaiting_approval gate: the project flow/list
+  // renders its APPROVE node frozen + disables Approve there. Snake_case matches
+  // the server JSON; omitted for every non-held gate.
+  held_by_freeze?: boolean;
+  frozen_envs?: string[];
 };
 
 export type StageRunSummary = {

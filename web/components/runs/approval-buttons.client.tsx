@@ -21,6 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { approveJob, rejectJob } from "@/server/actions/approvals";
+import { freezeReason } from "@/lib/freeze";
 
 type Props = {
   jobRunID: string;
@@ -37,19 +38,6 @@ type Props = {
   heldByFreeze?: boolean;
   frozenEnvs?: string[];
 };
-
-// freezeReason phrases the "why approval is paused" text for the tooltip + the
-// open dialog, naming the env when there is one and collapsing many.
-function freezeReason(frozenEnvs?: string[]): string {
-  const envs = frozenEnvs ?? [];
-  const subject =
-    envs.length === 1
-      ? `${envs.join(", ")} is`
-      : envs.length > 1
-        ? `${envs.length} environments are`
-        : "an environment is";
-  return `Approval is paused while ${subject} frozen — it resumes when unfrozen.`;
-}
 
 // ApprovalButtons renders the two-step Approve / Reject flow for
 // an awaiting_approval gate. Kept client-side because it drives a
