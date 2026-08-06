@@ -8,6 +8,38 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.86.0 — 2026-08-06
+
+### Added
+
+- **Preferred node affinity on runner profiles (#231).** Runner profiles gain a
+  `preferred_node_affinity` field — a SOFT Kubernetes node preference
+  (`nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution`). Unlike the
+  hard `node_selector` (which leaves a pod Pending when nothing matches), a
+  preference only biases the scheduler, so a profile can prefer a node class and
+  fall back to another when it is unavailable — the canonical use is spot-first
+  with on-demand fallback. Each term is a weight (1–100) plus AND-ed match
+  expressions (`In`/`NotIn`/`Exists`/`DoesNotExist`/`Gt`/`Lt`), validated
+  server-side against the apiserver's own rules (`labels.NewRequirement`) with
+  bounded totals. Configurable in the admin runner-profile editor (nested) and
+  via the Helm `runnerProfiles[]` seed. Honoured by the Kubernetes engine for the
+  task/job pod only — `services:` pods keep the agent scheduling baseline.
+
+### Fixed
+
+- **Agent tolerates transient Kubernetes API backpressure in the pod waiters
+  (#229).** The isolated pod-per-job runner polls the apiserver while waiting for
+  the prep and task containers to start/terminate. When the apiserver (or a proxy
+  in front of it) applied HTTP/2 flood protection — `RST_STREAM` with
+  `ENHANCE_YOUR_CALM`, surfaced by gRPC as `ResourceExhausted` — the waiters
+  returned on the first error and failed the whole job. ENHANCE_YOUR_CALM is a
+  retryable "slow down" signal (common under bursty API load such as spot-node
+  churn); the six pod waiters now retry it with capped exponential backoff +
+  jitter within the existing startup budget, honouring any server `Retry-After`,
+  while non-transient errors (NotFound/Forbidden/…) and context cancellation still
+  fail fast. Adds `gocdnext_agent_k8s_transient_retries_total{op,reason}` so a
+  chronic rate is visible.
+
 ## v0.85.0 — 2026-08-05
 
 ### Added
