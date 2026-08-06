@@ -2377,7 +2377,7 @@ components:
 
     RunnerProfile:
       type: object
-      required: [id, name, engine, node_selector, tolerations, env, secret_keys, created_at, updated_at]
+      required: [id, name, engine, node_selector, tolerations, preferred_node_affinity, env, secret_keys, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string, example: "fast-builds" }
@@ -2425,6 +2425,17 @@ components:
             (concat; kubelet ignores duplicates). On read, each
             entry's `operator` is always the explicit value
             (empty input is normalised to `Equal` at write time).
+        preferred_node_affinity:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreferredNodeAffinityTerm'
+          description: |
+            SOFT node preference (k8s nodeAffinity
+            preferredDuringSchedulingIgnoredDuringExecution). Biases
+            scheduling toward matching nodes but never overrides the
+            hard node_selector — an unsatisfiable preference simply has
+            no effect. Always present on read — empty array means none.
+            Honoured by the Kubernetes engine for the task/job pod only.
         env:
           type: object
           additionalProperties: { type: string }
@@ -2469,6 +2480,9 @@ components:
     RunnerProfileWrite:
       type: object
       required: [name, engine]
+      # The server decodes with DisallowUnknownFields — an unknown key is a
+      # 400, so a generated client must not emit one.
+      additionalProperties: false
       properties:
         name:
           type: string
@@ -2512,6 +2526,16 @@ components:
             NoExecute}. operator=Exists with non-empty value is
             rejected. toleration_seconds must be ≥ 0 and only
             allowed with effect=NoExecute. Full-replace on update.
+        preferred_node_affinity:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/PreferredNodeAffinityTerm'
+          description: |
+            SOFT node preference. Each term: weight 1..100 + AND-ed
+            match_expressions. Operator/value rules enforced server-side
+            (labels.NewRequirement) + total limits (terms/expressions/
+            values). Full-replace on update.
         env:
           type: object
           additionalProperties: { type: string }
@@ -2538,6 +2562,45 @@ components:
             literal text (`prefix-{{secret:DB_PASSWORD}}-suffix`).
             Unresolvable references fail the dispatch closed.
 
+    PreferredNodeAffinityTerm:
+      type: object
+      required: [weight, match_expressions]
+      additionalProperties: false
+      description: |
+        Mirrors `corev1.PreferredSchedulingTerm`: a weight (1..100) plus
+        the label expressions that must ALL match (AND) for the weight
+        to apply to a node. SOFT preference only. (The store also bounds
+        the TOTAL expressions and values across all terms — limits the
+        per-schema maxItems can only approximate.)
+      properties:
+        weight:
+          type: integer
+          minimum: 1
+          maximum: 100
+        match_expressions:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/NodeAffinityMatchExpression'
+    NodeAffinityMatchExpression:
+      type: object
+      required: [key, operator]
+      additionalProperties: false
+      description: |
+        Mirrors `corev1.NodeSelectorRequirement`. Value rules (In/NotIn
+        need ≥1 label-valid value; Exists/DoesNotExist need zero; Gt/Lt
+        need exactly one integer) are enforced server-side.
+      properties:
+        key:
+          type: string
+        operator:
+          type: string
+          enum: [In, NotIn, Exists, DoesNotExist, Gt, Lt]
+        values:
+          type: array
+          maxItems: 100
+          items: { type: string }
     Toleration:
       type: object
       description: |
