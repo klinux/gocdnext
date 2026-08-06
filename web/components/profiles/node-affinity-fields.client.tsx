@@ -11,7 +11,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 import type {
   AdminNodeAffinityExpr,
   AdminPreferredNodeAffinityTerm,
@@ -27,20 +26,25 @@ const AFFINITY_OPERATORS = [
 ] as const;
 type AffinityOperator = (typeof AFFINITY_OPERATORS)[number];
 
-// Editor-local shapes. `values` is a comma-separated string while
-// editing (parsed into a list on save) so a term can carry multiple
-// values without a nested list-of-inputs. A term keeps a LIST of
-// expressions — the API + seed accept several (AND-ed), so the editor
-// must too, or editing a YAML-authored profile would silently drop all
-// but the first expression.
-export type AffinityExprRow = { key: string; operator: string; values: string };
+// `values` is a LIST (one input per value), NOT a comma-joined string, so an
+// empty label value round-trips: Kubernetes accepts `In`/`NotIn` with
+// `values: [""]`, and a per-value list distinguishes `[""]` (one empty value)
+// from `[]` (no values) — a comma string collapses both to "".
+export type AffinityExprRow = {
+  key: string;
+  operator: string;
+  values: string[];
+};
 export type AffinityTermRow = {
   weight: number;
   match_expressions: AffinityExprRow[];
 };
 
+function operatorTakesValues(op: string): boolean {
+  return op !== "Exists" && op !== "DoesNotExist";
+}
 function emptyExpr(): AffinityExprRow {
-  return { key: "", operator: "In", values: "" };
+  return { key: "", operator: "In", values: [""] };
 }
 function emptyTerm(): AffinityTermRow {
   return { weight: 100, match_expressions: [emptyExpr()] };
@@ -55,27 +59,22 @@ export function PreferredNodeAffinityEditor({
 }) {
   const patchTerm = (ti: number, patch: Partial<AffinityTermRow>) =>
     setRows(rows.map((t, i) => (i === ti ? { ...t, ...patch } : t)));
+
   const patchExpr = (ti: number, ei: number, patch: Partial<AffinityExprRow>) =>
-    setRows(
-      rows.map((t, i) =>
-        i === ti
-          ? {
-              ...t,
-              match_expressions: t.match_expressions.map((e, j) => {
-                if (j !== ei) return e;
-                const next = { ...e, ...patch };
-                // Exists / DoesNotExist take no values (k8s rule); keep
-                // the field cleared so the form can't submit a value the
-                // server would reject.
-                if (next.operator === "Exists" || next.operator === "DoesNotExist") {
-                  next.values = "";
-                }
-                return next;
-              }),
-            }
-          : t,
-      ),
-    );
+    patchTerm(ti, {
+      match_expressions: (rows[ti]?.match_expressions ?? []).map((e, j) => {
+        if (j !== ei) return e;
+        const next = { ...e, ...patch };
+        // Exists / DoesNotExist take no values (k8s rule); switching TO them
+        // clears the list, switching AWAY re-seeds one empty input to type into.
+        if (!operatorTakesValues(next.operator)) {
+          next.values = [];
+        } else if (next.values.length === 0) {
+          next.values = [""];
+        }
+        return next;
+      }),
+    });
 
   return (
     <fieldset className="space-y-3 rounded-md border border-border p-3">
@@ -119,68 +118,20 @@ export function PreferredNodeAffinityEditor({
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
-          {term.match_expressions.map((expr, ei) => {
-            const noValues =
-              expr.operator === "Exists" || expr.operator === "DoesNotExist";
-            return (
-              <div key={ei} className="grid grid-cols-1 gap-2 sm:grid-cols-12">
-                <Input
-                  value={expr.key}
-                  placeholder="cloud.google.com/gke-spot"
-                  onChange={(e) => patchExpr(ti, ei, { key: e.target.value })}
-                  className="font-mono text-xs sm:col-span-4"
-                  aria-label="Affinity key"
-                />
-                <Select
-                  value={expr.operator}
-                  onValueChange={(v) => {
-                    if (v) patchExpr(ti, ei, { operator: v as AffinityOperator });
-                  }}
-                >
-                  <SelectTrigger
-                    aria-label="Affinity operator"
-                    className="w-full text-xs sm:col-span-3"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AFFINITY_OPERATORS.map((op) => (
-                      <SelectItem key={op} value={op}>
-                        {op}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  value={expr.values}
-                  placeholder={noValues ? "(no values)" : "true (comma-sep)"}
-                  onChange={(e) => patchExpr(ti, ei, { values: e.target.value })}
-                  disabled={noValues}
-                  className={cn(
-                    "font-mono text-xs sm:col-span-4",
-                    noValues && "bg-muted/60",
-                  )}
-                  aria-label="Affinity values (comma-separated)"
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  onClick={() =>
-                    patchTerm(ti, {
-                      match_expressions: term.match_expressions.filter(
-                        (_, j) => j !== ei,
-                      ),
-                    })
-                  }
-                  aria-label="Remove affinity expression"
-                  className="justify-self-end sm:col-span-1 sm:justify-self-auto"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            );
-          })}
+          {term.match_expressions.map((expr, ei) => (
+            <ExpressionRow
+              key={ei}
+              expr={expr}
+              onPatch={(patch) => patchExpr(ti, ei, patch)}
+              onRemove={() =>
+                patchTerm(ti, {
+                  match_expressions: term.match_expressions.filter(
+                    (_, j) => j !== ei,
+                  ),
+                })
+              }
+            />
+          ))}
           <Button
             type="button"
             size="sm"
@@ -207,9 +158,107 @@ export function PreferredNodeAffinityEditor({
   );
 }
 
-// affinityTermsFromApi hydrates the editor rows from the API shape,
-// joining each expression's values into the comma-separated string the
-// editor edits. Preserves EVERY expression (no silent truncation).
+function ExpressionRow({
+  expr,
+  onPatch,
+  onRemove,
+}: {
+  expr: AffinityExprRow;
+  onPatch: (patch: Partial<AffinityExprRow>) => void;
+  onRemove: () => void;
+}) {
+  const takesValues = operatorTakesValues(expr.operator);
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+      <Input
+        value={expr.key}
+        placeholder="cloud.google.com/gke-spot"
+        onChange={(e) => onPatch({ key: e.target.value })}
+        className="font-mono text-xs sm:col-span-4"
+        aria-label="Affinity key"
+      />
+      <Select
+        value={expr.operator}
+        onValueChange={(v) => {
+          if (v) onPatch({ operator: v as AffinityOperator });
+        }}
+      >
+        <SelectTrigger
+          aria-label="Affinity operator"
+          className="w-full text-xs sm:col-span-3"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {AFFINITY_OPERATORS.map((op) => (
+            <SelectItem key={op} value={op}>
+              {op}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <div className="flex flex-col gap-1 sm:col-span-4">
+        {takesValues ? (
+          <>
+            {expr.values.map((val, vi) => (
+              <div key={vi} className="flex items-center gap-1">
+                <Input
+                  value={val}
+                  placeholder="true"
+                  onChange={(e) => {
+                    const values = expr.values.slice();
+                    values[vi] = e.target.value;
+                    onPatch({ values });
+                  }}
+                  className="flex-1 font-mono text-xs"
+                  aria-label="Affinity value"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={() =>
+                    onPatch({ values: expr.values.filter((_, j) => j !== vi) })
+                  }
+                  aria-label="Remove affinity value"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="self-start text-xs"
+              onClick={() => onPatch({ values: [...expr.values, ""] })}
+            >
+              + value
+            </Button>
+          </>
+        ) : (
+          <span className="self-center text-xs text-muted-foreground">
+            (no values)
+          </span>
+        )}
+      </div>
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        onClick={onRemove}
+        aria-label="Remove affinity expression"
+        className="justify-self-end sm:col-span-1 sm:justify-self-auto"
+      >
+        <Trash2 className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
+// affinityTermsFromApi hydrates the editor rows from the API shape. Values are
+// copied VERBATIM (preserving `[""]`, `[]`, and multiple entries) — no join, no
+// filter — so an API/seed-authored profile round-trips without alteration.
 export function affinityTermsFromApi(
   terms: AdminPreferredNodeAffinityTerm[] | undefined,
 ): AffinityTermRow[] {
@@ -219,17 +268,13 @@ export function affinityTermsFromApi(
     match_expressions: (t.match_expressions ?? []).map((e) => ({
       key: e.key,
       operator: e.operator,
-      values: (e.values ?? []).join(", "),
+      values: [...(e.values ?? [])],
     })),
   }));
 }
 
-// collectPreferredNodeAffinity is the form → API transform at save:
-// trims, parses comma-separated values, drops expressions with no key
-// and terms left with no usable expression.
-// Collected* are the save-time shapes with `values` always present (never
-// undefined) so they satisfy both the read type (optional values) and the
-// write action's required-values input.
+// Collected* are the save-time shapes with `values` always present so they
+// satisfy both the read type (optional values) and the write action.
 export type CollectedAffinityExpr = {
   key: string;
   operator: AdminNodeAffinityExpr["operator"];
@@ -240,6 +285,10 @@ export type CollectedAffinityTerm = {
   match_expressions: CollectedAffinityExpr[];
 };
 
+// collectPreferredNodeAffinity is the form → API transform at save: trims each
+// value but does NOT drop empties (so an intentional `[""]` survives), forces
+// `[]` for Exists/DoesNotExist, and drops only expressions with no key and
+// terms left with no usable expression.
 export function collectPreferredNodeAffinity(
   rows: AffinityTermRow[],
 ): CollectedAffinityTerm[] {
@@ -249,10 +298,9 @@ export function collectPreferredNodeAffinity(
       .map((e) => ({
         key: e.key.trim(),
         operator: e.operator as AdminNodeAffinityExpr["operator"],
-        values: e.values
-          .split(",")
-          .map((v) => v.trim())
-          .filter((v) => v !== ""),
+        values: operatorTakesValues(e.operator)
+          ? e.values.map((v) => v.trim())
+          : [],
       }))
       .filter((e) => e.key !== "");
     if (exprs.length === 0) continue;

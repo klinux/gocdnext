@@ -29,18 +29,30 @@ describe("preferred node affinity collect/hydrate", () => {
     ];
     const rows = affinityTermsFromApi(api);
     expect(rows[0]?.match_expressions).toHaveLength(2);
-    expect(rows[0]?.match_expressions[1]?.values).toBe(
-      "us-central1-a, us-central1-b",
-    );
-    // Save transform must reproduce the same two expressions — the editing
-    // round-trip never collapses a multi-expression term to its first entry.
+    expect(rows[0]?.match_expressions[1]?.values).toEqual([
+      "us-central1-a",
+      "us-central1-b",
+    ]);
     expect(collectPreferredNodeAffinity(rows)).toEqual(api);
   });
 
-  it("drops expressions with no key and terms left without any expression", () => {
+  it('round-trips an empty label value [""] without dropping it', () => {
+    // k8s accepts In/NotIn with values: [""]; the editor must not collapse it.
+    const api: AdminPreferredNodeAffinityTerm[] = [
+      { weight: 10, match_expressions: [{ key: "k", operator: "In", values: [""] }] },
+    ];
+    const rows = affinityTermsFromApi(api);
+    expect(rows[0]?.match_expressions[0]?.values).toEqual([""]);
+    expect(collectPreferredNodeAffinity(rows)).toEqual(api);
+  });
+
+  it("forces [] for Exists and drops keyless expressions / empty terms", () => {
     const rows: AffinityTermRow[] = [
-      { weight: 100, match_expressions: [{ key: "", operator: "In", values: "x" }] },
-      { weight: 50, match_expressions: [{ key: "k", operator: "Exists", values: "" }] },
+      { weight: 100, match_expressions: [{ key: "", operator: "In", values: ["x"] }] },
+      {
+        weight: 50,
+        match_expressions: [{ key: "k", operator: "Exists", values: ["ignored"] }],
+      },
     ];
     const out = collectPreferredNodeAffinity(rows);
     expect(out).toHaveLength(1);

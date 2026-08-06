@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -128,7 +129,13 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 		return 0, fmt.Errorf("seed runner profiles: read %s: %w", path, err)
 	}
 	var file runnerProfilesFile
-	if err := yaml.Unmarshal(raw, &file); err != nil {
+	// KnownFields(true) turns a typo — a mistyped top-level key like
+	// `preferred_node_affinty`, or a wrong key inside match_expressions — into
+	// a loud parse error instead of a silently-empty field + successful boot,
+	// matching the admin API's strict JSON decode.
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&file); err != nil {
 		return 0, fmt.Errorf("seed runner profiles: parse %s: %w", path, err)
 	}
 	touched := 0
