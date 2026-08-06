@@ -43,6 +43,32 @@ func tolerationsToProto(in []store.Toleration) []*gocdnextv1.Toleration {
 	return out
 }
 
+// preferredNodeAffinityToProto maps the store-side preferred node-affinity
+// terms (validated + normalised at write time) to the proto wire shape. nil on
+// empty input so the wire stays minimal. Values are copied into fresh slices so
+// a shipped JobAssignment is independent of the caller's input.
+func preferredNodeAffinityToProto(in []store.PreferredNodeAffinityTerm) []*gocdnextv1.PreferredNodeAffinityTerm {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*gocdnextv1.PreferredNodeAffinityTerm, len(in))
+	for i, t := range in {
+		exprs := make([]*gocdnextv1.NodeAffinityMatchExpression, len(t.MatchExpressions))
+		for j, e := range t.MatchExpressions {
+			exprs[j] = &gocdnextv1.NodeAffinityMatchExpression{
+				Key:      e.Key,
+				Operator: e.Operator,
+				Values:   append([]string(nil), e.Values...),
+			}
+		}
+		out[i] = &gocdnextv1.PreferredNodeAffinityTerm{
+			Weight:           t.Weight,
+			MatchExpressions: exprs,
+		}
+	}
+	return out
+}
+
 // copyStringMap returns a fresh copy of the input — nil-tolerant.
 // Used for the JobAssignment.Outputs field so a later mutation of
 // the parsed-pipeline cache doesn't leak into in-flight assignments.

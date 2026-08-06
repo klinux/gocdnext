@@ -14,6 +14,11 @@ import {
 import { cn } from "@/lib/utils";
 import type { AdminToleration } from "@/server/queries/admin";
 
+import {
+  type AffinityTermRow,
+  PreferredNodeAffinityEditor,
+} from "./node-affinity-fields.client";
+
 // Label maps so the Select trigger renders the human label — base-ui's
 // Select.Value shows the raw value otherwise. The empty-string key on
 // EFFECT_LABELS is a real, selectable value ("any effect"); base-ui
@@ -41,21 +46,26 @@ type Props = {
   setNodeSelector: (rows: NodeSelectorRow[]) => void;
   tolerations: TolerationRow[];
   setTolerations: (rows: TolerationRow[]) => void;
+  affinity: AffinityTermRow[];
+  setAffinity: (rows: AffinityTermRow[]) => void;
 };
 
-// SchedulingFields renders the two scheduling editors as a self-
-// contained block inside the profile form. Kept in its own file so
-// the profile manager stays under the per-file LOC budget.
+// SchedulingFields renders the scheduling editors as a self-contained
+// block inside the profile form. Kept in its own file so the profile
+// manager stays under the per-file LOC budget.
 export function SchedulingFields({
   nodeSelector,
   setNodeSelector,
   tolerations,
   setTolerations,
+  affinity,
+  setAffinity,
 }: Props) {
   return (
     <div className="space-y-4">
       <NodeSelectorEditor rows={nodeSelector} setRows={setNodeSelector} />
       <TolerationsEditor rows={tolerations} setRows={setTolerations} />
+      <PreferredNodeAffinityEditor rows={affinity} setRows={setAffinity} />
     </div>
   );
 }

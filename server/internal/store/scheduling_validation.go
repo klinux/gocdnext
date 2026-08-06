@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -128,6 +130,83 @@ func ValidateAndNormaliseTolerations(in []Toleration) ([]Toleration, error) {
 	return out, nil
 }
 
+// Preferred node-affinity limits. Bounded so the JobAssignment (shipped over
+// gRPC and staged into a Secret) stays small and the scheduler stays cheap.
+// Enforced on BOTH the admin API and the YAML seed via applySchedulingValidation.
+// Totals are checked in addition to per-term counts so the product of the
+// per-dimension caps can't still produce a huge assignment.
+const (
+	maxAffinityTerms       = 10  // preferred_node_affinity length
+	maxAffinityExpressions = 20  // total match_expressions across all terms
+	maxAffinityValues      = 100 // total values across all expressions
+	maxAffinityWeight      = 100
+)
+
+// affinityOperators maps the wire operator string to the k8s selection
+// operator so labels.NewRequirement can apply the SAME rules the apiserver
+// enforces: key IsQualifiedName; In/NotIn need ≥1 label-valid value;
+// Exists/DoesNotExist need zero values; Gt/Lt need exactly one integer. A bad
+// expression fails here as a 400 instead of at pod admission hours later.
+var affinityOperators = map[string]selection.Operator{
+	"In":           selection.In,
+	"NotIn":        selection.NotIn,
+	"Exists":       selection.Exists,
+	"DoesNotExist": selection.DoesNotExist,
+	"Gt":           selection.GreaterThan,
+	"Lt":           selection.LessThan,
+}
+
+// ValidateAndNormalisePreferredNodeAffinity validates every term/expression
+// against the apiserver rules and returns a DEEP-COPIED normalised slice (safe
+// to persist without aliasing the caller's input). Empty input → empty output.
+// A term with zero match_expressions is rejected (a weight with nothing to
+// match is meaningless and k8s would reject the pod).
+func ValidateAndNormalisePreferredNodeAffinity(in []PreferredNodeAffinityTerm) ([]PreferredNodeAffinityTerm, error) {
+	if len(in) == 0 {
+		return in, nil
+	}
+	if len(in) > maxAffinityTerms {
+		return nil, fmt.Errorf("preferred_node_affinity: too many terms (%d > %d)", len(in), maxAffinityTerms)
+	}
+	totalExpr, totalVals := 0, 0
+	out := make([]PreferredNodeAffinityTerm, len(in))
+	for i, term := range in {
+		if term.Weight < 1 || term.Weight > maxAffinityWeight {
+			return nil, fmt.Errorf("preferred_node_affinity[%d].weight %d: must be 1..%d", i, term.Weight, maxAffinityWeight)
+		}
+		if len(term.MatchExpressions) == 0 {
+			return nil, fmt.Errorf("preferred_node_affinity[%d]: at least one match_expression is required", i)
+		}
+		totalExpr += len(term.MatchExpressions)
+		if totalExpr > maxAffinityExpressions {
+			return nil, fmt.Errorf("preferred_node_affinity: too many match_expressions total (> %d)", maxAffinityExpressions)
+		}
+		exprs := make([]NodeAffinityMatchExpression, len(term.MatchExpressions))
+		for j, e := range term.MatchExpressions {
+			op, ok := affinityOperators[e.Operator]
+			if !ok {
+				return nil, fmt.Errorf("preferred_node_affinity[%d].match_expressions[%d].operator %q: must be In, NotIn, Exists, DoesNotExist, Gt, or Lt", i, j, e.Operator)
+			}
+			totalVals += len(e.Values)
+			if totalVals > maxAffinityValues {
+				return nil, fmt.Errorf("preferred_node_affinity: too many values total (> %d)", maxAffinityValues)
+			}
+			// labels.NewRequirement applies the apiserver's key/value/operator
+			// rules; we discard the requirement itself and keep the raw shape.
+			if _, err := labels.NewRequirement(e.Key, op, e.Values); err != nil {
+				return nil, fmt.Errorf("preferred_node_affinity[%d].match_expressions[%d]: %w", i, j, err)
+			}
+			exprs[j] = NodeAffinityMatchExpression{
+				Key:      e.Key,
+				Operator: e.Operator,
+				Values:   append([]string(nil), e.Values...), // deep-copy — never alias the input
+			}
+		}
+		out[i] = PreferredNodeAffinityTerm{Weight: term.Weight, MatchExpressions: exprs}
+	}
+	return out, nil
+}
+
 // applySchedulingValidation is the internal shim every store
 // Insert/Update path runs before persist. Mutates input in place
 // (normalised tolerations replace the raw slice; node_selector
@@ -142,5 +221,10 @@ func applySchedulingValidation(in *RunnerProfileInput) error {
 		return err
 	}
 	in.Tolerations = normalised
+	affinity, err := ValidateAndNormalisePreferredNodeAffinity(in.PreferredNodeAffinity)
+	if err != nil {
+		return err
+	}
+	in.PreferredNodeAffinity = affinity
 	return nil
 }

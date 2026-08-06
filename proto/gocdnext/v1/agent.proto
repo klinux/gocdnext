@@ -505,6 +505,15 @@ message JobAssignment {
   // pods (#97). Zero for a never-revived run. Kubernetes engine only; Shell +
   // Docker ignore it.
   int64 service_generation = 26;
+
+  // PreferredNodeAffinity is the run's SOFT node preference, resolved from the
+  // runner profile (k8s nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution).
+  // It biases scheduling but NEVER overrides the hard node_selector (field 21):
+  // a preference incompatible with the selector simply has no effect. Honoured
+  // by the Kubernetes engine for the TASK/JOB pod only — `services:` pods still
+  // get just the agent scheduling baseline (follow-up tracks propagating all
+  // profile hints to services). Shell + Docker ignore it.
+  repeated PreferredNodeAffinityTerm preferred_node_affinity = 27;
 }
 
 // Toleration mirrors corev1.Toleration with concrete strings so
@@ -526,6 +535,25 @@ message Toleration {
   // semantics through the optional keyword) means "tolerate
   // forever"; 0 evicts immediately. Server validates >= 0.
   optional int64 toleration_seconds = 5;
+}
+
+// NodeAffinityMatchExpression mirrors corev1.NodeSelectorRequirement — a single
+// label match used inside a preferred node-affinity term. Operator is one of
+// In, NotIn, Exists, DoesNotExist, Gt, Lt, validated server-side via
+// labels.NewRequirement (same rules the apiserver applies) before it reaches
+// the wire.
+message NodeAffinityMatchExpression {
+  string key = 1;
+  string operator = 2;
+  repeated string values = 3;
+}
+
+// PreferredNodeAffinityTerm mirrors corev1.PreferredSchedulingTerm: a weight
+// (1..100) plus the label expressions that must ALL match (AND) for the weight
+// to apply to a node. Empty match_expressions is rejected server-side.
+message PreferredNodeAffinityTerm {
+  int32 weight = 1;
+  repeated NodeAffinityMatchExpression match_expressions = 2;
 }
 
 // ResourceRequirements mirrors the subset of corev1.ResourceList the

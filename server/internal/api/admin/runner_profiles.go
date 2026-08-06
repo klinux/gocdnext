@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -47,8 +48,11 @@ type runnerProfileDTO struct {
 	// present on read as a list (UI maps over it). Empty list =
 	// no tolerations beyond what the agent ships with.
 	Tolerations []store.Toleration `json:"tolerations"`
-	Env         map[string]string  `json:"env"`
-	SecretKeys  []string           `json:"secret_keys"`
+	// PreferredNodeAffinity is the SOFT node preference. Always present on
+	// read as a list (UI maps over it); empty = none.
+	PreferredNodeAffinity []store.PreferredNodeAffinityTerm `json:"preferred_node_affinity"`
+	Env                   map[string]string                 `json:"env"`
+	SecretKeys            []string                          `json:"secret_keys"`
 	// SecretRefs maps a secret KEY → the global secret NAME it
 	// references via `{{secret:NAME}}`. Only populated for rows
 	// where the value is a single template; mixed values
@@ -73,22 +77,23 @@ type runnerProfilesResponse struct {
 // client side. The UI must read SecretKeys, decide which to keep,
 // and send back the full set; missing keys are deletions.
 type runnerProfileWriteRequest struct {
-	Name              string             `json:"name"`
-	Description       string             `json:"description"`
-	Engine            string             `json:"engine"`
-	DefaultImage      string             `json:"default_image"`
-	DefaultCPURequest string             `json:"default_cpu_request"`
-	DefaultCPULimit   string             `json:"default_cpu_limit"`
-	DefaultMemRequest string             `json:"default_mem_request"`
-	DefaultMemLimit   string             `json:"default_mem_limit"`
-	MaxCPU            string             `json:"max_cpu"`
-	MaxMem            string             `json:"max_mem"`
-	Tags              []string           `json:"tags"`
-	Config            map[string]any     `json:"config,omitempty"`
-	NodeSelector      map[string]string  `json:"node_selector"`
-	Tolerations       []store.Toleration `json:"tolerations"`
-	Env               map[string]string  `json:"env"`
-	Secrets           map[string]string  `json:"secrets"`
+	Name                  string                            `json:"name"`
+	Description           string                            `json:"description"`
+	Engine                string                            `json:"engine"`
+	DefaultImage          string                            `json:"default_image"`
+	DefaultCPURequest     string                            `json:"default_cpu_request"`
+	DefaultCPULimit       string                            `json:"default_cpu_limit"`
+	DefaultMemRequest     string                            `json:"default_mem_request"`
+	DefaultMemLimit       string                            `json:"default_mem_limit"`
+	MaxCPU                string                            `json:"max_cpu"`
+	MaxMem                string                            `json:"max_mem"`
+	Tags                  []string                          `json:"tags"`
+	Config                map[string]any                    `json:"config,omitempty"`
+	NodeSelector          map[string]string                 `json:"node_selector"`
+	Tolerations           []store.Toleration                `json:"tolerations"`
+	PreferredNodeAffinity []store.PreferredNodeAffinityTerm `json:"preferred_node_affinity"`
+	Env                   map[string]string                 `json:"env"`
+	Secrets               map[string]string                 `json:"secrets"`
 }
 
 // supportedEngines is the allow-list checked at write time. Mirrors
@@ -297,8 +302,15 @@ func parseRunnerProfileID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bo
 func decodeRunnerProfileWrite(w http.ResponseWriter, r *http.Request) (runnerProfileWriteRequest, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	var req runnerProfileWriteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields() // a typo in a scheduling field is a 400, not silently dropped
+	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return req, false
+	}
+	// Reject trailing content or a second JSON value after the object.
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "invalid json: body must contain a single object", http.StatusBadRequest)
 		return req, false
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -349,27 +361,34 @@ func decodeRunnerProfileWrite(w http.ResponseWriter, r *http.Request) (runnerPro
 		return req, false
 	}
 	req.Tolerations = normalised
+	affinity, err := store.ValidateAndNormalisePreferredNodeAffinity(req.PreferredNodeAffinity)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return req, false
+	}
+	req.PreferredNodeAffinity = affinity
 	return req, true
 }
 
 func runnerProfileInputFromReq(req runnerProfileWriteRequest) store.RunnerProfileInput {
 	return store.RunnerProfileInput{
-		Name:              req.Name,
-		Description:       req.Description,
-		Engine:            req.Engine,
-		DefaultImage:      req.DefaultImage,
-		DefaultCPURequest: req.DefaultCPURequest,
-		DefaultCPULimit:   req.DefaultCPULimit,
-		DefaultMemRequest: req.DefaultMemRequest,
-		DefaultMemLimit:   req.DefaultMemLimit,
-		MaxCPU:            req.MaxCPU,
-		MaxMem:            req.MaxMem,
-		Tags:              req.Tags,
-		Config:            req.Config,
-		NodeSelector:      req.NodeSelector,
-		Tolerations:       req.Tolerations,
-		Env:               req.Env,
-		Secrets:           req.Secrets,
+		Name:                  req.Name,
+		Description:           req.Description,
+		Engine:                req.Engine,
+		DefaultImage:          req.DefaultImage,
+		DefaultCPURequest:     req.DefaultCPURequest,
+		DefaultCPULimit:       req.DefaultCPULimit,
+		DefaultMemRequest:     req.DefaultMemRequest,
+		DefaultMemLimit:       req.DefaultMemLimit,
+		MaxCPU:                req.MaxCPU,
+		MaxMem:                req.MaxMem,
+		Tags:                  req.Tags,
+		Config:                req.Config,
+		NodeSelector:          req.NodeSelector,
+		Tolerations:           req.Tolerations,
+		PreferredNodeAffinity: req.PreferredNodeAffinity,
+		Env:                   req.Env,
+		Secrets:               req.Secrets,
 	}
 }
 
@@ -405,27 +424,32 @@ func toRunnerProfileDTO(p store.RunnerProfile, refs map[string]string) runnerPro
 	if tolerations == nil {
 		tolerations = []store.Toleration{}
 	}
+	affinity := p.PreferredNodeAffinity
+	if affinity == nil {
+		affinity = []store.PreferredNodeAffinityTerm{}
+	}
 	return runnerProfileDTO{
-		ID:                p.ID.String(),
-		Name:              p.Name,
-		Description:       p.Description,
-		Engine:            p.Engine,
-		DefaultImage:      p.DefaultImage,
-		DefaultCPURequest: p.DefaultCPURequest,
-		DefaultCPULimit:   p.DefaultCPULimit,
-		DefaultMemRequest: p.DefaultMemRequest,
-		DefaultMemLimit:   p.DefaultMemLimit,
-		MaxCPU:            p.MaxCPU,
-		MaxMem:            p.MaxMem,
-		Tags:              tags,
-		Config:            p.Config,
-		NodeSelector:      nodeSel,
-		Tolerations:       tolerations,
-		Env:               env,
-		SecretKeys:        keys,
-		SecretRefs:        refs,
-		CreatedAt:         p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:         p.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		ID:                    p.ID.String(),
+		Name:                  p.Name,
+		Description:           p.Description,
+		Engine:                p.Engine,
+		DefaultImage:          p.DefaultImage,
+		DefaultCPURequest:     p.DefaultCPURequest,
+		DefaultCPULimit:       p.DefaultCPULimit,
+		DefaultMemRequest:     p.DefaultMemRequest,
+		DefaultMemLimit:       p.DefaultMemLimit,
+		MaxCPU:                p.MaxCPU,
+		MaxMem:                p.MaxMem,
+		Tags:                  tags,
+		Config:                p.Config,
+		NodeSelector:          nodeSel,
+		Tolerations:           tolerations,
+		PreferredNodeAffinity: affinity,
+		Env:                   env,
+		SecretKeys:            keys,
+		SecretRefs:            refs,
+		CreatedAt:             p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:             p.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 

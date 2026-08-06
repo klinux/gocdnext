@@ -113,20 +113,21 @@ func (r *Runner) checkout(ctx context.Context, workDir string, co *gocdnextv1.Ma
 func (r *Runner) runScript(ctx context.Context, workDir, script, image string, docker bool, services servicePhase, env map[string]string, outputs outputsPaths, a *gocdnextv1.JobAssignment, seq *atomic.Int64) (int, error) {
 	r.emitLog(a, seq, "stdout", "$ "+script)
 	return r.cfg.Engine.RunScript(ctx, engine.ScriptSpec{
-		WorkDir:         workDir,
-		Image:           image,
-		Env:             env,
-		Script:          script,
-		Docker:          docker,
-		Network:         services.network,
-		HostAliases:     services.hostAliases,
-		Resources:       assignmentResources(a),
-		Profile:         a.GetProfile(),
-		AgentTags:       append([]string(nil), r.cfg.AgentTags...),
-		OutputsHostPath: outputs.host,
-		OutputsRelPath:  outputs.rel,
-		NodeSelector:    assignmentNodeSelector(a),
-		Tolerations:     assignmentTolerations(a),
+		WorkDir:               workDir,
+		Image:                 image,
+		Env:                   env,
+		Script:                script,
+		Docker:                docker,
+		Network:               services.network,
+		HostAliases:           services.hostAliases,
+		Resources:             assignmentResources(a),
+		Profile:               a.GetProfile(),
+		AgentTags:             append([]string(nil), r.cfg.AgentTags...),
+		OutputsHostPath:       outputs.host,
+		OutputsRelPath:        outputs.rel,
+		NodeSelector:          assignmentNodeSelector(a),
+		Tolerations:           assignmentTolerations(a),
+		PreferredNodeAffinity: assignmentPreferredNodeAffinity(a),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},
@@ -197,6 +198,34 @@ func assignmentTolerations(a *gocdnextv1.JobAssignment) []corev1.Toleration {
 			v := *t.TolerationSeconds
 			out[i].TolerationSeconds = &v
 		}
+	}
+	return out
+}
+
+// assignmentPreferredNodeAffinity converts the proto preferred node-affinity
+// terms into the corev1.PreferredSchedulingTerm slice the Kubernetes engine
+// wraps into pod.Spec.Affinity. Values are copied into fresh slices so engine
+// mutation can't leak back into the proto (same aliasing discipline as the
+// tolerations/node-selector conversions). Empty input → nil.
+func assignmentPreferredNodeAffinity(a *gocdnextv1.JobAssignment) []corev1.PreferredSchedulingTerm {
+	in := a.GetPreferredNodeAffinity()
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]corev1.PreferredSchedulingTerm, 0, len(in))
+	for _, t := range in {
+		exprs := make([]corev1.NodeSelectorRequirement, 0, len(t.GetMatchExpressions()))
+		for _, e := range t.GetMatchExpressions() {
+			exprs = append(exprs, corev1.NodeSelectorRequirement{
+				Key:      e.GetKey(),
+				Operator: corev1.NodeSelectorOperator(e.GetOperator()),
+				Values:   append([]string(nil), e.GetValues()...),
+			})
+		}
+		out = append(out, corev1.PreferredSchedulingTerm{
+			Weight:     t.GetWeight(),
+			Preference: corev1.NodeSelectorTerm{MatchExpressions: exprs},
+		})
 	}
 	return out
 }

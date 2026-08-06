@@ -67,6 +67,29 @@ const tolerationSchema = z.object({
 });
 const tolerationsSchema = z.array(tolerationSchema).optional().default([]);
 
+// Preferred node-affinity (SOFT). Operator + value rules mirror the k8s
+// apiserver; the server re-validates via labels.NewRequirement and enforces
+// the total limits, so this schema only guards obvious shape errors early.
+const affinityExprSchema = z.object({
+  key: z.string().min(1, "affinity key cannot be empty"),
+  operator: z.enum(["In", "NotIn", "Exists", "DoesNotExist", "Gt", "Lt"]),
+  values: z.array(z.string()).optional().default([]),
+});
+const affinityTermSchema = z.object({
+  weight: z
+    .number()
+    .int()
+    .min(1, "weight must be between 1 and 100")
+    .max(100, "weight must be between 1 and 100"),
+  match_expressions: z
+    .array(affinityExprSchema)
+    .min(1, "at least one match expression is required"),
+});
+const preferredNodeAffinitySchema = z
+  .array(affinityTermSchema)
+  .optional()
+  .default([]);
+
 const writeSchema = z.object({
   name: z
     .string()
@@ -87,6 +110,9 @@ const writeSchema = z.object({
   // collision) and concatenates tolerations (kubelet dedupes).
   node_selector: nodeSelectorSchema,
   tolerations: tolerationsSchema,
+  // SOFT node preference — the scheduler prefers matching nodes but the hard
+  // node_selector still governs. Lets a profile prefer e.g. spot and fall back.
+  preferred_node_affinity: preferredNodeAffinitySchema,
   // Plain env vars the runner injects into every plugin container
   // running on this profile. Use for non-secret config like bucket
   // names and regions.

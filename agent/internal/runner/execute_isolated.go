@@ -178,19 +178,20 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 	}
 
 	spec := engine.IsolatedJobSpec{
-		RunID:               a.GetRunId(),
-		JobID:               a.GetJobId(),
-		WorkDir:             scriptWorkDir,
-		Env:                 a.GetEnv(),
-		Docker:              a.GetDocker(),
-		Resources:           assignmentResources(a),
-		Profile:             a.GetProfile(),
-		AgentTags:           append([]string(nil), r.cfg.AgentTags...),
-		HostAliases:         servicesPhase.hostAliases,
-		OutputsRelPath:      outputsRel,
-		NodeSelector:        assignmentNodeSelector(a),
-		Tolerations:         assignmentTolerations(a),
-		NeedsCacheFetchInit: needsCacheFetch,
+		RunID:                 a.GetRunId(),
+		JobID:                 a.GetJobId(),
+		WorkDir:               scriptWorkDir,
+		Env:                   a.GetEnv(),
+		Docker:                a.GetDocker(),
+		Resources:             assignmentResources(a),
+		Profile:               a.GetProfile(),
+		AgentTags:             append([]string(nil), r.cfg.AgentTags...),
+		HostAliases:           servicesPhase.hostAliases,
+		OutputsRelPath:        outputsRel,
+		NodeSelector:          assignmentNodeSelector(a),
+		Tolerations:           assignmentTolerations(a),
+		PreferredNodeAffinity: assignmentPreferredNodeAffinity(a),
+		NeedsCacheFetchInit:   needsCacheFetch,
 	}
 
 	if plugin := task.GetPlugin(); plugin != nil {

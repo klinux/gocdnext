@@ -32,7 +32,7 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations
+       node_selector, tolerations, preferred_node_affinity
 FROM runner_profiles
 WHERE id = $1
 LIMIT 1
@@ -61,6 +61,7 @@ func (q *Queries) GetRunnerProfile(ctx context.Context, id pgtype.UUID) (RunnerP
 		&i.Secrets,
 		&i.NodeSelector,
 		&i.Tolerations,
+		&i.PreferredNodeAffinity,
 	)
 	return i, err
 }
@@ -74,7 +75,7 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations
+       node_selector, tolerations, preferred_node_affinity
 FROM runner_profiles
 WHERE name = $1
 LIMIT 1
@@ -106,6 +107,7 @@ func (q *Queries) GetRunnerProfileByName(ctx context.Context, name string) (Runn
 		&i.Secrets,
 		&i.NodeSelector,
 		&i.Tolerations,
+		&i.PreferredNodeAffinity,
 	)
 	return i, err
 }
@@ -119,7 +121,7 @@ INSERT INTO runner_profiles (
     max_cpu, max_mem,
     tags, config,
     env, secrets,
-    node_selector, tolerations
+    node_selector, tolerations, preferred_node_affinity
 ) VALUES (
     $1, $2, $3,
     $4,
@@ -128,7 +130,7 @@ INSERT INTO runner_profiles (
     $9, $10,
     $11, $12,
     $13, $14,
-    $15, $16
+    $15, $16, $17
 )
 RETURNING id, name, description, engine,
           default_image,
@@ -138,26 +140,27 @@ RETURNING id, name, description, engine,
           tags, config,
           created_at, updated_at,
           env, secrets,
-          node_selector, tolerations
+          node_selector, tolerations, preferred_node_affinity
 `
 
 type InsertRunnerProfileParams struct {
-	Name              string
-	Description       string
-	Engine            string
-	DefaultImage      string
-	DefaultCpuRequest string
-	DefaultCpuLimit   string
-	DefaultMemRequest string
-	DefaultMemLimit   string
-	MaxCpu            string
-	MaxMem            string
-	Tags              []string
-	Config            []byte
-	Env               []byte
-	Secrets           []byte
-	NodeSelector      []byte
-	Tolerations       []byte
+	Name                  string
+	Description           string
+	Engine                string
+	DefaultImage          string
+	DefaultCpuRequest     string
+	DefaultCpuLimit       string
+	DefaultMemRequest     string
+	DefaultMemLimit       string
+	MaxCpu                string
+	MaxMem                string
+	Tags                  []string
+	Config                []byte
+	Env                   []byte
+	Secrets               []byte
+	NodeSelector          []byte
+	Tolerations           []byte
+	PreferredNodeAffinity []byte
 }
 
 func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfileParams) (RunnerProfile, error) {
@@ -178,6 +181,7 @@ func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfi
 		arg.Secrets,
 		arg.NodeSelector,
 		arg.Tolerations,
+		arg.PreferredNodeAffinity,
 	)
 	var i RunnerProfile
 	err := row.Scan(
@@ -200,6 +204,7 @@ func (q *Queries) InsertRunnerProfile(ctx context.Context, arg InsertRunnerProfi
 		&i.Secrets,
 		&i.NodeSelector,
 		&i.Tolerations,
+		&i.PreferredNodeAffinity,
 	)
 	return i, err
 }
@@ -213,7 +218,7 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations
+       node_selector, tolerations, preferred_node_affinity
 FROM runner_profiles
 ORDER BY name
 `
@@ -248,6 +253,7 @@ func (q *Queries) ListRunnerProfiles(ctx context.Context) ([]RunnerProfile, erro
 			&i.Secrets,
 			&i.NodeSelector,
 			&i.Tolerations,
+			&i.PreferredNodeAffinity,
 		); err != nil {
 			return nil, err
 		}
@@ -274,28 +280,30 @@ SET name = $2,
     secrets = $15,
     node_selector = $16,
     tolerations = $17,
+    preferred_node_affinity = $18,
     updated_at = NOW()
 WHERE id = $1
 `
 
 type UpdateRunnerProfileParams struct {
-	ID                pgtype.UUID
-	Name              string
-	Description       string
-	Engine            string
-	DefaultImage      string
-	DefaultCpuRequest string
-	DefaultCpuLimit   string
-	DefaultMemRequest string
-	DefaultMemLimit   string
-	MaxCpu            string
-	MaxMem            string
-	Tags              []string
-	Config            []byte
-	Env               []byte
-	Secrets           []byte
-	NodeSelector      []byte
-	Tolerations       []byte
+	ID                    pgtype.UUID
+	Name                  string
+	Description           string
+	Engine                string
+	DefaultImage          string
+	DefaultCpuRequest     string
+	DefaultCpuLimit       string
+	DefaultMemRequest     string
+	DefaultMemLimit       string
+	MaxCpu                string
+	MaxMem                string
+	Tags                  []string
+	Config                []byte
+	Env                   []byte
+	Secrets               []byte
+	NodeSelector          []byte
+	Tolerations           []byte
+	PreferredNodeAffinity []byte
 }
 
 func (q *Queries) UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfileParams) error {
@@ -317,6 +325,7 @@ func (q *Queries) UpdateRunnerProfile(ctx context.Context, arg UpdateRunnerProfi
 		arg.Secrets,
 		arg.NodeSelector,
 		arg.Tolerations,
+		arg.PreferredNodeAffinity,
 	)
 	return err
 }
