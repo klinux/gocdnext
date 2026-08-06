@@ -12,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // serviceGenerationLabel carries the run's service_generation (#97) on every service
@@ -491,7 +490,7 @@ func (k *Kubernetes) CleanupRunServices(ctx context.Context, runID string, maxGe
 // the IP string or an error describing what went wrong.
 func (k *Kubernetes) waitForPodIP(ctx context.Context, name string) (string, error) {
 	var ip string
-	err := wait.PollUntilContextCancel(ctx, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
+	err := pollWithBackoff(ctx, "pod_ip", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
