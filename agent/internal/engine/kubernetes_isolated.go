@@ -13,7 +13,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
 )
 
@@ -617,7 +616,7 @@ func (k *Kubernetes) DeleteIsolatedJobPod(ctx context.Context, podName string) e
 func (k *Kubernetes) WaitForInitStarted(ctx context.Context, podName, initContainerName string) error {
 	startup, cancel := context.WithTimeout(ctx, k.cfg.StartupTimeout)
 	defer cancel()
-	return wait.PollUntilContextCancel(startup, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
+	return pollWithBackoff(startup, "init_started", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -649,7 +648,7 @@ func (k *Kubernetes) WaitForInitStarted(ctx context.Context, podName, initContai
 // JobAssignment's TimeoutSeconds.
 func (k *Kubernetes) WaitForInitTerminated(ctx context.Context, podName, initContainerName string) (int, error) {
 	var pod *corev1.Pod
-	err := wait.PollUntilContextCancel(ctx, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
+	err := pollWithBackoff(ctx, "init_terminated", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		p, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -700,7 +699,7 @@ func (k *Kubernetes) StreamInitLogs(ctx context.Context, podName, initContainerN
 func (k *Kubernetes) WaitForTaskStarted(ctx context.Context, podName string) error {
 	startup, cancel := context.WithTimeout(ctx, k.cfg.StartupTimeout)
 	defer cancel()
-	return wait.PollUntilContextCancel(startup, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
+	return pollWithBackoff(startup, "task_started", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
