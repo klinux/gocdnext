@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"golang.org/x/net/http2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,6 +39,9 @@ func TestClassifyTransientAPIErr(t *testing.T) {
 		{"grpc resource exhausted wrapped", fmt.Errorf("get pod: %w", enhanceYourCalmStatus()), "resource_exhausted", true, 0},
 		{"grpc unavailable", status.Error(codes.Unavailable, "transport closing"), "unavailable", true, 0},
 		{"grpc deadline is NOT transient", status.Error(codes.DeadlineExceeded, "x"), "", false, 0},
+		{"raw http2 stream enhance_your_calm", http2.StreamError{Code: http2.ErrCodeEnhanceYourCalm}, "enhance_your_calm", true, 0},
+		{"raw http2 goaway enhance_your_calm", http2.GoAwayError{ErrCode: http2.ErrCodeEnhanceYourCalm}, "enhance_your_calm", true, 0},
+		{"raw http2 other code is fatal", http2.StreamError{Code: http2.ErrCodeInternal}, "", false, 0},
 		{"too many requests w/ retry-after", apierrors.NewTooManyRequests("busy", 7), "too_many_requests", true, 7 * time.Second},
 		{"too many requests wrapped", fmt.Errorf("w: %w", apierrors.NewTooManyRequests("busy", 3)), "too_many_requests", true, 3 * time.Second},
 		{"service unavailable", apierrors.NewServiceUnavailable("no backend"), "unavailable", true, 0},
@@ -69,13 +73,13 @@ func TestNextDelay(t *testing.T) {
 		prev, base, max time.Duration
 		want            time.Duration
 	}{
-		{"first is base", 0, s, 10 * s, s},
-		{"doubles", s, s, 10 * s, 2 * s},
-		{"doubles again", 2 * s, s, 10 * s, 4 * s},
+		{"first is 2*base", 0, s, 10 * s, 2 * s},
+		{"doubles", 2 * s, s, 10 * s, 4 * s},
+		{"doubles again", 4 * s, s, 10 * s, 8 * s},
 		{"caps at max", 8 * s, s, 10 * s, 10 * s},
 		{"stays capped", 10 * s, s, 10 * s, 10 * s},
-		{"zero base defaults to 1s", 0, 0, 10 * s, s},
-		{"cap never below base", 0, 30 * s, 10 * s, 30 * s},
+		{"zero base defaults to 1s (first 2s)", 0, 0, 10 * s, 2 * s},
+		{"cap raised to 2*base", 0, 30 * s, 10 * s, 60 * s},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,8 +156,8 @@ func TestPollWithBackoffImpl_RetriesThenSucceeds(t *testing.T) {
 	if calls != 3 {
 		t.Errorf("calls=%d want 3", calls)
 	}
-	// Nominal exponential progression (jitter is identity here).
-	want := []time.Duration{time.Second, 2 * time.Second}
+	// Nominal exponential progression starting at 2*base (jitter is identity).
+	want := []time.Duration{2 * time.Second, 4 * time.Second}
 	if len(rec.calls) != 2 || rec.calls[0] != want[0] || rec.calls[1] != want[1] {
 		t.Errorf("sleeps=%v want %v", rec.calls, want)
 	}
@@ -183,15 +187,34 @@ func TestPollWithBackoffImpl_HonorsRetryAfter(t *testing.T) {
 		func(context.Context) (bool, error) {
 			calls++
 			if calls == 1 {
-				return false, apierrors.NewTooManyRequests("busy", 5) // Retry-After 5s > nominal 1s
+				return false, apierrors.NewTooManyRequests("busy", 5) // Retry-After 5s
 			}
 			return true, nil
 		})
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if len(rec.calls) != 1 || rec.calls[0] != 5*time.Second {
-		t.Errorf("sleeps=%v want [5s] (Retry-After beats backoff)", rec.calls)
+	// Retry-After (5s) is a FLOOR plus bounded dispersion (jitter(base)=1s under
+	// identity) => 6s — never the exact 5s, so the fleet doesn't wake in lockstep.
+	if len(rec.calls) != 1 || rec.calls[0] != 6*time.Second {
+		t.Errorf("sleeps=%v want [6s] (Retry-After floor + dispersion)", rec.calls)
+	}
+}
+
+func TestPollWithBackoffImpl_NoRetryCountWhenCtxExpiresInBackoff(t *testing.T) {
+	before := testutil.ToFloat64(metrics.K8sTransientRetries.WithLabelValues("test2", "resource_exhausted"))
+	rec := &sleepRecorder{cancelAfter: 1} // the backoff sleep itself hits ctx expiry
+	calls := 0
+	err := pollWithBackoffImpl(context.Background(), "test2", time.Second, testCfg(rec),
+		func(context.Context) (bool, error) { calls++; return false, enhanceYourCalmStatus() })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v want DeadlineExceeded", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls=%d want 1 (ctx expired before any retry)", calls)
+	}
+	if got := testutil.ToFloat64(metrics.K8sTransientRetries.WithLabelValues("test2", "resource_exhausted")) - before; got != 0 {
+		t.Errorf("metric delta=%v want 0 (no retry actually happened)", got)
 	}
 }
 

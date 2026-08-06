@@ -15,10 +15,11 @@ import (
 	"github.com/gocdnext/gocdnext/agent/internal/metrics"
 )
 
-// maxBackoff caps the nominal (pre-jitter) delay between poll attempts once
+// maxBackoff caps the nominal (pre-jitter) backoff between poll attempts once
 // transient backpressure appears. With PollInterval=1s and StartupTimeout=5m
-// this still leaves many attempts before the budget runs out. Effective sleep
-// never exceeds this: equal jitter stays within [d/2, d].
+// this still leaves many attempts before the budget runs out. The
+// backoff-driven sleep never exceeds this (equal jitter stays within [d/2, d]);
+// a larger server-supplied Retry-After can, since it is honoured as a floor.
 const maxBackoff = 10 * time.Second
 
 // classifyTransientAPIErr reports whether err is a retryable backpressure /
@@ -75,17 +76,19 @@ func classifyTransientAPIErr(err error) (kind string, retryAfter time.Duration, 
 }
 
 // nextDelay returns the nominal (pre-jitter) backoff after a transient error:
-// base on the first, doubling thereafter, capped at max. prev<=0 resets to
-// base (used after a clean poll). The cap is never below base, so a
-// PollInterval larger than max still polls at base rather than faster.
+// 2*base on the first — so equal jitter lands in [base, 2*base] and we never
+// retry FASTER than a normal poll right after the server asked us to slow
+// down — doubling thereafter, capped at max. prev<=0 resets to the first value
+// (used after a clean poll). The cap is raised to 2*base when smaller, so even
+// at the cap the jittered sleep stays >= base.
 func nextDelay(prev, base, max time.Duration) time.Duration {
 	if base <= 0 {
 		base = time.Second
 	}
-	if max < base {
-		max = base
+	if max < 2*base {
+		max = 2 * base
 	}
-	d := base
+	d := 2 * base
 	if prev > 0 {
 		d = prev * 2
 	}
@@ -163,15 +166,26 @@ func pollWithBackoffImpl(ctx context.Context, op string, base time.Duration, cfg
 			if !ok {
 				return err // non-transient: abort (today's behaviour)
 			}
-			metrics.K8sTransientRetries.WithLabelValues(op, kind).Inc()
 			backoff = nextDelay(backoff, base, cfg.max)
 			d := cfg.jitter(backoff)
-			if retryAfter > d {
-				d = retryAfter
+			if d < base {
+				d = base // never retry faster than a normal poll
+			}
+			if retryAfter > 0 {
+				// Retry-After is a FLOOR, not the exact delay: add bounded
+				// dispersion so a fleet hit by the same 429/APF doesn't wake in
+				// lockstep and immediately re-flood the apiserver.
+				if floored := retryAfter + cfg.jitter(base); floored > d {
+					d = floored
+				}
 			}
 			if serr := cfg.sleep(ctx, d); serr != nil {
-				return serr
+				return serr // ctx expired during backoff: no retry happened
 			}
+			// Count only an ACTUAL retry — the next iteration re-polls. Placing
+			// this after the sleep keeps *_retries_total from over-counting a
+			// blip the ctx cancelled before we could retry.
+			metrics.K8sTransientRetries.WithLabelValues(op, kind).Inc()
 			continue
 		}
 		if done {
