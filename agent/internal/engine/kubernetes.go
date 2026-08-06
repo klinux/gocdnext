@@ -18,7 +18,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -564,7 +563,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 func (k *Kubernetes) waitForRunning(ctx context.Context, name string) error {
 	startup, cancel := context.WithTimeout(ctx, k.cfg.StartupTimeout)
 	defer cancel()
-	return wait.PollUntilContextCancel(startup, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
+	return pollWithBackoff(startup, "running", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		pod, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -588,7 +587,7 @@ func (k *Kubernetes) waitForRunning(ctx context.Context, name string) error {
 // container status.
 func (k *Kubernetes) waitForTaskTerminated(ctx context.Context, name string) (int, error) {
 	var pod *corev1.Pod
-	err := wait.PollUntilContextCancel(ctx, k.cfg.PollInterval, true, func(ctx context.Context) (bool, error) {
+	err := pollWithBackoff(ctx, "task_terminated", k.cfg.PollInterval, func(ctx context.Context) (bool, error) {
 		p, err := k.client.CoreV1().Pods(k.cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
