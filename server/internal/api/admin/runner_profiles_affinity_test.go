@@ -76,3 +76,22 @@ func TestRunnerProfiles_RejectsTrailingJSON(t *testing.T) {
 		t.Errorf("trailing-json status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
 	}
 }
+
+// Semantically-invalid affinity (weight out of range) is a 400 — the store
+// validator runs on the admin write path, not just the seed.
+func TestRunnerProfiles_RejectsInvalidAffinity(t *testing.T) {
+	_, _, srv := newRunnerProfileHandler(t)
+	body := bytes.NewBufferString(`{
+        "name": "bad",
+        "engine": "kubernetes",
+        "preferred_node_affinity": [
+            {"weight": 0, "match_expressions": [
+                {"key": "k", "operator": "Exists"}
+            ]}
+        ]
+    }`)
+	rr := request(srv, http.MethodPost, "/api/v1/admin/runner-profiles", body)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("invalid-affinity status = %d, want 400 (body=%s)", rr.Code, rr.Body.String())
+	}
+}

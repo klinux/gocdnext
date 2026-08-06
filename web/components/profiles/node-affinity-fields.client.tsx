@@ -44,7 +44,11 @@ function operatorTakesValues(op: string): boolean {
   return op !== "Exists" && op !== "DoesNotExist";
 }
 function emptyExpr(): AffinityExprRow {
-  return { key: "", operator: "In", values: [""] };
+  // Start with NO values — a fresh In/NotIn shows just the "+ value" button.
+  // Saving key-only then yields In [] which the server rejects loudly ("needs
+  // a value") instead of silently persisting a match on the empty-string label
+  // value. An explicit "+ value" adds [""], which still round-trips.
+  return { key: "", operator: "In", values: [] };
 }
 function emptyTerm(): AffinityTermRow {
   return { weight: 100, match_expressions: [emptyExpr()] };
@@ -65,12 +69,11 @@ export function PreferredNodeAffinityEditor({
       match_expressions: (rows[ti]?.match_expressions ?? []).map((e, j) => {
         if (j !== ei) return e;
         const next = { ...e, ...patch };
-        // Exists / DoesNotExist take no values (k8s rule); switching TO them
-        // clears the list, switching AWAY re-seeds one empty input to type into.
+        // Exists / DoesNotExist take no values (k8s rule) — clear the list.
+        // Switching AWAY does NOT auto-seed a value: an In/NotIn with no value
+        // stays empty (→ a loud server 400) rather than silently becoming [""].
         if (!operatorTakesValues(next.operator)) {
           next.values = [];
-        } else if (next.values.length === 0) {
-          next.values = [""];
         }
         return next;
       }),

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -137,6 +138,12 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 	dec.KnownFields(true)
 	if err := dec.Decode(&file); err != nil {
 		return 0, fmt.Errorf("seed runner profiles: parse %s: %w", path, err)
+	}
+	// Reject additional `---`-separated documents: a second doc would be
+	// silently ignored otherwise, so a stray/duplicated block passes unnoticed.
+	// Matches the admin JSON API's trailing-content rejection.
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return 0, fmt.Errorf("seed runner profiles: %s: expected a single YAML document", path)
 	}
 	touched := 0
 	for i, p := range file.Profiles {

@@ -82,3 +82,24 @@ profiles:
 		t.Error("expected error for unknown field inside match_expressions, got nil")
 	}
 }
+
+// A stray second `---` document must be rejected, not silently ignored —
+// matching the admin JSON API's trailing-content rejection.
+func TestSeed_RejectsMultipleDocuments(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	path := writeSeed(t, `
+profiles:
+  - name: first
+    engine: kubernetes
+---
+profiles:
+  - name: ignored
+    engine: kubernetes
+`)
+	if _, err := s.SeedRunnerProfilesFromFile(ctx, path); err == nil {
+		t.Error("expected error for multiple YAML documents, got nil")
+	}
+}

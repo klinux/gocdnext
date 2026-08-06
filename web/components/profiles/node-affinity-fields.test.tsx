@@ -46,6 +46,17 @@ describe("preferred node affinity collect/hydrate", () => {
     expect(collectPreferredNodeAffinity(rows)).toEqual(api);
   });
 
+  it("keeps values [] when none are provided (distinct from an explicit [\"\"])", () => {
+    // A key-only In expression must NOT silently become [""] — it stays [] so
+    // the server rejects it loudly ("In needs a value").
+    const rows: AffinityTermRow[] = [
+      { weight: 100, match_expressions: [{ key: "k", operator: "In", values: [] }] },
+    ];
+    expect(
+      collectPreferredNodeAffinity(rows)[0]?.match_expressions[0]?.values,
+    ).toEqual([]);
+  });
+
   it("forces [] for Exists and drops keyless expressions / empty terms", () => {
     const rows: AffinityTermRow[] = [
       { weight: 100, match_expressions: [{ key: "", operator: "In", values: ["x"] }] },
@@ -74,5 +85,14 @@ describe("PreferredNodeAffinityEditor", () => {
     expect(screen.getAllByLabelText("Affinity key")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: /add expression/i }));
     expect(screen.getAllByLabelText("Affinity key")).toHaveLength(2);
+  });
+
+  it("a fresh expression has no value input until '+ value' is clicked", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: /add affinity term/i }));
+    expect(screen.queryAllByLabelText("Affinity value")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: /\+ value/i }));
+    expect(screen.getAllByLabelText("Affinity value")).toHaveLength(1);
   });
 });
