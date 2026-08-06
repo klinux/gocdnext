@@ -70,10 +70,14 @@ type RunnerProfile struct {
 	// agent-level set (concat, no dedup on the engine side —
 	// kubelet ignores exact duplicates anyway).
 	Tolerations []Toleration
-	Env         map[string]string
-	SecretKeys  []string // names only, sorted; values never decrypted on this path
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// PreferredNodeAffinity is the SOFT node preference (k8s nodeAffinity
+	// preferredDuringScheduling). Empty = none. It biases scheduling but
+	// never overrides the hard NodeSelector.
+	PreferredNodeAffinity []PreferredNodeAffinityTerm
+	Env                   map[string]string
+	SecretKeys            []string // names only, sorted; values never decrypted on this path
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // Toleration mirrors corev1.Toleration in store-friendly form
@@ -93,6 +97,24 @@ type Toleration struct {
 	TolerationSeconds *int64 `json:"toleration_seconds,omitempty"`
 }
 
+// NodeAffinityMatchExpression mirrors corev1.NodeSelectorRequirement — one
+// label match inside a preferred node-affinity term. Operator ∈ {In, NotIn,
+// Exists, DoesNotExist, Gt, Lt}; validated via labels.NewRequirement.
+type NodeAffinityMatchExpression struct {
+	Key      string   `json:"key"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values,omitempty"`
+}
+
+// PreferredNodeAffinityTerm mirrors corev1.PreferredSchedulingTerm: a weight
+// (1..100) plus the expressions that must ALL match (AND) for the weight to
+// apply to a node. SOFT — it biases scheduling but never overrides the hard
+// NodeSelector.
+type PreferredNodeAffinityTerm struct {
+	Weight           int32                         `json:"weight"`
+	MatchExpressions []NodeAffinityMatchExpression `json:"match_expressions"`
+}
+
 // RunnerProfileInput is the write shape for Insert + Update. ID is
 // allocated by the DB on insert, ignored on update (passed via
 // Update's first arg).
@@ -101,22 +123,23 @@ type Toleration struct {
 // encrypt each value with the cipher before persisting. Reads never
 // return Secrets in this shape; only SecretKeys on the read path.
 type RunnerProfileInput struct {
-	Name              string
-	Description       string
-	Engine            string
-	DefaultImage      string
-	DefaultCPURequest string
-	DefaultCPULimit   string
-	DefaultMemRequest string
-	DefaultMemLimit   string
-	MaxCPU            string
-	MaxMem            string
-	Tags              []string
-	Config            map[string]any
-	NodeSelector      map[string]string
-	Tolerations       []Toleration
-	Env               map[string]string
-	Secrets           map[string]string
+	Name                  string
+	Description           string
+	Engine                string
+	DefaultImage          string
+	DefaultCPURequest     string
+	DefaultCPULimit       string
+	DefaultMemRequest     string
+	DefaultMemLimit       string
+	MaxCPU                string
+	MaxMem                string
+	Tags                  []string
+	Config                map[string]any
+	NodeSelector          map[string]string
+	Tolerations           []Toleration
+	PreferredNodeAffinity []PreferredNodeAffinityTerm
+	Env                   map[string]string
+	Secrets               map[string]string
 }
 
 // ListRunnerProfiles returns every profile, sorted by name.
@@ -183,6 +206,10 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 	if err != nil {
 		return RunnerProfile{}, err
 	}
+	affinityBytes, err := encodePreferredNodeAffinity(in.PreferredNodeAffinity)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
 	envBytes, err := encodeProfileEnv(in.Env)
 	if err != nil {
 		return RunnerProfile{}, err
@@ -192,22 +219,23 @@ func (s *Store) InsertRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		return RunnerProfile{}, err
 	}
 	row, err := s.q.InsertRunnerProfile(ctx, db.InsertRunnerProfileParams{
-		Name:              in.Name,
-		Description:       in.Description,
-		Engine:            in.Engine,
-		DefaultImage:      in.DefaultImage,
-		DefaultCpuRequest: in.DefaultCPURequest,
-		DefaultCpuLimit:   in.DefaultCPULimit,
-		DefaultMemRequest: in.DefaultMemRequest,
-		DefaultMemLimit:   in.DefaultMemLimit,
-		MaxCpu:            in.MaxCPU,
-		MaxMem:            in.MaxMem,
-		Tags:              normalizeTags(in.Tags),
-		Config:            cfg,
-		NodeSelector:      nodeSel,
-		Tolerations:       tolerations,
-		Env:               envBytes,
-		Secrets:           secretsBytes,
+		Name:                  in.Name,
+		Description:           in.Description,
+		Engine:                in.Engine,
+		DefaultImage:          in.DefaultImage,
+		DefaultCpuRequest:     in.DefaultCPURequest,
+		DefaultCpuLimit:       in.DefaultCPULimit,
+		DefaultMemRequest:     in.DefaultMemRequest,
+		DefaultMemLimit:       in.DefaultMemLimit,
+		MaxCpu:                in.MaxCPU,
+		MaxMem:                in.MaxMem,
+		Tags:                  normalizeTags(in.Tags),
+		Config:                cfg,
+		NodeSelector:          nodeSel,
+		Tolerations:           tolerations,
+		PreferredNodeAffinity: affinityBytes,
+		Env:                   envBytes,
+		Secrets:               secretsBytes,
 	})
 	if err != nil {
 		return RunnerProfile{}, fmt.Errorf("store: insert runner profile %q: %w", in.Name, err)
@@ -257,6 +285,10 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 	if err != nil {
 		return err
 	}
+	affinityBytes, err := encodePreferredNodeAffinity(in.PreferredNodeAffinity)
+	if err != nil {
+		return err
+	}
 	envBytes, err := encodeProfileEnv(in.Env)
 	if err != nil {
 		return err
@@ -278,6 +310,7 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
             tags = $12, config = $13,
             env = $14, secrets = $15,
             node_selector = $16, tolerations = $17,
+            preferred_node_affinity = $18,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -289,6 +322,7 @@ func (s *Store) UpdateRunnerProfile(ctx context.Context, cipher *crypto.Cipher, 
 		normalizeTags(in.Tags), cfg,
 		envBytes, secretsBytes,
 		nodeSel, tolerations,
+		affinityBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update runner profile %s: %w", id, err)
@@ -325,6 +359,10 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 	if err != nil {
 		return err
 	}
+	affinityBytes, err := encodePreferredNodeAffinity(in.PreferredNodeAffinity)
+	if err != nil {
+		return err
+	}
 	envBytes, err := encodeProfileEnv(in.Env)
 	if err != nil {
 		return err
@@ -340,6 +378,7 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
             tags = $12, config = $13,
             env = $14,
             node_selector = $15, tolerations = $16,
+            preferred_node_affinity = $17,
             updated_at = NOW()
         WHERE id = $1
     `, toPgUUID(id),
@@ -351,6 +390,7 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 		normalizeTags(in.Tags), cfg,
 		envBytes,
 		nodeSel, tolerations,
+		affinityBytes,
 	)
 	if err != nil {
 		return fmt.Errorf("store: seed-update runner profile %s: %w", id, err)
@@ -374,10 +414,11 @@ func (s *Store) UpdateRunnerProfileFromSeed(ctx context.Context, id uuid.UUID, i
 //     JobAssignment.Tolerations. Already validated + normalised at
 //     write time (see scheduling_validation.go).
 type ResolvedProfile struct {
-	Env          map[string]string
-	SecretValues []string
-	NodeSelector map[string]string
-	Tolerations  []Toleration
+	Env                   map[string]string
+	SecretValues          []string
+	NodeSelector          map[string]string
+	Tolerations           []Toleration
+	PreferredNodeAffinity []PreferredNodeAffinityTerm
 }
 
 // ResolveProfileByName is the dispatch path: scheduler asks for a
@@ -440,12 +481,17 @@ func (s *Store) ResolveProfileByName(ctx context.Context, cipher *crypto.Cipher,
 	if err != nil {
 		return ResolvedProfile{}, err
 	}
+	affinity, err := decodePreferredNodeAffinity(row.PreferredNodeAffinity)
+	if err != nil {
+		return ResolvedProfile{}, err
+	}
 
 	return ResolvedProfile{
-		Env:          merged,
-		SecretValues: values,
-		NodeSelector: nodeSel,
-		Tolerations:  tolerations,
+		Env:                   merged,
+		SecretValues:          values,
+		NodeSelector:          nodeSel,
+		Tolerations:           tolerations,
+		PreferredNodeAffinity: affinity,
 	}, nil
 }
 
@@ -641,6 +687,10 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 	if err != nil {
 		return RunnerProfile{}, err
 	}
+	affinity, err := decodePreferredNodeAffinity(r.PreferredNodeAffinity)
+	if err != nil {
+		return RunnerProfile{}, err
+	}
 	env, err := decodeProfileEnv(r.Env)
 	if err != nil {
 		return RunnerProfile{}, err
@@ -650,25 +700,26 @@ func runnerProfileFromRow(r db.RunnerProfile) (RunnerProfile, error) {
 		return RunnerProfile{}, err
 	}
 	return RunnerProfile{
-		ID:                fromPgUUID(r.ID),
-		Name:              r.Name,
-		Description:       r.Description,
-		Engine:            r.Engine,
-		DefaultImage:      r.DefaultImage,
-		DefaultCPURequest: r.DefaultCpuRequest,
-		DefaultCPULimit:   r.DefaultCpuLimit,
-		DefaultMemRequest: r.DefaultMemRequest,
-		DefaultMemLimit:   r.DefaultMemLimit,
-		MaxCPU:            r.MaxCpu,
-		MaxMem:            r.MaxMem,
-		Tags:              append([]string(nil), r.Tags...),
-		Config:            cfg,
-		NodeSelector:      nodeSel,
-		Tolerations:       tolerations,
-		Env:               env,
-		SecretKeys:        keys,
-		CreatedAt:         r.CreatedAt.Time,
-		UpdatedAt:         r.UpdatedAt.Time,
+		ID:                    fromPgUUID(r.ID),
+		Name:                  r.Name,
+		Description:           r.Description,
+		Engine:                r.Engine,
+		DefaultImage:          r.DefaultImage,
+		DefaultCPURequest:     r.DefaultCpuRequest,
+		DefaultCPULimit:       r.DefaultCpuLimit,
+		DefaultMemRequest:     r.DefaultMemRequest,
+		DefaultMemLimit:       r.DefaultMemLimit,
+		MaxCPU:                r.MaxCpu,
+		MaxMem:                r.MaxMem,
+		Tags:                  append([]string(nil), r.Tags...),
+		Config:                cfg,
+		NodeSelector:          nodeSel,
+		Tolerations:           tolerations,
+		PreferredNodeAffinity: affinity,
+		Env:                   env,
+		SecretKeys:            keys,
+		CreatedAt:             r.CreatedAt.Time,
+		UpdatedAt:             r.UpdatedAt.Time,
 	}, nil
 }
 
@@ -743,6 +794,34 @@ func decodeTolerations(raw []byte) ([]Toleration, error) {
 	var out []Toleration
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("store: unmarshal tolerations: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// encodePreferredNodeAffinity / decodePreferredNodeAffinity handle the JSONB
+// column. Empty/nil slice serialises to `[]`; the agent engine treats absent
+// + empty identically.
+func encodePreferredNodeAffinity(a []PreferredNodeAffinityTerm) ([]byte, error) {
+	if len(a) == 0 {
+		return []byte("[]"), nil
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal preferred_node_affinity: %w", err)
+	}
+	return b, nil
+}
+
+func decodePreferredNodeAffinity(raw []byte) ([]PreferredNodeAffinityTerm, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out []PreferredNodeAffinityTerm
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("store: unmarshal preferred_node_affinity: %w", err)
 	}
 	if len(out) == 0 {
 		return nil, nil

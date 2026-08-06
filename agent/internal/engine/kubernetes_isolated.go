@@ -85,6 +85,10 @@ type IsolatedJobSpec struct {
 	// agent-level only.
 	NodeSelector map[string]string
 	Tolerations  []corev1.Toleration
+	// PreferredNodeAffinity is the SOFT node preference resolved from the
+	// runner profile. Kubernetes engine only; biases scheduling, never
+	// overrides NodeSelector.
+	PreferredNodeAffinity []corev1.PreferredSchedulingTerm
 
 	// NeedsCacheFetchInit toggles the second init container —
 	// `cache-fetch` — that the agent uses to read workspace files
@@ -397,6 +401,7 @@ func (k *Kubernetes) BuildIsolatedJobPodSpec(spec IsolatedJobSpec) (*corev1.Pod,
 			RestartPolicy:    corev1.RestartPolicyNever,
 			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
+			Affinity:         buildNodeAffinity(spec.PreferredNodeAffinity),
 			ImagePullSecrets: pullSecrets,
 			Volumes:          buildIsolatedVolumes(workspaceVolume, assignmentVolume, spec),
 			InitContainers:   buildIsolatedInitContainers(prepContainer, spec, k.cfg.HousekeeperImage, workspaceMount),

@@ -8,7 +8,7 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations
+       node_selector, tolerations, preferred_node_affinity
 FROM runner_profiles
 ORDER BY name;
 
@@ -21,7 +21,7 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations
+       node_selector, tolerations, preferred_node_affinity
 FROM runner_profiles
 WHERE id = $1
 LIMIT 1;
@@ -38,7 +38,7 @@ SELECT id, name, description, engine,
        tags, config,
        created_at, updated_at,
        env, secrets,
-       node_selector, tolerations
+       node_selector, tolerations, preferred_node_affinity
 FROM runner_profiles
 WHERE name = $1
 LIMIT 1;
@@ -52,7 +52,7 @@ INSERT INTO runner_profiles (
     max_cpu, max_mem,
     tags, config,
     env, secrets,
-    node_selector, tolerations
+    node_selector, tolerations, preferred_node_affinity
 ) VALUES (
     $1, $2, $3,
     $4,
@@ -61,7 +61,7 @@ INSERT INTO runner_profiles (
     $9, $10,
     $11, $12,
     $13, $14,
-    $15, $16
+    $15, $16, $17
 )
 RETURNING id, name, description, engine,
           default_image,
@@ -71,7 +71,7 @@ RETURNING id, name, description, engine,
           tags, config,
           created_at, updated_at,
           env, secrets,
-          node_selector, tolerations;
+          node_selector, tolerations, preferred_node_affinity;
 
 -- name: UpdateRunnerProfile :exec
 UPDATE runner_profiles
@@ -88,6 +88,7 @@ SET name = $2,
     secrets = $15,
     node_selector = $16,
     tolerations = $17,
+    preferred_node_affinity = $18,
     updated_at = NOW()
 WHERE id = $1;
 

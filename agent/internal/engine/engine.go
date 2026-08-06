@@ -96,6 +96,11 @@ type ScriptSpec struct {
 	// ignore both. Empty/nil = use agent-level only.
 	NodeSelector map[string]string
 	Tolerations  []corev1.Toleration
+	// PreferredNodeAffinity is the SOFT node preference resolved from the
+	// runner profile (k8s nodeAffinity preferredDuringScheduling). Empty =
+	// none. Kubernetes engine only; biases scheduling, never overrides
+	// NodeSelector.
+	PreferredNodeAffinity []corev1.PreferredSchedulingTerm
 }
 
 // OutputsEnvName is the env variable the plugin / script reads to

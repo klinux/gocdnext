@@ -65,3 +65,22 @@ func cloneToleration(t corev1.Toleration) corev1.Toleration {
 	}
 	return out
 }
+
+// buildNodeAffinity wraps the profile's preferred node-affinity terms into a
+// pod Affinity. Returns nil when there are none so the pod spec stays minimal.
+// SOFT preference only (preferredDuringSchedulingIgnoredDuringExecution): it
+// biases the scheduler toward matching nodes but never constrains scheduling
+// the way NodeSelector (a hard match) does — an unsatisfiable preference just
+// has no effect. There is no agent-level affinity baseline to merge with (the
+// agent StatefulSet's own affinity is separate), so this is the profile's set
+// verbatim.
+func buildNodeAffinity(preferred []corev1.PreferredSchedulingTerm) *corev1.Affinity {
+	if len(preferred) == 0 {
+		return nil
+	}
+	return &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: preferred,
+		},
+	}
+}
