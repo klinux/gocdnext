@@ -92,9 +92,10 @@ flows into every profile that references it.
 
 ## Scheduling hints (v0.14.0+)
 
-Profiles can pin job pods to specific nodes via `node_selector` and
-tolerate specific taints via `tolerations`. Honoured by the
-Kubernetes engine only.
+Profiles can pin job pods to specific nodes via `node_selector`,
+tolerate specific taints via `tolerations`, and **prefer** a node
+class via `preferred_node_affinity`. Honoured by the Kubernetes
+engine only.
 
 ### `node_selector`: agent baseline + profile, profile wins
 
@@ -123,12 +124,45 @@ Same two sources for tolerations. **The lists concatenate** with the
 agent baseline first; profile entries are appended. Kubelet ignores
 exact duplicates so dedup is not needed on the agent side.
 
+### `preferred_node_affinity`: soft preference, spot-first fallback
+
+A **soft** node preference (k8s `nodeAffinity.preferredDuringScheduling
+IgnoredDuringExecution`). Unlike `node_selector` — a *hard* match that
+leaves a pod Pending when no node qualifies — a preference only biases
+the scheduler. An unsatisfiable preference simply has no effect, so the
+pod still schedules elsewhere.
+
+The canonical use is **spot-first with on-demand fallback**: prefer spot
+nodes but fall back to on-demand when spot capacity is unavailable,
+instead of failing the job. Point `node_selector` (or a shared label) at
+a set of nodes that includes both classes, then prefer spot:
+
+```yaml
+# Runner profile
+preferred_node_affinity:
+  - weight: 100                       # 1..100; higher = stronger pull
+    match_expressions:
+      - key: cloud.google.com/gke-spot
+        operator: In
+        values: ["true"]
+```
+
+Each term is a `weight` (1..100) plus one or more `match_expressions`
+that must **all** match (AND) for the weight to apply to a node.
+Operators are the node-affinity set: `In`, `NotIn`, `Exists`,
+`DoesNotExist`, `Gt`, `Lt`.
+
+The profile's affinity is applied to the task/job pod **verbatim** —
+there is no agent-baseline affinity to merge with (the agent
+StatefulSet's own affinity is separate).
+
 ### Services inherit ONLY the agent baseline
 
 `services:`-declared sidecar pods (postgres, redis, etc.) receive
 the agent baseline `nodeSelector` + `tolerations` so they can
 schedule on the same tainted nodes as the task pod. They do **not**
-receive profile-scoped scheduling — services attach to the run, not
+receive profile-scoped scheduling (`node_selector`, `tolerations`, or
+`preferred_node_affinity`) — services attach to the run, not
 to a specific job, and don't carry the profile reference at
 materialisation time.
 
@@ -167,6 +201,14 @@ Tolerations validate operator (`Equal` / `Exists`), effect
 `Exists`-with-value rejection, and `toleration_seconds` only with
 `effect: NoExecute`. Empty `operator` normalises to `Equal`
 server-side so persisted rows always carry the explicit form.
+
+`preferred_node_affinity` is validated per expression against the same
+rules the apiserver applies (via `labels.NewRequirement`): `key` must be
+a qualified name; `In`/`NotIn` need at least one label-valid value;
+`Exists`/`DoesNotExist` take none; `Gt`/`Lt` take exactly one integer.
+`weight` must be 1–100, each term needs at least one expression, and the
+total counts (terms, expressions, values) are bounded so the assignment
+stays small.
 
 ## Seed via Helm
 

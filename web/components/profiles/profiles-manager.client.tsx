@@ -46,6 +46,11 @@ import {
   type NodeSelectorRow,
   type TolerationRow,
 } from "./scheduling-fields.client";
+import {
+  type AffinityTermRow,
+  affinityTermsFromApi,
+  collectPreferredNodeAffinity,
+} from "./node-affinity-fields.client";
 
 type Props = {
   initial: AdminRunnerProfile[];
@@ -98,6 +103,7 @@ type FormDraft = {
   // collectTolerations.
   nodeSelectorRows: NodeSelectorRow[];
   tolerationRows: TolerationRow[];
+  affinityRows: AffinityTermRow[];
 };
 
 function blankForm(): FormDraft {
@@ -118,6 +124,7 @@ function blankForm(): FormDraft {
     secretRows: [{ key: "", value: "", existing: false, replace: true }],
     nodeSelectorRows: [],
     tolerationRows: [],
+    affinityRows: [],
   };
 }
 
@@ -174,6 +181,7 @@ function profileToDraft(p: AdminRunnerProfile): FormDraft {
       effect: t.effect ?? "",
       toleration_seconds: t.toleration_seconds ?? null,
     })),
+    affinityRows: affinityTermsFromApi(p.preferred_node_affinity),
   };
 }
 
@@ -252,6 +260,7 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
     const secretsMap = collectSecrets(form.secretRows);
     const nodeSelectorMap = collectNodeSelector(form.nodeSelectorRows);
     const tolerationsList = collectTolerations(form.tolerationRows);
+    const affinityList = collectPreferredNodeAffinity(form.affinityRows);
     startTransition(async () => {
       const body = {
         name,
@@ -267,6 +276,7 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         tags: parseTags(form.tagsRaw),
         node_selector: nodeSelectorMap,
         tolerations: tolerationsList,
+        preferred_node_affinity: affinityList,
         env: envMap,
         secrets: secretsMap,
       };
@@ -296,6 +306,7 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
         tags: parseTags(form.tagsRaw),
         node_selector: nodeSelectorMap,
         tolerations: tolerationsList,
+        preferred_node_affinity: affinityList,
         env: envMap,
         secret_keys: Object.keys(secretsMap).sort(),
         secret_refs: optimisticSecretRefs(secretsMap),
@@ -534,6 +545,10 @@ export function ProfilesManager({ initial, globalSecretNames }: Props) {
                 tolerations={form.tolerationRows}
                 setTolerations={(rows) =>
                   setForm({ ...form, tolerationRows: rows })
+                }
+                affinity={form.affinityRows}
+                setAffinity={(rows) =>
+                  setForm({ ...form, affinityRows: rows })
                 }
               />
 

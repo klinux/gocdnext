@@ -209,6 +209,10 @@ export type AdminRunnerProfile = {
   // null, so the editor can iterate without nil-checks.
   node_selector: Record<string, string>;
   tolerations: AdminToleration[];
+  // SOFT node preference (k8s nodeAffinity preferredDuringScheduling).
+  // Biases scheduling toward matching nodes without overriding the hard
+  // node_selector. Always emitted as `[]`, never null.
+  preferred_node_affinity: AdminPreferredNodeAffinityTerm[];
   created_at: string;
   updated_at: string;
 };
@@ -223,6 +227,22 @@ export type AdminToleration = {
   value?: string;
   effect?: "" | "NoSchedule" | "PreferNoSchedule" | "NoExecute";
   toleration_seconds?: number | null;
+};
+
+// AdminNodeAffinityExpr mirrors corev1.NodeSelectorRequirement — one label
+// match inside a preferred node-affinity term.
+export type AdminNodeAffinityExpr = {
+  key: string;
+  operator: "In" | "NotIn" | "Exists" | "DoesNotExist" | "Gt" | "Lt";
+  values?: string[];
+};
+
+// AdminPreferredNodeAffinityTerm mirrors corev1.PreferredSchedulingTerm: a
+// weight (1..100) plus the expressions that must ALL match (AND) for the
+// weight to apply to a node. SOFT preference only.
+export type AdminPreferredNodeAffinityTerm = {
+  weight: number;
+  match_expressions: AdminNodeAffinityExpr[];
 };
 
 export async function listAdminRunnerProfiles(): Promise<{

@@ -23,6 +23,8 @@ function Harness({ initial }: { initial: TolerationRow[] }) {
       setNodeSelector={setNodeSelector}
       tolerations={tolerations}
       setTolerations={setTolerations}
+      affinity={[]}
+      setAffinity={() => {}}
     />
   );
 }

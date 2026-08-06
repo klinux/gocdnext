@@ -514,25 +514,26 @@ type RunGatePass struct {
 }
 
 type RunnerProfile struct {
-	ID                pgtype.UUID
-	Name              string
-	Description       string
-	Engine            string
-	DefaultImage      string
-	DefaultCpuRequest string
-	DefaultCpuLimit   string
-	DefaultMemRequest string
-	DefaultMemLimit   string
-	MaxCpu            string
-	MaxMem            string
-	Tags              []string
-	Config            []byte
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
-	Env               []byte
-	Secrets           []byte
-	NodeSelector      []byte
-	Tolerations       []byte
+	ID                    pgtype.UUID
+	Name                  string
+	Description           string
+	Engine                string
+	DefaultImage          string
+	DefaultCpuRequest     string
+	DefaultCpuLimit       string
+	DefaultMemRequest     string
+	DefaultMemLimit       string
+	MaxCpu                string
+	MaxMem                string
+	Tags                  []string
+	Config                []byte
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+	Env                   []byte
+	Secrets               []byte
+	NodeSelector          []byte
+	Tolerations           []byte
+	PreferredNodeAffinity []byte
 }
 
 type ScmCredential struct {

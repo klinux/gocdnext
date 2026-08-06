@@ -428,6 +428,7 @@ func BuildAssignment(
 		Outputs:               copyStringMap(jobDef.Outputs),
 		NodeSelector:          copyStringMap(profile.NodeSelector),
 		Tolerations:           tolerationsToProto(profile.Tolerations),
+		PreferredNodeAffinity: preferredNodeAffinityToProto(profile.PreferredNodeAffinity),
 		// ServiceGeneration lets the k8s engine name+label this run's service pods
 		// per generation, so a revive (RerunJob bumps it) gets fresh pods immune to a
 		// stale supersede/terminal cleanup carrying the older generation (#97).

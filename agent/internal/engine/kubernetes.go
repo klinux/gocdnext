@@ -547,6 +547,7 @@ func (k *Kubernetes) BuildPodSpec(spec ScriptSpec) *corev1.Pod {
 			RestartPolicy:    corev1.RestartPolicyNever,
 			NodeSelector:     mergeNodeSelector(k.cfg.NodeSelector, spec.NodeSelector),
 			Tolerations:      concatTolerations(k.cfg.Tolerations, spec.Tolerations),
+			Affinity:         buildNodeAffinity(spec.PreferredNodeAffinity),
 			ImagePullSecrets: pullSecrets,
 			Volumes:          []corev1.Volume{workspaceVolume},
 			Containers:       containers,

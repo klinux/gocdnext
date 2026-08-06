@@ -59,16 +59,17 @@ func (r *Runner) runPlugin(
 		// "Cannot connect to the Docker daemon" miles away from the
 		// cause. runScript at runner.go:422 already does this for
 		// script tasks; the plugin path silently dropped it.
-		Docker:          a.GetDocker(),
-		Network:         services.network,
-		HostAliases:     services.hostAliases,
-		Resources:       assignmentResources(a),
-		Profile:         a.GetProfile(),
-		AgentTags:       append([]string(nil), r.cfg.AgentTags...),
-		OutputsHostPath: outputs.host,
-		OutputsRelPath:  outputs.rel,
-		NodeSelector:    assignmentNodeSelector(a),
-		Tolerations:     assignmentTolerations(a),
+		Docker:                a.GetDocker(),
+		Network:               services.network,
+		HostAliases:           services.hostAliases,
+		Resources:             assignmentResources(a),
+		Profile:               a.GetProfile(),
+		AgentTags:             append([]string(nil), r.cfg.AgentTags...),
+		OutputsHostPath:       outputs.host,
+		OutputsRelPath:        outputs.rel,
+		NodeSelector:          assignmentNodeSelector(a),
+		Tolerations:           assignmentTolerations(a),
+		PreferredNodeAffinity: assignmentPreferredNodeAffinity(a),
 		OnLine: func(stream, text string) {
 			r.emitLog(a, seq, stream, text)
 		},

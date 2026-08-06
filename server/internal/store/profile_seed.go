@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -35,8 +37,9 @@ type runnerProfileEntry struct {
 	// overwrite operator-set scheduling hints with `{}`/`[]` on
 	// every server boot. The values.yaml seed is then the
 	// declarative source of truth for both bounds AND scheduling.
-	NodeSelector map[string]string `yaml:"node_selector"`
-	Tolerations  []seedToleration  `yaml:"tolerations"`
+	NodeSelector          map[string]string  `yaml:"node_selector"`
+	Tolerations           []seedToleration   `yaml:"tolerations"`
+	PreferredNodeAffinity []seedAffinityTerm `yaml:"preferred_node_affinity"`
 	// Env carries plaintext, non-secret runtime config (bucket
 	// names, regions, GOCDNEXT_LAYER_CACHE_* defaults). Plain
 	// values.yaml is the right place — they're not credentials.
@@ -76,6 +79,39 @@ func (e runnerProfileEntry) tolerations() []Toleration {
 	return out
 }
 
+// seedAffinityExpr / seedAffinityTerm mirror the preferred-node-affinity
+// domain shape in YAML form. snake_case tags match the admin REST API + JSONB
+// so a Helm-managed profile and a UI-edited row read the same everywhere.
+type seedAffinityExpr struct {
+	Key      string   `yaml:"key" json:"key"`
+	Operator string   `yaml:"operator" json:"operator"`
+	Values   []string `yaml:"values" json:"values"`
+}
+
+type seedAffinityTerm struct {
+	Weight           int32              `yaml:"weight" json:"weight"`
+	MatchExpressions []seedAffinityExpr `yaml:"match_expressions" json:"match_expressions"`
+}
+
+func (e runnerProfileEntry) preferredNodeAffinity() []PreferredNodeAffinityTerm {
+	if len(e.PreferredNodeAffinity) == 0 {
+		return nil
+	}
+	out := make([]PreferredNodeAffinityTerm, len(e.PreferredNodeAffinity))
+	for i, t := range e.PreferredNodeAffinity {
+		exprs := make([]NodeAffinityMatchExpression, len(t.MatchExpressions))
+		for j, x := range t.MatchExpressions {
+			exprs[j] = NodeAffinityMatchExpression{
+				Key:      x.Key,
+				Operator: x.Operator,
+				Values:   append([]string(nil), x.Values...),
+			}
+		}
+		out[i] = PreferredNodeAffinityTerm{Weight: t.Weight, MatchExpressions: exprs}
+	}
+	return out
+}
+
 // SeedRunnerProfilesFromFile reads a YAML file and upserts each
 // profile entry by name. New names insert; existing names update
 // in place; profiles in the DB but not in the file are LEFT ALONE
@@ -94,8 +130,20 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 		return 0, fmt.Errorf("seed runner profiles: read %s: %w", path, err)
 	}
 	var file runnerProfilesFile
-	if err := yaml.Unmarshal(raw, &file); err != nil {
+	// KnownFields(true) turns a typo — a mistyped top-level key like
+	// `preferred_node_affinty`, or a wrong key inside match_expressions — into
+	// a loud parse error instead of a silently-empty field + successful boot,
+	// matching the admin API's strict JSON decode.
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&file); err != nil {
 		return 0, fmt.Errorf("seed runner profiles: parse %s: %w", path, err)
+	}
+	// Reject additional `---`-separated documents: a second doc would be
+	// silently ignored otherwise, so a stray/duplicated block passes unnoticed.
+	// Matches the admin JSON API's trailing-content rejection.
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return 0, fmt.Errorf("seed runner profiles: %s: expected a single YAML document", path)
 	}
 	touched := 0
 	for i, p := range file.Profiles {
@@ -106,21 +154,22 @@ func (s *Store) SeedRunnerProfilesFromFile(ctx context.Context, path string) (in
 			return touched, fmt.Errorf("seed runner profiles: entry %q: engine is required", p.Name)
 		}
 		input := RunnerProfileInput{
-			Name:              p.Name,
-			Description:       p.Description,
-			Engine:            p.Engine,
-			DefaultImage:      p.DefaultImage,
-			DefaultCPURequest: p.DefaultCPURequest,
-			DefaultCPULimit:   p.DefaultCPULimit,
-			DefaultMemRequest: p.DefaultMemRequest,
-			DefaultMemLimit:   p.DefaultMemLimit,
-			MaxCPU:            p.MaxCPU,
-			MaxMem:            p.MaxMem,
-			Tags:              p.Tags,
-			Config:            p.Config,
-			NodeSelector:      p.NodeSelector,
-			Tolerations:       p.tolerations(),
-			Env:               p.Env,
+			Name:                  p.Name,
+			Description:           p.Description,
+			Engine:                p.Engine,
+			DefaultImage:          p.DefaultImage,
+			DefaultCPURequest:     p.DefaultCPURequest,
+			DefaultCPULimit:       p.DefaultCPULimit,
+			DefaultMemRequest:     p.DefaultMemRequest,
+			DefaultMemLimit:       p.DefaultMemLimit,
+			MaxCPU:                p.MaxCPU,
+			MaxMem:                p.MaxMem,
+			Tags:                  p.Tags,
+			Config:                p.Config,
+			NodeSelector:          p.NodeSelector,
+			Tolerations:           p.tolerations(),
+			PreferredNodeAffinity: p.preferredNodeAffinity(),
+			Env:                   p.Env,
 			// Secrets intentionally NOT seeded from YAML — see the
 			// type comment for the rationale.
 		}
