@@ -67,15 +67,25 @@ func (m *Middleware) Enabled() bool { return m.enabled }
 // don't read the cookie. Bearer present but invalid (revoked,
 // expired, malformed) falls through to cookie / anonymous;
 // RequireAuth on protected routes 401s as usual.
+//
+// The Bearer probe runs even when enforcement is off. "Auth
+// disabled" means routes don't REQUIRE an identity — not that a
+// credential the caller explicitly presented gets thrown away.
+// Skipping it left every self-scoped handler (/api/v1/me,
+// /api/v1/account/*, rollout-gate decisions) 401'ing on a
+// perfectly valid token in the default config
+// (GOCDNEXT_AUTH_ENABLED=false), which reads to the caller as
+// "my token is broken". Cost is one indexed hash lookup, and
+// only on requests that actually carry a `gnk_` bearer.
 func (m *Middleware) LoadSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !m.enabled {
-			next.ServeHTTP(w, r)
+		if u, ok := m.authenticateBearer(r); ok {
+			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), u)))
 			return
 		}
 
-		if u, ok := m.authenticateBearer(r); ok {
-			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), u)))
+		if !m.enabled {
+			next.ServeHTTP(w, r)
 			return
 		}
 

@@ -1309,7 +1309,10 @@ func devCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256")
+		// Authorization must be listed or the browser's preflight
+		// rejects every API-token call from a cross-origin page
+		// before it ever reaches the middleware.
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
