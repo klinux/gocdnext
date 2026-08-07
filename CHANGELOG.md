@@ -8,6 +8,22 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.86.1 — 2026-08-06
+
+### Fixed
+
+- **Job detail sheet showed the stale attempt after a rerun (web).** Rerunning a
+  failed job dispatches a new attempt, but reopening **View status** kept showing
+  the previous attempt's status and logs until a full page reload. The sheet
+  cached its fetch result for the component's lifetime and never re-fetched on
+  reopen — and because a rerun bumps the job's `attempt` in place under the same
+  `jobRunId`, nothing about its identity changed to invalidate that cache. The
+  sheet now re-fetches on every open (a snapshot-per-open), dropping any response
+  that lands after a close/reopen so a late in-flight request can't overwrite the
+  current attempt. The lazy-on-open fetch is preserved, and the drawer now
+  requests `head=0` (tail-only, as it advertises) so a single open no longer
+  pulls every job's 500-line head across a wide matrix run.
+
 ## v0.86.0 — 2026-08-06
 
 ### Added
