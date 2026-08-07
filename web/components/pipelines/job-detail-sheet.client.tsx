@@ -59,14 +59,29 @@ export function JobDetailSheet({
   const [result, setResult] = useState<JobDetailResult | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Re-fetch on EVERY open, not just the first. A rerun bumps the job's
+  // attempt in place (same jobRunId) while this component stays mounted (open
+  // toggles visibility, it isn't remounted), so a lifetime-cached result would
+  // keep showing the stale prior attempt until a full page reload. Opening
+  // clears + re-fetches; the sheet is a snapshot-per-open (live follow while
+  // open is out of scope — LogPane is presentational, RunLive owns streaming).
   useEffect(() => {
-    if (!open || result) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- lazy fetch fired on the open transition: the loading flag must flip synchronously alongside kicking off the one-shot request, so it can't be derived during render
+    if (!open) return;
+    let live = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- open→true is a real transition, not derivable during render: we clear the prior attempt and flip loading synchronously as the one-shot fetch fires. `live` drops a response that lands after a close/reopen — the server action can't be aborted from the client, so we ignore its result instead.
+    setResult(null);
     setLoading(true);
     fetchJobDetail({ runId, jobId, logLines: 80 })
-      .then(setResult)
-      .finally(() => setLoading(false));
-  }, [open, runId, jobId, result]);
+      .then((r) => {
+        if (live) setResult(r);
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, runId, jobId]);
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>

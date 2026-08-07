@@ -168,7 +168,11 @@ export async function fetchJobDetail(
     };
   }
   try {
-    const detail = await getRunDetail(parsed.data.runId, parsed.data.logLines ?? 50);
+    // head=0: this drawer is a tail-only glance ("recent log tail"); the full
+    // run page carries the head+omitted deep-dive. getRunDetail fetches EVERY
+    // job's log window in the run, so keeping the default 500-line head would
+    // multiply the cost per open on a wide matrix run — for nothing here.
+    const detail = await getRunDetail(parsed.data.runId, parsed.data.logLines ?? 50, 0);
     for (const stage of detail.stages) {
       const job = stage.jobs.find((j) => j.id === parsed.data.jobId);
       if (!job) continue;
