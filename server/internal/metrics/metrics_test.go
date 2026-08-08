@@ -17,6 +17,8 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 	QueueDepth.WithLabelValues("queued").Set(3)
 	AgentsOnline.Set(4)
 	LogArchiveJobs.WithLabelValues("success").Inc()
+	LogLinesDropped.WithLabelValues("backpressure").Inc()
+	LogBatcherSessionDiscarded.Inc()
 	RetentionDroppedLogPartitions.Inc()
 	WebhookDeliveries.WithLabelValues("github", "accepted").Inc()
 	JobDurationSeconds.WithLabelValues("success").Observe(1.5)
@@ -42,6 +44,8 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 		"gocdnext_queue_depth",
 		"gocdnext_agents_online",
 		"gocdnext_log_archive_jobs_total",
+		"gocdnext_log_lines_dropped_total",
+		"gocdnext_log_batcher_session_discarded_total",
 		"gocdnext_retention_dropped_log_partitions_total",
 		"gocdnext_webhook_deliveries_total",
 		"gocdnext_runs_superseded_total",

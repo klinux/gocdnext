@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -22,7 +24,78 @@ import (
 const (
 	defaultLogBatchSize  = 100
 	defaultLogFlushEvery = 200 * time.Millisecond
+	// defaultLogMaxLines bounds the per-stream buffer by line COUNT.
+	// 4096 ≈ 13s of headroom at a few hundred lines/s — absorbs the
+	// Gradle/testcontainers bursts that dropped at the old 4×batch=400.
+	defaultLogMaxLines = 4096
+	// defaultLogMaxInflightBytes bounds the buffer by RETAINED BYTES.
+	// The pod log scanner cap is 1MB/line (engine.kubernetes*), so a
+	// count-only bound of N lines has an N×1MB worst case; the byte cap
+	// pins the heap regardless of line size. 16MiB/stream is the
+	// pathological ceiling, not the common case (real lines are ~hundreds
+	// of bytes).
+	defaultLogMaxInflightBytes int64 = 16 << 20 // 16 MiB
+	// logMaxLinesCeiling clamps an operator-supplied line cap so a
+	// fat-fingered env can't request a near-unbounded channel.
+	logMaxLinesCeiling = 65536
+	// logMinInflightBytes: one worst-case 1MB line must always fit, else
+	// a single fat line would be dropped forever.
+	logMinInflightBytes int64 = 1 << 20 // 1 MiB
+	// logMaxInflightBytesCeiling caps an operator-supplied byte bound so
+	// a fat-fingered GOCDNEXT_LOG_BUFFER_MAX_BYTES (an extra few zeros)
+	// can't turn one stream's buffer into an OOM. 512MiB/stream is far
+	// above any legitimate tuning need.
+	logMaxInflightBytesCeiling int64 = 512 << 20 // 512 MiB
 )
+
+// logBatcherConfig carries the per-stream buffer sizing. Env lives in
+// config.Load (GOCDNEXT_LOG_BUFFER_MAX_*) and reaches the service via
+// WithLogBatcherLimits — NOT read inside the batcher — then is clamped
+// so newLogBatcherWithConfig can trust the values.
+type logBatcherConfig struct {
+	batchSize        int
+	flushEvery       time.Duration
+	maxLines         int   // channel capacity (line-count bound)
+	maxInflightBytes int64 // retained-payload bound: sum of len(LogLine.Text)
+}
+
+func defaultLogBatcherConfig() logBatcherConfig {
+	return logBatcherConfig{
+		batchSize:        defaultLogBatchSize,
+		flushEvery:       defaultLogFlushEvery,
+		maxLines:         defaultLogMaxLines,
+		maxInflightBytes: defaultLogMaxInflightBytes,
+	}
+}
+
+// clamped enforces the invariants regardless of source (config-derived
+// limits OR a WithLogBatcherLimits override):
+//   - batchSize > 0, flushEvery > 0
+//   - maxLines ∈ [batchSize, logMaxLinesCeiling] (must hold ≥1 batch)
+//   - maxInflightBytes ∈ [logMinInflightBytes, logMaxInflightBytesCeiling]
+//     (one 1MB line must fit; ceiling caps a fat-fingered env so it can't
+//     OOM the process).
+func (c logBatcherConfig) clamped() logBatcherConfig {
+	if c.batchSize <= 0 {
+		c.batchSize = defaultLogBatchSize
+	}
+	if c.flushEvery <= 0 {
+		c.flushEvery = defaultLogFlushEvery
+	}
+	if c.maxLines < c.batchSize {
+		c.maxLines = c.batchSize
+	}
+	if c.maxLines > logMaxLinesCeiling {
+		c.maxLines = logMaxLinesCeiling
+	}
+	if c.maxInflightBytes < logMinInflightBytes {
+		c.maxInflightBytes = logMinInflightBytes
+	}
+	if c.maxInflightBytes > logMaxInflightBytesCeiling {
+		c.maxInflightBytes = logMaxInflightBytesCeiling
+	}
+	return c
+}
 
 // logSink is the narrow store interface the batcher actually uses.
 // Lifting the dependency to an interface lets unit tests drive the
@@ -89,6 +162,23 @@ type logBatcher struct {
 	// ON CONFLICT race against the new attempt's lines and silently
 	// drop the new ones.
 	discard atomic.Bool
+
+	// maxInflightBytes bounds the retained log-text payload (channel +
+	// in-flight batch). inflightBytes is the running sum, incremented
+	// once when a line is accepted into the buffer (Push) and
+	// decremented once when it leaves (any flush outcome). Exactly-once
+	// on both edges — a drop never increments; the flush defer always
+	// decrements.
+	maxInflightBytes int64
+	inflightBytes    atomic.Int64
+
+	// Cached drop counters — resolved once so the hot path never pays a
+	// WithLabelValues map lookup per drop.
+	mDropBackpressure  prometheus.Counter
+	mDropBytesFull     prometheus.Counter
+	mDropSnapshotStale prometheus.Counter
+	mDropFlushFailed   prometheus.Counter
+	mSessionDiscarded  prometheus.Counter
 }
 
 // newLogBatcher wires a batcher with sensible defaults. The caller
@@ -105,22 +195,48 @@ func newLogBatcher(
 	log *slog.Logger,
 	agentID uuid.UUID,
 ) *logBatcher {
+	return newLogBatcherWithConfig(sink, log, agentID, defaultLogBatcherConfig())
+}
+
+// newLogBatcherWithConfig is the real constructor: the channel is sized
+// by cfg.maxLines (line-count bound) and the byte bound by
+// cfg.maxInflightBytes. cfg is re-clamped defensively so a
+// WithLogBatcherLimits override can't smuggle in an invalid shape.
+// The drop counters are resolved once here (not per-drop).
+func newLogBatcherWithConfig(
+	sink logSink,
+	log *slog.Logger,
+	agentID uuid.UUID,
+	cfg logBatcherConfig,
+) *logBatcher {
 	if log == nil {
 		log = slog.Default()
 	}
+	cfg = cfg.clamped()
 	return &logBatcher{
-		// Buffer 4× the batch size: lets a burst of agent emissions
-		// queue up while a flush is in flight without forcing the
-		// caller to block on Push. 4×100 = 400 lines ~ a few hundred
-		// KB worst case — bounded.
-		in:         make(chan pendingLine, 4*defaultLogBatchSize),
-		done:       make(chan struct{}),
-		sink:       sink,
-		log:        log,
-		batchSize:  defaultLogBatchSize,
-		flushEvery: defaultLogFlushEvery,
-		agentID:    agentID,
+		in:                 make(chan pendingLine, cfg.maxLines),
+		done:               make(chan struct{}),
+		sink:               sink,
+		log:                log,
+		batchSize:          cfg.batchSize,
+		flushEvery:         cfg.flushEvery,
+		agentID:            agentID,
+		maxInflightBytes:   cfg.maxInflightBytes,
+		mDropBackpressure:  metrics.LogLinesDropped.WithLabelValues("backpressure"),
+		mDropBytesFull:     metrics.LogLinesDropped.WithLabelValues("bytes_full"),
+		mDropSnapshotStale: metrics.LogLinesDropped.WithLabelValues("snapshot_stale"),
+		mDropFlushFailed:   metrics.LogLinesDropped.WithLabelValues("flush_failed"),
+		mSessionDiscarded:  metrics.LogBatcherSessionDiscarded,
 	}
+}
+
+// lineBytes is the retained-payload size the byte bound accounts for:
+// the log text itself, which the 1MB scanner cap makes the only field
+// that varies by orders of magnitude. Fixed metadata (uuid, seq, ts,
+// stream) is intentionally not counted — the bound caps heap under fat
+// log lines, not per-line struct overhead.
+func lineBytes(l store.LogLine) int64 {
+	return int64(len(l.Text))
 }
 
 // Start launches the flusher goroutine. The goroutine exits when
@@ -144,18 +260,39 @@ func (b *logBatcher) Start(ctx context.Context) {
 // been mid-flight here when revoke fired.
 func (b *logBatcher) Push(l store.LogLine, attempt int32) {
 	if b.discard.Load() {
+		// Session superseded: this line is never persisted. Count it on
+		// the intentional-discard series — a line arriving AFTER Discard
+		// is in no batch, so without this it would vanish invisibly (the
+		// pending batch is counted at flush; these are not).
+		b.mSessionDiscarded.Inc()
+		return
+	}
+	sz := lineBytes(l)
+	// Byte-based backpressure, checked BEFORE the channel enqueue: a
+	// handful of ~1MB lines can blow the per-stream heap even when the
+	// line-count channel still has slots. Single-producer (the stream's
+	// recv loop), so this Load-then-Add is race-free against itself; the
+	// flusher only ever DECREMENTS, so a concurrent flush can only make
+	// inflightBytes smaller — the cap stays a true upper bound.
+	if b.inflightBytes.Load()+sz > b.maxInflightBytes {
+		b.mDropBytesFull.Inc()
+		b.log.Warn("log batcher backpressure, dropping line (bytes cap)",
+			"job_run_id", l.JobRunID, "seq", l.Seq)
 		return
 	}
 	entry := pendingLine{line: l, attempt: attempt}
 	select {
 	case b.in <- entry:
+		b.inflightBytes.Add(sz)
 	default:
 		// Channel full — try once more with a tight deadline before
 		// giving up. A 50ms wedge is enough for one in-flight flush
 		// to drain a backlog under sustained load.
 		select {
 		case b.in <- entry:
+			b.inflightBytes.Add(sz)
 		case <-time.After(50 * time.Millisecond):
+			b.mDropBackpressure.Inc()
 			b.log.Warn("log batcher backpressure, dropping line",
 				"job_run_id", l.JobRunID, "seq", l.Seq)
 		}
@@ -243,13 +380,25 @@ func (b *logBatcher) run(ctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
+		// Every line in `batch` is leaving the buffer this call —
+		// flushed, stale-dropped, DB-failed, or discarded. Release its
+		// retained bytes exactly once, on ALL outcomes, via one defer.
+		// (Deferred args evaluate now, so this captures the full sum.)
+		var batchBytes int64
+		for i := range batch {
+			batchBytes += lineBytes(batch[i].line)
+		}
+		defer b.inflightBytes.Add(-batchBytes)
+
 		// Session was superseded mid-batch: drop pending lines on
 		// the floor. Inserting them now would either pollute a
 		// just-reclaimed row's log_lines OR win the
 		// (job_run_id, seq, at) ON CONFLICT race against the new
 		// attempt and silently drop ITS legitimate lines. Either
-		// way the operator sees a corrupt log tail.
+		// way the operator sees a corrupt log tail. Counted on its own
+		// series (intentional discard), NEVER on LogLinesDropped.
 		if b.discard.Load() {
+			b.mSessionDiscarded.Add(float64(len(batch)))
 			batch = batch[:0]
 			return
 		}
@@ -279,10 +428,12 @@ func (b *logBatcher) run(ctx context.Context) {
 					// (agent, attempt) since the receive-side
 					// captured this group's attempt. Drop — the next
 					// attempt owns the row now.
+					b.mDropSnapshotStale.Add(float64(len(lines)))
 					b.log.Warn("log batcher: dropped lines after snapshot stale",
 						"job_run_id", k.jobID, "attempt", k.attempt, "lines", len(lines))
 					continue
 				}
+				b.mDropFlushFailed.Add(float64(len(lines)))
 				b.log.Warn("log batcher flush failed",
 					"err", err, "job_run_id", k.jobID, "attempt", k.attempt, "lines", len(lines))
 			}
