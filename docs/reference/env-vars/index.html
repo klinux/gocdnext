@@ -348,7 +348,17 @@ for the value-side names.</p>
 
 
 
-<table><thead><tr><th>Var</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">GOCDNEXT_LOG_RETENTION</code></td><td>empty</td><td>Drop log_lines partitions older than this duration. Empty = no drop. Format: Go duration (<code dir="auto">720h</code>, <code dir="auto">30d</code>).</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_MONTHS_AHEAD</code></td><td><code dir="auto">3</code></td><td>Months of partitions stocked ahead of “now”</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_ARCHIVE</code></td><td><code dir="auto">auto</code></td><td><code dir="auto">auto | on | off</code>. <code dir="auto">auto</code> = on iff artefact backend wired.</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES</code></td><td><code dir="auto">268435456</code></td><td>LRU cache for decoded archives. 0 = disabled. (256 MiB)</td></tr></tbody></table>
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Var</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">GOCDNEXT_LOG_RETENTION</code></td><td>empty</td><td>Drop log_lines partitions older than this duration. Empty = no drop. Format: Go duration (<code dir="auto">720h</code>, <code dir="auto">30d</code>).</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_MONTHS_AHEAD</code></td><td><code dir="auto">3</code></td><td>Months of partitions stocked ahead of “now”</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_ARCHIVE</code></td><td><code dir="auto">auto</code></td><td><code dir="auto">auto | on | off</code>. <code dir="auto">auto</code> = on iff artefact backend wired.</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES</code></td><td><code dir="auto">268435456</code></td><td>LRU cache for decoded archives. 0 = disabled. (256 MiB)</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_BUFFER_MAX_LINES</code></td><td><code dir="auto">4096</code></td><td>Per-agent-stream log batcher buffer, line-count bound. Clamped to <code dir="auto">[batch(100), 65536]</code>. Raise if <code dir="auto">gocdnext_log_lines_dropped_total{reason="backpressure"}</code> climbs.</td></tr><tr><td><code dir="auto">GOCDNEXT_LOG_BUFFER_MAX_BYTES</code></td><td><code dir="auto">16777216</code></td><td>Same buffer, retained-bytes bound (16 MiB). Clamped to <code dir="auto">[1 MiB, 512 MiB]</code>. Caps heap under fat log lines (scanner cap is 1 MiB/line); watch <code dir="auto">reason="bytes_full"</code>.</td></tr></tbody></table>
 <h2 id="authentication">Authentication</h2>
 
 
