@@ -36,7 +36,7 @@ UPDATE agents SET last_seen_at = NOW() WHERE id = $1;
 -- COALESCE to 0 for category (2) so the Go side gets a stable int —
 -- the NULL-agent fence path uses agent_id == uuid.Nil as its skip
 -- predicate anyway.
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id,
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id, j.retry_unsafe,
        a.status AS agent_status, a.last_seen_at,
        COALESCE(a.session_generation, 0)::bigint AS agent_session_generation
 FROM job_runs j
@@ -101,7 +101,7 @@ WHERE j.status = 'running'
 -- past max attempts it becomes a failed (not canceled) row,
 -- mis-attributing the operator's deliberate stop as a process
 -- crash.
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id, j.retry_unsafe
 FROM job_runs j
 WHERE j.status = 'running'
   AND j.agent_id = $1
@@ -184,6 +184,18 @@ WHERE id = $1
   AND attempt = @expected_attempt::int
   AND agent_id IS NOT DISTINCT FROM @expected_agent_id::uuid
 RETURNING id, run_id, stage_run_id, agent_id, name, started_at, finished_at;
+
+-- name: GetJobRunForDisruption :one
+-- Classify a job the agent reported DISRUPTED (task pod preempted/evicted).
+-- Returns the fields the handler needs to pick requeue-vs-terminal:
+-- retry_unsafe (deploy/env job — never auto-retry), cancel_requested_at
+-- (an operator cancel that won the race — terminalize as 'canceled'), plus
+-- the current status/attempt/run_id. No snapshot predicate here: the ACTION
+-- (requeueStaleJob / CompleteJob) carries the (agent_id, attempt) CAS; this
+-- is only a read to choose the branch.
+SELECT run_id, status, attempt, retry_unsafe, cancel_requested_at
+FROM job_runs
+WHERE id = $1;
 
 -- name: DeleteLogLinesByJob :exec
 -- Called after a successful reclaim so the retry starts with a clean log

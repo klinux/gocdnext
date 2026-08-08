@@ -163,6 +163,34 @@ func TestCleanupIsolatedPod_DeletesOnCancelDespiteCleanupOnFailureFalse(t *testi
 	}
 }
 
+// TestDisruptionStatus locks the FAILED-vs-DISRUPTED contract the two
+// isolated-run exit sites share. A platform teardown (pod gone / evicted
+// / preempted) must map to DISRUPTED so the server re-dispatches a new
+// attempt; a task that exited non-zero on its own (or an in-pod SIGTERM
+// the housekeeper survived, term all-false) must stay FAILED. Driving the
+// full executeIsolated to exit 143 against the fake clientset isn't
+// feasible (pod-state polling), so — mirroring resolveIsolatedScriptWorkDir
+// above — the decision is unit-tested through the extracted helper.
+func TestDisruptionStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		term engine.TaskTermination
+		want gocdnextv1.RunStatus
+	}{
+		{"pod gone", engine.TaskTermination{PodGone: true}, gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED},
+		{"disrupted flag", engine.TaskTermination{Disrupted: true}, gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED},
+		{"pod gone + disrupted", engine.TaskTermination{PodGone: true, Disrupted: true}, gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED},
+		{"neither (real fail / in-pod SIGTERM)", engine.TaskTermination{}, gocdnextv1.RunStatus_RUN_STATUS_FAILED},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := disruptionStatus(tt.term); got != tt.want {
+				t.Errorf("disruptionStatus(%+v) = %v, want %v", tt.term, got, tt.want)
+			}
+		})
+	}
+}
+
 func mustCreatePod(t *testing.T, ctx context.Context, cli *fake.Clientset, ns, name string) {
 	t.Helper()
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}

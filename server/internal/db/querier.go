@@ -721,6 +721,14 @@ type Querier interface {
 	// lock, exactly one of (cancel commits / dispatch commits) wins;
 	// the loser sees the post-commit state and routes correctly.
 	GetJobRunForCancel(ctx context.Context, id pgtype.UUID) (GetJobRunForCancelRow, error)
+	// Classify a job the agent reported DISRUPTED (task pod preempted/evicted).
+	// Returns the fields the handler needs to pick requeue-vs-terminal:
+	// retry_unsafe (deploy/env job — never auto-retry), cancel_requested_at
+	// (an operator cancel that won the race — terminalize as 'canceled'), plus
+	// the current status/attempt/run_id. No snapshot predicate here: the ACTION
+	// (requeueStaleJob / CompleteJob) carries the (agent_id, attempt) CAS; this
+	// is only a read to choose the branch.
+	GetJobRunForDisruption(ctx context.Context, id pgtype.UUID) (GetJobRunForDisruptionRow, error)
 	// Resolves pipeline_id + project_id + agent_id for a (job_run_id,
 	// run_id) pair. Used by the RequestArtifactUpload handler to authorise
 	// + derive the FKs. Returns ErrNoRows if job_run_id doesn't belong to

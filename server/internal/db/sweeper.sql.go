@@ -110,8 +110,42 @@ func (q *Queries) GetJobAttempt(ctx context.Context, id pgtype.UUID) (GetJobAtte
 	return i, err
 }
 
+const getJobRunForDisruption = `-- name: GetJobRunForDisruption :one
+SELECT run_id, status, attempt, retry_unsafe, cancel_requested_at
+FROM job_runs
+WHERE id = $1
+`
+
+type GetJobRunForDisruptionRow struct {
+	RunID             pgtype.UUID
+	Status            string
+	Attempt           int32
+	RetryUnsafe       bool
+	CancelRequestedAt pgtype.Timestamptz
+}
+
+// Classify a job the agent reported DISRUPTED (task pod preempted/evicted).
+// Returns the fields the handler needs to pick requeue-vs-terminal:
+// retry_unsafe (deploy/env job — never auto-retry), cancel_requested_at
+// (an operator cancel that won the race — terminalize as 'canceled'), plus
+// the current status/attempt/run_id. No snapshot predicate here: the ACTION
+// (requeueStaleJob / CompleteJob) carries the (agent_id, attempt) CAS; this
+// is only a read to choose the branch.
+func (q *Queries) GetJobRunForDisruption(ctx context.Context, id pgtype.UUID) (GetJobRunForDisruptionRow, error) {
+	row := q.db.QueryRow(ctx, getJobRunForDisruption, id)
+	var i GetJobRunForDisruptionRow
+	err := row.Scan(
+		&i.RunID,
+		&i.Status,
+		&i.Attempt,
+		&i.RetryUnsafe,
+		&i.CancelRequestedAt,
+	)
+	return i, err
+}
+
 const listRunningJobsForAgent = `-- name: ListRunningJobsForAgent :many
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id, j.retry_unsafe
 FROM job_runs j
 WHERE j.status = 'running'
   AND j.agent_id = $1
@@ -119,12 +153,13 @@ WHERE j.status = 'running'
 `
 
 type ListRunningJobsForAgentRow struct {
-	ID         pgtype.UUID
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-	Attempt    int32
-	AgentID    pgtype.UUID
+	ID          pgtype.UUID
+	RunID       pgtype.UUID
+	StageRunID  pgtype.UUID
+	Name        string
+	Attempt     int32
+	AgentID     pgtype.UUID
+	RetryUnsafe bool
 }
 
 // Every running job currently assigned to a given agent_id. The
@@ -164,6 +199,7 @@ func (q *Queries) ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UU
 			&i.Name,
 			&i.Attempt,
 			&i.AgentID,
+			&i.RetryUnsafe,
 		); err != nil {
 			return nil, err
 		}
@@ -176,7 +212,7 @@ func (q *Queries) ListRunningJobsForAgent(ctx context.Context, agentID pgtype.UU
 }
 
 const listStaleRunningJobs = `-- name: ListStaleRunningJobs :many
-SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id,
+SELECT j.id, j.run_id, j.stage_run_id, j.name, j.attempt, j.agent_id, j.retry_unsafe,
        a.status AS agent_status, a.last_seen_at,
        COALESCE(a.session_generation, 0)::bigint AS agent_session_generation
 FROM job_runs j
@@ -227,6 +263,7 @@ type ListStaleRunningJobsRow struct {
 	Name                   string
 	Attempt                int32
 	AgentID                pgtype.UUID
+	RetryUnsafe            bool
 	AgentStatus            *string
 	LastSeenAt             pgtype.Timestamptz
 	AgentSessionGeneration int64
@@ -280,6 +317,7 @@ func (q *Queries) ListStaleRunningJobs(ctx context.Context, staleness pgtype.Int
 			&i.Name,
 			&i.Attempt,
 			&i.AgentID,
+			&i.RetryUnsafe,
 			&i.AgentStatus,
 			&i.LastSeenAt,
 			&i.AgentSessionGeneration,

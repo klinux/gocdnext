@@ -417,8 +417,9 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// (evicted/preempted/node reclaimed). Classify so the operator
 		// gets the real reason instead of a raw poll error.
 		term := k.TaskPodTermination(ctx, podName)
+		status := disruptionStatus(term)
 		msg := "wait for task: " + err.Error()
-		if term.PodGone || term.Disrupted {
+		if status == gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED {
 			msg = disruptionMessage(term)
 		}
 		r.emitLog(a, &seq, "stderr", msg)
@@ -426,11 +427,13 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		// scanning would only emit "container not found" noise. Skip it.
 		// When only the task container died, the housekeeper may still be
 		// alive, so scan test_reports for diagnostic signal (best-effort).
-		if !(term.PodGone || term.Disrupted) {
+		if status != gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED {
 			r.scanTestReportsFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 			r.scanCoverageFromPod(ctx, exec, podName, "housekeeper", scriptWorkDir, a, &seq)
 		}
-		r.sendResult(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, -1, msg)
+		// DISRUPTED (not FAILED) on a platform teardown: the server
+		// re-dispatches a new attempt instead of counting a real failure.
+		r.sendResult(a, status, -1, msg)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
@@ -445,9 +448,15 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 		resultMsg := fmt.Sprintf("task exited with %d", taskExit)
 		phaseMsg := fmt.Sprintf("task failed after %s (exit %d)", phaseDur(taskStart), taskExit)
 		skipScans := false
+		// Real task failure by default. Only exit 143 (128+SIGTERM) can be
+		// an EXTERNAL teardown; classify via the pod so a preemption/
+		// eviction reports DISRUPTED (→ server re-dispatch) while an
+		// in-pod SIGTERM the housekeeper survived stays FAILED.
+		status := gocdnextv1.RunStatus_RUN_STATUS_FAILED
 		if taskExit == 143 {
 			term := k.TaskPodTermination(ctx, podName)
-			if term.PodGone || term.Disrupted {
+			status = disruptionStatus(term)
+			if status == gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED {
 				// Platform reclaimed the pod. The housekeeper is gone, so
 				// scanning would only emit "container not found" — skip it.
 				resultMsg = disruptionMessage(term)
@@ -476,7 +485,7 @@ func (r *Runner) executeIsolated(ctx context.Context, a *gocdnextv1.JobAssignmen
 			// housekeeper alive — skipScans (pod gone/disrupted) also skips it.
 			failRefs = r.postJobArtifactsOnFailure(ctx, exec, podName, scriptWorkDir, a, &seq)
 		}
-		r.sendResultWithArtifacts(a, gocdnextv1.RunStatus_RUN_STATUS_FAILED, int32(taskExit), resultMsg, failRefs)
+		r.sendResultWithArtifacts(a, status, int32(taskExit), resultMsg, failRefs)
 		r.cleanupIsolatedPod(ctx, k, podName, false)
 		return
 	}
@@ -638,6 +647,20 @@ func toUpperEnv(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// disruptionStatus maps a task-pod termination to the RunStatus the agent
+// reports. DISRUPTED when the platform tore the pod down externally
+// (PodGone/evicted/preempted/node-shutdown) so the server re-dispatches a
+// new attempt instead of counting a real failure; FAILED otherwise (the
+// task exited non-zero on its own, or an in-pod SIGTERM the housekeeper
+// survived). This is the single source of the FAILED-vs-DISRUPTED
+// decision at both isolated-run exit sites (wait error + exit 143).
+func disruptionStatus(t engine.TaskTermination) gocdnextv1.RunStatus {
+	if t.PodGone || t.Disrupted {
+		return gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED
+	}
+	return gocdnextv1.RunStatus_RUN_STATUS_FAILED
 }
 
 // disruptionMessage renders a clear, operator-facing reason for a pod the
