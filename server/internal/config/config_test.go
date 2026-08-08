@@ -64,3 +64,34 @@ func TestLoad_SecretDurations_Defaults(t *testing.T) {
 		t.Errorf("zero durations not honoured: ttl=%s timeout=%s", cfg.SecretExternalCacheTTL, cfg.SecretExternalTimeout)
 	}
 }
+
+// TestLoad_LogBufferEnv: the log-batcher buffer knobs flow through Load,
+// and — unlike the security durations above — a garbage value falls back
+// to 0 ("use the batcher default") instead of aborting boot. They're
+// optional performance knobs; the batcher re-clamps them anyway.
+func TestLoad_LogBufferEnv(t *testing.T) {
+	t.Setenv("GOCDNEXT_DATABASE_URL", "postgres://x") // satisfy the required check
+
+	t.Setenv("GOCDNEXT_LOG_BUFFER_MAX_LINES", "8192")
+	t.Setenv("GOCDNEXT_LOG_BUFFER_MAX_BYTES", "33554432") // 32 MiB
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogBufferMaxLines != 8192 {
+		t.Errorf("LogBufferMaxLines = %d, want 8192", cfg.LogBufferMaxLines)
+	}
+	if cfg.LogBufferMaxBytes != 32<<20 {
+		t.Errorf("LogBufferMaxBytes = %d, want %d", cfg.LogBufferMaxBytes, 32<<20)
+	}
+
+	// Garbage → 0 (fallback), never a boot failure.
+	t.Setenv("GOCDNEXT_LOG_BUFFER_MAX_LINES", "not-a-number")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load with garbage env must not fail: %v", err)
+	}
+	if cfg.LogBufferMaxLines != 0 {
+		t.Errorf("garbage LogBufferMaxLines = %d, want 0 (fallback)", cfg.LogBufferMaxLines)
+	}
+}

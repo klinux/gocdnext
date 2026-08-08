@@ -103,6 +103,37 @@ var (
 		[]string{"result"},
 	)
 
+	// LogLinesDropped counts job log lines the server-side batcher
+	// discarded BEFORE they reached the DB, by reason:
+	//   - backpressure: the per-stream buffer's line cap was full
+	//     (channel-full, 50ms wedge expired) — producer outran the
+	//     flush→DB path.
+	//   - bytes_full: the buffer's retained-BYTES cap was hit; a few
+	//     huge lines (scanner cap is 1MB/line) can blow the heap even
+	//     with channel slots free, so bytes are gated separately.
+	//   - snapshot_stale: the row was reclaimed/redispatched (a newer
+	//     attempt owns it) so that group was dropped.
+	//   - flush_failed: the DB write errored (non-stale).
+	// The agent has a mirror (gocdnext_agent_log_lines_dropped_total);
+	// the two together bound "why is a job's log tail missing?".
+	LogLinesDropped = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gocdnext_log_lines_dropped_total",
+			Help: "Job log lines the server batcher dropped before persistence, by reason.",
+		},
+		[]string{"reason"},
+	)
+
+	// LogBatcherSessionDiscarded counts log lines intentionally dropped
+	// when a session was superseded (Discard mode). NOT a health signal
+	// like LogLinesDropped — kept a separate series so a deliberate
+	// discard of a reclaimed attempt's stale tail never masquerades as
+	// backpressure/data-loss on the drop metric.
+	LogBatcherSessionDiscarded = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gocdnext_log_batcher_session_discarded_total",
+		Help: "Log lines the batcher dropped because the session was superseded (intentional).",
+	})
+
 	// RetentionDroppedLogPartitions counts how many monthly
 	// partitions the sweeper has dropped. Constant-time DROP, so
 	// big numbers here are healthy — they mean the partitioning
@@ -280,6 +311,8 @@ func init() {
 		QueueDepth,
 		AgentsOnline,
 		LogArchiveJobs,
+		LogLinesDropped,
+		LogBatcherSessionDiscarded,
 		RetentionDroppedLogPartitions,
 		WebhookDeliveries,
 		RunsSuperseded,
