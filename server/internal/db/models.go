@@ -351,6 +351,7 @@ type JobRun struct {
 	CancelRequestedAt   pgtype.Timestamptz
 	DeployRollback      bool
 	CancelOrigin        *string
+	RetryUnsafe         bool
 }
 
 type JobRunApproval struct {

@@ -23,6 +23,7 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 	RunsSuperseded.Inc()
 	SupersedeBackstopErrors.Inc()
 	SupersedeLockBusy.Inc()
+	JobsDisrupted.WithLabelValues("requeued").Inc()
 
 	resp, err := http.Get(srv.URL)
 	if err != nil {
@@ -47,6 +48,7 @@ func TestHandlerExposesAllSeries(t *testing.T) {
 		"gocdnext_runs_superseded_total",
 		"gocdnext_supersede_backstop_errors_total",
 		"gocdnext_supersede_lock_busy_total",
+		"gocdnext_jobs_disrupted_total",
 		"go_goroutines",           // runtime collector wired
 		"process_resident_memory", // process collector wired
 	}
