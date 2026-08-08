@@ -2,14 +2,18 @@ package grpcsrv
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/gocdnext/gocdnext/server/internal/metrics"
 	"github.com/gocdnext/gocdnext/server/internal/store"
 )
 
@@ -443,4 +447,245 @@ func TestLogBatcher_AfterFlushSkippedInDiscard(t *testing.T) {
 		// expected: barrier dropped
 	}
 	b.Stop()
+}
+
+// ---------------------------------------------------------------------
+// Byte-bounded buffer + drop observability (PR: log-batcher-drop-metrics)
+// ---------------------------------------------------------------------
+
+// makeBigLine is makeLine with a payload of textLen bytes, so tests can
+// exercise the RETAINED-BYTES bound (not just line count). The 1MB pod
+// scanner cap is what makes this dimension load-bearing.
+func makeBigLine(seq int64, textLen int) store.LogLine {
+	return store.LogLine{
+		JobRunID: sharedJobID,
+		Seq:      seq,
+		Stream:   "stdout",
+		At:       time.Now().UTC(),
+		Text:     strings.Repeat("x", textLen),
+	}
+}
+
+// dropCount reads the current value of the by-reason drop counter.
+// Tests assert on DELTAS (before/after) since the series is process-global.
+func dropCount(reason string) float64 {
+	return testutil.ToFloat64(metrics.LogLinesDropped.WithLabelValues(reason))
+}
+
+func discardCount() float64 {
+	return testutil.ToFloat64(metrics.LogBatcherSessionDiscarded)
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition %q not met within deadline", what)
+}
+
+// (1) Red-first: a line whose bytes would push the buffer past
+// maxInflightBytes is DROPPED as bytes_full — and the drop must NOT
+// increment inflightBytes (exactly-once accounting: only accepted lines
+// count). No Start(): nothing drains, so the byte gate is driven purely
+// by the running inflight sum.
+func TestLogBatcher_DropsOnMaxInflightBytes(t *testing.T) {
+	sink := &recordingSink{}
+	cfg := logBatcherConfig{
+		batchSize:        100,
+		flushEvery:       time.Second,
+		maxLines:         4096,
+		maxInflightBytes: 1 << 20, // 1 MiB cap (also the floor)
+	}
+	b := newLogBatcherWithConfig(sink, silentLogger(), uuid.New(), cfg)
+
+	const big = 600 * 1024 // two of these (1.2MiB) exceed the 1MiB cap
+	before := dropCount("bytes_full")
+	b.Push(makeBigLine(1, big), 1) // 600KiB ≤ 1MiB → accepted
+	b.Push(makeBigLine(2, big), 1) // would be 1.2MiB → dropped
+
+	if got := dropCount("bytes_full") - before; got != 1 {
+		t.Fatalf("bytes_full drops = %v, want 1", got)
+	}
+	if got := b.inflightBytes.Load(); got != int64(big) {
+		t.Fatalf("inflightBytes = %d, want %d (a drop must NOT increment)", got, big)
+	}
+}
+
+// (2) After a successful flush, the buffer's retained bytes return to 0
+// — the flush decrements exactly what Push incremented.
+func TestLogBatcher_InflightBytesReleasedAfterFlush(t *testing.T) {
+	sink := &recordingSink{}
+	cfg := defaultLogBatcherConfig()
+	cfg.flushEvery = 20 * time.Millisecond
+	b := newLogBatcherWithConfig(sink, silentLogger(), uuid.New(), cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.Start(ctx)
+
+	for i := int64(0); i < 5; i++ {
+		b.Push(makeBigLine(i, 1000), 1)
+	}
+	waitFor(t, "flush landed", func() bool { return len(sink.snapshot()) >= 1 })
+	waitFor(t, "inflight drained", func() bool { return b.inflightBytes.Load() == 0 })
+	b.Stop()
+
+	if got := b.inflightBytes.Load(); got != 0 {
+		t.Fatalf("inflightBytes after flush = %d, want 0", got)
+	}
+}
+
+// (3) On a sink error the group's lines are dropped — but the byte
+// accounting still releases them (defer runs on every outcome) AND the
+// matching by-reason counter increments by the number of lines dropped.
+func TestLogBatcher_SinkErrorReleasesBytesAndCountsReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"snapshot_stale", store.ErrSnapshotStale, "snapshot_stale"},
+		{"flush_failed", errors.New("db down"), "flush_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &recordingSink{failOn: func(recordedBatch) error { return tc.err }}
+			cfg := defaultLogBatcherConfig()
+			cfg.flushEvery = 20 * time.Millisecond
+			b := newLogBatcherWithConfig(sink, silentLogger(), uuid.New(), cfg)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			b.Start(ctx)
+
+			before := dropCount(tc.reason)
+			const n = 3 // one (jobID, attempt) group → one failing insert of 3 lines
+			for i := int64(0); i < n; i++ {
+				b.Push(makeBigLine(i, 500), 1)
+			}
+			waitFor(t, "reason counted", func() bool { return dropCount(tc.reason)-before >= n })
+			waitFor(t, "inflight drained", func() bool { return b.inflightBytes.Load() == 0 })
+			b.Stop()
+
+			if got := dropCount(tc.reason) - before; got != n {
+				t.Fatalf("%s dropped = %v, want %d", tc.reason, got, n)
+			}
+			if got := b.inflightBytes.Load(); got != 0 {
+				t.Fatalf("inflightBytes = %d, want 0 (must release even on sink error)", got)
+			}
+		})
+	}
+}
+
+// (4) Discard() (superseded session): pending lines are dropped, their
+// bytes released, counted ONLY on the session-discarded series — never
+// on log_lines_dropped{backpressure} — and they never reach the sink.
+func TestLogBatcher_DiscardCountsSeparatelyAndReleasesBytes(t *testing.T) {
+	sink := &recordingSink{}
+	cfg := defaultLogBatcherConfig()
+	cfg.flushEvery = time.Hour // no ticker flush before we Discard
+	b := newLogBatcherWithConfig(sink, silentLogger(), uuid.New(), cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.Start(ctx)
+
+	const n = 4
+	beforeDiscard := discardCount()
+	beforeBP := dropCount("backpressure")
+	for i := int64(0); i < n; i++ {
+		b.Push(makeBigLine(i, 500), 1)
+	}
+	b.Discard() // flip to drop-pending mode
+	b.Stop()    // drains: the final flush sees discard and drops the batch
+
+	if got := discardCount() - beforeDiscard; got != n {
+		t.Fatalf("session_discarded delta = %v, want %d", got, n)
+	}
+	if got := dropCount("backpressure") - beforeBP; got != 0 {
+		t.Fatalf("backpressure incremented on discard = %v, want 0", got)
+	}
+	if got := b.inflightBytes.Load(); got != 0 {
+		t.Fatalf("inflightBytes after discard = %d, want 0", got)
+	}
+	if got := len(sink.snapshot()); got != 0 {
+		t.Fatalf("discarded lines must not reach the sink, got %d batches", got)
+	}
+}
+
+// (5) Config clamps + env defaults: bad sizes are corrected, not trusted.
+func TestLogBatcherConfig_Clamped(t *testing.T) {
+	tests := []struct {
+		name string
+		in   logBatcherConfig
+		want logBatcherConfig
+	}{
+		{
+			"defaults pass through",
+			defaultLogBatcherConfig(),
+			defaultLogBatcherConfig(),
+		},
+		{
+			"maxLines below batchSize raised to batchSize",
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 10, maxInflightBytes: 16 << 20},
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 100, maxInflightBytes: 16 << 20},
+		},
+		{
+			"maxLines above ceiling capped",
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 1 << 20, maxInflightBytes: 16 << 20},
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: logMaxLinesCeiling, maxInflightBytes: 16 << 20},
+		},
+		{
+			"non-positive batchSize/flushEvery get defaults",
+			logBatcherConfig{batchSize: 0, flushEvery: 0, maxLines: 4096, maxInflightBytes: 16 << 20},
+			logBatcherConfig{batchSize: defaultLogBatchSize, flushEvery: defaultLogFlushEvery, maxLines: 4096, maxInflightBytes: 16 << 20},
+		},
+		{
+			"tiny byte cap raised to 1MiB floor",
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 4096, maxInflightBytes: 1024},
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 4096, maxInflightBytes: logMinInflightBytes},
+		},
+		{
+			"huge byte cap (fat-fingered env) capped at ceiling",
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 4096, maxInflightBytes: 16 << 30}, // 16 GiB
+			logBatcherConfig{batchSize: 100, flushEvery: time.Second, maxLines: 4096, maxInflightBytes: logMaxInflightBytesCeiling},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.in.clamped(); got != tt.want {
+				t.Errorf("clamped() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A line pushed AFTER Discard() is in no batch, so it must be counted on
+// the session-discarded series at Push time — otherwise post-supersede
+// arrivals vanish with no metric at all (the pending batch is counted at
+// flush; these are not). And they must never enter the byte buffer.
+func TestLogBatcher_PushAfterDiscardCounted(t *testing.T) {
+	sink := &recordingSink{}
+	b := newLogBatcherWithConfig(sink, silentLogger(), uuid.New(), defaultLogBatcherConfig())
+	// No Start(): Push's discard gate is synchronous, so no flusher is
+	// needed to exercise it.
+	b.Discard()
+
+	before := discardCount()
+	const n = 3
+	for i := int64(0); i < n; i++ {
+		b.Push(makeBigLine(i, 500), 1)
+	}
+
+	if got := discardCount() - before; got != n {
+		t.Fatalf("session_discarded after post-discard pushes = %v, want %d", got, n)
+	}
+	if got := b.inflightBytes.Load(); got != 0 {
+		t.Fatalf("post-discard pushes must not enter the buffer, inflight = %d", got)
+	}
+	if got := len(sink.snapshot()); got != 0 {
+		t.Fatalf("post-discard pushes must not reach the sink, got %d batches", got)
+	}
 }

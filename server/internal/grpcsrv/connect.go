@@ -59,7 +59,7 @@ func (a *AgentService) Connect(stream gocdnextv1.AgentService_ConnectServer) err
 	// row still belongs to us. Doing the lookup at receive (not
 	// flush) keeps the tail intact for fast-finishing jobs whose
 	// JobResult triggers ClearAssignment between push and flush.
-	batcher := newLogBatcher(a.store, log, agentID)
+	batcher := newLogBatcherWithConfig(a.store, log, agentID, a.logBatcherCfg)
 	batcher.Start(stream.Context())
 	defer batcher.Stop()
 

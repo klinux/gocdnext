@@ -77,6 +77,8 @@ for the value-side names.
 | `GOCDNEXT_LOG_MONTHS_AHEAD` | `3` | Months of partitions stocked ahead of "now" |
 | `GOCDNEXT_LOG_ARCHIVE` | `auto` | `auto \| on \| off`. `auto` = on iff artefact backend wired. |
 | `GOCDNEXT_LOG_ARCHIVE_CACHE_BYTES` | `268435456` | LRU cache for decoded archives. 0 = disabled. (256 MiB) |
+| `GOCDNEXT_LOG_BUFFER_MAX_LINES` | `4096` | Per-agent-stream log batcher buffer, line-count bound. Clamped to `[batch(100), 65536]`. Raise if `gocdnext_log_lines_dropped_total{reason="backpressure"}` climbs. |
+| `GOCDNEXT_LOG_BUFFER_MAX_BYTES` | `16777216` | Same buffer, retained-bytes bound (16 MiB). Clamped to `[1 MiB, 512 MiB]`. Caps heap under fat log lines (scanner cap is 1 MiB/line); watch `reason="bytes_full"`. |
 
 ## Authentication
 

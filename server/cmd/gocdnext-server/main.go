@@ -438,6 +438,7 @@ func main() {
 	agentService := grpcsrv.NewAgentService(st, sessions, logger, 30).
 		WithChecksReporter(checksReporter).
 		WithLogBroker(logBroker).
+		WithLogBatcherLimits(cfg.LogBufferMaxLines, cfg.LogBufferMaxBytes).
 		WithAutoRegisterToken(cfg.AgentRegistrationToken)
 	if artifactStore != nil {
 		agentService = agentService.WithArtifactStore(artifactStore, 15*time.Minute, 30*time.Minute, 30*24*time.Hour)

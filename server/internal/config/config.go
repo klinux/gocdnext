@@ -20,6 +20,14 @@ type Config struct {
 	LogLevel     slog.Level
 	SecretKeyHex string // 64-char hex AES-256 key for encrypting secrets at rest
 
+	// Log pipeline tuning: the per-agent-stream log batcher's buffer
+	// bounds (line count and retained bytes). 0 = use the batcher's
+	// built-in default (4096 lines / 16 MiB). Both are re-clamped by the
+	// batcher (floor/ceiling), so a fat-fingered value is corrected
+	// rather than able to OOM or wedge the stream.
+	LogBufferMaxLines int
+	LogBufferMaxBytes int64
+
 	// Artifact storage. Backend selects the implementation; the other
 	// fields are read only for the selected backend.
 	ArtifactsBackend    string // "filesystem" (default), "s3", "gcs"
@@ -240,10 +248,13 @@ func Load() (*Config, error) {
 	}
 
 	c := &Config{
-		HTTPAddr:     env("GOCDNEXT_HTTP_ADDR", ":8153"),
-		GRPCAddr:     env("GOCDNEXT_GRPC_ADDR", ":8154"),
-		DatabaseURL:  env("GOCDNEXT_DATABASE_URL", ""),
-		SecretKeyHex: env("GOCDNEXT_SECRET_KEY", ""),
+		HTTPAddr:    env("GOCDNEXT_HTTP_ADDR", ":8153"),
+		GRPCAddr:    env("GOCDNEXT_GRPC_ADDR", ":8154"),
+		DatabaseURL: env("GOCDNEXT_DATABASE_URL", ""),
+
+		LogBufferMaxLines: envInt("GOCDNEXT_LOG_BUFFER_MAX_LINES", 0),
+		LogBufferMaxBytes: int64(envInt("GOCDNEXT_LOG_BUFFER_MAX_BYTES", 0)),
+		SecretKeyHex:      env("GOCDNEXT_SECRET_KEY", ""),
 
 		ArtifactsBackend:    strings.ToLower(env("GOCDNEXT_ARTIFACTS_BACKEND", "filesystem")),
 		ArtifactsFSRoot:     env("GOCDNEXT_ARTIFACTS_FS_ROOT", "/var/lib/gocdnext/artifacts"),
@@ -508,6 +519,22 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envInt reads a non-negative integer env var, returning fallback when
+// unset, empty, or unparseable. Deliberately lenient: these are optional
+// performance knobs, so a typo tunes nothing (falls back) rather than
+// crashing boot the way a hard ParseInt error would.
+func envInt(key string, fallback int) int {
+	s := os.Getenv(key)
+	if s == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
 }
 
 // splitAndTrim parses a comma-separated env var into a clean slice.
