@@ -220,6 +220,21 @@ var (
 		Help: "Server-side downgrades of a reported success by integrity kind (artifacts|outputs).",
 	}, []string{"kind"})
 
+	// JobsDisrupted counts jobs the agent reported DISRUPTED (task pod
+	// preempted/evicted/node-reclaimed) by the server's verdict:
+	//   - requeued: plain job under the cap → re-dispatched (new attempt).
+	//   - failed_capped: the retry cap was already reached → terminal fail.
+	//   - failed_unsafe_target: a deploy/environment job — never auto-retried
+	//     (a partially-applied mutation must not re-run) → terminal fail.
+	//   - canceled: an operator cancel won the race → terminal 'canceled'.
+	// A rising `requeued` rate is spot-preemption churn; `failed_capped`
+	// climbing means the cap is too low for the preemption rate. Separate
+	// outcomes so "not retried for safety" is never masked as "hit the cap".
+	JobsDisrupted = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gocdnext_jobs_disrupted_total",
+		Help: "Jobs the agent reported DISRUPTED (pod preemption/eviction), by server outcome.",
+	}, []string{"outcome"})
+
 	// AgentDrain counts graceful-drain outcomes observed server-side at
 	// stream close: clean (no in-flight jobs left) vs abandoned (jobs
 	// still running → requeued by the reaper). Only draining sessions
@@ -307,6 +322,7 @@ func init() {
 		JobsReclaimed,
 		JobReclaimSweeps,
 		JobResultValidationFailed,
+		JobsDisrupted,
 		AgentDrain,
 		AgentDrainDuration,
 		GRPCServerStarted,

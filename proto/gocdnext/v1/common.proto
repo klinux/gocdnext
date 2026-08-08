@@ -16,6 +16,13 @@ enum RunStatus {
   RUN_STATUS_CANCELED    = 5;
   RUN_STATUS_SKIPPED     = 6;
   RUN_STATUS_WAITING     = 7; // aprovação manual pendente
+  // Job terminated EXTERNALLY, not by its own logic — the task pod was
+  // preempted/evicted/deleted (spot reclaim, node shutdown). The agent
+  // reports this instead of FAILED so the server can re-dispatch a new
+  // attempt (up to the cap) rather than count a real failure. Distinct
+  // from CANCELED (operator-initiated) and FAILED (task exited non-zero
+  // on its own).
+  RUN_STATUS_DISRUPTED   = 8;
 }
 
 // BuildCause — o que disparou o pipeline.

@@ -54,8 +54,8 @@ VALUES ($1, $2, $3)
 RETURNING id, run_id, name, ordinal, status;
 
 -- name: InsertJobRun :one
-INSERT INTO job_runs (run_id, stage_run_id, name, matrix_key, image, needs)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO job_runs (run_id, stage_run_id, name, matrix_key, image, needs, retry_unsafe)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, needs;
 
 -- name: CountRunsByPipeline :one

@@ -63,18 +63,19 @@ func (q *Queries) GetPipelineDefinition(ctx context.Context, id pgtype.UUID) (Ge
 }
 
 const insertJobRun = `-- name: InsertJobRun :one
-INSERT INTO job_runs (run_id, stage_run_id, name, matrix_key, image, needs)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO job_runs (run_id, stage_run_id, name, matrix_key, image, needs, retry_unsafe)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id, run_id, stage_run_id, name, matrix_key, image, status, needs
 `
 
 type InsertJobRunParams struct {
-	RunID      pgtype.UUID
-	StageRunID pgtype.UUID
-	Name       string
-	MatrixKey  *string
-	Image      *string
-	Needs      []string
+	RunID       pgtype.UUID
+	StageRunID  pgtype.UUID
+	Name        string
+	MatrixKey   *string
+	Image       *string
+	Needs       []string
+	RetryUnsafe bool
 }
 
 type InsertJobRunRow struct {
@@ -96,6 +97,7 @@ func (q *Queries) InsertJobRun(ctx context.Context, arg InsertJobRunParams) (Ins
 		arg.MatrixKey,
 		arg.Image,
 		arg.Needs,
+		arg.RetryUnsafe,
 	)
 	var i InsertJobRunRow
 	err := row.Scan(

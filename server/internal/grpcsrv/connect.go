@@ -774,6 +774,16 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 		return
 	}
 
+	// A DISRUPTED result (task pod preempted / evicted / node-reclaimed) is
+	// NOT a real failure. Route it to the requeue-or-terminal engine BEFORE
+	// mapStatus / artifact / output validation — a disrupted job never
+	// uploaded artifacts, and its non-zero exit is a platform teardown, so
+	// none of that validation (which would downgrade to failed) applies.
+	if r.GetStatus() == gocdnextv1.RunStatus_RUN_STATUS_DISRUPTED {
+		a.handleDisruptedResult(ctx, log, sess, batcher, jobID, expectedAttempt, r)
+		return
+	}
+
 	status := mapStatus(r.GetStatus())
 	if status == "" {
 		log.Warn("agent result: unsupported status", "status", r.GetStatus().String())
@@ -910,106 +920,10 @@ func (a *AgentService) handleJobResult(ctx context.Context, log logger, sess *Se
 		"stage_done", comp.StageCompleted, "stage_status", comp.StageStatus,
 		"run_done", comp.RunCompleted, "run_status", comp.RunStatus)
 
-	// Cold-archive enqueue. The archiver runs async — the worker
-	// pool will read the job's log_lines, gzip + upload, then drop
-	// the rows. Per-project override is resolved live so an admin
-	// toggle takes effect on the next terminating job without a
-	// service restart.
-	a.maybeEnqueueArchive(ctx, log, batcher, comp.JobRunID)
-
-	// Security findings (#71): parse this job's *.sarif artifacts and reconcile
-	// the findings table. Async + best-effort — never affects the job result.
-	a.ingestSecurityFindings(comp.JobRunID, expectedAttempt)
-
-	// Deployment tracking (#39): if this job carried a `deploy:`
-	// marker, the dispatch path opened an in_progress revision.
-	// Finalise it to match the job's terminal outcome. Best-effort
-	// (a tracking-write failure must not affect the run cascade) and
-	// idempotent: 0 rows means the job had no deploy: block (the
-	// common case), and the status='in_progress' guard makes a
-	// re-delivered terminal result a no-op.
-	//
-	// KNOWN GAP (v1, accepted): CompleteJob already flipped the job
-	// terminal above; if the process crashes (or this write fails)
-	// before the finalise lands, the revision stays in_progress for a
-	// job that is actually done — the reaper/fence only cover attempts
-	// that DIED (requeue/fail-at-max), not "job terminal, revision
-	// in_progress". An in_progress row never reads as "current" (only
-	// success counts), so the worst case is a stale in_progress entry
-	// in the timeline. A lightweight reconciler (finalise in_progress
-	// revisions whose job_run is already terminal) is the post-v1 fix.
-	// EFFECTIVE status (#207): a canceled deploy job records a 'canceled' revision
-	// (never becomes current, stays in history, excluded from DORA), not 'failed'.
-	deployStatus := store.DeployStatusFailed
-	switch comp.JobStatus {
-	case string(domain.StatusSuccess):
-		deployStatus = store.DeployStatusSuccess
-	case string(domain.StatusCanceled):
-		deployStatus = store.DeployStatusCanceled
-	}
-	if _, err := a.store.FinalizeDeploymentRevision(ctx, comp.JobRunID, expectedAttempt, deployStatus); err != nil {
-		log.Warn("deploy tracking: finalize revision", "job_id", comp.JobRunID, "err", err)
-	}
-
-	if comp.RunCompleted {
-		a.checksReporter.ReportRunCompleted(ctx, comp.RunID, comp.RunStatus)
-		// Run-scoped service teardown. Broadcast to EVERY agent
-		// that ran a job of this run — services come up on the
-		// agent that hosted the first job needing them, and that
-		// engine type may differ from later jobs' agents when the
-		// pipeline mixes `tags:` / `agent:` profiles. Targeting
-		// only the agent of the final job (an earlier design)
-		// silently leaked k8s pods when the final job happened to
-		// run on a Docker engine.
-		//
-		// Cleanup is idempotent per-engine: k8s does the label-
-		// selector delete (multi-agent races resolve via NotFound);
-		// docker/shell return (0, nil). Cheap to send to all.
-		//
-		// hasServices is a cheap pre-flight: pipelines without a
-		// `services:` block skip the dispatch entirely (no API
-		// list, no agent traffic).
-		// Cleanup decision + dispatch run in a goroutine with a
-		// fresh Background context so a stream drop right after
-		// the JobResult doesn't kill the cleanup work. Same logic
-		// the Cancel HTTP handler uses (actions.go) — post-commit
-		// side effects must outlive the originating request /
-		// stream lifecycle.
-		runID := comp.RunID
-		// Captured in the completion tx (#97): pass it to the cleanup so a rerun that
-		// revives the run into a higher generation keeps its fresh pods.
-		serviceGen := comp.ServiceGeneration
-		go func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			hasServices, hsErr := a.store.RunHasServices(cleanupCtx, runID)
-			if hsErr != nil {
-				log.Warn("cleanup run services: has-services check failed; dispatching anyway",
-					"run_id", runID, "err", hsErr)
-				hasServices = true // fail-open: better one extra List than leak
-			}
-			if hasServices {
-				a.dispatchRunServiceCleanup(cleanupCtx, log, runID, serviceGen)
-			}
-		}()
-	}
-
-	// Wake the scheduler on EVERY non-terminal-run completion, not
-	// only when the stage finished. Same-stage `needs:` siblings
-	// would otherwise wait up to one periodic tick (15s) because the
-	// stage stays open while the gated downstream is still queued —
-	// the stage-completed signal never fires until the downstream
-	// also lands, but the downstream can't dispatch without a tick.
-	// NOTIFY is cheap (microseconds), the dispatch handler is a
-	// no-op when there's no eligible work, and the periodic tick
-	// continues to serve as a backstop. Trading one wasted-tick log
-	// line per intra-stage completion for ~15s of latency removal
-	// is a clear win.
-	if !comp.RunCompleted {
-		if err := a.store.NotifyRunQueued(ctx, comp.RunID); err != nil {
-			log.Warn("agent result: notify run_queued", "err", err)
-		}
-	}
+	// Post-completion side-effects (archive, security ingest, deploy
+	// finalise, run-completed teardown, scheduler wake) — shared with the
+	// DISRUPTED-terminal path so both go through the exact same tail.
+	a.afterJobCompletion(ctx, log, batcher, comp, expectedAttempt)
 
 	// Fanout: if the stage passed and some downstream pipeline lists this
 	// (pipeline, stage) as an upstream material, queue those runs now. Errors

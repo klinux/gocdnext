@@ -442,6 +442,11 @@ func (s *Store) insertRunRowsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, i
 				MatrixKey:  nullableString(key),
 				Image:      nullableString(job.Image),
 				Needs:      needs,
+				// A job that mutates external state (deploy: / environment:)
+				// is NOT safe to auto-retry after a disruption — a partially
+				// applied mutation would re-run. Stamp it once here so the
+				// reaper + the disruption-retry path gate on it cheaply.
+				RetryUnsafe: job.TargetEnvironment() != "",
 			})
 			if err != nil {
 				return RunCreated{}, fmt.Errorf("store: insert job %s[%s]: %w", job.Name, key, err)

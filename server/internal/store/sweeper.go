@@ -106,15 +106,25 @@ func (s *Store) ReclaimStaleJobs(ctx context.Context, maxAttempts int32, stalene
 			Attempt:                j.Attempt,
 		}
 
-		if j.Attempt+1 > maxAttempts {
-			// Cap reached — snapshot-validating fail. Stage/run cascade
-			// runs inside failJobIfStale so the result matches the
-			// existing CompleteJob terminal path exactly.
-			_, ok, err := s.failJobIfStale(ctx, res.JobRunID, j.Attempt, res.AgentID,
-				fmt.Sprintf("agent lost before completion (attempts=%d, max=%d)", j.Attempt, maxAttempts))
+		if j.RetryUnsafe || j.Attempt+1 > maxAttempts {
+			// Terminal-fail via failJobIfStale — which PRESERVES evidence
+			// (no log/artifact/test/coverage delete, unlike the requeue
+			// path). Two triggers:
+			//   - cap reached (attempt+1 > max), OR
+			//   - retry_unsafe: the job mutates external state (deploy/
+			//     environment). Auto-requeuing a deploy/migration that may
+			//     have partially applied would re-run the mutation, so a
+			//     human decides via rerun instead.
+			// Stage/run cascade runs inside failJobIfStale so the result
+			// matches the existing CompleteJob terminal path exactly.
+			reason := fmt.Sprintf("agent lost before completion (attempts=%d, max=%d)", j.Attempt, maxAttempts)
+			if j.RetryUnsafe {
+				reason = "agent lost before completion; not auto-retried (deploy/environment job)"
+			}
+			_, ok, err := s.failJobIfStale(ctx, res.JobRunID, j.Attempt, res.AgentID, reason)
 			switch {
 			case err != nil:
-				res.Err = fmt.Errorf("fail at max: %w", err)
+				res.Err = fmt.Errorf("fail terminal: %w", err)
 			case !ok:
 				res.Action = ReclaimActionSkipped
 			default:
@@ -203,12 +213,18 @@ func (s *Store) ReclaimAgentJobs(ctx context.Context, agentID uuid.UUID, maxAtte
 			AgentID:  fromPgUUID(j.AgentID),
 			Attempt:  j.Attempt,
 		}
-		if j.Attempt+1 > maxAttempts {
-			_, ok, err := s.failJobIfStale(ctx, res.JobRunID, j.Attempt, res.AgentID,
-				fmt.Sprintf("agent re-registered before completion (attempts=%d, max=%d)", j.Attempt, maxAttempts))
+		if j.RetryUnsafe || j.Attempt+1 > maxAttempts {
+			// Same guard as ReclaimStaleJobs: terminal-fail (evidence
+			// preserved) at the cap OR for a retry_unsafe deploy/env job
+			// that must not be auto-retried after the agent vanished.
+			reason := fmt.Sprintf("agent re-registered before completion (attempts=%d, max=%d)", j.Attempt, maxAttempts)
+			if j.RetryUnsafe {
+				reason = "agent re-registered before completion; not auto-retried (deploy/environment job)"
+			}
+			_, ok, err := s.failJobIfStale(ctx, res.JobRunID, j.Attempt, res.AgentID, reason)
 			switch {
 			case err != nil:
-				res.Err = fmt.Errorf("fail at max: %w", err)
+				res.Err = fmt.Errorf("fail terminal: %w", err)
 			case !ok:
 				res.Action = ReclaimActionSkipped
 			default:

@@ -34,6 +34,13 @@ const (
 	RunStatus_RUN_STATUS_CANCELED    RunStatus = 5
 	RunStatus_RUN_STATUS_SKIPPED     RunStatus = 6
 	RunStatus_RUN_STATUS_WAITING     RunStatus = 7 // aprovação manual pendente
+	// Job terminated EXTERNALLY, not by its own logic — the task pod was
+	// preempted/evicted/deleted (spot reclaim, node shutdown). The agent
+	// reports this instead of FAILED so the server can re-dispatch a new
+	// attempt (up to the cap) rather than count a real failure. Distinct
+	// from CANCELED (operator-initiated) and FAILED (task exited non-zero
+	// on its own).
+	RunStatus_RUN_STATUS_DISRUPTED RunStatus = 8
 )
 
 // Enum value maps for RunStatus.
@@ -47,6 +54,7 @@ var (
 		5: "RUN_STATUS_CANCELED",
 		6: "RUN_STATUS_SKIPPED",
 		7: "RUN_STATUS_WAITING",
+		8: "RUN_STATUS_DISRUPTED",
 	}
 	RunStatus_value = map[string]int32{
 		"RUN_STATUS_UNSPECIFIED": 0,
@@ -57,6 +65,7 @@ var (
 		"RUN_STATUS_CANCELED":    5,
 		"RUN_STATUS_SKIPPED":     6,
 		"RUN_STATUS_WAITING":     7,
+		"RUN_STATUS_DISRUPTED":   8,
 	}
 )
 
@@ -299,7 +308,7 @@ const file_gocdnext_v1_common_proto_rawDesc = "" +
 	"\ttimestamp\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\"2\n" +
 	"\bKeyValue\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value*\xce\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value*\xe8\x01\n" +
 	"\tRunStatus\x12\x1a\n" +
 	"\x16RUN_STATUS_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11RUN_STATUS_QUEUED\x10\x01\x12\x16\n" +
@@ -308,7 +317,8 @@ const file_gocdnext_v1_common_proto_rawDesc = "" +
 	"\x11RUN_STATUS_FAILED\x10\x04\x12\x17\n" +
 	"\x13RUN_STATUS_CANCELED\x10\x05\x12\x16\n" +
 	"\x12RUN_STATUS_SKIPPED\x10\x06\x12\x16\n" +
-	"\x12RUN_STATUS_WAITING\x10\a*\xa4\x01\n" +
+	"\x12RUN_STATUS_WAITING\x10\a\x12\x18\n" +
+	"\x14RUN_STATUS_DISRUPTED\x10\b*\xa4\x01\n" +
 	"\n" +
 	"BuildCause\x12\x1b\n" +
 	"\x17BUILD_CAUSE_UNSPECIFIED\x10\x00\x12\x17\n" +
