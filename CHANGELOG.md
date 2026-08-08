@@ -8,6 +8,34 @@ convention that minor bumps may carry breaking changes until 1.0).
 
 ## [Unreleased]
 
+## v0.87.0 — 2026-08-08
+
+### Added
+
+- **Preempted jobs now retry instead of failing (agent + server).** Spot-node
+  preemption reclaims a job's pod mid-run (SIGTERM → exit 143); the agent used
+  to flatten that into a plain failure, so a transient platform teardown counted
+  as a real job failure ("task exited with 143, no reason"). The agent now
+  reports a distinct `DISRUPTED` status **only** on a confirmed external teardown
+  (preempt/evict/delete — a startup timeout or an in-pod SIGTERM still fails),
+  and the server re-dispatches a new attempt (up to the reaper's cap) instead of
+  failing the run. Jobs that mutate external state (`deploy:` / `environment:`)
+  are **never** auto-retried — they fail terminal while **preserving** their
+  logs/artifacts/test results, and a human reruns; a cancel that won the race
+  lands `canceled`. New metric
+  `gocdnext_jobs_disrupted_total{outcome=requeued|failed_capped|failed_unsafe_target|canceled}`.
+  (#236)
+
+- **Server log-batcher observability + bounded memory.** The per-stream log
+  batcher dropped lines silently under backpressure, so a failing job's tail
+  could vanish — making preempted/failed jobs look reasonless. New
+  `gocdnext_log_lines_dropped_total{reason}` (plus a separate
+  `gocdnext_log_batcher_session_discarded_total` for intentional discards) make
+  the loss visible, and the buffer is now bounded by **both** line count and
+  retained bytes (a 1 MB/line scanner cap meant a count-only bound had a large
+  worst case) — configurable via `GOCDNEXT_LOG_BUFFER_MAX_LINES` /
+  `GOCDNEXT_LOG_BUFFER_MAX_BYTES`. (#235)
+
 ## v0.86.1 — 2026-08-06
 
 ### Fixed
