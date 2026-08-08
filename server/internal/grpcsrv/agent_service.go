@@ -84,6 +84,12 @@ type AgentService struct {
 	// WithRegisterFenceMaxAttempts for tests / operators tuning
 	// the policy globally.
 	registerFenceMaxAttempts int32
+
+	// logBatcherCfg sizes the per-stream log batcher (line-count +
+	// retained-bytes bounds). Starts at the built-in default; the binary
+	// overrides it via WithLogBatcherLimits with values config.Load read
+	// from env, so env ownership stays in config, not in the batcher.
+	logBatcherCfg logBatcherConfig
 }
 
 // DefaultRegisterFenceMaxAttempts is duplicated from
@@ -106,7 +112,25 @@ func NewAgentService(s *store.Store, sessions *SessionStore, log *slog.Logger, h
 		log:                      log,
 		heartbeatSeconds:         heartbeatSeconds,
 		registerFenceMaxAttempts: DefaultRegisterFenceMaxAttempts,
+		logBatcherCfg:            defaultLogBatcherConfig(),
 	}
+}
+
+// WithLogBatcherLimits overrides the per-stream log-batcher buffer bounds
+// (line count and retained bytes). Non-positive values leave the default
+// in place, so cmd can pass config values straight through (0 = unset).
+// Both are re-clamped in newLogBatcherWithConfig, so an out-of-range
+// value is corrected rather than trusted. Exported (unlike the internal
+// logBatcherConfig) so the binary's wiring — which owns env via
+// config.Load — can set it.
+func (a *AgentService) WithLogBatcherLimits(maxLines int, maxInflightBytes int64) *AgentService {
+	if maxLines > 0 {
+		a.logBatcherCfg.maxLines = maxLines
+	}
+	if maxInflightBytes > 0 {
+		a.logBatcherCfg.maxInflightBytes = maxInflightBytes
+	}
+	return a
 }
 
 // WithRegisterFenceMaxAttempts lets the operator (or tests) tune
