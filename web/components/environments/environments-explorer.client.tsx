@@ -128,8 +128,8 @@ export function EnvironmentsExplorer({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative min-w-[230px] flex-1">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative w-full min-w-[230px] shrink-0 sm:w-[260px] lg:w-[300px]">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
             aria-hidden
@@ -139,13 +139,13 @@ export function EnvironmentsExplorer({
             onValueChange={(next: string) => setQuery(next)}
             placeholder="Filter environment, version, or target..."
             aria-label="Search environments"
-            className="pl-8"
+            className="h-9 pl-8 text-sm"
           />
         </div>
 
         <div
           role="group"
-          className="flex rounded-lg border border-border bg-card p-1"
+          className="flex shrink-0 rounded-lg border border-border bg-card p-1"
           aria-label="Environment status filter"
         >
           {FILTERS.map((item) => (
@@ -175,7 +175,7 @@ export function EnvironmentsExplorer({
           type="button"
           variant="ghost"
           size="sm"
-          className="text-xs text-muted-foreground"
+          className="shrink-0 text-xs text-muted-foreground"
           onClick={toggleVisibleHistories}
           disabled={visibleHistoryEnvironments.length === 0}
         >
