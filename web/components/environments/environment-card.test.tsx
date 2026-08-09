@@ -214,17 +214,48 @@ describe("EnvironmentCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
 
     await waitFor(() => expect(screen.getByText("1.41.def456")).toBeTruthy());
+    const region = screen.getByRole("region", {
+      name: /production deployment history/i,
+    });
+    const scroll = region.querySelector("[data-history-scroll]");
+    expect(scroll?.className).toContain("max-h-[196px]");
+    expect(scroll?.className).toContain("overflow-y-auto");
+    expect(screen.getByText("current")).toBeTruthy();
+    expect(screen.getByText("Showing 2 latest deployments")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toContain(
       "/api/v1/projects/acme/environments/env-1/deployments",
     );
   });
 
-  it("surfaces a history fetch error without crashing", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
+  it("surfaces a history fetch error and lets the operator retry", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          deployments: [
+            {
+              id: "rev-retry",
+              run_id: "run-retry",
+              attempt: 0,
+              version: "1.40.retry",
+              status: "success",
+              is_rollback: false,
+              created_at: "2026-06-12T09:58:00Z",
+              finished_at: "2026-06-12T10:00:00Z",
+            },
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
     render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
     await waitFor(() => expect(screen.getByText(/Couldn't load history/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByText("1.40.retry")).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

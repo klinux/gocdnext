@@ -135,7 +135,7 @@ export default async function EnvironmentsPage({
           slug={slug}
           apiBaseURL={env.GOCDNEXT_PUBLIC_API_URL}
         >
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 items-start gap-4 min-[760px]:grid-cols-[repeat(auto-fill,minmax(400px,1fr))]">
             {environments.map((e) => (
               <EnvironmentCard
                 // Keyed by NAME, never by id: `id` is absent on a freeze-only
