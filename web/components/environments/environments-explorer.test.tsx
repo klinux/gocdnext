@@ -65,6 +65,7 @@ const environments: EnvironmentSummary[] = [
     id: "env-production",
     name: "production",
     has_environment_row: true,
+    total_deploys: 3,
     frozen: false,
     current: {
       id: "rev-production",
@@ -81,6 +82,7 @@ const environments: EnvironmentSummary[] = [
     id: "env-canary",
     name: "canary",
     has_environment_row: true,
+    total_deploys: 1,
     frozen: true,
     current: {
       id: "rev-canary",
@@ -97,12 +99,14 @@ const environments: EnvironmentSummary[] = [
     id: "env-preview",
     name: "preview",
     has_environment_row: true,
+    total_deploys: 0,
     frozen: false,
     current: null,
   },
   {
     name: "held-before-first-deploy",
     has_environment_row: false,
+    total_deploys: 0,
     frozen: true,
     current: null,
   },

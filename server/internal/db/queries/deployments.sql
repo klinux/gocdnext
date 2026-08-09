@@ -42,18 +42,38 @@ SELECT
 
 -- name: CreateDeploymentRevision :one
 -- Recorded at dispatch with the resolved version, status in_progress,
--- tagged with the dispatch attempt so retries don't collide.
-INSERT INTO deployment_revisions
-    (environment_id, run_id, job_run_id, attempt, version, is_rollback, deployed_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id;
+-- tagged with the dispatch attempt so retries don't collide. The environment's
+-- timeline counter bumps in the same statement, so cards can render counts from
+-- GET /environments without a COUNT(*) per environment.
+WITH inserted AS (
+    INSERT INTO deployment_revisions
+        (environment_id, run_id, job_run_id, attempt, version, is_rollback, deployed_by)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING id, environment_id
+), bumped AS (
+    UPDATE environments e
+    SET total_deploys = e.total_deploys + 1,
+        updated_at = NOW()
+    FROM inserted i
+    WHERE e.id = i.environment_id
+)
+SELECT inserted.id FROM inserted;
 
 -- name: DeleteDeploymentRevision :exec
 -- Removes a revision created at dispatch when the dispatch then failed
 -- to reach an agent (the frame never went out, so no deploy happened).
--- Scoped to in_progress so it can never erase a finalized audit row.
-DELETE FROM deployment_revisions
-WHERE id = $1 AND status = 'in_progress';
+-- Scoped to in_progress so it can never erase a finalized audit row. The
+-- timeline counter only decrements when a row was actually removed.
+WITH deleted AS (
+    DELETE FROM deployment_revisions dr
+    WHERE dr.id = $1 AND dr.status = 'in_progress'
+    RETURNING dr.environment_id
+)
+UPDATE environments e
+SET total_deploys = GREATEST(e.total_deploys - 1, 0),
+    updated_at = NOW()
+FROM deleted d
+WHERE e.id = d.environment_id;
 
 -- name: FinalizeDeploymentRevision :one
 -- Called on the job's terminal result (or by the reaper for a dead
@@ -91,7 +111,7 @@ WHERE id = $1 AND status = 'in_progress'
 RETURNING job_run_id, attempt;
 
 -- name: ListEnvironmentsByProject :many
-SELECT id, project_id, name, description, created_at, updated_at
+SELECT id, project_id, name, description, total_deploys, created_at, updated_at
 FROM environments
 WHERE project_id = $1
 ORDER BY name;
@@ -128,7 +148,7 @@ ORDER BY name;
 -- (id/created_at/updated_at), because sqlc types columns from the catalog and
 -- would otherwise generate a `string` that fails to scan NULL.
 WITH env AS (
-    SELECT ev.id, ev.name, ev.description, ev.created_at, ev.updated_at
+    SELECT ev.id, ev.name, ev.description, ev.total_deploys, ev.created_at, ev.updated_at
     FROM environments ev
     WHERE ev.project_id = $1
 ), frz AS (
@@ -142,6 +162,7 @@ SELECT COALESCE(e.name, f.name)::text  AS name,
        e.created_at,
        e.updated_at,
        (e.id IS NOT NULL)::boolean     AS has_environment_row,
+       COALESCE(e.total_deploys, 0)    AS total_deploys,
        (f.name IS NOT NULL)::boolean   AS frozen,
        f.frozen_at,
        COALESCE(f.frozen_by, '')       AS frozen_by,
@@ -178,6 +199,13 @@ SELECT EXISTS (
     SELECT 1 FROM environments WHERE id = $2 AND project_id = $1
 );
 
+-- name: GetEnvironmentDeploymentTotalByProject :one
+-- Scope guard + O(1) timeline total for a project-owned environment. A missing
+-- row maps to 404 at the API boundary.
+SELECT total_deploys
+FROM environments
+WHERE project_id = $1 AND id = $2;
+
 -- name: UpdateEnvironmentDescription :exec
 UPDATE environments
 SET description = $3, updated_at = NOW()
@@ -201,11 +229,3 @@ FROM deployment_revisions
 WHERE environment_id = $1
 ORDER BY created_at DESC
 LIMIT $2;
-
--- name: CountDeploymentHistory :one
--- Count all timeline rows for one environment. Uses the same environment_id
--- index as ListDeploymentHistory and runs only when the returned page hits
--- its limit, so the common "small history" path avoids this second query.
-SELECT COUNT(*)::bigint
-FROM deployment_revisions
-WHERE environment_id = $1;

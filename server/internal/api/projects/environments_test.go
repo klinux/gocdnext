@@ -193,8 +193,9 @@ func TestListEnvironments_ShapeAndCurrent(t *testing.T) {
 
 	var resp struct {
 		Environments []struct {
-			Name    string `json:"name"`
-			Current *struct {
+			Name         string `json:"name"`
+			TotalDeploys int64  `json:"total_deploys"`
+			Current      *struct {
 				Version string `json:"version"`
 				Status  string `json:"status"`
 			} `json:"current"`
@@ -210,14 +211,22 @@ func TestListEnvironments_ShapeAndCurrent(t *testing.T) {
 		Version string `json:"version"`
 		Status  string `json:"status"`
 	}{}
+	totalsByName := map[string]int64{}
 	for _, e := range resp.Environments {
 		byName[e.Name] = e.Current
+		totalsByName[e.Name] = e.TotalDeploys
 	}
 	if byName["staging"] != nil {
 		t.Errorf("staging.current = %+v, want null", byName["staging"])
 	}
+	if totalsByName["staging"] != 0 {
+		t.Errorf("staging.total_deploys = %d, want 0", totalsByName["staging"])
+	}
 	if c := byName["production"]; c == nil || c.Version != "1.42.abc" || c.Status != "success" {
 		t.Errorf("production.current = %+v, want version 1.42.abc / success", c)
+	}
+	if totalsByName["production"] != 1 {
+		t.Errorf("production.total_deploys = %d, want 1", totalsByName["production"])
 	}
 }
 

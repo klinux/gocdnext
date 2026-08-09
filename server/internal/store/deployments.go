@@ -32,8 +32,12 @@ type Environment struct {
 	ProjectID   uuid.UUID
 	Name        string
 	Description string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// TotalDeploys is the number of deployment_revisions rows for this
+	// environment. It is maintained transactionally by the create/delete
+	// revision paths so environment list pages do not need COUNT(*) probes.
+	TotalDeploys int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // DeploymentRevision is one recorded deploy attempt. RunID/JobRunID
@@ -328,6 +332,7 @@ type EnvironmentWithCurrent struct {
 	ProjectID         uuid.UUID
 	Name              string
 	Description       string
+	TotalDeploys      int64
 	// CreatedAt/UpdatedAt are nil for a freeze-only row.
 	CreatedAt *time.Time
 	UpdatedAt *time.Time
@@ -358,6 +363,7 @@ func (s *Store) ListEnvironmentsWithCurrent(ctx context.Context, projectID uuid.
 			ProjectID:         projectID,
 			Name:              r.Name,
 			Description:       r.Description,
+			TotalDeploys:      r.TotalDeploys,
 			CreatedAt:         pgTimePtr(r.CreatedAt),
 			UpdatedAt:         pgTimePtr(r.UpdatedAt),
 			Frozen:            r.Frozen,
@@ -399,12 +405,13 @@ func (s *Store) ListEnvironments(ctx context.Context, projectID uuid.UUID) ([]En
 	out := make([]Environment, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, Environment{
-			ID:          fromPgUUID(r.ID),
-			ProjectID:   fromPgUUID(r.ProjectID),
-			Name:        r.Name,
-			Description: r.Description,
-			CreatedAt:   r.CreatedAt.Time,
-			UpdatedAt:   r.UpdatedAt.Time,
+			ID:           fromPgUUID(r.ID),
+			ProjectID:    fromPgUUID(r.ProjectID),
+			Name:         r.Name,
+			Description:  r.Description,
+			TotalDeploys: r.TotalDeploys,
+			CreatedAt:    r.CreatedAt.Time,
+			UpdatedAt:    r.UpdatedAt.Time,
 		})
 	}
 	return out, nil
@@ -598,6 +605,22 @@ func (s *Store) EnvironmentBelongsToProject(ctx context.Context, projectID, envI
 	return ok, nil
 }
 
+// EnvironmentDeploymentTotal returns the persisted history size for envID, while
+// also scope-checking that the environment belongs to projectID.
+func (s *Store) EnvironmentDeploymentTotal(ctx context.Context, projectID, envID uuid.UUID) (int64, bool, error) {
+	total, err := s.q.GetEnvironmentDeploymentTotalByProject(ctx, db.GetEnvironmentDeploymentTotalByProjectParams{
+		ProjectID: pgUUID(projectID),
+		ID:        pgUUID(envID),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("store: environment deployment total: %w", err)
+	}
+	return total, true, nil
+}
+
 // ListDeploymentHistory returns the environment's timeline (all
 // statuses), newest first, capped at limit.
 func (s *Store) ListDeploymentHistory(ctx context.Context, envID uuid.UUID, limit int32) ([]DeploymentRevision, error) {
@@ -613,17 +636,6 @@ func (s *Store) ListDeploymentHistory(ctx context.Context, envID uuid.UUID, limi
 		out = append(out, revisionFromRow(r))
 	}
 	return out, nil
-}
-
-// CountDeploymentHistory returns the full timeline size for one environment.
-// The API calls this only when a limited page is full, so small histories avoid
-// the extra query.
-func (s *Store) CountDeploymentHistory(ctx context.Context, envID uuid.UUID) (int64, error) {
-	total, err := s.q.CountDeploymentHistory(ctx, pgUUID(envID))
-	if err != nil {
-		return 0, fmt.Errorf("store: count deployment history: %w", err)
-	}
-	return total, nil
 }
 
 // ErrDeploymentRevisionNotFound is returned when no revision matches the id.

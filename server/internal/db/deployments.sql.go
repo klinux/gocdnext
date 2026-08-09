@@ -11,27 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countDeploymentHistory = `-- name: CountDeploymentHistory :one
-SELECT COUNT(*)::bigint
-FROM deployment_revisions
-WHERE environment_id = $1
-`
-
-// Count all timeline rows for one environment. Uses the same environment_id
-// index as ListDeploymentHistory and runs only when the returned page hits
-// its limit, so the common "small history" path avoids this second query.
-func (q *Queries) CountDeploymentHistory(ctx context.Context, environmentID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countDeploymentHistory, environmentID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const createDeploymentRevision = `-- name: CreateDeploymentRevision :one
-INSERT INTO deployment_revisions
-    (environment_id, run_id, job_run_id, attempt, version, is_rollback, deployed_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id
+WITH inserted AS (
+    INSERT INTO deployment_revisions
+        (environment_id, run_id, job_run_id, attempt, version, is_rollback, deployed_by)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING id, environment_id
+), bumped AS (
+    UPDATE environments e
+    SET total_deploys = e.total_deploys + 1,
+        updated_at = NOW()
+    FROM inserted i
+    WHERE e.id = i.environment_id
+)
+SELECT inserted.id FROM inserted
 `
 
 type CreateDeploymentRevisionParams struct {
@@ -45,7 +38,9 @@ type CreateDeploymentRevisionParams struct {
 }
 
 // Recorded at dispatch with the resolved version, status in_progress,
-// tagged with the dispatch attempt so retries don't collide.
+// tagged with the dispatch attempt so retries don't collide. The environment's
+// timeline counter bumps in the same statement, so cards can render counts from
+// GET /environments without a COUNT(*) per environment.
 func (q *Queries) CreateDeploymentRevision(ctx context.Context, arg CreateDeploymentRevisionParams) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, createDeploymentRevision,
 		arg.EnvironmentID,
@@ -92,13 +87,22 @@ func (q *Queries) CurrentDeploymentByEnvironment(ctx context.Context, environmen
 }
 
 const deleteDeploymentRevision = `-- name: DeleteDeploymentRevision :exec
-DELETE FROM deployment_revisions
-WHERE id = $1 AND status = 'in_progress'
+WITH deleted AS (
+    DELETE FROM deployment_revisions dr
+    WHERE dr.id = $1 AND dr.status = 'in_progress'
+    RETURNING dr.environment_id
+)
+UPDATE environments e
+SET total_deploys = GREATEST(e.total_deploys - 1, 0),
+    updated_at = NOW()
+FROM deleted d
+WHERE e.id = d.environment_id
 `
 
 // Removes a revision created at dispatch when the dispatch then failed
 // to reach an agent (the frame never went out, so no deploy happened).
-// Scoped to in_progress so it can never erase a finalized audit row.
+// Scoped to in_progress so it can never erase a finalized audit row. The
+// timeline counter only decrements when a row was actually removed.
 func (q *Queries) DeleteDeploymentRevision(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteDeploymentRevision, id)
 	return err
@@ -268,6 +272,26 @@ func (q *Queries) GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (De
 	return i, err
 }
 
+const getEnvironmentDeploymentTotalByProject = `-- name: GetEnvironmentDeploymentTotalByProject :one
+SELECT total_deploys
+FROM environments
+WHERE project_id = $1 AND id = $2
+`
+
+type GetEnvironmentDeploymentTotalByProjectParams struct {
+	ProjectID pgtype.UUID
+	ID        pgtype.UUID
+}
+
+// Scope guard + O(1) timeline total for a project-owned environment. A missing
+// row maps to 404 at the API boundary.
+func (q *Queries) GetEnvironmentDeploymentTotalByProject(ctx context.Context, arg GetEnvironmentDeploymentTotalByProjectParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getEnvironmentDeploymentTotalByProject, arg.ProjectID, arg.ID)
+	var total_deploys int64
+	err := row.Scan(&total_deploys)
+	return total_deploys, err
+}
+
 const listDeploymentHistory = `-- name: ListDeploymentHistory :many
 SELECT id, environment_id, run_id, job_run_id, attempt, version, status,
        is_rollback, deployed_by, created_at, finished_at
@@ -316,26 +340,37 @@ func (q *Queries) ListDeploymentHistory(ctx context.Context, arg ListDeploymentH
 }
 
 const listEnvironmentsByProject = `-- name: ListEnvironmentsByProject :many
-SELECT id, project_id, name, description, created_at, updated_at
+SELECT id, project_id, name, description, total_deploys, created_at, updated_at
 FROM environments
 WHERE project_id = $1
 ORDER BY name
 `
 
-func (q *Queries) ListEnvironmentsByProject(ctx context.Context, projectID pgtype.UUID) ([]Environment, error) {
+type ListEnvironmentsByProjectRow struct {
+	ID           pgtype.UUID
+	ProjectID    pgtype.UUID
+	Name         string
+	Description  string
+	TotalDeploys int64
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) ListEnvironmentsByProject(ctx context.Context, projectID pgtype.UUID) ([]ListEnvironmentsByProjectRow, error) {
 	rows, err := q.db.Query(ctx, listEnvironmentsByProject, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Environment{}
+	items := []ListEnvironmentsByProjectRow{}
 	for rows.Next() {
-		var i Environment
+		var i ListEnvironmentsByProjectRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
 			&i.Name,
 			&i.Description,
+			&i.TotalDeploys,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -351,7 +386,7 @@ func (q *Queries) ListEnvironmentsByProject(ctx context.Context, projectID pgtyp
 
 const listEnvironmentsWithCurrentByProject = `-- name: ListEnvironmentsWithCurrentByProject :many
 WITH env AS (
-    SELECT ev.id, ev.name, ev.description, ev.created_at, ev.updated_at
+    SELECT ev.id, ev.name, ev.description, ev.total_deploys, ev.created_at, ev.updated_at
     FROM environments ev
     WHERE ev.project_id = $1
 ), frz AS (
@@ -365,6 +400,7 @@ SELECT COALESCE(e.name, f.name)::text  AS name,
        e.created_at,
        e.updated_at,
        (e.id IS NOT NULL)::boolean     AS has_environment_row,
+       COALESCE(e.total_deploys, 0)    AS total_deploys,
        (f.name IS NOT NULL)::boolean   AS frozen,
        f.frozen_at,
        COALESCE(f.frozen_by, '')       AS frozen_by,
@@ -396,6 +432,7 @@ type ListEnvironmentsWithCurrentByProjectRow struct {
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
 	HasEnvironmentRow bool
+	TotalDeploys      int64
 	Frozen            bool
 	FrozenAt          pgtype.Timestamptz
 	FrozenBy          string
@@ -456,6 +493,7 @@ func (q *Queries) ListEnvironmentsWithCurrentByProject(ctx context.Context, proj
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.HasEnvironmentRow,
+			&i.TotalDeploys,
 			&i.Frozen,
 			&i.FrozenAt,
 			&i.FrozenBy,

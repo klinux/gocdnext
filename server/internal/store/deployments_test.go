@@ -227,6 +227,72 @@ func TestDeploymentRevision_LifecycleInProgressToSuccess(t *testing.T) {
 	}
 }
 
+func TestDeploymentRevision_TotalDeploysMaintained(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, _, _, jobA, jobB := seedRunningJob(t, pool)
+	projectID := projectIDForRun(t, pool, runID)
+	envID, err := s.EnsureEnvironment(ctx, projectID, "production")
+	if err != nil {
+		t.Fatalf("EnsureEnvironment: %v", err)
+	}
+
+	total, found, err := s.EnvironmentDeploymentTotal(ctx, projectID, envID)
+	if err != nil || !found || total != 0 {
+		t.Fatalf("initial total = %d found=%v err=%v; want 0/true/nil", total, found, err)
+	}
+
+	revA, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobA, Attempt: 0, Version: "1.0.wip",
+	})
+	if err != nil {
+		t.Fatalf("CreateDeploymentRevision A: %v", err)
+	}
+	revB, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+		EnvironmentID: envID, RunID: runID, JobRunID: jobB, Attempt: 0, Version: "1.1.good",
+	})
+	if err != nil {
+		t.Fatalf("CreateDeploymentRevision B: %v", err)
+	}
+	total, found, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
+	if err != nil || !found || total != 2 {
+		t.Fatalf("after creates total = %d found=%v err=%v; want 2/true/nil", total, found, err)
+	}
+
+	if err := s.DeleteDeploymentRevision(ctx, revA); err != nil {
+		t.Fatalf("DeleteDeploymentRevision in_progress: %v", err)
+	}
+	total, _, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
+	if err != nil || total != 1 {
+		t.Fatalf("after cleanup total = %d err=%v; want 1/nil", total, err)
+	}
+	if err := s.DeleteDeploymentRevision(ctx, revA); err != nil {
+		t.Fatalf("DeleteDeploymentRevision replay: %v", err)
+	}
+	total, _, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
+	if err != nil || total != 1 {
+		t.Fatalf("after replay cleanup total = %d err=%v; want still 1/nil", total, err)
+	}
+
+	if _, err := s.FinalizeDeploymentRevision(ctx, jobB, 0, store.DeployStatusSuccess); err != nil {
+		t.Fatalf("FinalizeDeploymentRevision: %v", err)
+	}
+	if err := s.DeleteDeploymentRevision(ctx, revB); err != nil {
+		t.Fatalf("DeleteDeploymentRevision finalized: %v", err)
+	}
+	total, _, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
+	if err != nil || total != 1 {
+		t.Fatalf("finalized delete total = %d err=%v; want still 1/nil", total, err)
+	}
+
+	otherProject := seedProject(t, s, "env-total-other")
+	if _, found, err := s.EnvironmentDeploymentTotal(ctx, otherProject, envID); err != nil || found {
+		t.Fatalf("cross-project total found=%v err=%v; want false/nil", found, err)
+	}
+}
+
 func TestFinalizeDeploymentRevision_NoDeployBlockIsNoop(t *testing.T) {
 	// A job with no deploy: block has no in_progress revision — the
 	// result-path finalize must affect zero rows, not error.

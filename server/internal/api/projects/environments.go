@@ -47,6 +47,10 @@ type environmentDTO struct {
 	// No omitempty: it is the discriminator, and a silently-absent `false`
 	// would read as "unknown" on the client.
 	HasEnvironmentRow bool `json:"has_environment_row"`
+	// Full timeline size for this environment. Persisted on environments so
+	// project pages can show counts without per-card COUNT(*) queries. Freeze-only
+	// rows have no environment record, so they correctly report 0.
+	TotalDeploys int64 `json:"total_deploys"`
 
 	// Change-freeze (00078). `frozen` and `frozen_at` are VIEWER-readable —
 	// "production is frozen" is operational state everyone needs. `freeze_reason`
@@ -138,6 +142,7 @@ func (h *Handler) ListEnvironments(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:         e.CreatedAt,
 			UpdatedAt:         e.UpdatedAt,
 			HasEnvironmentRow: e.HasEnvironmentRow,
+			TotalDeploys:      e.TotalDeploys,
 			Frozen:            e.Frozen,
 			FrozenAt:          e.FrozenAt,
 		}
@@ -185,9 +190,9 @@ func (h *Handler) ListEnvironmentDeployments(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	ok, err := h.store.EnvironmentBelongsToProject(r.Context(), detail.Project.ID, envID)
+	total, ok, err := h.store.EnvironmentDeploymentTotal(r.Context(), detail.Project.ID, envID)
 	if err != nil {
-		h.log.Error("list deployments: scope check", "slug", slug, "env_id", envID, "err", err)
+		h.log.Error("list deployments: scope/total", "slug", slug, "env_id", envID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -208,15 +213,6 @@ func (h *Handler) ListEnvironmentDeployments(w http.ResponseWriter, r *http.Requ
 		h.log.Error("list deployments", "slug", slug, "env_id", envID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
-	}
-	total := int64(len(revs))
-	if len(revs) == limit {
-		total, err = h.store.CountDeploymentHistory(r.Context(), envID)
-		if err != nil {
-			h.log.Error("count deployments", "slug", slug, "env_id", envID, "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
 	}
 	out := make([]deploymentDTO, 0, len(revs))
 	for _, rev := range revs {
