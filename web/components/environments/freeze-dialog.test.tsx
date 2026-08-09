@@ -20,11 +20,14 @@ afterEach(() => {
 // The trigger and the submit button both read "Freeze", so every assertion
 // below is scoped INSIDE the dialog — otherwise a test could pass by matching
 // the trigger and never exercise the form at all.
-async function open(props: { environment?: string } = {}) {
+async function open(
+  props: { environment?: string; environmentSuggestions?: string[] } = {},
+) {
   render(
     <FreezeDialog
       slug="acme"
       environment={props.environment}
+      environmentSuggestions={props.environmentSuggestions}
       trigger={<Button>Open freeze dialog</Button>}
     />,
   );
@@ -80,6 +83,55 @@ describe("FreezeDialog", () => {
       expect(freezeMock).toHaveBeenCalledWith({
         slug: "acme",
         name: "production",
+        reason: "PCI audit window",
+      }),
+    );
+  });
+
+  it("suggests detected environments without blocking a brand-new name", async () => {
+    const dialog = await open({
+      environmentSuggestions: [" production ", "staging", "", "production"],
+    });
+    const input = dialog.getByLabelText("Environment") as HTMLInputElement;
+
+    const listID = input.getAttribute("list");
+    expect(listID).toBeTruthy();
+    const options = Array.from(
+      document.getElementById(listID ?? "")?.querySelectorAll("option") ?? [],
+    ).map((option) => option.value);
+    expect(options).toEqual(["production", "staging"]);
+
+    fireEvent.change(input, {
+      target: { value: "dr-before-first-deploy" },
+    });
+    fireEvent.change(dialog.getByLabelText("Reason"), {
+      target: { value: "DR rehearsal" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "Freeze" }));
+    await waitFor(() =>
+      expect(freezeMock).toHaveBeenCalledWith({
+        slug: "acme",
+        name: "dr-before-first-deploy",
+        reason: "DR rehearsal",
+      }),
+    );
+  });
+
+  it("submits a selected detected environment", async () => {
+    const dialog = await open({
+      environmentSuggestions: ["production", "staging"],
+    });
+    fireEvent.change(dialog.getByLabelText("Environment"), {
+      target: { value: "staging" },
+    });
+    fireEvent.change(dialog.getByLabelText("Reason"), {
+      target: { value: "PCI audit window" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "Freeze" }));
+    await waitFor(() =>
+      expect(freezeMock).toHaveBeenCalledWith({
+        slug: "acme",
+        name: "staging",
         reason: "PCI audit window",
       }),
     );

@@ -1,6 +1,12 @@
 "use client";
 
-import { type ReactNode, useState, useTransition } from "react";
+import {
+  type ReactNode,
+  useId,
+  useMemo,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Snowflake } from "lucide-react";
 import { toast } from "sonner";
@@ -29,9 +35,14 @@ type Props = {
   // deploy, so freezing one pre-emptively means naming an environment that has
   // no card yet.
   environment?: string;
+  // Best-effort suggestions from environments the page already knows about
+  // (deployed or currently frozen). Still free text: a freeze can name an
+  // environment before its first deploy creates a row.
+  environmentSuggestions?: string[];
 };
 
 const REASON_MAX = 500;
+const EMPTY_ENVIRONMENT_SUGGESTIONS: string[] = [];
 
 // FreezeDialog collects the REQUIRED reason and puts an environment under a
 // change-freeze (#202).
@@ -43,14 +54,32 @@ const REASON_MAX = 500;
 // Controls are INLINE (plain buttons, an Input, a Textarea) — deliberately no
 // DropdownMenu or Select inside the Dialog, which crashes in this stack (see
 // policy-form.client.tsx).
-export function FreezeDialog({ slug, trigger, environment }: Props) {
+export function FreezeDialog({
+  slug,
+  trigger,
+  environment,
+  environmentSuggestions = EMPTY_ENVIRONMENT_SUGGESTIONS,
+}: Props) {
   const router = useRouter();
   const nameLocked = environment !== undefined;
+  const rawSuggestionsID = useId();
 
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(environment ?? "");
   const [reason, setReason] = useState("");
   const [pending, startTransition] = useTransition();
+  const suggestions = useMemo(() => {
+    const seen = new Set<string>();
+    const values: string[] = [];
+    for (const candidate of environmentSuggestions) {
+      const value = candidate.trim();
+      if (value === "" || seen.has(value)) continue;
+      seen.add(value);
+      values.push(value);
+    }
+    return values;
+  }, [environmentSuggestions]);
+  const suggestionsID = suggestions.length > 0 ? rawSuggestionsID : undefined;
 
   function submit() {
     startTransition(async () => {
@@ -97,11 +126,19 @@ export function FreezeDialog({ slug, trigger, environment }: Props) {
               <Label htmlFor="freeze-env">Environment</Label>
               <Input
                 id="freeze-env"
+                list={suggestionsID}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onValueChange={setName}
                 placeholder="production"
                 autoComplete="off"
               />
+              {suggestionsID ? (
+                <datalist id={suggestionsID}>
+                  {suggestions.map((suggestion) => (
+                    <option key={suggestion} value={suggestion} />
+                  ))}
+                </datalist>
+              ) : null}
               <p className="text-xs text-muted-foreground">
                 It doesn&apos;t have to exist yet — freezing a name blocks the
                 first deploy that would create it.
