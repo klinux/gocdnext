@@ -848,6 +848,9 @@ export type EnvironmentSummary = {
   created_at?: string;
   updated_at?: string;
   has_environment_row: boolean;
+  // Full deployment timeline size for the environment. Comes from the project
+  // environments list so cards do not count history individually.
+  total_deploys: number;
   // Change-freeze state. `frozen` / `frozen_at` are viewer-readable; the
   // server REDACTS freeze_reason and frozen_by below maintainer, so treat
   // their absence as "not allowed to see", never as "not set".

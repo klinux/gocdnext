@@ -157,7 +157,7 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
       setHistory({
         phase: "loaded",
         rows: data.deployments,
-        total: data.total ?? data.deployments.length,
+        total: data.total ?? environment.total_deploys ?? data.deployments.length,
       });
     } catch (err) {
       setHistory({
@@ -165,7 +165,7 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
         message: err instanceof Error ? err.message : "failed to load history",
       });
     }
-  }, [apiBaseURL, environmentId, hasRow, slug]);
+  }, [apiBaseURL, environment.total_deploys, environmentId, hasRow, slug]);
 
   const setHistoryOpenState = useCallback(
     (next: boolean) => {
@@ -271,12 +271,16 @@ export const EnvironmentCard = forwardRef<EnvironmentCardHandle, Props>(
             className="-ml-2 h-7 text-xs font-medium text-muted-foreground"
             onClick={toggleHistory}
             aria-expanded={open}
+            aria-label={`History, ${environment.total_deploys.toLocaleString()} deployment${environment.total_deploys === 1 ? "" : "s"}`}
           >
             <ChevronDown
               className={cn("size-3.5 transition-transform", open && "rotate-180")}
               aria-hidden
             />
             History
+            <span className="ml-1 rounded-4xl bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+              {environment.total_deploys.toLocaleString()}
+            </span>
           </Button>
         ) : (
           <span aria-hidden className="min-h-7 flex-1" />
