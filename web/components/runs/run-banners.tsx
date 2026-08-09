@@ -1,12 +1,94 @@
 import type { Route } from "next";
-import { GitPullRequest } from "lucide-react";
+import { GitPullRequest, TriangleAlert } from "lucide-react";
 
 import { EntityChip } from "@/components/shared/entity-chip";
 
-// Two small banners surfaced at the top of the run-detail page when
-// the run was kicked off by something interesting — a PR or an
-// upstream pipeline. Pure presentation, lifted out of run-live so
-// the live client component stays focused on streaming + state.
+// Small banners surfaced at the top of the run-detail page when the
+// run was kicked off by something interesting — a PR, an upstream
+// pipeline, or a PR-head config. Pure presentation, lifted out of
+// run-live so the live client component stays focused on streaming +
+// state.
+
+export type PRHeadConfig = {
+  configRevision?: string;
+  prURL?: string;
+  prNumber?: number;
+};
+
+export function prHeadConfigFromCauseDetail(
+  detail: Record<string, unknown> | undefined,
+): PRHeadConfig | null {
+  if (!detail || detail.config_source !== "pr_head") return null;
+  return {
+    configRevision: nonEmptyString(detail.config_revision),
+    prURL: safeExternalURL(detail.pr_url),
+    prNumber: positiveInteger(detail.pr_number),
+  };
+}
+
+export function PRHeadConfigBanner({ config }: { config: PRHeadConfig }) {
+  const shortRevision = config.configRevision?.slice(0, 7);
+  const prURL = safeExternalURL(config.prURL);
+  const prLabel =
+    typeof config.prNumber === "number" ? `PR #${config.prNumber}` : "Open PR";
+
+  return (
+    <aside
+      aria-label="PR head config provenance"
+      className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert
+          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-hidden
+        />
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-amber-800 dark:text-amber-300">
+              PR head config
+            </span>
+            {shortRevision ? (
+              <span
+                className="rounded bg-background/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground"
+                title={config.configRevision}
+              >
+                {shortRevision}
+              </span>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            This run used the pipeline definition from the PR head
+            {shortRevision ? (
+              <>
+                {" "}
+                (<span className="font-mono text-foreground">{shortRevision}</span>)
+              </>
+            ) : null}
+            , not the default branch.
+            {prURL ? (
+              <>
+                {" "}
+                <a
+                  href={prURL}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-mono text-amber-700 hover:underline dark:text-amber-300"
+                >
+                  {prLabel}
+                </a>
+              </>
+            ) : config.prNumber ? (
+              <>
+                {" "}
+                <span className="font-mono text-foreground">{prLabel}</span>
+              </>
+            ) : null}
+          </p>
+        </div>
+      </div>
+    </aside>
+  );
+}
 
 export function PullRequestBanner({
   pr,
@@ -104,4 +186,29 @@ export function UpstreamBanner({
       ) : null}
     </aside>
   );
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number") return undefined;
+  if (!Number.isInteger(value) || value <= 0) return undefined;
+  return value;
+}
+
+function safeExternalURL(value: unknown): string | undefined {
+  const raw = nonEmptyString(value);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
