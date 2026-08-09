@@ -863,11 +863,20 @@ export type EnvironmentSummary = {
 
 export type EnvironmentsList = { environments: EnvironmentSummary[] };
 
+export type DeploymentHistoryEnvironment = {
+  id: string;
+  name: string;
+  total_deploys: number;
+  current_revision_id?: string;
+};
+
 export type DeploymentsList = {
   deployments: DeploymentRecord[];
   // Present on current servers; optional so older dev servers degrade to
   // "showing N of N" rather than breaking the client during rolling upgrades.
   total?: number;
+  next_cursor?: string;
+  environment?: DeploymentHistoryEnvironment;
 };
 
 // Native deployment target (ADR-0001): how an environment deploys — which provider

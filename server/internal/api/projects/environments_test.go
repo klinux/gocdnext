@@ -249,17 +249,37 @@ func TestListEnvironmentDeployments_CrossProject404(t *testing.T) {
 }
 
 func TestListEnvironmentDeployments_IncludesTotal(t *testing.T) {
-	router, s, _ := environmentsRouter(t)
+	router, s, pool := environmentsRouter(t)
 	ctx := t.Context()
 	projectID := seedProjectForEnv(t, s, "history-total")
 	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
 
-	for _, version := range []string{"1.0.0", "1.1.0", "1.2.0"} {
-		if _, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+	var currentRev uuid.UUID
+	for i, rev := range []struct {
+		version   string
+		createdAt string
+	}{
+		{"1.0.0", "2026-06-13T10:00:00Z"},
+		{"1.1.0", "2026-06-13T11:00:00Z"},
+		{"1.2.0", "2026-06-13T12:00:00Z"},
+	} {
+		revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
 			EnvironmentID: envID,
-			Version:       version,
-		}); err != nil {
-			t.Fatalf("create revision %s: %v", version, err)
+			Version:       rev.version,
+			Attempt:       int32(i),
+		})
+		if err != nil {
+			t.Fatalf("create revision %s: %v", rev.version, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE deployment_revisions SET created_at = $2::timestamptz WHERE id = $1`,
+			revID, rev.createdAt,
+		); err != nil {
+			t.Fatalf("set created_at %s: %v", rev.version, err)
+		}
+		if rev.version == "1.2.0" {
+			currentRev = revID
+			mustMarkSuccess(t, pool, revID)
 		}
 	}
 
@@ -275,7 +295,13 @@ func TestListEnvironmentDeployments_IncludesTotal(t *testing.T) {
 		Deployments []struct {
 			Version string `json:"version"`
 		} `json:"deployments"`
-		Total int64 `json:"total"`
+		Total       int64  `json:"total"`
+		NextCursor  string `json:"next_cursor"`
+		Environment struct {
+			Name              string  `json:"name"`
+			TotalDeploys      int64   `json:"total_deploys"`
+			CurrentRevisionID *string `json:"current_revision_id"`
+		} `json:"environment"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -285,6 +311,46 @@ func TestListEnvironmentDeployments_IncludesTotal(t *testing.T) {
 	}
 	if resp.Total != 3 {
 		t.Fatalf("total = %d, want full history count 3", resp.Total)
+	}
+	if resp.NextCursor == "" {
+		t.Fatal("next_cursor empty for limited first page")
+	}
+	if resp.Environment.Name != "production" || resp.Environment.TotalDeploys != 3 {
+		t.Fatalf("environment = %+v, want production/3", resp.Environment)
+	}
+	if resp.Environment.CurrentRevisionID == nil || *resp.Environment.CurrentRevisionID != currentRev.String() {
+		t.Fatalf("current_revision_id = %v, want %s", resp.Environment.CurrentRevisionID, currentRev)
+	}
+
+	req = httptest.NewRequest(http.MethodGet,
+		"/api/v1/projects/history-total/environments/"+envID.String()+"/deployments?limit=2&cursor="+resp.NextCursor, nil)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second page status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var page2 struct {
+		Deployments []struct {
+			Version string `json:"version"`
+		} `json:"deployments"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &page2); err != nil {
+		t.Fatalf("decode second page: %v", err)
+	}
+	if len(page2.Deployments) != 1 || page2.Deployments[0].Version != "1.0.0" {
+		t.Fatalf("second page deployments = %+v, want only 1.0.0", page2.Deployments)
+	}
+	if page2.NextCursor != "" {
+		t.Fatalf("second page next_cursor = %q, want empty", page2.NextCursor)
+	}
+
+	req = httptest.NewRequest(http.MethodGet,
+		"/api/v1/projects/history-total/environments/"+envID.String()+"/deployments?cursor=not-a-cursor", nil)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("malformed cursor status = %d, want 400", rr.Code)
 	}
 }
 
