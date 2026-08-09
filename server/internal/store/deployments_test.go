@@ -239,9 +239,9 @@ func TestDeploymentRevision_TotalDeploysMaintained(t *testing.T) {
 		t.Fatalf("EnsureEnvironment: %v", err)
 	}
 
-	total, found, err := s.EnvironmentDeploymentTotal(ctx, projectID, envID)
-	if err != nil || !found || total != 0 {
-		t.Fatalf("initial total = %d found=%v err=%v; want 0/true/nil", total, found, err)
+	meta, found, err := s.EnvironmentHistoryMeta(ctx, projectID, envID)
+	if err != nil || !found || meta.TotalDeploys != 0 || meta.Name != "production" {
+		t.Fatalf("initial meta = %+v found=%v err=%v; want production/0/true/nil", meta, found, err)
 	}
 
 	revA, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
@@ -256,24 +256,24 @@ func TestDeploymentRevision_TotalDeploysMaintained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDeploymentRevision B: %v", err)
 	}
-	total, found, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
-	if err != nil || !found || total != 2 {
-		t.Fatalf("after creates total = %d found=%v err=%v; want 2/true/nil", total, found, err)
+	meta, found, err = s.EnvironmentHistoryMeta(ctx, projectID, envID)
+	if err != nil || !found || meta.TotalDeploys != 2 {
+		t.Fatalf("after creates meta = %+v found=%v err=%v; want total 2/true/nil", meta, found, err)
 	}
 
 	if err := s.DeleteDeploymentRevision(ctx, revA); err != nil {
 		t.Fatalf("DeleteDeploymentRevision in_progress: %v", err)
 	}
-	total, _, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
-	if err != nil || total != 1 {
-		t.Fatalf("after cleanup total = %d err=%v; want 1/nil", total, err)
+	meta, _, err = s.EnvironmentHistoryMeta(ctx, projectID, envID)
+	if err != nil || meta.TotalDeploys != 1 {
+		t.Fatalf("after cleanup meta = %+v err=%v; want total 1/nil", meta, err)
 	}
 	if err := s.DeleteDeploymentRevision(ctx, revA); err != nil {
 		t.Fatalf("DeleteDeploymentRevision replay: %v", err)
 	}
-	total, _, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
-	if err != nil || total != 1 {
-		t.Fatalf("after replay cleanup total = %d err=%v; want still 1/nil", total, err)
+	meta, _, err = s.EnvironmentHistoryMeta(ctx, projectID, envID)
+	if err != nil || meta.TotalDeploys != 1 {
+		t.Fatalf("after replay cleanup meta = %+v err=%v; want still total 1/nil", meta, err)
 	}
 
 	if _, err := s.FinalizeDeploymentRevision(ctx, jobB, 0, store.DeployStatusSuccess); err != nil {
@@ -282,13 +282,13 @@ func TestDeploymentRevision_TotalDeploysMaintained(t *testing.T) {
 	if err := s.DeleteDeploymentRevision(ctx, revB); err != nil {
 		t.Fatalf("DeleteDeploymentRevision finalized: %v", err)
 	}
-	total, _, err = s.EnvironmentDeploymentTotal(ctx, projectID, envID)
-	if err != nil || total != 1 {
-		t.Fatalf("finalized delete total = %d err=%v; want still 1/nil", total, err)
+	meta, _, err = s.EnvironmentHistoryMeta(ctx, projectID, envID)
+	if err != nil || meta.TotalDeploys != 1 || meta.CurrentRevisionID == nil || *meta.CurrentRevisionID != revB {
+		t.Fatalf("finalized delete meta = %+v err=%v; want total 1/current revB/nil", meta, err)
 	}
 
 	otherProject := seedProject(t, s, "env-total-other")
-	if _, found, err := s.EnvironmentDeploymentTotal(ctx, otherProject, envID); err != nil || found {
+	if _, found, err := s.EnvironmentHistoryMeta(ctx, otherProject, envID); err != nil || found {
 		t.Fatalf("cross-project total found=%v err=%v; want false/nil", found, err)
 	}
 }
@@ -452,6 +452,64 @@ func TestCurrentDeployment_LatestSuccessWins(t *testing.T) {
 	if len(hist) != 3 {
 		t.Fatalf("history len = %d, want 3", len(hist))
 	}
+}
+
+func TestListDeploymentHistoryPage_Keyset(t *testing.T) {
+	pool := dbtest.SetupPool(t)
+	s := store.New(pool)
+	ctx := context.Background()
+
+	runID, _, _, jobID, _ := seedRunningJob(t, pool)
+	projectID := projectIDForRun(t, pool, runID)
+	envID, _ := s.EnsureEnvironment(ctx, projectID, "production")
+
+	revs := []struct {
+		version   string
+		attempt   int32
+		createdAt string
+	}{
+		{"1.0.old", 0, "2026-06-13T10:00:00Z"},
+		{"1.1.mid", 1, "2026-06-13T11:00:00Z"},
+		{"1.2.tie-a", 2, "2026-06-13T12:00:00Z"},
+		{"1.2.tie-b", 3, "2026-06-13T12:00:00Z"},
+	}
+	for _, rev := range revs {
+		revID, err := s.CreateDeploymentRevision(ctx, store.CreateDeploymentRevisionInput{
+			EnvironmentID: envID, RunID: runID, JobRunID: jobID, Attempt: rev.attempt, Version: rev.version,
+		})
+		if err != nil {
+			t.Fatalf("CreateDeploymentRevision %s: %v", rev.version, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE deployment_revisions SET created_at = $2::timestamptz WHERE id = $1`,
+			revID, rev.createdAt,
+		); err != nil {
+			t.Fatalf("set created_at for %s: %v", rev.version, err)
+		}
+	}
+
+	first, err := s.ListDeploymentHistoryPage(ctx, envID, 1, nil)
+	if err != nil {
+		t.Fatalf("ListDeploymentHistoryPage first: %v", err)
+	}
+	if len(first) != 1 || !isTieVersion(first[0].Version) {
+		t.Fatalf("first page = %+v, want one newest tie revision", first)
+	}
+
+	next, err := s.ListDeploymentHistoryPage(ctx, envID, 2, &store.DeploymentHistoryCursor{
+		CreatedAt: first[0].CreatedAt,
+		ID:        first[0].ID,
+	})
+	if err != nil {
+		t.Fatalf("ListDeploymentHistoryPage next: %v", err)
+	}
+	if len(next) != 2 || !isTieVersion(next[0].Version) || next[0].Version == first[0].Version || next[1].Version != "1.1.mid" {
+		t.Fatalf("next page = %+v, want other tie revision then 1.1.mid", next)
+	}
+}
+
+func isTieVersion(version string) bool {
+	return version == "1.2.tie-a" || version == "1.2.tie-b"
 }
 
 func TestListEnvironmentsWithCurrent(t *testing.T) {

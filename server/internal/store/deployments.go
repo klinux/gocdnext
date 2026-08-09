@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gocdnext/gocdnext/server/internal/db"
@@ -56,6 +57,21 @@ type DeploymentRevision struct {
 	DeployedBy    string
 	CreatedAt     time.Time
 	FinishedAt    *time.Time
+}
+
+// EnvironmentHistoryMeta is the lightweight header for a single environment's
+// history page. It is scoped by project in SQL.
+type EnvironmentHistoryMeta struct {
+	Name              string
+	TotalDeploys      int64
+	CurrentRevisionID *uuid.UUID
+}
+
+// DeploymentHistoryCursor is a keyset cursor over the history ordering:
+// newest first by (created_at, id).
+type DeploymentHistoryCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
 }
 
 // CreateDeploymentRevisionInput is the dispatch-time payload. Attempt
@@ -605,29 +621,47 @@ func (s *Store) EnvironmentBelongsToProject(ctx context.Context, projectID, envI
 	return ok, nil
 }
 
-// EnvironmentDeploymentTotal returns the persisted history size for envID, while
-// also scope-checking that the environment belongs to projectID.
-func (s *Store) EnvironmentDeploymentTotal(ctx context.Context, projectID, envID uuid.UUID) (int64, bool, error) {
-	total, err := s.q.GetEnvironmentDeploymentTotalByProject(ctx, db.GetEnvironmentDeploymentTotalByProjectParams{
+// EnvironmentHistoryMeta returns lightweight metadata for envID, while also
+// scope-checking that the environment belongs to projectID.
+func (s *Store) EnvironmentHistoryMeta(ctx context.Context, projectID, envID uuid.UUID) (EnvironmentHistoryMeta, bool, error) {
+	row, err := s.q.GetEnvironmentHistoryMetaByProject(ctx, db.GetEnvironmentHistoryMetaByProjectParams{
 		ProjectID: pgUUID(projectID),
 		ID:        pgUUID(envID),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return EnvironmentHistoryMeta{}, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("store: environment deployment total: %w", err)
+		return EnvironmentHistoryMeta{}, false, fmt.Errorf("store: environment history meta: %w", err)
 	}
-	return total, true, nil
+	meta := EnvironmentHistoryMeta{
+		Name:         row.Name,
+		TotalDeploys: row.TotalDeploys,
+	}
+	if row.CurrentID.Valid {
+		id := fromPgUUID(row.CurrentID)
+		meta.CurrentRevisionID = &id
+	}
+	return meta, true, nil
 }
 
 // ListDeploymentHistory returns the environment's timeline (all
 // statuses), newest first, capped at limit.
 func (s *Store) ListDeploymentHistory(ctx context.Context, envID uuid.UUID, limit int32) ([]DeploymentRevision, error) {
-	rows, err := s.q.ListDeploymentHistory(ctx, db.ListDeploymentHistoryParams{
+	return s.ListDeploymentHistoryPage(ctx, envID, limit, nil)
+}
+
+// ListDeploymentHistoryPage returns one keyset-paginated history page.
+func (s *Store) ListDeploymentHistoryPage(ctx context.Context, envID uuid.UUID, limit int32, cursor *DeploymentHistoryCursor) ([]DeploymentRevision, error) {
+	params := db.ListDeploymentHistoryPageParams{
 		EnvironmentID: pgUUID(envID),
-		Limit:         limit,
-	})
+		PageSize:      limit,
+	}
+	if cursor != nil {
+		params.CursorCreatedAt = pgtype.Timestamptz{Time: cursor.CreatedAt, Valid: true}
+		params.CursorID = pgUUID(cursor.ID)
+	}
+	rows, err := s.q.ListDeploymentHistoryPage(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("store: list deployment history: %w", err)
 	}

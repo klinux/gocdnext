@@ -272,43 +272,75 @@ func (q *Queries) GetDeploymentRevision(ctx context.Context, id pgtype.UUID) (De
 	return i, err
 }
 
-const getEnvironmentDeploymentTotalByProject = `-- name: GetEnvironmentDeploymentTotalByProject :one
-SELECT total_deploys
-FROM environments
-WHERE project_id = $1 AND id = $2
+const getEnvironmentHistoryMetaByProject = `-- name: GetEnvironmentHistoryMetaByProject :one
+SELECT e.name,
+       e.total_deploys,
+       c.id AS current_id
+FROM environments e
+LEFT JOIN LATERAL (
+    SELECT id
+    FROM deployment_revisions
+    WHERE environment_id = e.id AND status = 'success'
+    ORDER BY finished_at DESC
+    LIMIT 1
+) c ON TRUE
+WHERE e.project_id = $1 AND e.id = $2
 `
 
-type GetEnvironmentDeploymentTotalByProjectParams struct {
+type GetEnvironmentHistoryMetaByProjectParams struct {
 	ProjectID pgtype.UUID
 	ID        pgtype.UUID
 }
 
-// Scope guard + O(1) timeline total for a project-owned environment. A missing
-// row maps to 404 at the API boundary.
-func (q *Queries) GetEnvironmentDeploymentTotalByProject(ctx context.Context, arg GetEnvironmentDeploymentTotalByProjectParams) (int64, error) {
-	row := q.db.QueryRow(ctx, getEnvironmentDeploymentTotalByProject, arg.ProjectID, arg.ID)
-	var total_deploys int64
-	err := row.Scan(&total_deploys)
-	return total_deploys, err
+type GetEnvironmentHistoryMetaByProjectRow struct {
+	Name         string
+	TotalDeploys int64
+	CurrentID    pgtype.UUID
 }
 
-const listDeploymentHistory = `-- name: ListDeploymentHistory :many
+// Scope guard + O(1) timeline metadata for a project-owned environment. A
+// missing row maps to 404 at the API boundary.
+func (q *Queries) GetEnvironmentHistoryMetaByProject(ctx context.Context, arg GetEnvironmentHistoryMetaByProjectParams) (GetEnvironmentHistoryMetaByProjectRow, error) {
+	row := q.db.QueryRow(ctx, getEnvironmentHistoryMetaByProject, arg.ProjectID, arg.ID)
+	var i GetEnvironmentHistoryMetaByProjectRow
+	err := row.Scan(&i.Name, &i.TotalDeploys, &i.CurrentID)
+	return i, err
+}
+
+const listDeploymentHistoryPage = `-- name: ListDeploymentHistoryPage :many
 SELECT id, environment_id, run_id, job_run_id, attempt, version, status,
        is_rollback, deployed_by, created_at, finished_at
 FROM deployment_revisions
 WHERE environment_id = $1
-ORDER BY created_at DESC
-LIMIT $2
+  AND (
+      $2::timestamptz IS NULL
+      OR created_at < $2::timestamptz
+      OR (
+          created_at = $2::timestamptz
+          AND id < $3::uuid
+      )
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4::int
 `
 
-type ListDeploymentHistoryParams struct {
-	EnvironmentID pgtype.UUID
-	Limit         int32
+type ListDeploymentHistoryPageParams struct {
+	EnvironmentID   pgtype.UUID
+	CursorCreatedAt pgtype.Timestamptz
+	CursorID        pgtype.UUID
+	PageSize        int32
 }
 
-// Timeline for one environment, all statuses, newest first.
-func (q *Queries) ListDeploymentHistory(ctx context.Context, arg ListDeploymentHistoryParams) ([]DeploymentRevision, error) {
-	rows, err := q.db.Query(ctx, listDeploymentHistory, arg.EnvironmentID, arg.Limit)
+// Timeline for one environment, all statuses, newest first. Cursor pagination
+// uses (created_at, id) so rows with identical timestamps still paginate
+// deterministically.
+func (q *Queries) ListDeploymentHistoryPage(ctx context.Context, arg ListDeploymentHistoryPageParams) ([]DeploymentRevision, error) {
+	rows, err := q.db.Query(ctx, listDeploymentHistoryPage,
+		arg.EnvironmentID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
