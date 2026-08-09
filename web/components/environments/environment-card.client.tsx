@@ -1,11 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import {
   ChevronDown,
-  ChevronUp,
   Eye,
   GitBranch,
   Loader2,
@@ -26,6 +25,7 @@ import { RemoveEnvironment } from "@/components/environments/remove-environment-
 import {
   Card,
   CardContent,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -80,6 +80,9 @@ const borderToneClasses: Record<StatusTone, string> = {
   neutral: "border-l-border",
 };
 
+const HISTORY_SCROLL_CLASS =
+  "max-h-[196px] overflow-y-auto overscroll-contain [scrollbar-width:thin]";
+
 type HistoryState =
   | { phase: "idle" }
   | { phase: "loading" }
@@ -95,7 +98,11 @@ export function EnvironmentCard({
   apiBaseURL,
 }: Props) {
   const { current } = environment;
-  const tone: StatusTone = current ? statusTone(current.status) : "neutral";
+  const accentTone: StatusTone = environment.frozen
+    ? "warning"
+    : current
+      ? statusTone(current.status)
+      : "neutral";
   const watch = useDeployWatch(environment.name);
   const [history, setHistory] = useState<HistoryState>({ phase: "idle" });
   const [open, setOpen] = useState(false);
@@ -105,7 +112,32 @@ export function EnvironmentCard({
   const environmentId = environment.id;
   const hasRow = environment.has_environment_row && environmentId !== undefined;
 
-  async function toggleHistory() {
+  async function loadHistory() {
+    if (!hasRow) return;
+    setHistory({ phase: "loading" });
+    try {
+      // Trim a trailing slash so a configured base ending in "/"
+      // doesn't produce "host//api/v1/..." — matches the other lazy
+      // fetchers' normalization.
+      const base = apiBaseURL.replace(/\/+$/, "");
+      const res = await fetch(
+        `${base}/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}/deployments`,
+        { credentials: "include", headers: { Accept: "application/json" } },
+      );
+      if (!res.ok) {
+        throw new Error(`server returned ${res.status}`);
+      }
+      const data = (await res.json()) as DeploymentsList;
+      setHistory({ phase: "loaded", rows: data.deployments });
+    } catch (err) {
+      setHistory({
+        phase: "error",
+        message: err instanceof Error ? err.message : "failed to load history",
+      });
+    }
+  }
+
+  function toggleHistory() {
     if (!hasRow) return;
     if (open) {
       setOpen(false);
@@ -114,48 +146,40 @@ export function EnvironmentCard({
     setOpen(true);
     // Fetch once, then keep the result while toggling open/closed.
     if (history.phase === "idle" || history.phase === "error") {
-      setHistory({ phase: "loading" });
-      try {
-        // Trim a trailing slash so a configured base ending in "/"
-        // doesn't produce "host//api/v1/..." — matches the other lazy
-        // fetchers' normalization.
-        const base = apiBaseURL.replace(/\/+$/, "");
-        const res = await fetch(
-          `${base}/api/v1/projects/${encodeURIComponent(slug)}/environments/${encodeURIComponent(environmentId)}/deployments`,
-          { credentials: "include", headers: { Accept: "application/json" } },
-        );
-        if (!res.ok) {
-          throw new Error(`server returned ${res.status}`);
-        }
-        const data = (await res.json()) as DeploymentsList;
-        setHistory({ phase: "loaded", rows: data.deployments });
-      } catch (err) {
-        setHistory({
-          phase: "error",
-          message: err instanceof Error ? err.message : "failed to load history",
-        });
-      }
+      void loadHistory();
     }
   }
 
   return (
-    <Card className={cn("border-l-4", borderToneClasses[tone])}>
-      <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-        <CardTitle className="flex items-center gap-2 text-base">
+    <Card
+      className={cn(
+        "gap-0 border-l-4 py-0 transition-shadow hover:shadow-sm",
+        borderToneClasses[accentTone],
+      )}
+    >
+      <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 px-4 pb-0 pt-4">
+        <CardTitle className="flex min-w-0 items-center gap-2 text-base font-semibold">
           <Rocket className="size-4 text-muted-foreground" aria-hidden />
-          {environment.name}
+          <span className="truncate">{environment.name}</span>
         </CardTitle>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {watch ? <NativeWatchChip watch={watch} /> : null}
-          {current ? (
+          {environment.frozen ? (
+            <span className="inline-flex h-5 items-center gap-1 rounded-4xl bg-amber-500/10 px-2 text-xs font-medium text-amber-700 dark:text-amber-400">
+              <Snowflake className="size-3" aria-hidden />
+              Frozen
+            </span>
+          ) : current ? (
             <StatusBadge status={current.status} />
           ) : (
-            <span className="text-xs text-muted-foreground">no deploys yet</span>
+            <span className="inline-flex h-5 items-center rounded-4xl bg-muted px-2 text-xs font-medium text-muted-foreground">
+              no deploys yet
+            </span>
           )}
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-3">
+      <CardContent className="flex flex-1 flex-col gap-3 px-4 py-3">
         {environment.description ? (
           <p className="text-sm text-muted-foreground">{environment.description}</p>
         ) : null}
@@ -198,59 +222,59 @@ export function EnvironmentCard({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 w-full justify-start text-xs text-muted-foreground"
+                className="h-8 w-full justify-start border-dashed text-xs text-muted-foreground hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
               >
                 <Plus className="mr-1 size-3.5" aria-hidden /> Add native target
               </Button>
             }
           />
         ) : null}
+      </CardContent>
 
-        <div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            {/* History / Remove address the environments row by id, so they are
-                hidden entirely on a freeze-only card — there is no row. */}
-            {hasRow ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="-ml-2 h-7 text-xs text-muted-foreground"
-                onClick={toggleHistory}
-                aria-expanded={open}
-              >
-                {open ? (
-                  <ChevronUp className="size-3.5" aria-hidden />
-                ) : (
-                  <ChevronDown className="size-3.5" aria-hidden />
-                )}
-                History
-              </Button>
-            ) : (
-              <span />
-            )}
-            <span className="flex items-center gap-2">
-              {canManage ? (
-                <FreezeControl slug={slug} environment={environment} />
-              ) : null}
-              {isAdmin && hasRow ? (
-                <RemoveEnvironment
-                  slug={slug}
-                  environmentId={environmentId}
-                  environmentName={environment.name}
-                />
-              ) : null}
-            </span>
-          </div>
-          {open && hasRow ? (
-            <DeployHistory
-              state={history}
+      <CardFooter className="mt-auto justify-between gap-2 rounded-none border-t border-border/60 bg-muted/40 px-4 py-2">
+        {/* History / Remove address the environments row by id, so they are
+            hidden entirely on a freeze-only card — there is no row. */}
+        {hasRow ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-2 h-7 text-xs font-medium text-muted-foreground"
+            onClick={toggleHistory}
+            aria-expanded={open}
+          >
+            <ChevronDown
+              className={cn("size-3.5 transition-transform", open && "rotate-180")}
+              aria-hidden
+            />
+            History
+          </Button>
+        ) : (
+          <span aria-hidden className="min-h-7 flex-1" />
+        )}
+        <span className="flex items-center gap-2">
+          {canManage ? (
+            <FreezeControl slug={slug} environment={environment} />
+          ) : null}
+          {isAdmin && hasRow ? (
+            <RemoveEnvironment
               slug={slug}
               environmentId={environmentId}
               environmentName={environment.name}
             />
           ) : null}
-        </div>
-      </CardContent>
+        </span>
+      </CardFooter>
+
+      {open && hasRow ? (
+        <DeployHistory
+          state={history}
+          slug={slug}
+          environmentId={environmentId}
+          environmentName={environment.name}
+          currentRevisionId={current?.id}
+          onRetry={loadHistory}
+        />
+      ) : null}
     </Card>
   );
 }
@@ -263,7 +287,7 @@ export function EnvironmentCard({
 // state the freeze clearly without them.
 function FrozenBanner({ environment }: { environment: EnvironmentSummary }) {
   return (
-    <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs">
+    <div className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
       <p className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
         <Snowflake className="size-3.5" aria-hidden />
         Frozen — no deploy to this environment will be admitted
@@ -356,7 +380,7 @@ function NativeTargetRow({
 }) {
   const SyncIcon = target.sync_mode === "observe" ? Eye : RefreshCw;
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
       <span className="font-medium text-foreground">Native</span>
       <Dot />
       <span>{PROVIDER_LABELS[target.provider] ?? target.provider}</span>
@@ -417,12 +441,12 @@ function CurrentDeploy({ slug, current }: { slug: string; current: DeploymentRec
       <div className="flex items-center gap-2">
         {/* break-all + min-w-0: long OCI tags/digests wrap instead of
             pushing the rollback badge off the card. */}
-        <span className="min-w-0 break-all font-mono text-sm font-medium">
+        <span className="min-w-0 break-all font-mono text-base font-semibold tracking-tight">
           {current.version}
         </span>
         {current.is_rollback ? <RollbackBadge /> : null}
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         deployed <RelativeTime at={current.finished_at} fallback="—" />
         {current.deployed_by ? ` by ${current.deployed_by}` : null}
         {current.run_id ? (
@@ -441,52 +465,108 @@ function DeployHistory({
   slug,
   environmentId,
   environmentName,
+  currentRevisionId,
+  onRetry,
 }: {
   state: HistoryState;
   slug: string;
   environmentId: string;
   environmentName: string;
+  currentRevisionId?: string;
+  onRetry: () => Promise<void>;
 }) {
+  let body: ReactNode;
+
   if (state.phase === "loading") {
-    return <p className="mt-2 text-xs text-muted-foreground">Loading…</p>;
-  }
-  if (state.phase === "error") {
-    return (
-      <p className="mt-2 text-xs text-red-500">
-        Couldn&apos;t load history ({state.message}).
+    body = (
+      <p className="px-4 py-3 text-xs text-muted-foreground">
+        Loading history…
       </p>
     );
+  } else if (state.phase === "error") {
+    body = (
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs">
+        <p className="text-red-500">
+          Couldn&apos;t load history ({state.message}).
+        </p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={() => void onRetry()}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  } else if (state.phase !== "loaded" || state.rows.length === 0) {
+    body = (
+      <p className="px-4 py-3 text-xs text-muted-foreground">
+        No deploys recorded.
+      </p>
+    );
+  } else {
+    body = (
+      <ol className="divide-y divide-border/60">
+        {state.rows.map((d) => (
+          <li
+            key={d.id}
+            className="flex items-center gap-3 px-4 py-2.5 text-xs hover:bg-muted/40"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <span
+                className="min-w-0 truncate font-mono text-foreground"
+                title={d.version}
+              >
+                {d.version}
+              </span>
+              {d.id === currentRevisionId ? (
+                <span className="rounded-4xl bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  current
+                </span>
+              ) : null}
+              {d.is_rollback ? <RollbackBadge /> : null}
+            </span>
+            <span className="ml-auto flex shrink-0 items-center gap-2 text-muted-foreground">
+              <StatusBadge status={d.status} className="text-[10px]" />
+              <RelativeTime at={d.finished_at ?? d.created_at} fallback="—" />
+              {d.run_id ? <RunLink runId={d.run_id} /> : null}
+              {/* Roll back is offered only for a successful deploy whose
+                  run still exists (a GC'd run has no job to re-run). */}
+              {d.status === "success" && d.run_id ? (
+                <RollbackButton
+                  slug={slug}
+                  environmentId={environmentId}
+                  environmentName={environmentName}
+                  revisionId={d.id}
+                  version={d.version}
+                />
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ol>
+    );
   }
-  if (state.phase !== "loaded" || state.rows.length === 0) {
-    return <p className="mt-2 text-xs text-muted-foreground">No deploys recorded.</p>;
-  }
+
   return (
-    <ol className="mt-2 space-y-2 border-l border-border pl-3">
-      {state.rows.map((d) => (
-        <li key={d.id} className="flex items-start justify-between gap-2 text-xs">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 break-all font-mono">{d.version}</span>
-            {d.is_rollback ? <RollbackBadge /> : null}
+    <div
+      role="region"
+      aria-label={`${environmentName} deployment history`}
+      className="border-t border-border/60 bg-card"
+    >
+      <div data-history-scroll className={HISTORY_SCROLL_CLASS}>
+        {body}
+      </div>
+      {state.phase === "loaded" && state.rows.length > 0 ? (
+        <div className="flex items-center justify-between border-t border-border/60 bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+          <span>
+            Showing {state.rows.length} latest deployment
+            {state.rows.length === 1 ? "" : "s"}
           </span>
-          <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
-            <StatusBadge status={d.status} className="text-[10px]" />
-            <RelativeTime at={d.finished_at ?? d.created_at} fallback="—" />
-            {d.run_id ? <RunLink runId={d.run_id} /> : null}
-            {/* Roll back is offered only for a successful deploy whose
-                run still exists (a GC'd run has no job to re-run). */}
-            {d.status === "success" && d.run_id ? (
-              <RollbackButton
-                slug={slug}
-                environmentId={environmentId}
-                environmentName={environmentName}
-                revisionId={d.id}
-                version={d.version}
-              />
-            ) : null}
-          </span>
-        </li>
-      ))}
-    </ol>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
