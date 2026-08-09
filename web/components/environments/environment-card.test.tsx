@@ -44,6 +44,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function openEnvironmentActions(environmentName = "production") {
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: new RegExp(`Environment actions for ${environmentName}`, "i"),
+    }),
+  );
+}
+
 describe("EnvironmentCard", () => {
   it("shows the current version, deployer and a run link", () => {
     render(<EnvironmentCard slug="acme" environment={withCurrent} apiBaseURL="" canManage={false} isAdmin={false} />);
@@ -102,7 +110,7 @@ describe("EnvironmentCard", () => {
     expect(screen.queryByText("checkout")).toBeNull();
   });
 
-  it("offers an Edit affordance on the native row for managers", () => {
+  it("offers an Edit affordance in the actions menu for managers", async () => {
     render(
       <EnvironmentCard
         slug="acme"
@@ -113,12 +121,13 @@ describe("EnvironmentCard", () => {
         apiBaseURL=""
       />,
     );
-    expect(
-      screen.getByRole("button", { name: /Edit native target for production/i }),
-    ).toBeTruthy();
+    openEnvironmentActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Edit native target/i }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Edit native deploy target")).toBeTruthy();
   });
 
-  it("offers 'Add native target' on a target-less env for managers", () => {
+  it("offers 'Add native target' in the actions menu on a target-less env for managers", async () => {
     render(
       <EnvironmentCard
         slug="acme"
@@ -128,9 +137,10 @@ describe("EnvironmentCard", () => {
         apiBaseURL=""
       />,
     );
-    expect(
-      screen.getByRole("button", { name: /Add native target/i }),
-    ).toBeTruthy();
+    openEnvironmentActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Add native target/i }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Register native deploy target")).toBeTruthy();
   });
 
   it("hides management affordances from non-managers", () => {
@@ -144,12 +154,15 @@ describe("EnvironmentCard", () => {
         apiBaseURL=""
       />,
     );
-    expect(screen.queryByRole("button", { name: /Edit native target/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Add native target/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Environment actions/i }),
+    ).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Edit native target/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Add native target/i })).toBeNull();
   });
 
   it("offers Remove only to admins, with a confirm step", () => {
-    const { rerender } = render(
+    const { unmount } = render(
       <EnvironmentCard
         slug="acme"
         environment={withCurrent}
@@ -159,9 +172,13 @@ describe("EnvironmentCard", () => {
       />,
     );
     // A maintainer (canManage but not admin) never sees Remove.
-    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    openEnvironmentActions();
+    expect(
+      screen.queryByRole("menuitem", { name: /Remove environment/i }),
+    ).toBeNull();
+    unmount();
 
-    rerender(
+    render(
       <EnvironmentCard
         slug="acme"
         environment={withCurrent}
@@ -171,7 +188,8 @@ describe("EnvironmentCard", () => {
       />,
     );
     // Admin sees Remove; it's a two-step confirm (no immediate delete).
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    openEnvironmentActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove environment/i }));
     expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
@@ -365,7 +383,10 @@ describe("EnvironmentCard — change-freeze", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: /History/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    openEnvironmentActions();
+    expect(
+      screen.queryByRole("menuitem", { name: /Remove environment/i }),
+    ).toBeNull();
     // Unfreezing it is still possible — otherwise the freeze would be permanent.
     expect(screen.getByRole("button", { name: "Unfreeze" })).toBeTruthy();
     expect(screen.getByText(/doesn't exist yet/i)).toBeTruthy();
