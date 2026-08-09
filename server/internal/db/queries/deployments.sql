@@ -199,12 +199,21 @@ SELECT EXISTS (
     SELECT 1 FROM environments WHERE id = $2 AND project_id = $1
 );
 
--- name: GetEnvironmentDeploymentTotalByProject :one
--- Scope guard + O(1) timeline total for a project-owned environment. A missing
--- row maps to 404 at the API boundary.
-SELECT total_deploys
-FROM environments
-WHERE project_id = $1 AND id = $2;
+-- name: GetEnvironmentHistoryMetaByProject :one
+-- Scope guard + O(1) timeline metadata for a project-owned environment. A
+-- missing row maps to 404 at the API boundary.
+SELECT e.name,
+       e.total_deploys,
+       c.id AS current_id
+FROM environments e
+LEFT JOIN LATERAL (
+    SELECT id
+    FROM deployment_revisions
+    WHERE environment_id = e.id AND status = 'success'
+    ORDER BY finished_at DESC
+    LIMIT 1
+) c ON TRUE
+WHERE e.project_id = $1 AND e.id = $2;
 
 -- name: UpdateEnvironmentDescription :exec
 UPDATE environments
@@ -221,11 +230,21 @@ WHERE environment_id = $1 AND status = 'success'
 ORDER BY finished_at DESC
 LIMIT 1;
 
--- name: ListDeploymentHistory :many
--- Timeline for one environment, all statuses, newest first.
+-- name: ListDeploymentHistoryPage :many
+-- Timeline for one environment, all statuses, newest first. Cursor pagination
+-- uses (created_at, id) so rows with identical timestamps still paginate
+-- deterministically.
 SELECT id, environment_id, run_id, job_run_id, attempt, version, status,
        is_rollback, deployed_by, created_at, finished_at
 FROM deployment_revisions
 WHERE environment_id = $1
-ORDER BY created_at DESC
-LIMIT $2;
+  AND (
+      sqlc.narg(cursor_created_at)::timestamptz IS NULL
+      OR created_at < sqlc.narg(cursor_created_at)::timestamptz
+      OR (
+          created_at = sqlc.narg(cursor_created_at)::timestamptz
+          AND id < sqlc.narg(cursor_id)::uuid
+      )
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_size)::int;

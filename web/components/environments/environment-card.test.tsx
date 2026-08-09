@@ -313,6 +313,9 @@ describe("EnvironmentCard", () => {
     expect(scroll?.className).toContain("overflow-y-auto");
     expect(screen.getByText("current")).toBeTruthy();
     expect(screen.getByText("Showing 2 of 12 deployments")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /View full history/i }).getAttribute("href")).toBe(
+      "/projects/acme/environments/env-1/history",
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toContain(
       "/api/v1/projects/acme/environments/env-1/deployments",

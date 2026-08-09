@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import type { Route } from "next";
 import {
+  ArrowRight,
   ChevronDown,
   Eye,
   GitBranch,
@@ -696,6 +697,19 @@ function DeployHistory({
             Showing {state.rows.length} of {state.total} deployment
             {state.total === 1 ? "" : "s"}
           </span>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="-mr-2"
+            render={
+              <Link
+                href={`/projects/${slug}/environments/${environmentId}/history` as Route}
+              >
+                View full history
+                <ArrowRight className="size-3" aria-hidden />
+              </Link>
+            }
+          />
         </div>
       ) : null}
     </div>

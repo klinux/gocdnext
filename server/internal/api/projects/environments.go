@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -73,14 +74,61 @@ type environmentsListResponse struct {
 }
 
 type deploymentsListResponse struct {
-	Deployments []deploymentDTO `json:"deployments"`
-	Total       int64           `json:"total"`
+	Deployments []deploymentDTO         `json:"deployments"`
+	Total       int64                   `json:"total"`
+	NextCursor  *string                 `json:"next_cursor,omitempty"`
+	Environment deploymentHistoryEnvDTO `json:"environment"`
+}
+
+type deploymentHistoryEnvDTO struct {
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	TotalDeploys      int64   `json:"total_deploys"`
+	CurrentRevisionID *string `json:"current_revision_id,omitempty"`
+}
+
+type deploymentHistoryCursorDTO struct {
+	CreatedAt time.Time `json:"created_at"`
+	ID        string    `json:"id"`
 }
 
 // deploymentHistoryLimit caps the timeline page. Generous: the
 // Environments tab shows a single env's history, and the index serves
 // it newest-first off idx_deployment_revisions_history.
 const deploymentHistoryLimit = 100
+
+func parseDeploymentHistoryCursor(raw string) (*store.DeploymentHistoryCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
+	}
+	var dto deploymentHistoryCursorDTO
+	if err := json.Unmarshal(decoded, &dto); err != nil {
+		return nil, err
+	}
+	id, err := uuid.Parse(dto.ID)
+	if err != nil {
+		return nil, err
+	}
+	if dto.CreatedAt.IsZero() {
+		return nil, errors.New("empty cursor created_at")
+	}
+	return &store.DeploymentHistoryCursor{CreatedAt: dto.CreatedAt, ID: id}, nil
+}
+
+func deploymentHistoryCursorFor(r store.DeploymentRevision) (string, error) {
+	payload, err := json.Marshal(deploymentHistoryCursorDTO{
+		CreatedAt: r.CreatedAt,
+		ID:        r.ID.String(),
+	})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(payload), nil
+}
 
 func toDeploymentDTO(r store.DeploymentRevision) deploymentDTO {
 	d := deploymentDTO{
@@ -190,9 +238,9 @@ func (h *Handler) ListEnvironmentDeployments(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	total, ok, err := h.store.EnvironmentDeploymentTotal(r.Context(), detail.Project.ID, envID)
+	meta, ok, err := h.store.EnvironmentHistoryMeta(r.Context(), detail.Project.ID, envID)
 	if err != nil {
-		h.log.Error("list deployments: scope/total", "slug", slug, "env_id", envID, "err", err)
+		h.log.Error("list deployments: scope/meta", "slug", slug, "env_id", envID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -207,19 +255,51 @@ func (h *Handler) ListEnvironmentDeployments(w http.ResponseWriter, r *http.Requ
 			limit = n
 		}
 	}
+	cursor, err := parseDeploymentHistoryCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		http.Error(w, "malformed cursor", http.StatusBadRequest)
+		return
+	}
 
-	revs, err := h.store.ListDeploymentHistory(r.Context(), envID, int32(limit))
+	revs, err := h.store.ListDeploymentHistoryPage(r.Context(), envID, int32(limit+1), cursor)
 	if err != nil {
 		h.log.Error("list deployments", "slug", slug, "env_id", envID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	var nextCursor *string
+	if len(revs) > limit {
+		revs = revs[:limit]
+		if len(revs) > 0 {
+			next, err := deploymentHistoryCursorFor(revs[len(revs)-1])
+			if err != nil {
+				h.log.Error("encode deployments cursor", "slug", slug, "env_id", envID, "err", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			nextCursor = &next
+		}
+	}
 	out := make([]deploymentDTO, 0, len(revs))
 	for _, rev := range revs {
 		out = append(out, toDeploymentDTO(rev))
 	}
+	envDTO := deploymentHistoryEnvDTO{
+		ID:           envID.String(),
+		Name:         meta.Name,
+		TotalDeploys: meta.TotalDeploys,
+	}
+	if meta.CurrentRevisionID != nil {
+		s := meta.CurrentRevisionID.String()
+		envDTO.CurrentRevisionID = &s
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(deploymentsListResponse{Deployments: out, Total: total})
+	_ = json.NewEncoder(w).Encode(deploymentsListResponse{
+		Deployments: out,
+		Total:       meta.TotalDeploys,
+		NextCursor:  nextCursor,
+		Environment: envDTO,
+	})
 }
 
 type rollbackRequest struct {
